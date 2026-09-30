@@ -293,6 +293,26 @@ describe('GitActivityRecorder', () => {
       expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('create');
     });
 
+    it('uses the PR number captured from the output as the create event prNumber', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'gh pr create --fill', cwd: repoDir, createdPrNumber: '42' }),
+      );
+      recorder.recordToolCall(
+        makeRecord({
+          id: 'mcp',
+          toolUseId: 'tool-2',
+          toolName: 'create_pull_request',
+          cwd: repoDir,
+          createdPrNumber: '57',
+        }),
+      );
+
+      const numbers = store
+        .query({ since: 0, until: Date.now() + 1000 })
+        .map((r) => (r.kind === 'pr' ? r.prEvent.prNumber : undefined));
+      expect(numbers.sort()).toEqual(['42', '57']);
+    });
+
     it('records gh pr merge command as PR activity', () => {
       const record = makeRecord({
         command: 'gh pr merge 123',

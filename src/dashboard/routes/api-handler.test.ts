@@ -4097,6 +4097,49 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['pr-session-1']);
   });
 
+  it('clears ready_for_review once the PR number captured at create is merged', async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'pr-merged-1',
+            timeline: [
+              {
+                timestamp: startMs + 10_000,
+                durationMs: 500,
+                toolName: 'Bash',
+                success: true,
+                command: 'gh pr create --fill',
+                createdPrNumber: '42',
+              },
+              {
+                timestamp: startMs + 20_000,
+                durationMs: 500,
+                toolName: 'Bash',
+                success: true,
+                command: 'gh pr merge 42 --squash',
+              },
+            ],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const parsed = JSON.parse(body()) as SessionStatusPayload;
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    expect(parsed.sessionStatus.sessionIds.completed).toEqual(['pr-merged-1']);
+  });
+
   it('marks a live session with ordinary tool calls as working', async () => {
     const now = Date.now();
     const startOfDay = new Date(now);

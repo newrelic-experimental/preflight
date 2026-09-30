@@ -306,6 +306,7 @@ export class LocalSessionAggregator {
     errorType?: unknown;
     platform?: string | null;
     agentId?: unknown;
+    createdPrNumber?: unknown;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
     const timestamp = record.timestamp ?? Date.now();
@@ -361,6 +362,9 @@ export class LocalSessionAggregator {
         ...(record.isLintCommand === true && { isLintCommand: true }),
         ...(typeof record.errorType === 'string' && { errorType: record.errorType }),
         ...(typeof record.agentId === 'string' && { agentId: record.agentId }),
+        ...(typeof record.createdPrNumber === 'string' && {
+          createdPrNumber: record.createdPrNumber,
+        }),
       });
     }
 

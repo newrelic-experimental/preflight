@@ -400,6 +400,19 @@ describe('LocalSessionAggregator timeline persistence', () => {
     });
   });
 
+  it('persists the created PR number so a replay can match it to a later merge', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 100,
+      command: 'gh pr create --fill',
+      createdPrNumber: '42',
+    });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]?.createdPrNumber).toBe('42');
+  });
+
   it('omits the timeline entirely when nothing was recorded for it', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });

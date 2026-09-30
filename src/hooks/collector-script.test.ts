@@ -396,6 +396,52 @@ describe('collector-script', () => {
       expect(event.toolOutput).toEqual({ exitCode: 0 });
     });
 
+    it('keeps only the PR number from a gh pr create URL, never the output text', () => {
+      const response = {
+        stdout: 'Creating pull request for fix into main\n\nhttps://github.com/acme/app/pull/42\n',
+        stderr: '',
+      };
+      processHook(
+        makePostToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr create --fill' },
+          tool_response: response,
+        }),
+      );
+
+      const event = readBufferEvents()[0]!;
+      expect(event.toolOutput).toEqual({ createdPrNumber: '42' });
+    });
+
+    it('ignores a PR URL in the output of a command that is not gh pr create', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr view 7' },
+          tool_response: { stdout: 'https://github.com/acme/app/pull/7\n' },
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolOutput).toBeUndefined();
+    });
+
+    it('keeps the PR number from an MCP create_pull_request result', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'mcp__github__create_pull_request',
+          tool_input: { owner: 'acme', repo: 'app', title: 't', head: 'b', base: 'main' },
+          tool_response: [
+            {
+              type: 'text',
+              text: '{"number":57,"html_url":"https://github.com/acme/app/pull/57"}',
+            },
+          ],
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '57' });
+    });
+
     it('omits toolOutput when no parseable output fields exist', () => {
       const response = { filePath: '/tmp/out.ts', success: true };
       processHook(makePostToolUse({ tool_response: response }));

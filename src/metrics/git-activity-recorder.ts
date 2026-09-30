@@ -101,7 +101,11 @@ export class GitActivityRecorder {
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',
         kind: 'pr',
-        prEvent: { timestamp: record.timestamp, action: mcpPrAction, prNumber: null },
+        prEvent: {
+          timestamp: record.timestamp,
+          action: mcpPrAction,
+          prNumber: mcpPrAction === 'create' ? (record.createdPrNumber ?? null) : null,
+        },
         timestamp: record.timestamp,
         recordId: this.makeRecordId(record, 'pr-mcp'),
         workspaceKey: this.resolveWorkspaceKey(cwd),
@@ -119,8 +123,13 @@ export class GitActivityRecorder {
     // `gh` invocation can be chained before or after a `git` command, or
     // follow a heredoc script on its own newline-separated segment.
     for (let i = 0; i < segments.length; i++) {
-      const prEvent = processGhCommand(segments[i].trim(), record.timestamp);
-      if (!prEvent) continue;
+      const parsed = processGhCommand(segments[i].trim(), record.timestamp);
+      if (!parsed) continue;
+      // `gh pr create` takes no number; the one it opened comes from its output.
+      const prEvent =
+        parsed.action === 'create' && parsed.prNumber === null && record.createdPrNumber
+          ? { ...parsed, prNumber: record.createdPrNumber }
+          : parsed;
       // A failed `gh pr create` made no PR — nothing to count. Every other
       // verb stays real even on failure: `gh pr checks` exits non-zero when
       // checks are failing, and that's still a genuine checks view.

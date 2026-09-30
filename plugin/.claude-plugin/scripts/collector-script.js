@@ -365,17 +365,42 @@ function extractInputMeta(toolName, input) {
   }
   return Object.keys(meta).length > 0 ? meta : void 0;
 }
-function extractOutputMeta(toolName, output) {
+var PR_URL_RE = /https?:\/\/[^\s"'/]+\/[^\s"'/]+\/[^\s"'/]+\/pull\/(\d{1,9})\b/g;
+var GH_PR_CREATE_RE = /(?:^|[\s;&|(])gh\s+pr\s+create\b/;
+function findCreatedPrNumber(output) {
+  const texts = [];
+  const blocks = Array.isArray(output) ? output : output.content;
+  if (!Array.isArray(output) && typeof output.stdout === "string") texts.push(output.stdout);
+  if (Array.isArray(blocks)) {
+    for (const block of blocks) if (hasStringText(block)) texts.push(block.text);
+  }
+  let prNumber;
+  for (const text of texts) {
+    for (const match of text.matchAll(PR_URL_RE)) prNumber = match[1];
+  }
+  return prNumber;
+}
+function extractOutputMeta(toolName, output, input) {
   if (output === null || output === void 0 || typeof output !== "object") return void 0;
   const obj = output;
+  if (toolName.endsWith("create_pull_request")) {
+    const createdPrNumber = findCreatedPrNumber(output);
+    return createdPrNumber === void 0 ? void 0 : { createdPrNumber };
+  }
   if (toolName === "Bash") {
+    const meta = {};
     if (typeof obj.exitCode === "number") {
-      return { exitCode: obj.exitCode };
-    }
-    if (typeof obj.exitCode === "string") {
+      meta.exitCode = obj.exitCode;
+    } else if (typeof obj.exitCode === "string") {
       const parsed = Number(obj.exitCode);
-      if (!Number.isNaN(parsed)) return { exitCode: parsed };
+      if (!Number.isNaN(parsed)) meta.exitCode = parsed;
     }
+    const command = input !== null && typeof input === "object" ? input.command : void 0;
+    if (typeof command === "string" && GH_PR_CREATE_RE.test(command)) {
+      const createdPrNumber = findCreatedPrNumber(obj);
+      if (createdPrNumber !== void 0) meta.createdPrNumber = createdPrNumber;
+    }
+    if (Object.keys(meta).length > 0) return meta;
   }
   if (toolName === "Edit") {
     const meta = {};
@@ -474,7 +499,7 @@ function processHook(raw) {
     }
     const postInputMeta = extractInputMeta(toolName, data.tool_input);
     if (postInputMeta !== void 0) event.toolInput = postInputMeta;
-    const outputMeta = extractOutputMeta(toolName, toolResponse);
+    const outputMeta = extractOutputMeta(toolName, toolResponse, data.tool_input);
     if (outputMeta !== void 0) event.toolOutput = outputMeta;
     if (recordContent && toolResponse !== void 0) {
       const content = typeof toolResponse === "string" ? toolResponse : JSON.stringify(toolResponse);
@@ -530,7 +555,7 @@ function processHook(raw) {
     };
     const postInputMeta = extractInputMeta(toolName, data.tool_input);
     if (postInputMeta !== void 0) event.toolInput = postInputMeta;
-    const outputMeta = extractOutputMeta(toolName, data.tool_response);
+    const outputMeta = extractOutputMeta(toolName, data.tool_response, data.tool_input);
     if (outputMeta !== void 0) event.toolOutput = outputMeta;
     if (recordContent && data.tool_response !== void 0) {
       const content = typeof data.tool_response === "string" ? data.tool_response : JSON.stringify(data.tool_response);

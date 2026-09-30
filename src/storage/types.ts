@@ -338,6 +338,8 @@ export interface ToolCallRecord {
   readonly skillName?: string;
   /** Length of the free-text `tool_input.args`; the text itself is never recorded. */
   readonly skillArgsLength?: number;
+  /** Number of the PR a `gh pr create` or MCP create_pull_request call opened, parsed from the PR URL in its output. */
+  readonly createdPrNumber?: string;
   readonly [key: string]: unknown;
 }
 
@@ -365,6 +367,8 @@ export interface ReplayTimelineEntry {
   readonly skillName?: string;
   /** Only on `toolName === 'Agent'` entries, from the hook payload's `subagent_type`. */
   readonly agentType?: string;
+  /** Same as `ToolCallRecord.createdPrNumber`; absent in sessions persisted before it existed. */
+  readonly createdPrNumber?: string;
 }
 
 /**
