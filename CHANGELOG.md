@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.57.2] - 2026-09-30
+
+### Fixed
+
+- Audit trail and security events for tool calls made inside a subagent now carry the subagent's type (for example `Explore`), so sensitive-file access and destructive commands can be attributed by subagent type. The type is known once the subagent's spawning `Agent` call completes, so calls audited while that subagent is still running can still lack it.
+- The long-running `--local` daemon no longer keeps a record of every subagent tool call it has ever seen. Subagent attribution now keeps at most 10,000 tool calls and 1,000 subagents, and drops entries unused for 24 hours.
+
 ## [1.57.1] - 2026-09-29
 
 ### Fixed
