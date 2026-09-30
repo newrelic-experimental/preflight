@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.57.2] - 2026-09-30
+
+### Fixed
+
+- A git remote with a token in it no longer leaks the token. With a remote such as `https://<token>@github.com/widgets.git` or `ssh://git@github.com/widgets.git`, the repository name recorded on session summaries and shown in the dashboard header came out as `<token>@github.com/widgets`. Remotes like these have no owner segment, so they now give no repository name. `repo_url` also drops the credential part of the remote now, including a token used as the username, which the secret patterns did not always catch; before, the value kept the token or had the whole host replaced by `[REDACTED]`.
+- Repository names and commit links now work for remotes with a trailing slash, an uppercase `.GIT` suffix, or a query string, and commit links from `ssh://` remotes with a port no longer put the port in the link's path.
+
 ## [1.57.1] - 2026-09-29
 
 ### Fixed
