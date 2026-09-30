@@ -1411,7 +1411,7 @@ describe('developer sanitization via loadMcpConfig()', () => {
     expect(config.repoUrl).not.toBeNull();
     expect(config.repoUrl).not.toContain('ghp_faketoken1234567890abcd');
     expect(config.repoUrl).not.toContain('someuser:');
-    expect(config.repoUrl).toContain('[REDACTED]');
+    expect(config.repoUrl).toBe('https://github.com/org/repo.git');
   });
 
   it('strips embedded credentials from an explicit NEW_RELIC_AI_REPO_URL env var', () => {
@@ -1424,7 +1424,17 @@ describe('developer sanitization via loadMcpConfig()', () => {
     expect(config.repoUrl).not.toBeNull();
     expect(config.repoUrl).not.toContain('ghp_faketoken1234567890abcd');
     expect(config.repoUrl).not.toContain('someuser:');
-    expect(config.repoUrl).toContain('[REDACTED]');
+    expect(config.repoUrl).toBe('https://github.com/org/repo.git');
+  });
+
+  it('strips a username-only token that no redaction pattern recognizes', () => {
+    // A GitLab/Bitbucket token used as the https username has no `user:pass`
+    // shape and no known prefix, so redactSensitive alone let it through.
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_REPO_URL = 'https://opaquetoken123@gitlab.example.com/org/repo.git';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.repoUrl).toBe('https://gitlab.example.com/org/repo.git');
   });
 
   it('repoUrl strips embedded credentials from an inferred git remote', () => {
@@ -1454,7 +1464,8 @@ describe('developer sanitization via loadMcpConfig()', () => {
       expect(config.repoUrl).not.toBeNull();
       expect(config.repoUrl).not.toContain('ghp_faketoken1234567890abcd');
       expect(config.repoUrl).not.toContain('someuser:');
-      expect(config.repoUrl).toContain('[REDACTED]');
+      expect(config.repoUrl).toBe('https://github.com/org/repo.git');
+      expect(config.projectId).toBe('org/repo');
     } finally {
       process.chdir(origDir);
       rmSync(gitDir, { recursive: true, force: true });
