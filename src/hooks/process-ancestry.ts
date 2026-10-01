@@ -99,10 +99,10 @@ function parentPidFromProcStat(stat: string): number | null {
 
 /**
  * Builds a pid→ppid map for every process, via a single `ps` call.
- * Returns an empty map on any failure (missing `ps`, non-zero exit, timeout,
+ * Returns null on any failure (missing `ps`, non-zero exit, timeout,
  * unparseable output) so callers degrade to a depth-0 walk rather than throw.
  */
-function readProcessTable(execFileSync: ExecFileSyncFn): Map<number, number> {
+function readProcessTable(execFileSync: ExecFileSyncFn): Map<number, number> | null {
   const table = new Map<number, number>();
   let out: string;
   try {
@@ -118,9 +118,9 @@ function readProcessTable(execFileSync: ExecFileSyncFn): Map<number, number> {
     // execFileSync throws on non-zero exit, timeout, and ENOENT alike. A
     // pathological injected fn could also throw synchronously — same handling.
     logger.debug('Could not read process table via ps', { error: String(err) });
-    return table;
+    return null;
   }
-  if (typeof out !== 'string') return table;
+  if (typeof out !== 'string') return null;
 
   for (const line of out.split('\n')) {
     const parts = line.trim().split(/\s+/);
@@ -130,7 +130,20 @@ function readProcessTable(execFileSync: ExecFileSyncFn): Map<number, number> {
     if (!Number.isFinite(pid) || !Number.isFinite(ppid)) continue;
     table.set(pid, ppid);
   }
-  return table;
+  // `ps` always lists at least itself, so an empty table means bad output.
+  return table.size > 0 ? table : null;
+}
+
+/** What walkAncestorPids() found. */
+export interface AncestorWalk {
+  /** `[startPid, parent, grandparent, ...]`, as getAncestorPids() returns. */
+  readonly pids: number[];
+  /**
+   * True when the walk stopped because a lookup failed (`ps` failed or a
+   * `/proc` read threw) rather than at a natural end, so a later call may
+   * return more. False for a walk that ran to `maxDepth`, PID 1 or a cycle.
+   */
+  readonly lookupFailed: boolean;
 }
 
 /**
@@ -148,7 +161,19 @@ function readProcessTable(execFileSync: ExecFileSyncFn): Map<number, number> {
  * Never throws.
  */
 export function getAncestorPids(startPid: number, options: AncestorPidsOptions = {}): number[] {
-  if (!Number.isFinite(startPid) || startPid <= 0) return [];
+  return walkAncestorPids(startPid, options).pids;
+}
+
+/**
+ * getAncestorPids(), plus whether the walk was cut short by a failed lookup.
+ * For a caller that caches the result and should retry a degraded one rather
+ * than keep it for the life of the process. Never throws.
+ */
+export function walkAncestorPids(
+  startPid: number,
+  options: AncestorPidsOptions = {},
+): AncestorWalk {
+  if (!Number.isFinite(startPid) || startPid <= 0) return { pids: [], lookupFailed: false };
 
   const maxDepth = options.maxDepth ?? 4;
   const platform = options.platform ?? process.platform;
@@ -157,12 +182,12 @@ export function getAncestorPids(startPid: number, options: AncestorPidsOptions =
   if (platform === 'win32') {
     // Not implemented — see the module doc comment. Returning just the direct
     // pid keeps behavior identical to having no walk at all.
-    return pids;
+    return { pids, lookupFailed: false };
   }
 
   // On Linux read /proc directly; everywhere else pay for one `ps` call, and
   // only lazily — a walk that stops at depth 0 never spawns anything.
-  let table: Map<number, number> | undefined;
+  let table: Map<number, number> | null | undefined;
   const execFileSync = options.execFileSync ?? (nodeExecFileSync as unknown as ExecFileSyncFn);
 
   let pid = startPid;
@@ -173,10 +198,11 @@ export function getAncestorPids(startPid: number, options: AncestorPidsOptions =
       try {
         parentPid = parentPidFromProcStat(_procFs.readFile(`/proc/${pid}/stat`));
       } catch {
-        break;
+        return { pids, lookupFailed: true };
       }
     } else {
-      table ??= readProcessTable(execFileSync);
+      if (table === undefined) table = readProcessTable(execFileSync);
+      if (table === null) return { pids, lookupFailed: true };
       parentPid = table.get(pid) ?? null;
     }
 
@@ -186,5 +212,5 @@ export function getAncestorPids(startPid: number, options: AncestorPidsOptions =
     pid = parentPid;
   }
 
-  return pids;
+  return { pids, lookupFailed: false };
 }

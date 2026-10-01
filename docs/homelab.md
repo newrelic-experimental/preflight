@@ -100,8 +100,9 @@ two ways depending on the caller: forwarding clients send it as
 `Authorization: Bearer <token>` on `POST /ingest`; browsers viewing the
 dashboard send it as HTTP Basic Auth (any username, the token as the
 password) — your browser's native login prompt handles this automatically and
-resends the credential on every request. `GET /api/health` stays open
-(no session data). There is no per-developer credential. Bind to a trusted
+resends the credential on every request. `GET /api/health` stays open, and
+any field in it that names a session is sent only to an authenticated
+request. There is no per-developer credential. Bind to a trusted
 network/VPN interface if that matters for your deployment.
 
 `homelabServerUrl` is expected to point at a private LAN address — that's the

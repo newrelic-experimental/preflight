@@ -1,6 +1,11 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 
-import { getAncestorPids, _procFs, type ExecFileSyncFn } from './process-ancestry.js';
+import {
+  getAncestorPids,
+  walkAncestorPids,
+  _procFs,
+  type ExecFileSyncFn,
+} from './process-ancestry.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let originalReadFile: typeof _procFs.readFile;
@@ -232,6 +237,67 @@ describe('process-ancestry', () => {
       );
       expect(getAncestorPids(100, { platform: 'win32', execFileSync: exec.fn })).toEqual([100]);
       expect(exec.calls).toBe(0);
+    });
+  });
+  describe('walkAncestorPids()', () => {
+    const throwingPs = (() => {
+      throw new Error('spawnSync ps ETIMEDOUT');
+    }) as ExecFileSyncFn;
+
+    it('reports a failed ps call so a caller can retry it', () => {
+      expect(walkAncestorPids(100, { platform: 'darwin', execFileSync: throwingPs })).toEqual({
+        pids: [100],
+        lookupFailed: true,
+      });
+    });
+
+    it('reports empty, unparseable or non-string ps output as a failed lookup', () => {
+      for (const out of ['', 'garbage\nlines', undefined as unknown as string]) {
+        const exec = makeExec(out);
+        expect(walkAncestorPids(100, { platform: 'darwin', execFileSync: exec.fn })).toEqual({
+          pids: [100],
+          lookupFailed: true,
+        });
+      }
+    });
+
+    it('reports an unreadable /proc entry as a failed lookup', () => {
+      mockProc({});
+      expect(walkAncestorPids(1001, { platform: 'linux' })).toEqual({
+        pids: [1001],
+        lookupFailed: true,
+      });
+    });
+
+    it('does not report a walk that ends at PID 1 or maxDepth as failed', () => {
+      const exec = makeExec(
+        psOutput([
+          [100, 99],
+          [99, 1],
+        ]),
+      );
+      expect(walkAncestorPids(100, { platform: 'darwin', execFileSync: exec.fn })).toEqual({
+        pids: [100, 99],
+        lookupFailed: false,
+      });
+      expect(
+        walkAncestorPids(100, { platform: 'darwin', execFileSync: exec.fn, maxDepth: 1 }),
+      ).toEqual({ pids: [100, 99], lookupFailed: false });
+    });
+
+    it('does not report a pid missing from a good table as failed', () => {
+      const exec = makeExec(psOutput([[555, 1]]));
+      expect(walkAncestorPids(999, { platform: 'darwin', execFileSync: exec.fn })).toEqual({
+        pids: [999],
+        lookupFailed: false,
+      });
+    });
+
+    it('does not report win32, which never walks, as failed', () => {
+      expect(walkAncestorPids(100, { platform: 'win32', execFileSync: throwingPs })).toEqual({
+        pids: [100],
+        lookupFailed: false,
+      });
     });
   });
 });

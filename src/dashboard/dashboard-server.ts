@@ -11,6 +11,7 @@ import { createApiHandler, ApiHandlerDeps } from './routes/api-handler.js';
 import { createSseHandler } from './routes/sse-handler.js';
 import type { LocalAlertEngine } from '../alerts/local-alert-engine.js';
 import type { AlertLog } from '../alerts/alert-log.js';
+import type { UnforwardedSessionsSnapshot } from '../transport/unforwarded-session-monitor.js';
 
 const logger = createLogger('dashboard-server');
 
@@ -49,6 +50,14 @@ export interface DashboardServerOptions {
    * including static assets and /sse which can't carry custom headers.
    */
   readonly isAuthorized?: (authHeader: string | undefined) => boolean;
+  /**
+   * When provided, GET /api/health includes `unforwardedSessions`: the
+   * sessions this process drained with no live owning engine and could not
+   * forward to New Relic (see UnforwardedSessionMonitor). Carries session ids
+   * and counts only, never credentials. GET /api/health skips isAuthorized,
+   * so with isAuthorized set the field is only sent to a caller that passes it.
+   */
+  readonly unforwardedSessions?: () => UnforwardedSessionsSnapshot;
 }
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
@@ -95,7 +104,12 @@ export class DashboardServer {
         ? { alertLog: opts.alertLog }
         : undefined;
     this.apiHandler = apiDeps ? createApiHandler(apiDeps) : undefined;
-    this.routes.set('GET /api/health', (_req, res) => {
+    this.routes.set('GET /api/health', (req, res) => {
+      const unforwardedSessions =
+        opts.unforwardedSessions &&
+        (!opts.isAuthorized || opts.isAuthorized(req.headers.authorization))
+          ? opts.unforwardedSessions()
+          : undefined;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify({
@@ -104,6 +118,7 @@ export class DashboardServer {
           version: VERSION,
           latestVersion: this.latestVersion,
           updateAvailable: this.updateAvailable,
+          ...(unforwardedSessions ? { unforwardedSessions } : {}),
         }),
       );
     });

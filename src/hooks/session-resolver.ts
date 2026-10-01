@@ -46,9 +46,10 @@ import {
 import { resolve, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { createLogger } from '../shared/index.js';
-import { getAncestorPids } from './process-ancestry.js';
+import { getAncestorPids, walkAncestorPids, type AncestorPidsOptions } from './process-ancestry.js';
 
 import { redactSensitive } from '../config.js';
+import { hasLiveOwningEngine } from '../storage/local-store.js';
 
 const logger = createLogger('session-resolver');
 
@@ -65,6 +66,9 @@ const WARN_AFTER_MS = 60_000;
  * progressively more shared between concurrent sessions on the same machine.
  */
 const READ_ANCESTOR_MAX_DEPTH = 4;
+
+/** How far above our own ppid watchPpidBreadcrumb() looks; see its doc comment. */
+const CORRECTION_ANCESTOR_MAX_DEPTH = 1;
 
 /** Which of the sources produced a resolveSessionId() result. */
 export type SessionIdSource = 'jobdir' | 'ppid' | 'ppid-ancestor' | 'cwd';
@@ -441,6 +445,22 @@ export async function resolveSessionId(
   });
 }
 
+export type PpidBreadcrumbWatchOptions = SessionResolverOptions & {
+  signal?: AbortSignal;
+  /**
+   * Test seam for the parent-of-ppid level: the platform it is gated on, and
+   * the `ps` call behind the ancestor walk off Linux.
+   */
+  readonly ancestry?: Pick<AncestorPidsOptions, 'platform' | 'execFileSync'>;
+} & (
+    | { readonly includeParentOfPpid?: false }
+    | {
+        readonly includeParentOfPpid: true;
+        /** The cwd-guessed id the caller already adopted. */
+        readonly staleId: string;
+      }
+  );
+
 /**
  * Keep watching the PPID breadcrumb only (never cwd, never CLAUDE_JOB_DIR) —
  * used as a corrective safety net after an initial resolution came from the
@@ -450,14 +470,63 @@ export async function resolveSessionId(
  * already adopted and is worth acting on — this function doesn't know or
  * care. No 60s WARN log: a cwd-sourced session working fine while the ppid
  * breadcrumb stays silent is expected, not alarming.
+ *
+ * With `includeParentOfPpid`, each tick also checks the breadcrumb of our
+ * ppid's own parent. That covers an `npx`-launched engine, whose ppid is the
+ * `npm exec` wrapper and never gets a breadcrumb, so the direct watch alone
+ * can never correct a wrong cwd guess (#479: a Copilot engine started in a
+ * directory where Claude Code is active adopts the Claude session's id).
+ * One level reaches the host that launched `npx`. For an engine the host
+ * launched directly, it is instead the host's own parent, a slot the host's
+ * hooks never write, so a breadcrumb there names some other session. Hence:
+ *
+ * - A parent-level hit is only ever a correction: one equal to `staleId` is
+ *   never resolved, so `staleId` coming back always means our ppid's own
+ *   breadcrumb confirmed the guess.
+ * - A parent-level session that already has a live owning engine is not
+ *   ours. Once skipped for either reason, an id stays skipped, so a
+ *   neighbour whose engine later exits is not adopted then.
+ * - Never on Linux. The collector writes a breadcrumb at each of its
+ *   ancestors there (collector-script.ts's writePpidBreadcrumb()), so the
+ *   host's parent is routinely a shared slot (an editor's main process, a
+ *   shell) carrying a concurrent session's id, which may have no engine of
+ *   its own or not have adopted its id yet. Elsewhere the collector writes
+ *   only its own ppid.
  */
 export async function watchPpidBreadcrumb(
-  options: SessionResolverOptions & { signal?: AbortSignal } = {},
+  options: PpidBreadcrumbWatchOptions = {},
 ): Promise<string> {
   const ppid = options.ppid ?? process.ppid;
   const storagePath = options.storagePath ?? DEFAULT_STORAGE_DIR;
+  const platform = options.ancestry?.platform ?? process.platform;
 
   let attempt = 0;
+  let tickCount = 0;
+  // [ppid, parent], kept once a walk succeeds. A walk cut short by a failed
+  // lookup (a `ps` timeout under load) is retried on ticks 1, 2, 4, 8, ...:
+  // soon enough to recover from a blip, rarely enough that a `ps` that keeps
+  // timing out (each attempt blocks for up to 2s) costs little.
+  let parentLevelPids: readonly number[] | undefined;
+  const skippedParentIds = new Set<string>();
+
+  const readParentLevelPids = (): readonly number[] => {
+    if (parentLevelPids) return parentLevelPids;
+    if (options.ancestorPids) {
+      parentLevelPids = options.ancestorPids.slice(0, CORRECTION_ANCESTOR_MAX_DEPTH + 1);
+      return parentLevelPids;
+    }
+    if ((tickCount & (tickCount - 1)) !== 0) return [ppid]; // not a power of two
+    const walk = walkAncestorPids(ppid, {
+      maxDepth: CORRECTION_ANCESTOR_MAX_DEPTH,
+      ...options.ancestry,
+    });
+    if (walk.lookupFailed) {
+      logger.debug('Ancestor walk failed; retrying on a later tick', { ppid, tick: tickCount });
+    } else {
+      parentLevelPids = walk.pids;
+    }
+    return walk.pids;
+  };
 
   return new Promise<string>((resolvePromise, rejectPromise) => {
     const onAbort = () => {
@@ -476,6 +545,7 @@ export async function watchPpidBreadcrumb(
     }
 
     const tick = () => {
+      tickCount++;
       if (options.signal?.aborted) {
         options.signal.removeEventListener('abort', onAbort);
         return;
@@ -486,6 +556,30 @@ export async function watchPpidBreadcrumb(
         if (options.signal) options.signal.removeEventListener('abort', onAbort);
         resolvePromise(sid);
         return;
+      }
+      if (options.includeParentOfPpid && platform !== 'linux') {
+        // resolveFromAncestorBreadcrumb skips index 0, our ppid.
+        const fromParent = resolveFromAncestorBreadcrumb(storagePath, readParentLevelPids());
+        if (fromParent && !skippedParentIds.has(fromParent.sessionId)) {
+          const { sessionId, pid } = fromParent;
+          const skipReason =
+            sessionId === options.staleId
+              ? 'matches the cwd guess'
+              : hasLiveOwningEngine(storagePath, sessionId)
+                ? 'has a live owning engine'
+                : undefined;
+          if (!skipReason) {
+            logger.debug('Resolved corrected session_id from the ppid parent breadcrumb', {
+              sessionId,
+              pid,
+            });
+            if (options.signal) options.signal.removeEventListener('abort', onAbort);
+            resolvePromise(sessionId);
+            return;
+          }
+          skippedParentIds.add(sessionId);
+          logger.debug('Ignoring the ppid parent breadcrumb', { sessionId, pid, skipReason });
+        }
       }
       const delay = nextDelayMs(attempt++);
       const handle = setTimeout(tick, delay);
@@ -502,11 +596,10 @@ export async function watchPpidBreadcrumb(
  * Whether `<storagePath>/buffer-<sessionId>.jsonl` exists and is non-empty —
  * i.e. the hook collector has actually appended at least one event for this
  * session. Mirrors `LocalStore`'s buffer-naming convention
- * (`buffer-<sessionId>.jsonl`) without importing `LocalStore` itself (this
- * module has no storage-layer dependency today); the file is only ever
- * created by `LocalStore.appendEvent()`'s `appendFileSync`, so existence
- * already implies non-empty content in practice — the size check is a cheap
- * extra guard, not load-bearing.
+ * (`buffer-<sessionId>.jsonl`) without constructing a `LocalStore`; the file
+ * is only ever created by `LocalStore.appendEvent()`'s `appendFileSync`, so
+ * existence already implies non-empty content in practice — the size check
+ * is a cheap extra guard, not load-bearing.
  */
 function hasActiveBuffer(storagePath: string, sessionId: string): boolean {
   try {

@@ -21,7 +21,11 @@ import {
   shouldReplaceSessionName,
   sanitizeCwdForFilename,
 } from './session-resolver.js';
+import type { ExecFileSyncFn } from './process-ancestry.js';
 import { redactSensitive } from '../config.js';
+
+/** Above every platform's pid_max, so `kill(pid, 0)` always reports ESRCH. */
+const DEAD_PID = 2_147_483_646;
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -598,6 +602,287 @@ describe('session-resolver', () => {
         suppressWarn: true,
       });
       expect(sid).toBe('sess-ppid-wins');
+    });
+
+    it('ignores the parent-of-ppid breadcrumb unless includeParentOfPpid is set', async () => {
+      const ppid = 88004;
+      const hostPid = 88005;
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+      writeFileSync(resolve(breadcrumbDir, `${hostPid}.txt`), 'sess-host');
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 400);
+      await expect(
+        watchPpidBreadcrumb({
+          ppid,
+          ancestorPids: [ppid, hostPid],
+          ancestry: { platform: 'darwin' },
+          storagePath: tmpDir,
+          signal: ac.signal,
+        }),
+      ).rejects.toThrow(/aborted/);
+    });
+
+    it('with includeParentOfPpid, resolves from the npx host breadcrumb one level up (#479)', async () => {
+      // npx: our ppid is the `npm exec` wrapper (no breadcrumb); the host that
+      // launched it (Copilot CLI here) is where its hooks write theirs.
+      const npmExecPid = 88006;
+      const hostPid = 88007;
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+      setTimeout(() => {
+        writeFileSync(resolve(breadcrumbDir, `${hostPid}.txt`), 'sess-copilot');
+      }, 150);
+
+      const sid = await watchPpidBreadcrumb({
+        ppid: npmExecPid,
+        ancestorPids: [npmExecPid, hostPid],
+        ancestry: { platform: 'darwin' },
+        storagePath: tmpDir,
+        includeParentOfPpid: true,
+        staleId: 'sess-claude',
+      });
+      expect(sid).toBe('sess-copilot');
+    });
+
+    it('with includeParentOfPpid, never looks more than one level above ppid', async () => {
+      const ppid = 88008;
+      const hostPid = 88009;
+      const sharedShellPid = 88010;
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+      // A shared ancestor (a shell or tmux server on Linux) carrying a
+      // neighbouring session's id must never be adopted as a correction.
+      writeFileSync(resolve(breadcrumbDir, `${sharedShellPid}.txt`), 'sess-neighbour');
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 400);
+      await expect(
+        watchPpidBreadcrumb({
+          ppid,
+          ancestorPids: [ppid, hostPid, sharedShellPid],
+          ancestry: { platform: 'darwin' },
+          storagePath: tmpDir,
+          includeParentOfPpid: true,
+          staleId: 'sess-own',
+          signal: ac.signal,
+        }),
+      ).rejects.toThrow(/aborted/);
+    });
+
+    it('with includeParentOfPpid, still prefers the direct ppid breadcrumb', async () => {
+      const ppid = 88011;
+      const parentPid = 88012;
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+      writeFileSync(resolve(breadcrumbDir, `${ppid}.txt`), 'sess-direct');
+      writeFileSync(resolve(breadcrumbDir, `${parentPid}.txt`), 'sess-parent');
+
+      const sid = await watchPpidBreadcrumb({
+        ppid,
+        ancestorPids: [ppid, parentPid],
+        ancestry: { platform: 'darwin' },
+        storagePath: tmpDir,
+        includeParentOfPpid: true,
+        staleId: 'sess-cwd-guess',
+      });
+      expect(sid).toBe('sess-direct');
+    });
+
+    it('with includeParentOfPpid, never reads a parent breadcrumb equal to the cwd guess as confirmation', async () => {
+      // A Copilot engine launched directly by its host, in a directory where
+      // Claude session A is live: the cwd guess is A, and the host's parent
+      // carries A's breadcrumb (routine on Linux, which the watch skips
+      // outright, so this runs as darwin to test the equality check). That
+      // match proves nothing about this engine, so the watch must keep
+      // polling until the host's own breadcrumb names the real session.
+      const ppid = 88013;
+      const parentPid = 88014;
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+      writeFileSync(resolve(breadcrumbDir, `${parentPid}.txt`), 'sess-claude-a');
+      setTimeout(() => {
+        writeFileSync(resolve(breadcrumbDir, `${ppid}.txt`), 'sess-copilot');
+      }, 350);
+
+      const sid = await watchPpidBreadcrumb({
+        ppid,
+        ancestorPids: [ppid, parentPid],
+        ancestry: { platform: 'darwin' },
+        storagePath: tmpDir,
+        includeParentOfPpid: true,
+        staleId: 'sess-claude-a',
+      });
+      expect(sid).toBe('sess-copilot');
+    });
+
+    it('with includeParentOfPpid, skips a parent breadcrumb whose session has a live owning engine', async () => {
+      // The cwd guess is right, but the host's parent carries a co-located
+      // session's id. That session already has its own engine, so it can't be
+      // this one's.
+      const ppid = 88015;
+      const parentPid = 88016;
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+      writeFileSync(resolve(breadcrumbDir, `${parentPid}.txt`), 'sess-claude-a');
+      writeFileSync(resolve(tmpDir, 'active-sess-claude-a.pid'), String(process.pid));
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 400);
+      await expect(
+        watchPpidBreadcrumb({
+          ppid,
+          ancestorPids: [ppid, parentPid],
+          ancestry: { platform: 'darwin' },
+          storagePath: tmpDir,
+          includeParentOfPpid: true,
+          staleId: 'sess-copilot',
+          signal: ac.signal,
+        }),
+      ).rejects.toThrow(/aborted/);
+    });
+
+    it('with includeParentOfPpid, adopts a parent breadcrumb whose owner heartbeat names a dead process', async () => {
+      const ppid = 88017;
+      const hostPid = 88018;
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+      writeFileSync(resolve(breadcrumbDir, `${hostPid}.txt`), 'sess-copilot');
+      writeFileSync(resolve(tmpDir, 'active-sess-copilot.pid'), String(DEAD_PID));
+
+      const sid = await watchPpidBreadcrumb({
+        ppid,
+        ancestorPids: [ppid, hostPid],
+        ancestry: { platform: 'darwin' },
+        storagePath: tmpDir,
+        includeParentOfPpid: true,
+        staleId: 'sess-claude-a',
+      });
+      expect(sid).toBe('sess-copilot');
+    });
+
+    it('with includeParentOfPpid, keeps skipping a parent breadcrumb after its owning engine exits', async () => {
+      // The co-located session ending doesn't make its breadcrumb ours.
+      const ppid = 88021;
+      const parentPid = 88022;
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+      writeFileSync(resolve(breadcrumbDir, `${parentPid}.txt`), 'sess-claude-a');
+      const heartbeat = resolve(tmpDir, 'active-sess-claude-a.pid');
+      writeFileSync(heartbeat, String(process.pid));
+      setTimeout(() => writeFileSync(heartbeat, String(DEAD_PID)), 200);
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 1000);
+      await expect(
+        watchPpidBreadcrumb({
+          ppid,
+          ancestorPids: [ppid, parentPid],
+          ancestry: { platform: 'darwin' },
+          storagePath: tmpDir,
+          includeParentOfPpid: true,
+          staleId: 'sess-copilot',
+          signal: ac.signal,
+        }),
+      ).rejects.toThrow(/aborted/);
+    });
+
+    it('with includeParentOfPpid, never consults the parent level on Linux', async () => {
+      // Linux collectors write breadcrumbs at their ancestors too, so the
+      // parent slot is routinely shared; an ownerless neighbour there would
+      // otherwise pass every other check.
+      const ppid = 88023;
+      const parentPid = 88024;
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+      writeFileSync(resolve(breadcrumbDir, `${parentPid}.txt`), 'sess-hooks-only-neighbour');
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 400);
+      await expect(
+        watchPpidBreadcrumb({
+          ppid,
+          ancestorPids: [ppid, parentPid],
+          ancestry: { platform: 'linux' },
+          storagePath: tmpDir,
+          includeParentOfPpid: true,
+          staleId: 'sess-own',
+          signal: ac.signal,
+        }),
+      ).rejects.toThrow(/aborted/);
+    });
+
+    describe('with includeParentOfPpid and the real ancestor walk', () => {
+      const ppid = 88019;
+      const hostPid = 88020;
+      const psTable = `${ppid} ${hostPid}\n${hostPid} 1\n`;
+
+      async function watchUntil(
+        abortAfterMs: number,
+        execFileSync: ExecFileSyncFn,
+      ): Promise<string | 'aborted'> {
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), abortAfterMs);
+        try {
+          return await watchPpidBreadcrumb({
+            ppid,
+            storagePath: tmpDir,
+            includeParentOfPpid: true,
+            staleId: 'sess-claude-a',
+            ancestry: { platform: 'darwin', execFileSync },
+            signal: ac.signal,
+          });
+        } catch (err) {
+          if (/aborted/.test(String(err))) return 'aborted';
+          throw err;
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      it('retries a walk whose ps call failed instead of caching the failure', async () => {
+        // macOS, npx-launched Copilot engine on a saturated machine: the first
+        // `ps` times out. A later tick must still reach the host's breadcrumb.
+        const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+        mkdirSync(breadcrumbDir, { recursive: true });
+        writeFileSync(resolve(breadcrumbDir, `${hostPid}.txt`), 'sess-copilot');
+        let calls = 0;
+        const result = await watchUntil(1500, () => {
+          calls++;
+          if (calls === 1) throw new Error('spawnSync ps ETIMEDOUT');
+          return psTable;
+        });
+        expect(result).toBe('sess-copilot');
+        expect(calls).toBe(2);
+      });
+
+      it('spaces out retries of a walk that keeps failing', async () => {
+        // Ticks land at ~100, 300 and 800ms; walks run on ticks 1 and 2 only.
+        let calls = 0;
+        const result = await watchUntil(1300, () => {
+          calls++;
+          throw new Error('spawnSync ps ETIMEDOUT');
+        });
+        expect(result).toBe('aborted');
+        expect(calls).toBe(2);
+      });
+
+      it('walks once when the walk succeeds', async () => {
+        let calls = 0;
+        const result = await watchUntil(1300, () => {
+          calls++;
+          return psTable;
+        });
+        expect(result).toBe('aborted');
+        expect(calls).toBe(1);
+      });
+
+      it('walks once when the chain legitimately ends at the ppid', async () => {
+        // ppid's parent is launchd (pid 1), so [ppid] is the whole answer.
+        let calls = 0;
+        const result = await watchUntil(1300, () => {
+          calls++;
+          return `${ppid} 1\n`;
+        });
+        expect(result).toBe('aborted');
+        expect(calls).toBe(1);
+      });
     });
 
     it('aborts via signal', async () => {

@@ -1378,6 +1378,86 @@ describe('stdio integration', () => {
     }
   }, 30000);
 
+  it('does not read a parent-of-ppid breadcrumb naming the cwd guess as confirmation (#479)', async () => {
+    // The engine's parent-of-ppid can carry a co-located session's id (on
+    // Linux the collector writes breadcrumbs at its ancestors). Reading it as
+    // confirmation would seed this engine from that session's checkpoint and
+    // start overwriting it, and would stop the watch for good.
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-ancestor-confirm-storage-'));
+    const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-ancestor-confirm-project-'));
+    const realProjectCwd = realpathSync(tmpProjectCwd);
+
+    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    mkdirSync(cwdBreadcrumbDir, { recursive: true });
+    const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
+    writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'neighbour-session-id');
+
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [binPath, '--stdio'],
+      cwd: tmpProjectCwd,
+      env: {
+        ...env,
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+      },
+    });
+
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+      await client.listTools();
+
+      const readSessionId = async (): Promise<string> => {
+        const result = await client.callTool({
+          name: 'nr_observe_get_session_stats',
+          arguments: {},
+        });
+        const content = result.content as Array<{ type: string; text: string }>;
+        return (JSON.parse(content[0]?.text ?? '{}') as { session_id: string }).session_id;
+      };
+
+      // The child's ppid is this test process, so its parent-of-ppid is ours.
+      const ppidBreadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+      mkdirSync(ppidBreadcrumbDir, { recursive: true });
+      writeFileSync(resolve(ppidBreadcrumbDir, `${process.ppid}.txt`), 'neighbour-session-id');
+
+      // The watch ticks at most 2s apart, and a confirmation would checkpoint
+      // within the 200ms persist interval after that.
+      await new Promise((r) => setTimeout(r, 3500));
+      const dateStr = new Date().toISOString().slice(0, 10);
+      expect(
+        existsSync(resolve(tmpStoragePath, 'sessions', `${dateStr}_neighbour-session-id.json`)),
+      ).toBe(false);
+
+      // Still watching: the host's own breadcrumb corrects the guess.
+      writeFileSync(resolve(ppidBreadcrumbDir, `${process.pid}.txt`), 'own-session-id');
+      let corrected = false;
+      for (let i = 0; i < 20; i++) {
+        if ((await readSessionId()) === 'own-session-id') {
+          corrected = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(corrected).toBe(true);
+
+      await client.close();
+    } finally {
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+      rmSync(tmpProjectCwd, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it('resets accumulated cost when the PPID breadcrumb corrects to a different session id', async () => {
     const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
     const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
@@ -1592,6 +1672,102 @@ describe('stdio integration', () => {
     } finally {
       rmSync(tmpStoragePath, { recursive: true, force: true });
       rmSync(tmpProjectCwd, { recursive: true, force: true });
+    }
+  }, 30000);
+});
+
+describe('--local with cloud export configured but no credentials (#479)', () => {
+  it('reports the ownerless sessions it drains as unforwarded on /api/health', async () => {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-local-unfwd-storage-'));
+    const tmpConfigDir = mkdtempSync(join(tmpdir(), 'nr-local-unfwd-config-'));
+    const configPath = resolve(tmpConfigDir, 'config.json');
+    // Cloud export requested, credentials left to the (absent) environment —
+    // the dashboard LaunchAgent case.
+    writeFileSync(configPath, JSON.stringify({ mode: 'both' }));
+
+    // An ownerless buffer: no active-<id>.pid heartbeat, so --local drains it.
+    const sessionId = 'copilot-orphan-session';
+    const ts = Date.now() - 1000;
+    writeFileSync(
+      resolve(tmpStoragePath, `buffer-${sessionId}.jsonl`),
+      [
+        { mode: 'pre', tool: 'Bash', timestamp: ts, sessionId, toolUseId: 'toolu_1' },
+        {
+          mode: 'post',
+          tool: 'Bash',
+          timestamp: ts + 1,
+          sessionId,
+          toolUseId: 'toolu_1',
+          success: true,
+        },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join('\n') + '\n',
+      { mode: 0o600 },
+    );
+
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_ALERTS_ENABLED: 'false',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+    };
+    delete env.NR_AI_MODE;
+
+    const child = spawn(process.execPath, [binPath, '--local', '--config', configPath], {
+      env,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+
+    try {
+      let unforwarded: Record<string, unknown> | undefined;
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline) {
+        try {
+          const res = await fetch(`http://127.0.0.1:${port}/api/health`);
+          const body = (await res.json()) as { unforwardedSessions?: Record<string, unknown> };
+          if ((body.unforwardedSessions?.count as number | undefined) === 1) {
+            unforwarded = body.unforwardedSessions;
+            break;
+          }
+        } catch {
+          // Not listening yet.
+        }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
+      expect(unforwarded).toMatchObject({
+        reason: 'missing-license-key',
+        requestedMode: 'both',
+        count: 1,
+        sessions: [{ sessionId, toolCalls: 1 }],
+      });
+      expect(stderr).toContain(
+        'Session has no owning --stdio engine and is not reaching New Relic',
+      );
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+      rmSync(tmpConfigDir, { recursive: true, force: true });
     }
   }, 30000);
 });
