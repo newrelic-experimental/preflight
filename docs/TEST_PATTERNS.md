@@ -66,6 +66,36 @@ Web tests follow the same factory-function and spy patterns as Jest tests — ju
 
 ---
 
+## Browser Tests (Playwright)
+
+`e2e/` runs the built dashboard in real Chromium against real `--local` servers. `playwright.config.ts` starts two, each over its own temp directory, which also stands in for `HOME`, so neither reads your credentials, your `~/.newrelic-preflight`, or your Claude Code transcripts:
+
+| Server | URL                                | Store                                                        |
+| ------ | ---------------------------------- | ------------------------------------------------------------ |
+| empty  | the default `baseURL`              | nothing                                                      |
+| seeded | `SEEDED_URL` from `e2e/servers.ts` | one persisted session from `e2e/fixtures/session-fixture.ts` |
+
+```bash
+npm run test:e2e                          # Build, then run the suite
+npx playwright test e2e/views.spec.ts     # One spec, against an existing build
+```
+
+### Adding a view smoke test
+
+`e2e/views.spec.ts` holds a smoke test per dashboard route, run once against each server. Each reaches the view from the sidebar, then again by reloading on its URL, and asserts the view's `<h1>`, no "Not found", and no console error, uncaught exception, failed request or unexpected 4xx/5xx while it loads. A new view needs one row in `VIEWS`; a test comparing `VIEWS` against the sidebar fails until it has one:
+
+```typescript
+{ nav: 'Workflows', path: '/workflows', heading: 'Workflows', query: /^\/api\/workflows$/ },
+```
+
+`nav` is the Sidebar button's label and `heading` the view's `<h1>` text. `query` matches the pathname of a request the view issues on mount; the test waits for it to be answered after the reload, so it must not be one the App shell makes (`/api/session/current`, `/api/anti-patterns`, `/api/health` and `/sse`, on every route). Another view may share it. It proves the request was answered, not that the view rendered its data, and the error checks cover the reloaded load: the sidebar visit is checked by URL and heading only, and its fetches are cancelled by the reload. If the view requests something that legitimately answers with an error status, add it to `EXPECTED_ERROR_RESPONSES` with a comment saying why, rather than loosening the check.
+
+To assert what a view shows with data, `test.use({ baseURL: SEEDED_URL })` in a `describe` and, if the fixture lacks what you need, extend `buildFixtureSession()`. Import the values you assert on from `session-fixture.ts` instead of repeating them.
+
+Smoke tests take no screenshots. Screenshots are per-platform baselines, and every new one means recording a Linux copy too — see [The three suites](../CONTRIBUTING.md#the-three-suites).
+
+---
+
 ## Global Test Setup
 
 Nearly every test file follows this setup pattern:
