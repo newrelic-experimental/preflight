@@ -329,6 +329,7 @@ export interface ConfigSummary {
   readonly storagePath: string;
   readonly dashboardUrl: string;
   readonly configFilePath: string;
+  readonly companionMode: boolean;
 }
 
 export function handleGetConfig(configSummary: ConfigSummary): {

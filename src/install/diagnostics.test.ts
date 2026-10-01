@@ -39,8 +39,10 @@ jest.mock('../config.js', () => ({
     malformed: false,
     errors: [],
     warnings: [],
+    companionMode: undefined,
   })),
-  loadMcpConfig: jest.fn(() => ({ mode: 'local' })),
+  loadMcpConfig: jest.fn(() => ({ mode: 'local', companionMode: false })),
+  resolveCompanionMode: jest.fn(() => ({ value: false, source: 'default' })),
   DEFAULT_STORAGE_PATH: '/test-home/.newrelic-preflight',
 }));
 
@@ -874,7 +876,7 @@ describe('runDiagnostics', () => {
       const checks = await runDiagnostics({ configPath: '/tmp/does-not-exist.json' });
       // All 11 checks must still be present — one throwing dependency must not
       // take down the rest of the diagnostic run.
-      expect(checks).toHaveLength(11);
+      expect(checks).toHaveLength(12);
       const check = checks.find((c) => c.check === 'Local instances');
       expect(check?.status).toBe('warn');
       expect(check?.detail).toContain('registry file is corrupt');
@@ -925,6 +927,6 @@ describe('runDiagnostics', () => {
 
   it('returns exactly 11 checks on macOS', async () => {
     const checks = await runDiagnostics(makeOpts());
-    expect(checks).toHaveLength(11);
+    expect(checks).toHaveLength(12);
   });
 });

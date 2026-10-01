@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.59.0] - 2026-10-01
+
+### Added
+
+- **Adding Preflight to an org that already exports Claude Code's OTel metrics to New Relic doubled its reported cost and tokens until someone turned on companion mode.** Companion mode now turns on by itself when Claude Code's telemetry is on, `OTEL_METRICS_EXPORTER` includes `otlp`, and the OTLP endpoint is an `nr-data.net` host. `NR_AI_COMPANION_MODE` or `companionMode` in the config file still wins in either direction, so `NR_AI_COMPANION_MODE=false` turns it off. `preflight doctor` shows the resolved value and its source, and `nr_observe_get_config` shows the value.
+
 ## [1.57.2] - 2026-09-29
 
 ### Fixed

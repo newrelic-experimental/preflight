@@ -19,6 +19,53 @@ const logger = createLogger('mcp-config');
 export const VALID_MODES = ['cloud', 'local', 'both'] as const;
 export type Mode = (typeof VALID_MODES)[number];
 
+export type CompanionModeSource =
+  'env NR_AI_COMPANION_MODE' | 'config file' | 'detected Claude Code OTel export' | 'default';
+
+export interface ResolvedCompanionMode {
+  readonly value: boolean;
+  readonly source: CompanionModeSource;
+}
+
+function otlpEndpointIsNewRelic(endpoint: string | undefined): boolean {
+  if (!endpoint) return false;
+  try {
+    const url = new URL(endpoint.includes('://') ? endpoint : `https://${endpoint}`);
+    return url.hostname === 'nr-data.net' || url.hostname.endsWith('.nr-data.net');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Companion mode only prevents double-counting when Claude Code's own OTel
+ * metrics also land in New Relic. Detection requires an nr-data.net endpoint:
+ * turning it on for an export that goes elsewhere would drop Preflight's cost
+ * gauges from New Relic with nothing replacing them.
+ */
+export function resolveCompanionMode(
+  env: NodeJS.ProcessEnv,
+  fileValue: boolean | undefined,
+): ResolvedCompanionMode {
+  const envValue = parseEnvBool(env.NR_AI_COMPANION_MODE);
+  if (envValue !== undefined) return { value: envValue, source: 'env NR_AI_COMPANION_MODE' };
+  if (fileValue !== undefined) return { value: fileValue, source: 'config file' };
+
+  const exporters = (env.OTEL_METRICS_EXPORTER ?? '')
+    .split(',')
+    .map((e) => e.trim())
+    .filter((e) => e !== '' && e !== 'none');
+  const endpoint = env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT || env.OTEL_EXPORTER_OTLP_ENDPOINT;
+  if (
+    parseEnvBool(env.CLAUDE_CODE_ENABLE_TELEMETRY) === true &&
+    exporters.includes('otlp') &&
+    otlpEndpointIsNewRelic(endpoint)
+  ) {
+    return { value: true, source: 'detected Claude Code OTel export' };
+  }
+  return { value: false, source: 'default' };
+}
+
 export interface McpServerConfig {
   readonly licenseKey?: string;
   readonly accountId?: string;
@@ -366,11 +413,15 @@ function inferRepoUrl(): string | null {
   return getGitRemoteUrl();
 }
 
-function envBool(key: string, defaultValue: boolean): boolean {
-  const val = process.env[key]?.trim().toLowerCase();
+function parseEnvBool(raw: string | undefined): boolean | undefined {
+  const val = raw?.trim().toLowerCase();
   if (val === 'true' || val === '1' || val === 'yes' || val === 'y' || val === 'on') return true;
   if (val === 'false' || val === '0' || val === 'no' || val === 'n' || val === 'off') return false;
-  return defaultValue;
+  return undefined;
+}
+
+function envBool(key: string, defaultValue: boolean): boolean {
+  return parseEnvBool(process.env[key]) ?? defaultValue;
 }
 
 // Applied to every return path of envInt (not just the parsed-env-var one) so
@@ -883,10 +934,17 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       ),
     ),
 
-    companionMode: envBool(
-      'NR_AI_COMPANION_MODE',
-      typeof file.companionMode === 'boolean' ? file.companionMode : false,
-    ),
+    companionMode: (() => {
+      const resolved = resolveCompanionMode(
+        process.env,
+        typeof file.companionMode === 'boolean' ? file.companionMode : undefined,
+      );
+      logger.info('Companion mode resolved', {
+        value: resolved.value,
+        source: resolved.source,
+      });
+      return resolved.value;
+    })(),
 
     redactionPatterns: DEFAULT_REDACTION_PATTERNS,
 
@@ -1414,6 +1472,8 @@ export interface ConfigValidationResult {
   readonly mode?: string;
   /** The `storagePath` field from the parsed config, if present and a string. */
   readonly storagePath?: string;
+  /** The `companionMode` field from the parsed config, if present and a boolean. */
+  readonly companionMode?: boolean;
   /** True when a non-blank licenseKey is present in the parsed config. Raw value is intentionally not exposed. */
   readonly hasLicenseKey: boolean;
   /** Fatal problems that will prevent the MCP server from starting. */
@@ -1543,6 +1603,7 @@ export function validateConfigFile(filePath: string): ConfigValidationResult {
     malformed: false,
     mode: typeof file.mode === 'string' ? file.mode : undefined,
     storagePath: typeof file.storagePath === 'string' ? file.storagePath : undefined,
+    companionMode: typeof file.companionMode === 'boolean' ? file.companionMode : undefined,
     hasLicenseKey: typeof file.licenseKey === 'string' && file.licenseKey.trim().length > 0,
     errors,
     warnings,
