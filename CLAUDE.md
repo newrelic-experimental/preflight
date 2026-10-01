@@ -9,7 +9,7 @@ npm run build              # TypeScript build
 npm run build:clean        # Clean build output
 npm test                   # Jest suite, everything outside src/web (maxWorkers: 1)
 npm run test:web           # Vitest suite, src/web
-npm run lint               # ESLint across src/
+npm run lint               # ESLint across src/, scripts/, e2e/ and the root configs
 npm run format             # Prettier (write)
 npm run format:check       # Prettier (check only)
 ```

@@ -38,6 +38,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+
+      # The script only imports Node built-ins, but its runner, tsx, is a
+      # pinned devDependency; installing from the lockfile is what keeps the
+      # job from fetching an unpinned copy from the registry at run time.
+      - name: Install dependencies
+        run: npm ci
 
       - name: Load cursor from tracking issue
         id: load
@@ -62,9 +69,6 @@ jobs:
 
       - name: Run changelog check
         id: check
-        # No `npm ci` — the script only imports Node built-ins; `npx tsx`
-        # fetches its own runtime on demand, same as the other scripts/*.ts
-        # entries in package.json.
         run: npm run check:claude-code-changelog
 
       - name: Create tracking issue

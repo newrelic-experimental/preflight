@@ -2007,35 +2007,27 @@ async function main(): Promise<void> {
 
     const capturedAlertEngine = alertEngine;
     const capturedAlertSnapshotCollector = alertSnapshotCollector;
+    // BudgetTracker invokes this from inside updateCost(), so an uncaught
+    // throw would skip its remaining periods and abort the caller's record
+    // handling. Guard it like the periodic evaluation tick, with the NR ingest
+    // and the local alert engine guarded separately so neither skips the other.
     budgetTracker.setOnThreshold((event) => {
-      capturedNrIngest?.ingestBudgetWarning(event);
       logger.warn('Budget threshold reached', {
         period: event.period,
         pct: event.thresholdPct,
         spentUsd: event.spentUsd.toFixed(4),
         budgetUsd: event.budgetUsd.toFixed(2),
       });
-      // Route into the local alert engine so configured rules can fire.
-      if (capturedAlertEngine) {
-        capturedAlertEngine.evaluate(
-          {
-            timestamp: event.timestamp,
-            cost: { sessionUsd: 0, todayUsd: 0, weekUsd: 0 },
-            efficiency: { score: null },
-            antiPatterns: [],
-            latency: [],
-            toolFailures: [],
-            budgetThresholds: [
-              {
-                period: event.period,
-                thresholdPct: event.thresholdPct,
-                spentUsd: event.spentUsd,
-                budgetUsd: event.budgetUsd,
-              },
-            ],
-          },
-          Date.now(),
-        );
+      try {
+        capturedNrIngest?.ingestBudgetWarning(event);
+      } catch (err) {
+        logger.warn('Budget warning ingest failed', { error: String(err) });
+      }
+      try {
+        // Route into the local alert engine so budget rules can fire.
+        capturedAlertEngine?.evaluateBudgetThreshold(event, Date.now());
+      } catch (err) {
+        logger.warn('Budget threshold alert evaluation failed', { error: String(err) });
       }
     });
     // Attributes hook records to the subagent that made them where the hook
