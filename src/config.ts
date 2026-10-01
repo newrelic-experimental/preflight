@@ -357,10 +357,6 @@ function inferProjectId(): string | null {
   return repoNameFromRemote(getGitRemoteUrl());
 }
 
-function inferRepoUrl(): string | null {
-  return stripRemoteCredentials(getGitRemoteUrl());
-}
-
 function envBool(key: string, defaultValue: boolean): boolean {
   const val = process.env[key]?.trim().toLowerCase();
   if (val === 'true' || val === '1' || val === 'yes' || val === 'y' || val === 'on') return true;
@@ -824,7 +820,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
   // copy-pasted from an authenticated `git remote -v`).
   const rawRepoUrl =
     process.env.NEW_RELIC_AI_REPO_URL ??
-    (typeof file.repoUrl === 'string' ? file.repoUrl : inferRepoUrl());
+    (typeof file.repoUrl === 'string' ? file.repoUrl : getGitRemoteUrl());
   // stripRemoteCredentials drops URL userinfo and query strings;
   // redactSensitive then catches any token elsewhere in the value.
   const strippedRepoUrl = stripRemoteCredentials(rawRepoUrl);
