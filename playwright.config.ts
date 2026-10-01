@@ -9,16 +9,18 @@ const RUN_ROOT = join(tmpdir(), `nr-ai-e2e-${process.pid}`);
 
 /**
  * The runner's inherited Preflight, New Relic, OTel and Claude Code variables, mapped to
- * undefined: its settings, plus CLAUDECODE and MCP_CLIENT, which platform detection reads.
+ * undefined: its settings, plus CLAUDECODE and MCP_CLIENT*, which platform detection reads.
  * Playwright spawns the server with process.env merged under `env`, and Node drops undefined
  * values from a child's environment, so spreading this first unsets them: a contributor's
  * exported license key, OTLP endpoint, budget cap or retention window never reaches the run.
  * An empty string would not do: `??` fallbacks in src/config.ts keep ''. Matched by prefix,
- * so a variable outside these families has to be pinned below.
+ * so a variable outside these families has to be pinned below. Other editors' detection
+ * variables (CURSOR_*, KIRO_*, VSCODE_VERSION and the rest) still pass through: they only
+ * change the detected platform, which the dashboard does not render.
  */
 const INHERITED_SETTINGS = Object.fromEntries(
   Object.keys(process.env)
-    .filter((key) => /^(NEW_RELIC_|NR_AI_|OTEL_|CLAUDE|MCP_CLIENT$)/.test(key))
+    .filter((key) => /^(NEW_RELIC_|NR_AI_|OTEL_|CLAUDE|MCP_CLIENT)/.test(key))
     .map((key) => [key, undefined]),
 );
 
@@ -82,7 +84,7 @@ function isolatedServer(name: string, port: number, prelude?: (dir: string) => s
 export default defineConfig({
   testDir: './e2e',
   // {platform} keeps a macOS baseline from being compared against Linux font rasterization,
-  // which maxDiffPixelRatio cannot absorb on a full-page shot. Without it, one contributor
+  // which maxDiffPixelRatio cannot absorb across a whole viewport of text. Without it, one contributor
   // re-recording overwrites every other platform's baseline.
   snapshotPathTemplate: '{testDir}/{testFileName}-snapshots/{arg}-{projectName}-{platform}{ext}',
   timeout: 30_000,

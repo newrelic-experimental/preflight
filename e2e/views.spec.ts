@@ -191,8 +191,9 @@ for (const store of [
 }
 
 test.describe('empty store', () => {
-  // Both empty states also render while loading and on a failed fetch, so each test checks
-  // for errors too; otherwise a 500 from /api/sessions would satisfy it.
+  // Both empty states also render on a failed fetch, so each test checks for errors too;
+  // otherwise a 500 from /api/sessions would satisfy it. History's also renders while
+  // loading, so that test settles before asserting; Sessions shows a loading state instead.
   test('Sessions shows its empty state', async ({ page }) => {
     const log = collectErrors(page);
     await page.goto('/sessions');
