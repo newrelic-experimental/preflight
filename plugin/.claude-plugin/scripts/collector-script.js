@@ -423,7 +423,7 @@ function extractOutputMeta(toolName, output) {
 function getWindsurfToolInfo(data) {
   return data.tool_info !== null && typeof data.tool_info === "object" ? data.tool_info : {};
 }
-function processHook(raw) {
+function processHook(raw, cliEvent) {
   let data;
   try {
     data = JSON.parse(raw);
@@ -441,8 +441,11 @@ function processHook(raw) {
   const recordContent = getRecordContent();
   const maxContentLen = getMaxContentLength();
   const isGeminiCli = process.env.MCP_CLIENT === "gemini-cli" || process.env.NEW_RELIC_AI_PLATFORM === "gemini-cli";
-  const isAntigravityPre = data.toolCall !== void 0;
-  const isAntigravityPost = !isAntigravityPre && typeof data.stepIdx === "number" && data.hook_event_name === void 0 && data.agent_action_name === void 0;
+  const isAntigravityShape = data.hook_event_name === void 0 && data.agent_action_name === void 0 && (data.toolCall !== void 0 || typeof data.stepIdx === "number");
+  const agyCliEvent = cliEvent?.toLowerCase();
+  const isAntigravityPost = isAntigravityShape && (agyCliEvent === "posttooluse" || agyCliEvent !== "pretooluse" && (data.error !== void 0 || data.toolCall === void 0));
+  const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
+  const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: String(data.stepIdx) } : {};
   let event;
   if (eventName === "pretooluse") {
     event = {
@@ -672,7 +675,7 @@ function processHook(raw) {
       timestamp,
       inputSize: sizeOf(data.toolCall?.args),
       inputHash: hashInput(data.toolCall?.args),
-      ...typeof data.stepIdx === "number" && { toolUseId: String(data.stepIdx) }
+      ...agyToolUseId
     };
     const inputMeta = extractInputMeta(agyToolName, data.toolCall?.args);
     if (inputMeta !== void 0) event.toolInput = inputMeta;
@@ -683,10 +686,10 @@ function processHook(raw) {
     const hasError = typeof data.error === "string" && data.error !== "";
     event = {
       mode: "post",
-      tool: "unknown",
+      tool: data.toolCall?.name ?? "unknown",
       timestamp,
       success: !hasError,
-      toolUseId: String(data.stepIdx),
+      ...agyToolUseId,
       ...typeof data.error === "string" && data.error !== "" && { error: redact(data.error) }
     };
   } else if (eventName === "stopfailure") {
@@ -823,7 +826,7 @@ if (_isDirectExecution) {
   try {
     const stdin = readStdinSync();
     if (stdin.trim()) {
-      processHook(stdin);
+      processHook(stdin, process.argv[2]);
     }
   } catch {
   }
