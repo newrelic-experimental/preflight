@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.58.0] - 2026-10-01
+
+### Fixed
+
+- **Sessions on Bedrock or behind an API gateway reported $0 when the model string was not a bare model id.** Bedrock system inference-profile ARNs (`arn:aws:bedrock:<region>:<account>:inference-profile/us.anthropic.claude-sonnet-4-6`), foundation-model ARNs, and provider-prefixed ids such as `bedrock/claude-sonnet-4-6` are now reduced to the embedded model id before pricing, so they cost the same as the bare model. Every cost, context, and CLAUDE.md-impact calculation uses the same lookup.
+
+### Added
+
+- The custom pricing file (`NEW_RELIC_AI_CUSTOM_PRICING_FILE`) accepts an `aliases` object that maps an opaque model name, such as a gateway alias or an application inference profile ARN, to a model Preflight already prices, without restating its rates. An alias to an unknown model is logged once and ignored. See [ADVANCED.md](./docs/ADVANCED.md).
+- `nr_observe_get_cost_breakdown` returns `unpriced_models`, the models in the session that Preflight has no price for.
+
 ## [1.57.2] - 2026-09-29
 
 ### Fixed

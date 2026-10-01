@@ -97,6 +97,19 @@ Every dollar figure Preflight reports — session cost, budget-threshold alerts,
 
 **`customPricingFile`** (env: `NEW_RELIC_AI_CUSTOM_PRICING_FILE`): path to a JSON file of `{ "model-id": { "inputPerMTok": ..., "outputPerMTok": ..., ... } }` entries (see `ModelPricing` in `src/shared/pricing.ts`) that fully replaces the vendored table for the models it lists. If your organization has contracted per-model rates, enter them here model-by-model and Preflight reports at your real rate, no multiplier needed. Mutually exclusive with the bundled gap-fill pricing overlay — see the doc comment on `applyPricingOverlay()` in `src/metrics/pricing-overlay.ts`.
 
+**Model name matching.** Preflight strips Bedrock system inference-profile ARNs (`arn:aws:bedrock:<region>:<account>:inference-profile/us.anthropic.claude-sonnet-4-6`, `arn:aws:bedrock:<region>::foundation-model/...`) and a leading `<provider>/` segment (`bedrock/claude-sonnet-4-6`) down to the embedded model id before looking up a price. Application inference profile ARNs and names your gateway invents (`gw-claude-sonnet`) say nothing about the model behind them, so they price at $0 until you map them. Add an `aliases` object to the custom pricing file:
+
+```json
+{
+  "aliases": {
+    "gw-claude-sonnet": "claude-sonnet-4-6",
+    "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123xyz": "claude-sonnet-4-6"
+  }
+}
+```
+
+An alias reuses the target model's rates, so there is no rate table to keep current. The target must be a model Preflight can price, either built in or defined by a rate entry in the same file. An alias to an unknown model is logged once at startup and ignored. A file may hold only `aliases`, only rate entries, or both. A file with only `aliases` keeps the bundled gap-fill overlay, so an alias can target a model the overlay prices; a file with any rate entries replaces the overlay as before. Models that still cannot be priced are listed in `unpriced_models` in the `nr_observe_get_cost_breakdown` response.
+
 **`costRateMultiplier`** (env: `NEW_RELIC_AI_COST_RATE_MULTIPLIER`): a flat discount factor, `0 < x ≤ 1`, applied to every dollar figure `CostTracker` computes — a cheaper alternative to `customPricingFile` when you have a single blended discount off list price rather than distinct per-model contracted rates. Mirrors the semantics of Claude Code's own `modelPricing.multiplier` managed setting.
 
 ```json

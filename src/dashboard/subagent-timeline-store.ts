@@ -35,7 +35,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { calculateCost, createLogger, type TokenUsage } from '../shared/index.js';
+import { createLogger, type TokenUsage } from '../shared/index.js';
+import { calculateModelCost } from '../metrics/pricing-overlay.js';
 import { AGENT_ID_RE } from '../lib/agent-id.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
 import { findWorkflowScriptPath, WorkflowStore } from './workflow-store.js';
@@ -943,7 +944,7 @@ function parseAssistantTurn(line: string): AssistantTurn | null {
  */
 function computeUsd(usage: TokenUsage, model: string): number | null {
   if (model.length === 0) return null;
-  const breakdown = calculateCost(model, usage);
+  const breakdown = calculateModelCost(model, usage);
   if (breakdown.totalUsd > 0) return breakdown.totalUsd;
   return null;
 }
