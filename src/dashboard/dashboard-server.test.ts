@@ -81,7 +81,7 @@ describe('DashboardServer', () => {
 
   it('reports unforwarded sessions in /api/health when a provider is wired', async () => {
     const monitor = new UnforwardedSessionMonitor({
-      gap: { reason: 'missing-license-key', requestedMode: 'both' },
+      gap: { reason: 'missing-license-key', missingField: 'licenseKey', requestedMode: 'both' },
       warn: () => {},
     });
     monitor.recordToolCall('copilot-session-1');
@@ -102,6 +102,35 @@ describe('DashboardServer', () => {
       toolCalls: 1,
       sessions: [{ sessionId: 'copilot-session-1', toolCalls: 1 }],
     });
+  });
+
+  it('leaves unforwarded sessions out of /api/health for a caller that fails isAuthorized', async () => {
+    // /api/health is exempt from isAuthorized, so anything naming a session
+    // must be gated separately or an exposed server would hand it out.
+    const monitor = new UnforwardedSessionMonitor({
+      gap: { reason: 'missing-license-key', missingField: 'licenseKey', requestedMode: 'both' },
+      warn: () => {},
+    });
+    monitor.recordToolCall('copilot-session-1');
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      isAuthorized: (authHeader) => authHeader === 'Basic good',
+      unforwardedSessions: () => monitor.getSnapshot(),
+    });
+    const addr = await server.start();
+
+    const anonymous = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
+    expect(anonymous.status).toBe(200);
+    const anonymousBody = await anonymous.json();
+    expect(anonymousBody.ok).toBe(true);
+    expect(anonymousBody).not.toHaveProperty('unforwardedSessions');
+
+    const authed = await fetch(`http://127.0.0.1:${addr.port}/api/health`, {
+      headers: { authorization: 'Basic good' },
+    });
+    expect((await authed.json()).unforwardedSessions).toMatchObject({ count: 1 });
   });
 
   it('includes the package version in /api/health', async () => {

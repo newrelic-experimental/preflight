@@ -27,6 +27,8 @@ export type CloudForwardingGapReason = 'missing-license-key' | 'missing-account-
 
 export interface CloudForwardingGap {
   readonly reason: CloudForwardingGapReason;
+  /** The config field named by `reason`. */
+  readonly missingField: 'licenseKey' | 'accountId';
   /** The mode the config asked for before the fallback (`cloud` or `both`). */
   readonly requestedMode: string;
 }
@@ -41,14 +43,16 @@ export interface UnforwardedSessionEntry {
 export interface UnforwardedSessionsSnapshot {
   readonly reason: CloudForwardingGapReason;
   readonly requestedMode: string;
-  /** Distinct identified sessions drained without forwarding. */
+  /**
+   * Distinct identified sessions drained without forwarding, among those
+   * still tracked: past the cap the least recently active are evicted.
+   */
   readonly count: number;
+  /** Sessions evicted to stay under the cap. One seen again counts again. */
+  readonly evictedSessions: number;
   /** Tool calls drained without forwarding, across every session. */
   readonly toolCalls: number;
-  /**
-   * The share of `toolCalls` with no usable session id, or from a new
-   * session after the tracking cap was reached. Not reflected in `count`.
-   */
+  /** The share of `toolCalls` with no usable session id. Not in `count`. */
   readonly untrackedToolCalls: number;
   /** Up to 20 sessions, most recently active first. */
   readonly sessions: readonly UnforwardedSessionEntry[];
@@ -59,7 +63,11 @@ export interface UnforwardedSessionsSnapshot {
 
 export interface UnforwardedSessionMonitorOptions {
   readonly gap: CloudForwardingGap;
-  /** Cap on per-session entries kept in memory. Default 500. */
+  /**
+   * Cap on per-session entries kept in memory. Default 500. Past it the least
+   * recently active entry is evicted, so a session losing data now is always
+   * listed however long the process has been up.
+   */
   readonly maxTrackedSessions?: number;
   /** Test seam for the one-per-session warning. */
   readonly warn?: (message: string, fields: Record<string, unknown>) => void;
@@ -81,8 +89,10 @@ const GAP_ERROR_RE = /Missing required configuration: (licenseKey|accountId) \(m
 export function detectCloudForwardingGap(errorMessage: string): CloudForwardingGap | null {
   const match = GAP_ERROR_RE.exec(errorMessage);
   if (!match) return null;
+  const missingField = match[1] === 'licenseKey' ? 'licenseKey' : 'accountId';
   return {
-    reason: match[1] === 'licenseKey' ? 'missing-license-key' : 'missing-account-id',
+    reason: missingField === 'licenseKey' ? 'missing-license-key' : 'missing-account-id',
+    missingField,
     requestedMode: match[2]!,
   };
 }
@@ -98,7 +108,9 @@ export class UnforwardedSessionMonitor {
   private readonly maxTrackedSessions: number;
   private readonly warn: (message: string, fields: Record<string, unknown>) => void;
   private readonly now: () => number;
+  /** Least recently active first: an update re-inserts its entry at the end. */
   private readonly sessions = new Map<string, MutableEntry>();
+  private evictedSessions = 0;
   private untrackedToolCalls = 0;
   private totalToolCalls = 0;
   private warnedUntracked = false;
@@ -112,23 +124,22 @@ export class UnforwardedSessionMonitor {
 
   /**
    * Record one tool call drained from an ownerless buffer and not forwarded.
-   * Warns the first time each session is seen. A missing or malformed session
-   * id, or a new session past the tracking cap, is counted without an entry.
+   * Warns the first time each session is seen, and again if it comes back
+   * after eviction. A missing or malformed session id is counted without an
+   * entry.
    */
   recordToolCall(sessionId: string | null | undefined): void {
     this.totalToolCalls++;
     const nowMs = this.now();
     const existing = typeof sessionId === 'string' ? this.sessions.get(sessionId) : undefined;
-    if (existing) {
+    if (typeof sessionId === 'string' && existing) {
       existing.toolCalls++;
       existing.lastSeenMs = nowMs;
+      this.sessions.delete(sessionId);
+      this.sessions.set(sessionId, existing);
       return;
     }
-    if (
-      typeof sessionId !== 'string' ||
-      !SESSION_ID_RE.test(sessionId) ||
-      this.sessions.size >= this.maxTrackedSessions
-    ) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) {
       this.untrackedToolCalls++;
       if (!this.warnedUntracked) {
         this.warnedUntracked = true;
@@ -143,6 +154,11 @@ export class UnforwardedSessionMonitor {
       }
       return;
     }
+    if (this.sessions.size >= this.maxTrackedSessions) {
+      const leastRecent = this.sessions.keys().next().value;
+      if (leastRecent !== undefined) this.sessions.delete(leastRecent);
+      this.evictedSessions++;
+    }
     this.sessions.set(sessionId, { toolCalls: 1, firstSeenMs: nowMs, lastSeenMs: nowMs });
     this.warn('Session has no owning --stdio engine and is not reaching New Relic', {
       sessionId,
@@ -153,14 +169,15 @@ export class UnforwardedSessionMonitor {
   }
 
   getSnapshot(): UnforwardedSessionsSnapshot {
-    const all = [...this.sessions.entries()]
-      .map(([sessionId, e]) => ({ sessionId, ...e }))
-      .sort((a, b) => b.lastSeenMs - a.lastSeenMs);
-    const sessions = all.slice(0, SNAPSHOT_SESSION_LIMIT);
+    const sessions = [...this.sessions]
+      .slice(-SNAPSHOT_SESSION_LIMIT)
+      .reverse()
+      .map(([sessionId, e]) => ({ sessionId, ...e }));
     return {
       reason: this.gap.reason,
       requestedMode: this.gap.requestedMode,
       count: this.sessions.size,
+      evictedSessions: this.evictedSessions,
       toolCalls: this.totalToolCalls,
       untrackedToolCalls: this.untrackedToolCalls,
       sessions,

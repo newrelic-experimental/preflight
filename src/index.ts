@@ -1094,7 +1094,7 @@ async function main(): Promise<void> {
         config = loadConfigOrDie(options);
         unforwardedSessionMonitor = new UnforwardedSessionMonitor({ gap });
         logger.warn(
-          `Cloud export is configured (mode='${gap.requestedMode}') but this --local process has no ${gap.reason === 'missing-license-key' ? 'licenseKey' : 'accountId'}; sessions it drains will not reach New Relic`,
+          `Cloud export is configured (mode='${gap.requestedMode}') but this --local process has no ${gap.missingField}; sessions it drains will not reach New Relic`,
           { reason: gap.reason, requestedMode: gap.requestedMode },
         );
       }
@@ -2213,8 +2213,10 @@ async function main(): Promise<void> {
           );
         }
         capturedNrIngest?.ingestToolCall(record, auditRecord);
-        // Only set on --local, whose unscoped drain skips every buffer with a
-        // live owning engine, so every record here is from an ownerless session.
+        // Only set on --local, whose unscoped drain skips every per-session
+        // buffer with a live owning engine. Records from the legacy shared
+        // buffer.jsonl are drained regardless and usually carry no sessionId,
+        // so the monitor counts them as untracked.
         unforwardedSessionMonitor?.recordToolCall(record.sessionId);
 
         // SSE consumers filter by sessionId for the per-session live tail.

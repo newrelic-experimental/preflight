@@ -1,10 +1,16 @@
+import { describe, it, expect } from '@jest/globals';
+
 import {
   UnforwardedSessionMonitor,
   detectCloudForwardingGap,
   type CloudForwardingGap,
 } from './unforwarded-session-monitor.js';
 
-const GAP: CloudForwardingGap = { reason: 'missing-license-key', requestedMode: 'both' };
+const GAP: CloudForwardingGap = {
+  reason: 'missing-license-key',
+  missingField: 'licenseKey',
+  requestedMode: 'both',
+};
 
 interface WarnCall {
   readonly message: string;
@@ -32,6 +38,7 @@ describe('detectCloudForwardingGap', () => {
       "Missing required configuration: licenseKey (mode='both'). Set the NEW_RELIC_LICENSE_KEY environment variable or add \"licenseKey\" to /home/u/.newrelic-preflight/config.json, or switch to mode='local' to skip cloud transport.";
     expect(detectCloudForwardingGap(msg)).toEqual({
       reason: 'missing-license-key',
+      missingField: 'licenseKey',
       requestedMode: 'both',
     });
   });
@@ -40,6 +47,7 @@ describe('detectCloudForwardingGap', () => {
     const msg = "Missing required configuration: accountId (mode='cloud'). Set ...";
     expect(detectCloudForwardingGap(msg)).toEqual({
       reason: 'missing-account-id',
+      missingField: 'accountId',
       requestedMode: 'cloud',
     });
   });
@@ -107,20 +115,39 @@ describe('UnforwardedSessionMonitor', () => {
     expect(warns).toHaveLength(1);
   });
 
-  it('stops adding entries at the tracking cap but keeps counting', () => {
-    const { monitor, warns } = makeMonitor({ maxTrackedSessions: 2 });
+  it('evicts the least recently active session at the cap, so new losses still surface', () => {
+    // The dashboard LaunchAgent runs for weeks: once the cap fills, a session
+    // losing data right now must still be listed and warned about.
+    const clock = { t: 1_000 };
+    const { monitor, warns } = makeMonitor({ maxTrackedSessions: 2, clock });
     monitor.recordToolCall('sess-a');
+    clock.t = 2_000;
     monitor.recordToolCall('sess-b');
-    monitor.recordToolCall('sess-c');
+    clock.t = 3_000;
     monitor.recordToolCall('sess-a');
+    clock.t = 4_000;
+    monitor.recordToolCall('sess-c');
 
     const snap = monitor.getSnapshot();
-    expect(snap.count).toBe(2);
-    expect(snap.toolCalls).toBe(4);
-    expect(snap.untrackedToolCalls).toBe(1);
-    expect(snap.sessions.find((s) => s.sessionId === 'sess-a')?.toolCalls).toBe(2);
-    // sess-a, sess-b, then one warning for the untracked overflow.
-    expect(warns).toHaveLength(3);
+    expect(snap).toMatchObject({
+      count: 2,
+      evictedSessions: 1,
+      toolCalls: 4,
+      untrackedToolCalls: 0,
+      truncated: false,
+    });
+    expect(snap.sessions.map((s) => s.sessionId)).toEqual(['sess-c', 'sess-a']);
+    expect(warns.map((w) => w.fields.sessionId)).toEqual(['sess-a', 'sess-b', 'sess-c']);
+  });
+
+  it('warns again for a session seen after it was evicted', () => {
+    const { monitor, warns } = makeMonitor({ maxTrackedSessions: 1 });
+    monitor.recordToolCall('sess-a');
+    monitor.recordToolCall('sess-b');
+    monitor.recordToolCall('sess-a');
+
+    expect(warns.map((w) => w.fields.sessionId)).toEqual(['sess-a', 'sess-b', 'sess-a']);
+    expect(monitor.getSnapshot()).toMatchObject({ count: 1, evictedSessions: 2 });
   });
 
   it('lists at most 20 sessions and flags the rest as truncated', () => {
@@ -146,6 +173,7 @@ describe('UnforwardedSessionMonitor', () => {
     expect(Object.keys(monitor.getSnapshot()).sort()).toEqual(
       [
         'count',
+        'evictedSessions',
         'hint',
         'reason',
         'requestedMode',
