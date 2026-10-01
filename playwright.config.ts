@@ -8,15 +8,17 @@ import { EMPTY_PORT, EMPTY_URL, SEEDED_PORT } from './e2e/servers.js';
 const RUN_ROOT = join(tmpdir(), `nr-ai-e2e-${process.pid}`);
 
 /**
- * Every setting the server reads from the environment, as the runner inherited it, mapped to
- * undefined. Playwright spawns the server with process.env merged under `env`, and Node drops
- * undefined values from a child's environment, so spreading this first unsets them: a
- * contributor's exported license key, OTLP endpoint, budget cap or retention window never
- * reaches the run. An empty string would not do: `??` fallbacks in src/config.ts keep ''.
+ * The runner's inherited Preflight, New Relic, OTel and Claude Code variables, mapped to
+ * undefined: its settings, plus CLAUDECODE and MCP_CLIENT, which platform detection reads.
+ * Playwright spawns the server with process.env merged under `env`, and Node drops undefined
+ * values from a child's environment, so spreading this first unsets them: a contributor's
+ * exported license key, OTLP endpoint, budget cap or retention window never reaches the run.
+ * An empty string would not do: `??` fallbacks in src/config.ts keep ''. Matched by prefix,
+ * so a variable outside these families has to be pinned below.
  */
 const INHERITED_SETTINGS = Object.fromEntries(
   Object.keys(process.env)
-    .filter((key) => /^(NEW_RELIC_|NR_AI_|OTEL_|CLAUDE_)/.test(key))
+    .filter((key) => /^(NEW_RELIC_|NR_AI_|OTEL_|CLAUDE|MCP_CLIENT$)/.test(key))
     .map((key) => [key, undefined]),
 );
 
@@ -64,6 +66,7 @@ function isolatedServer(name: string, port: number, prelude?: (dir: string) => s
       HOME: dir,
       USERPROFILE: dir,
       APPDATA: join(dir, 'AppData', 'Roaming'),
+      LOCALAPPDATA: join(dir, 'AppData', 'Local'),
       XDG_CONFIG_HOME: join(dir, '.config'),
       NEW_RELIC_AI_COPILOT_DIR: join(dir, '.copilot'),
       // The developer override, then the login-name fallbacks inferDeveloper() reads; any of
