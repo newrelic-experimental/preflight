@@ -1015,4 +1015,15 @@ describe('computeWorkspaceMetrics — chained and failed git commands', () => {
     expect(metrics.pushCount).toBe(0);
     expect(metrics.mergeConflicts).toBe(1);
   });
+
+  it('resolves a conflict with a commit whose message mentions --amendment', () => {
+    const t = Date.now();
+    const records = [
+      gitActivity('git merge main', 'ws-a', { timestamp: t, success: false, error: CONFLICT }),
+      gitActivity('git commit -m "document --amendment flag"', 'ws-a', { timestamp: t + 1_000 }),
+    ];
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.commitCount).toBe(1);
+    expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['resolved']);
+  });
 });

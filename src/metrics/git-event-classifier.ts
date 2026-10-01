@@ -138,13 +138,20 @@ export type GitEventType =
   | 'other_git';
 
 const AMEND_RE = /\s--amend\b/;
+// A commit message is quoted, so `-m "fix --amend handling"` is no amend.
+const QUOTED_TEXT_RE = /"(?:[^"\\]|\\.)*"|'[^']*'/g;
+
+/** Whether a commit segment is `git commit --amend`. */
+export function isAmendCommit(command: string): boolean {
+  return AMEND_RE.test(command.replace(QUOTED_TEXT_RE, ''));
+}
 
 /** A commit that added history: it succeeded and was not an amend, which
  *  rewrites a commit instead of adding one. Hydrated commits always qualify.
  *  The weekly/30-day report and the per-session `GitEfficiencyTracker` both
  *  count commits with this, so the two views agree. */
 export function isCountedCommit(event: GitEvent): boolean {
-  return event.type === 'commit' && event.success && !AMEND_RE.test(event.command ?? '');
+  return event.type === 'commit' && event.success && !isAmendCommit(event.command ?? '');
 }
 
 // ---------------------------------------------------------------------------

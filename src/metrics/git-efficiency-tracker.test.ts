@@ -1615,6 +1615,29 @@ describe('GitEfficiencyTracker', () => {
       expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['resolved']);
       expect(metrics.conflictHistory[0]!.resolutionTimeMs).toBe(60_000);
     });
+
+    it('counts a commit whose message mentions --amend', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "fix: --amend handling"' }));
+      expect(tracker.getMetrics().commitCount).toBe(1);
+    });
+
+    it('resolves a conflict with a commit whose message mentions --amendment', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git merge main',
+          success: false,
+          error: 'CONFLICT (content): Merge conflict in a.ts',
+          timestamp: t,
+        }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "document --amendment flag"', timestamp: t + 1_000 }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(1);
+      expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['resolved']);
+    });
   });
 
   // The hook reports one success/error pair for a whole shell chain.

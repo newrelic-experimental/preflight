@@ -1,6 +1,6 @@
 import { createLogger } from '../shared/index.js';
 import { GIT_LOG_SESSION_ID, type GitActivityRecord } from './git-activity-recorder.js';
-import { isCountedCommit, type GitEvent } from './git-event-classifier.js';
+import { isAmendCommit, isCountedCommit, type GitEvent } from './git-event-classifier.js';
 import type {
   BestPractice,
   ConflictResolutionStrategy,
@@ -1066,7 +1066,7 @@ export function computeWorkspaceMetrics(
         if (!event.success) break;
         // git commit --amend fixes a prior commit, not a merge conflict —
         // drop the oldest pending conflict without recording a resolution.
-        if (command.includes('--amend')) {
+        if (isAmendCommit(command)) {
           pendingConflicts.shift();
         } else {
           const pending = pendingConflicts.shift();

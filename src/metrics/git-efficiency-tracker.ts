@@ -3,6 +3,7 @@ import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
 import { stripHeredocBodies } from './local-session-aggregator.js';
 import {
   classifyGitSegments,
+  isAmendCommit,
   isCountedCommit,
   processGhCommand,
   splitShellSegments,
@@ -762,7 +763,7 @@ export class GitEfficiencyTracker {
         // Drop the oldest pending conflict on amend (without recording a
         // resolution) so a later, unrelated commit doesn't retroactively
         // "resolve" it.
-        if (command.includes('--amend')) {
+        if (isAmendCommit(command)) {
           this.pendingConflicts.shift();
         } else {
           const pending = this.pendingConflicts.shift();
