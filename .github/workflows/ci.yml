@@ -1,8 +1,8 @@
 name: CI
 
-# Runs CONTRIBUTING.md's "Before opening a PR" checklist except one item:
-# test:e2e, which needs a browser download and has a baseline only for macOS.
-# Plus the two drift-checker scripts that otherwise never run automatically:
+# Runs CONTRIBUTING.md's "Before opening a PR" checklist: everything in the
+# verify job, test:e2e in its own job. Plus the two drift-checker scripts that
+# otherwise never run automatically:
 # check-docs-inventory.ts (docs/code drift) and check-bundle-size.ts (SPA
 # bundle budget, mirrors verify:plugin-hook's already-enforced pattern in
 # release.yml).
@@ -67,6 +67,11 @@ jobs:
       - name: Typecheck (web)
         run: npx tsc -p tsconfig.web.json
 
+      # scripts/, e2e/ and the root *.config.ts files — including the two drift
+      # checkers below, which tsx runs without typechecking.
+      - name: Typecheck (tools)
+        run: npx tsc -p tsconfig.tools.json
+
       - name: Build
         run: npm run build
 
@@ -81,3 +86,65 @@ jobs:
 
       - name: Check SPA bundle size
         run: npm run check:bundle-size
+
+  # Separate from verify so the browser suite runs in parallel instead of adding its
+  # minutes to the end of it, on every PR: the dashboard is served from src/web and
+  # src/dashboard but reads from most of src/, so a path filter would have to list nearly
+  # everything to be safe.
+  e2e:
+    runs-on: ubuntu-latest
+    # The committed *-linux.png baselines were recorded in this image, so the fonts and
+    # rasterizer here are the ones they were drawn with. Its tag must match the
+    # @playwright/test version in package.json (checked below); bump both together, and
+    # re-record the Linux baselines in the new image (see "The three suites" in
+    # CONTRIBUTING.md).
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble
+    steps:
+      - uses: actions/checkout@v5
+
+      # The image ships its own Node; pin the one verify builds and tests with, so the built
+      # server is exercised on the same version in both jobs.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.x
+          cache: npm
+
+      # The image tag above is written out because `container:` is resolved before any step
+      # runs; this keeps its version from drifting from package.json. It reads the tag the
+      # same way e2e/record-linux-baselines.sh does, so the two always record and compare in
+      # one image. Fails on a range pin too, which has no image.
+      - name: Check image matches @playwright/test
+        run: |
+          images="$(sed -n 's/^ *image: *\(mcr\.microsoft\.com\/playwright:[^ ]*\)$/\1/p' .github/workflows/ci.yml)"
+          version="$(node -p "require('./package.json').devDependencies['@playwright/test']")"
+          if [ "$(printf '%s\n' "$images" | grep -c .)" -ne 1 ]; then
+            echo "::error file=.github/workflows/ci.yml::expected exactly one mcr.microsoft.com/playwright image, found: $images"
+            exit 1
+          fi
+          case "$images" in
+            # -noble included: the baselines depend on the distro's fonts as much as on the
+            # Playwright version. Moving distros means re-recording, then changing both.
+            "mcr.microsoft.com/playwright:v$version-noble") ;;
+            *)
+              echo "::error file=.github/workflows/ci.yml::e2e image $images does not match @playwright/test $version in package.json"
+              exit 1
+              ;;
+          esac
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The image ships the browser, so the install that pretest:e2e runs is a no-op here.
+      - name: Test (e2e)
+        run: npm run test:e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

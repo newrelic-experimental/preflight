@@ -5,11 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.57.2] - 2026-09-30
+## [1.57.3] - 2026-10-01
 
 ### Fixed
 
 - The Kiro Power manifest (`kiro-power/plugin.json`) now validates against the Agent Plugins 1.0.0 schema it declares. It carried a root `displayName` key, which the schema does not allow and which marketplaces validating against it rejected. Kiro's Powers documentation does not list `displayName` as a manifest field, so the key was removed rather than moved.
+
+## [1.57.2] - 2026-09-29
+
+### Fixed
+
+- Crossing a budget threshold no longer clears other local alerts that are still true. A firing `cost.window` rule reported "cleared" and could not fire again for its `deduplicateSeconds`, and a firing `budget.session` rule cleared whenever a daily or weekly threshold crossed. A budget-threshold crossing now evaluates only budget rules, and every other rule is left to the periodic alert check. When the cost trackers cannot be read, cost rules skip that check instead of reading $0.
 
 ## [1.57.1] - 2026-09-29
 

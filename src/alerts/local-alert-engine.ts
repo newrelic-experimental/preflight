@@ -46,6 +46,23 @@ export interface LocalAlertEngineOptions {
 
 type BudgetPeriod = 'session' | 'daily' | 'weekly';
 
+function isBudgetRule(
+  rule: LocalAlertRule,
+): rule is BudgetSessionRule | BudgetDailyRule | BudgetWeeklyRule {
+  switch (rule.type) {
+    case 'budget.session':
+    case 'budget.daily':
+    case 'budget.weekly':
+      return true;
+    case 'cost.window':
+    case 'efficiency.below':
+    case 'antipattern.count':
+    case 'latency.percentile':
+    case 'tool.failure':
+      return false;
+  }
+}
+
 function budgetPeriodForRule(
   rule: BudgetSessionRule | BudgetDailyRule | BudgetWeeklyRule,
 ): BudgetPeriod {
@@ -133,10 +150,44 @@ export class LocalAlertEngine {
   }
 
   evaluate(snapshot: AlertSnapshot, now: number): readonly AlertEvent[] {
-    if (this.rules.length === 0) return [];
+    return this.evaluateRules(this.rules, snapshot, now);
+  }
+
+  /**
+   * Evaluate a BudgetTracker threshold crossing. Only budget rules run: the
+   * crossing is edge-triggered, and every other rule type is level-triggered
+   * and belongs to the periodic tick. Evaluating them here against zeroed
+   * cost cleared firing cost.window rules (#813). The snapshot carries no
+   * cost, so budget.session's reset check waits for the periodic tick.
+   */
+  evaluateBudgetThreshold(
+    threshold: NonNullable<AlertSnapshot['budgetThresholds']>[number],
+    now: number,
+  ): readonly AlertEvent[] {
+    return this.evaluateRules(
+      this.rules.filter(isBudgetRule),
+      {
+        timestamp: now,
+        cost: null,
+        efficiency: { score: null },
+        antiPatterns: [],
+        latency: [],
+        toolFailures: [],
+        budgetThresholds: [threshold],
+      },
+      now,
+    );
+  }
+
+  private evaluateRules(
+    rules: readonly LocalAlertRule[],
+    snapshot: AlertSnapshot,
+    now: number,
+  ): readonly AlertEvent[] {
+    if (rules.length === 0) return [];
     const emitted: AlertEvent[] = [];
 
-    for (const rule of this.rules) {
+    for (const rule of rules) {
       if (!rule.enabled) continue;
       const events = this.evaluateRule(rule, snapshot, now);
       for (const ev of events) {
@@ -310,6 +361,7 @@ export class LocalAlertEngine {
    * N-second window. The engine reads whichever bucket the rule names.
    */
   private computeCostWindowValue(rule: CostWindowRule, snapshot: AlertSnapshot): number | null {
+    if (snapshot.cost === null) return null;
     switch (rule.costPeriod) {
       case 'session':
         return snapshot.cost.sessionUsd;
@@ -441,6 +493,7 @@ export class LocalAlertEngine {
         const sessionReset =
           period === 'session' &&
           state.firedSpentUsd !== undefined &&
+          snapshot.cost !== null &&
           snapshot.cost.sessionUsd < state.firedSpentUsd;
         if (storedPeriodKey !== currentPeriodKey || sessionReset) {
           state.status = 'idle';

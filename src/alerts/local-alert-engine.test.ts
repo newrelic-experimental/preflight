@@ -1060,3 +1060,99 @@ describe('LocalAlertEngine — OS notifications', () => {
     expect(events).toHaveLength(1);
   });
 });
+
+describe('LocalAlertEngine — evaluateBudgetThreshold', () => {
+  const T0 = 1700000000000;
+
+  function makeSessionCostRule(): LocalAlertRule {
+    return {
+      id: 'session-cost',
+      name: 'Session cost > $5',
+      type: 'cost.window',
+      severity: 'warning',
+      enabled: true,
+      threshold: 5,
+      operator: 'above',
+      deduplicateSeconds: 300,
+      windowSeconds: 3600,
+      costPeriod: 'session',
+      channels: ['banner'],
+    };
+  }
+
+  it('fires a budget rule whose threshold crossed', () => {
+    const engine = new LocalAlertEngine();
+    engine.loadRules([makeBudgetRule()]);
+    const events = engine.evaluateBudgetThreshold(
+      { period: 'session', thresholdPct: 80, spentUsd: 4, budgetUsd: 5 },
+      T0,
+    );
+    expect(events.map((e) => [e.id, e.state])).toEqual([['session-budget', 'firing']]);
+  });
+
+  it('leaves a firing cost.window rule firing', () => {
+    const engine = new LocalAlertEngine();
+    engine.loadRules([makeSessionCostRule()]);
+    const live = makeSnapshot({ cost: { sessionUsd: 6, todayUsd: 6, weekUsd: 6 } });
+    expect(engine.evaluate(live, T0).map((e) => e.state)).toEqual(['firing']);
+
+    expect(
+      engine.evaluateBudgetThreshold(
+        { period: 'daily', thresholdPct: 50, spentUsd: 6, budgetUsd: 10 },
+        T0 + 1000,
+      ),
+    ).toEqual([]);
+    // Still firing, so the next tick neither clears nor re-fires.
+    expect(engine.evaluate(live, T0 + 2000)).toEqual([]);
+  });
+
+  it('leaves a firing budget.session rule firing when a daily threshold crosses', () => {
+    const engine = new LocalAlertEngine();
+    engine.loadRules([makeBudgetRule()]);
+    engine.evaluateBudgetThreshold(
+      { period: 'session', thresholdPct: 80, spentUsd: 4, budgetUsd: 5 },
+      T0,
+    );
+    expect(
+      engine.evaluateBudgetThreshold(
+        { period: 'daily', thresholdPct: 50, spentUsd: 5, budgetUsd: 10 },
+        T0 + 1000,
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('LocalAlertEngine — unavailable cost', () => {
+  const T0 = 1700000000000;
+
+  it('skips a cost.window rule instead of clearing it', () => {
+    const engine = new LocalAlertEngine();
+    engine.loadRules([
+      {
+        id: 'session-cost',
+        name: 'Session cost > $5',
+        type: 'cost.window',
+        severity: 'warning',
+        enabled: true,
+        threshold: 5,
+        operator: 'above',
+        deduplicateSeconds: 0,
+        windowSeconds: 3600,
+        costPeriod: 'session',
+        channels: ['banner'],
+      },
+    ]);
+    engine.evaluate(makeSnapshot({ cost: { sessionUsd: 6, todayUsd: 0, weekUsd: 0 } }), T0);
+    expect(engine.evaluate(makeSnapshot({ cost: null }), T0 + 1000)).toEqual([]);
+  });
+
+  it('does not read unavailable cost as a session reset', () => {
+    const engine = new LocalAlertEngine();
+    engine.loadRules([makeBudgetRule()]);
+    engine.evaluateBudgetThreshold(
+      { period: 'session', thresholdPct: 80, spentUsd: 4, budgetUsd: 5 },
+      T0,
+    );
+    expect(engine.evaluate(makeSnapshot({ cost: null }), T0 + 1000)).toEqual([]);
+  });
+});
