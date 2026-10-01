@@ -285,25 +285,19 @@ Tests that touch the filesystem create a unique temp directory per test and clea
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = resolve(
-    tmpdir(),
-    `nr-localstore-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  );
+  tmpDir = mkdtempSync(resolve(tmpdir(), 'nr-localstore-test-'));
 });
 
 afterEach(() => {
-  if (existsSync(tmpDir)) {
-    rmSync(tmpDir, { recursive: true, force: true });
-  }
+  rmSync(tmpDir, { recursive: true, force: true });
 });
 ```
 
-The directory name includes both `Date.now()` and a random suffix to guarantee uniqueness across parallel runs and rapid re-runs. Tests call `mkdirSync(tmpDir, { recursive: true })` or `store.initialize()` at the start of each test case.
+`mkdtempSync` creates the directory under a name no other process holds. A name built from `Date.now()` alone collides when two Jest processes start a test in the same millisecond, and the first to finish deletes the directory under the other; older tests that add a `Math.random()` suffix to it are also safe.
 
 ```typescript
 it('round-trips a single event', () => {
   const store = new LocalStore(tmpDir);
-  mkdirSync(tmpDir, { recursive: true });
 
   const event = makeEvent({ tool: 'Write' });
   store.appendToBuffer(event);
