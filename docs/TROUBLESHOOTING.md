@@ -19,6 +19,14 @@ preflight doctor
 
 It checks your config, hook wiring, daemon status, storage permissions, and New Relic connectivity, and prints a fix command next to anything that's broken. Most setup problems are one of these checks failing.
 
+For scripts, `preflight doctor --json` prints the checks as a JSON array. This lists the failing ones:
+
+```bash
+preflight doctor --json | jq -r '.[] | select(.status == "fail") | .check'
+```
+
+Both forms exit 0 when every check passes, 1 when any check fails, and 2 when the only problems are warnings.
+
 ---
 
 ## MCP server won't start (wrong Node version)
