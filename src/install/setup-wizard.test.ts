@@ -10,6 +10,7 @@ import {
   resolveEnvironmentChoice,
 } from './setup-wizard.js';
 import * as scheduleMod from './schedule.js';
+import * as updateSupportMod from './update-support.js';
 import * as keyValidator from './key-validator.js';
 import * as cliMod from './cli.js';
 import * as platformMod from './platform.js';
@@ -33,7 +34,11 @@ jest.mock('node:fs', () => ({
 jest.mock('./cli.js', () => ({
   runInstallCli: jest.fn(),
   verifyBinaryOnPath: jest.fn(),
+}));
+jest.mock('./update-support.js', () => ({
   findRepoRoot: jest.fn(() => null),
+  detectUpdateSupport: jest.fn(() => ({ supported: true, repoRoot: '/src/preflight' })),
+  UPGRADE_COMMAND: 'npm install -g @newrelic/preflight@latest',
 }));
 jest.mock('./platform.js', () => ({
   isWsl: jest.fn(() => false),
@@ -1289,6 +1294,55 @@ describe('setupWizard daemon install step', () => {
     expect(mockedSchedule.installDashboardDaemon).not.toHaveBeenCalled();
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).toContain('Cannot install dashboard daemon');
+  });
+});
+
+describe('setupWizard auto-update step on a package-manager install', () => {
+  let stdoutSpy: ReturnType<typeof jest.spyOn>;
+  let stderrSpy: ReturnType<typeof jest.spyOn>;
+  let mockRl: { question: jest.Mock; close: jest.Mock };
+  const savedPlatform = process.platform;
+  const mockedUpdateSupport = updateSupportMod as unknown as { detectUpdateSupport: jest.Mock };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockRl = { question: jest.fn(), close: jest.fn() };
+    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedFs.mkdirSync.mockReturnValue(undefined);
+    mockedFs.writeFileSync.mockReturnValue(undefined);
+    mockedFs.readFileSync.mockReturnValue('{}');
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
+    mockedUpdateSupport.detectUpdateSupport.mockReturnValue({
+      supported: false,
+      blocker: 'package-manager',
+    });
+  });
+
+  afterEach(() => {
+    mockedUpdateSupport.detectUpdateSupport.mockReturnValue({
+      supported: true,
+      repoRoot: '/src/preflight',
+    });
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+    Object.defineProperty(process, 'platform', { value: savedPlatform, configurable: true });
+  });
+
+  it('does not ask about auto-updates or install a schedule, and prints the upgrade command', async () => {
+    const values = ['local', 'tester', '', '', '', '', '', 'n', 'n', 'n', 'n'];
+    let i = 0;
+    mockRl.question.mockImplementation(async () => values[i++] ?? '');
+
+    await runSetupWizard();
+
+    const asked = mockRl.question.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(asked).not.toContain('auto-updates');
+    expect(mockedSchedule.installSchedule).not.toHaveBeenCalled();
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('npm install -g @newrelic/preflight@latest');
   });
 });
 

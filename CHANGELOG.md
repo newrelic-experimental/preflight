@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.57.6] - 2026-10-01
+
+### Fixed
+
+- **A daily auto-update scheduled on an npm or pnpm install failed every run, silently.** `preflight update` runs `git pull` and a rebuild, so it only works on a source clone, but setup offered the macOS LaunchAgent on every install. Setup now skips the auto-update prompt on a package-manager install and prints the upgrade command instead. `preflight schedule --time` refuses on such an install with the same hint and a non-zero exit. `preflight schedule --disable` still works. `preflight doctor` has a new "Update schedule" check that warns when `com.preflight.update.plist` is installed on an install where `preflight update` cannot run, and names the fix. One shared check decides whether `update` can run, so `update`, setup, `schedule`, and `doctor` agree.
+
 ## [1.57.2] - 2026-09-29
 
 ### Fixed

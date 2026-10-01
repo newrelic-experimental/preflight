@@ -28,8 +28,14 @@ jest.mock('node:os', () => {
 // Stub schedule module.
 jest.mock('./schedule.js', () => ({
   getDashboardDaemonStatus: jest.fn(() => ({ installed: false, readable: false })),
+  getScheduleStatus: jest.fn(() => ({ installed: false, readable: false })),
   resolveNodeDir: jest.fn(() => dirname(process.execPath)),
   findExecutableNodeDir: jest.fn(() => ({ dir: null, hasNonExecutable: false })),
+}));
+
+jest.mock('./update-support.js', () => ({
+  detectUpdateSupport: jest.fn(() => ({ supported: true, repoRoot: '/src/preflight' })),
+  UPGRADE_COMMAND: 'npm install -g @newrelic/preflight@latest',
 }));
 
 // Stub config module.
@@ -75,6 +81,7 @@ global.fetch = mockFetch as unknown as typeof fetch;
 
 import type { DiagnosticCheck } from './diagnostics.js';
 import * as schedule from './schedule.js';
+import * as updateSupport from './update-support.js';
 import * as config from '../config.js';
 import * as installHelper from './install-helper.js';
 import * as platform from './platform.js';
@@ -87,6 +94,8 @@ const mockedStatSync = nodeFs.statSync as jest.Mock;
 const mockedPlatform = nodeOs.platform as jest.Mock;
 const mockedGetDaemonStatus = schedule.getDashboardDaemonStatus as jest.Mock;
 const mockedFindExecutableNodeDir = schedule.findExecutableNodeDir as jest.Mock;
+const mockedGetScheduleStatus = schedule.getScheduleStatus as jest.Mock;
+const mockedDetectUpdateSupport = updateSupport.detectUpdateSupport as jest.Mock;
 const mockedValidateConfig = config.validateConfigFile as jest.Mock;
 const mockedLoadMcpConfig = config.loadMcpConfig as jest.Mock;
 const mockedDetectSettingsPath = installHelper.detectSettingsPath as jest.Mock;
@@ -275,6 +284,40 @@ describe('runDiagnostics', () => {
       mockedExistSync.mockReturnValue(true);
       const checks = await runDiagnostics(makeOpts());
       expect(checks.find((x) => x.check === 'Daemon installed')?.status).toBe('ok');
+    });
+  });
+
+  describe('Update schedule', () => {
+    const findCheck = (checks: DiagnosticCheck[]) =>
+      checks.find((x) => x.check === 'Update schedule')!;
+
+    beforeEach(() => {
+      mockedGetScheduleStatus.mockReturnValue({ installed: false, readable: false });
+      mockedDetectUpdateSupport.mockReturnValue({ supported: true, repoRoot: '/src/preflight' });
+    });
+
+    it('returns skip on non-macOS', async () => {
+      mockedPlatform.mockReturnValue('linux');
+      expect(findCheck(await runDiagnostics(makeOpts())).status).toBe('skip');
+    });
+
+    it('returns ok when no schedule is installed', async () => {
+      expect(findCheck(await runDiagnostics(makeOpts())).status).toBe('ok');
+    });
+
+    it('returns ok when a schedule is installed on a source clone', async () => {
+      mockedGetScheduleStatus.mockReturnValue({ installed: true, readable: true });
+      expect(findCheck(await runDiagnostics(makeOpts())).status).toBe('ok');
+    });
+
+    it('warns with removal and upgrade fix when a schedule is installed on a package-manager install', async () => {
+      mockedGetScheduleStatus.mockReturnValue({ installed: true, readable: true });
+      mockedDetectUpdateSupport.mockReturnValue({ supported: false, blocker: 'package-manager' });
+      const c = findCheck(await runDiagnostics(makeOpts()));
+      expect(c.status).toBe('warn');
+      expect(c.detail).toContain('com.preflight.update.plist');
+      expect(c.fix).toContain('preflight schedule --disable');
+      expect(c.fix).toContain('npm install -g @newrelic/preflight@latest');
     });
   });
 
@@ -872,9 +915,9 @@ describe('runDiagnostics', () => {
         throw new Error('registry file is corrupt');
       });
       const checks = await runDiagnostics({ configPath: '/tmp/does-not-exist.json' });
-      // All 11 checks must still be present — one throwing dependency must not
+      // All 12 checks must still be present — one throwing dependency must not
       // take down the rest of the diagnostic run.
-      expect(checks).toHaveLength(11);
+      expect(checks).toHaveLength(12);
       const check = checks.find((c) => c.check === 'Local instances');
       expect(check?.status).toBe('warn');
       expect(check?.detail).toContain('registry file is corrupt');
@@ -923,8 +966,8 @@ describe('runDiagnostics', () => {
     });
   });
 
-  it('returns exactly 11 checks on macOS', async () => {
+  it('returns exactly 12 checks on macOS', async () => {
     const checks = await runDiagnostics(makeOpts());
-    expect(checks).toHaveLength(11);
+    expect(checks).toHaveLength(12);
   });
 });

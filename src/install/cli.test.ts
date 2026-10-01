@@ -140,6 +140,11 @@ const mockedSetupWizard = {
 };
 
 describe('schedule subcommand', () => {
+  const mockedFsForSchedule = fsMod as unknown as {
+    existsSync: jest.Mock;
+    realpathSync: jest.Mock;
+  };
+  const mockedChildForSchedule = childMod as unknown as { execFileSync: jest.Mock };
   let stdoutSpy: ReturnType<typeof jest.spyOn>;
   let exitSpy: ReturnType<typeof jest.spyOn>;
   const savedPlatform = process.platform;
@@ -153,12 +158,21 @@ describe('schedule subcommand', () => {
         throw new Error(`process.exit(${String(code)})`);
       });
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    mockedFsForSchedule.realpathSync.mockReturnValue('/home/user/preflight/dist/index.js');
+    mockedFsForSchedule.existsSync.mockImplementation(
+      (p: unknown) => String(p) === '/home/user/preflight/package.json',
+    );
+    mockedChildForSchedule.execFileSync.mockReset();
+    mockedChildForSchedule.execFileSync.mockReturnValue('/home/user/preflight');
   });
 
   afterEach(() => {
     stdoutSpy.mockRestore();
     exitSpy.mockRestore();
     Object.defineProperty(process, 'platform', { value: savedPlatform, configurable: true });
+    mockedFsForSchedule.existsSync.mockImplementation(() => false);
+    mockedFsForSchedule.realpathSync.mockImplementation((p: unknown) => p);
+    mockedChildForSchedule.execFileSync.mockReset();
   });
 
   it('prints status when no flags given and no schedule installed', async () => {
@@ -187,6 +201,33 @@ describe('schedule subcommand', () => {
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).toContain('plist unreadable');
     expect(output).toContain('reinstall');
+  });
+
+  it('refuses --time on a package-manager install with the upgrade hint and does not install', async () => {
+    mockedFsForSchedule.realpathSync.mockReturnValue(
+      '/usr/local/lib/node_modules/@newrelic/preflight/dist/index.js',
+    );
+    mockedFsForSchedule.existsSync.mockImplementation(
+      (p: unknown) => String(p) === '/usr/local/lib/node_modules/@newrelic/preflight/package.json',
+    );
+    mockedChildForSchedule.execFileSync.mockImplementation(() => {
+      throw new Error('not a repository');
+    });
+    await expect(runInstallCli(['schedule', '--time', '08:00'])).rejects.toThrow('process.exit(1)');
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('package manager');
+    expect(output).toContain('npm install -g @newrelic/preflight@latest');
+    expect(mockedSchedule.installSchedule).not.toHaveBeenCalled();
+  });
+
+  it('still allows --disable on a package-manager install so a stale schedule can be removed', async () => {
+    mockedFsForSchedule.realpathSync.mockReturnValue('/usr/local/lib/node_modules/p/dist/index.js');
+    mockedChildForSchedule.execFileSync.mockImplementation(() => {
+      throw new Error('not a repository');
+    });
+    mockedSchedule.removeSchedule.mockReturnValue(true);
+    await runInstallCli(['schedule', '--disable']);
+    expect(mockedSchedule.removeSchedule).toHaveBeenCalled();
   });
 
   it('installs schedule with --time 08:00', async () => {

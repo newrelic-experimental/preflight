@@ -13,7 +13,8 @@ import { z } from 'zod';
 import { normalizeDeveloperName, ConfigFileSchema, DEFAULT_STORAGE_PATH } from '../config.js';
 import type { Mode } from '../config.js';
 import { migrateStoragePath } from './migrate.js';
-import { runInstallCli, verifyBinaryOnPath, findRepoRoot } from './cli.js';
+import { runInstallCli, verifyBinaryOnPath } from './cli.js';
+import { detectUpdateSupport, findRepoRoot, UPGRADE_COMMAND } from './update-support.js';
 import { writeJsonFile } from './json-utils.js';
 import { installSchedule, installDashboardDaemon, resolveBinaryPath } from './schedule.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
@@ -707,7 +708,9 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
     }
 
     // Step 7: Auto-update schedule (macOS only)
-    if (process.platform === 'darwin') {
+    if (process.platform === 'darwin' && !detectUpdateSupport().supported) {
+      print(`\n  ℹ Auto-update needs a source clone. To upgrade, run: ${UPGRADE_COMMAND}`);
+    } else if (process.platform === 'darwin') {
       const enableUpdate = (await rl.question('\nEnable daily auto-updates? [Y/n]: '))
         .trim()
         .toLowerCase();
