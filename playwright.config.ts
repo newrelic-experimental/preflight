@@ -33,7 +33,8 @@ const INHERITED_SETTINGS = Object.fromEntries(
  */
 function isolatedServer(name: string, port: number, prelude?: (dir: string) => string) {
   const dir = join(RUN_ROOT, name);
-  const serve = `node dist/index.js --local --config ${join(dir, 'config.json')}`;
+  // Double-quoted for the shell, which sh and cmd both read: tmpdir() can hold a space.
+  const serve = `node dist/index.js --local --config "${join(dir, 'config.json')}"`;
   return {
     command: prelude ? `${prelude(dir)} && ${serve}` : serve,
     port,
@@ -77,7 +78,10 @@ function isolatedServer(name: string, port: number, prelude?: (dir: string) => s
       USER: 'e2e',
       USERNAME: 'e2e',
     } as Record<string, string>,
-    reuseExistingServer: !process.env.CI,
+    // Never adopt a server already on the port: it would be another run's, over another
+    // temp store and possibly another worktree's build, and the seeded server's prelude
+    // would be skipped. Playwright fails naming the port instead.
+    reuseExistingServer: false,
   };
 }
 
@@ -102,6 +106,6 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
   webServer: [
     isolatedServer('empty', EMPTY_PORT),
-    isolatedServer('seeded', SEEDED_PORT, (dir) => `npx tsx e2e/fixtures/seed-store.ts ${dir}`),
+    isolatedServer('seeded', SEEDED_PORT, (dir) => `npx tsx e2e/fixtures/seed-store.ts "${dir}"`),
   ],
 });
