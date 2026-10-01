@@ -3117,16 +3117,19 @@ async function main(): Promise<void> {
         storagePath: config!.storagePath,
         signal: ppidCorrectionAbort.signal,
         includeParentOfPpid: true,
+        staleId,
       })
         .then(async (ppidId) => {
           if (ppidCorrectionAbort?.signal.aborted || corrected) return;
           if (ppidId === staleId) {
-            // The cwd guess turned out to be correct — no correction needed,
-            // so no reason to keep suppressing checkpoints for the rest of
-            // the cap window. It was NOT seeded eagerly (see the
-            // resolvedViaCwdOnly gate on rehydrateTrackersIfResumed's first
-            // call site) precisely because it wasn't confirmed yet — seed it
-            // now that it is.
+            // The cwd guess turned out to be correct, as confirmed by our own
+            // ppid's breadcrumb: the watch never resolves to staleId from an
+            // ancestor, whose breadcrumb may be a co-located session's. No
+            // correction needed, so no reason to keep suppressing checkpoints
+            // for the rest of the cap window. It was NOT seeded eagerly (see
+            // the resolvedViaCwdOnly gate on rehydrateTrackersIfResumed's
+            // first call site) precisely because it wasn't confirmed yet —
+            // seed it now that it is.
             rehydrateTrackersIfResumed(staleId);
             clearPendingConfirmation();
             return;
