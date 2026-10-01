@@ -3,6 +3,8 @@ import { resolve } from 'node:path';
 
 const repoRoot = resolve(__dirname, '..');
 
+const SERVER_VERSION_ENV = 'NEW_RELIC_AI_PREFLIGHT_VERSION';
+
 const packageJson: { version: string } = JSON.parse(
   readFileSync(resolve(repoRoot, 'package.json'), 'utf-8'),
 );
@@ -48,11 +50,20 @@ describe('Claude Code plugin manifests', () => {
     expect(existsSync(resolve(repoRoot, 'plugin/.mcp.json'))).toBe(true);
   });
 
-  it('.mcp.json launches the published package over stdio', () => {
+  it('.mcp.json launches the published package over stdio, pinnable by env var', () => {
     const server = mcpConfig.mcpServers['newrelic-preflight'];
     expect(server).toBeDefined();
     expect(server.command).toBe('npx');
-    expect(server.args).toEqual(['-y', '@newrelic/preflight@latest', '--stdio']);
+    expect(server.args).toEqual([
+      '-y',
+      `@newrelic/preflight@\${${SERVER_VERSION_ENV}:-latest}`,
+      '--stdio',
+    ]);
+  });
+
+  it('docs/PLUGIN.md documents the same pin variable the manifest expands', () => {
+    const pluginDoc = readFileSync(resolve(repoRoot, 'docs/PLUGIN.md'), 'utf-8');
+    expect(pluginDoc).toContain(SERVER_VERSION_ENV);
   });
 
   it('hooks.json wires both PreToolUse and PostToolUse to the bundled collector', () => {

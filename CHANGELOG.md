@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.61.0] - 2026-10-01
+
+### Added
+
+- Fleet admins can hold the Claude Code plugin's MCP server on a specific version. The plugin's `.mcp.json` now launches `@newrelic/preflight@${NEW_RELIC_AI_PREFLIGHT_VERSION:-latest}`, which Claude Code expands at session start, so a managed settings `env` entry such as `"NEW_RELIC_AI_PREFLIGHT_VERSION": "1.61.0"` pins every machine that receives it, stages a rollout per device group, and rolls back without a new release. Unset, the server follows `latest` as before. `docs/PLUGIN.md` has a managed settings example that also pins the plugin to its release tag so the bundled hook collector and the server stay in lockstep.
+
 ## [1.57.2] - 2026-09-29
 
 ### Fixed
