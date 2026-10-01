@@ -84,6 +84,12 @@ const MAX_BYTES_PER_POLL = 64 * 1024;
  * to MAX_PARTIAL_LINE_BYTES + one chunk and guarantees forward progress.
  */
 const MAX_PARTIAL_LINE_BYTES = 1024 * 1024; // 1 MiB
+/**
+ * Read ceiling for a subagent's `agent-<id>.meta.json` sidecar. Real sidecars
+ * are a few hundred bytes; the cap keeps an oversized one from costing a full
+ * read on every poll, since a failed read is not cached.
+ */
+export const MAX_META_SIDECAR_BYTES = 16 * 1024;
 const HEALTH_INTERVAL_MS = 60_000;
 const SCHEMA_FINGERPRINT_REEMIT_MS = 60 * 60 * 1000; // 1h
 const COST_SELF_CHECK_MS = 60 * 60 * 1000; // 1h
@@ -857,13 +863,28 @@ export class SubagentWatcher {
     if (cached !== undefined) return cached;
     const metaPath = transcriptPath.replace(/\.jsonl$/, '.meta.json');
     let agentType: string | undefined;
+    let fd: number | undefined;
     try {
-      const parsed: unknown = JSON.parse(readFileSync(metaPath, 'utf-8'));
+      fd = openSync(metaPath, 'r');
+      // One byte past the ceiling tells an oversized file apart from one
+      // exactly at it, without trusting a stat that could race a writer.
+      const buf = Buffer.alloc(MAX_META_SIDECAR_BYTES + 1);
+      const bytesRead = readSync(fd, buf, 0, buf.length, 0);
+      if (bytesRead > MAX_META_SIDECAR_BYTES) return undefined;
+      const parsed: unknown = JSON.parse(buf.toString('utf-8', 0, bytesRead));
       if (parsed !== null && typeof parsed === 'object') {
         agentType = normalizeAgentType((parsed as { agentType?: unknown }).agentType);
       }
     } catch {
       return undefined; // absent (older Claude Code or not yet written) or malformed
+    } finally {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch {
+          /* best-effort close */
+        }
+      }
     }
     if (agentType !== undefined) this.agentTypeByPath.set(transcriptPath, agentType);
     return agentType;

@@ -11,7 +11,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SubagentWatcher, buildSubagentCursorPath } from './subagent-watcher.js';
+import {
+  MAX_META_SIDECAR_BYTES,
+  SubagentWatcher,
+  buildSubagentCursorPath,
+} from './subagent-watcher.js';
 import { LocalStore } from '../storage/local-store.js';
 
 // Only statSync is wrapped as a spy (everything else delegates to the real
@@ -701,6 +705,24 @@ describe('SubagentWatcher', () => {
       writeFileSync(metaPath(), JSON.stringify({ agentType: 7 }));
       writeFileSync(agentJsonl, twoTurns());
       expect(pollTokenLines(watcher)[1]).not.toHaveProperty('agentType');
+    });
+
+    it('ignores a sidecar larger than MAX_META_SIDECAR_BYTES and accepts one at the limit', () => {
+      const sidecarOfSize = (bytes: number): string => {
+        const base = JSON.stringify({ agentType: 'Explore', description: '' });
+        return base.replace(
+          '"description":""',
+          `"description":"${'x'.repeat(bytes - base.length)}"`,
+        );
+      };
+      writeFileSync(metaPath(), sidecarOfSize(MAX_META_SIDECAR_BYTES + 1));
+      writeFileSync(agentJsonl, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+      const watcher = makeWatcher();
+      expect(pollTokenLines(watcher)[0]).not.toHaveProperty('agentType');
+
+      writeFileSync(metaPath(), sidecarOfSize(MAX_META_SIDECAR_BYTES));
+      writeFileSync(agentJsonl, twoTurns());
+      expect(pollTokenLines(watcher)[1].agentType).toBe('Explore');
     });
 
     it('picks the type up on a later poll when the sidecar appears after the transcript', () => {
