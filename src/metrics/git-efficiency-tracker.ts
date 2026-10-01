@@ -3,6 +3,8 @@ import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
 import { stripHeredocBodies } from './local-session-aggregator.js';
 import {
   classifyGitSegments,
+  isAmendCommit,
+  isCountedCommit,
   processGhCommand,
   splitShellSegments,
   type GitEvent,
@@ -517,7 +519,7 @@ export class GitEfficiencyTracker {
     const pushCount = this.events.filter(
       (e) => e.type === 'push' || e.type === 'force_push' || e.type === 'force_push_lease',
     ).length;
-    const commitCount = this.events.filter((e) => e.type === 'commit').length;
+    const commitCount = this.events.filter(isCountedCommit).length;
     const branchOperations = this.events.filter((e) => e.type === 'branch').length;
 
     // A conflict that's currently open (mid-merge, not yet aborted or
@@ -752,11 +754,16 @@ export class GitEfficiencyTracker {
       }
 
       case 'commit': {
+        this.statusChecksSinceLastAction = 0;
+        // A failed commit (e.g. a pre-commit hook rejection, or unmerged
+        // files) added no history and resolved nothing, so it leaves pending
+        // conflicts queued and stays out of the commit cadence below.
+        if (!event.success) break;
         // git commit --amend fixes a prior commit, not a merge conflict.
         // Drop the oldest pending conflict on amend (without recording a
         // resolution) so a later, unrelated commit doesn't retroactively
         // "resolve" it.
-        if (command.includes('--amend')) {
+        if (isAmendCommit(command)) {
           this.pendingConflicts.shift();
         } else {
           const pending = this.pendingConflicts.shift();
@@ -778,9 +785,12 @@ export class GitEfficiencyTracker {
             }
           }
         }
-        this.commitTimestamps.push(event.timestamp);
-        this.commitsSinceLastSync++;
-        this.statusChecksSinceLastAction = 0;
+        // Same rule as the commit count: an amend rewrites a commit rather
+        // than adding one, so it isn't another commit in the cadence.
+        if (isCountedCommit(event)) {
+          this.commitTimestamps.push(event.timestamp);
+          this.commitsSinceLastSync++;
+        }
         break;
       }
 

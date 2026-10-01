@@ -1,6 +1,6 @@
 import { createLogger } from '../shared/index.js';
 import { GIT_LOG_SESSION_ID, type GitActivityRecord } from './git-activity-recorder.js';
-import type { GitEvent } from './git-event-classifier.js';
+import { isAmendCommit, isCountedCommit, type GitEvent } from './git-event-classifier.js';
 import type {
   BestPractice,
   ConflictResolutionStrategy,
@@ -788,14 +788,6 @@ export const COMMIT_RECONCILE_WINDOW_MS = 60_000;
 
 type GitCommitRecord = Extract<GitActivityRecord, { kind: 'git' }>;
 
-const AMEND_RE = /\s--amend\b/;
-
-/** A commit that added history: it succeeded and was not an amend, which
- *  rewrites a commit instead of adding one. Hydrated commits always qualify. */
-export function isCountedCommit(event: GitEvent): boolean {
-  return event.type === 'commit' && event.success && !AMEND_RE.test(event.command ?? '');
-}
-
 function isHookCommit(r: GitCommitRecord): boolean {
   return isCountedCommit(r.gitEvent) && !r.gitEvent.hash;
 }
@@ -1070,9 +1062,11 @@ export function computeWorkspaceMetrics(
       }
 
       case 'commit': {
+        // A failed commit resolved nothing; see GitEfficiencyTracker.
+        if (!event.success) break;
         // git commit --amend fixes a prior commit, not a merge conflict —
         // drop the oldest pending conflict without recording a resolution.
-        if (command.includes('--amend')) {
+        if (isAmendCommit(command)) {
           pendingConflicts.shift();
         } else {
           const pending = pendingConflicts.shift();
