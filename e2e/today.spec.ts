@@ -23,6 +23,17 @@ test.describe('Today view — empty state', () => {
   });
 
   test('screenshot: empty state', async ({ page }) => {
+    // The server asks the live npm registry for the latest release, and the sidebar adds a
+    // "v<x> available" line when it is newer than the build, which no baseline can predict.
+    // Answer as up to date, the state the baselines were drawn in.
+    await page.route('**/api/health', async (route) => {
+      const response = await route.fetch();
+      const health = (await response.json()) as Record<string, unknown>;
+      await route.fulfill({
+        response,
+        json: { ...health, latestVersion: null, updateAvailable: false },
+      });
+    });
     await page.goto('/');
     await expect(page.getByText('No activity yet today')).toBeVisible();
     // Wait for animations to settle

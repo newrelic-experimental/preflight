@@ -5,11 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.57.2] - 2026-09-30
+## [1.57.3] - 2026-10-01
 
 ### Fixed
 
 - A session in the "Sessions today" tile no longer stays "Ready for review" after its pull request merges, including when the merge runs from a different session or worktree of the same repo. Preflight now records the number of the pull request that `gh pr create` opened, read from the PR URL in its output (only the number is kept). Sessions saved before this release have no recorded number, so their pull requests still read as open. A `gh pr merge` that fails or only turns auto-merge on or off no longer counts as a merge, and a `gh pr create` or `gh pr merge` aimed at another repo with `-R`/`--repo` is never matched to this repo's pull requests.
+
+## [1.57.2] - 2026-09-29
+
+### Fixed
+
+- Crossing a budget threshold no longer clears other local alerts that are still true. A firing `cost.window` rule reported "cleared" and could not fire again for its `deduplicateSeconds`, and a firing `budget.session` rule cleared whenever a daily or weekly threshold crossed. A budget-threshold crossing now evaluates only budget rules, and every other rule is left to the periodic alert check. When the cost trackers cannot be read, cost rules skip that check instead of reading $0.
 
 ## [1.57.1] - 2026-09-29
 

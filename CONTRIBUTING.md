@@ -54,10 +54,12 @@ preflight update
 | `npm test`                          | Run the full Jest suite (`maxWorkers: 1`) — everything except `src/web`                      |
 | `npm run test:web`                  | Run the Vitest suite — the `src/web` dashboard UI                                            |
 | `npm run test:e2e`                  | Run the Playwright suite in `e2e/` (rebuilds first via `pretest:e2e`)                        |
-| `npm run test:e2e:update`           | Rewrite the Playwright screenshot snapshots                                                  |
+| `npm run test:e2e:update`           | Rewrite the Playwright screenshot baselines for the OS you are on                            |
+| `npm run test:e2e:update:linux`     | Rewrite the `-linux` baselines in the Playwright image CI uses (needs Docker)                |
 | `npm run test:integration`          | Run `src/multi-instance.integration.test.ts`                                                 |
 | `npx tsc -p tsconfig.web.json`      | Typecheck `src/web`, tests included (`npm run build` checks source only)                     |
-| `npm run lint`                      | ESLint over `src/`                                                                           |
+| `npx tsc -p tsconfig.tools.json`    | Typecheck `scripts/`, `e2e/` and the root `*.config.ts` files, which no other config reaches |
+| `npm run lint`                      | ESLint over `src/`, `scripts/`, `e2e/` and the root `*.config.ts` files                      |
 | `npm run format`                    | Prettier write                                                                               |
 | `npm run format:check`              | Prettier check (no writes)                                                                   |
 | `npm run deploy:dashboard`          | Deploy the default NR dashboard                                                              |
@@ -254,15 +256,30 @@ asserts an invariant that does not hold for vendored source, and
 `src/multi-instance.integration.test.ts`, which spawns real processes and runs on demand via
 `npm run test:integration`. Both carry a comment saying why.
 
-`npm run test:e2e` installs its browser if needed, rebuilds, then starts the dashboard itself
-against a temp storage directory, config path and `.env` — so it needs no running server, and it
-neither reads your credentials nor writes to your real `~/.newrelic-preflight`.
+`npm run test:e2e` installs its browser if needed, rebuilds, then starts two dashboards itself —
+one over an empty store, one over a seeded one — each against its own temp directory, which
+also stands in for `HOME`. So it needs no running server, and it reads none of your credentials,
+your real `~/.newrelic-preflight`, or your Claude Code and Copilot transcripts. See
+[TEST_PATTERNS.md](./docs/TEST_PATTERNS.md#browser-tests-playwright) for adding a test.
 
-It asserts against committed screenshots in `e2e/today.spec.ts-snapshots/`, which are
-per-platform. Only a macOS baseline is committed today, so a first run on Linux or Windows fails
-on a missing snapshot and writes one; commit that file to give your OS a baseline. On macOS, when
-a deliberate UI change makes yours stale, re-record with `npm run test:e2e:update` and commit the
-result. Either way you only ever replace the baseline for the OS you are on.
+Screenshot assertions compare against per-platform baselines in `e2e/*-snapshots/`. Two are
+committed for each screenshot: `-darwin`, recorded on a Mac, and `-linux`, recorded in the
+`mcr.microsoft.com/playwright` image whose tag matches `@playwright/test` in `package.json` —
+the image CI's `e2e` job runs in, so CI checks the Linux one. When a deliberate UI change makes
+them stale, re-record both and commit the result:
+
+- **macOS:** `npm run test:e2e:update`.
+- **Linux:** `npm run test:e2e:update:linux`, from any OS with Docker running. It records in the
+  pinned image as `linux/amd64`, so on Apple Silicon it runs emulated and takes a few minutes.
+  Your checkout has to be under a directory Docker shares with its VM (your home directory,
+  by default).
+
+A Linux desktop run compares against the committed `-linux` baseline and may fail on font
+differences alone; the container is the reference. There is no Windows baseline: a first run
+on Windows writes one and fails, and later runs compare against it. Keep it uncommitted, since
+nothing in CI checks it. Adding a new screenshot means committing its `-darwin` and `-linux`
+files together. CI's `e2e` job fails on a missing `-linux` one; it runs Linux only, so nothing
+catches a missing or stale `-darwin` one but the next macOS run.
 
 ### Writing tests
 
@@ -294,8 +311,9 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 - [ ] `npm run build` succeeds
 - [ ] `npm test` passes
 - [ ] `npm run test:web` passes (if you touched `src/web`)
-- [ ] `npm run test:e2e` passes (if you changed the dashboard UI; on a non-macOS first run, see [The three suites](#the-three-suites) about recording your platform's baseline)
+- [ ] `npm run test:e2e` passes (if you changed the dashboard UI; CI runs it too, against the `-linux` baselines — see [The three suites](#the-three-suites) for re-recording them)
 - [ ] `npx tsc -p tsconfig.web.json` passes (if you touched `src/web`; `npm run build` checks source only)
+- [ ] `npx tsc -p tsconfig.tools.json` passes (if you touched `scripts/`, `e2e/` or a root `*.config.ts`)
 - [ ] `npm run lint` passes
 - [ ] `npm run format:check` passes (the `pre-commit` hook runs this too)
 - [ ] You've reviewed your own diff

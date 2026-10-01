@@ -179,7 +179,7 @@ describe('AlertSnapshotCollector — tracker reads', () => {
     };
     const collector = new AlertSnapshotCollector(deps);
     const snap = collector.snapshot(NOW, []);
-    expect(snap.cost.sessionUsd).toBeCloseTo(1.42);
+    expect(snap.cost?.sessionUsd).toBeCloseTo(1.42);
   });
 
   it('handles costTracker returning null sessionTotalCostUsd', () => {
@@ -189,7 +189,7 @@ describe('AlertSnapshotCollector — tracker reads', () => {
       },
     };
     const collector = new AlertSnapshotCollector(deps);
-    expect(collector.snapshot(NOW, []).cost.sessionUsd).toBe(0);
+    expect(collector.snapshot(NOW, []).cost?.sessionUsd).toBe(0);
   });
 
   it('reads efficiency score via the efficiencyScorer adapter', () => {
@@ -280,7 +280,7 @@ describe('AlertSnapshotCollector — tracker reads', () => {
     expect(snap.latency).toEqual([]);
   });
 
-  it('swallows errors from costTracker and falls back to zeros', () => {
+  it('reports cost as unavailable when costTracker throws', () => {
     const deps: AlertSnapshotCollectorDeps = {
       costTracker: {
         getMetrics: () => {
@@ -289,7 +289,7 @@ describe('AlertSnapshotCollector — tracker reads', () => {
       },
     };
     const collector = new AlertSnapshotCollector(deps);
-    expect(collector.snapshot(NOW, []).cost.sessionUsd).toBe(0);
+    expect(collector.snapshot(NOW, []).cost).toBeNull();
   });
 
   it('reads todayUsd/weekUsd from budgetTracker.getStatus()', () => {
@@ -300,11 +300,11 @@ describe('AlertSnapshotCollector — tracker reads', () => {
     };
     const collector = new AlertSnapshotCollector(deps);
     const snap = collector.snapshot(NOW, []);
-    expect(snap.cost.todayUsd).toBe(12);
-    expect(snap.cost.weekUsd).toBe(40);
+    expect(snap.cost?.todayUsd).toBe(12);
+    expect(snap.cost?.weekUsd).toBe(40);
   });
 
-  it('swallows errors from budgetTracker.getStatus() and falls back to zeros', () => {
+  it('reports cost as unavailable when budgetTracker.getStatus() throws', () => {
     const deps: AlertSnapshotCollectorDeps = {
       budgetTracker: {
         getStatus: () => {
@@ -313,6 +313,6 @@ describe('AlertSnapshotCollector — tracker reads', () => {
       },
     };
     const collector = new AlertSnapshotCollector(deps);
-    expect(collector.snapshot(NOW, []).cost).toEqual({ sessionUsd: 0, todayUsd: 0, weekUsd: 0 });
+    expect(collector.snapshot(NOW, []).cost).toBeNull();
   });
 });
