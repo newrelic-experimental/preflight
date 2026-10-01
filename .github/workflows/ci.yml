@@ -103,6 +103,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The image ships its own Node; pin the one verify builds and tests with, so the built
+      # server is exercised on the same version in both jobs.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.x
+          cache: npm
+
       # The image tag above is written out because `container:` is resolved before any step
       # runs; this keeps its version from drifting from package.json. It reads the tag the
       # same way e2e/record-linux-baselines.sh does, so the two always record and compare in
