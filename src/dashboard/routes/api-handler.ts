@@ -1389,13 +1389,12 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
   const bufferToolCalls = pairToolCallsFromBufferEvents(
     peeked as unknown as readonly HookEvent[],
   ).filter((record) => record.timestamp >= startMs);
+  for (const record of bufferToolCalls) activityRecorder.recordToolCall(record);
+  // Only replayed sessions contribute repo keys. Buffer records carry no cwd
+  // (pairToolCallsFromBufferEvents doesn't copy it), so their PR activity is
+  // 'unattributed' and matches within its own session until the periodic
+  // session checkpoint persists it with a cwd.
   const repoKeyByWorkspace = new Map<string, string>();
-  for (const record of bufferToolCalls) {
-    activityRecorder.recordToolCall(record);
-    // Already resolved (and cached) by the recorder above.
-    const identity = identityResolver.resolve(record.cwd as string | undefined);
-    if (identity) repoKeyByWorkspace.set(identity.worktreeKey, identity.repoKey);
-  }
   for (const session of todaySessions) {
     const replayed = input.replayCache.replay(session, identityResolver);
     for (const record of replayed.records) activityStore.ingest(record);

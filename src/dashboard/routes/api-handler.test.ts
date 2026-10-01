@@ -20,6 +20,7 @@ import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
 import { makeUsage } from '../../__test-utils__/token-usage.js';
 import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
+import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
 
 import type { ToolCallRecord } from '../../storage/types.js';
 import type { GitWorkspaceReport } from '../../metrics/git-workspace-report.js';
@@ -4288,6 +4289,44 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       prSession('merger', 20_000, command, { repoName: 'acme/app' }),
     ]);
     expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it('resolves no worktree identity for buffer tool calls that record no git or PR activity', async () => {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const outsideRepo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pr-773-no-repo-')));
+    const bufferEvents = Array.from({ length: 5 }, (_, i) => {
+      const base = {
+        sessionId: 'reader',
+        toolUseId: `read-${i}`,
+        tool: 'Read',
+        cwd: outsideRepo,
+        timestamp: startOfDay.getTime() + 10_000 + i,
+      };
+      return [
+        { ...base, mode: 'pre', toolInput: { file_path: path.join(outsideRepo, `f${i}`) } },
+        { ...base, mode: 'post', success: true },
+      ];
+    }).flat();
+    const resolveSpy = jest.spyOn(WorktreeIdentityResolver.prototype, 'resolve');
+    try {
+      const handler = createApiHandler({
+        localStore: { peekAllBuffers: () => bufferEvents },
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+      const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+      const { res, status } = fakeRes();
+      await handler(req, res);
+      expect(status()).toBe(200);
+      expect(resolveSpy).not.toHaveBeenCalled();
+    } finally {
+      resolveSpy.mockRestore();
+      fs.rmSync(outsideRepo, { recursive: true, force: true });
+    }
   });
 
   it('keeps ready_for_review for a PR created in another repo with -R when the cwd repo merges that number', async () => {
