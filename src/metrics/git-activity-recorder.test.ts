@@ -534,13 +534,66 @@ describe('GitActivityRecorder', () => {
       expect(prRecords()).toHaveLength(0);
     });
 
-    it('still counts a failed gh pr merge — a non-create verb stays real even on failure', () => {
+    it('does not count a failed gh pr merge as a merge', () => {
       recorder.recordToolCall(
         makeRecord({ command: 'gh pr merge 5', cwd: repoDir, success: false }),
       );
+      expect(prRecords()).toHaveLength(0);
+    });
+
+    it('still counts a failed gh pr checks — a verb that changes nothing stays real on failure', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'gh pr checks 5', cwd: repoDir, success: false }),
+      );
+      const results = prRecords();
+      expect(results).toHaveLength(1);
+      expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('checks');
+      expect(results[0].kind === 'pr' && results[0].prEvent.prNumber).toBe('5');
+    });
+
+    it.each(['gh pr merge 5 --auto --squash', 'gh pr merge 5 --disable-auto'])(
+      'does not count `%s`, which only toggles auto-merge, as a merge',
+      (command) => {
+        recorder.recordToolCall(makeRecord({ command, cwd: repoDir }));
+        expect(prRecords()).toHaveLength(0);
+      },
+    );
+
+    it.each([
+      'gh pr merge 5 -R acme/other',
+      'gh pr merge 5 -Racme/other',
+      'gh pr merge 5 -dR acme/other',
+      'gh pr merge 5 --repo acme/other',
+      'gh pr merge 5 --repo=acme/other',
+      'GH_REPO=acme/other gh pr merge 5',
+    ])('keeps `%s` as a merge but drops a number aimed at another repo', (command) => {
+      recorder.recordToolCall(makeRecord({ command, cwd: repoDir }));
       const results = prRecords();
       expect(results).toHaveLength(1);
       expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('merge');
+      expect(results[0].kind === 'pr' && results[0].prEvent.prNumber).toBeNull();
+    });
+
+    it('does not attach the captured number to a gh pr create aimed at another repo', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: 'gh pr create --fill -R acme/other',
+          cwd: repoDir,
+          createdPrNumber: '42',
+        }),
+      );
+      const results = prRecords();
+      expect(results).toHaveLength(1);
+      expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('create');
+      expect(results[0].kind === 'pr' && results[0].prEvent.prNumber).toBeNull();
+    });
+
+    it('keeps the number of a merge with unrelated flags', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'gh pr merge 5 --rebase -d --admin', cwd: repoDir }),
+      );
+      const results = prRecords();
+      expect(results).toHaveLength(1);
       expect(results[0].kind === 'pr' && results[0].prEvent.prNumber).toBe('5');
     });
 

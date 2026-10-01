@@ -3,6 +3,8 @@ import type { KeyedRecord } from './git-activity-store.js';
 import { ActivityStore } from './git-activity-store.js';
 import {
   classifyGitSegments,
+  ghPrMergeTogglesAuto,
+  ghSegmentOverridesRepo,
   processGhCommand,
   splitShellSegments,
   type GitEvent,
@@ -123,17 +125,25 @@ export class GitActivityRecorder {
     // `gh` invocation can be chained before or after a `git` command, or
     // follow a heredoc script on its own newline-separated segment.
     for (let i = 0; i < segments.length; i++) {
-      const parsed = processGhCommand(segments[i].trim(), record.timestamp);
+      const segment = segments[i].trim();
+      const parsed = processGhCommand(segment, record.timestamp);
       if (!parsed) continue;
-      // `gh pr create` takes no number; the one it opened comes from its output.
-      const prEvent =
-        parsed.action === 'create' && parsed.prNumber === null && record.createdPrNumber
-          ? { ...parsed, prNumber: record.createdPrNumber }
-          : parsed;
-      // A failed `gh pr create` made no PR — nothing to count. Every other
-      // verb stays real even on failure: `gh pr checks` exits non-zero when
-      // checks are failing, and that's still a genuine checks view.
-      if (prEvent.action === 'create' && record.success === false) continue;
+      // A failed `gh pr create` made no PR and a failed `gh pr merge` merged
+      // nothing, so neither counts; nor does a merge that only toggles
+      // auto-merge. Every other verb stays real even on failure: `gh pr
+      // checks` exits non-zero when checks are failing, and that's still a
+      // genuine checks view.
+      const changesPr = parsed.action === 'create' || parsed.action === 'merge';
+      if (changesPr && record.success === false) continue;
+      if (parsed.action === 'merge' && ghPrMergeTogglesAuto(segment)) continue;
+      // The activity is keyed to the cwd's repo, so a number aimed at another
+      // repo is dropped rather than matched there. `gh pr create` takes no
+      // number; the one it opened comes from its output.
+      const captured = parsed.action === 'create' ? record.createdPrNumber : undefined;
+      const prEvent = {
+        ...parsed,
+        prNumber: ghSegmentOverridesRepo(segment) ? null : (parsed.prNumber ?? captured ?? null),
+      };
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',
         kind: 'pr',

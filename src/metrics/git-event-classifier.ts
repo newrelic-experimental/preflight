@@ -235,6 +235,26 @@ export function processGhCommand(command: string, timestamp: number): PrEvent | 
   return { timestamp, action, prNumber: match[2] ?? null };
 }
 
+// `-R`/`--repo` and a `GH_REPO=` prefix point gh at a repo other than the
+// cwd's. Any short-flag cluster holding an `R` (`-dR`) counts too, which errs
+// toward treating the segment as aimed elsewhere.
+const GH_REPO_OVERRIDE_RE = /(?:^|\s)(?:-[A-Za-z]*R|--repo(?=[\s=]|$)|GH_REPO=)/;
+
+// `--auto` queues a merge until its requirements pass and `--disable-auto`
+// cancels one, so neither merged anything when it ran.
+const GH_PR_AUTO_MERGE_RE = /(?:^|\s)--(?:auto|disable-auto)(?=[\s=]|$)/;
+
+/** True when a `gh` segment names its repo explicitly, so a PR number in it
+ *  may belong to a repo other than the cwd's. */
+export function ghSegmentOverridesRepo(segment: string): boolean {
+  return GH_REPO_OVERRIDE_RE.test(segment);
+}
+
+/** True when a `gh pr merge` segment only enables or disables auto-merge. */
+export function ghPrMergeTogglesAuto(segment: string): boolean {
+  return GH_PR_AUTO_MERGE_RE.test(segment);
+}
+
 export interface ClassifiedGitSegment {
   readonly segment: string;
   readonly event: GitEvent;

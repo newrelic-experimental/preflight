@@ -4145,7 +4145,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     sessionId: string,
     offsetMs: number,
     command: string,
-    extra: { repoName?: string; cwd?: string; createdPrNumber?: string },
+    extra: { repoName?: string; cwd?: string; createdPrNumber?: string; success?: boolean },
   ) => {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -4157,7 +4157,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
           timestamp: startOfDay.getTime() + offsetMs,
           durationMs: 500,
           toolName: 'Bash',
-          success: true,
+          success: extra.success ?? true,
           command,
           cwd: extra.cwd,
           createdPrNumber: extra.createdPrNumber,
@@ -4241,6 +4241,62 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     const parsed = await statusFor([
       prSession('creator', 10_000, 'gh pr create --fill', { createdPrNumber: '42' }),
       prSession('merger', 20_000, 'gh pr merge 42', {}),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  // Claude Code reports a non-zero `gh pr merge` (pending checks, a conflict,
+  // branch protection) through PostToolUseFailure, persisted as success: false.
+  it('keeps ready_for_review when another session in the same repo fails to merge the PR', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42 --squash', {
+        repoName: 'acme/app',
+        success: false,
+      }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it.each(['gh pr merge 42 --auto --squash', 'gh pr merge 42 --disable-auto'])(
+    'keeps ready_for_review when `%s` only toggles auto-merge',
+    async (command) => {
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', {
+          repoName: 'acme/app',
+          createdPrNumber: '42',
+        }),
+        prSession('merger', 20_000, command, { repoName: 'acme/app' }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    },
+  );
+
+  it.each([
+    'gh pr merge 42 -R acme/other',
+    'gh pr merge 42 --repo=acme/other --squash',
+    'GH_REPO=acme/other gh pr merge 42',
+  ])('keeps ready_for_review when `%s` merges the same number in another repo', async (command) => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, command, { repoName: 'acme/app' }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it('keeps ready_for_review for a PR created in another repo with -R when the cwd repo merges that number', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill -R acme/other', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42', { repoName: 'acme/app' }),
     ]);
     expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
   });
