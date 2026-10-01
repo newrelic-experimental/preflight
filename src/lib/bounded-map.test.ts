@@ -56,6 +56,18 @@ describe('BoundedMap', () => {
     expect(map.get('b')).toBe(2);
   });
 
+  it('treats set() on an existing key as a use, so the overwritten entry survives eviction', () => {
+    const map = new BoundedMap<string, number>({ maxEntries: 2 });
+    map.set('a', 1);
+    map.set('b', 2);
+    map.set('a', 10);
+    map.set('c', 3);
+
+    expect(map.get('a')).toBe(10);
+    expect(map.has('b')).toBe(false);
+    expect(map.get('c')).toBe(3);
+  });
+
   it('never grows past maxEntries across many inserts', () => {
     const map = new BoundedMap<string, number>({ maxEntries: 100 });
     for (let i = 0; i < 10_000; i++) map.set(`k${i}`, i);

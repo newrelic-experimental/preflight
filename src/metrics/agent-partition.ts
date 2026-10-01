@@ -1,6 +1,11 @@
 import type { ToolCallRecord } from '../storage/types.js';
 
-/** The read side of a string-keyed lookup — satisfied by `Map` and `BoundedMap`. */
+/**
+ * A string-keyed lookup, satisfied by `Map` and `BoundedMap`. Not a read-only
+ * contract: `BoundedMap.get` counts as a use, refreshing the entry's LRU
+ * position and idle-expiry clock, so the backfill functions below keep the
+ * entries they look up alive.
+ */
 export interface StringLookup {
   get(key: string): string | undefined;
 }
