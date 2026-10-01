@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A message that rules out an option and proposes another, such as "That approach won't work for X, let's use Y instead", no longer counts as a correction of the assistant. "won't work" still counts when the sentence proposes nothing, or when it points back at prior output ("your fix still won't work, let's go back"). Correction rate, the high-correction-rate recommendation, and the CLAUDE.md-change verdict were inflated by design discussion that used the phrase.
+- A message that rules out an option and proposes another, such as "That approach won't work for X, let's use Y instead", no longer counts as a correction of the assistant, whether the proposal follows a comma, a period or a dash. "won't work" still counts when the message opens on it ("That won't work, ..."), when neither its sentence nor the next one proposes anything, or when either points back at the assistant's output ("your fix still won't work, let's go back"). Correction rate, the high-correction-rate recommendation, and the CLAUDE.md-change verdict were inflated by design discussion that used the phrase. Sessions recorded before this version keep their counts, so a CLAUDE.md before/after comparison that spans the upgrade can show a drop the edit didn't cause.
 
 ## [1.57.1] - 2026-09-29
 
