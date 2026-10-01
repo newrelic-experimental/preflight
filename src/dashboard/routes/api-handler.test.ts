@@ -5003,23 +5003,37 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
   // host's own zone with the same local-date arithmetic the handler uses. In a
   // zone without DST a local day is always 86_400_000ms, the fixed-ms bug this
   // guards against cannot occur, and the test is skipped.
-  const dstTransitionDayStart = ((): number | null => {
+  //
+  // The transition day and the day after must both begin at a real 00:00. In a
+  // zone that springs forward at local midnight (America/Havana, Africa/Cairo,
+  // Asia/Beirut, Atlantic/Azores), `new Date(y, m, d)` resolves the skipped
+  // midnight to 01:00, and the handler's own ranges for the transition day and
+  // the day after then overlap by that hour, a separate defect in
+  // `computeDailyPeakConcurrency` that no fixture here can pass around. The
+  // scan moves on to the same zone's fall-back transition, which still
+  // exercises the fixed-ms bug.
+  const dstTransitionDay = ((): { start: number; next: number } | null => {
+    const startsAtMidnight = (d: Date): boolean => d.getHours() === 0 && d.getMinutes() === 0;
     for (let i = 0; i < 366; i++) {
-      const start = new Date(2026, 0, 1 + i).getTime();
-      if (new Date(2026, 0, 2 + i).getTime() - start !== 86_400_000) return start;
+      const start = new Date(2026, 0, 1 + i);
+      const next = new Date(2026, 0, 2 + i);
+      if (next.getTime() - start.getTime() === 86_400_000) continue;
+      if (startsAtMidnight(start) && startsAtMidnight(next)) {
+        return { start: start.getTime(), next: next.getTime() };
+      }
     }
     return null;
   })();
 
-  (dstTransitionDayStart === null ? it.skip : it)(
+  (dstTransitionDay === null ? it.skip : it)(
     'keys dailyPeaks correctly across a DST transition, where a local day is not 86_400_000ms',
     async () => {
       jest.useFakeTimers();
       try {
-        const transitionStart = dstTransitionDayStart as number;
-        const nextDay = new Date(transitionStart);
-        nextDay.setDate(nextDay.getDate() + 1);
-        const nextStart = nextDay.getTime();
+        const { start: transitionStart, next: nextStart } = dstTransitionDay as {
+          start: number;
+          next: number;
+        };
         const isShortDay = nextStart - transitionStart < 86_400_000;
         // "Today" = the day after the transition, mid-afternoon, so days=3
         // covers [day before, transition day, day after].
@@ -5055,6 +5069,9 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
         expect(status()).toBe(200);
         const result = JSON.parse(body());
         // 3-day window [day before, transition, day after] → indices [0, 1, 2].
+        // The date checks only confirm that layout, since date keying has its
+        // own test ("view=history keys each day's dailyPeaks entry by local
+        // date"); the peak checks are the regression guard.
         expect(result.dailyPeaks[1].date).toBe(localDateKey(transitionStart));
         expect(result.dailyPeaks[2].date).toBe(localDateKey(nextStart));
         // A naive `dayEndMs = transitionStart + 86_400_000` would attribute

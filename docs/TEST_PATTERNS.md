@@ -345,7 +345,7 @@ it('fires events harvest at 5s intervals', async () => {
 
 Tests must pass in any host zone; CI runs both suites under `America/New_York` and under `UTC`. Build day-boundary fixtures with the same local-date helpers the code uses (`localStartOfDay`, `localDateKey` from `src/lib/date.ts`, or `new Date(y, m, d)`), or pass an explicit IANA `tz` to helpers that accept one. Don't hardcode a zone's offset or DST dates.
 
-Jest gives each test file its own copy of `process.env`, so `process.env.TZ = '...'` inside a Jest test has no effect. A test that needs a zone property, such as a DST transition, derives it from the host zone and skips when the host has none (see the `dailyPeaks` DST test in `src/dashboard/routes/api-handler.test.ts`). Vitest does honor a runtime `process.env.TZ`; restore it with `delete process.env.TZ` when it was unset, since assigning `undefined` stores the string `"undefined"`.
+Jest gives each test file its own copy of `process.env`, so `process.env.TZ = '...'` inside a Jest test has no effect. A test that needs a zone property, such as a DST transition, derives it from the host zone and skips when the host has none (see the `dailyPeaks` DST test in `src/dashboard/routes/api-handler.test.ts`). In a zone that springs forward at local midnight (`America/Havana`, `Africa/Cairo`), `new Date(y, m, d)` for that day resolves to 01:00, so check that a derived day start reads 00:00. Vitest does honor a runtime `process.env.TZ`; restore it with `delete process.env.TZ` when it was unset, since assigning `undefined` stores the string `"undefined"`.
 
 ### Transport / HTTP tests
 
