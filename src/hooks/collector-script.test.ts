@@ -2531,6 +2531,17 @@ describe('collector-script', () => {
       expect(event.error).toBe('exit status 1');
     });
 
+    it('omits toolUseId from both events when stepIdx is not a number', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      processHook(makeAntigravityPreToolUse({ stepIdx: undefined }), 'PreToolUse');
+      processHook(makeAntigravityPostToolUse({ stepIdx: undefined }), 'PostToolUse');
+
+      const events = readBufferLines('agy-conv-001');
+      expect(events.map((e) => e.mode)).toEqual(['pre', 'post']);
+      for (const event of events) expect(event).not.toHaveProperty('toolUseId');
+    });
+
     it('replies with only {} on stdout for PostToolUse, never a decision field (#793)', () => {
       processHook(makeAntigravityPostToolUse(), 'PostToolUse');
       expect(stdoutSpy).toHaveBeenCalledTimes(1);
@@ -2544,6 +2555,15 @@ describe('collector-script', () => {
 
       expect(readBufferLines('agy-conv-001')[0]!.mode).toBe('post');
       expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
+    });
+
+    it('the PreToolUse argument wins over a payload carrying an error key', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      processHook(makeAntigravityPostToolUse(), 'PreToolUse');
+
+      expect(readBufferLines('agy-conv-001')[0]!.mode).toBe('pre');
+      expect(stdoutSpy).toHaveBeenCalledWith('{"decision":"allow"}\n');
     });
 
     it('without an event-name argument, treats a payload carrying an error key as PostToolUse', () => {

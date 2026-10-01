@@ -779,6 +779,10 @@ function processHook(raw: string, cliEvent?: string): void {
     (agyCliEvent === 'posttooluse' ||
       (agyCliEvent !== 'pretooluse' && (data.error !== undefined || data.toolCall === undefined)));
   const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
+  // Both Antigravity branches spread this, so a pre and its post agree on
+  // whether they carry a toolUseId: HookEventProcessor pairs a post by its
+  // toolUseId whenever it has one, and a pre without one is keyed by a UUID.
+  const agyToolUseId = typeof data.stepIdx === 'number' ? { toolUseId: String(data.stepIdx) } : {};
 
   let event: Record<string, unknown>;
 
@@ -1133,7 +1137,7 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       inputSize: sizeOf(data.toolCall?.args),
       inputHash: hashInput(data.toolCall?.args),
-      ...(typeof data.stepIdx === 'number' && { toolUseId: String(data.stepIdx) }),
+      ...agyToolUseId,
     };
 
     // Raw Antigravity argument names (CommandLine, TargetFile, etc.) don't
@@ -1148,17 +1152,17 @@ function processHook(raw: string, cliEvent?: string): void {
     }
   } else if (isAntigravityPost) {
     // Antigravity PostToolUse — carries the same `toolCall` as PreToolUse
-    // plus an optional `error`. Pairing with the pre-event is by toolUseId
-    // (stepIdx), and HookEventProcessor.handlePostEvent() takes the merged
-    // record's toolName from the pre-event, so the 'unknown' fallback here
-    // only matters for a payload with no `toolCall`.
+    // plus an optional `error`. A paired call takes its toolName from the
+    // pre-event (HookEventProcessor.handlePostEvent()), but this post's own
+    // tool name still matters: it is the FIFO pairing key when there is no
+    // stepIdx, and the record's toolName when the post is orphaned.
     const hasError = typeof data.error === 'string' && data.error !== '';
     event = {
       mode: 'post' as const,
       tool: data.toolCall?.name ?? 'unknown',
       timestamp,
       success: !hasError,
-      toolUseId: String(data.stepIdx),
+      ...agyToolUseId,
       ...(typeof data.error === 'string' && data.error !== '' && { error: redact(data.error) }),
     };
   } else if (eventName === 'stopfailure') {

@@ -394,8 +394,10 @@ describe('HookEventProcessor', () => {
     });
   });
 
-  describe('processEvents() — Antigravity pairing (raw tool name only on pre-event)', () => {
-    it('resolves toolName from the pre-event even though the post-event carries "unknown"', () => {
+  describe('processEvents() — Antigravity pairing', () => {
+    // The collector falls back to tool "unknown" for a PostToolUse payload
+    // without `toolCall`; pairing by the stepIdx toolUseId still recovers it.
+    it('pairs by the stepIdx toolUseId and takes toolName from the pre-event', () => {
       const processor = new HookEventProcessor({
         store,
         onRecord,
@@ -413,6 +415,24 @@ describe('HookEventProcessor', () => {
       expect(record.toolUseId).toBe('19');
       expect(record.durationMs).toBe(200);
       expect(record.success).toBe(true);
+    });
+
+    it('pairs a pre/post without stepIdx by tool name when neither carries a toolUseId', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        platformAdapter: new AntigravityAdapter(),
+      });
+
+      processor.processEvents([
+        makePreEvent({ tool: 'run_command', toolUseId: undefined, timestamp: 1000 }),
+        makePostEvent({ tool: 'run_command', toolUseId: undefined, timestamp: 1200 }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.toolName).toBe('Bash');
+      expect(records[0]!.durationMs).toBe(200);
+      expect(processor.pendingCount).toBe(0);
     });
   });
 

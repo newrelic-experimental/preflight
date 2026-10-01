@@ -445,6 +445,7 @@ function processHook(raw, cliEvent) {
   const agyCliEvent = cliEvent?.toLowerCase();
   const isAntigravityPost = isAntigravityShape && (agyCliEvent === "posttooluse" || agyCliEvent !== "pretooluse" && (data.error !== void 0 || data.toolCall === void 0));
   const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
+  const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: String(data.stepIdx) } : {};
   let event;
   if (eventName === "pretooluse") {
     event = {
@@ -674,7 +675,7 @@ function processHook(raw, cliEvent) {
       timestamp,
       inputSize: sizeOf(data.toolCall?.args),
       inputHash: hashInput(data.toolCall?.args),
-      ...typeof data.stepIdx === "number" && { toolUseId: String(data.stepIdx) }
+      ...agyToolUseId
     };
     const inputMeta = extractInputMeta(agyToolName, data.toolCall?.args);
     if (inputMeta !== void 0) event.toolInput = inputMeta;
@@ -688,7 +689,7 @@ function processHook(raw, cliEvent) {
       tool: data.toolCall?.name ?? "unknown",
       timestamp,
       success: !hasError,
-      toolUseId: String(data.stepIdx),
+      ...agyToolUseId,
       ...typeof data.error === "string" && data.error !== "" && { error: redact(data.error) }
     };
   } else if (eventName === "stopfailure") {
