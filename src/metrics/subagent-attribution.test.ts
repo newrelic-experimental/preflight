@@ -120,6 +120,19 @@ describe('SubagentAttributionIndex', () => {
     expect(index.backfill(record)).toBe(record);
   });
 
+  it("leaves a parent call's envelope agentType (the session's --agent name) untouched", () => {
+    const index = new SubagentAttributionIndex();
+    index.recordSubagentToolUses('agent-a', ['toolu_sub_1']);
+    index.recordAgentToolCall(makeAgentCall('agent-a', 'Explore'));
+    const record = makeRecord({ toolUseId: 'toolu_parent_1', agentType: 'claude' });
+
+    const result = index.backfill(record);
+
+    expect(result).toBe(record);
+    expect(result.agentId).toBeUndefined();
+    expect(result.agentType).toBe('claude');
+  });
+
   it('returns the same record reference when nothing applies', () => {
     const index = new SubagentAttributionIndex();
     const record = makeRecord();

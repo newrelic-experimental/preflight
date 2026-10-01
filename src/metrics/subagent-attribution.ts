@@ -37,8 +37,10 @@ export interface SubagentAttributionIndexSize {
 
 /**
  * Joins the two signals that attribute a hook `ToolCallRecord` to the
- * subagent that made it, since the hook envelope's own `agent_id` and
- * `agent_type` never populate in practice:
+ * subagent that made it when the hook envelope leaves `agent_id` or
+ * `agent_type` out. Claude Code documents both on calls made inside a
+ * subagent, and recent versions do send `agent_type`, but some installs have
+ * been observed sending neither (#656):
  *
  * - `toolUseId → agentId`, from `tool_use` blocks `SubagentWatcher` finds
  *   while tailing each subagent's transcript (see `backfillAgentId()`).
@@ -96,7 +98,7 @@ export class SubagentAttributionIndex {
     }
   }
 
-  /** The subagent type for `agentId`, if its spawning `Agent` call has been seen. */
+  /** The subagent type for `agentId`, if its sidecar or spawning `Agent` call has been seen. */
   agentTypeFor(agentId: string): string | undefined {
     return this.agentTypeByAgentId.get(agentId);
   }

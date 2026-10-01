@@ -2038,10 +2038,11 @@ async function main(): Promise<void> {
         );
       }
     });
-    // Attributes hook records to the subagent that made them (agentId via a
-    // toolUseId join against SubagentWatcher's transcript tail, agentType via
-    // the parent's own Agent tool call) and gives onSubagentTurn the type for
-    // cost breakdown. Size-capped with idle expiry so a long-running --local
+    // Attributes hook records to the subagent that made them where the hook
+    // envelope left agent_id/agent_type out (agentId via a toolUseId join
+    // against SubagentWatcher's transcript tail, agentType via the
+    // transcript's meta sidecar or the parent's own Agent tool call) and gives
+    // onSubagentTurn the type for cost breakdown. Size-capped with idle expiry so a long-running --local
     // daemon doesn't keep one entry per subagent call forever (#682).
     const subagentAttribution = new SubagentAttributionIndex();
     eventProcessor = new HookEventProcessor({

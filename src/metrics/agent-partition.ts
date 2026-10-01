@@ -42,9 +42,9 @@ export function partitionByAgent<T extends { readonly agentId?: string }>(
 
 /**
  * Fills in `ToolCallRecord.agentId` from a `toolUseId → agentId` map when the
- * record's own `agentId` is absent — Claude Code's hook envelope documents
- * `agent_id`/`agent_type` as present on every hook event fired inside a
- * subagent call, but in practice it never populates. `toolUseId`
+ * record's own `agentId` is absent. Claude Code's hook envelope documents
+ * `agent_id` as present on every hook event fired inside a subagent call, but
+ * some installs have been observed never sending it (#656). `toolUseId`
  * is reliable on both sides: it's already captured correctly on every
  * ToolCallRecord, and it's the same id Claude Code assigns to the matching
  * `tool_use` block in that subagent's own transcript, which `SubagentWatcher`
@@ -65,12 +65,13 @@ export function backfillAgentId(
 /**
  * Fills in `ToolCallRecord.agentType` from an `agentId → subagent type` map
  * once the record's `agentId` is known (either from the envelope or from
- * `backfillAgentId()`, so run that first). The hook envelope's own
- * `agent_type` never populates in practice, for the same reason `agent_id`
- * doesn't; the type comes instead from the parent's own `Agent` tool call,
- * which carries both `subagentType` and `spawnedAgentId`. A non-empty
- * envelope-provided `agentType` is never overwritten. Returns the same object
- * reference when no backfill applies.
+ * `backfillAgentId()`, so run that first). Recent Claude Code sends
+ * `agent_type` on the hook envelope itself, and a non-empty envelope value is
+ * never overwritten; this covers the records where the envelope left it out
+ * (as on the installs in #656). The map is filled from the subagent
+ * transcript's meta sidecar and from the parent's own `Agent` tool call (see
+ * `SubagentAttributionIndex`). Returns the same object reference when no
+ * backfill applies.
  */
 export function backfillAgentType(
   record: ToolCallRecord,
