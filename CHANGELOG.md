@@ -5,11 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.57.2] - 2026-09-30
+## [1.57.3] - 2026-10-01
 
 ### Fixed
 
 - A message that rules out an option and proposes another, such as "That approach won't work for X, let's use Y instead", no longer counts as a correction of the assistant, whether the proposal follows a comma, a period or a dash. "won't work" still counts when the message opens on it ("That won't work, ..."), when neither its sentence nor the next one proposes anything, or when either points back at the assistant's output ("your fix still won't work, let's go back"). Correction rate, the high-correction-rate recommendation, and the CLAUDE.md-change verdict were inflated by design discussion that used the phrase. Sessions recorded before this version keep their counts, so a CLAUDE.md before/after comparison that spans the upgrade can show a drop the edit didn't cause.
+
+## [1.57.2] - 2026-09-29
+
+### Fixed
+
+- Crossing a budget threshold no longer clears other local alerts that are still true. A firing `cost.window` rule reported "cleared" and could not fire again for its `deduplicateSeconds`, and a firing `budget.session` rule cleared whenever a daily or weekly threshold crossed. A budget-threshold crossing now evaluates only budget rules, and every other rule is left to the periodic alert check. When the cost trackers cannot be read, cost rules skip that check instead of reading $0.
 
 ## [1.57.1] - 2026-09-29
 
