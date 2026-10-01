@@ -1437,6 +1437,25 @@ describe('developer sanitization via loadMcpConfig()', () => {
     expect(config.repoUrl).toBe('https://gitlab.example.com/org/repo.git');
   });
 
+  it('strips a token from a git+https remote', () => {
+    // The `repository.url` shape in package.json. Only ssh-family schemes keep
+    // a userinfo login name; every other scheme loses the whole userinfo.
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_REPO_URL =
+      'git+https://opaquetoken123@gitlab.example.com/org/repo.git';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.repoUrl).toBe('git+https://gitlab.example.com/org/repo.git');
+  });
+
+  it('strips a password containing an unencoded slash', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_REPO_URL = 'https://user:pa/ss@github.com/acme/widgets.git';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.repoUrl).toBe('https://github.com/acme/widgets.git');
+  });
+
   it('repoUrl strips embedded credentials from an inferred git remote', () => {
     const origDir = process.cwd();
     // A dedicated mkdtemp dir, not the shared per-test `tmpDir`, since this

@@ -1,15 +1,20 @@
 /**
  * The one parser for git remote URLs (`git remote get-url origin` output).
  *
- * Every function here strips credentials before returning anything, so a
- * caller cannot put a token from a remote into a log line, an event field, a
- * persisted session summary, or a link. Credentials are removed from:
+ * Every function here strips these credentials before returning anything:
  *
- * - URL userinfo (`https://<token>@host/...`, `https://user:<token>@host/...`,
- *   `ssh://user:<password>@host/...`). For http(s) the whole userinfo goes,
- *   since hosts accept a token as the username. For ssh/git the password goes
- *   and the login name (usually `git`) stays.
+ * - URL userinfo. A login name is kept only where it is one by convention:
+ *   `ssh://`, `git+ssh://`, and `ssh+git://` (case-sensitively, as git matches
+ *   them) and scp-like `user@host:path`. There the name (usually `git`) stays
+ *   and any `:password` goes. Every other scheme loses its whole userinfo,
+ *   including `https://`, `git+https://`, and schemes not listed, since hosts
+ *   accept a token as the username. Outside `file://`, the userinfo runs to
+ *   the last `@` in the value, so an unencoded `@`, `/`, `?`, or `#` in a
+ *   password cannot push part of it into the host or path.
  * - Query strings and fragments (`...repo.git?token=...`).
+ *
+ * A credential anywhere else, such as a token used as a path segment, is not
+ * recognized here; `redactSensitive()` is the backstop for those.
  *
  * Accepted shapes: `https://`/`http://`, `ssh://` (with or without a port),
  * `git://`, `file://`, scp-like `[user@]host:owner/repo`, and local paths.
@@ -23,7 +28,7 @@ export interface ParsedGitRemote {
   readonly host: string | null;
   /** Port as written, or null. */
   readonly port: string | null;
-  /** ssh/scp login name (e.g. `git`). Always null for http(s), whose username may be a token. */
+  /** Login name (e.g. `git`) for ssh-family and scp remotes. Null for every other scheme, whose username may be a token. */
   readonly user: string | null;
   /** Repository path with no leading or trailing slashes and no `.git` suffix. */
   readonly path: string;
@@ -31,14 +36,22 @@ export interface ParsedGitRemote {
   readonly ownerRepo: string | null;
 }
 
-// scheme://[userinfo@]hostport[/path][?query][#fragment]. The userinfo group is
-// greedy up to the last `@` before the path, so an unencoded `@` inside a
-// password is still treated as userinfo rather than as part of the host.
-const URL_FORM_RE = /^([a-z][a-z0-9+.-]*):\/\/(?:([^/?#]*)@)?([^/?#]*)([^?#]*)/i;
-// [user@]host:path, git's scp-like syntax: a `:` that comes before any `/`.
-const SCP_FORM_RE = /^(?:([^/]*)@)?([^/:@]+):([^?#]*)/;
+// scheme://[userinfo@]hostport[/path][?query][#fragment]. The userinfo is
+// greedy up to the last `@` in the value. That over-strips a remote with an
+// `@` in its path or query, which no git host produces, rather than letting a
+// password containing `/`, `?`, or `#` split across the host and path.
+const URL_FORM_RE = /^([a-z][a-z0-9+.-]*):\/\/(?:([\s\S]*)@)?([^/?#]*)([^?#]*)/i;
+// In a file:// URL an `@` after the authority is part of a local path.
+const FILE_URL_RE = /^(file):\/\/(?:([^/?#]*)@)?([^/?#]*)([^?#]*)/i;
+// [user@]host:path, git's scp-like syntax: a `:` with no `/` before it. The
+// user runs to the last `@` that is followed by `host:`, for the same reason.
+const SCP_FORM_RE = /^(?=[^/]*:)(?:([\s\S]*)@)?([^/:@]+):([^?#]*)/;
+// `C:/repos/x` and `C:\repos\x` are Windows paths, not scp syntax.
+const DRIVE_PATH_RE = /^[a-z]:/i;
 const HOST_PORT_RE = /^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/;
 const HTTP_PROTOCOLS = new Set(['http', 'https']);
+/** Schemes, as written, whose userinfo is a login name. See the module doc. */
+const LOGIN_NAME_SCHEMES = new Set(['ssh', 'git+ssh', 'ssh+git']);
 /** Protocols whose host serves a browsable web UI at `https://<host>/<path>`. */
 const BROWSABLE_PROTOCOLS = new Set(['http', 'https', 'ssh', 'git+ssh', 'ssh+git', 'scp']);
 /** Relative-path segments, whitespace, and control characters never form a real owner or repo name. */
@@ -75,6 +88,31 @@ function loginName(userinfo: string | undefined): string | null {
   return name ? name : null;
 }
 
+interface UrlFormParts {
+  /** The scheme as written. */
+  readonly scheme: string;
+  /** The login name to keep, or null when the scheme's userinfo is dropped. */
+  readonly user: string | null;
+  readonly hostPort: string;
+  readonly path: string;
+}
+
+function matchUrlForm(value: string): UrlFormParts | null {
+  const url = FILE_URL_RE.exec(value) ?? URL_FORM_RE.exec(value);
+  if (!url) return null;
+  const scheme = url[1];
+  return {
+    scheme,
+    user: LOGIN_NAME_SCHEMES.has(scheme) ? loginName(url[2]) : null,
+    hostPort: url[3] ?? '',
+    path: url[4] ?? '',
+  };
+}
+
+function matchScpForm(value: string): RegExpExecArray | null {
+  return DRIVE_PATH_RE.test(value) ? null : SCP_FORM_RE.exec(value);
+}
+
 function build(
   protocol: string,
   host: string | null,
@@ -96,19 +134,17 @@ export function parseGitRemote(remote: string | null | undefined): ParsedGitRemo
   const trimmed = remote.trim();
   if (trimmed.length === 0) return null;
 
-  const url = URL_FORM_RE.exec(trimmed);
+  const url = matchUrlForm(trimmed);
   if (url) {
-    const protocol = url[1].toLowerCase();
-    const hostPort = HOST_PORT_RE.exec(url[3] ?? '');
+    const protocol = url.scheme.toLowerCase();
+    const hostPort = HOST_PORT_RE.exec(url.hostPort);
     const host = hostPort?.[1] ? hostPort[1] : null;
     const port = hostPort?.[2] ? hostPort[2] : null;
-    const user = HTTP_PROTOCOLS.has(protocol) ? null : loginName(url[2]);
-    return build(protocol, protocol === 'file' ? null : host, port, user, url[4] ?? '');
+    return build(protocol, protocol === 'file' ? null : host, port, url.user, url.path);
   }
 
-  // A single-letter "host" is a Windows drive (`C:/repos/x`), not scp syntax.
-  const scp = SCP_FORM_RE.exec(trimmed);
-  if (scp && scp[2].length > 1) {
+  const scp = matchScpForm(trimmed);
+  if (scp) {
     return build('scp', scp[2], null, loginName(scp[1]), scp[3]);
   }
 
@@ -152,15 +188,13 @@ export function stripRemoteCredentials(remote: string | null | undefined): strin
   const trimmed = remote.trim();
   if (trimmed.length === 0) return null;
 
-  const url = URL_FORM_RE.exec(trimmed);
+  const url = matchUrlForm(trimmed);
   if (url) {
-    const protocol = url[1].toLowerCase();
-    const user = HTTP_PROTOCOLS.has(protocol) ? null : loginName(url[2]);
-    return `${url[1]}://${user ? `${user}@` : ''}${url[3] ?? ''}${url[4] ?? ''}`;
+    return `${url.scheme}://${url.user ? `${url.user}@` : ''}${url.hostPort}${url.path}`;
   }
 
-  const scp = SCP_FORM_RE.exec(trimmed);
-  if (scp && scp[2].length > 1) {
+  const scp = matchScpForm(trimmed);
+  if (scp) {
     const user = loginName(scp[1]);
     return `${user ? `${user}@` : ''}${scp[2]}:${scp[3]}`;
   }

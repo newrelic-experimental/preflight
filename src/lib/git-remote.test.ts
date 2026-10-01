@@ -373,7 +373,7 @@ describe('shared parser', () => {
   });
 
   it('never returns a credential from any function', () => {
-    const secrets = ['ghp_secret', 'token', 'glpat-abc123', 'p@ss', 'abc?'];
+    const secrets = ['ghp_secret', 'token', 'glpat-abc123', 'p@ss'];
     for (const r of MATRIX) {
       const outputs = [
         repoNameFromRemote(r.remote),
@@ -387,6 +387,145 @@ describe('shared parser', () => {
         }
       }
     }
+  });
+});
+
+// [remote, stripRemoteCredentials output, secrets no function may return]
+const USERINFO_CASES: readonly (readonly [string, string, readonly string[]])[] = [
+  // Every scheme outside the ssh family loses its whole userinfo.
+  [
+    'git+https://opaquetoken123@gitlab.example.com/org/repo.git',
+    'git+https://gitlab.example.com/org/repo.git',
+    ['opaquetoken123'],
+  ],
+  [
+    'git+http://alice:hunter2@gitlab.example.com/org/repo.git',
+    'git+http://gitlab.example.com/org/repo.git',
+    ['alice', 'hunter2'],
+  ],
+  [
+    'HTTPS://opaquetoken123@github.com/acme/widgets.git',
+    'HTTPS://github.com/acme/widgets.git',
+    ['opaquetoken123'],
+  ],
+  [
+    'Git+Https://opaquetoken123@github.com/acme/widgets.git',
+    'Git+Https://github.com/acme/widgets.git',
+    ['opaquetoken123'],
+  ],
+  [
+    'htps://opaquetoken123@github.com/acme/widgets.git',
+    'htps://github.com/acme/widgets.git',
+    ['opaquetoken123'],
+  ],
+  [
+    'gitlab-ci://opaquetoken123@gitlab.example.com/org/repo.git',
+    'gitlab-ci://gitlab.example.com/org/repo.git',
+    ['opaquetoken123'],
+  ],
+  [
+    'git://opaquetoken123@git.example.com/org/repo.git',
+    'git://git.example.com/org/repo.git',
+    ['opaquetoken123'],
+  ],
+  ['file://opaquetoken123@nas/srv/org/repo.git', 'file://nas/srv/org/repo.git', ['opaquetoken123']],
+  // git matches `ssh` case-sensitively, so an uppercase scheme is not ssh.
+  [
+    'SSH://deploy:hunter2@ghe.example.com/acme/widgets.git',
+    'SSH://ghe.example.com/acme/widgets.git',
+    ['deploy', 'hunter2'],
+  ],
+  // An unencoded `/`, `?`, or `#` in the userinfo does not split it.
+  [
+    'https://alice:hun/ter2@github.com/acme/widgets.git',
+    'https://github.com/acme/widgets.git',
+    ['alice', 'hun', 'ter2'],
+  ],
+  [
+    'https://opaque/token123@github.com/acme/widgets.git',
+    'https://github.com/acme/widgets.git',
+    ['opaque', 'token123'],
+  ],
+  [
+    'https://alice:hun?ter2@github.com/acme/widgets.git',
+    'https://github.com/acme/widgets.git',
+    ['alice', 'hun', 'ter2'],
+  ],
+  [
+    'https://alice:hun#ter2@github.com/acme/widgets.git',
+    'https://github.com/acme/widgets.git',
+    ['alice', 'hun', 'ter2'],
+  ],
+  [
+    'git+https://alice:p@ss/w0rd@gitlab.example.com/org/repo.git',
+    'git+https://gitlab.example.com/org/repo.git',
+    ['alice', 'p@ss', 'w0rd'],
+  ],
+  // The ssh family and scp syntax keep the login name and drop the password.
+  [
+    'ssh://git:hunter2@ghe.example.com:2222/acme/widgets.git',
+    'ssh://git@ghe.example.com:2222/acme/widgets.git',
+    ['hunter2'],
+  ],
+  [
+    'git+ssh://git:hunter2@github.com/acme/widgets.git',
+    'git+ssh://git@github.com/acme/widgets.git',
+    ['hunter2'],
+  ],
+  ['ssh+git://git@github.com/acme/widgets.git', 'ssh+git://git@github.com/acme/widgets.git', []],
+  [
+    'ssh://git:hun/ter2@github.com/acme/widgets.git',
+    'ssh://git@github.com/acme/widgets.git',
+    ['hun', 'ter2'],
+  ],
+  [
+    'deploy:hun/ter2@github.com:acme/widgets.git',
+    'deploy@github.com:acme/widgets.git',
+    ['hun', 'ter2'],
+  ],
+  // An `@` in a local path is not userinfo.
+  ['file:///home/me/@work/repo.git', 'file:///home/me/@work/repo.git', []],
+  ['/home/me/@work/repo.git', '/home/me/@work/repo.git', []],
+  ['C:/repos/a@bb:c', 'C:/repos/a@bb:c', []],
+];
+
+describe('userinfo handling', () => {
+  it.each(USERINFO_CASES)('%s', (remote, stripped, secrets) => {
+    expect(stripRemoteCredentials(remote)).toBe(stripped);
+    const outputs = [
+      repoNameFromRemote(remote),
+      commitUrlFromRemote(remote, HASH),
+      stripRemoteCredentials(remote),
+      JSON.stringify(parseGitRemote(remote)),
+    ];
+    for (const out of outputs) {
+      for (const secret of secrets) expect(out ?? '').not.toContain(secret);
+    }
+  });
+
+  it('parses the host and path after a userinfo containing `/`', () => {
+    expect(parseGitRemote('https://alice:hun/ter2@github.com/acme/widgets.git')).toEqual({
+      protocol: 'https',
+      host: 'github.com',
+      port: null,
+      user: null,
+      path: 'acme/widgets',
+      ownerRepo: 'acme/widgets',
+    });
+    expect(commitUrlFromRemote('https://alice:hun/ter2@github.com/acme/widgets.git', HASH)).toBe(
+      commit(GH),
+    );
+  });
+
+  it('keeps no user for a git+https remote', () => {
+    expect(
+      parseGitRemote('git+https://opaquetoken123@gitlab.example.com/org/repo.git'),
+    ).toMatchObject({
+      protocol: 'git+https',
+      host: 'gitlab.example.com',
+      user: null,
+      ownerRepo: 'org/repo',
+    });
   });
 });
 
