@@ -172,9 +172,12 @@ for (const store of [
       test(`${view.nav} (${view.path})`, async ({ page }) => {
         const log = collectErrors(page);
         await page.goto('/');
+        // By the label span, like the drift test: Today's alert-count badge joins its
+        // button's accessible name, so a name match would miss Today once alerts fire.
         await page
           .getByRole('navigation')
-          .getByRole('button', { name: view.nav, exact: true })
+          .getByRole('button')
+          .filter({ has: page.getByText(view.nav, { exact: true }) })
           .click();
         await expectView(page, view);
         await page.reload();
