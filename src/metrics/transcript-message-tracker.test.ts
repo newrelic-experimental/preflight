@@ -182,6 +182,155 @@ describe('TranscriptMessageTracker', () => {
     expect(tracker.getMetrics().userCorrections).toBe(0);
   });
 
+  // #677: labeled corpus for the "won't work" clause. Corrections reject
+  // something the assistant already produced; design discussion rules out an
+  // option before anything was built and proposes the next one.
+  describe("won't work corpus (#677)", () => {
+    function countCorrections(text: string): number {
+      writeLines([userLine(text)]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      return tracker.getMetrics().userCorrections;
+    }
+
+    const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+
+    /** Every [clause, follow-up] pair runs under each joiner, so a verdict can't hinge on punctuation. */
+    const JOINERS: ReadonlyArray<(clause: string, followUp: string) => string> = [
+      (c, f) => `${c}, ${f}.`,
+      (c, f) => `${c}. ${capitalize(f)}.`,
+      (c, f) => `${c}; ${f}.`,
+      (c, f) => `${c} — ${f}.`,
+      (c, f) => `${c}\n${capitalize(f)}`,
+    ];
+
+    const punctuationVariants = (pairs: ReadonlyArray<readonly [string, string]>): string[] =>
+      pairs.flatMap(([clause, followUp]) => JOINERS.map((join) => join(clause, followUp)));
+
+    const WONT_WORK_CORRECTIONS = [
+      "That approach won't work because there's a race condition.",
+      "That won't work.",
+      "This still won't work.",
+      "Your fix won't work because the cache is never invalidated.",
+      "It won't work, the test still fails.",
+      "That wont work, you're reading the wrong file.",
+      'This still wont work — same error as before.',
+      "The change you made won't work since the handler is never registered.",
+      "It still won't work after your last edit.",
+      "That won't work, let's try again.",
+      "That won't work for empty arrays — the loop skips index 0.",
+      "Your version won't work for us, let's go back to the old one.",
+    ];
+
+    /** Corrections followed by a forward-looking cue, caught by a bare-pronoun opener or a reference to the assistant's output. */
+    const WONT_WORK_CORRECTIONS_WITH_PROPOSAL = punctuationVariants([
+      ["That won't work", "let's use a map instead"],
+      ["It won't work", 'we should await the promise'],
+      ["That won't work", 'we need to handle the null case'],
+      ["Your fix won't work because the cache is never invalidated", 'we should clear it on write'],
+      ["The change you made won't work on Windows", "let's revert it"],
+      ["The migration still won't work", "let's try a different approach"],
+      ["What you just wrote won't work for empty input", 'we need to guard the loop'],
+    ]);
+
+    /** Includes "still", "your", "fails" and "anymore" used about the option rather than the assistant's output. */
+    const WONT_WORK_DESIGN_DISCUSSION = punctuationVariants([
+      ["That approach won't work for X", "let's use Y instead"],
+      ["A cache won't work here since we need fresh reads", "let's query the DB directly"],
+      ["Polling won't work on Windows", 'so we should use fs.watch'],
+      ["Redis won't work for us", 'we could use SQLite instead'],
+      ["I think a regex won't work for nested brackets", "so let's write a small parser"],
+      ["A global lock won't work at scale", 'instead we should shard by key'],
+      ["Symlinks won't work on Windows", 'so we should copy the files'],
+      ["Webhooks won't work behind the firewall", "we'll need to poll instead"],
+      ["A cron job won't work because we need sub-minute latency", 'so we should use a queue'],
+      ["If we do it that way it won't work offline", "so let's cache the manifest"],
+      ["We still need fresh reads, so a cache won't work", "let's query the DB"],
+      ["Your proposal won't work here", 'instead we should shard by key'],
+      ["The retry won't work if the lookup fails", "so let's add a fallback"],
+      ["Redis won't work for us anymore", "let's use SQLite"],
+    ]);
+
+    // Known residuals, pinned to the current verdict so a rule change that
+    // fixes or reopens one shows up here.
+    const KNOWN_FALSE_POSITIVES = [
+      // Rules out an option without proposing one.
+      "That approach won't work for production.",
+      // A bare-pronoun opener may point at a proposal rather than code; the text can't tell which.
+      "It won't work on Windows, so we should use fs.watch.",
+      // The proposal is two sentences away, outside the one-sentence window.
+      "A cache won't work here. We need fresh reads. Let's query the DB.",
+    ];
+
+    const KNOWN_MISSES = [
+      // Names the rejected code with a noun phrase and proposes a fix: reads as design discussion.
+      "The null check won't work, we need to handle undefined too.",
+      // Curly apostrophe.
+      'That won’t work.',
+    ];
+
+    it.each([...WONT_WORK_CORRECTIONS, ...WONT_WORK_CORRECTIONS_WITH_PROPOSAL])(
+      'detects a correction for %j',
+      (text) => {
+        expect(countCorrections(text)).toBe(1);
+      },
+    );
+
+    it.each(WONT_WORK_DESIGN_DISCUSSION)('does not count %j as a correction', (text) => {
+      expect(countCorrections(text)).toBe(0);
+    });
+
+    it.each(KNOWN_FALSE_POSITIVES)('counts %j (known false positive)', (text) => {
+      expect(countCorrections(text)).toBe(1);
+    });
+
+    it.each(KNOWN_MISSES)('does not count %j (known miss)', (text) => {
+      expect(countCorrections(text)).toBe(0);
+    });
+
+    it('counts a bare "That won\'t work." opener when the next sentence adds a task', () => {
+      expect(countCorrections("That won't work. Let's also add a test for the empty case.")).toBe(
+        1,
+      );
+    });
+
+    it("lets a reference to the assistant's output in the next sentence override its forward cue", () => {
+      expect(
+        countCorrections(
+          "That approach won't work. Your migration drops the index, let's add it back.",
+        ),
+      ).toBe(1);
+    });
+
+    it('still counts a later correcting sentence when an earlier one is design discussion', () => {
+      expect(
+        countCorrections(
+          "Redis won't work for us, let's use SQLite. Also your migration still won't work.",
+        ),
+      ).toBe(1);
+    });
+
+    // Fake timers freeze Date.now(), so they can't time a regex. Each input is
+    // sized so a backtracking pattern takes seconds while the linear one takes
+    // about a millisecond, which keeps the budget far from the line.
+    it.each([
+      [
+        'repeated phrase with no punctuation',
+        `${"won't work ".repeat(5_000)}${'x '.repeat(50_000)}let's`,
+      ],
+      ['long run of sentence punctuation', `A cache won't work ${'.'.repeat(50_000)}x let's`],
+      ['long run of mixed punctuation', `A cache won't work ${'.!?'.repeat(20_000)}x let's`],
+    ])('stays fast on a long adversarial message: %s', (_label, text) => {
+      writeLines([userLine(text)]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      const start = Date.now();
+      tracker.refresh();
+      expect(Date.now() - start).toBeLessThan(1_000);
+    });
+  });
+
   it('only processes new lines across multiple refresh() calls (no double-counting)', () => {
     writeLines([userLine('first message')]);
     const tracker = new TranscriptMessageTracker();

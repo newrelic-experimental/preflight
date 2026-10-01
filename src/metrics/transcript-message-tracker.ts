@@ -66,7 +66,44 @@ const TARGETED_UNDO_RE = new RegExp(
 
 /** Correction phrasing that doesn't require a trigger word at the start of the message. */
 const EMBEDDED_CORRECTION_RE =
-  /\b(won'?t work|you (missed|forgot|broke)|that'?s (not (right|correct|what)|wrong|incorrect)|not what (i|you)'?d? (meant|asked|wanted|said)|this is the (\d+|second|third|fourth|fifth|\w+th) time)\b/i;
+  /\b(you (missed|forgot|broke)|that'?s (not (right|correct|what)|wrong|incorrect)|not what (i|you)'?d? (meant|asked|wanted|said)|this is the (\d+|second|third|fourth|fifth|\w+th) time)\b/i;
+
+const WONT_WORK_RE = /\bwon'?t work\b/i;
+
+/** A message that opens on a bare pronoun ("That won't work", "It still won't work, ...") names nothing of its own, so the pronoun points at the assistant's previous turn. A named option ("That approach won't work for X") is design discussion when a proposal follows. */
+const DEICTIC_WONT_WORK_RE = new RegExp(
+  `^${OPTIONAL_ACTUALLY}(that|this|it) (still )?won'?t work\\b`,
+  'i',
+);
+
+/** Proposing the next option ("..., let's use Y instead") marks design discussion rather than a rejection of the assistant's output. "because"/"since" are not signals either way: both forms give reasons. */
+const FORWARD_LOOKING_RE =
+  /\b(let'?s|let us|instead|we (should|could|can|need to|might|may)|we'?ll (need|have)|so we|should we|how about|what if|maybe we|i'?d (rather|prefer))\b/i;
+
+/** A reference attached to the assistant's output (a built artifact, a past action, or a repeat failure), which overrides a forward-looking cue. Ruling out a plan ("your proposal") is design discussion, and a bare "still"/"again"/"fails" describes the option as often as the output ("we still need fresh reads"), so neither counts. */
+const PAST_REFERENCE_RE =
+  /\b(your (last |latest |previous |recent |new )?(fix|change|edit|code|version|patch|implementation|update|commit|refactor|migration|test|script|function|query|solution)s?|you('?ve| have)? (just |already )?(wrote|written|added|made|changed|did|done|used|tried|broke|broken|removed|edited|updated|implemented)|still won'?t work)\b/i;
+
+/** Whitespace after sentence-ending punctuation, or a newline. The lookbehind keeps the split linear: a quantified punctuation run followed by a required character backtracks quadratically on a long run of dots. */
+const SENTENCE_SPLIT_RE = /(?<=[.!?])\s+|\n\s*/;
+
+/**
+ * "won't work" is a correction when the message opens on it with a bare pronoun, or when a sentence
+ * using it has no forward-looking cue in itself or the sentence after it, or when either of those
+ * sentences points back at the assistant's output. The one-sentence window makes "X won't work for Y.
+ * Let's use Z." read the same as the comma form.
+ */
+function hasWontWorkCorrection(text: string): boolean {
+  if (!WONT_WORK_RE.test(text)) return false;
+  if (DEICTIC_WONT_WORK_RE.test(text)) return true;
+  const sentences = text.split(SENTENCE_SPLIT_RE);
+  return sentences.some((sentence, i) => {
+    if (!WONT_WORK_RE.test(sentence)) return false;
+    const pair = [sentence, sentences[i + 1] ?? ''];
+    if (pair.some((s) => PAST_REFERENCE_RE.test(s))) return true;
+    return !pair.some((s) => FORWARD_LOOKING_RE.test(s));
+  });
+}
 
 function isCorrectionMessage(text: string): boolean {
   return (
@@ -75,7 +112,8 @@ function isCorrectionMessage(text: string): boolean {
     EXPLICIT_REJECTION_RE.test(text) ||
     LEADING_INTERJECTION_RE.test(text) ||
     TARGETED_UNDO_RE.test(text) ||
-    EMBEDDED_CORRECTION_RE.test(text)
+    EMBEDDED_CORRECTION_RE.test(text) ||
+    hasWontWorkCorrection(text)
   );
 }
 
