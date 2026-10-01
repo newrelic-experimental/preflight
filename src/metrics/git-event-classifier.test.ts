@@ -294,11 +294,11 @@ describe('classifyGitSegments error attribution', () => {
     );
 
   it('hands conflict text to the segment that can conflict, not a later push', () => {
-    expect(classify('git pull && git push', CONFLICT)).toEqual(['merge_conflict', 'push']);
+    expect(classify('git pull && git push', CONFLICT)).toEqual(['merge_conflict']);
   });
 
   it('keeps conflicted files on the segment the conflict is attributed to', () => {
-    const command = 'git merge feature && git push && gh pr create --fill';
+    const command = 'git merge feature; git push; gh pr create --fill';
     const events = classifyGitSegments(
       command,
       makeRecord({ command, success: false, error: CONFLICT }),
@@ -312,11 +312,11 @@ describe('classifyGitSegments error attribution', () => {
   it('attributes rebase conflict text to a pull --rebase before a push', () => {
     expect(
       classify('git pull --rebase && git push', 'error: rebase could not apply abc123'),
-    ).toEqual(['rebase_conflict', 'push']);
+    ).toEqual(['rebase_conflict']);
   });
 
   it('attributes push rejection text to the push, not a later git segment', () => {
-    expect(classify('git push && git status', REJECTED)).toEqual(['push_rejected', 'status']);
+    expect(classify('git push; git status', REJECTED)).toEqual(['push_rejected', 'status']);
   });
 
   it('leaves a git segment unattributed when a following gh command could own the error', () => {
@@ -345,5 +345,24 @@ describe('classifyGitSegments error attribution', () => {
     ]);
     // Single-segment behavior is unchanged, even for text no verb explains.
     expect(classify('git status', 'both modified:   a.ts')).toEqual(['merge_conflict']);
+  });
+
+  it('drops git segments that a failure earlier in an && chain kept from running', () => {
+    expect(classify('git pull && git push && git status', CONFLICT)).toEqual(['merge_conflict']);
+    // `||` and `;` run the next segment after a failure, so it is kept.
+    expect(classify('git pull && git push || git status', CONFLICT)).toEqual([
+      'merge_conflict',
+      'status',
+    ]);
+    expect(classify('git pull; git push', CONFLICT)).toEqual(['merge_conflict', 'push']);
+  });
+
+  it('keeps every segment of a chain that succeeded', () => {
+    const command = 'git pull && git push';
+    const events = classifyGitSegments(command, makeRecord({ command }), resolveRepo);
+    expect(events.map(({ event }) => [event.type, event.success])).toEqual([
+      ['pull', true],
+      ['push', true],
+    ]);
   });
 });

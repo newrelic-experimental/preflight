@@ -229,11 +229,23 @@ const GH_PR_VERB_ACTION: Record<string, PrEvent['action']> = {
   view: 'view',
 };
 
+const SHELL_OPERATOR_RE = /(\|\||&&|;|\||\n)/;
+
+/** A shell command's segments and the operators between them:
+ *  `operators[i]` joins `segments[i]` to `segments[i + 1]`. */
+function splitShellChain(command: string): { segments: string[]; operators: string[] } {
+  const parts = command.split(SHELL_OPERATOR_RE);
+  return {
+    segments: parts.filter((_, i) => i % 2 === 0),
+    operators: parts.filter((_, i) => i % 2 === 1),
+  };
+}
+
 /** Splits a shell command into its top-level segments on `||`, `&&`, `;`,
  *  `|`, and newline. Strip heredoc bodies first so a surviving newline really
  *  does start a new command. */
 export function splitShellSegments(command: string): string[] {
-  return command.split(/\|\||&&|;|\||\n/);
+  return splitShellChain(command).segments;
 }
 
 /** The PrEvent a `gh pr <verb>` segment denotes, or null when it is not one. */
@@ -280,29 +292,41 @@ function errorSegmentIndex(
   return lastGitIsFinal ? gitSegments.length - 1 : -1;
 }
 
+/** Index of the last segment that `&&` kept from running after segment
+ *  `failed` failed; `failed` itself when the next segment runs anyway. */
+function lastSkippedSegment(operators: readonly string[], failed: number): number {
+  let last = failed;
+  while (operators[last] === '&&') last++;
+  return last;
+}
+
 /**
  * Classifies every git segment of a heredoc-stripped shell command, so a
  * chained `git commit -m x && git push` yields a commit AND a push instead
  * of whichever verb `classifyGitCommand` ranks first.
  *
  * `record.error` goes to at most one segment (see `errorSegmentIndex`);
- * `record.success` is command-level and applies to every segment. The target
- * directory comes from the whole command, so a `cd dir &&` in an earlier
- * segment still attributes every git segment.
+ * `record.success` is command-level and applies to every segment. Segments
+ * that `&&` kept from running after that segment failed are dropped. The
+ * target directory comes from the whole command, so a `cd dir &&` in an
+ * earlier segment still attributes every git segment.
  */
 export function classifyGitSegments(
   command: string,
   record: ToolCallRecord,
   resolveRepo: (dir: string | null) => string | null,
 ): ClassifiedGitSegment[] {
-  const all = splitShellSegments(command);
+  const { segments: all, operators } = splitShellChain(command);
   const gitIndexes = all.flatMap((s, i) => (GIT_SEGMENT_RE.test(s) ? [i] : []));
   const segments = gitIndexes.map((i) => all[i]!);
   const lastGitIsFinal = all.slice((gitIndexes.at(-1) ?? 0) + 1).every((s) => s.trim() === '');
   const owner = errorSegmentIndex(segments, lastGitIsFinal, (record.error as string) ?? '');
+  const failedAt = !record.success && owner !== -1 ? gitIndexes[owner]! : -1;
+  const skippedThrough = failedAt === -1 ? -1 : lastSkippedSegment(operators, failedAt);
   const targetDir = gitCommandTargetDir(command, record.cwd as string | undefined);
-  return segments.map((segment, i) => {
+  return segments.flatMap((segment, i) => {
+    if (gitIndexes[i]! > failedAt && gitIndexes[i]! <= skippedThrough) return [];
     const forSegment = i === owner ? record : { ...record, error: undefined };
-    return { segment, event: classifyGitCommand(segment, forSegment, resolveRepo, targetDir) };
+    return [{ segment, event: classifyGitCommand(segment, forSegment, resolveRepo, targetDir) }];
   });
 }

@@ -1617,6 +1617,24 @@ describe('GitEfficiencyTracker', () => {
     });
   });
 
+  // The hook reports one success/error pair for a whole shell chain.
+  describe('chained commands', () => {
+    const CONFLICT = 'CONFLICT (content): Merge conflict in a.ts\nAutomatic merge failed';
+
+    it('does not record a push that a conflicting pull kept from running', () => {
+      tracker.recordToolCall(
+        makeRecord({ command: 'git pull && git push', success: false, error: CONFLICT }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.pushCount).toBe(0);
+      expect(metrics.mergeConflicts).toBe(1);
+      expect(metrics.velocityMetrics.buildBeforePush).toBeNull();
+      expect(metrics.bestPractices.find((p) => p.id === 'verify_before_push')?.detail).toBe(
+        'No pushes yet.',
+      );
+    });
+  });
+
   describe('velocity metrics', () => {
     it('computes avg/longest gap and detects a 3-commit burst', () => {
       const t = Date.now();

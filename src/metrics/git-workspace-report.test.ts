@@ -6,7 +6,7 @@ import {
   COMMIT_RECONCILE_WINDOW_MS,
   type WorktreeLiveState,
 } from './git-workspace-report.js';
-import { classifyGitCommand } from './git-event-classifier.js';
+import { classifyGitCommand, classifyGitSegments } from './git-event-classifier.js';
 import { GIT_LOG_SESSION_ID, type GitActivityRecord } from './git-activity-recorder.js';
 import type { WorktreeIdentity } from './git-workspace-identity.js';
 import type { ToolCallRecord } from '../storage/types.js';
@@ -55,6 +55,27 @@ function gitActivity(
     workspaceKey,
     sessionId: record.sessionId ?? 'unknown',
   };
+}
+
+/** One 'git' GitActivityRecord per segment of a chained command, built the
+ *  way GitActivityRecorder builds them. */
+function chainActivities(
+  command: string,
+  workspaceKey: string,
+  overrides: Partial<ToolCallRecord> = {},
+): GitActivityRecord[] {
+  const record = makeToolCallRecord({ command, ...overrides });
+  return classifyGitSegments(command, record, () => null).map(({ event }) => {
+    recordCounter++;
+    return {
+      kind: 'git',
+      gitEvent: event,
+      timestamp: record.timestamp,
+      recordId: `r-${recordCounter}`,
+      workspaceKey,
+      sessionId: record.sessionId ?? 'unknown',
+    };
+  });
 }
 
 /** Builds a hydrated-from-`git log` commit record, the shape
@@ -947,5 +968,21 @@ describe('computeWorkspaceMetrics — git-log hydrated commits', () => {
 
     expect(metrics.commitCount).toBe(1);
     expect(metrics.sessionIds).toEqual(['real-session']);
+  });
+});
+
+// Same scenarios as GitEfficiencyTracker's, so the session and weekly views agree.
+describe('computeWorkspaceMetrics — chained and failed git commands', () => {
+  const identity = makeIdentity();
+  const CONFLICT = 'CONFLICT (content): Merge conflict in a.ts';
+
+  it('does not record a push that a conflicting pull kept from running', () => {
+    const records = chainActivities('git pull && git push', 'ws-a', {
+      success: false,
+      error: CONFLICT,
+    });
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.pushCount).toBe(0);
+    expect(metrics.mergeConflicts).toBe(1);
   });
 });
