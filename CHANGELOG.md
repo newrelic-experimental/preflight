@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.57.5] - 2026-10-01
+
+### Fixed
+
+- **The Claude Code plugin captured only tool calls, so plugin installs lost permission, API failure, prompt, and session data.** `plugin/hooks/hooks.json` now registers every hook event that `preflight install` writes: `PermissionRequest`, `PermissionDenied`, `StopFailure`, `InstructionsLoaded`, `PostModelSwitch`, `SessionStart`, `UserPromptSubmit`, and `Stop`, alongside `PreToolUse` and `PostToolUse`. Each calls the bundled collector with the matching subcommand. A test compares the plugin manifest against the installer's hook entries, so the two cannot drift.
+
 ## [1.57.2] - 2026-09-29
 
 ### Fixed

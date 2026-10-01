@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import { generateHookEntries } from '../src/install/install-helper.js';
+
 const repoRoot = resolve(__dirname, '..');
 
 const packageJson: { version: string } = JSON.parse(
@@ -22,8 +24,13 @@ const mcpConfig: {
   mcpServers: Record<string, { command: string; args: string[] }>;
 } = JSON.parse(readFileSync(resolve(repoRoot, 'plugin/.mcp.json'), 'utf-8'));
 
+interface HookGroup {
+  matcher: string;
+  hooks: Array<{ type: string; command: string }>;
+}
+
 const hooksConfig: {
-  hooks: { PreToolUse: unknown[]; PostToolUse: unknown[] };
+  hooks: Record<string, HookGroup[]>;
 } = JSON.parse(readFileSync(resolve(repoRoot, 'plugin/hooks/hooks.json'), 'utf-8'));
 
 const kiroPluginManifest: { version: string } = JSON.parse(
@@ -58,6 +65,32 @@ describe('Claude Code plugin manifests', () => {
   it('hooks.json wires both PreToolUse and PostToolUse to the bundled collector', () => {
     expect(hooksConfig.hooks.PreToolUse.length).toBeGreaterThan(0);
     expect(hooksConfig.hooks.PostToolUse.length).toBeGreaterThan(0);
+  });
+
+  it('hooks.json wires the same events, matchers, and subcommands as preflight install', () => {
+    const shape = (entries: Record<string, HookGroup[]>) =>
+      Object.fromEntries(
+        Object.entries(entries)
+          .map(([event, groups]) => [
+            event,
+            groups.map((group) => ({
+              matcher: group.matcher,
+              subcommands: group.hooks.map((hook) => hook.command.trim().split(/\s+/).pop()),
+            })),
+          ])
+          .sort(([a], [b]) => String(a).localeCompare(String(b))),
+      );
+
+    expect(shape(hooksConfig.hooks)).toEqual(shape(generateHookEntries()));
+  });
+
+  it('every hooks.json command invokes the bundled collector', () => {
+    const commands = Object.values(hooksConfig.hooks).flatMap((groups) =>
+      groups.flatMap((group) => group.hooks.map((hook) => hook.command)),
+    );
+    for (const command of commands) {
+      expect(command).toContain('${CLAUDE_PLUGIN_ROOT}/.claude-plugin/scripts/collector-script.js');
+    }
   });
 
   it('the bundled hook collector script exists and is committed', () => {
