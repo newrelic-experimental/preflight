@@ -1619,7 +1619,102 @@ describe('GitEfficiencyTracker', () => {
 
   // The hook reports one success/error pair for a whole shell chain.
   describe('chained commands', () => {
+    const REJECTED =
+      ' ! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs';
     const CONFLICT = 'CONFLICT (content): Merge conflict in a.ts\nAutomatic merge failed';
+
+    it('counts a commit whose chained push was rejected', () => {
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m x && git push', success: false, error: REJECTED }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(1);
+      expect(metrics.riskIndicators.commitsSinceLastSync).toBe(1);
+      expect(metrics.riskIndicators.pushRejections).toBe(1);
+    });
+
+    it('counts a heredoc-message commit whose chained push was rejected', () => {
+      const command = 'git commit -m "$(cat <<\'EOF\'\nfix: thing\nEOF\n)" && git push';
+      tracker.recordToolCall(makeRecord({ command, success: false, error: REJECTED }));
+      expect(tracker.getMetrics().commitCount).toBe(1);
+    });
+
+    it('counts a commit whose chained gh pr create failed', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git commit -m x && gh pr create --fill',
+          success: false,
+          error: 'pull request create failed: GraphQL: No commits between main and feature',
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(1);
+      expect(metrics.prMetrics.created).toBe(0);
+    });
+
+    it('does not count a final commit that its own hook rejected', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git add -A && git commit -m x',
+          success: false,
+          error: 'husky - pre-commit script failed',
+        }),
+      );
+      expect(tracker.getMetrics().commitCount).toBe(0);
+    });
+
+    it('counts neither the commit nor the push when the commit had nothing to commit', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git add -A && git commit -m x && git push',
+          success: false,
+          error: 'nothing to commit, working tree clean',
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(0);
+      expect(metrics.pushCount).toBe(0);
+    });
+
+    it('resolves a conflict with a commit whose chained push was rejected', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({ command: 'git merge main', success: false, error: CONFLICT, timestamp: t }),
+      );
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git commit -m merge && git push',
+          success: false,
+          error: REJECTED,
+          timestamp: t + 10_000,
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['resolved']);
+      expect(metrics.conflictResolutionRate).toBe(1);
+    });
+
+    it('judges a later push against a commit whose chained push was rejected', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({ command: 'npm test', isTestCommand: true, timestamp: t }),
+      );
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git commit -m x && git push',
+          success: false,
+          error: REJECTED,
+          timestamp: t + 1_000,
+        }),
+      );
+      tracker.recordToolCall(makeRecord({ command: 'git push', timestamp: t + 2_000 }));
+      const metrics = tracker.getMetrics();
+      // The test ran before the commit, so it did not verify what was pushed.
+      expect(metrics.velocityMetrics.buildBeforePush).toBe(false);
+      expect(metrics.bestPractices.find((p) => p.id === 'verify_before_push')?.status).not.toBe(
+        'pass',
+      );
+    });
 
     it('does not record a push that a conflicting pull kept from running', () => {
       tracker.recordToolCall(

@@ -366,3 +366,53 @@ describe('classifyGitSegments error attribution', () => {
     ]);
   });
 });
+
+describe('classifyGitSegments per-segment outcome', () => {
+  const resolveRepo = (): string | null => null;
+  const REJECTED = ' ! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs';
+
+  // The hook reports one exit status for the whole chain, so only the
+  // segment the failure is attributed to inherits it.
+  const outcomes = (command: string, error: string): [string, boolean][] =>
+    classifyGitSegments(command, makeRecord({ command, success: false, error }), resolveRepo).map(
+      ({ event }) => [event.type, event.success],
+    );
+
+  it('marks a commit before a rejected push as succeeded', () => {
+    expect(outcomes('git commit -m x && git push', REJECTED)).toEqual([
+      ['commit', true],
+      ['push_rejected', false],
+    ]);
+  });
+
+  it('marks a commit before a failing gh step as succeeded', () => {
+    expect(
+      outcomes(
+        'git commit -m x && gh pr create --fill',
+        'pull request create failed: GraphQL: No commits between main and feature',
+      ),
+    ).toEqual([['commit', true]]);
+  });
+
+  it('marks a final commit failed when its own hook rejects it', () => {
+    expect(outcomes('git add -A && git commit -m x', 'husky - pre-commit script failed')).toEqual([
+      ['other_git', true],
+      ['commit', false],
+    ]);
+  });
+
+  it('attributes commit-failure text to the commit, not a later push', () => {
+    expect(
+      outcomes(
+        'git add -A && git commit -m x && git push',
+        'nothing to commit, working tree clean',
+      ),
+    ).toEqual([
+      ['other_git', true],
+      ['commit', false],
+    ]);
+    expect(
+      outcomes('git commit -m x && git push', 'husky - pre-commit script failed (code 1)'),
+    ).toEqual([['commit', false]]);
+  });
+});

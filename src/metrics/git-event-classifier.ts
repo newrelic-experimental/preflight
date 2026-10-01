@@ -49,6 +49,16 @@ const REJECT_INDICATORS = [
   /Updates were rejected/i,
 ];
 
+// What a failed `git commit` prints: its own refusals, or a hook failure
+// (husky prints "husky - pre-commit script failed (code 1)").
+const COMMIT_FAILURE_INDICATORS = [
+  /nothing to commit/i,
+  /no changes added to commit/i,
+  /Committing is not possible/i,
+  /Aborting commit/i,
+  /\b(?:pre-commit|commit-msg)\b.*\b(?:failed|exited)\b/i,
+];
+
 // Conflict file path extraction: "CONFLICT (content): Merge conflict in <path>"
 const CONFLICT_FILE_RE = /Merge conflict in (.+)/g;
 
@@ -77,6 +87,8 @@ export interface GitEvent {
   readonly timestamp: number;
   readonly type: GitEventType;
   readonly command?: string;
+  /** For one segment of a chained command, false only when the command's
+   *  failure is attributed to that segment (see `classifyGitSegments`). */
   readonly success: boolean;
   readonly durationMs: number | null;
   /** `owner/name` of the repo this event belongs to, when known. */
@@ -270,11 +282,12 @@ const GIT_CONFLICT_CAPABLE_RE =
  * Index of the git segment that `error` belongs to, or -1 when none does.
  *
  * The hook payload carries one error for the whole command, not one per
- * segment. Conflict and rejection text names the kind of git command that
- * printed it, so it goes to the last segment that can print it:
- * `git pull && git push` hands a conflict to the pull. Text no git segment
- * explains goes to the last git segment only when nothing runs after it; in
- * `git fetch && gh pr checkout 12` the text may be gh's, so no segment gets it.
+ * segment. Conflict, rejection, and commit-failure text names the kind of
+ * git command that printed it, so it goes to the last segment that can print
+ * it: `git pull && git push` hands a conflict to the pull. Text no git
+ * segment explains goes to the last git segment only when nothing runs after
+ * it; in `git fetch && gh pr checkout 12` the text may be gh's, so no segment
+ * gets it.
  */
 function errorSegmentIndex(
   gitSegments: readonly string[],
@@ -284,10 +297,12 @@ function errorSegmentIndex(
   const hasConflict =
     MERGE_CONFLICT_INDICATORS.some((re) => re.test(error)) || REBASE_CONFLICT_RE.test(error);
   const hasRejection = REJECT_INDICATORS.some((re) => re.test(error));
+  const hasCommitFailure = COMMIT_FAILURE_INDICATORS.some((re) => re.test(error));
   for (let i = gitSegments.length - 1; i >= 0; i--) {
     const segment = gitSegments[i]!;
     if (hasConflict && GIT_CONFLICT_CAPABLE_RE.test(segment)) return i;
     if (hasRejection && GIT_PUSH_RE.test(segment)) return i;
+    if (hasCommitFailure && GIT_COMMIT_RE.test(segment)) return i;
   }
   return lastGitIsFinal ? gitSegments.length - 1 : -1;
 }
@@ -305,11 +320,13 @@ function lastSkippedSegment(operators: readonly string[], failed: number): numbe
  * chained `git commit -m x && git push` yields a commit AND a push instead
  * of whichever verb `classifyGitCommand` ranks first.
  *
- * `record.error` goes to at most one segment (see `errorSegmentIndex`);
- * `record.success` is command-level and applies to every segment. Segments
- * that `&&` kept from running after that segment failed are dropped. The
- * target directory comes from the whole command, so a `cd dir &&` in an
- * earlier segment still attributes every git segment.
+ * The hook reports one success/error pair for the whole command. The error,
+ * and the failure with it, go to at most one segment (see
+ * `errorSegmentIndex`); every other segment that ran counts as succeeded, so
+ * a commit before a rejected push still counts. Segments that `&&` kept from
+ * running after the failure are dropped. The target directory comes from the
+ * whole command, so a `cd dir &&` in an earlier segment still attributes
+ * every git segment.
  */
 export function classifyGitSegments(
   command: string,
@@ -326,7 +343,7 @@ export function classifyGitSegments(
   const targetDir = gitCommandTargetDir(command, record.cwd as string | undefined);
   return segments.flatMap((segment, i) => {
     if (gitIndexes[i]! > failedAt && gitIndexes[i]! <= skippedThrough) return [];
-    const forSegment = i === owner ? record : { ...record, error: undefined };
+    const forSegment = i === owner ? record : { ...record, success: true, error: undefined };
     return [{ segment, event: classifyGitCommand(segment, forSegment, resolveRepo, targetDir) }];
   });
 }

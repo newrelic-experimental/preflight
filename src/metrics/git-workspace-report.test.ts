@@ -975,6 +975,36 @@ describe('computeWorkspaceMetrics — git-log hydrated commits', () => {
 describe('computeWorkspaceMetrics — chained and failed git commands', () => {
   const identity = makeIdentity();
   const CONFLICT = 'CONFLICT (content): Merge conflict in a.ts';
+  const REJECTED = ' ! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs';
+
+  it('does not let a failed commit resolve a pending conflict', () => {
+    const t = Date.now();
+    const records = [
+      gitActivity('git merge main', 'ws-a', { timestamp: t, success: false, error: CONFLICT }),
+      gitActivity('git commit -m "merge"', 'ws-a', {
+        timestamp: t + 1_000,
+        success: false,
+        error: 'error: Committing is not possible because you have unmerged files.',
+      }),
+    ];
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['pending']);
+  });
+
+  it('counts a commit whose chained push was rejected, and lets it resolve a conflict', () => {
+    const t = Date.now();
+    const records = [
+      gitActivity('git merge main', 'ws-a', { timestamp: t, success: false, error: CONFLICT }),
+      ...chainActivities('git commit -m merge && git push', 'ws-a', {
+        timestamp: t + 10_000,
+        success: false,
+        error: REJECTED,
+      }),
+    ];
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.commitCount).toBe(1);
+    expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['resolved']);
+  });
 
   it('does not record a push that a conflicting pull kept from running', () => {
     const records = chainActivities('git pull && git push', 'ws-a', {

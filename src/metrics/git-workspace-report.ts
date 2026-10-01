@@ -1062,6 +1062,8 @@ export function computeWorkspaceMetrics(
       }
 
       case 'commit': {
+        // A failed commit resolved nothing; see GitEfficiencyTracker.
+        if (!event.success) break;
         // git commit --amend fixes a prior commit, not a merge conflict —
         // drop the oldest pending conflict without recording a resolution.
         if (command.includes('--amend')) {
