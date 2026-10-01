@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.57.4] - 2026-10-01
+
+### Fixed
+
+- **Following the plugin's cloud-mode setup produced a server that would not start.** `docs/PLUGIN.md` now lists the three variables cloud mode needs, `NR_AI_MODE=cloud`, `NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_ACCOUNT_ID`, with a complete Claude Code `env` settings example. The account ID variable is `NEW_RELIC_ACCOUNT_ID`, the name config reads, on that page and in `smithery.yaml`.
+
 ## [1.57.2] - 2026-09-29
 
 ### Fixed
