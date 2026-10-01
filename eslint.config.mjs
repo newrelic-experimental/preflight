@@ -36,6 +36,14 @@ export default [
     },
   },
   {
+    // CLI scripts report to the terminal. The no-console rule protects the MCP server's
+    // stdout, which is its stdio transport; these never run as part of that process.
+    files: ['scripts/**/*.ts'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+  {
     files: ['**/*.tsx'],
     plugins: {
       react: reactPlugin,

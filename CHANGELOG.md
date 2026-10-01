@@ -5,12 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.57.2] - 2026-10-01
+## [1.57.3] - 2026-10-01
 
 ### Fixed
 
 - The per-session Git Efficiency view and the `ai.git.commit_count` gauge no longer count a commit that failed, such as one a pre-commit hook rejected, or an `--amend`, so they agree with the weekly/30-day panel. Expect the count to step down. A commit chained before a step that failed, such as `git commit -m x && git push` with a rejected push or `git commit -m x && gh pr create` where gh fails, still counts in both views and still resolves a pending merge conflict. A commit message that mentions `--amend` no longer reads as an amend.
 - Git error text in a chained command now goes to the step that printed it, not the last git step: in `git pull && git push`, a conflict belongs to the pull, and a rejection in `git push && git status` belongs to the push. A step that `&&` skipped after an earlier failure is no longer recorded, so a conflicting `git pull && git push` counts no push in `ai.git.push_count`, the build-before-push practice or the weekly panel.
+
+## [1.57.2] - 2026-09-29
+
+### Fixed
+
+- Crossing a budget threshold no longer clears other local alerts that are still true. A firing `cost.window` rule reported "cleared" and could not fire again for its `deduplicateSeconds`, and a firing `budget.session` rule cleared whenever a daily or weekly threshold crossed. A budget-threshold crossing now evaluates only budget rules, and every other rule is left to the periodic alert check. When the cost trackers cannot be read, cost rules skip that check instead of reading $0.
 
 ## [1.57.1] - 2026-09-29
 
