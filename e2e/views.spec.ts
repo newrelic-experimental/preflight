@@ -1,4 +1,4 @@
-import { test, expect, type Page, type Request } from '@playwright/test';
+import { test as base, expect, type Page, type Request } from '@playwright/test';
 
 import {
   FIXTURE_MODEL,
@@ -46,7 +46,8 @@ const SESSIONS_LIST = /^\/api\/sessions$/;
 const EXPECTED_ERROR_RESPONSES: readonly { readonly status: number; readonly path: RegExp }[] = [
   // Today's live tail selects the --local process's own synthetic session, which never has
   // replay data; the endpoint answers 404 no_replay_data and the view renders without it.
-  { status: 404, path: /^\/api\/sessions\/local-\d+\/replay$/ },
+  // Any id after the prefix, as isSyntheticSessionId() matches: not the timestamp it is today.
+  { status: 404, path: /^\/api\/sessions\/local-[^/]+\/replay$/ },
 ];
 
 interface ErrorLog {
@@ -138,6 +139,23 @@ function collectErrors(page: Page): ErrorLog {
   };
 }
 
+/**
+ * `log` collects from the start of the test. On a failure it is attached to the report, so
+ * a server error is named even when a locator times out before the test checks the log.
+ */
+const test = base.extend<{ log: ErrorLog }>({
+  log: async ({ page }, use, testInfo) => {
+    const log = collectErrors(page);
+    await use(log);
+    if (testInfo.status !== testInfo.expectedStatus && log.errors.length > 0) {
+      await testInfo.attach('collected errors', {
+        body: log.errors.join('\n'),
+        contentType: 'text/plain',
+      });
+    }
+  },
+});
+
 async function expectView(page: Page, view: ViewCase): Promise<void> {
   await expect(page).toHaveURL((url) => url.pathname === view.path);
   await expect(
@@ -169,8 +187,7 @@ for (const store of [
     test.use({ baseURL: store.url });
 
     for (const view of VIEWS) {
-      test(`${view.nav} (${view.path})`, async ({ page }) => {
-        const log = collectErrors(page);
+      test(`${view.nav} (${view.path})`, async ({ page, log }) => {
         await page.goto('/');
         // By the label span, like the drift test: Today's alert-count badge joins its
         // button's accessible name, so a name match would miss Today once alerts fire.
@@ -194,8 +211,7 @@ test.describe('empty store', () => {
   // Both empty states also render on a failed fetch, so each test checks for errors too;
   // otherwise a 500 from /api/sessions would satisfy it. History's also renders while
   // loading, so that test settles before asserting; Sessions shows a loading state instead.
-  test('Sessions shows its empty state', async ({ page }) => {
-    const log = collectErrors(page);
+  test('Sessions shows its empty state', async ({ page, log }) => {
     await page.goto('/sessions');
     await expect(page.getByText('No sessions yet')).toBeVisible();
     await expect(page.getByText(FIXTURE_SESSION_NAME)).toHaveCount(0);
@@ -203,8 +219,7 @@ test.describe('empty store', () => {
     expect(log.errors).toEqual([]);
   });
 
-  test('History shows its empty state', async ({ page }) => {
-    const log = collectErrors(page);
+  test('History shows its empty state', async ({ page, log }) => {
     await page.goto('/history');
     // Settle first: History renders both strings from `sessions.data ?? []` at first paint,
     // before /api/sessions answers, so asserting them earlier would pass on any store.
@@ -218,8 +233,7 @@ test.describe('empty store', () => {
 test.describe('store with one session', () => {
   test.use({ baseURL: SEEDED_URL });
 
-  test('Sessions lists it', async ({ page }) => {
-    const log = collectErrors(page);
+  test('Sessions lists it', async ({ page, log }) => {
     await page.goto('/sessions');
     await expect(
       page.getByRole('button', { name: new RegExp(FIXTURE_SESSION_NAME) }),
@@ -230,8 +244,7 @@ test.describe('store with one session', () => {
     expect(log.errors).toEqual([]);
   });
 
-  test('History counts it and breaks it out by model', async ({ page }) => {
-    const log = collectErrors(page);
+  test('History counts it and breaks it out by model', async ({ page, log }) => {
     await page.goto('/history');
     await expect(page.getByText('1 sessions', { exact: true })).toBeVisible();
     await expect(page.getByRole('cell', { name: FIXTURE_MODEL })).toBeVisible();
