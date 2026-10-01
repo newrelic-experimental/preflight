@@ -1,3 +1,4 @@
+import { normalizeAgentType } from '../lib/agent-id.js';
 import { BoundedMap } from '../lib/bounded-map.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import { backfillAgentId, backfillAgentType } from './agent-partition.js';
@@ -71,12 +72,17 @@ export class SubagentAttributionIndex {
     });
   }
 
-  /** Learns a subagent's type from the parent's `Agent` tool call; ignores every other record. */
+  /**
+   * Learns a subagent's type from the parent's `Agent` tool call; ignores every
+   * other record. `subagentType` is `tool_input.subagent_type` read straight
+   * off a `buffer.jsonl` line, so it passes the same `normalizeAgentType()`
+   * check as the sidecar type before it can be backfilled onto audit records.
+   */
   recordAgentToolCall(record: ToolCallRecord): void {
     if (record.toolName !== 'Agent') return;
     const spawnedAgentId =
       typeof record.spawnedAgentId === 'string' ? record.spawnedAgentId : undefined;
-    const subagentType = typeof record.subagentType === 'string' ? record.subagentType : undefined;
+    const subagentType = normalizeAgentType(record.subagentType);
     if (spawnedAgentId && subagentType) {
       this.agentTypeByAgentId.set(spawnedAgentId, subagentType);
     }

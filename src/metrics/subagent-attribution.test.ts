@@ -1,5 +1,6 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { SubagentAttributionIndex } from './subagent-attribution.js';
+import { MAX_AGENT_TYPE_LENGTH } from '../lib/agent-id.js';
 import { AuditTrailManager } from '../security/audit-trail.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
@@ -61,6 +62,18 @@ describe('SubagentAttributionIndex', () => {
     index.recordSubagentType('agent-b', '');
 
     expect(index.size.subagents).toBe(0);
+  });
+
+  it("drops an Agent call's subagentType that is oversized or contains a control character", () => {
+    const index = new SubagentAttributionIndex();
+    index.recordAgentToolCall(makeAgentCall('agent-long', 'x'.repeat(MAX_AGENT_TYPE_LENGTH + 1)));
+    index.recordAgentToolCall(makeAgentCall('agent-ctl', 'Explore\nInjected'));
+    index.recordSubagentToolUses('agent-long', ['toolu_long']);
+
+    expect(index.agentTypeFor('agent-long')).toBeUndefined();
+    expect(index.agentTypeFor('agent-ctl')).toBeUndefined();
+    expect(index.size.subagents).toBe(0);
+    expect(index.backfill(makeRecord({ toolUseId: 'toolu_long' })).agentType).toBeUndefined();
   });
 
   it('ignores non-Agent records and Agent records missing either signal', () => {
