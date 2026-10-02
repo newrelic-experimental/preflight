@@ -359,14 +359,13 @@ interface HookInput {
   error?: string;
   is_interrupt?: boolean;
   // Claude Code's docs (code.claude.com/docs/en/hooks.md) document agent_id
-  // as present on every hook event fired inside a subagent call (agent_type
-  // similarly), but empirically this never populates in production —
-  // confirmed via a live dogfooding check on Claude Code v2.1.236 with a real
-  // subagent spawn. Still parsed here (harmless if Claude Code ever starts
-  // sending it), but ToolCallRecord.agentId's real source is now the
-  // toolUseId join in agent-partition.ts's backfillAgentId — see its doc
-  // comment. Left in place rather than removed: a future Claude Code release
-  // fixing this on their end would need zero changes here to start working.
+  // as present on every hook event fired inside a subagent call, and
+  // agent_type there too plus on parent calls when the session runs with
+  // --agent. A live dogfooding check on Claude Code v2.1.236 with a real
+  // subagent spawn found neither (#656); later installs do send agent_type.
+  // Whichever is absent is backfilled downstream (backfillAgentId /
+  // backfillAgentType in agent-partition.ts), which never overwrites a value
+  // parsed here.
   agent_id?: string;
   agent_type?: string;
   // PostToolUse/PostToolUseFailure (code.claude.com/docs/en/hooks.md): tool
