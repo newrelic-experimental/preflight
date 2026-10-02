@@ -281,6 +281,23 @@ export function segmentSuccessFollowsCommand(command: string, index: number): bo
   return pipelineStart === 0 || operators[pipelineStart - 1] !== '||';
 }
 
+// `cd [dir]` opening a segment, including as a subshell's first command.
+const CD_SEGMENT_RE = /^[\s(]*cd(?:\s+(?:"([^"]*)"|'([^']*)'|([^\s)]+)))?(?=[\s;)]|$)/;
+const GH_REPO_ASSIGNMENT_RE = /(?:^|\s)GH_REPO=/;
+
+/** The directory a segment's leading `cd` moves to: `''` for a bare `cd`
+ *  (which goes home), null when the segment does not start with one. */
+export function cdSegmentTarget(segment: string): string | null {
+  const match = CD_SEGMENT_RE.exec(segment);
+  return match ? (match[1] ?? match[2] ?? match[3] ?? '') : null;
+}
+
+/** True when a segment assigns `GH_REPO`, which can point the gh calls after
+ *  it at another repo. */
+export function segmentAssignsGhRepo(segment: string): boolean {
+  return GH_REPO_ASSIGNMENT_RE.test(segment);
+}
+
 export interface ClassifiedGitSegment {
   readonly segment: string;
   readonly event: GitEvent;

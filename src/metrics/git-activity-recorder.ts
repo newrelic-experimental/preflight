@@ -1,11 +1,15 @@
+import { resolve as resolvePath } from 'node:path';
+
 import type { ToolCallRecord } from '../storage/types.js';
 import type { KeyedRecord } from './git-activity-store.js';
 import { ActivityStore } from './git-activity-store.js';
 import {
+  cdSegmentTarget,
   classifyGitSegments,
   ghPrMergeTogglesAuto,
   ghSegmentOverridesRepo,
   processGhCommand,
+  segmentAssignsGhRepo,
   segmentSuccessFollowsCommand,
   splitShellSegments,
   type GitEvent,
@@ -146,15 +150,20 @@ export class GitActivityRecorder {
       ) {
         continue;
       }
-      // The activity is keyed to the cwd's repo, so a number aimed at another
-      // repo is dropped rather than matched there. `gh pr create` takes no
-      // number; the one it opened comes from its output.
+      // The activity is keyed to the cwd's repo, so a number that may belong
+      // to another repo is dropped. `gh pr create` takes no number; the one
+      // it opened comes from its output.
       const captured =
         parsed.action === 'create' && soleCreate ? record.createdPrNumber : undefined;
       const number = parsed.prNumber ?? captured ?? null;
       const prEvent = {
         ...parsed,
-        prNumber: ghSegmentOverridesRepo(segment) ? null : number,
+        prNumber:
+          number === null ||
+          ghSegmentOverridesRepo(segment) ||
+          segments.slice(0, i).some((earlier) => this.mayLeaveCwdRepo(earlier.trim(), cwd))
+            ? null
+            : number,
       };
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',
@@ -185,6 +194,18 @@ export class GitActivityRecorder {
 
   private ingestActivity(activity: GitActivityRecord): void {
     this.store.ingest(activity);
+  }
+
+  /** True when `segment`, run before a gh call, may have pointed that call
+   *  at a repo other than the cwd's: it assigns `GH_REPO`, or it is a `cd`
+   *  that can't be shown to stay in the cwd's repo. */
+  private mayLeaveCwdRepo(segment: string, cwd: string | undefined): boolean {
+    if (segmentAssignsGhRepo(segment)) return true;
+    const dir = cdSegmentTarget(segment);
+    if (dir === null) return false;
+    if (!cwd || dir === '') return true;
+    const cwdRepo = this.identityResolver.resolve(cwd)?.repoKey;
+    return !cwdRepo || this.identityResolver.resolve(resolvePath(cwd, dir))?.repoKey !== cwdRepo;
   }
 
   private resolveWorkspaceKey(cwd: string | undefined): string {

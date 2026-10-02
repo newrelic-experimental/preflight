@@ -1,5 +1,5 @@
-import { join } from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncOptions,
@@ -702,6 +702,64 @@ describe('GitActivityRecorder', () => {
         }),
       );
       expect(prEvents()).toContainEqual({ action: 'create', prNumber: '42' });
+    });
+
+    describe('a cd or GH_REPO earlier in the command', () => {
+      let otherRepo: string;
+
+      beforeEach(() => {
+        otherRepo = mkdtempSync(join('/tmp', 'git-activity-other-'));
+        spawnSync('git', ['init'], { cwd: otherRepo, stdio: 'ignore' });
+        mkdirSync(join(repoDir, 'sub'));
+      });
+
+      afterEach(() => {
+        rmSync(otherRepo, { recursive: true, force: true });
+      });
+
+      it.each([
+        ['an absolute cd into another repo', () => `cd ${otherRepo} && gh pr merge 12`],
+        ['a relative cd into another repo', () => `cd ../${basename(otherRepo)} && gh pr merge 12`],
+        ['a cd in a subshell', () => `(cd "${otherRepo}" && gh pr merge 12)`],
+        ['a cd that cannot be resolved', () => 'cd "$OTHER" && gh pr merge 12'],
+        ['a bare cd', () => 'cd; gh pr merge 12'],
+        ['an exported GH_REPO', () => 'export GH_REPO=acme/other; gh pr merge 12'],
+        ['a GH_REPO assignment', () => 'GH_REPO=acme/other\ngh pr merge 12'],
+      ])('keeps the merge after %s but drops its number', (_label, command) => {
+        recorder.recordToolCall(makeRecord({ command: command(), cwd: repoDir }));
+        expect(merges()).toEqual([{ action: 'merge', prNumber: null }]);
+      });
+
+      it('drops the captured create number after a cd into another repo', () => {
+        recorder.recordToolCall(
+          makeRecord({
+            command: `cd ${otherRepo} && gh pr create --fill`,
+            cwd: repoDir,
+            createdPrNumber: '42',
+          }),
+        );
+        expect(prEvents()).toEqual([{ action: 'create', prNumber: null }]);
+      });
+
+      it.each([
+        ['into the same repo', () => `cd ${repoDir} && gh pr merge 12`],
+        ['into a subdirectory of the same repo', () => 'cd sub && gh pr merge 12'],
+      ])('keeps the number after a cd %s', (_label, command) => {
+        recorder.recordToolCall(makeRecord({ command: command(), cwd: repoDir }));
+        expect(merges()).toEqual([{ action: 'merge', prNumber: '12' }]);
+      });
+
+      it('drops the number after a cd when the cwd is unknown', () => {
+        recorder.recordToolCall(makeRecord({ command: `cd ${repoDir} && gh pr merge 12` }));
+        expect(merges()).toEqual([{ action: 'merge', prNumber: null }]);
+      });
+
+      it('keeps the number when the cd comes after the gh segment', () => {
+        recorder.recordToolCall(
+          makeRecord({ command: `gh pr merge 12 && cd ${otherRepo}`, cwd: repoDir }),
+        );
+        expect(merges()).toEqual([{ action: 'merge', prNumber: '12' }]);
+      });
     });
   });
 
