@@ -564,6 +564,82 @@ describe('CostTracker', () => {
     });
   });
 
+  describe('unpricedByModel', () => {
+    it('counts calls and tokens for a model with no price, across repeated records', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 100, outputTokens: 50, totalTokens: 150 }),
+        'claude-foo-9-9',
+      );
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 10, cacheReadTokens: 5, totalTokens: 15 }),
+        'claude-foo-9-9',
+      );
+      expect(tracker.getMetrics().unpricedByModel['claude-foo-9-9']).toEqual({
+        calls: 2,
+        tokens: 165,
+      });
+    });
+
+    it('also counts a late-arrival event for an unpriced model', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 100, totalTokens: 100 }),
+        'claude-foo-9-9',
+        { timestampMs: Date.now() - 72 * 60 * 60 * 1000 },
+      );
+      expect(tracker.getMetrics().unpricedByModel['claude-foo-9-9']).toEqual({
+        calls: 1,
+        tokens: 100,
+      });
+    });
+
+    it('is empty for a priced model', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 100, outputTokens: 50, totalTokens: 150 }),
+        'claude-sonnet-5',
+      );
+      expect(tracker.getMetrics().unpricedByModel).toEqual({});
+    });
+
+    it('does not count an unpriced call that carries no tokens', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(makeUsage(), 'claude-foo-9-9');
+      expect(tracker.getMetrics().unpricedByModel).toEqual({});
+    });
+
+    it('returns a fresh record each call', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(makeUsage({ inputTokens: 1, totalTokens: 1 }), 'claude-foo-9-9');
+      const first = tracker.getMetrics().unpricedByModel;
+      tracker.recordTokenUsage(makeUsage({ inputTokens: 1, totalTokens: 1 }), 'claude-foo-9-9');
+      expect(first['claude-foo-9-9']?.calls).toBe(1);
+    });
+
+    it('reset() clears it', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(makeUsage({ inputTokens: 1, totalTokens: 1 }), 'claude-foo-9-9');
+      tracker.reset('s');
+      expect(tracker.getMetrics().unpricedByModel).toEqual({});
+    });
+
+    it('emits ai.cost.unpriced_calls per model with a model attribute', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(makeUsage({ inputTokens: 1, totalTokens: 1 }), 'claude-foo-9-9');
+      tracker.recordTokenUsage(makeUsage({ inputTokens: 1, totalTokens: 1 }), 'claude-foo-9-9');
+      tracker.recordTokenUsage(makeUsage({ inputTokens: 1, totalTokens: 1 }), 'claude-sonnet-5');
+      const aggregator = new MetricAggregator();
+      tracker.emitMetrics(aggregator);
+      const unpriced = aggregator
+        .harvest(60_000)
+        .filter((m) => m.name === 'ai.cost.unpriced_calls');
+      expect(unpriced).toHaveLength(1);
+      expect(unpriced[0]?.attributes?.model).toBe('claude-foo-9-9');
+      expect(JSON.stringify(unpriced[0])).toContain('2');
+    });
+  });
+
   describe('emitMetrics()', () => {
     it('records expected metric names to aggregator', () => {
       const tracker = new CostTracker();
@@ -1467,6 +1543,24 @@ describe('seedFromPersisted()', () => {
     expect(metrics.totalCacheCreationTokens).toBe(3_409_635);
     expect(metrics.costByModel['claude-sonnet-5']).toBeCloseTo(56.02, 4);
     expect(tracker.getCostForDay(localDateKey())).toBeCloseTo(56.02, 4);
+  });
+
+  it('seeds unpricedByModel additively on top of live counts', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(makeUsage({ inputTokens: 10, totalTokens: 10 }), 'claude-foo-9-9');
+    tracker.seedFromPersisted(
+      makeSeed({
+        totalInputTokens: 500,
+        unpricedByModel: {
+          'claude-foo-9-9': { calls: 3, tokens: 400 },
+          'claude-bar-1': { calls: 1, tokens: 100 },
+        },
+      }),
+    );
+    expect(tracker.getMetrics().unpricedByModel).toEqual({
+      'claude-foo-9-9': { calls: 4, tokens: 410 },
+      'claude-bar-1': { calls: 1, tokens: 100 },
+    });
   });
 
   it('adds on top of totals already recorded by this process, rather than overwriting', () => {

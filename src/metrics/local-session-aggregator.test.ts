@@ -180,6 +180,22 @@ describe('LocalSessionAggregator', () => {
     expect(summary?.model).toBe('claude-opus-4.8');
   });
 
+  it('counts unpriced-model calls on the session that made them', () => {
+    const other = 'b0000000-0000-4000-8000-000000000000';
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
+    agg.recordToolCall({ sessionId: other, toolName: 'read_file', timestamp: 1 });
+    agg.recordTokenUsage(REAL_ID, { model: 'claude-foo-9-9', inputTokens: 100, outputTokens: 20 });
+    agg.recordTokenUsage(REAL_ID, { model: 'claude-foo-9-9', inputTokens: 30 });
+    agg.recordTokenUsage(other, { costUsd: 0.01, model: 'claude-sonnet-5', inputTokens: 100 });
+
+    const byId = new Map(summariesOf(agg).map((s) => [s.sessionId, s]));
+    expect(byId.get(REAL_ID)?.unpricedByModel).toEqual({
+      'claude-foo-9-9': { calls: 2, tokens: 150 },
+    });
+    expect(byId.get(other)?.unpricedByModel).toBeUndefined();
+  });
+
   it('leaves model null when a session spans several models', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });

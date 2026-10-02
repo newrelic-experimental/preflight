@@ -944,6 +944,7 @@ describe('buildSessionSummary', () => {
         reportCount: 3,
         estimationCount: 0,
         latestCostBreakdown: null,
+        unpricedByModel: { 'claude-foo-9-9': { calls: 2, tokens: 30 } },
       }),
     };
 
@@ -1028,6 +1029,7 @@ describe('buildSessionSummary', () => {
     expect(summary.sessionId).toBe('test-session');
     expect(summary.developer).toBe('alice');
     expect(summary.model).toBe('claude-opus-4-20250514');
+    expect(summary.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 2, tokens: 30 } });
     expect(summary.toolCallCount).toBe(15);
     expect(summary.toolBreakdown).toEqual({ Read: 5, Edit: 7, Bash: 3 });
     expect(summary.filesRead).toEqual(['/src/a.ts', '/src/b.ts', '/src/c.ts']);
@@ -1539,6 +1541,35 @@ describe('buildSessionSummary', () => {
     expect(merged.subagentCostByDayUsd).toBeUndefined();
   });
 
+  it('mergeSummaries takes the per-model max of unpriced calls and tokens', () => {
+    const existing = makeSummary({
+      unpricedByModel: { a: { calls: 3, tokens: 100 }, b: { calls: 1, tokens: 10 } },
+    });
+    const incoming = makeSummary({
+      unpricedByModel: { a: { calls: 2, tokens: 400 }, c: { calls: 7, tokens: 70 } },
+    });
+    expect(mergeSummaries(existing, incoming).unpricedByModel).toEqual({
+      a: { calls: 3, tokens: 400 },
+      b: { calls: 1, tokens: 10 },
+      c: { calls: 7, tokens: 70 },
+    });
+  });
+
+  it('mergeSummaries leaves unpricedByModel undefined when neither side has it', () => {
+    const merged = mergeSummaries(makeSummary(), makeSummary());
+    expect(merged.unpricedByModel).toBeUndefined();
+  });
+
+  it('mergeSummaries keeps unpricedByModel when only one side has it', () => {
+    const only = { a: { calls: 1, tokens: 2 } };
+    expect(
+      mergeSummaries(makeSummary({ unpricedByModel: only }), makeSummary()).unpricedByModel,
+    ).toEqual(only);
+    expect(
+      mergeSummaries(makeSummary(), makeSummary({ unpricedByModel: only })).unpricedByModel,
+    ).toEqual(only);
+  });
+
   it('mergeSummaries unions timeline entries from both sides instead of keeping only the longer array', () => {
     // Simulates a Claude Code --stdio resume: the old process's on-disk
     // timeline is longer than what the new process has accumulated so far,
@@ -1694,6 +1725,7 @@ describe('buildSessionSummary', () => {
       costByWorkflowRunId: {},
       costByDayUsd: {},
       subagentCostByDayUsd: {},
+      unpricedByModel: {},
       subagentByAgentType: {},
       highContextCostUsd: 0,
       apiDurationMs: null,
@@ -1736,6 +1768,7 @@ describe('buildSessionSummary', () => {
       costByWorkflowRunId: { wf_test_run: { '2026-08-14': 0.05 } },
       costByDayUsd: { '2026-08-14': 0.05 },
       subagentCostByDayUsd: {},
+      unpricedByModel: {},
       subagentByAgentType: {},
       highContextCostUsd: 0,
       apiDurationMs: null,
@@ -1960,6 +1993,46 @@ describe('buildSessionSummary', () => {
     };
     const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
     expect(result.costByDayUsd).toBeUndefined();
+  });
+
+  it('deserializeFullSessionSummary keeps valid unpricedByModel entries and drops malformed ones', () => {
+    const raw = {
+      sessionId: 'sess-unpriced',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+      unpricedByModel: {
+        good: { calls: 2, tokens: 300 },
+        negative: { calls: -1, tokens: 5 },
+        negativeTokens: { calls: 1, tokens: -5 },
+        notFinite: { calls: null, tokens: 5 },
+        missingTokens: { calls: 1 },
+        notAnObject: 'nope',
+        arrayEntry: [1, 2],
+      },
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.unpricedByModel).toEqual({ good: { calls: 2, tokens: 300 } });
+  });
+
+  it('deserializeFullSessionSummary yields undefined unpricedByModel when absent, an array, or nothing valid', () => {
+    const base = {
+      sessionId: 'sess-unpriced-2',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+    };
+    for (const unpricedByModel of [undefined, [1], 'x', { bad: { calls: -1, tokens: 1 } }]) {
+      const result = deserializeFullSessionSummary({
+        ...base,
+        unpricedByModel,
+      } as unknown as Record<string, unknown>);
+      expect(result.unpricedByModel).toBeUndefined();
+    }
   });
 
   it('deserializeFullSessionSummary drops non-numeric values inside costByWorkflowRunId rather than throwing', () => {
@@ -3370,6 +3443,7 @@ describe('attribution field', () => {
         },
         highContextCostUsd: 0.75,
         apiDurationMs: 12_000,
+        unpricedByModel: {},
       }),
     } as unknown as CostTracker;
 
