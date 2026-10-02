@@ -393,6 +393,20 @@ describe('parseToolSpecificFields', () => {
       expect(fields.command).toBe('npm test');
     });
 
+    it('carries the created PR number through, and drops a non-numeric one', () => {
+      const cmd = { command: 'gh pr create --fill' };
+      expect(parseToolSpecificFields('Bash', cmd, { createdPrNumber: '42' }).createdPrNumber).toBe(
+        '42',
+      );
+      expect(
+        parseToolSpecificFields('Bash', cmd, { createdPrNumber: '4x' }).createdPrNumber,
+      ).toBeUndefined();
+      expect(
+        parseToolSpecificFields('mcp__github__create_pull_request', {}, { createdPrNumber: '57' })
+          .createdPrNumber,
+      ).toBe('57');
+    });
+
     it('extracts non-zero exitCode', () => {
       const fields = parseToolSpecificFields('Bash', { command: 'false' }, { exitCode: 1 });
       expect(fields.exitCode).toBe(1);

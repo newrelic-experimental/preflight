@@ -1,5 +1,5 @@
-import { join } from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncOptions,
@@ -293,6 +293,26 @@ describe('GitActivityRecorder', () => {
       expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('create');
     });
 
+    it('uses the PR number captured from the output as the create event prNumber', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'gh pr create --fill', cwd: repoDir, createdPrNumber: '42' }),
+      );
+      recorder.recordToolCall(
+        makeRecord({
+          id: 'mcp',
+          toolUseId: 'tool-2',
+          toolName: 'create_pull_request',
+          cwd: repoDir,
+          createdPrNumber: '57',
+        }),
+      );
+
+      const numbers = store
+        .query({ since: 0, until: Date.now() + 1000 })
+        .map((r) => (r.kind === 'pr' ? r.prEvent.prNumber : undefined));
+      expect(numbers.sort()).toEqual(['42', '57']);
+    });
+
     it('records gh pr merge command as PR activity', () => {
       const record = makeRecord({
         command: 'gh pr merge 123',
@@ -514,13 +534,66 @@ describe('GitActivityRecorder', () => {
       expect(prRecords()).toHaveLength(0);
     });
 
-    it('still counts a failed gh pr merge — a non-create verb stays real even on failure', () => {
+    it('does not count a failed gh pr merge as a merge', () => {
       recorder.recordToolCall(
         makeRecord({ command: 'gh pr merge 5', cwd: repoDir, success: false }),
       );
+      expect(prRecords()).toHaveLength(0);
+    });
+
+    it('still counts a failed gh pr checks — a verb that changes nothing stays real on failure', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'gh pr checks 5', cwd: repoDir, success: false }),
+      );
+      const results = prRecords();
+      expect(results).toHaveLength(1);
+      expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('checks');
+      expect(results[0].kind === 'pr' && results[0].prEvent.prNumber).toBe('5');
+    });
+
+    it.each(['gh pr merge 5 --auto --squash', 'gh pr merge 5 --disable-auto'])(
+      'does not count `%s`, which only toggles auto-merge, as a merge',
+      (command) => {
+        recorder.recordToolCall(makeRecord({ command, cwd: repoDir }));
+        expect(prRecords()).toHaveLength(0);
+      },
+    );
+
+    it.each([
+      'gh pr merge 5 -R acme/other',
+      'gh pr merge 5 -Racme/other',
+      'gh pr merge 5 -dR acme/other',
+      'gh pr merge 5 --repo acme/other',
+      'gh pr merge 5 --repo=acme/other',
+      'GH_REPO=acme/other gh pr merge 5',
+    ])('keeps `%s` as a merge but drops a number aimed at another repo', (command) => {
+      recorder.recordToolCall(makeRecord({ command, cwd: repoDir }));
       const results = prRecords();
       expect(results).toHaveLength(1);
       expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('merge');
+      expect(results[0].kind === 'pr' && results[0].prEvent.prNumber).toBeNull();
+    });
+
+    it('does not attach the captured number to a gh pr create aimed at another repo', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: 'gh pr create --fill -R acme/other',
+          cwd: repoDir,
+          createdPrNumber: '42',
+        }),
+      );
+      const results = prRecords();
+      expect(results).toHaveLength(1);
+      expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('create');
+      expect(results[0].kind === 'pr' && results[0].prEvent.prNumber).toBeNull();
+    });
+
+    it('keeps the number of a merge with unrelated flags', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'gh pr merge 5 --rebase -d --admin', cwd: repoDir }),
+      );
+      const results = prRecords();
+      expect(results).toHaveLength(1);
       expect(results[0].kind === 'pr' && results[0].prEvent.prNumber).toBe('5');
     });
 
@@ -570,6 +643,123 @@ describe('GitActivityRecorder', () => {
       const results = prRecords();
       expect(results).toHaveLength(1);
       expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('create');
+    });
+  });
+
+  describe('gh pr merge and create inside compound commands', () => {
+    const prEvents = () =>
+      store
+        .query({ since: 0, until: 10000 })
+        .flatMap((r) => (r.kind === 'pr' ? [r.prEvent] : []))
+        .map(({ action, prNumber }) => ({ action, prNumber }));
+    const merges = () => prEvents().filter((e) => e.action === 'merge');
+
+    it.each([
+      'gh pr merge 42 --squash 2>&1 | tail -5',
+      'gh pr merge 42 --squash || echo "merge failed"',
+      'gh pr merge 42 --squash; echo done',
+      'gh pr merge 42 --squash\necho done',
+      'gh pr merge 42 --squash && echo ok || echo failed',
+      'gh pr view 42 --json state | grep -q MERGED || gh pr merge 42',
+    ])('drops `%s`: the command can succeed while the merge failed or never ran', (command) => {
+      recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
+      expect(merges()).toEqual([]);
+    });
+
+    it.each([
+      'gh pr merge 42 --squash',
+      'gh pr merge 42 --squash;',
+      'git fetch && gh pr merge 42 --squash',
+      'gh pr view 42 | cat; gh pr merge 42 --squash',
+      'gh pr merge 42 --squash && git checkout main && git pull',
+      'gh pr merge 42 --squash && git pull 2>&1 | tail -3',
+    ])('counts `%s`, whose success means the merge succeeded', (command) => {
+      recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
+      expect(merges()).toEqual([{ action: 'merge', prNumber: '42' }]);
+    });
+
+    it('gives no number to either create when one command opens two PRs', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command:
+            'gh pr create --base main --fill && git checkout part-2 && gh pr create --base part-1 --fill',
+          cwd: repoDir,
+          createdPrNumber: '42',
+        }),
+      );
+      expect(prEvents()).toEqual([
+        { action: 'create', prNumber: null },
+        { action: 'create', prNumber: null },
+      ]);
+    });
+
+    it('keeps the captured number when one create shares a command with other gh verbs', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: 'gh pr create --fill && gh pr view --web',
+          cwd: repoDir,
+          createdPrNumber: '42',
+        }),
+      );
+      expect(prEvents()).toContainEqual({ action: 'create', prNumber: '42' });
+    });
+
+    describe('a cd or GH_REPO earlier in the command', () => {
+      let otherRepo: string;
+
+      beforeEach(() => {
+        otherRepo = mkdtempSync(join('/tmp', 'git-activity-other-'));
+        spawnSync('git', ['init'], { cwd: otherRepo, stdio: 'ignore' });
+        mkdirSync(join(repoDir, 'sub'));
+      });
+
+      afterEach(() => {
+        rmSync(otherRepo, { recursive: true, force: true });
+      });
+
+      it.each([
+        ['an absolute cd into another repo', () => `cd ${otherRepo} && gh pr merge 12`],
+        ['a relative cd into another repo', () => `cd ../${basename(otherRepo)} && gh pr merge 12`],
+        ['a cd in a subshell', () => `(cd "${otherRepo}" && gh pr merge 12)`],
+        ['a cd that cannot be resolved', () => 'cd "$OTHER" && gh pr merge 12'],
+        ['a bare cd', () => 'cd; gh pr merge 12'],
+        ['an exported GH_REPO', () => 'export GH_REPO=acme/other; gh pr merge 12'],
+        ['a GH_REPO assignment', () => 'GH_REPO=acme/other\ngh pr merge 12'],
+      ])('keeps the merge after %s but drops its number', (_label, command) => {
+        recorder.recordToolCall(makeRecord({ command: command(), cwd: repoDir }));
+        expect(merges()).toEqual([{ action: 'merge', prNumber: null }]);
+      });
+
+      it('drops the captured create number after a cd into another repo', () => {
+        recorder.recordToolCall(
+          makeRecord({
+            command: `cd ${otherRepo} && gh pr create --fill`,
+            cwd: repoDir,
+            createdPrNumber: '42',
+          }),
+        );
+        expect(prEvents()).toEqual([{ action: 'create', prNumber: null }]);
+      });
+
+      it.each([
+        ['into the same repo', () => `cd ${repoDir} && gh pr merge 12`],
+        ['into a subdirectory of the same repo', () => 'cd sub && gh pr merge 12'],
+      ])('keeps the number after a cd %s', (_label, command) => {
+        recorder.recordToolCall(makeRecord({ command: command(), cwd: repoDir }));
+        expect(merges()).toEqual([{ action: 'merge', prNumber: '12' }]);
+      });
+
+      it('drops the number after a cd when the cwd is unknown', () => {
+        recorder.recordToolCall(makeRecord({ command: `cd ${repoDir} && gh pr merge 12` }));
+        expect(merges()).toEqual([{ action: 'merge', prNumber: null }]);
+      });
+
+      it('keeps the number when the cd comes after the gh segment', () => {
+        recorder.recordToolCall(
+          makeRecord({ command: `gh pr merge 12 && cd ${otherRepo}`, cwd: repoDir }),
+        );
+        expect(merges()).toEqual([{ action: 'merge', prNumber: '12' }]);
+      });
     });
   });
 

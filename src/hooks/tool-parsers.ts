@@ -266,6 +266,15 @@ export function parseToolSpecificFields(
     if (outputParser && output !== null && output !== undefined && typeof output === 'object') {
       Object.assign(fields, outputParser(output as Record<string, unknown>));
     }
+    // Set by the collector for `gh pr create` and MCP create_pull_request, so
+    // it is tool-name independent here.
+    const createdPrNumber =
+      output !== null && typeof output === 'object'
+        ? (output as Record<string, unknown>).createdPrNumber
+        : undefined;
+    if (typeof createdPrNumber === 'string' && /^\d{1,9}$/.test(createdPrNumber)) {
+      fields.createdPrNumber = createdPrNumber;
+    }
 
     return fields;
   } catch {

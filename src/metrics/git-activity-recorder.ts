@@ -1,9 +1,16 @@
+import { resolve as resolvePath } from 'node:path';
+
 import type { ToolCallRecord } from '../storage/types.js';
 import type { KeyedRecord } from './git-activity-store.js';
 import { ActivityStore } from './git-activity-store.js';
 import {
+  cdSegmentTarget,
   classifyGitSegments,
+  ghPrMergeTogglesAuto,
+  ghSegmentOverridesRepo,
   processGhCommand,
+  segmentAssignsGhRepo,
+  segmentSuccessFollowsCommand,
   splitShellSegments,
   type GitEvent,
 } from './git-event-classifier.js';
@@ -101,7 +108,11 @@ export class GitActivityRecorder {
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',
         kind: 'pr',
-        prEvent: { timestamp: record.timestamp, action: mcpPrAction, prNumber: null },
+        prEvent: {
+          timestamp: record.timestamp,
+          action: mcpPrAction,
+          prNumber: mcpPrAction === 'create' ? (record.createdPrNumber ?? null) : null,
+        },
         timestamp: record.timestamp,
         recordId: this.makeRecordId(record, 'pr-mcp'),
         workspaceKey: this.resolveWorkspaceKey(cwd),
@@ -118,13 +129,42 @@ export class GitActivityRecorder {
     // Track GitHub CLI PR commands. Each segment is checked on its own — a
     // `gh` invocation can be chained before or after a `git` command, or
     // follow a heredoc script on its own newline-separated segment.
+    const ghEvents = segments.map((segment) => processGhCommand(segment.trim(), record.timestamp));
+    // The PR URL in the output belongs to a create only when there is one.
+    const soleCreate = ghEvents.filter((event) => event?.action === 'create').length === 1;
     for (let i = 0; i < segments.length; i++) {
-      const prEvent = processGhCommand(segments[i].trim(), record.timestamp);
-      if (!prEvent) continue;
-      // A failed `gh pr create` made no PR — nothing to count. Every other
-      // verb stays real even on failure: `gh pr checks` exits non-zero when
-      // checks are failing, and that's still a genuine checks view.
-      if (prEvent.action === 'create' && record.success === false) continue;
+      const segment = segments[i].trim();
+      const parsed = ghEvents[i];
+      if (!parsed) continue;
+      // A failed `gh pr create` made no PR and a failed `gh pr merge` merged
+      // nothing, so neither counts; nor does a merge that only toggles
+      // auto-merge, or one whose outcome the command's exit status doesn't
+      // show (`gh pr merge 5 | tail`). Every other verb stays real even on
+      // failure: `gh pr checks` exits non-zero when checks are failing, and
+      // that's still a genuine checks view.
+      const changesPr = parsed.action === 'create' || parsed.action === 'merge';
+      if (changesPr && record.success === false) continue;
+      if (
+        parsed.action === 'merge' &&
+        (ghPrMergeTogglesAuto(segment) || !segmentSuccessFollowsCommand(command, i))
+      ) {
+        continue;
+      }
+      // The activity is keyed to the cwd's repo, so a number that may belong
+      // to another repo is dropped. `gh pr create` takes no number; the one
+      // it opened comes from its output.
+      const captured =
+        parsed.action === 'create' && soleCreate ? record.createdPrNumber : undefined;
+      const number = parsed.prNumber ?? captured ?? null;
+      const prEvent = {
+        ...parsed,
+        prNumber:
+          number === null ||
+          ghSegmentOverridesRepo(segment) ||
+          segments.slice(0, i).some((earlier) => this.mayLeaveCwdRepo(earlier.trim(), cwd))
+            ? null
+            : number,
+      };
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',
         kind: 'pr',
@@ -154,6 +194,18 @@ export class GitActivityRecorder {
 
   private ingestActivity(activity: GitActivityRecord): void {
     this.store.ingest(activity);
+  }
+
+  /** True when `segment`, run before a gh call, may have pointed that call
+   *  at a repo other than the cwd's: it assigns `GH_REPO`, or it is a `cd`
+   *  that can't be shown to stay in the cwd's repo. */
+  private mayLeaveCwdRepo(segment: string, cwd: string | undefined): boolean {
+    if (segmentAssignsGhRepo(segment)) return true;
+    const dir = cdSegmentTarget(segment);
+    if (dir === null) return false;
+    if (!cwd || dir === '') return true;
+    const cwdRepo = this.identityResolver.resolve(cwd)?.repoKey;
+    return !cwdRepo || this.identityResolver.resolve(resolvePath(cwd, dir))?.repoKey !== cwdRepo;
   }
 
   private resolveWorkspaceKey(cwd: string | undefined): string {

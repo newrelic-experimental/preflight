@@ -235,6 +235,69 @@ export function processGhCommand(command: string, timestamp: number): PrEvent | 
   return { timestamp, action, prNumber: match[2] ?? null };
 }
 
+// `-R`/`--repo` and a `GH_REPO=` prefix point gh at a repo other than the
+// cwd's. Any short-flag cluster holding an `R` (`-dR`) counts too, which errs
+// toward treating the segment as aimed elsewhere.
+const GH_REPO_OVERRIDE_RE = /(?:^|\s)(?:-[A-Za-z]*R|--repo(?=[\s=]|$)|GH_REPO=)/;
+
+// `--auto` queues a merge until its requirements pass and `--disable-auto`
+// cancels one, so neither merged anything when it ran.
+const GH_PR_AUTO_MERGE_RE = /(?:^|\s)--(?:auto|disable-auto)(?=[\s=]|$)/;
+
+/** True when a `gh` segment names its repo explicitly, so a PR number in it
+ *  may belong to a repo other than the cwd's. */
+export function ghSegmentOverridesRepo(segment: string): boolean {
+  return GH_REPO_OVERRIDE_RE.test(segment);
+}
+
+/** True when a `gh pr merge` segment only enables or disables auto-merge. */
+export function ghPrMergeTogglesAuto(segment: string): boolean {
+  return GH_PR_AUTO_MERGE_RE.test(segment);
+}
+
+// The `splitShellSegments` separators, captured: odd entries of a split are
+// the operators, and `operators[i]` joins segment `i` to segment `i + 1`.
+const SHELL_SEPARATOR_RE = /(\|\||&&|;|\||\n)/;
+
+/**
+ * True when the command succeeding means its segment `index` (as numbered by
+ * `splitShellSegments`) ran and succeeded. A hook reports one exit status for
+ * the whole command, so that holds only when the segment's own status
+ * decides it: the segment is not piped into anything, is not the fallback of
+ * a `||`, and nothing follows it except `&&` steps, which run only if it
+ * succeeded. A trailing `;` or newline runs nothing more and is ignored.
+ */
+export function segmentSuccessFollowsCommand(command: string, index: number): boolean {
+  const parts = command.split(SHELL_SEPARATOR_RE);
+  const operators = parts.filter((_, i) => i % 2 === 1);
+  let lastRun = operators.length;
+  while (lastRun > index && parts[2 * lastRun].trim() === '') lastRun--;
+  for (let j = index; j < lastRun; j++) {
+    // `&& x | y` is one `&&` step.
+    if (operators[j] !== '&&' && (operators[j] !== '|' || j === index)) return false;
+  }
+  let pipelineStart = index;
+  while (pipelineStart > 0 && operators[pipelineStart - 1] === '|') pipelineStart--;
+  return pipelineStart === 0 || operators[pipelineStart - 1] !== '||';
+}
+
+// `cd [dir]` opening a segment, including as a subshell's first command.
+const CD_SEGMENT_RE = /^[\s(]*cd(?:\s+(?:"([^"]*)"|'([^']*)'|([^\s)]+)))?(?=[\s;)]|$)/;
+const GH_REPO_ASSIGNMENT_RE = /(?:^|\s)GH_REPO=/;
+
+/** The directory a segment's leading `cd` moves to: `''` for a bare `cd`
+ *  (which goes home), null when the segment does not start with one. */
+export function cdSegmentTarget(segment: string): string | null {
+  const match = CD_SEGMENT_RE.exec(segment);
+  return match ? (match[1] ?? match[2] ?? match[3] ?? '') : null;
+}
+
+/** True when a segment assigns `GH_REPO`, which can point the gh calls after
+ *  it at another repo. */
+export function segmentAssignsGhRepo(segment: string): boolean {
+  return GH_REPO_ASSIGNMENT_RE.test(segment);
+}
+
 export interface ClassifiedGitSegment {
   readonly segment: string;
   readonly event: GitEvent;
