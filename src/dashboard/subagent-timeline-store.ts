@@ -35,12 +35,13 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { calculateCost, createLogger, type TokenUsage } from '../shared/index.js';
+import { createLogger, type TokenUsage } from '../shared/index.js';
 import { AGENT_ID_RE } from '../lib/agent-id.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
 import { findWorkflowScriptPath, WorkflowStore } from './workflow-store.js';
 import { parseWorkflowScript, type DeclaredTopology } from '../hooks/workflow-script-parser.js';
 import type { RawTranscriptEntry, RawAssistantMessage } from '../lib/transcript-types.js';
+import { priceUsage } from '../metrics/model-pricing.js';
 
 const logger = createLogger('subagent-timeline-store');
 
@@ -935,17 +936,13 @@ function parseAssistantTurn(line: string): AssistantTurn | null {
 }
 
 /**
- * Compute per-agent USD via the shared pricing table. `calculateCost` returns
- * an all-zero breakdown for unknown models (it never returns null), so we treat
- * a `totalUsd` of 0 with no real spend as "unknown / unpriced" → null, matching
- * how CostTracker reports unknown models. A genuinely zero-token agent (no
+ * Per-agent USD, or null when the model is unpriced. A zero-token agent (no
  * billable usage) also yields null, which is the honest answer.
  */
 function computeUsd(usage: TokenUsage, model: string): number | null {
   if (model.length === 0) return null;
-  const breakdown = calculateCost(model, usage);
-  if (breakdown.totalUsd > 0) return breakdown.totalUsd;
-  return null;
+  const { resolution, breakdown } = priceUsage(model, usage);
+  return resolution.kind === 'priced' && breakdown.totalUsd > 0 ? breakdown.totalUsd : null;
 }
 
 // ---------------------------------------------------------------------------
