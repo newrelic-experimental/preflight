@@ -41,7 +41,7 @@ export interface ParsedGitRemote {
   readonly user: string | null;
   /** Repository path with no leading or trailing slashes and no `.git` suffix. */
   readonly path: string;
-  /** `owner/name`: the last two path segments. Null when the path has fewer than two. */
+  /** `owner/name`: the last two path segments, or `host/name` when a remote with a host has a one-segment path. Null otherwise. */
   readonly ownerRepo: string | null;
 }
 
@@ -86,10 +86,14 @@ function normalizePath(rawPath: string): string {
     .replace(/\/+$/, '');
 }
 
-function ownerRepoOf(path: string): string | null {
+function ownerRepoOf(host: string | null, path: string): string | null {
+  // A null name matches every repo in GitEfficiencyTracker.replayTimeline(),
+  // so a one-segment remote (Gerrit, cgit, gitolite) takes its host as owner.
   const segments = path.split('/').filter((s) => s.length > 0);
-  if (segments.length < 2) return null;
-  const pair = segments.slice(-2);
+  let pair: string[];
+  if (segments.length >= 2) pair = segments.slice(-2);
+  else if (host && segments.length === 1) pair = [host, segments[0]];
+  else return null;
   if (!pair.every(isValidSegment)) return null;
   return pair.join('/');
 }
@@ -138,7 +142,7 @@ function build(
   rawPath: string,
 ): ParsedGitRemote {
   const path = normalizePath(rawPath);
-  return { protocol, host, port, user, path, ownerRepo: ownerRepoOf(path) };
+  return { protocol, host, port, user, path, ownerRepo: ownerRepoOf(host, path) };
 }
 
 /**

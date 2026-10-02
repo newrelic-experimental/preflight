@@ -210,6 +210,17 @@ const MATRIX: readonly Row[] = [
   ),
   row('../widgets', [null, null, null, '../widgets'], [null, null, '../widgets']),
   row('', [null, null, null, null], [null, null, null]),
+  // One path segment: the host stands in for the owner.
+  row(
+    'https://github.com/widgets',
+    [
+      'github.com/widgets',
+      'github.com/widgets',
+      commit('github.com/widgets'),
+      'https://github.com/widgets',
+    ],
+    ['github.com/widgets', commit('github.com/widgets'), 'https://github.com/widgets'],
+  ),
   // A userless ssh or scp remote gets no link.
   row(
     'ssh://github.com/acme/widgets.git',
@@ -251,7 +262,7 @@ const MATRIX: readonly Row[] = [
       commit('github.com/widgets'),
       'https://ghp_secret@github.com/widgets.git',
     ],
-    [null, commit('github.com/widgets'), 'https://github.com/widgets.git'],
+    ['github.com/widgets', commit('github.com/widgets'), 'https://github.com/widgets.git'],
   ),
   row(
     'https://user:p@ss@github.com/acme/widgets.git',
@@ -281,7 +292,7 @@ const MATRIX: readonly Row[] = [
       commit('github.com/widgets'),
       'ssh://git@github.com/widgets.git',
     ],
-    [null, commit('github.com/widgets'), 'ssh://git@github.com/widgets.git'],
+    ['github.com/widgets', commit('github.com/widgets'), 'ssh://git@github.com/widgets.git'],
   ),
   // Remote-helper remotes (`<transport>::<address>`).
   row(
@@ -306,16 +317,6 @@ const MATRIX: readonly Row[] = [
   ),
 
   // CHANGED: shapes the old parsers got wrong.
-  row(
-    'https://github.com/widgets',
-    [
-      'github.com/widgets',
-      'github.com/widgets',
-      commit('github.com/widgets'),
-      'https://github.com/widgets',
-    ],
-    [null, commit('github.com/widgets'), 'https://github.com/widgets'],
-  ),
   row(
     'https://github.com/acme/widgets/',
     [null, null, commit('github.com/acme/widgets/'), 'https://github.com/acme/widgets/'],
@@ -350,6 +351,15 @@ const MATRIX: readonly Row[] = [
       'ssh://git@github.com:22/acme/widgets.git',
     ],
     ['acme/widgets', commit(GH), 'ssh://git@github.com:22/acme/widgets.git'],
+  ),
+  row(
+    'git@git.example.com:widgets.git',
+    [null, null, commit('git.example.com/widgets'), 'git@git.example.com:widgets.git'],
+    [
+      'git.example.com/widgets',
+      commit('git.example.com/widgets'),
+      'git@git.example.com:widgets.git',
+    ],
   ),
   // CHANGED for config.ts's projectId only: its `[\w.-]` class rejected these.
   row(
