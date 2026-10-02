@@ -83,7 +83,7 @@ export class SubagentAttributionIndex {
     const spawnedAgentId =
       typeof record.spawnedAgentId === 'string' ? record.spawnedAgentId : undefined;
     const subagentType = normalizeAgentType(record.subagentType);
-    if (spawnedAgentId && subagentType) {
+    if (spawnedAgentId && subagentType && !this.agentTypeByAgentId.has(spawnedAgentId)) {
       this.agentTypeByAgentId.set(spawnedAgentId, subagentType);
     }
   }

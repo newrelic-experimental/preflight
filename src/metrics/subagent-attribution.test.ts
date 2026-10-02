@@ -146,6 +146,17 @@ describe('SubagentAttributionIndex', () => {
     expect(result.agentType).toBe('claude');
   });
 
+  it("prefers the transcript-metadata type over the parent's Agent call, in either order", () => {
+    const index = new SubagentAttributionIndex();
+    index.recordSubagentType('agent-sidecar-first', 'Explore');
+    index.recordAgentToolCall(makeAgentCall('agent-sidecar-first', 'general-purpose'));
+    index.recordAgentToolCall(makeAgentCall('agent-call-first', 'general-purpose'));
+    index.recordSubagentType('agent-call-first', 'Explore');
+
+    expect(index.agentTypeFor('agent-sidecar-first')).toBe('Explore');
+    expect(index.agentTypeFor('agent-call-first')).toBe('Explore');
+  });
+
   it('returns the same record reference when nothing applies', () => {
     const index = new SubagentAttributionIndex();
     const record = makeRecord();
