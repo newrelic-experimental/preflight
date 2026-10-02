@@ -37,6 +37,7 @@ beforeEach(() => {
   delete process.env.NEW_RELIC_HOST;
   delete process.env.NEW_RELIC_AI_MCP_PROXY_UPSTREAMS;
   delete process.env.NEW_RELIC_AI_HIGH_SECURITY;
+  delete process.env.NEW_RELIC_AI_PRICING_REFRESH;
   delete process.env.NEW_RELIC_AI_MODEL;
   delete process.env.NEW_RELIC_AI_SESSION_BUDGET_USD;
   delete process.env.NEW_RELIC_AI_DAILY_BUDGET_USD;
@@ -562,6 +563,37 @@ describe('loadMcpConfig()', () => {
     const configPath = writeConfigFile({});
     const config = loadMcpConfig({ config: configPath });
     expect(config.highSecurity).toBe(false);
+  });
+
+  it('pricingRefresh defaults to true', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.pricingRefresh).toBe(true);
+  });
+
+  it('pricingRefresh env var false disables it', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_PRICING_REFRESH = 'false';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.pricingRefresh).toBe(false);
+  });
+
+  it('pricingRefresh config-file key is honoured', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const config = loadMcpConfig({ config: writeConfigFile({ pricingRefresh: false }) });
+    expect(config.pricingRefresh).toBe(false);
+  });
+
+  it('highSecurity forces pricingRefresh off even when env var says true', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_HIGH_SECURITY = 'true';
+    process.env.NEW_RELIC_AI_PRICING_REFRESH = 'true';
+    const config = loadMcpConfig({ config: writeConfigFile({ pricingRefresh: true }) });
+    expect(config.pricingRefresh).toBe(false);
   });
 
   it('highSecurity=true set via env var', () => {

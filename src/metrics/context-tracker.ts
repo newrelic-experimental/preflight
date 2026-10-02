@@ -1,4 +1,4 @@
-import { resolveModelPricing } from '../shared/index.js';
+import { resolvePricing } from './model-pricing.js';
 import type { TokenEvent, ToolCallRecord } from '../storage/types.js';
 
 // ---------------------------------------------------------------------------
@@ -119,9 +119,12 @@ export class ContextTracker {
     // the larger context, so a 605K-token snapshot would otherwise read as
     // 302% fillPercent against a shrunken 200K cap.
     if (event.model) {
-      const pricing = resolveModelPricing(event.model);
-      if (pricing && pricing.contextWindow > this.modelContextWindow) {
-        this.modelContextWindow = pricing.contextWindow;
+      const resolution = resolvePricing(event.model);
+      if (
+        resolution.kind === 'priced' &&
+        resolution.pricing.contextWindow > this.modelContextWindow
+      ) {
+        this.modelContextWindow = resolution.pricing.contextWindow;
       }
     }
 

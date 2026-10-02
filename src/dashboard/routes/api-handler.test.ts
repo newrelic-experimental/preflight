@@ -3310,6 +3310,92 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.subagentUsd).toBeCloseTo(6, 3);
   });
 
+  it('sums unpriced calls per model across persisted sessions and the live tracker', async () => {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'p1',
+            unpricedByModel: { 'claude-foo-9-9': { calls: 2, tokens: 300 } },
+          },
+          {
+            sessionId: 'p2',
+            unpricedByModel: {
+              'claude-foo-9-9': { calls: 1, tokens: 50 },
+              'claude-bar-1': { calls: 4, tokens: 70 },
+            },
+          },
+          { sessionId: 'p3' },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      costTracker: {
+        getMetrics: () => ({
+          sessionTotalCostUsd: 0,
+          unpricedByModel: { 'claude-bar-1': { calls: 1, tokens: 5 } },
+        }),
+        getCostForDay: () => 0,
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as {
+      unpricedByModel: Record<string, { calls: number; tokens: number }>;
+    };
+    expect(parsed.unpricedByModel).toEqual({
+      'claude-foo-9-9': { calls: 3, tokens: 350 },
+      'claude-bar-1': { calls: 5, tokens: 75 },
+    });
+  });
+
+  it('sums estimated calls per model across persisted sessions and the live tracker', async () => {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'p1',
+            estimatedByModel: {
+              'claude-opus-5-9': { calls: 2, tokens: 300, estimatedFrom: 'claude-opus-5' },
+            },
+          },
+          {
+            sessionId: 'p2',
+            estimatedByModel: {
+              'claude-opus-5-9': { calls: 1, tokens: 50, estimatedFrom: 'claude-opus-5' },
+            },
+          },
+          { sessionId: 'p3' },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      costTracker: {
+        getMetrics: () => ({
+          sessionTotalCostUsd: 0,
+          estimatedByModel: {
+            'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+          },
+        }),
+        getCostForDay: () => 0,
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as {
+      estimatedByModel: Record<string, { calls: number; tokens: number; estimatedFrom: string }>;
+    };
+    expect(parsed.estimatedByModel).toEqual({
+      'claude-opus-5-9': { calls: 4, tokens: 355, estimatedFrom: 'claude-opus-5' },
+    });
+  });
+
   // A NEW-format session with day buckets contributes exactly its today-bucket
   // for both total and subagent, even with an empty timeline.
   it('uses day buckets for subagent spend regardless of timeline presence', async () => {

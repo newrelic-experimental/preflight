@@ -52,6 +52,7 @@ import { ContextCompositionTracker } from './metrics/context-composition-tracker
 import { ContextTrackerRegistry } from './metrics/context-tracker.js';
 import { ContextWindowTracker } from './metrics/context-window-tracker.js';
 import { applyPricingOverlay } from './metrics/pricing-overlay.js';
+import { startPricingRefresh } from './metrics/pricing-refresh.js';
 import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
 import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
@@ -770,6 +771,14 @@ export function parseArgs(argv: string[]): CliOptions {
   };
 }
 
+function initModelPricing(config: McpServerConfig): void {
+  applyPricingOverlay(config.customPricingFile);
+  void startPricingRefresh({
+    enabled: config.pricingRefresh,
+    cachePath: resolve(config.storagePath, 'pricing-cache.json'),
+  });
+}
+
 async function main(): Promise<void> {
   const nodeVersionError = checkNodeVersion();
   if (nodeVersionError) {
@@ -1028,7 +1037,7 @@ async function main(): Promise<void> {
         process.exit(0);
       }
 
-      applyPricingOverlay(config.customPricingFile);
+      initModelPricing(config);
 
       const fromJobDir = resolveFromJobDir(process.env.CLAUDE_JOB_DIR ?? null);
       const fromPpid = fromJobDir ? null : resolveFromBreadcrumb(config.storagePath, process.ppid);
@@ -1091,7 +1100,7 @@ async function main(): Promise<void> {
         process.exit(0);
       }
 
-      applyPricingOverlay(config.customPricingFile);
+      initModelPricing(config);
 
       // --local has no owning Claude Code session — derive a deterministic
       // identifier so the rest of the codebase can rely on a non-empty
