@@ -64,8 +64,9 @@ const HOST_PORT_RE = /^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/;
 const HTTP_PROTOCOLS = new Set(['http', 'https']);
 /** Schemes, as written, whose userinfo is a login name. See the module doc. */
 const LOGIN_NAME_SCHEMES = new Set(['ssh', 'git+ssh', 'ssh+git']);
+const SSH_PROTOCOLS = new Set(['ssh', 'git+ssh', 'ssh+git', 'scp']);
 /** Protocols whose host serves a browsable web UI at `https://<host>/<path>`. */
-const BROWSABLE_PROTOCOLS = new Set(['http', 'https', 'ssh', 'git+ssh', 'ssh+git', 'scp']);
+const BROWSABLE_PROTOCOLS = new Set([...HTTP_PROTOCOLS, ...SSH_PROTOCOLS]);
 /** Relative-path segments, whitespace, and control characters never form a real owner or repo name. */
 function isValidSegment(segment: string): boolean {
   if (segment === '.' || segment === '..') return false;
@@ -174,9 +175,11 @@ export function repoNameFromRemote(remote: string | null | undefined): string | 
 
 /**
  * A browsable commit URL (`https://<host>/<path>/commit/<hash>`) for a network
- * remote. Null for local, `file://`, and `git://` remotes, and for a missing
- * hash, so the UI degrades to plain text rather than a broken link. The port
- * is kept for http(s), where it is the web server's; an ssh port is dropped.
+ * remote. Null for local, `file://`, and `git://` remotes, for an ssh or scp
+ * remote with no login name, which usually names a `Host` alias from
+ * `~/.ssh/config`, and for a missing hash, so the UI degrades to plain text
+ * rather than a broken link. The port is kept for http(s), where it is the
+ * web server's; an ssh port is dropped.
  */
 export function commitUrlFromRemote(
   remote: string | null | undefined,
@@ -186,6 +189,7 @@ export function commitUrlFromRemote(
   const parsed = parseGitRemote(remote);
   if (!parsed || !parsed.host || !parsed.path) return null;
   if (!BROWSABLE_PROTOCOLS.has(parsed.protocol)) return null;
+  if (SSH_PROTOCOLS.has(parsed.protocol) && !parsed.user) return null;
   const hostPort =
     parsed.port && HTTP_PROTOCOLS.has(parsed.protocol)
       ? `${parsed.host}:${parsed.port}`

@@ -210,6 +210,17 @@ const MATRIX: readonly Row[] = [
   ),
   row('../widgets', [null, null, null, '../widgets'], [null, null, '../widgets']),
   row('', [null, null, null, null], [null, null, null]),
+  // A userless ssh or scp remote gets no link.
+  row(
+    'ssh://github.com/acme/widgets.git',
+    ['acme/widgets', 'acme/widgets', null, 'ssh://github.com/acme/widgets.git'],
+    ['acme/widgets', null, 'ssh://github.com/acme/widgets.git'],
+  ),
+  row(
+    'github.com:acme/widgets.git',
+    ['acme/widgets', 'acme/widgets', null, 'github.com:acme/widgets.git'],
+    ['acme/widgets', null, 'github.com:acme/widgets.git'],
+  ),
 
   // CHANGED: credentials no longer reach any output.
   row(
@@ -339,16 +350,6 @@ const MATRIX: readonly Row[] = [
       'ssh://git@github.com:22/acme/widgets.git',
     ],
     ['acme/widgets', commit(GH), 'ssh://git@github.com:22/acme/widgets.git'],
-  ),
-  row(
-    'ssh://github.com/acme/widgets.git',
-    ['acme/widgets', 'acme/widgets', null, 'ssh://github.com/acme/widgets.git'],
-    ['acme/widgets', commit(GH), 'ssh://github.com/acme/widgets.git'],
-  ),
-  row(
-    'github.com:acme/widgets.git',
-    ['acme/widgets', 'acme/widgets', null, 'github.com:acme/widgets.git'],
-    ['acme/widgets', commit(GH), 'github.com:acme/widgets.git'],
   ),
   // CHANGED for config.ts's projectId only: its `[\w.-]` class rejected these.
   row(
