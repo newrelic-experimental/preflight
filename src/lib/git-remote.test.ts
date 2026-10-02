@@ -272,6 +272,27 @@ const MATRIX: readonly Row[] = [
     ],
     [null, commit('github.com/widgets'), 'ssh://git@github.com/widgets.git'],
   ),
+  // Remote-helper remotes (`<transport>::<address>`).
+  row(
+    'hg::https://user:s3cret@hg.example.com/acme/widgets',
+    [
+      'acme/widgets',
+      'acme/widgets',
+      commit('hg.example.com/acme/widgets'),
+      'hg::[REDACTED]/acme/widgets',
+    ],
+    [null, null, null],
+  ),
+  row(
+    'gcrypt::https://glpat-abc123@gitlab.com/widgets.git',
+    [
+      null,
+      'glpat-abc123@gitlab.com/widgets',
+      commit('gitlab.com/widgets'),
+      'gcrypt::https://glpat-abc123@gitlab.com/widgets.git',
+    ],
+    [null, null, null],
+  ),
 
   // CHANGED: shapes the old parsers got wrong.
   row(
@@ -373,7 +394,7 @@ describe('shared parser', () => {
   });
 
   it('never returns a credential from any function', () => {
-    const secrets = ['ghp_secret', 'token', 'glpat-abc123', 'p@ss'];
+    const secrets = ['ghp_secret', 'token', 'glpat-abc123', 'p@ss', 's3cret'];
     for (const r of MATRIX) {
       const outputs = [
         repoNameFromRemote(r.remote),
@@ -391,7 +412,7 @@ describe('shared parser', () => {
 });
 
 // [remote, stripRemoteCredentials output, secrets no function may return]
-const USERINFO_CASES: readonly (readonly [string, string, readonly string[]])[] = [
+const USERINFO_CASES: readonly (readonly [string, string | null, readonly string[]])[] = [
   // Every scheme outside the ssh family loses its whole userinfo.
   [
     'git+https://opaquetoken123@gitlab.example.com/org/repo.git',
@@ -483,6 +504,18 @@ const USERINFO_CASES: readonly (readonly [string, string, readonly string[]])[] 
     'deploy@github.com:acme/widgets.git',
     ['hun', 'ter2'],
   ],
+  // Remote-helper remotes (`<transport>::<address>`).
+  ['hg::https://user:s3cret@hg.example.com/acme/widgets', null, ['user:', 's3cret']],
+  ['gcrypt::https://glpat-abc123@gitlab.com/widgets.git', null, ['glpat-abc123']],
+  ['gcrypt::deploy:hunter2@gitlab.com:acme/widgets.git', null, ['hunter2']],
+  ['codecommit::us-east-1://deploy:hunter2@widgets', null, ['hunter2']],
+  [
+    'persistent-https::https://opaquetoken123@ghe.example.com/acme/widgets',
+    null,
+    ['opaquetoken123'],
+  ],
+  ['ext::sshpass -p hunter2 ssh git@git.example.com %S acme/widgets', null, ['hunter2']],
+  ['::https://opaquetoken123@github.com/acme/widgets.git', null, ['opaquetoken123']],
   // An `@` in a local path is not userinfo.
   ['file:///home/me/@work/repo.git', 'file:///home/me/@work/repo.git', []],
   ['/home/me/@work/repo.git', '/home/me/@work/repo.git', []],
@@ -566,6 +599,18 @@ describe('parseGitRemote', () => {
       port: '22',
       ownerRepo: 'acme/widgets',
     });
+  });
+
+  it.each([
+    'hg::https://hg.example.com/acme/widgets',
+    'gcrypt::git@gitlab.com:acme/widgets.git',
+    'codecommit::us-east-1://widgets',
+    '::https://github.com/acme/widgets.git',
+  ])('returns nothing for the remote-helper remote %s', (remote) => {
+    expect(parseGitRemote(remote)).toBeNull();
+    expect(repoNameFromRemote(remote)).toBeNull();
+    expect(commitUrlFromRemote(remote, HASH)).toBeNull();
+    expect(stripRemoteCredentials(remote)).toBeNull();
   });
 
   it('rejects owner/name segments containing whitespace', () => {

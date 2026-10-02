@@ -19,6 +19,14 @@
  * Accepted shapes: `https://`/`http://`, `ssh://` (with or without a port),
  * `git://`, `file://`, scp-like `[user@]host:owner/repo`, and local paths.
  * Any host is accepted, including GitHub Enterprise and self-hosted GitLab.
+ *
+ * A remote-helper remote, `<transport>::<address>`, is recognized before any
+ * of those, as git recognizes it, and every function returns null for it. git
+ * passes the address verbatim to `git-remote-<transport>`, so its syntax is
+ * the helper's own: `ext::` takes a shell command and `codecommit::` takes
+ * `region://profile@repo`. No rule here can locate a credential in it. Its
+ * host also does not know git's commit hashes (git-cinnabar's Mercurial) or
+ * holds only ciphertext (gcrypt), so a commit link would be broken anyway.
  */
 
 export interface ParsedGitRemote {
@@ -48,6 +56,9 @@ const FILE_URL_RE = /^(file):\/\/(?:([^/?#]*)@)?([^/?#]*)([^?#]*)/i;
 const SCP_FORM_RE = /^(?=[^/]*:)(?:([\s\S]*)@)?([^/:@]+):([^?#]*)/;
 // `C:/repos/x` and `C:\repos\x` are Windows paths, not scp syntax.
 const DRIVE_PATH_RE = /^[a-z]:/i;
+// git's own test in transport_get() (transport.c): an optional
+// `[A-Za-z0-9][A-Za-z0-9+.-]*`, then `::`.
+const REMOTE_HELPER_RE = /^(?:[A-Za-z0-9][A-Za-z0-9+.-]*)?::/;
 const HOST_PORT_RE = /^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/;
 const HTTP_PROTOCOLS = new Set(['http', 'https']);
 /** Schemes, as written, whose userinfo is a login name. See the module doc. */
@@ -125,14 +136,14 @@ function build(
 }
 
 /**
- * Parse a git remote. Returns null for a missing, empty, or unrecognizable
- * value. Leading and trailing whitespace (e.g. the newline from `git`'s
- * stdout) is ignored.
+ * Parse a git remote. Returns null for a missing or empty value; see the
+ * module doc for remote-helper remotes. Leading and trailing whitespace
+ * (e.g. the newline from `git`'s stdout) is ignored.
  */
 export function parseGitRemote(remote: string | null | undefined): ParsedGitRemote | null {
   if (typeof remote !== 'string') return null;
   const trimmed = remote.trim();
-  if (trimmed.length === 0) return null;
+  if (trimmed.length === 0 || REMOTE_HELPER_RE.test(trimmed)) return null;
 
   const url = matchUrlForm(trimmed);
   if (url) {
@@ -181,12 +192,13 @@ export function commitUrlFromRemote(
  * The remote with its credentials, query string, and fragment removed, and
  * otherwise as written (the `.git` suffix and any trailing slash stay). Values
  * that are not a URL or scp-like remote, such as local paths, are returned
- * trimmed but unchanged. Null for a missing or empty value.
+ * trimmed but unchanged. Null for a missing or empty value; see the module doc
+ * for remote-helper remotes.
  */
 export function stripRemoteCredentials(remote: string | null | undefined): string | null {
   if (typeof remote !== 'string') return null;
   const trimmed = remote.trim();
-  if (trimmed.length === 0) return null;
+  if (trimmed.length === 0 || REMOTE_HELPER_RE.test(trimmed)) return null;
 
   const url = matchUrlForm(trimmed);
   if (url) {
