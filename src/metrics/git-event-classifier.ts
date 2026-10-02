@@ -255,6 +255,32 @@ export function ghPrMergeTogglesAuto(segment: string): boolean {
   return GH_PR_AUTO_MERGE_RE.test(segment);
 }
 
+// The `splitShellSegments` separators, captured: odd entries of a split are
+// the operators, and `operators[i]` joins segment `i` to segment `i + 1`.
+const SHELL_SEPARATOR_RE = /(\|\||&&|;|\||\n)/;
+
+/**
+ * True when the command succeeding means its segment `index` (as numbered by
+ * `splitShellSegments`) ran and succeeded. A hook reports one exit status for
+ * the whole command, so that holds only when the segment's own status
+ * decides it: the segment is not piped into anything, is not the fallback of
+ * a `||`, and nothing follows it except `&&` steps, which run only if it
+ * succeeded. A trailing `;` or newline runs nothing more and is ignored.
+ */
+export function segmentSuccessFollowsCommand(command: string, index: number): boolean {
+  const parts = command.split(SHELL_SEPARATOR_RE);
+  const operators = parts.filter((_, i) => i % 2 === 1);
+  let lastRun = operators.length;
+  while (lastRun > index && parts[2 * lastRun].trim() === '') lastRun--;
+  for (let j = index; j < lastRun; j++) {
+    // `&& x | y` is one `&&` step.
+    if (operators[j] !== '&&' && (operators[j] !== '|' || j === index)) return false;
+  }
+  let pipelineStart = index;
+  while (pipelineStart > 0 && operators[pipelineStart - 1] === '|') pipelineStart--;
+  return pipelineStart === 0 || operators[pipelineStart - 1] !== '||';
+}
+
 export interface ClassifiedGitSegment {
   readonly segment: string;
   readonly event: GitEvent;

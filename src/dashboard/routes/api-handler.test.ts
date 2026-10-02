@@ -4205,6 +4205,19 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
   });
 
+  it('keeps ready_for_review when a piped merge exits 0 but the merge itself may have failed', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42 --squash 2>&1 | tail -5', {
+        repoName: 'acme/app',
+      }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
   it('matches a merge run from the primary checkout to a PR created in a linked worktree', async () => {
     const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
     const git = (cwd: string, ...args: string[]) =>

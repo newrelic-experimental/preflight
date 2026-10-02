@@ -646,6 +646,39 @@ describe('GitActivityRecorder', () => {
     });
   });
 
+  describe('gh pr merge and create inside compound commands', () => {
+    const prEvents = () =>
+      store
+        .query({ since: 0, until: 10000 })
+        .flatMap((r) => (r.kind === 'pr' ? [r.prEvent] : []))
+        .map(({ action, prNumber }) => ({ action, prNumber }));
+    const merges = () => prEvents().filter((e) => e.action === 'merge');
+
+    it.each([
+      'gh pr merge 42 --squash 2>&1 | tail -5',
+      'gh pr merge 42 --squash || echo "merge failed"',
+      'gh pr merge 42 --squash; echo done',
+      'gh pr merge 42 --squash\necho done',
+      'gh pr merge 42 --squash && echo ok || echo failed',
+      'gh pr view 42 --json state | grep -q MERGED || gh pr merge 42',
+    ])('drops `%s`: the command can succeed while the merge failed or never ran', (command) => {
+      recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
+      expect(merges()).toEqual([]);
+    });
+
+    it.each([
+      'gh pr merge 42 --squash',
+      'gh pr merge 42 --squash;',
+      'git fetch && gh pr merge 42 --squash',
+      'gh pr view 42 | cat; gh pr merge 42 --squash',
+      'gh pr merge 42 --squash && git checkout main && git pull',
+      'gh pr merge 42 --squash && git pull 2>&1 | tail -3',
+    ])('counts `%s`, whose success means the merge succeeded', (command) => {
+      recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
+      expect(merges()).toEqual([{ action: 'merge', prNumber: '42' }]);
+    });
+  });
+
   describe('processGhCommand standalone function — verb table and anchoring', () => {
     it('returns null for a verb outside the PR-action table (comment)', () => {
       expect(processGhCommand('gh pr comment 5 --body "see gh pr create"', 1000)).toBeNull();

@@ -6,6 +6,7 @@ import {
   ghPrMergeTogglesAuto,
   ghSegmentOverridesRepo,
   processGhCommand,
+  segmentSuccessFollowsCommand,
   splitShellSegments,
   type GitEvent,
 } from './git-event-classifier.js';
@@ -130,12 +131,18 @@ export class GitActivityRecorder {
       if (!parsed) continue;
       // A failed `gh pr create` made no PR and a failed `gh pr merge` merged
       // nothing, so neither counts; nor does a merge that only toggles
-      // auto-merge. Every other verb stays real even on failure: `gh pr
-      // checks` exits non-zero when checks are failing, and that's still a
-      // genuine checks view.
+      // auto-merge, or one whose outcome the command's exit status doesn't
+      // show (`gh pr merge 5 | tail`). Every other verb stays real even on
+      // failure: `gh pr checks` exits non-zero when checks are failing, and
+      // that's still a genuine checks view.
       const changesPr = parsed.action === 'create' || parsed.action === 'merge';
       if (changesPr && record.success === false) continue;
-      if (parsed.action === 'merge' && ghPrMergeTogglesAuto(segment)) continue;
+      if (
+        parsed.action === 'merge' &&
+        (ghPrMergeTogglesAuto(segment) || !segmentSuccessFollowsCommand(command, i))
+      ) {
+        continue;
+      }
       // The activity is keyed to the cwd's repo, so a number aimed at another
       // repo is dropped rather than matched there. `gh pr create` takes no
       // number; the one it opened comes from its output.
