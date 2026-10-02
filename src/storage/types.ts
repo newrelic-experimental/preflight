@@ -341,12 +341,13 @@ export interface ToolCallRecord {
    * subagent, or the session's own agent name (e.g. `claude`) on a parent
    * call when the session runs with `--agent` or the `agent` setting. So its
    * presence does not mean the call came from a subagent; `agentId` does.
-   * When the envelope leaves it out (some installs never send it, #656), it
-   * is backfilled via `backfillAgentType()` (agent-partition.ts) once
-   * `agentId` is known, from the subagent transcript's `agent-<id>.meta.json`
-   * sidecar (written at spawn) or, failing that, the parent's own `Agent`
-   * tool call, with the same best-effort timing window as `agentId`. A
-   * non-empty envelope value is never overwritten.
+   * When the envelope leaves it out (some installs never send it, #656) or
+   * sends a value `normalizeAgentType()` rejects, it is backfilled via
+   * `backfillAgentType()` (agent-partition.ts) once `agentId` is known, from
+   * the subagent transcript's `agent-<id>.meta.json` sidecar (written at
+   * spawn) or, failing that, the parent's own `Agent` tool call, with the
+   * same best-effort timing window as `agentId`. An envelope value that
+   * passes `normalizeAgentType()` is never overwritten.
    */
   readonly agentType?: string;
   /** Skill invoked, from the hook's `tool_input.skill`; only on `toolName === 'Skill'` records. */

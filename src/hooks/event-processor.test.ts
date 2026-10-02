@@ -2,6 +2,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { MAX_AGENT_TYPE_LENGTH } from '../lib/agent-id.js';
 import { LocalStore } from '../storage/local-store.js';
 import { HookEventProcessor } from './event-processor.js';
 import { AntigravityAdapter } from '../platforms/antigravity-adapter.js';
@@ -283,6 +284,43 @@ describe('HookEventProcessor', () => {
       const record = records[0]!;
       expect(record.agentId).toBe('agent-abc123');
       expect(record.agentType).toBe('general-purpose');
+    });
+
+    it('drops an envelope agentType that is oversized, has a control character or is not a string', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+      const invalidTypes: unknown[] = [
+        'x'.repeat(MAX_AGENT_TYPE_LENGTH + 1),
+        'Explore\nInjected',
+        42,
+      ];
+
+      processor.processEvents(
+        invalidTypes.flatMap((agentType, i) => [
+          makePreEvent({
+            toolUseId: `toolu_bad_${i}`,
+            agentId: 'agent-abc123',
+            agentType: agentType as string,
+          }),
+          makePostEvent({ toolUseId: `toolu_bad_${i}` }),
+        ]),
+      );
+
+      expect(records).toHaveLength(invalidTypes.length);
+      for (const record of records) {
+        expect(record.agentId).toBe('agent-abc123');
+        expect(record).not.toHaveProperty('agentType');
+      }
+    });
+
+    it('falls back to a valid post event agentType when the pre event value is invalid', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent({ agentType: 'Explore\u0007' }),
+        makePostEvent({ agentType: 'Explore' }),
+      ]);
+
+      expect(records[0]!.agentType).toBe('Explore');
     });
 
     it('omits agentId/agentType for a parent-session tool call', () => {

@@ -218,12 +218,15 @@ function numAttr(v: unknown): number {
 /**
  * The attribution fields every record shape carries. Pre wins over post for
  * `cwd`, `agentId`, `agentType`, and `platform`: the collector stamps both,
- * and pre is the event that observed the call start.
+ * and pre is the event that observed the call start. The collector copies the
+ * envelope's `agent_type` raw, so it passes `normalizeAgentType()` here like
+ * every other type source; an invalid value counts as absent, which leaves it
+ * for `backfillAgentType()` to fill.
  */
 function attributionFields(pre: PreHookEvent | undefined, post?: PostHookEvent) {
   const cwd = pre?.cwd ?? post?.cwd;
   const agentId = pre?.agentId ?? post?.agentId;
-  const agentType = pre?.agentType ?? post?.agentType;
+  const agentType = normalizeAgentType(pre?.agentType) ?? normalizeAgentType(post?.agentType);
   const platform = pre?.platform ?? post?.platform;
   return {
     ...(pre?.inputSize !== undefined && { inputSizeBytes: pre.inputSize }),
