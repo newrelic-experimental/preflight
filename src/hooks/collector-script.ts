@@ -621,7 +621,9 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
 const PR_URL_RE = /https?:\/\/[^\s"'/]+\/[^\s"'/]+\/[^\s"'/]+\/pull\/(\d{1,9})\b/g;
 const GH_PR_CREATE_RE = /(?:^|[\s;&|(])gh\s+pr\s+create\b/;
 
-/** The PR number in the last PR URL of a tool's output text. Only the digits
+/** The PR number named by the PR URLs in a tool's output text, or undefined
+ *  when they name none or several, since then the created one is unknown (a
+ *  second create, or a `gh pr comment` URL on another PR). Only the digits
  *  leave this function; the output itself is never kept. */
 function findCreatedPrNumber(output: Record<string, unknown> | unknown[]): string | undefined {
   const texts: string[] = [];
@@ -630,11 +632,11 @@ function findCreatedPrNumber(output: Record<string, unknown> | unknown[]): strin
   if (Array.isArray(blocks)) {
     for (const block of blocks) if (hasStringText(block)) texts.push(block.text);
   }
-  let prNumber: string | undefined;
+  const prNumbers = new Set<string>();
   for (const text of texts) {
-    for (const match of text.matchAll(PR_URL_RE)) prNumber = match[1];
+    for (const match of text.matchAll(PR_URL_RE)) prNumbers.add(match[1]);
   }
-  return prNumber;
+  return prNumbers.size === 1 ? [...prNumbers][0] : undefined;
 }
 
 /**

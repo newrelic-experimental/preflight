@@ -125,9 +125,12 @@ export class GitActivityRecorder {
     // Track GitHub CLI PR commands. Each segment is checked on its own — a
     // `gh` invocation can be chained before or after a `git` command, or
     // follow a heredoc script on its own newline-separated segment.
+    const ghEvents = segments.map((segment) => processGhCommand(segment.trim(), record.timestamp));
+    // The PR URL in the output belongs to a create only when there is one.
+    const soleCreate = ghEvents.filter((event) => event?.action === 'create').length === 1;
     for (let i = 0; i < segments.length; i++) {
       const segment = segments[i].trim();
-      const parsed = processGhCommand(segment, record.timestamp);
+      const parsed = ghEvents[i];
       if (!parsed) continue;
       // A failed `gh pr create` made no PR and a failed `gh pr merge` merged
       // nothing, so neither counts; nor does a merge that only toggles
@@ -146,10 +149,12 @@ export class GitActivityRecorder {
       // The activity is keyed to the cwd's repo, so a number aimed at another
       // repo is dropped rather than matched there. `gh pr create` takes no
       // number; the one it opened comes from its output.
-      const captured = parsed.action === 'create' ? record.createdPrNumber : undefined;
+      const captured =
+        parsed.action === 'create' && soleCreate ? record.createdPrNumber : undefined;
+      const number = parsed.prNumber ?? captured ?? null;
       const prEvent = {
         ...parsed,
-        prNumber: ghSegmentOverridesRepo(segment) ? null : (parsed.prNumber ?? captured ?? null),
+        prNumber: ghSegmentOverridesRepo(segment) ? null : number,
       };
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',

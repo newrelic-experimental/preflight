@@ -374,11 +374,11 @@ function findCreatedPrNumber(output) {
   if (Array.isArray(blocks)) {
     for (const block of blocks) if (hasStringText(block)) texts.push(block.text);
   }
-  let prNumber;
+  const prNumbers = /* @__PURE__ */ new Set();
   for (const text of texts) {
-    for (const match of text.matchAll(PR_URL_RE)) prNumber = match[1];
+    for (const match of text.matchAll(PR_URL_RE)) prNumbers.add(match[1]);
   }
-  return prNumber;
+  return prNumbers.size === 1 ? [...prNumbers][0] : void 0;
 }
 function extractOutputMeta(toolName, output, input) {
   if (output === null || output === void 0 || typeof output !== "object") return void 0;

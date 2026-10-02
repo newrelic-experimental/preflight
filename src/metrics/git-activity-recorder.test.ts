@@ -677,6 +677,32 @@ describe('GitActivityRecorder', () => {
       recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
       expect(merges()).toEqual([{ action: 'merge', prNumber: '42' }]);
     });
+
+    it('gives no number to either create when one command opens two PRs', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command:
+            'gh pr create --base main --fill && git checkout part-2 && gh pr create --base part-1 --fill',
+          cwd: repoDir,
+          createdPrNumber: '42',
+        }),
+      );
+      expect(prEvents()).toEqual([
+        { action: 'create', prNumber: null },
+        { action: 'create', prNumber: null },
+      ]);
+    });
+
+    it('keeps the captured number when one create shares a command with other gh verbs', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: 'gh pr create --fill && gh pr view --web',
+          cwd: repoDir,
+          createdPrNumber: '42',
+        }),
+      );
+      expect(prEvents()).toContainEqual({ action: 'create', prNumber: '42' });
+    });
   });
 
   describe('processGhCommand standalone function — verb table and anchoring', () => {

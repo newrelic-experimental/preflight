@@ -413,6 +413,47 @@ describe('collector-script', () => {
       expect(event.toolOutput).toEqual({ createdPrNumber: '42' });
     });
 
+    it.each([
+      [
+        'two creates',
+        'gh pr create --base main --fill && gh pr create --base part-1 --fill',
+        'https://github.com/acme/app/pull/41\nhttps://github.com/acme/app/pull/42\n',
+      ],
+      [
+        'a comment on another PR',
+        'gh pr create --fill && gh pr comment 40 --body "supersedes #40"',
+        'https://github.com/acme/app/pull/41\nhttps://github.com/acme/app/pull/40#issuecomment-9\n',
+      ],
+    ])(
+      'keeps no PR number when the output names more than one PR (%s)',
+      (_label, command, stdout) => {
+        processHook(
+          makePostToolUse({
+            tool_name: 'Bash',
+            tool_input: { command },
+            tool_response: { stdout },
+          }),
+        );
+
+        expect(readBufferEvents()[0]!.toolOutput).toBeUndefined();
+      },
+    );
+
+    it('keeps the PR number when every PR URL in the output names the same PR', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr create --fill && gh pr comment --body "ready"' },
+          tool_response: {
+            stdout:
+              'https://github.com/acme/app/pull/41\nhttps://github.com/acme/app/pull/41#issuecomment-9\n',
+          },
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '41' });
+    });
+
     it('ignores a PR URL in the output of a command that is not gh pr create', () => {
       processHook(
         makePostToolUse({
