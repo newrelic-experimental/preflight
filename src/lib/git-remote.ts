@@ -5,12 +5,13 @@
  *
  * - URL userinfo. A login name is kept only where it is one by convention:
  *   `ssh://`, `git+ssh://`, and `ssh+git://` (case-sensitively, as git matches
- *   them) and scp-like `user@host:path`. There the name (usually `git`) stays
- *   and any `:password` goes. Every other scheme loses its whole userinfo,
- *   including `https://`, `git+https://`, and schemes not listed, since hosts
- *   accept a token as the username. Outside `file://`, the userinfo runs to
- *   the last `@` in the value, so an unencoded `@`, `/`, `?`, or `#` in a
- *   password cannot push part of it into the host or path.
+ *   them) and scp-like `user@host:path`. There the name (usually `git`) stays,
+ *   up to its first `:`, `@`, `/`, `?`, or `#`, and the rest of the userinfo
+ *   goes. Every other scheme loses its whole userinfo, including `https://`,
+ *   `git+https://`, and schemes not listed, since hosts accept a token as the
+ *   username. Outside `file://`, the userinfo runs to the last `@` in the
+ *   value, so an unencoded `@`, `/`, `?`, or `#` in a password cannot push
+ *   part of it into the host or path.
  * - Query strings and fragments (`...repo.git?token=...`).
  *
  * A credential anywhere else, such as a token used as a path segment, is not
@@ -92,10 +93,14 @@ function ownerRepoOf(path: string): string | null {
   return pair.join('/');
 }
 
-/** Login name from a userinfo string, dropping any `:password`. */
+/**
+ * The login name at the start of a userinfo string. The greedy userinfo
+ * match can run through a path or query that contains an `@`, so the name
+ * stops at the first character that cannot be part of one.
+ */
 function loginName(userinfo: string | undefined): string | null {
   if (!userinfo) return null;
-  const name = userinfo.split(':')[0];
+  const name = /^[^:@/?#]*/.exec(userinfo)?.[0];
   return name ? name : null;
 }
 

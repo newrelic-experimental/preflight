@@ -504,6 +504,8 @@ const USERINFO_CASES: readonly (readonly [string, string | null, readonly string
     'deploy@github.com:acme/widgets.git',
     ['hun', 'ter2'],
   ],
+  // The greedy userinfo runs through the query; the login name stops at `@`.
+  ['ssh://git@github.com/acme/widgets.git?auth=s3cret@x', 'ssh://git@x', ['auth=', 's3cret']],
   // Remote-helper remotes (`<transport>::<address>`).
   ['hg::https://user:s3cret@hg.example.com/acme/widgets', null, ['user:', 's3cret']],
   ['gcrypt::https://glpat-abc123@gitlab.com/widgets.git', null, ['glpat-abc123']],
