@@ -5,11 +5,12 @@
  *   1. Self-reporting via the `nr_observe_report_tokens` MCP tool (primary)
  *   2. Estimation from hook input/output byte sizes (fallback)
  *
- * Cost calculation delegates to `calculateCost()` from the shared package.
+ * Cost calculation goes through `priceUsage()` in `model-pricing.ts`.
  */
 
 import type { TokenUsage, CostBreakdown, MetricAggregator } from '../shared/index.js';
-import { calculateCost, createLogger } from '../shared/index.js';
+import { createLogger } from '../shared/index.js';
+import { priceUsage } from './model-pricing.js';
 import { localDateKey } from '../lib/date.js';
 import type { SessionTracker } from './session-tracker.js';
 import type { Resettable } from './tracker-contracts.js';
@@ -365,7 +366,7 @@ export class CostTracker implements Resettable {
     model: string,
     ctx?: TokenRecordContext,
   ): CostBreakdown {
-    const rawBreakdown = calculateCost(model, usage);
+    const rawBreakdown = priceUsage(model, usage).breakdown;
     const breakdown =
       this.rateMultiplier === 1
         ? rawBreakdown
