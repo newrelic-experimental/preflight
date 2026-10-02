@@ -133,16 +133,18 @@ describe('SubagentAttributionIndex', () => {
     expect(index.backfill(record)).toBe(record);
   });
 
-  it("leaves a parent call's envelope agentType (the session's --agent name) untouched", () => {
+  it("keeps an envelope agentType (the session's --agent name) when the join resolves an agentId", () => {
     const index = new SubagentAttributionIndex();
-    index.recordSubagentToolUses('agent-a', ['toolu_sub_1']);
+    // The record's own toolUseId is in the join, so backfillAgentType sees an
+    // agentId with a known indexed type and only its no-overwrite guard keeps
+    // the envelope value.
+    index.recordSubagentToolUses('agent-a', ['toolu_parent_1']);
     index.recordAgentToolCall(makeAgentCall('agent-a', 'Explore'));
     const record = makeRecord({ toolUseId: 'toolu_parent_1', agentType: 'claude' });
 
     const result = index.backfill(record);
 
-    expect(result).toBe(record);
-    expect(result.agentId).toBeUndefined();
+    expect(result.agentId).toBe('agent-a');
     expect(result.agentType).toBe('claude');
   });
 
