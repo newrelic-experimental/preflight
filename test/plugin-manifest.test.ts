@@ -88,6 +88,12 @@ const KEYWORD_TYPES = new Map([
 ]);
 
 function unsupportedKeywords(schema: JsonSchema, path = '#'): string[] {
+  // A boolean subschema (`true`/`false`) is valid 2020-12, but
+  // validateAgainstSchema() treats it as an empty schema and accepts anything.
+  const node: unknown = schema;
+  if (typeof node !== 'object' || node === null || Array.isArray(node)) {
+    return [`${path}: non-object subschema ${JSON.stringify(node)}`];
+  }
   const found = Object.keys(schema).flatMap((k) => {
     if (!SUPPORTED_KEYWORDS.has(k)) return [`${path}/${k}`];
     const neededType = KEYWORD_TYPES.get(k);
@@ -103,7 +109,9 @@ function unsupportedKeywords(schema: JsonSchema, path = '#'): string[] {
       `${path}/properties/${k}`,
       s,
     ]),
-    ...(schema.items ? [[`${path}/items`, schema.items] as [string, JsonSchema]] : []),
+    ...(schema.items !== undefined
+      ? [[`${path}/items`, schema.items] as [string, JsonSchema]]
+      : []),
     ...(typeof schema.additionalProperties === 'object'
       ? [[`${path}/additionalProperties`, schema.additionalProperties] as [string, JsonSchema]]
       : []),
@@ -225,6 +233,15 @@ describe('Claude Code plugin manifests', () => {
     expect(
       unsupportedKeywords(parseSchema('{"type":"object","properties":{"a":{"pattern":"x"}}}')),
     ).toEqual(['#/properties/a/pattern without type "string"']);
+  });
+
+  it('the keyword guard flags boolean subschemas the validator would treat as empty', () => {
+    expect(unsupportedKeywords(parseSchema('{"type":"array","items":false}'))).toEqual([
+      '#/items: non-object subschema false',
+    ]);
+    expect(unsupportedKeywords(parseSchema('{"type":"object","properties":{"x":false}}'))).toEqual([
+      '#/properties/x: non-object subschema false',
+    ]);
   });
 
   it('kiro-power/plugin.json validates against the Agent Plugins 1.0.0 schema', () => {
