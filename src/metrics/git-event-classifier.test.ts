@@ -415,4 +415,13 @@ describe('classifyGitSegments per-segment outcome', () => {
       outcomes('git commit -m x && git push', 'husky - pre-commit script failed (code 1)'),
     ).toEqual([['commit', false]]);
   });
+
+  it('attributes "nothing added to commit" to the commit, not a later push', () => {
+    expect(
+      outcomes(
+        'git commit -m x && git push',
+        'nothing added to commit but untracked files present (use "git add" to track)',
+      ),
+    ).toEqual([['commit', false]]);
+  });
 });

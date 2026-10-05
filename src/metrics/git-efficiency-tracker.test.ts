@@ -1751,6 +1751,19 @@ describe('GitEfficiencyTracker', () => {
         'No pushes yet.',
       );
     });
+
+    it('counts neither the commit nor the push when only untracked files were present', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git commit -m x && git push',
+          success: false,
+          error: 'nothing added to commit but untracked files present (use "git add" to track)',
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(0);
+      expect(metrics.pushCount).toBe(0);
+    });
   });
 
   describe('velocity metrics', () => {

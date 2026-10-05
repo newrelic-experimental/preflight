@@ -53,6 +53,7 @@ const REJECT_INDICATORS = [
 // (husky prints "husky - pre-commit script failed (code 1)").
 const COMMIT_FAILURE_INDICATORS = [
   /nothing to commit/i,
+  /nothing added to commit/i,
   /no changes added to commit/i,
   /Committing is not possible/i,
   /Aborting commit/i,
