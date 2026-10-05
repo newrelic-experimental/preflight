@@ -5,12 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.57.3] - 2026-10-01
+## [1.57.4] - 2026-10-05
 
 ### Fixed
 
 - Audit trail and security events for tool calls made inside a subagent now carry the subagent's type (for example `Explore`) even when Claude Code's hook payload leaves its own `agent_type` out, as some installs do, so sensitive-file access and destructive commands can be attributed by subagent type. The type is read from the metadata file Claude Code writes next to each subagent transcript when the subagent starts, so it is available while the subagent runs; like the subagent id, it can still be missing on a call recorded before Preflight has read that subagent's transcript. A type the hook payload does send is kept as is, unless it is over 128 characters or contains control characters: such a value is dropped and the type is filled in the same way.
 - The long-running `--local` daemon no longer keeps a record of every subagent tool call it has ever seen. Subagent attribution now keeps at most 10,000 tool calls and 1,000 subagents, and drops entries unused for 24 hours.
+
+## [1.57.3] - 2026-10-01
+
+### Fixed
+
+- The Kiro Power manifest (`kiro-power/plugin.json`) now validates against the Agent Plugins 1.0.0 schema it declares. It carried a root `displayName` key, which the schema does not allow and which marketplaces validating against it rejected. Kiro's Powers documentation does not list `displayName` as a manifest field, so the key was removed rather than moved.
 
 ## [1.57.2] - 2026-09-29
 
