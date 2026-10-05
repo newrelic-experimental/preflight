@@ -5027,13 +5027,16 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
 
   // The DST test below skips silently when the scan finds nothing, which is
   // also what a misspelled `TZ` or a runner without that zone's data produces:
-  // Node falls back to UTC and reports the zone as undefined. So a requested
-  // zone must resolve, and under the DST zones CI runs this file in, the scan
-  // must find a day.
+  // Node falls back to UTC. So the process zone must match what `TZ` names
+  // (an invalid name makes the explicit formatter throw a RangeError, and
+  // aliases canonicalize the same way on both sides), and under the DST zones
+  // CI runs this file in, the scan must find a day.
   const CI_DST_ZONES = ['America/New_York', 'Pacific/Auckland', 'America/Havana'];
   const requestedZone = process.env.TZ;
   (requestedZone ? it : it.skip)('runs under the time zone TZ requests', () => {
-    expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBeDefined();
+    expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(
+      new Intl.DateTimeFormat('en', { timeZone: requestedZone }).resolvedOptions().timeZone,
+    );
     if (requestedZone && CI_DST_ZONES.includes(requestedZone)) {
       expect(dstTransitionDay).not.toBeNull();
     }
