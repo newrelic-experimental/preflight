@@ -470,6 +470,20 @@ describe('classifyGitSegments shell splitting', () => {
   const resolveRepo = (): string | null => null;
   const NOTHING = 'nothing to commit, working tree clean';
 
+  it('splits a continued line made of a long run of # in linear time', () => {
+    // `git push ||` continues past comment-only lines; the line after the run
+    // of `#` is a real command, so the continuation check must fail fast.
+    const command = `git push ||\n${'#'.repeat(5000)}\necho done\ngit commit -m x`;
+    const startedAt = performance.now();
+    const events = classifyGitSegments(
+      command,
+      makeRecord({ command, success: true }),
+      resolveRepo,
+    ).map(({ event }) => event.type);
+    expect(performance.now() - startedAt).toBeLessThan(1000);
+    expect(events).toEqual(['push', 'commit']);
+  });
+
   const outcomes = (command: string, error: string): [string, boolean][] =>
     classifyGitSegments(command, makeRecord({ command, success: false, error }), resolveRepo).map(
       ({ event }) => [event.type, event.success],

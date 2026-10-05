@@ -277,8 +277,15 @@ interface ShellChain {
 }
 
 const SHELL_OPERATOR_RE = /(\|\||&&|;|\||\n)/;
-// A segment of only whitespace and `#` comments runs nothing.
-const NO_COMMAND_RE = /^(?:\s|#[^\n]*)*$/;
+/** Whether a segment is only whitespace and `#` comments, so it runs nothing.
+ *  Checked per line rather than with one regex: `(?:\s|#[^\n]*)*` backtracks
+ *  exponentially on a run of `#`. */
+function runsNoCommand(segment: string): boolean {
+  return segment.split('\n').every((line) => {
+    const trimmed = line.trim();
+    return trimmed === '' || trimmed.startsWith('#');
+  });
+}
 const COMMENT_START_AFTER_RE = /[\s;&|(]/;
 const CONTINUED_BY_NEWLINE = new Set(['&&', '||', '|']);
 
@@ -316,7 +323,7 @@ function splitShellChain(command: string): ShellChain {
       const continued =
         op === '\n' &&
         CONTINUED_BY_NEWLINE.has(operators.at(-1) ?? '') &&
-        NO_COMMAND_RE.test(source.slice(start, i));
+        runsNoCommand(source.slice(start, i));
       if (continued) continue;
       segments.push(source.slice(start, i));
       operators.push(op);
@@ -375,7 +382,7 @@ function finalAndRun(
   operators: readonly string[],
 ): { first: number; last: number } {
   let last = segments.length - 1;
-  while (last > 0 && NO_COMMAND_RE.test(segments[last]!)) last--;
+  while (last > 0 && runsNoCommand(segments[last]!)) last--;
   let first = last;
   while (first > 0 && operators[first - 1] === '&&') first--;
   return { first, last };
