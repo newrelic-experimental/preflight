@@ -369,6 +369,8 @@ export interface ReplayTimelineEntry {
   readonly agentType?: string;
   /** Same as `ToolCallRecord.createdPrNumber`; absent in sessions persisted before it existed. */
   readonly createdPrNumber?: string;
+  /** Only when true: a Bash call run in the background, whose `success` was reported when it started. */
+  readonly runInBackground?: boolean;
 }
 
 /**

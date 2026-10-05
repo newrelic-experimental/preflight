@@ -2668,6 +2668,7 @@ describe('buildSessionSummary timeline', () => {
                 success: true,
                 command: 'gh pr create --fill',
                 createdPrNumber: '42',
+                runInBackground: true,
               },
             ],
           },
@@ -2684,6 +2685,8 @@ describe('buildSessionSummary timeline', () => {
     expect(summary.timeline).toHaveLength(3);
     expect(summary.timeline![2]!.createdPrNumber).toBe('42');
     expect(summary.timeline![0]!.createdPrNumber).toBeUndefined();
+    expect(summary.timeline![2]!.runInBackground).toBe(true);
+    expect(summary.timeline![0]!.runInBackground).toBeUndefined();
     expect(summary.timeline![0]!.toolName).toBe('Skill');
     expect(summary.timeline![0]!.skillName).toBe('unslop');
     expect(summary.timeline![0]!.agentType).toBeUndefined();
@@ -2739,6 +2742,27 @@ describe('SessionStore deserialization', () => {
     const session = store.loadSession('pr-num');
     expect(session!.timeline![0]!.createdPrNumber).toBe('42');
     expect(session!.timeline![1]!.createdPrNumber).toBeUndefined();
+  });
+
+  it('keeps runInBackground on timeline entries only when it is true', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const raw = JSON.stringify({
+      sessionId: 'bg-run',
+      startTime: 1000,
+      endTime: 2000,
+      durationMs: 1000,
+      toolCallCount: 2,
+      developer: 'alice',
+      timeline: [
+        { timestamp: 1100, toolName: 'Bash', runInBackground: true },
+        { timestamp: 1200, toolName: 'Bash', runInBackground: 'yes' },
+      ],
+    });
+    writeFileSync(join(tmpDir, 'sessions', '2026-01-01_bg-run.json'), raw + '\n');
+
+    const session = store.loadSession('bg-run');
+    expect(session!.timeline![0]!.runInBackground).toBe(true);
+    expect(session!.timeline![1]!.runInBackground).toBeUndefined();
   });
 
   it('returns null for a session file with non-object JSON', () => {

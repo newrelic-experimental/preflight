@@ -307,6 +307,7 @@ export class LocalSessionAggregator {
     platform?: string | null;
     agentId?: unknown;
     createdPrNumber?: unknown;
+    runInBackground?: unknown;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
     const timestamp = record.timestamp ?? Date.now();
@@ -365,6 +366,7 @@ export class LocalSessionAggregator {
         ...(typeof record.createdPrNumber === 'string' && {
           createdPrNumber: record.createdPrNumber,
         }),
+        ...(record.runInBackground === true && { runInBackground: true }),
       });
     }
 

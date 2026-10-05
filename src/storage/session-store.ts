@@ -1051,6 +1051,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     skillName: tc.toolName === 'Skill' && tc.skillName ? tc.skillName : undefined,
     agentType: tc.toolName === 'Agent' && tc.agentType ? tc.agentType : undefined,
     createdPrNumber: tc.createdPrNumber,
+    runInBackground: tc.runInBackground === true || undefined,
   }));
 
   const now = Date.now();
@@ -1588,6 +1589,7 @@ export function deserializeFullSessionSummary(
               typeof e.createdPrNumber === 'string' && /^\d{1,9}$/.test(e.createdPrNumber)
                 ? e.createdPrNumber
                 : undefined,
+            runInBackground: e.runInBackground === true || undefined,
           }))
       : undefined,
     toolSelectionMetrics,

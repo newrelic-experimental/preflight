@@ -413,6 +413,21 @@ describe('LocalSessionAggregator timeline persistence', () => {
     expect(timeline[0]?.createdPrNumber).toBe('42');
   });
 
+  it('persists a background run, whose success predates the command finishing', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 100,
+      command: 'gh pr merge 42',
+      runInBackground: true,
+    });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Bash', timestamp: 200, command: 'ls' });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]?.runInBackground).toBe(true);
+    expect(timeline[1]).not.toHaveProperty('runInBackground');
+  });
+
   it('omits the timeline entirely when nothing was recorded for it', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });

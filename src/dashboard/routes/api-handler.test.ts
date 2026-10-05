@@ -4146,7 +4146,13 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     sessionId: string,
     offsetMs: number,
     command: string,
-    extra: { repoName?: string; cwd?: string; createdPrNumber?: string; success?: boolean },
+    extra: {
+      repoName?: string;
+      cwd?: string;
+      createdPrNumber?: string;
+      success?: boolean;
+      runInBackground?: boolean;
+    },
   ) => {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -4162,6 +4168,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
           command,
           cwd: extra.cwd,
           createdPrNumber: extra.createdPrNumber,
+          runInBackground: extra.runInBackground,
         },
       ],
     };
@@ -4213,6 +4220,20 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       }),
       prSession('merger', 20_000, 'gh pr merge 42 --squash 2>&1 | tail -5', {
         repoName: 'acme/app',
+      }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it('keeps ready_for_review when the merge ran in the background', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr checks 42 --watch && gh pr merge 42 --squash', {
+        repoName: 'acme/app',
+        runInBackground: true,
       }),
     ]);
     expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
