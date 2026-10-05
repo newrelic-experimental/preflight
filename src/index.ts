@@ -36,7 +36,7 @@ import {
   watchCwdBreadcrumbForCorrection,
   watchPpidBreadcrumb,
 } from './hooks/session-resolver.js';
-import { SubagentWatcher } from './hooks/subagent-watcher.js';
+import { SubagentWatcher, type SubagentTokenEvent } from './hooks/subagent-watcher.js';
 import { WorkflowWatcher } from './hooks/workflow-watcher.js';
 import { migrateStoragePath } from './install/migrate.js';
 import { checkNodeVersion } from './install/node-version-check.js';
@@ -2033,9 +2033,9 @@ async function main(): Promise<void> {
     // Attributes hook records to the subagent that made them where the hook
     // envelope left agent_id/agent_type out (agentId via a toolUseId join
     // against SubagentWatcher's transcript tail, agentType via the
-    // transcript's meta sidecar or the parent's own Agent tool call) and gives
-    // onSubagentTurn the type for cost breakdown. Size-capped with idle expiry so a long-running --local
-    // daemon doesn't keep one entry per subagent call forever (#682).
+    // transcript's meta sidecar or the parent's own Agent tool call) and gives onSubagentTurn the type for cost breakdown. Size-capped
+    // with idle expiry so a long-running --local daemon doesn't keep one entry
+    // per subagent call forever (#682).
     const subagentAttribution = new SubagentAttributionIndex();
     eventProcessor = new HookEventProcessor({
       store: localStore,
@@ -2045,9 +2045,14 @@ async function main(): Promise<void> {
       // is hot-swapped to the scoped store via replaceStore().
       drainAllSessions: !options.stdio || isProvisional,
       onRecord: (incomingRecord) => {
-        // Backfilled before any consumer (notably auditTrail below) sees the
+        // Attributed before any consumer (notably auditTrail below) sees the
         // record, so audit/security events carry agentId and agentType (#681).
-        const rawRecord = subagentAttribution.backfill(incomingRecord);
+        // The watcher's on-demand read is synchronous, which is what keeps it
+        // ahead of auditTrail.
+        const rawRecord = subagentAttribution.attributeAtIntake(
+          incomingRecord,
+          activeSubagentWatcher,
+        );
         if (!config || !sessionTracker || !taskDetector) {
           logger.warn('onRecord called before full initialization; skipping');
           return;
@@ -2395,12 +2400,10 @@ async function main(): Promise<void> {
       // `AiSubagentTurn` event per turn for NR-side queryability.
       onSubagentTurn: (turn) => {
         if (!costTracker || !config) return;
-        // The transcript's meta sidecar gives the type from spawn time, so it
-        // arrives with the toolUseId join: a subagent's own hook record is
-        // attributed by type at intake whenever the watcher has already seen
-        // its tool_use block (the same best-effort window as agentId).
-        subagentAttribution.recordSubagentType(turn.agentId, turn.agentType);
-        subagentAttribution.recordSubagentToolUses(turn.agentId, turn.toolUseIds);
+        // The watcher's onTurnRead already joined this turn when it read it;
+        // repeating it here covers turns an earlier process's watcher left in
+        // the buffer.
+        subagentAttribution.recordSubagentTurn(turn);
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
         const usage: TokenUsage = {
           inputTokens: turn.inputTokens,
@@ -2768,6 +2771,7 @@ async function main(): Promise<void> {
           // Only meaningful when unfiltered (--local) — lets discoverFiles()
           // skip sessions that already have a live --stdio owner tailing them.
           localStore,
+          onTurnRead: (turn: SubagentTokenEvent) => subagentAttribution.recordSubagentTurn(turn),
         };
         activeSubagentWatcher = new SubagentWatcher(
           isStdioWatcher

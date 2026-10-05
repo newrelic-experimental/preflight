@@ -1,7 +1,10 @@
+import { createLogger } from '../shared/index.js';
 import { normalizeAgentType } from '../lib/agent-id.js';
 import { BoundedMap } from '../lib/bounded-map.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import { backfillAgentId, backfillAgentType } from './agent-partition.js';
+
+const logger = createLogger('subagent-attribution');
 
 /**
  * One entry per subagent tool call. Each entry only has to live from when
@@ -29,6 +32,25 @@ export interface SubagentAttributionIndexOptions {
   readonly ttlMs?: number;
   /** Clock override for tests. */
   readonly now?: () => number;
+}
+
+/**
+ * What one subagent transcript turn tells the index: its subagent, that
+ * subagent's type when known, and the tool calls it made.
+ */
+export interface SubagentTurnAttribution {
+  readonly agentId: string;
+  readonly toolUseIds: readonly string[];
+  readonly agentType?: string;
+}
+
+/**
+ * Reads the turns live subagent transcripts gained since they were last read,
+ * feeding each into the index (`SubagentWatcher` does, through its
+ * `onTurnRead` option), and returns how many it read.
+ */
+export interface LiveSubagentTranscriptReader {
+  readLiveTails(sessionId: string | undefined): number;
 }
 
 export interface SubagentAttributionIndexSize {
@@ -102,6 +124,46 @@ export class SubagentAttributionIndex {
     for (const toolUseId of toolUseIds) {
       this.toolUseIdToAgentId.set(toolUseId, agentId);
     }
+  }
+
+  /** Records a subagent transcript turn's type and `tool_use` ids. */
+  recordSubagentTurn(turn: SubagentTurnAttribution): void {
+    this.recordSubagentType(turn.agentId, turn.agentType);
+    this.recordSubagentToolUses(turn.agentId, turn.toolUseIds);
+  }
+
+  /**
+   * Attributes a hook record as it arrives, before any consumer (notably the
+   * audit trail) sees it. When the backfill leaves `agentId` unknown for a
+   * record with a `toolUseId`, `reader` reads the live subagent transcripts now and
+   * the backfill runs again: a fast call's `tool_use` line is usually on disk
+   * but not yet polled, and the record would otherwise be audited without its
+   * subagent (#681). Parent-session calls take the same path, at the cost of
+   * one stat per live transcript. If the read throws, the record is returned
+   * as the first backfill left it.
+   */
+  attributeAtIntake(
+    record: ToolCallRecord,
+    reader: LiveSubagentTranscriptReader | null,
+  ): ToolCallRecord {
+    const backfilled = this.backfill(record);
+    if (
+      reader === null ||
+      backfilled.agentId !== undefined ||
+      typeof backfilled.toolUseId !== 'string'
+    ) {
+      return backfilled;
+    }
+    let turnsRead: number;
+    try {
+      turnsRead = reader.readLiveTails(record.sessionId ?? undefined);
+    } catch (err) {
+      logger.warn('On-demand subagent transcript read failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return backfilled;
+    }
+    return turnsRead > 0 ? this.backfill(backfilled) : backfilled;
   }
 
   /** The subagent type for `agentId`, if its sidecar or spawning `Agent` call has been seen. */

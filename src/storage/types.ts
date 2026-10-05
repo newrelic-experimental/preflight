@@ -329,10 +329,13 @@ export interface ToolCallRecord {
    * subagent call. Some installs have been observed never sending it (#656),
    * so when it is absent it is backfilled via `backfillAgentId()`
    * (agent-partition.ts), joining on `toolUseId` against tool_use blocks
-   * `SubagentWatcher` finds while tailing that subagent's own transcript.
-   * Absent for tool calls made by the parent/orchestrator session, or for a
-   * subagent call the payload omitted it from and this join hasn't caught up
-   * with yet (best-effort, not persisted retroactively).
+   * `SubagentWatcher` finds while tailing that subagent's own transcript, which
+   * `SubagentAttributionIndex.attributeAtIntake()` reads on demand when the
+   * join has no entry yet. Absent for tool calls made by the parent/orchestrator
+   * session, and for a subagent call whose tool_use line Claude Code had not
+   * written to the transcript yet when the record arrived, or whose transcript
+   * the watcher had not discovered yet (best-effort, not persisted
+   * retroactively).
    */
   readonly agentId?: string;
   /**

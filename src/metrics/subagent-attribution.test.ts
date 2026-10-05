@@ -1,7 +1,16 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { SubagentAttributionIndex } from './subagent-attribution.js';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  SubagentAttributionIndex,
+  type LiveSubagentTranscriptReader,
+} from './subagent-attribution.js';
+import { HookEventProcessor, type SubagentTurnEvent } from '../hooks/event-processor.js';
+import { SubagentWatcher } from '../hooks/subagent-watcher.js';
 import { MAX_AGENT_TYPE_LENGTH } from '../lib/agent-id.js';
-import { AuditTrailManager } from '../security/audit-trail.js';
+import { AuditTrailManager, type AuditRecord } from '../security/audit-trail.js';
+import { LocalStore } from '../storage/local-store.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
@@ -226,5 +235,242 @@ describe('SubagentAttributionIndex -> AuditTrailManager', () => {
 
     expect(auditRecord.agentId).toBe('agent-a');
     expect(auditRecord.agentType).toBe('Explore');
+  });
+});
+
+describe('SubagentAttributionIndex.attributeAtIntake', () => {
+  /** A reader standing in for SubagentWatcher: reading feeds the turn back into the index. */
+  function makeReader(
+    index: SubagentAttributionIndex,
+    turn?: { agentId: string; toolUseIds: string[]; agentType?: string },
+  ): LiveSubagentTranscriptReader & { calls: Array<string | undefined> } {
+    const calls: Array<string | undefined> = [];
+    return {
+      calls,
+      readLiveTails(sessionId) {
+        calls.push(sessionId);
+        if (!turn) return 0;
+        index.recordSubagentTurn(turn);
+        return 1;
+      },
+    };
+  }
+
+  it('reads live subagent transcripts when the backfill finds no agentId, then backfills again', () => {
+    const index = new SubagentAttributionIndex();
+    const reader = makeReader(index, {
+      agentId: 'agent-a',
+      toolUseIds: ['toolu_sub_1'],
+      agentType: 'Explore',
+    });
+
+    const result = index.attributeAtIntake(makeRecord({ toolUseId: 'toolu_sub_1' }), reader);
+
+    expect(reader.calls).toEqual(['sess-001']);
+    expect(result.agentId).toBe('agent-a');
+    expect(result.agentType).toBe('Explore');
+  });
+
+  it('does not read when the envelope or the existing join already gives the agentId', () => {
+    const index = new SubagentAttributionIndex();
+    index.recordSubagentToolUses('agent-a', ['toolu_sub_1']);
+    const reader = makeReader(index);
+
+    index.attributeAtIntake(makeRecord({ toolUseId: 'toolu_sub_1' }), reader);
+    index.attributeAtIntake(makeRecord({ toolUseId: 'toolu_x', agentId: 'agent-env' }), reader);
+
+    expect(reader.calls).toEqual([]);
+  });
+
+  it('does not read for a record without a toolUseId, which no join could attribute', () => {
+    const index = new SubagentAttributionIndex();
+    const reader = makeReader(index);
+
+    index.attributeAtIntake(makeRecord({ toolUseId: undefined }), reader);
+
+    expect(reader.calls).toEqual([]);
+  });
+
+  it('returns the plain backfill, unattributed, when the read finds nothing or no reader exists', () => {
+    const index = new SubagentAttributionIndex();
+    const record = makeRecord({ toolUseId: 'toolu_parent_1' });
+
+    expect(index.attributeAtIntake(record, makeReader(index))).toBe(record);
+    expect(index.attributeAtIntake(record, null)).toBe(record);
+  });
+
+  it('falls back to the plain backfill when the read throws', () => {
+    const index = new SubagentAttributionIndex();
+    const record = makeRecord({ toolUseId: 'toolu_sub_1' });
+    const reader: LiveSubagentTranscriptReader = {
+      readLiveTails: () => {
+        throw new Error('EIO');
+      },
+    };
+
+    expect(index.attributeAtIntake(record, reader)).toBe(record);
+  });
+});
+
+/**
+ * The production order from #681's review: a subagent's fast tool call
+ * reaches hook intake before any watcher poll has read its tool_use line,
+ * on an install whose hook payload sends neither agent_id nor agent_type.
+ * Wired as src/index.ts wires it: the watcher feeds the index from every line
+ * it reads, and onRecord attributes each record before the audit trail sees it.
+ */
+describe('record-first intake: hook record before the watcher has polled its tool_use line', () => {
+  const PARENT_SESSION = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const AGENT_ID = 'a1234567890abcdef';
+  let storagePath: string;
+  let projectsDir: string;
+  let transcriptPath: string;
+
+  beforeEach(() => {
+    storagePath = mkdtempSync(join(tmpdir(), 'subagent-intake-store-'));
+    projectsDir = mkdtempSync(join(tmpdir(), 'subagent-intake-projects-'));
+    const subagentsDir = join(projectsDir, 'project-slug', PARENT_SESSION, 'subagents');
+    mkdirSync(subagentsDir, { recursive: true });
+    transcriptPath = join(subagentsDir, `agent-${AGENT_ID}.jsonl`);
+    // Written at spawn: the meta sidecar and the prompt line.
+    writeFileSync(join(subagentsDir, `agent-${AGENT_ID}.meta.json`), '{"agentType":"Explore"}');
+    writeFileSync(
+      transcriptPath,
+      JSON.stringify({
+        type: 'user',
+        isSidechain: true,
+        sessionId: PARENT_SESSION,
+        message: { role: 'user', content: 'Check the env file' },
+      }) + '\n',
+    );
+  });
+
+  afterEach(() => {
+    rmSync(storagePath, { recursive: true, force: true });
+    rmSync(projectsDir, { recursive: true, force: true });
+  });
+
+  function assistantLine(messageId: string, block: Record<string, unknown>): string {
+    return JSON.stringify({
+      type: 'assistant',
+      isSidechain: true,
+      sessionId: PARENT_SESSION,
+      uuid: `uuid-${messageId}-${String(block.type)}`,
+      timestamp: '2026-10-05T12:00:00.000Z',
+      message: {
+        id: messageId,
+        role: 'assistant',
+        model: 'claude-opus-4-7',
+        content: [block],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+  }
+
+  function readEnvLine(messageId: string, toolUseId: string): string {
+    return assistantLine(messageId, {
+      type: 'tool_use',
+      id: toolUseId,
+      name: 'Read',
+      input: { file_path: '/repo/.env' },
+    });
+  }
+
+  /** The collector's pre/post lines for a subagent Read, with no agent fields. */
+  function appendHookPair(toolUseId: string): void {
+    const base = { tool: 'Read', toolUseId, sessionId: PARENT_SESSION };
+    appendFileSync(
+      join(storagePath, `buffer-${PARENT_SESSION}.jsonl`),
+      JSON.stringify({
+        ...base,
+        mode: 'pre',
+        timestamp: 1000,
+        toolInput: { file_path: '/repo/.env' },
+      }) +
+        '\n' +
+        JSON.stringify({ ...base, mode: 'post', timestamp: 1050, success: true }) +
+        '\n',
+    );
+  }
+
+  function wire(): {
+    watcher: SubagentWatcher;
+    drain: () => void;
+    audits: AuditRecord[];
+    turns: SubagentTurnEvent[];
+  } {
+    const index = new SubagentAttributionIndex();
+    const audit = new AuditTrailManager({ developer: 'alice', sessionId: PARENT_SESSION });
+    const audits: AuditRecord[] = [];
+    const turns: SubagentTurnEvent[] = [];
+    const watcher = new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+      onTurnRead: (turn) => index.recordSubagentTurn(turn),
+    });
+    const store = new LocalStore(storagePath, PARENT_SESSION);
+    store.initialize();
+    const processor = new HookEventProcessor({
+      store,
+      onRecord: (record) =>
+        audits.push(audit.recordToolCall(index.attributeAtIntake(record, watcher))),
+      onSubagentTurn: (turn) => {
+        index.recordSubagentTurn(turn);
+        turns.push(turn);
+      },
+    });
+    return { watcher, drain: () => processor.processEvents(store.drainBuffer()), audits, turns };
+  }
+
+  it('attributes the audit record by reading the transcript on demand', () => {
+    const { watcher, drain, audits, turns } = wire();
+    watcher.poll(); // the poll after spawn: only the prompt is on disk yet
+    appendFileSync(transcriptPath, readEnvLine('msg_1', 'toolu_sub_1') + '\n');
+    appendHookPair('toolu_sub_1');
+
+    drain();
+
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ agentId: AGENT_ID, agentType: 'Explore' });
+    expect(audits[0]?.securityAlert).toBeDefined();
+    // The turn the on-demand read found reaches cost tracking once, through
+    // the buffer like any polled turn, and the next poll does not repeat it.
+    expect(turns).toHaveLength(0);
+    drain();
+    watcher.poll();
+    drain();
+    expect(turns.map((t) => t.messageId)).toEqual(['msg_1']);
+  });
+
+  it('attributes a call whose tool_use block is on a later line of an already-counted message', () => {
+    const { watcher, drain, audits, turns } = wire();
+    appendFileSync(
+      transcriptPath,
+      assistantLine('msg_1', { type: 'thinking', thinking: '' }) +
+        '\n' +
+        readEnvLine('msg_1', 'toolu_sub_1') +
+        '\n',
+    );
+    watcher.poll();
+    drain(); // the turn, deduped by message id for cost
+    appendHookPair('toolu_sub_1');
+
+    drain();
+
+    expect(turns).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ agentId: AGENT_ID, agentType: 'Explore' });
+  });
+
+  it('audits a parent call unattributed, without reading, when no subagent transcript has changed', () => {
+    const { watcher, drain, audits } = wire();
+    watcher.poll();
+    appendHookPair('toolu_parent_1');
+
+    drain();
+
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.agentId).toBeUndefined();
+    expect(audits[0]?.agentType).toBeUndefined();
   });
 });

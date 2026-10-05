@@ -90,6 +90,17 @@ const MAX_PARTIAL_LINE_BYTES = 1024 * 1024; // 1 MiB
  * read on every poll, since a failed read is not cached.
  */
 export const MAX_META_SIDECAR_BYTES = 16 * 1024;
+/**
+ * A tracked transcript the last poll saw modified within this window counts as
+ * live for `readLiveTails()`. A subagent running a long tool call writes
+ * nothing meanwhile, but that call's tool_use line was read by an earlier poll,
+ * so the window only has to cover transcripts that are writing turns now.
+ */
+export const LIVE_TRANSCRIPT_WINDOW_MS = 10 * 60 * 1000;
+/** Most transcripts one `readLiveTails()` call stats, most recently modified first. */
+export const MAX_ON_DEMAND_FILES = 32;
+/** Most transcript bytes one `readLiveTails()` call reads in total; the poll reads the rest. */
+export const MAX_ON_DEMAND_BYTES = 1024 * 1024;
 const HEALTH_INTERVAL_MS = 60_000;
 const SCHEMA_FINGERPRINT_REEMIT_MS = 60 * 60 * 1000; // 1h
 const COST_SELF_CHECK_MS = 60 * 60 * 1000; // 1h
@@ -175,6 +186,15 @@ interface SubagentWatcherBaseOptions {
   readonly discoveryHours?: number;
   /** LocalStore (used to peek the parent buffer path naming convention). */
   readonly localStore?: LocalStore;
+  /**
+   * Called with every turn the watcher reads, by `poll()` or `readLiveTails()`,
+   * right after it is appended to the parent buffer. Claude Code writes a
+   * message one content block per line, each repeating the message id, and the
+   * buffer drain counts each message once, so the later lines, which usually
+   * hold the tool_use blocks, never reach the drain's consumers. This sees
+   * every line as soon as it is read. Errors are caught and recorded.
+   */
+  readonly onTurnRead?: (turn: SubagentTokenEvent) => void;
 }
 
 type CostSelfCheck = () => { trackedUsd: number; groundTruthUsd: number };
@@ -272,10 +292,12 @@ export class SubagentWatcher {
   private readonly parentSessionFilter: string | null;
   private readonly costSelfCheck: SubagentWatcherOptions['costSelfCheck'];
   private readonly localStore: LocalStore | undefined;
+  private readonly onTurnRead: ((turn: SubagentTokenEvent) => void) | undefined;
 
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private healthIntervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
+  private stopped = false;
 
   // Per-file in-memory partial-line retention. The persisted byte cursor
   // points to the start of the next un-read byte; this map carries any trailing
@@ -301,6 +323,15 @@ export class SubagentWatcher {
   // successful reads are cached (a sidecar that is missing now may appear
   // later); bounded by the live file set via evictStalePartials().
   private readonly agentTypeByPath = new Map<string, string>();
+  // Transcript path -> bytes consumed so far, mirroring the persisted cursor so
+  // readLiveTails() can compare a stat against it without reading the cursor
+  // file. Absent until a poll has read the file, and dropped when a read fails,
+  // so an unreadable file is left to the poll instead of being retried on every
+  // hook record. Bounded by the live file set via evictStalePartials().
+  private readonly consumedBytesByPath = new Map<string, number>();
+  // Transcripts the last poll found modified within LIVE_TRANSCRIPT_WINDOW_MS,
+  // most recently modified first: the only files readLiveTails() considers.
+  private liveFiles: DiscoveredFile[] = [];
 
   // Health counters
   private filesWatched = 0;
@@ -338,6 +369,7 @@ export class SubagentWatcher {
       (Number.isFinite(envHours) && envHours > 0 ? envHours : DEFAULT_DISCOVERY_HOURS);
     this.costSelfCheck = options.costSelfCheck;
     this.localStore = options.localStore;
+    this.onTurnRead = options.onTurnRead;
     this.loadFingerprints();
   }
 
@@ -347,6 +379,7 @@ export class SubagentWatcher {
       return;
     }
     this.running = true;
+    this.stopped = false;
     if (!existsSync(this.storagePath)) {
       mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
     }
@@ -362,6 +395,8 @@ export class SubagentWatcher {
   }
 
   stop(): void {
+    this.stopped = true;
+    this.liveFiles = [];
     if (!this.running) return;
     this.running = false;
     if (this.intervalId !== null) {
@@ -384,6 +419,10 @@ export class SubagentWatcher {
     try {
       const files = this.discoverFiles();
       this.filesWatched = files.length;
+      const now = Date.now();
+      this.liveFiles = files
+        .filter((f) => now - f.stat.mtimeMs <= LIVE_TRANSCRIPT_WINDOW_MS)
+        .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
       for (const file of files) {
         this.processFile(file);
       }
@@ -392,6 +431,55 @@ export class SubagentWatcher {
     } catch (err) {
       this.recordError(err);
     }
+  }
+
+  /**
+   * Reads what live subagent transcripts gained since they were last read,
+   * through the same path as `poll()` (parent buffer, cursor, `onTurnRead`),
+   * and returns how many turns it read. Hook intake calls this for a record the
+   * `toolUseId` join cannot attribute yet, so the subagent's tool_use line for
+   * that call is read before the record is audited instead of on the next poll.
+   *
+   * Every parent-session call qualifies too, so with no live transcript this
+   * makes no syscall. Otherwise it stats each live transcript (`sessionId`'s
+   * only, when given; at most MAX_ON_DEMAND_FILES) and reads only from one
+   * that has grown past what was already consumed, up to MAX_ON_DEMAND_BYTES
+   * in total. A transcript created since the last poll is not tracked yet.
+   * Never throws.
+   */
+  readLiveTails(sessionId?: string): number {
+    if (this.stopped || this.liveFiles.length === 0) return 0;
+    let turns = 0;
+    let byteBudget = MAX_ON_DEMAND_BYTES;
+    let checked = 0;
+    try {
+      for (const [i, tracked] of this.liveFiles.entries()) {
+        if (checked >= MAX_ON_DEMAND_FILES || byteBudget <= 0) break;
+        if (sessionId !== undefined && tracked.parentSessionId !== sessionId) continue;
+        checked += 1;
+        const consumed = this.consumedBytesByPath.get(tracked.path);
+        if (consumed === undefined) continue;
+        let stat: Stats;
+        try {
+          stat = statSync(tracked.path);
+        } catch {
+          continue; // removed since the poll, which will drop it
+        }
+        if (stat.size <= consumed) continue;
+        const file: DiscoveredFile = { ...tracked, stat };
+        this.liveFiles[i] = file;
+        while (byteBudget > 0) {
+          const read = this.processFile(file, Math.min(byteBudget, MAX_BYTES_PER_POLL));
+          turns += read.turns;
+          byteBudget -= read.bytes;
+          const caughtUp = (this.consumedBytesByPath.get(file.path) ?? stat.size) >= stat.size;
+          if (read.bytes === 0 || caughtUp) break;
+        }
+      }
+    } catch (err) {
+      this.recordError(err);
+    }
+    return turns;
   }
 
   /** Reset counters; for tests. */
@@ -666,7 +754,15 @@ export class SubagentWatcher {
   // Per-file processing
   // -------------------------------------------------------------------------
 
-  private processFile(file: DiscoveredFile): void {
+  /**
+   * Reads up to `maxBytes` past the file's cursor, emits its complete turns and
+   * advances the cursor. Returns the bytes read and turns emitted.
+   */
+  private processFile(
+    file: DiscoveredFile,
+    maxBytes: number = MAX_BYTES_PER_POLL,
+  ): { readonly bytes: number; readonly turns: number } {
+    const nothingRead = { bytes: 0, turns: 0 };
     const st = file.stat;
     const cursorPath = this.cursorPath(file.parentSessionId, file.agentId);
     const persisted = this.readCursor(cursorPath);
@@ -681,10 +777,13 @@ export class SubagentWatcher {
       : persisted;
     if (switchedFile) this.partialByPath.delete(file.path);
 
-    if (startCursor.bytePos >= st.size) return;
+    if (startCursor.bytePos >= st.size) {
+      this.consumedBytesByPath.set(file.path, startCursor.bytePos);
+      return nothingRead;
+    }
 
     const remaining = st.size - startCursor.bytePos;
-    const toRead = Math.min(remaining, MAX_BYTES_PER_POLL);
+    const toRead = Math.min(remaining, maxBytes);
     let buf: Buffer;
     let actuallyRead = 0;
     let fd: number | null = null;
@@ -694,6 +793,7 @@ export class SubagentWatcher {
       actuallyRead = readSync(fd, buf, 0, toRead, startCursor.bytePos);
     } catch (err) {
       this.recordError(err);
+      this.consumedBytesByPath.delete(file.path);
       if (fd !== null) {
         try {
           closeSync(fd);
@@ -701,7 +801,7 @@ export class SubagentWatcher {
           /* ignore */
         }
       }
-      return;
+      return nothingRead;
     } finally {
       if (fd !== null) {
         try {
@@ -711,7 +811,10 @@ export class SubagentWatcher {
         }
       }
     }
-    if (actuallyRead === 0) return;
+    if (actuallyRead === 0) {
+      this.consumedBytesByPath.set(file.path, startCursor.bytePos);
+      return nothingRead;
+    }
 
     let decoder = this.decoderByPath.get(file.path);
     if (decoder === undefined) {
@@ -759,6 +862,7 @@ export class SubagentWatcher {
 
     // Emit token events for each parsed assistant turn
     const agentType = lines.length > 0 ? this.readAgentType(file.path) : undefined;
+    let turns = 0;
     for (const line of lines) {
       if (!line) continue;
       this.linesRead += 1;
@@ -792,6 +896,8 @@ export class SubagentWatcher {
         ...(agentType !== undefined ? { agentType } : {}),
       };
       this.appendToParentBuffer(file.parentSessionId, event);
+      this.notifyTurnRead(event);
+      turns += 1;
     }
 
     // Persist the advanced cursor plus the (bounded) trailing partial so a
@@ -799,6 +905,7 @@ export class SubagentWatcher {
     // sync; when the partial is empty, drop the key entirely so a fully-consumed
     // file leaves no residual entry in the map.
     this.writeCursor(cursorPath, nextBytePos, newPartial, file.path);
+    this.consumedBytesByPath.set(file.path, nextBytePos);
     if (newPartial.length > 0) {
       this.partialByPath.set(file.path, newPartial);
     } else {
@@ -820,6 +927,16 @@ export class SubagentWatcher {
         event: 'oversized_line_dropped',
       });
     }
+    return { bytes: actuallyRead, turns };
+  }
+
+  private notifyTurnRead(event: SubagentTokenEvent): void {
+    if (this.onTurnRead === undefined) return;
+    try {
+      this.onTurnRead(event);
+    } catch (err) {
+      this.recordError(err);
+    }
   }
 
   /**
@@ -833,7 +950,8 @@ export class SubagentWatcher {
     if (
       this.partialByPath.size === 0 &&
       this.decoderByPath.size === 0 &&
-      this.agentTypeByPath.size === 0
+      this.agentTypeByPath.size === 0 &&
+      this.consumedBytesByPath.size === 0
     ) {
       return;
     }
@@ -847,6 +965,9 @@ export class SubagentWatcher {
     }
     for (const path of this.agentTypeByPath.keys()) {
       if (!live.has(path)) this.agentTypeByPath.delete(path);
+    }
+    for (const path of this.consumedBytesByPath.keys()) {
+      if (!live.has(path)) this.consumedBytesByPath.delete(path);
     }
   }
 
