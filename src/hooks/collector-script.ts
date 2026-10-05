@@ -29,6 +29,7 @@ import { createHash } from 'node:crypto';
 import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
+import { hookEventFromArg } from '../hook-subcommands.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -773,11 +774,11 @@ function processHook(raw: string, cliEvent?: string): void {
     data.hook_event_name === undefined &&
     data.agent_action_name === undefined &&
     (data.toolCall !== undefined || typeof data.stepIdx === 'number');
-  const agyCliEvent = cliEvent?.toLowerCase();
+  const agyCliEvent = hookEventFromArg(cliEvent);
   const isAntigravityPost =
     isAntigravityShape &&
-    (agyCliEvent === 'posttooluse' ||
-      (agyCliEvent !== 'pretooluse' && (data.error !== undefined || data.toolCall === undefined)));
+    (agyCliEvent === 'PostToolUse' ||
+      (agyCliEvent !== 'PreToolUse' && (data.error !== undefined || data.toolCall === undefined)));
   const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
   // Both Antigravity branches spread this, so a pre and its post agree on
   // whether they carry a toolUseId: HookEventProcessor pairs a post by its

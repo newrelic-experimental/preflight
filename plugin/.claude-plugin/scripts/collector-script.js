@@ -49,6 +49,29 @@ var CLAUDE_CODE_ENV_SIGNALS = [
   "CLAUDE_CODE_VERSION"
 ];
 
+// src/hook-subcommands.ts
+var HOOK_EVENT_TYPES = [
+  "PreToolUse",
+  "PostToolUse",
+  "PermissionRequest",
+  "PermissionDenied",
+  "StopFailure"
+];
+var HOOK_SUBCOMMANDS = {
+  PreToolUse: "pre-tool",
+  PostToolUse: "post-tool",
+  PermissionRequest: "permission-request",
+  PermissionDenied: "permission-denied",
+  StopFailure: "stop-failure"
+};
+function hookEventFromArg(arg) {
+  if (arg === void 0) return void 0;
+  const lower = arg.toLowerCase();
+  return HOOK_EVENT_TYPES.find(
+    (event) => event.toLowerCase() === lower || HOOK_SUBCOMMANDS[event] === lower
+  );
+}
+
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
 var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -442,8 +465,8 @@ function processHook(raw, cliEvent) {
   const maxContentLen = getMaxContentLength();
   const isGeminiCli = process.env.MCP_CLIENT === "gemini-cli" || process.env.NEW_RELIC_AI_PLATFORM === "gemini-cli";
   const isAntigravityShape = data.hook_event_name === void 0 && data.agent_action_name === void 0 && (data.toolCall !== void 0 || typeof data.stepIdx === "number");
-  const agyCliEvent = cliEvent?.toLowerCase();
-  const isAntigravityPost = isAntigravityShape && (agyCliEvent === "posttooluse" || agyCliEvent !== "pretooluse" && (data.error !== void 0 || data.toolCall === void 0));
+  const agyCliEvent = hookEventFromArg(cliEvent);
+  const isAntigravityPost = isAntigravityShape && (agyCliEvent === "PostToolUse" || agyCliEvent !== "PreToolUse" && (data.error !== void 0 || data.toolCall === void 0));
   const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
   const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: String(data.stepIdx) } : {};
   let event;

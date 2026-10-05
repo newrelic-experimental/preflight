@@ -2557,6 +2557,18 @@ describe('collector-script', () => {
       expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
     });
 
+    it("accepts the post-tool / pre-tool markers other platforms' hook commands use", () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      // No error key, so only the argument can mark this one as PostToolUse.
+      processHook(makeAntigravityPostToolUse({ error: undefined }), 'post-tool');
+      processHook(makeAntigravityPostToolUse(), 'pre-tool');
+
+      expect(readBufferLines('agy-conv-001').map((e) => e.mode)).toEqual(['post', 'pre']);
+      expect(stdoutSpy).toHaveBeenNthCalledWith(1, '{}\n');
+      expect(stdoutSpy).toHaveBeenNthCalledWith(2, '{"decision":"allow"}\n');
+    });
+
     it('the PreToolUse argument wins over a payload carrying an error key', () => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
