@@ -1,5 +1,12 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  appendFileSync,
+} from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TranscriptMessageTracker } from './transcript-message-tracker.js';
@@ -357,6 +364,39 @@ describe('TranscriptMessageTracker', () => {
           "Redis won't work for us, let's use SQLite. Also your migration still won't work.",
         ),
       ).toBe(1);
+    });
+
+    interface HeldOutSet {
+      readonly source: string;
+      readonly rows: ReadonlyArray<{
+        readonly text: string;
+        readonly label: 'correction' | 'design';
+        readonly context: string;
+      }>;
+    }
+
+    // Written by models that hadn't seen the rule and scored after it was frozen, so they estimate
+    // how its word lists generalise. The scores are pinned measurements, not targets: tune the rule
+    // on the labeled corpus above, then update these.
+    const HELD_OUT: Readonly<Record<string, HeldOutSet>> = (
+      JSON.parse(
+        readFileSync(resolve(__dirname, '../../test/fixtures/wont-work-held-out.json'), 'utf-8'),
+      ) as { sets: Record<string, HeldOutSet> }
+    ).sets;
+
+    it.each([
+      ['A', { corrections: 25, counted: 25, design: 25, flagged: 23 }],
+      ['B', { corrections: 25, counted: 22, design: 25, flagged: 20 }],
+    ])('scores held-out set %s', (name, expected) => {
+      const rows = HELD_OUT[name].rows;
+      const corrections = rows.filter((r) => r.label === 'correction');
+      const design = rows.filter((r) => r.label === 'design');
+      expect({
+        corrections: corrections.length,
+        counted: corrections.filter((r) => countCorrections(r.text) === 1).length,
+        design: design.length,
+        flagged: design.filter((r) => countCorrections(r.text) === 1).length,
+      }).toEqual(expected);
     });
 
     // Fake timers freeze Date.now(), so they can't time a regex. Each input is
