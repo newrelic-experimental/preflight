@@ -5,12 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.57.3] - 2026-10-01
+## [1.57.4] - 2026-10-05
 
 ### Fixed
 
 - A git remote with a token in it no longer leaks the token. With a remote such as `https://<token>@github.com/widgets.git` or `ssh://git@github.com/widgets.git`, the repository name recorded on session summaries and shown in the dashboard header came out as `<token>@github.com/widgets`; it is now `github.com/widgets`. `repo_url` also drops the credential part of the remote now, including a token used as the username, which the secret patterns did not always catch; before, the value kept the token or had the whole host replaced by `[REDACTED]`. Only `ssh://`-style and `git@host:path` remotes keep a login name, and only the name. Every other kind, including the `git+https://` form used in `package.json`, loses everything up to the `@`, even when a password contains an unencoded `/`. A remote that goes through a remote helper, such as `hg::https://...` or `gcrypt::https://...`, gives no repository name, commit link, or `repo_url` at all, because only the helper can parse what follows the `::`; before, a token in one could reach the repository name.
 - Repository names and commit links now work for remotes with a trailing slash, an uppercase `.GIT` suffix, or a query string, and commit links from `ssh://` remotes with a port no longer put the port in the link's path. A `git@host:repo.git` remote, whose path has no owner segment, gets the repository name `host/repo`. For a remote ending in `.GIT` or carrying a query string, the repository name changes (from `acme/widgets.GIT` to `acme/widgets`), so on the day of the upgrade, git activity from sessions saved earlier that day under the old name is left out of that day's git stats.
+
+## [1.57.3] - 2026-10-01
+
+### Fixed
+
+- The Kiro Power manifest (`kiro-power/plugin.json`) now validates against the Agent Plugins 1.0.0 schema it declares. It carried a root `displayName` key, which the schema does not allow and which marketplaces validating against it rejected. Kiro's Powers documentation does not list `displayName` as a manifest field, so the key was removed rather than moved.
 
 ## [1.57.2] - 2026-09-29
 
