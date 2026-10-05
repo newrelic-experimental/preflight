@@ -1,5 +1,6 @@
 import { describe, it, expect } from '@jest/globals';
 
+import { MissingCloudCredentialError } from '../config.js';
 import {
   UnforwardedSessionMonitor,
   detectCloudForwardingGap,
@@ -33,30 +34,36 @@ function makeMonitor(overrides: { maxTrackedSessions?: number; clock?: { t: numb
 }
 
 describe('detectCloudForwardingGap', () => {
-  it('parses a missing licenseKey error from loadMcpConfig', () => {
-    const msg =
-      "Missing required configuration: licenseKey (mode='both'). Set the NEW_RELIC_LICENSE_KEY environment variable or add \"licenseKey\" to /home/u/.newrelic-preflight/config.json, or switch to mode='local' to skip cloud transport.";
-    expect(detectCloudForwardingGap(msg)).toEqual({
+  it('reads a missing licenseKey error from loadMcpConfig', () => {
+    const err = new MissingCloudCredentialError('licenseKey', 'both', '/home/u/config.json');
+    expect(detectCloudForwardingGap(err)).toEqual({
       reason: 'missing-license-key',
       missingField: 'licenseKey',
       requestedMode: 'both',
     });
   });
 
-  it('parses a missing accountId error from loadMcpConfig', () => {
-    const msg = "Missing required configuration: accountId (mode='cloud'). Set ...";
-    expect(detectCloudForwardingGap(msg)).toEqual({
+  it("reads a missing accountId error carried as the cause of loadConfigOrDie's wrapper", () => {
+    const cause = new MissingCloudCredentialError('accountId', 'cloud', '/home/u/config.json');
+    const wrapped = new Error(`${cause.message}\n\nRun 'preflight doctor' to diagnose.`, {
+      cause,
+    });
+    expect(detectCloudForwardingGap(wrapped)).toEqual({
       reason: 'missing-account-id',
       missingField: 'accountId',
       requestedMode: 'cloud',
     });
   });
 
-  it('returns null for unrelated config errors so --local rethrows them', () => {
-    expect(detectCloudForwardingGap("Invalid NR_AI_MODE='x'.")).toBeNull();
+  it('returns null for any other error so --local rethrows it', () => {
+    expect(detectCloudForwardingGap(new Error("Invalid NR_AI_MODE='x'."))).toBeNull();
+    // Matching is by type: the same text on a plain Error is not a gap.
     expect(
-      detectCloudForwardingGap('Config has a licenseKey but no explicit mode. Telemetry...'),
+      detectCloudForwardingGap(
+        new Error("Missing required configuration: licenseKey (mode='both')"),
+      ),
     ).toBeNull();
+    expect(detectCloudForwardingGap('Missing required configuration: licenseKey')).toBeNull();
   });
 });
 

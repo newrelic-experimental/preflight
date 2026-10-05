@@ -14,6 +14,7 @@
  */
 
 import { createLogger } from '../shared/index.js';
+import { MissingCloudCredentialError } from '../config.js';
 
 const logger = createLogger('unforwarded-session-monitor');
 
@@ -80,20 +81,24 @@ const HINT =
   'credentials. Add licenseKey and accountId to the config file (the dashboard LaunchAgent ' +
   'does not inherit shell environment variables), then restart the dashboard.';
 
-const GAP_ERROR_RE = /Missing required configuration: (licenseKey|accountId) \(mode='([a-z]+)'\)/;
-
 /**
- * Parse the config-load error `--local` catches before falling back to local
- * mode. Returns null for any other error, which `--local` rethrows.
+ * Read the config-load error `--local` catches before falling back to local
+ * mode: a `MissingCloudCredentialError`, thrown directly or carried as the
+ * `cause` of a wrapping error. Returns null for any other error, which
+ * `--local` rethrows.
  */
-export function detectCloudForwardingGap(errorMessage: string): CloudForwardingGap | null {
-  const match = GAP_ERROR_RE.exec(errorMessage);
-  if (!match) return null;
-  const missingField = match[1] === 'licenseKey' ? 'licenseKey' : 'accountId';
+export function detectCloudForwardingGap(err: unknown): CloudForwardingGap | null {
+  const source =
+    err instanceof MissingCloudCredentialError
+      ? err
+      : err instanceof Error && err.cause instanceof MissingCloudCredentialError
+        ? err.cause
+        : undefined;
+  if (!source) return null;
   return {
-    reason: missingField === 'licenseKey' ? 'missing-license-key' : 'missing-account-id',
-    missingField,
-    requestedMode: match[2]!,
+    reason: source.missingField === 'licenseKey' ? 'missing-license-key' : 'missing-account-id',
+    missingField: source.missingField,
+    requestedMode: source.mode,
   };
 }
 

@@ -182,7 +182,7 @@ function loadConfigOrDie(options: Partial<CliOptions>): Readonly<McpServerConfig
     return loadMcpConfig(options);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`${msg}\n\nRun 'preflight doctor' to diagnose.`);
+    throw new Error(`${msg}\n\nRun 'preflight doctor' to diagnose.`, { cause: err });
   }
 }
 
@@ -1087,8 +1087,7 @@ async function main(): Promise<void> {
       try {
         config = loadConfigOrDie(options);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const gap = detectCloudForwardingGap(msg);
+        const gap = detectCloudForwardingGap(err);
         if (!gap) throw err;
         process.env.NR_AI_MODE = 'local';
         config = loadConfigOrDie(options);

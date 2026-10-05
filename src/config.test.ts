@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { execSync } from 'node:child_process';
 import {
   loadMcpConfig,
+  MissingCloudCredentialError,
   redactSensitive,
   sanitizeDeveloper,
   normalizeDeveloperName,
@@ -1575,6 +1576,29 @@ describe('licenseKey gating', () => {
     expect(() => loadMcpConfig({ config: configPath })).toThrow(
       /Missing required configuration: accountId/,
     );
+  });
+
+  // --local falls back to local mode on this type, not on the message (#479).
+  it('throws a MissingCloudCredentialError naming the missing field and the mode', () => {
+    const thrown = (fn: () => unknown): unknown => {
+      try {
+        fn();
+      } catch (err) {
+        return err;
+      }
+      throw new Error('expected loadMcpConfig to throw');
+    };
+
+    process.env.NR_AI_MODE = 'both';
+    const noKey = thrown(() => loadMcpConfig({ config: writeConfigFile({ accountId: '12345' }) }));
+    expect(noKey).toBeInstanceOf(MissingCloudCredentialError);
+    expect(noKey).toMatchObject({ missingField: 'licenseKey', mode: 'both' });
+
+    process.env.NR_AI_MODE = 'cloud';
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
+    const noAccount = thrown(() => loadMcpConfig({ config: writeConfigFile({}) }));
+    expect(noAccount).toBeInstanceOf(MissingCloudCredentialError);
+    expect(noAccount).toMatchObject({ missingField: 'accountId', mode: 'cloud' });
   });
 
   it('throws when NR_AI_MODE is set to an invalid value', () => {
