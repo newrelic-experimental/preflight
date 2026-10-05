@@ -1,0 +1,409 @@
+{
+  "sets": {
+    "C": {
+      "source": "claude-sonnet-4-6 through an LLM gateway, prompted with the correction/design definitions and no classifier code, rule description or cue words. Generated before the rule it scores was written, and scored once after that rule was frozen. Four rows that repeated a set A/B row near-verbatim were dropped, and the 40/40 split was restored by generation order. No label was changed.",
+      "rows": [
+        {
+          "text": "that wont work, you hardcoded the port to 3000 but we read it from env at startup",
+          "label": "correction",
+          "context": "The assistant wrote a Docker Compose service definition with PORT=3000 hardcoded."
+        },
+        {
+          "text": "Using a global mutex here wont work for our use case because we have multiple worker processes and they don't share memory",
+          "label": "design",
+          "context": "The assistant suggested using a global mutex to prevent concurrent writes to a shared resource."
+        },
+        {
+          "text": "this won't work - you're calling useState inside a conditional which breaks the rules of hooks",
+          "label": "correction",
+          "context": "The assistant wrote a React component that called useState inside an if statement."
+        },
+        {
+          "text": "JWT blacklisting wont work at scale because we'd have to hit the DB on every single request",
+          "label": "design",
+          "context": "The assistant proposed implementing token revocation by maintaining a blacklist of invalidated JWTs."
+        },
+        {
+          "text": "Won't work. The lambda has no VPC access so it can't reach the RDS instance.",
+          "label": "correction",
+          "context": "The assistant wrote a Lambda function that connects directly to an RDS PostgreSQL database."
+        },
+        {
+          "text": "polling every second wont work, product wants near-realtime and that'll hammer the db",
+          "label": "design",
+          "context": "The assistant suggested polling the database every second to detect new records for a live dashboard."
+        },
+        {
+          "text": "the regex you wrote won't work for unicode input, we have users in Japan and Korea",
+          "label": "correction",
+          "context": "The assistant wrote a username validation regex using only ASCII character ranges."
+        },
+        {
+          "text": "storing sessions in a single Redis node wont work once we go multi-region",
+          "label": "design",
+          "context": "The assistant proposed storing user session data in a Redis instance for a new authentication flow."
+        },
+        {
+          "text": "iframe embedding wont work here, the third-party dashboard sets X-Frame-Options: DENY",
+          "label": "design",
+          "context": "The assistant suggested embedding an analytics dashboard from a third-party vendor using an iframe."
+        },
+        {
+          "text": "this won't work lol, you forgot to await the async call so data is always undefined on first render",
+          "label": "correction",
+          "context": "The assistant wrote a data-fetching hook that called an async function without awaiting it."
+        },
+        {
+          "text": "a cron job for this wont work because the task can run longer than the interval and we'd get overlapping executions",
+          "label": "design",
+          "context": "The assistant proposed scheduling a data cleanup task using a cron job running every 5 minutes."
+        },
+        {
+          "text": "Won't work as written - the service account doesn't have storage.objects.create permission on that bucket",
+          "label": "correction",
+          "context": "The assistant wrote a Cloud Function that uploads processed files to a GCS bucket."
+        },
+        {
+          "text": "that approach wont work for mobile - we can't guarantee a persistent websocket connection when the app is backgrounded",
+          "label": "design",
+          "context": "The assistant proposed using WebSockets to push real-time notifications to the mobile app."
+        },
+        {
+          "text": "your SQL won't work, you're joining on user_id but the events table uses account_id",
+          "label": "correction",
+          "context": "The assistant wrote a SQL query joining the users table to the events table."
+        },
+        {
+          "text": "client-side encryption wont work here because the search feature needs to query on those fields",
+          "label": "design",
+          "context": "The assistant suggested encrypting sensitive PII fields on the client before sending to the server."
+        },
+        {
+          "text": "this config won't work in prod, you set NODE_ENV to development",
+          "label": "correction",
+          "context": "The assistant wrote a production Kubernetes ConfigMap for a Node.js service."
+        },
+        {
+          "text": "a single Postgres instance wont work long-term, we're projecting 50k writes/sec at peak",
+          "label": "design",
+          "context": "The assistant proposed using a single PostgreSQL instance as the primary data store for a new service."
+        },
+        {
+          "text": "won't work - you're mutating the redux state directly instead of returning a new object from the reducer",
+          "label": "correction",
+          "context": "The assistant wrote a Redux reducer that modified the state object in place."
+        },
+        {
+          "text": "basic auth wont work for the API because our enterprise customers need SAML SSO",
+          "label": "design",
+          "context": "The assistant suggested adding HTTP Basic Authentication to the public API."
+        },
+        {
+          "text": "the test you wrote won't work, it's testing the mock not the actual implementation",
+          "label": "correction",
+          "context": "The assistant wrote a unit test that mocked the function under test and then asserted on the mock."
+        },
+        {
+          "text": "flat file storage wont work once we need to support concurrent writes from multiple pods",
+          "label": "design",
+          "context": "The assistant proposed storing uploaded user avatars as files on the local filesystem."
+        },
+        {
+          "text": "that sed command won't work on macOS, BSD sed handles the -i flag differently",
+          "label": "correction",
+          "context": "The assistant wrote a shell script using GNU sed with the -i flag for in-place editing."
+        },
+        {
+          "text": "Wont work for our compliance requirements - we can't store card numbers even temporarily, need to go straight to the tokenization API",
+          "label": "design",
+          "context": "The assistant proposed briefly storing raw credit card numbers in a staging table before tokenizing them."
+        },
+        {
+          "text": "this won't work, the API returns a 204 with no body but you're trying to parse JSON from the response",
+          "label": "correction",
+          "context": "The assistant wrote a fetch call that called response.json() after a DELETE request."
+        },
+        {
+          "text": "recursive approach wont work here, the dependency trees can be hundreds of levels deep and we'll blow the stack",
+          "label": "design",
+          "context": "The assistant suggested using a recursive function to traverse a dependency graph."
+        },
+        {
+          "text": "the github action you wrote won't work, you're referencing a secret that only exists in the prod environment but this runs on PRs too",
+          "label": "correction",
+          "context": "The assistant wrote a GitHub Actions workflow that referenced a production-only secret in a step that runs on pull requests."
+        },
+        {
+          "text": "in-memory caching wont work across deploys, we need something external like redis or memcached",
+          "label": "design",
+          "context": "The assistant proposed caching expensive computation results in a module-level dictionary."
+        },
+        {
+          "text": "won't work. you're using Promise.all but if any one of those requests fails the whole thing rejects",
+          "label": "correction",
+          "context": "The assistant wrote code using Promise.all to fetch data from five independent API endpoints."
+        },
+        {
+          "text": "long polling wont work at our scale, we'd need too many open connections. leaning toward SSE or websockets",
+          "label": "design",
+          "context": "The assistant suggested implementing real-time updates using long polling."
+        },
+        {
+          "text": "that terraform plan won't work, you're trying to create the S3 bucket and the bucket policy in the same apply but the policy depends on the bucket ARN",
+          "label": "correction",
+          "context": "The assistant wrote a Terraform configuration that created an S3 bucket and its policy in the same resource block."
+        },
+        {
+          "text": "monorepo with a single lockfile wont work if teams need to deploy services independently on different release cadences",
+          "label": "design",
+          "context": "The assistant proposed consolidating all microservices into a monorepo with a single root package.json."
+        },
+        {
+          "text": "this won't work - index is out of bounds when the array is empty, you need to check length first",
+          "label": "correction",
+          "context": "The assistant wrote a function that accessed array[0] without checking if the array was empty."
+        },
+        {
+          "text": "syncing via git wont work for config distribution, operators won't have git access in the air-gapped environment",
+          "label": "design",
+          "context": "The assistant proposed distributing configuration updates to edge nodes by having them pull from a git repository."
+        },
+        {
+          "text": "the helm chart you generated won't work, the liveness probe path is /health but our app exposes /healthz",
+          "label": "correction",
+          "context": "The assistant generated a Helm chart for a Go microservice."
+        },
+        {
+          "text": "SHA-1 for content hashing wont work, we need collision resistance for the integrity checks",
+          "label": "design",
+          "context": "The assistant suggested using SHA-1 to generate content hashes for cache-busting asset filenames."
+        },
+        {
+          "text": "won't work, you're importing from the barrel file which creates a circular dependency with this module",
+          "label": "correction",
+          "context": "The assistant added an import from the project's main index.ts barrel file inside a utility module."
+        },
+        {
+          "text": "embedding the API key in the mobile app binary wont work, it can be extracted with basic reverse engineering",
+          "label": "design",
+          "context": "The assistant suggested storing the third-party API key as a compile-time constant in the iOS app."
+        },
+        {
+          "text": "that css won't work in safari, gap on flexbox wasn't supported until safari 14 and we still support 13",
+          "label": "correction",
+          "context": "The assistant wrote CSS using the gap property on a flex container for a navigation layout."
+        },
+        {
+          "text": "a single event loop thread wont work for the image processing service, those tasks are CPU-bound and will block everything",
+          "label": "design",
+          "context": "The assistant proposed building the image resizing service in Node.js."
+        },
+        {
+          "text": "this won't work - you're checking req.user before the auth middleware runs in the chain",
+          "label": "correction",
+          "context": "The assistant wrote an Express route that accessed req.user before the passport.authenticate middleware was applied."
+        },
+        {
+          "text": "schema-on-write wont work for this data source, the upstream format changes without notice and we need to handle it gracefully",
+          "label": "design",
+          "context": "The assistant proposed defining a strict schema and validating all incoming data against it at ingestion time."
+        },
+        {
+          "text": "the ansible playbook won't work, you're using the apt module but the target hosts run RHEL",
+          "label": "correction",
+          "context": "The assistant wrote an Ansible playbook that used the apt module to install packages."
+        },
+        {
+          "text": "feature flags in the DB wont work if the service needs to read them before the DB connection is established",
+          "label": "design",
+          "context": "The assistant proposed storing feature flags in a database table."
+        },
+        {
+          "text": "won't work - the cors middleware needs to come before the router, not after",
+          "label": "correction",
+          "context": "The assistant added CORS middleware registration after the route definitions in an Express app."
+        },
+        {
+          "text": "server-side rendering wont work for this dashboard, the data is user-specific and changes every few seconds",
+          "label": "design",
+          "context": "The assistant suggested switching the analytics dashboard to server-side rendering for better SEO and performance."
+        },
+        {
+          "text": "that grep pattern won't work, you need to escape the dot or it matches any character",
+          "label": "correction",
+          "context": "The assistant wrote a grep command using a regex pattern with an unescaped dot to match file extensions."
+        },
+        {
+          "text": "two-phase commit wont work across these services, one of them is a third-party API we don't control",
+          "label": "design",
+          "context": "The assistant proposed using two-phase commit to ensure consistency across a payment service and an inventory service."
+        },
+        {
+          "text": "this won't work in strict mode, you're using arguments.callee which is banned",
+          "label": "correction",
+          "context": "The assistant wrote a recursive JavaScript function that referenced arguments.callee."
+        },
+        {
+          "text": "the python script won't work, you're using walrus operator syntax which requires 3.8+ and the pipeline runs 3.7",
+          "label": "correction",
+          "context": "The assistant wrote a Python data processing script using the walrus operator."
+        },
+        {
+          "text": "hardcoding the region wont work, this stack gets deployed to us-east-1 and eu-west-1 and we need it to be portable",
+          "label": "design",
+          "context": "The assistant proposed hardcoding the AWS region as us-east-1 in the CDK stack configuration."
+        },
+        {
+          "text": "won't work - you're using window.localStorage in a Next.js component that gets server-rendered",
+          "label": "correction",
+          "context": "The assistant wrote a Next.js page component that accessed window.localStorage at the top level."
+        },
+        {
+          "text": "a shared staging environment wont work for us, teams deploy at different times and keep breaking each other's tests",
+          "label": "design",
+          "context": "The assistant suggested using a single shared staging environment for all teams to test against."
+        },
+        {
+          "text": "the type assertion you added won't work, you're casting a string to a number with 'as' but that doesn't actually convert the value at runtime",
+          "label": "correction",
+          "context": "The assistant used a TypeScript type assertion to cast a string variable to number."
+        },
+        {
+          "text": "dependency injection via constructor wont work here because these objects are created by the ORM, not by us",
+          "label": "design",
+          "context": "The assistant proposed refactoring model classes to use constructor-based dependency injection."
+        },
+        {
+          "text": "this won't work, you're closing the db connection inside the loop so the second iteration always fails",
+          "label": "correction",
+          "context": "The assistant wrote a batch processing script that opened and closed a database connection inside a for loop."
+        },
+        {
+          "text": "canary deployments wont work with our current setup because we don't have weighted routing in front of the service",
+          "label": "design",
+          "context": "The assistant proposed implementing canary deployments for the new checkout service."
+        },
+        {
+          "text": "that jq command won't work, you're piping to it but the input is an array not an object",
+          "label": "correction",
+          "context": "The assistant wrote a shell pipeline using jq to extract a field from JSON output."
+        },
+        {
+          "text": "that wont work on iOS 15 — UISheetPresentationController wasn't available until 15.0 but you've got the deployment target set to 14.0 in the project",
+          "label": "correction",
+          "context": "The assistant added a bottom sheet using UISheetPresentationController to the iOS view controller code."
+        },
+        {
+          "text": "using a global interpreter lock means threading wont work the way we need for the feature extraction stage, should we just go multiprocessing instead?",
+          "label": "design",
+          "context": "The assistant proposed using Python threads to parallelise the ETL feature extraction step."
+        },
+        {
+          "text": "Won't work — you marked the ELF section as read-only but the bootloader needs to patch the checksum in place at that address before jumping",
+          "label": "correction",
+          "context": "The assistant produced a linker script that placed the firmware checksum field in a read-only section."
+        },
+        {
+          "text": "hardcoding the locale to en-US wont work for us, we ship to Japan and Germany and the date formatting alone will break everything",
+          "label": "design",
+          "context": "The assistant suggested hardcoding the locale string as a quick fix for a date display bug."
+        },
+        {
+          "text": "the span name you used is wrong, that attribute wont work with the OTLP exporter we have configured — it expects otel.library.name not instrumentation.name",
+          "label": "correction",
+          "context": "The assistant added OpenTelemetry span attributes to the tracing instrumentation code."
+        },
+        {
+          "text": "Won't work for the ML pipeline tbh. If we checkpoint to local disk the spot instance gets recycled and we lose everything. Needs to go to S3 or GCS.",
+          "label": "design",
+          "context": "The assistant proposed saving model checkpoints to the local filesystem during training."
+        },
+        {
+          "text": "you registered the font with the wrong bundle identifier so it wont work at runtime, should be com.myapp.fonts not com.myapp",
+          "label": "correction",
+          "context": "The assistant added a custom font registration call in the iOS AppDelegate."
+        },
+        {
+          "text": "a makefile wont work here because half the team is on windows and we're not requiring WSL, we need something cross-platform like cmake or just use gradle",
+          "label": "design",
+          "context": "The assistant suggested adding a Makefile to automate the embedded firmware build steps."
+        },
+        {
+          "text": "that regex wont work for RTL languages, you're assuming left-to-right word boundaries and Arabic text will just fall through",
+          "label": "correction",
+          "context": "The assistant wrote a regex-based text segmentation function intended for use in the i18n module."
+        },
+        {
+          "text": "cherry-picking those commits wont work cleanly because the refactor in between changed all the import paths — we'd need to replay them on top of main manually",
+          "label": "design",
+          "context": "The assistant suggested cherry-picking a series of hotfix commits from a release branch onto main."
+        },
+        {
+          "text": "the vertex shader you wrote wont work, gl_FragCoord is a fragment shader built-in, it doesn't exist in the vertex stage",
+          "label": "correction",
+          "context": "The assistant wrote a GLSL vertex shader that referenced gl_FragCoord for a screen-space effect."
+        },
+        {
+          "text": "storing the entire raw event stream in memory wont work once we hit production volumes — we're talking 50M events a day, we need windowed aggregation before anything lands in the warehouse",
+          "label": "design",
+          "context": "The assistant proposed buffering all incoming Kafka events in a Python list before writing them to BigQuery."
+        },
+        {
+          "text": "wait this wont work, you set the gradle compileSdkVersion to 33 but the dependency you added requires at least 34",
+          "label": "correction",
+          "context": "The assistant added a new Android library dependency and updated the build.gradle file."
+        },
+        {
+          "text": "aria-label on a div wont work for screen readers the way you're thinking — we need an actual button element or at least role=button plus tabindex otherwise keyboard users are stuck",
+          "label": "correction",
+          "context": "The assistant added an aria-label attribute to a div element to make a custom click target accessible."
+        },
+        {
+          "text": "that approach wont work for the notebook — if we call model.fit inside a loop in a cell and the kernel restarts we lose all the epoch history, better to use a callback that writes to mlflow",
+          "label": "design",
+          "context": "The assistant suggested wrapping the training loop in a for loop inside a Jupyter notebook cell."
+        },
+        {
+          "text": "the log rotation config you added wont work, max-size is a Docker logging driver option not a logback property, these are two different systems",
+          "label": "correction",
+          "context": "The assistant added a max-size field to the logback.xml configuration file for a Java service."
+        },
+        {
+          "text": "squashing everything into one commit wont work for our release process — the changelog generator parses conventional commit messages individually and a squash loses all that",
+          "label": "design",
+          "context": "The assistant recommended squashing all feature branch commits before merging to keep the history clean."
+        },
+        {
+          "text": "the WinRT API you used wont work on Windows 10 1809, we still have enterprise customers on that build and they'll get a runtime crash",
+          "label": "correction",
+          "context": "The assistant used a WinRT storage API in the desktop application code to handle file picker functionality."
+        },
+        {
+          "text": "using pandas for the transform step wont work at scale — even with chunking you'll OOM on the 200GB daily dump, we should look at dask or just push the transforms into spark",
+          "label": "design",
+          "context": "The assistant proposed using pandas with chunked reading to process a large daily data file in the ETL pipeline."
+        },
+        {
+          "text": "the physics layer mask you set wont work — layer 6 collides with layer 6 in the matrix but the player is on layer 3, so the ground check raycast will never hit",
+          "label": "correction",
+          "context": "The assistant configured the Unity physics layer collision matrix and set up a ground detection raycast for the player controller."
+        },
+        {
+          "text": "peer dependencies wont work here because the plugin needs to support three different versions of the host library simultaneously and npm will just complain about the conflict",
+          "label": "design",
+          "context": "The assistant suggested declaring the host library as a peer dependency in the npm package manifest."
+        },
+        {
+          "text": "pluralisation via simple string replacement wont work for Polish or Russian — they have like four plural forms depending on the number and a simple s-suffix swap will look broken to native speakers",
+          "label": "design",
+          "context": "The assistant proposed handling plural strings by appending an 's' when a count is not equal to one."
+        },
+        {
+          "text": "that wont work for our Android target — we're still supporting API 21 and JobScheduler wasn't available until 21 but WorkManager's newer constraints API needs 23 minimum, so we'll have to stick with the compat layer",
+          "label": "design",
+          "context": "The assistant suggested using WorkManager's advanced scheduling constraints to handle background sync on Android."
+        }
+      ]
+    }
+  }
+}
