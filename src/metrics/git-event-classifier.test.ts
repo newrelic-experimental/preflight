@@ -425,3 +425,73 @@ describe('classifyGitSegments per-segment outcome', () => {
     ).toEqual([['commit', false]]);
   });
 });
+
+describe('classifyGitSegments when the error names no step', () => {
+  const resolveRepo = (): string | null => null;
+  const GPG = 'error: gpg failed to sign the data\nfatal: failed to write commit object';
+
+  const outcomes = (command: string, error: string): [string, boolean][] =>
+    classifyGitSegments(command, makeRecord({ command, success: false, error }), resolveRepo).map(
+      ({ event }) => [event.type, event.success],
+    );
+
+  it('fails a heredoc-message commit that is the only command', () => {
+    // What stripHeredocBodies leaves of `git commit -m "$(cat <<'EOF' ... EOF )"`.
+    expect(outcomes('git commit -m "$(cat <<\'EOF\'\n)"', GPG)).toEqual([['commit', false]]);
+  });
+
+  it('fails a multi-line quoted commit message that is the only command', () => {
+    expect(outcomes('git commit -m "title\n\nbody"', 'Author identity unknown')).toEqual([
+      ['commit', false],
+    ]);
+  });
+
+  it('ignores a trailing comment when finding the last command', () => {
+    expect(outcomes("git commit -m x\n# don't push yet", GPG)).toEqual([['commit', false]]);
+  });
+});
+
+describe('classifyGitSegments shell splitting', () => {
+  const resolveRepo = (): string | null => null;
+  const NOTHING = 'nothing to commit, working tree clean';
+
+  const outcomes = (command: string, error: string): [string, boolean][] =>
+    classifyGitSegments(command, makeRecord({ command, success: false, error }), resolveRepo).map(
+      ({ event }) => [event.type, event.success],
+    );
+
+  it('drops a push chained after a heredoc-message commit that failed', () => {
+    expect(outcomes('git commit -m "$(cat <<\'EOF\'\n)" && git push', NOTHING)).toEqual([
+      ['commit', false],
+    ]);
+  });
+
+  it('does not split on an operator inside a quoted commit message', () => {
+    expect(outcomes('git commit -m "a; b" && git push', NOTHING)).toEqual([['commit', false]]);
+  });
+
+  it('reads a backslash or an operator before a newline as one command line', () => {
+    const committed: [string, boolean][] = [
+      ['other_git', true],
+      ['commit', false],
+    ];
+    expect(outcomes('git add -A && \\\ngit commit -m x && \\\ngit push', NOTHING)).toEqual(
+      committed,
+    );
+    expect(outcomes('git add -A &&\ngit commit -m x &&\ngit push', NOTHING)).toEqual(committed);
+  });
+
+  it('ignores quotes inside a # comment', () => {
+    expect(outcomes("# don't\ngit commit -m x && git push\n# won't", NOTHING)).toEqual([
+      ['commit', false],
+    ]);
+  });
+
+  it('splits on every operator when the quotes do not balance', () => {
+    const REJECTED = ' ! [rejected] main -> main (non-fast-forward)';
+    expect(outcomes('git commit -m "x && git push', REJECTED)).toEqual([
+      ['commit', true],
+      ['push_rejected', false],
+    ]);
+  });
+});

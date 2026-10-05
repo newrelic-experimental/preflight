@@ -1752,6 +1752,25 @@ describe('GitEfficiencyTracker', () => {
       );
     });
 
+    it('does not count a heredoc-message commit that failed with unrecognized text', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({ command: 'git merge main', success: false, error: CONFLICT, timestamp: t }),
+      );
+      const command = 'git commit -m "$(cat <<\'EOF\'\nmerge main\n\nCo-Authored-By: x\nEOF\n)"';
+      tracker.recordToolCall(
+        makeRecord({
+          command,
+          success: false,
+          error: 'error: gpg failed to sign the data\nfatal: failed to write commit object',
+          timestamp: t + 1_000,
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(0);
+      expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['pending']);
+    });
+
     it('counts neither the commit nor the push when only untracked files were present', () => {
       tracker.recordToolCall(
         makeRecord({

@@ -249,23 +249,11 @@ const GH_PR_VERB_ACTION: Record<string, PrEvent['action']> = {
   view: 'view',
 };
 
-const SHELL_OPERATOR_RE = /(\|\||&&|;|\||\n)/;
-
-/** A shell command's segments and the operators between them:
- *  `operators[i]` joins `segments[i]` to `segments[i + 1]`. */
-function splitShellChain(command: string): { segments: string[]; operators: string[] } {
-  const parts = command.split(SHELL_OPERATOR_RE);
-  return {
-    segments: parts.filter((_, i) => i % 2 === 0),
-    operators: parts.filter((_, i) => i % 2 === 1),
-  };
-}
-
 /** Splits a shell command into its top-level segments on `||`, `&&`, `;`,
  *  `|`, and newline. Strip heredoc bodies first so a surviving newline really
  *  does start a new command. */
 export function splitShellSegments(command: string): string[] {
-  return splitShellChain(command).segments;
+  return command.split(/\|\||&&|;|\||\n/);
 }
 
 /** The PrEvent a `gh pr <verb>` segment denotes, or null when it is not one. */
@@ -280,6 +268,71 @@ export function processGhCommand(command: string, timestamp: number): PrEvent | 
 export interface ClassifiedGitSegment {
   readonly segment: string;
   readonly event: GitEvent;
+}
+
+interface ShellChain {
+  readonly segments: readonly string[];
+  /** `operators[i]` joins `segments[i]` to `segments[i + 1]`. */
+  readonly operators: readonly string[];
+}
+
+const SHELL_OPERATOR_RE = /(\|\||&&|;|\||\n)/;
+// A segment of only whitespace and `#` comments runs nothing.
+const NO_COMMAND_RE = /^(?:\s|#[^\n]*)*$/;
+const COMMENT_START_AFTER_RE = /[\s;&|(]/;
+const CONTINUED_BY_NEWLINE = new Set(['&&', '||', '|']);
+
+/**
+ * A shell command's segments and the operators between them, read the way
+ * the shell reads them: an operator inside quotes or a `#` comment does not
+ * split, nor does a newline after a backslash or after `&&`, `||` or `|`.
+ * So a commit whose quoted message spans lines, including what heredoc
+ * stripping leaves of `-m "$(cat <<'EOF'` ... `)"`, is one segment. A command
+ * whose quotes don't balance is split on every operator instead.
+ */
+function splitShellChain(command: string): ShellChain {
+  const source = command.replace(/\\\r?\n/g, '');
+  const segments: string[] = [];
+  const operators: string[] = [];
+  let start = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < source.length; i++) {
+    const c = source.charAt(i);
+    if (quote === "'") {
+      if (c === "'") quote = null;
+    } else if (c === '\\') {
+      i++;
+    } else if (quote === '"') {
+      if (c === '"') quote = null;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === '#' && (i === 0 || COMMENT_START_AFTER_RE.test(source.charAt(i - 1)))) {
+      const eol = source.indexOf('\n', i);
+      i = (eol === -1 ? source.length : eol) - 1;
+    } else {
+      const pair = source.slice(i, i + 2);
+      const op = pair === '&&' || pair === '||' ? pair : ';|\n'.includes(c) ? c : null;
+      if (op === null) continue;
+      const continued =
+        op === '\n' &&
+        CONTINUED_BY_NEWLINE.has(operators.at(-1) ?? '') &&
+        NO_COMMAND_RE.test(source.slice(start, i));
+      if (continued) continue;
+      segments.push(source.slice(start, i));
+      operators.push(op);
+      start = i + op.length;
+      i = start - 1;
+    }
+  }
+  if (quote !== null) {
+    const parts = source.split(SHELL_OPERATOR_RE);
+    return {
+      segments: parts.filter((_, i) => i % 2 === 0),
+      operators: parts.filter((_, i) => i % 2 === 1),
+    };
+  }
+  segments.push(source.slice(start));
+  return { segments, operators };
 }
 
 // Git verbs whose own output can report a merge/rebase conflict.
@@ -344,7 +397,9 @@ export function classifyGitSegments(
   const { segments: all, operators } = splitShellChain(command);
   const gitIndexes = all.flatMap((s, i) => (GIT_SEGMENT_RE.test(s) ? [i] : []));
   const segments = gitIndexes.map((i) => all[i]!);
-  const lastGitIsFinal = all.slice((gitIndexes.at(-1) ?? 0) + 1).every((s) => s.trim() === '');
+  const lastGitIsFinal = all
+    .slice((gitIndexes.at(-1) ?? 0) + 1)
+    .every((s) => NO_COMMAND_RE.test(s));
   const owner = errorSegmentIndex(segments, lastGitIsFinal, (record.error as string) ?? '');
   const failedAt = !record.success && owner !== -1 ? gitIndexes[owner]! : -1;
   const skippedThrough = failedAt === -1 ? -1 : lastSkippedSegment(operators, failedAt);
