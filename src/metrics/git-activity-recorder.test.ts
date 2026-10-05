@@ -661,6 +661,15 @@ describe('GitActivityRecorder', () => {
       'gh pr merge 42 --squash\necho done',
       'gh pr merge 42 --squash && echo ok || echo failed',
       'gh pr view 42 --json state | grep -q MERGED || gh pr merge 42',
+      'gh pr merge 42 --squash --auto ||\n  gh pr merge 42 --squash',
+      'gh pr merge 42 --squash --auto || \\\n  gh pr merge 42 --squash',
+      'gh pr view 42 --json state | grep -q MERGED ||\n\n  gh pr merge 42',
+      'gh pr view 42 --json state | grep -q MERGED || # not merged yet\n  gh pr merge 42',
+      "gh pr merge 42 --auto --body-file - <<'EOF' ||\nQueued.\nEOF\ngh pr merge 42 --squash",
+      'gh pr view 42 --json state | grep -q MERGED || (echo merging; gh pr merge 42)',
+      'gh pr view 42 --json state | grep -q MERGED || { echo merging; gh pr merge 42; }',
+      'gh pr merge 42 --squash &',
+      'gh pr checks 42 --watch && gh pr merge 42 --squash &',
     ])('drops `%s`: the command can succeed while the merge failed or never ran', (command) => {
       recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
       expect(merges()).toEqual([]);
@@ -673,9 +682,45 @@ describe('GitActivityRecorder', () => {
       'gh pr view 42 | cat; gh pr merge 42 --squash',
       'gh pr merge 42 --squash && git checkout main && git pull',
       'gh pr merge 42 --squash && git pull 2>&1 | tail -3',
+      'gh pr merge 42 \\\n  --squash',
+      'gh pr merge 42 --squash &&\n  git pull',
+      "gh pr merge 42 --squash --body-file - <<'EOF' &&\nMerged.\nEOF\ngit pull",
+      '{ git fetch && gh pr merge 42 --squash; }',
+      'gh pr merge 42 --squash &>/dev/null',
+      'sleep 1 & gh pr merge 42 --squash',
     ])('counts `%s`, whose success means the merge succeeded', (command) => {
       recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
       expect(merges()).toEqual([{ action: 'merge', prNumber: '42' }]);
+    });
+
+    it('drops a merge the Bash tool ran in the background, whose success came before the merge', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: 'gh pr checks 42 --watch && gh pr merge 42 --squash',
+          cwd: repoDir,
+          runInBackground: true,
+        }),
+      );
+      expect(merges()).toEqual([]);
+    });
+
+    it.each([
+      'echo "then && gh pr merge 42"',
+      'gh pr comment 7 --body "LGTM.\ngh pr merge 42 once CI is green"',
+    ])('finds no merge in quoted text: `%s`', (command) => {
+      recorder.recordToolCall(makeRecord({ command, cwd: repoDir }));
+      expect(merges()).toEqual([]);
+    });
+
+    it('drops the captured create number when --repo is on a continued line', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: 'gh pr create --fill \\\n  --repo acme/other',
+          cwd: repoDir,
+          createdPrNumber: '42',
+        }),
+      );
+      expect(prEvents()).toEqual([{ action: 'create', prNumber: null }]);
     });
 
     it('gives no number to either create when one command opens two PRs', () => {
@@ -725,6 +770,9 @@ describe('GitActivityRecorder', () => {
         ['a bare cd', () => 'cd; gh pr merge 12'],
         ['an exported GH_REPO', () => 'export GH_REPO=acme/other; gh pr merge 12'],
         ['a GH_REPO assignment', () => 'GH_REPO=acme/other\ngh pr merge 12'],
+        ['a pushd into another repo', () => `pushd ${otherRepo} && gh pr merge 12`],
+        ['a builtin cd into another repo', () => `builtin cd ${otherRepo} && gh pr merge 12`],
+        ['a cd in a brace group', () => `{ cd ${otherRepo} && gh pr merge 12; }`],
       ])('keeps the merge after %s but drops its number', (_label, command) => {
         recorder.recordToolCall(makeRecord({ command: command(), cwd: repoDir }));
         expect(merges()).toEqual([{ action: 'merge', prNumber: null }]);
@@ -747,6 +795,15 @@ describe('GitActivityRecorder', () => {
       ])('keeps the number after a cd %s', (_label, command) => {
         recorder.recordToolCall(makeRecord({ command: command(), cwd: repoDir }));
         expect(merges()).toEqual([{ action: 'merge', prNumber: '12' }]);
+      });
+
+      it('does not look up a cd target that does not exist', () => {
+        const resolve = jest.spyOn(identityResolver, 'resolve');
+        recorder.recordToolCall(
+          makeRecord({ command: 'cd "$OTHER" && gh pr merge 12', cwd: repoDir }),
+        );
+        expect(merges()).toEqual([{ action: 'merge', prNumber: null }]);
+        expect(resolve).not.toHaveBeenCalledWith(join(repoDir, '$OTHER'));
       });
 
       it('drops the number after a cd when the cwd is unknown', () => {
@@ -798,6 +855,26 @@ describe('GitActivityRecorder', () => {
       expect(splitShellSegments('git commit -m x\ngh pr create')).toEqual([
         'git commit -m x',
         'gh pr create',
+      ]);
+    });
+
+    it('does not split on an operator inside quotes', () => {
+      expect(splitShellSegments(`git commit -m "a; b && c" && echo 'x | y'`)).toEqual([
+        'git commit -m "a; b && c" ',
+        " echo 'x | y'",
+      ]);
+    });
+
+    it('joins a backslash-newline and continues a line that ends in ||, && or |', () => {
+      expect(
+        splitShellSegments('git commit \\\n  -m x &&\n  git push ||\n\n  echo failed'),
+      ).toEqual(['git commit   -m x ', '  git push ', '  echo failed']);
+    });
+
+    it('splits on a background & but not on a redirection', () => {
+      expect(splitShellSegments('git fetch & git status 2>&1 >/dev/null &>/dev/null')).toEqual([
+        'git fetch ',
+        ' git status 2>&1 >/dev/null &>/dev/null',
       ]);
     });
   });

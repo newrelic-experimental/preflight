@@ -219,11 +219,86 @@ const GH_PR_VERB_ACTION: Record<string, PrEvent['action']> = {
   view: 'view',
 };
 
-/** Splits a shell command into its top-level segments on `||`, `&&`, `;`,
- *  `|`, and newline. Strip heredoc bodies first so a surviving newline really
- *  does start a new command. */
+/** A shell command's segments and the operators between them:
+ *  `operators[i]` joins `segments[i]` to `segments[i + 1]`. */
+export interface ShellChain {
+  readonly segments: readonly string[];
+  readonly operators: readonly string[];
+}
+
+// Line breaks, blank lines and comments right after `||`, `&&` or `|`,
+// where bash reads on to the next line for the rest of the command.
+const CONTINUED_LINES_RE = /(?:[ \t]*(?:#[^\n]*)?\n)+/y;
+
+/**
+ * Splits a shell command on its top-level `||`, `&&`, `;`, `|`, `&` and
+ * newline operators, read the way bash reads them: an operator inside quotes
+ * is text, a backslash-newline joins two lines, and a line ending in `||`,
+ * `&&` or `|` goes on to the next. `|&` is a `|`, and the `&` of a
+ * redirection (`2>&1`, `&>file`) is not an operator. An unclosed quote runs
+ * to the end of the command. Strip heredoc bodies first so a surviving
+ * newline really does start a new command.
+ */
+export function splitShellChain(command: string): ShellChain {
+  const segments: string[] = [];
+  const operators: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote === "'") {
+      current += ch;
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (ch === '\\') {
+      if (command[i + 1] !== '\n') current += command.slice(i, i + 2);
+      i++;
+      continue;
+    }
+    if (quote === '"') {
+      current += ch;
+      if (ch === '"') quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      current += ch;
+      quote = ch;
+      continue;
+    }
+    const pair = command.slice(i, i + 2);
+    let operator: string;
+    if (pair === '||' || pair === '&&' || pair === '|&') {
+      operator = pair === '|&' ? '|' : pair;
+      i++;
+    } else if (ch === '|' || ch === ';' || ch === '\n') {
+      operator = ch;
+    } else if (
+      ch === '&' &&
+      command[i - 1] !== '>' &&
+      command[i - 1] !== '<' &&
+      command[i + 1] !== '>'
+    ) {
+      operator = ch;
+    } else {
+      current += ch;
+      continue;
+    }
+    segments.push(current);
+    operators.push(operator);
+    current = '';
+    if (operator === '||' || operator === '&&' || operator === '|') {
+      CONTINUED_LINES_RE.lastIndex = i + 1;
+      if (CONTINUED_LINES_RE.test(command)) i = CONTINUED_LINES_RE.lastIndex - 1;
+    }
+  }
+  segments.push(current);
+  return { segments, operators };
+}
+
+/** The segments of `splitShellChain`, without the operators. */
 export function splitShellSegments(command: string): string[] {
-  return command.split(/\|\||&&|;|\||\n/);
+  return [...splitShellChain(command).segments];
 }
 
 /** The PrEvent a `gh pr <verb>` segment denotes, or null when it is not one. */
@@ -255,38 +330,66 @@ export function ghPrMergeTogglesAuto(segment: string): boolean {
   return GH_PR_AUTO_MERGE_RE.test(segment);
 }
 
-// The `splitShellSegments` separators, captured: odd entries of a split are
-// the operators, and `operators[i]` joins segment `i` to segment `i + 1`.
-const SHELL_SEPARATOR_RE = /(\|\||&&|;|\||\n)/;
+// A segment that runs nothing: blank, or only the `)`/`}` closing groups
+// that end with the segment before it.
+const NO_COMMAND_RE = /^[\s)}]*$/;
+const QUOTED_SPAN_RE = /"(?:[^"\\]|\\.)*"|'[^']*'/g;
+
+/** Net groups (`( … )`, `{ … }`, `$( … )`) a segment opens, ignoring quoted
+ *  brackets. */
+function groupsOpened(segment: string): number {
+  const bare = segment.replace(QUOTED_SPAN_RE, '');
+  return (bare.match(/[({]/g)?.length ?? 0) - (bare.match(/[)}]/g)?.length ?? 0);
+}
 
 /**
- * True when the command succeeding means its segment `index` (as numbered by
- * `splitShellSegments`) ran and succeeded. A hook reports one exit status for
- * the whole command, so that holds only when the segment's own status
- * decides it: the segment is not piped into anything, is not the fallback of
- * a `||`, and nothing follows it except `&&` steps, which run only if it
- * succeeded. A trailing `;` or newline runs nothing more and is ignored.
+ * True when the command succeeding means its segment `index` ran and
+ * succeeded. A hook reports one exit status for the whole command, so that
+ * holds only when the segment's own status decides it: the segment is not
+ * piped into anything or put in the background, neither it nor a group
+ * around it is the fallback of a `||`, and nothing follows it except `&&`
+ * steps, which run only if it succeeded. A trailing `;` or newline runs
+ * nothing more and is ignored.
  */
-export function segmentSuccessFollowsCommand(command: string, index: number): boolean {
-  const parts = command.split(SHELL_SEPARATOR_RE);
-  const operators = parts.filter((_, i) => i % 2 === 1);
+export function segmentSuccessFollowsCommand(chain: ShellChain, index: number): boolean {
+  const { segments, operators } = chain;
   let lastRun = operators.length;
-  while (lastRun > index && parts[2 * lastRun].trim() === '') lastRun--;
+  while (
+    lastRun > index &&
+    NO_COMMAND_RE.test(segments[lastRun]) &&
+    operators[lastRun - 1] !== '&'
+  ) {
+    lastRun--;
+  }
   for (let j = index; j < lastRun; j++) {
     // `&& x | y` is one `&&` step.
     if (operators[j] !== '&&' && (operators[j] !== '|' || j === index)) return false;
   }
-  let pipelineStart = index;
-  while (pipelineStart > 0 && operators[pipelineStart - 1] === '|') pipelineStart--;
-  return pipelineStart === 0 || operators[pipelineStart - 1] !== '||';
+  // The segment, then the segment opening each group it sits in.
+  const starts = [index];
+  let opened = 0;
+  for (let j = index - 1; j >= 0; j--) {
+    opened += groupsOpened(segments[j]);
+    if (opened > 0) {
+      starts.push(j);
+      opened = 0;
+    }
+  }
+  return starts.every((start) => {
+    let pipelineStart = start;
+    while (pipelineStart > 0 && operators[pipelineStart - 1] === '|') pipelineStart--;
+    return pipelineStart === 0 || operators[pipelineStart - 1] !== '||';
+  });
 }
 
-// `cd [dir]` opening a segment, including as a subshell's first command.
-const CD_SEGMENT_RE = /^[\s(]*cd(?:\s+(?:"([^"]*)"|'([^']*)'|([^\s)]+)))?(?=[\s;)]|$)/;
+// `cd [dir]` or `pushd [dir]` opening a segment, including as the first
+// command of a subshell or brace group and behind `builtin` or `command`.
+const CD_SEGMENT_RE =
+  /^[\s({]*(?:(?:builtin|command)\s+)?(?:cd|pushd)(?:\s+(?:"([^"]*)"|'([^']*)'|([^\s;)}]+)))?(?=[\s;)}]|$)/;
 const GH_REPO_ASSIGNMENT_RE = /(?:^|\s)GH_REPO=/;
 
-/** The directory a segment's leading `cd` moves to: `''` for a bare `cd`
- *  (which goes home), null when the segment does not start with one. */
+/** The directory a segment's leading `cd` or `pushd` moves to: `''` for a
+ *  bare one (`cd` goes home), null when the segment does not start with one. */
 export function cdSegmentTarget(segment: string): string | null {
   const match = CD_SEGMENT_RE.exec(segment);
   return match ? (match[1] ?? match[2] ?? match[3] ?? '') : null;

@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 
 import type { ToolCallRecord } from '../storage/types.js';
@@ -11,7 +12,7 @@ import {
   processGhCommand,
   segmentAssignsGhRepo,
   segmentSuccessFollowsCommand,
-  splitShellSegments,
+  splitShellChain,
   type GitEvent,
 } from './git-event-classifier.js';
 import { UNATTRIBUTED_WORKSPACE_KEY, WorktreeIdentityResolver } from './git-workspace-identity.js';
@@ -124,7 +125,8 @@ export class GitActivityRecorder {
     // Classify on the command *minus* any inline script bodies: a heredoc
     // that merely mentions git/gh words is not a git or PR operation.
     const command = stripHeredocBodies(rawCommand);
-    const segments = splitShellSegments(command);
+    const chain = splitShellChain(command);
+    const { segments } = chain;
 
     // Track GitHub CLI PR commands. Each segment is checked on its own — a
     // `gh` invocation can be chained before or after a `git` command, or
@@ -139,14 +141,17 @@ export class GitActivityRecorder {
       // A failed `gh pr create` made no PR and a failed `gh pr merge` merged
       // nothing, so neither counts; nor does a merge that only toggles
       // auto-merge, or one whose outcome the command's exit status doesn't
-      // show (`gh pr merge 5 | tail`). Every other verb stays real even on
-      // failure: `gh pr checks` exits non-zero when checks are failing, and
-      // that's still a genuine checks view.
+      // show (`gh pr merge 5 | tail`, or a Bash call run in the background,
+      // which reports success as soon as it starts). Every other verb stays
+      // real even on failure: `gh pr checks` exits non-zero when checks are
+      // failing, and that's still a genuine checks view.
       const changesPr = parsed.action === 'create' || parsed.action === 'merge';
       if (changesPr && record.success === false) continue;
       if (
         parsed.action === 'merge' &&
-        (ghPrMergeTogglesAuto(segment) || !segmentSuccessFollowsCommand(command, i))
+        (record.runInBackground === true ||
+          ghPrMergeTogglesAuto(segment) ||
+          !segmentSuccessFollowsCommand(chain, i))
       ) {
         continue;
       }
@@ -198,14 +203,19 @@ export class GitActivityRecorder {
 
   /** True when `segment`, run before a gh call, may have pointed that call
    *  at a repo other than the cwd's: it assigns `GH_REPO`, or it is a `cd`
-   *  that can't be shown to stay in the cwd's repo. */
+   *  that can't be shown to stay in the cwd's repo. A target that doesn't
+   *  exist, such as an unexpanded `"$DIR"`, skips the resolver, which caches
+   *  only the identities it finds and would spawn git for it on every
+   *  dashboard poll. */
   private mayLeaveCwdRepo(segment: string, cwd: string | undefined): boolean {
     if (segmentAssignsGhRepo(segment)) return true;
     const dir = cdSegmentTarget(segment);
     if (dir === null) return false;
     if (!cwd || dir === '') return true;
+    const target = resolvePath(cwd, dir);
+    if (!existsSync(target)) return true;
     const cwdRepo = this.identityResolver.resolve(cwd)?.repoKey;
-    return !cwdRepo || this.identityResolver.resolve(resolvePath(cwd, dir))?.repoKey !== cwdRepo;
+    return !cwdRepo || this.identityResolver.resolve(target)?.repoKey !== cwdRepo;
   }
 
   private resolveWorkspaceKey(cwd: string | undefined): string {
