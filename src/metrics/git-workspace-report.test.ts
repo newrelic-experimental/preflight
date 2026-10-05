@@ -1016,6 +1016,20 @@ describe('computeWorkspaceMetrics — chained and failed git commands', () => {
     expect(metrics.mergeConflicts).toBe(1);
   });
 
+  it('counts neither the commit nor the push when a non-git step ahead of them failed', () => {
+    const records = chainActivities(
+      'npm test && git add -A && git commit -m x && git push',
+      'ws-a',
+      {
+        success: false,
+        error: 'FAIL src/a.test.ts\nTests: 1 failed, 4 passed',
+      },
+    );
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.commitCount).toBe(0);
+    expect(metrics.pushCount).toBe(0);
+  });
+
   it('resolves a conflict with a commit whose message mentions --amendment', () => {
     const t = Date.now();
     const records = [

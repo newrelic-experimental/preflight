@@ -1771,6 +1771,24 @@ describe('GitEfficiencyTracker', () => {
       expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['pending']);
     });
 
+    it('counts neither the commit nor the push when a non-git step ahead of them failed', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'npm test && git add -A && git commit -m x && git push',
+          success: false,
+          error: 'FAIL src/a.test.ts\nTests: 1 failed, 4 passed',
+          isTestCommand: true,
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(0);
+      expect(metrics.pushCount).toBe(0);
+      expect(metrics.velocityMetrics.buildBeforePush).toBeNull();
+      expect(metrics.bestPractices.find((p) => p.id === 'verify_before_push')?.detail).toBe(
+        'No pushes yet.',
+      );
+    });
+
     it('counts neither the commit nor the push when only untracked files were present', () => {
       tracker.recordToolCall(
         makeRecord({

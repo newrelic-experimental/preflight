@@ -449,6 +449,21 @@ describe('classifyGitSegments when the error names no step', () => {
   it('ignores a trailing comment when finding the last command', () => {
     expect(outcomes("git commit -m x\n# don't push yet", GPG)).toEqual([['commit', false]]);
   });
+
+  it('drops git steps that a failing non-git step ahead of them may have skipped', () => {
+    expect(
+      outcomes(
+        'npm test && git add -A && git commit -m x && git push',
+        'FAIL src/a.test.ts\nTests: 1 failed, 4 passed',
+      ),
+    ).toEqual([]);
+  });
+
+  it('drops git steps that an earlier git step may have kept from running', () => {
+    expect(outcomes('git add -A && git commit -m x && git push', GPG)).toEqual([
+      ['other_git', true],
+    ]);
+  });
 });
 
 describe('classifyGitSegments shell splitting', () => {
