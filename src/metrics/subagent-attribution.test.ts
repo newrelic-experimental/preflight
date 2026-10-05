@@ -157,6 +157,19 @@ describe('SubagentAttributionIndex', () => {
     expect(result.agentType).toBe('claude');
   });
 
+  it("leaves a parent call's envelope agentType (the session's --agent name) untouched", () => {
+    const index = new SubagentAttributionIndex();
+    index.recordSubagentToolUses('agent-a', ['toolu_sub_1']);
+    index.recordAgentToolCall(makeAgentCall('agent-a', 'Explore'));
+    const record = makeRecord({ toolUseId: 'toolu_parent_1', agentType: 'claude' });
+
+    const result = index.backfill(record);
+
+    expect(result).toBe(record);
+    expect(result.agentId).toBeUndefined();
+    expect(result.agentType).toBe('claude');
+  });
+
   it("prefers the transcript-metadata type over the parent's Agent call, in either order", () => {
     const index = new SubagentAttributionIndex();
     index.recordSubagentType('agent-sidecar-first', 'Explore');
@@ -309,6 +322,22 @@ describe('SubagentAttributionIndex.attributeAtIntake', () => {
     };
 
     expect(index.attributeAtIntake(record, reader)).toBe(record);
+  });
+
+  it('learns the subagent type from an envelope that carries both agent_id and agent_type', () => {
+    const index = new SubagentAttributionIndex();
+
+    index.attributeAtIntake(makeRecord({ agentId: 'agent-a', agentType: 'Explore' }), null);
+
+    expect(index.agentTypeFor('agent-a')).toBe('Explore');
+  });
+
+  it("does not learn a type from a parent call's --agent envelope, which has no agent_id", () => {
+    const index = new SubagentAttributionIndex();
+
+    index.attributeAtIntake(makeRecord({ agentType: 'claude' }), null);
+
+    expect(index.size.subagents).toBe(0);
   });
 });
 

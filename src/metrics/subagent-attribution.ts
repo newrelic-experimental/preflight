@@ -69,9 +69,10 @@ export interface SubagentAttributionIndexSize {
  *   while tailing each subagent's transcript (see `backfillAgentId()`).
  * - `agentId → subagent type`, from the subagent transcript's
  *   `agent-<id>.meta.json` sidecar (written at spawn, carried on each
- *   `SubagentWatcher` turn), and as a fallback from the parent's own `Agent`
- *   tool call, the one record carrying both `spawnedAgentId`
- *   (`tool_response.agentId`) and `subagentType` (`tool_input.subagent_type`).
+ *   `SubagentWatcher` turn), from a hook envelope that carries both fields,
+ *   and as a fallback from the parent's own `Agent` tool call, the one record
+ *   carrying both `spawnedAgentId` (`tool_response.agentId`) and
+ *   `subagentType` (`tool_input.subagent_type`).
  *
  * Both indexes are size-capped LRU maps with idle expiry so a long-running
  * `--local` daemon doesn't accumulate one entry per subagent call forever.
@@ -134,8 +135,10 @@ export class SubagentAttributionIndex {
 
   /**
    * Attributes a hook record as it arrives, before any consumer (notably the
-   * audit trail) sees it. When the backfill leaves `agentId` unknown for a
-   * record with a `toolUseId`, `reader` reads the live subagent transcripts now and
+   * audit trail) sees it. An envelope carrying both `agent_id` and
+   * `agent_type` teaches the index that subagent's type, for turns that lack a
+   * sidecar. When the backfill still leaves `agentId` unknown for a record
+   * with a `toolUseId`, `reader` reads the live subagent transcripts now and
    * the backfill runs again: a fast call's `tool_use` line is usually on disk
    * but not yet polled, and the record would otherwise be audited without its
    * subagent (#681). Parent-session calls take the same path, at the cost of
@@ -146,6 +149,9 @@ export class SubagentAttributionIndex {
     record: ToolCallRecord,
     reader: LiveSubagentTranscriptReader | null,
   ): ToolCallRecord {
+    if (typeof record.agentId === 'string' && record.agentId.length > 0) {
+      this.recordSubagentType(record.agentId, normalizeAgentType(record.agentType));
+    }
     const backfilled = this.backfill(record);
     if (
       reader === null ||
@@ -166,7 +172,7 @@ export class SubagentAttributionIndex {
     return turnsRead > 0 ? this.backfill(backfilled) : backfilled;
   }
 
-  /** The subagent type for `agentId`, if its sidecar or spawning `Agent` call has been seen. */
+  /** The subagent type for `agentId`, if its sidecar, a hook envelope, or its spawning `Agent` call has been seen. */
   agentTypeFor(agentId: string): string | undefined {
     return this.agentTypeByAgentId.get(agentId);
   }

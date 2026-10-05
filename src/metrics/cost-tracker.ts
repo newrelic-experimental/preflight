@@ -46,9 +46,10 @@ export interface TokenRecordContext {
   readonly agentId?: string;
   /**
    * Best-effort subagent type for this `agentId`, supplied by the caller from
-   * the subagent transcript's `agent-<id>.meta.json` sidecar or, failing
-   * that, the parent's `Agent` tool call (see `SubagentAttributionIndex`).
-   * Absent when neither has been seen yet for this `agentId`.
+   * the subagent transcript's `agent-<id>.meta.json` sidecar, the hook
+   * envelope of one of that subagent's tool calls, or, failing those, the
+   * parent's `Agent` tool call (see `SubagentAttributionIndex`). Absent when
+   * none has been seen yet for this `agentId`.
    */
   readonly agentType?: string;
   /**

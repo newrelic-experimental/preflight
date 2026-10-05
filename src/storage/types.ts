@@ -348,7 +348,8 @@ export interface ToolCallRecord {
    * sends a value `normalizeAgentType()` rejects, it is backfilled via
    * `backfillAgentType()` (agent-partition.ts) once `agentId` is known, from
    * the subagent transcript's `agent-<id>.meta.json` sidecar (written at
-   * spawn) or, failing that, the parent's own `Agent` tool call, with the
+   * spawn), an earlier envelope from the same subagent that carried both
+   * fields, or, failing those, the parent's own `Agent` tool call, with the
    * same best-effort timing window as `agentId`. An envelope value that
    * passes `normalizeAgentType()` is never overwritten.
    */
