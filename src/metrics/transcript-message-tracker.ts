@@ -70,29 +70,55 @@ const EMBEDDED_CORRECTION_RE =
 
 const WONT_WORK_RE = /\bwon'?t work\b/i;
 
-/** A message that opens on a bare pronoun ("That won't work", "Hmm, that definitely won't work, ...") names nothing of its own, so the pronoun points at the assistant's previous turn. A named option ("That approach won't work for X") is design discussion when a proposal sits next to it. */
+/** A message that opens on "won't work" with a bare pronoun or no subject at all ("That won't work", "Hmm, that definitely won't work, ...", "Nah, won't work —") names nothing of its own, so it points at the assistant's previous turn. */
 const DEICTIC_WONT_WORK_RE = new RegExp(
-  `^(?:[a-z]+[,.!]+\\s+)?${OPTIONAL_ACTUALLY}(that|this|it) (?:(?:still|just|also|even|[a-z]+ly) ){0,2}won'?t work\\b`,
+  `^(?:[a-z]+[,.!]+\\s+)?${OPTIONAL_ACTUALLY}(?:(?:that|this|it) (?:(?:still|just|also|even|[a-z]+ly) ){0,2})?won'?t work\\b`,
   'i',
 );
 
-/** Proposing the next option ("..., let's use Y instead") marks design discussion rather than a rejection of the assistant's output. A negated modal ("we can't lock the table") and "instead of" describe what something does, so neither counts. "because"/"since" are not signals either way: both forms give reasons. */
-const FORWARD_LOOKING_RE =
-  /\b(let'?s|let us|instead(?!\s+of\b)|we (should|could|can|need to|might|may)(?!'t|\s+not\b)|we'?ll (need|have)|should we|how about|what if|maybe we|i'?d (rather|prefer))\b/i;
+/** Things the assistant builds. "your proposal", "your solution" and "your idea" rule out a plan, which is design discussion. */
+const ASSISTANT_ARTIFACT =
+  'fix|change|edit|code|version|patch|implementation|update|commit|refactor|migration|test|script|function|query';
 
-/** A reference attached to the assistant's output (a built artifact, a past action, or a repeat failure), which overrides a forward-looking cue. Ruling out a plan or answering a remark ("your proposal", "your solution", "the point you made") is design discussion, and a bare "still"/"again"/"fails" describes the option as often as the output ("we still need fresh reads"), so neither counts. */
-const PAST_REFERENCE_RE =
-  /\b(your (last |latest |previous |recent |new )?(fix|change|edit|code|version|patch|implementation|update|commit|refactor|migration|test|script|function|query)s?|(?<!\b(?:point|argument|suggestion|proposal|plan|idea)s? )you('?ve| have)? (just |already )?(wrote|written|added|made|changed|did|done|used|tried|broke|broken|removed|edited|updated|implemented)|still won'?t work)\b/i;
+/** A hypothetical "you" ("if you add a cache") or one after a remark ("the point you made") is not about the assistant's output. */
+const NOT_ABOUT_OUTPUT_BEFORE_YOU =
+  '(?<!\\b(?:if|unless|(?:point|argument|suggestion|proposal|plan|idea)s?) )';
+
+const ADVERB_AFTER_YOU =
+  '(?:just|already|also|accidentally|only|then|now|still|again|clearly|probably|actually|never|always|not) ';
+
+/** Stems of verbs that report what the assistant said, thought or planned rather than what it built ("you suggested", "you're proposing", "the way you're thinking", "you're going to need"). Rejecting those is design discussion. */
+const IDEA_VERB =
+  '(?:(?:suggest|propos|mention|recommend|describ|outlin|ask|think|plan|consider|imagin|list|point|want|expect|offer|rais|say|talk|mean|agree)\\w*|going)\\b';
+
+/** A past tense or participle. "-eed" words ("you need", "you proceed") are present tense, so the letter before "ed" can't be "e". */
+const PAST_VERB =
+  '[a-z]*[a-df-z]ed|wrote|written|rewrote|rewritten|made|did|done|undid|undone|broke|broken|ran|put|set|cast|left|built|kept|sent|split|gave|given|took|taken|forgot|forgotten|hid|hidden';
+
+/**
+ * A reference back to the assistant's output: "your" plus a built artifact, second person plus a past
+ * or present-progressive verb ("you wrote", "you've added", "you're mutating"), or a repeat failure
+ * ("still won't work"). A present-tense or modal "you" ("you need a lock", "you can't hold
+ * connections") is as often impersonal, so it doesn't count.
+ */
+const ASSISTANT_REFERENCE_RE = new RegExp(
+  [
+    `\\byour (?:last |latest |previous |recent |new )?(?:${ASSISTANT_ARTIFACT})s?\\b`,
+    `\\b${NOT_ABOUT_OUTPUT_BEFORE_YOU}you(?:'ve| have)? (?:${ADVERB_AFTER_YOU})?(?!${IDEA_VERB})(?:${PAST_VERB})\\b`,
+    `\\b${NOT_ABOUT_OUTPUT_BEFORE_YOU}you(?:'re| are) (?:${ADVERB_AFTER_YOU})?(?!${IDEA_VERB})[a-z]+ing\\b`,
+    `\\bstill won'?t work\\b`,
+  ].join('|'),
+  'i',
+);
 
 /** Whitespace after sentence-ending punctuation, or a newline. The lookbehind keeps the split linear: a quantified punctuation run followed by a required character backtracks quadratically on a long run of dots. */
 const SENTENCE_SPLIT_RE = /(?<=[.!?])\s+|\n\s*/;
 
 /**
- * "won't work" is a correction when the message opens on it with a bare pronoun, or when a sentence
- * using it has no forward-looking cue in itself or the sentences either side of it, or when any of
- * those sentences points back at the assistant's output. The window reaches one sentence each way, so
- * "X won't work for Y. Let's use Z." and "Let's use Z. X won't work for Y." read the same as the
- * comma forms.
+ * "won't work" is a correction when the message opens on it with a bare pronoun or no subject, or when
+ * a sentence using it, or the sentence either side of it, points back at the assistant's output.
+ * Otherwise it states a constraint on an option, which is design discussion whether or not a proposal
+ * follows.
  */
 function hasWontWorkCorrection(text: string): boolean {
   if (!WONT_WORK_RE.test(text)) return false;
@@ -101,8 +127,7 @@ function hasWontWorkCorrection(text: string): boolean {
   return sentences.some((sentence, i) => {
     if (!WONT_WORK_RE.test(sentence)) return false;
     const nearby = [sentences[i - 1] ?? '', sentence, sentences[i + 1] ?? ''];
-    if (nearby.some((s) => PAST_REFERENCE_RE.test(s))) return true;
-    return !nearby.some((s) => FORWARD_LOOKING_RE.test(s));
+    return nearby.some((s) => ASSISTANT_REFERENCE_RE.test(s));
   });
 }
 
