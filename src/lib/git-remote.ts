@@ -41,7 +41,7 @@ export interface ParsedGitRemote {
   readonly user: string | null;
   /** Repository path with no leading or trailing slashes and no `.git` suffix. */
   readonly path: string;
-  /** `owner/name`: the last two path segments, or `host/name` when a remote with a host has a one-segment path. Null otherwise. */
+  /** `owner/name`: the last two path segments, or `host/name` when a remote with a host has a one-segment path (see {@link projectIdFromRemote}). Null otherwise. */
   readonly ownerRepo: string | null;
 }
 
@@ -175,6 +175,19 @@ export function parseGitRemote(remote: string | null | undefined): ParsedGitRemo
 /** `owner/name` from a git remote, or null. See {@link ParsedGitRemote.ownerRepo}. */
 export function repoNameFromRemote(remote: string | null | undefined): string | null {
   return parseGitRemote(remote)?.ownerRepo ?? null;
+}
+
+/**
+ * The `project_id` inferred from a git remote: {@link repoNameFromRemote}
+ * without the host. `project_id` goes on every event sent to New Relic, and a
+ * host can name an internal git server, which only `repo_url` (with its own
+ * opt-out) may carry. So a one-segment remote gives just its name.
+ */
+export function projectIdFromRemote(remote: string | null | undefined): string | null {
+  const parsed = parseGitRemote(remote);
+  if (!parsed?.ownerRepo) return null;
+  // A one-segment path has no `/` after normalizePath(), and its ownerRepo is `host/name`.
+  return parsed.path.includes('/') ? parsed.ownerRepo : parsed.path;
 }
 
 /**

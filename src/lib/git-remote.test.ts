@@ -2,6 +2,7 @@ import { redactSensitive } from '../config.js';
 import {
   commitUrlFromRemote,
   parseGitRemote,
+  projectIdFromRemote,
   repoNameFromRemote,
   stripRemoteCredentials,
 } from './git-remote.js';
@@ -63,25 +64,32 @@ interface Row {
     readonly repoName: string | null;
     readonly commitUrl: string | null;
     readonly repoUrl: string | null;
+    readonly projectId: string | null;
   };
 }
 
 function row(
   remote: string,
   legacy: [string | null, string | null, string | null, string | null],
-  next: [string | null, string | null, string | null],
+  next: [string | null, string | null, string | null, (string | null)?],
 ): Row {
   const [configProjectId, repoName, commitUrl, repoUrl] = legacy;
   return {
     remote,
     legacy: { configProjectId, repoName, commitUrl, repoUrl },
-    next: { repoName: next[0], commitUrl: next[1], repoUrl: next[2] },
+    next: {
+      repoName: next[0],
+      commitUrl: next[1],
+      repoUrl: next[2],
+      projectId: next[3] === undefined ? next[0] : next[3],
+    },
   };
 }
 
 const GH = 'github.com/acme/widgets';
 // Columns: legacy [config projectId, index/aggregator repoName, commitUrl, repoUrl]
-//          next   [repoName (all call sites), commitUrl, repoUrl]
+//          next   [repoName (index, aggregator, workspace identity), commitUrl, repoUrl,
+//                  config projectId when it differs from repoName]
 const MATRIX: readonly Row[] = [
   // Unchanged: the common shapes.
   row(
@@ -210,7 +218,8 @@ const MATRIX: readonly Row[] = [
   ),
   row('../widgets', [null, null, null, '../widgets'], [null, null, '../widgets']),
   row('', [null, null, null, null], [null, null, null]),
-  // One path segment: the host stands in for the owner.
+  // One path segment: the host stands in for the owner in the local repo name.
+  // CHANGED: projectId keeps only the name, since the host can be internal.
   row(
     'https://github.com/widgets',
     [
@@ -219,7 +228,7 @@ const MATRIX: readonly Row[] = [
       commit('github.com/widgets'),
       'https://github.com/widgets',
     ],
-    ['github.com/widgets', commit('github.com/widgets'), 'https://github.com/widgets'],
+    ['github.com/widgets', commit('github.com/widgets'), 'https://github.com/widgets', 'widgets'],
   ),
   // A userless ssh or scp remote gets no link.
   row(
@@ -262,7 +271,12 @@ const MATRIX: readonly Row[] = [
       commit('github.com/widgets'),
       'https://ghp_secret@github.com/widgets.git',
     ],
-    ['github.com/widgets', commit('github.com/widgets'), 'https://github.com/widgets.git'],
+    [
+      'github.com/widgets',
+      commit('github.com/widgets'),
+      'https://github.com/widgets.git',
+      'widgets',
+    ],
   ),
   row(
     'https://user:p@ss@github.com/acme/widgets.git',
@@ -292,7 +306,12 @@ const MATRIX: readonly Row[] = [
       commit('github.com/widgets'),
       'ssh://git@github.com/widgets.git',
     ],
-    ['github.com/widgets', commit('github.com/widgets'), 'ssh://git@github.com/widgets.git'],
+    [
+      'github.com/widgets',
+      commit('github.com/widgets'),
+      'ssh://git@github.com/widgets.git',
+      'widgets',
+    ],
   ),
   // Remote-helper remotes (`<transport>::<address>`).
   row(
@@ -359,6 +378,22 @@ const MATRIX: readonly Row[] = [
       'git.example.com/widgets',
       commit('git.example.com/widgets'),
       'git@git.example.com:widgets.git',
+      'widgets',
+    ],
+  ),
+  row(
+    'ssh://git@gerrit.example.com:29418/widgets',
+    [
+      '29418/widgets',
+      'git@gerrit.example.com:29418/widgets',
+      commit('gerrit.example.com/29418/widgets'),
+      'ssh://git@gerrit.example.com:29418/widgets',
+    ],
+    [
+      'gerrit.example.com/widgets',
+      commit('gerrit.example.com/widgets'),
+      'ssh://git@gerrit.example.com:29418/widgets',
+      'widgets',
     ],
   ),
   // CHANGED for config.ts's projectId only: its `[\w.-]` class rejected these.
@@ -402,6 +437,7 @@ describe('shared parser', () => {
     expect(repoNameFromRemote(r.remote)).toBe(r.next.repoName);
     expect(commitUrlFromRemote(r.remote, HASH)).toBe(r.next.commitUrl);
     expect(newRepoUrl(r.remote)).toBe(r.next.repoUrl);
+    expect(projectIdFromRemote(r.remote)).toBe(r.next.projectId);
   });
 
   it('never returns a credential from any function', () => {
@@ -409,6 +445,7 @@ describe('shared parser', () => {
     for (const r of MATRIX) {
       const outputs = [
         repoNameFromRemote(r.remote),
+        projectIdFromRemote(r.remote),
         commitUrlFromRemote(r.remote, HASH),
         stripRemoteCredentials(r.remote),
         JSON.stringify(parseGitRemote(r.remote)),
@@ -540,6 +577,7 @@ describe('userinfo handling', () => {
     expect(stripRemoteCredentials(remote)).toBe(stripped);
     const outputs = [
       repoNameFromRemote(remote),
+      projectIdFromRemote(remote),
       commitUrlFromRemote(remote, HASH),
       stripRemoteCredentials(remote),
       JSON.stringify(parseGitRemote(remote)),
@@ -622,12 +660,32 @@ describe('parseGitRemote', () => {
   ])('returns nothing for the remote-helper remote %s', (remote) => {
     expect(parseGitRemote(remote)).toBeNull();
     expect(repoNameFromRemote(remote)).toBeNull();
+    expect(projectIdFromRemote(remote)).toBeNull();
     expect(commitUrlFromRemote(remote, HASH)).toBeNull();
     expect(stripRemoteCredentials(remote)).toBeNull();
   });
 
   it('rejects owner/name segments containing whitespace', () => {
     expect(repoNameFromRemote('https://github.com/acme/wid gets')).toBeNull();
+  });
+});
+
+describe('projectIdFromRemote', () => {
+  it.each([
+    'https://git.corp.internal/widgets.git',
+    'git://git.corp.internal/widgets.git',
+    'ssh://git@git.corp.internal/widgets',
+    'ssh://git@git.corp.internal:29418/widgets',
+    'git@git.corp.internal:widgets.git',
+    'git.corp.internal:widgets.git',
+  ])('keeps the host of the one-segment remote %s out', (remote) => {
+    expect(repoNameFromRemote(remote)).toBe('git.corp.internal/widgets');
+    expect(projectIdFromRemote(remote)).toBe('widgets');
+  });
+
+  it('gives no name for a one-segment local path, as before', () => {
+    expect(projectIdFromRemote('widgets')).toBeNull();
+    expect(projectIdFromRemote('file:///widgets.git')).toBeNull();
   });
 });
 

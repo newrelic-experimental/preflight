@@ -11,7 +11,7 @@ import type { PersonalAlertThresholds } from './alerts/types.js';
 import { DEFAULT_PERSONAL_THRESHOLDS } from './alerts/types.js';
 import { REDACTION_PATTERNS as DEFAULT_REDACTION_PATTERNS } from './redaction-patterns.js';
 import { resolveRecordContent } from './record-content-gate.js';
-import { repoNameFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
+import { projectIdFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
 import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
 import type { ResolvedTier } from './transport/tier-types.js';
 
@@ -354,7 +354,7 @@ function getGitRemoteUrl(): string | null {
 }
 
 function inferProjectId(): string | null {
-  return repoNameFromRemote(getGitRemoteUrl());
+  return projectIdFromRemote(getGitRemoteUrl());
 }
 
 function envBool(key: string, defaultValue: boolean): boolean {

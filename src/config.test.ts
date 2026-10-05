@@ -1491,6 +1491,30 @@ describe('developer sanitization via loadMcpConfig()', () => {
     }
   });
 
+  it.each(['git@git.corp.internal:widgets.git', 'ssh://git@git.corp.internal:29418/widgets'])(
+    'keeps the git host of the one-segment remote %s out of projectId when repoUrl is off',
+    (remote) => {
+      const origDir = process.cwd();
+      const gitDir = mkdtempSync(resolve(tmpdir(), 'nr-mcp-test-repo-'));
+      // See the previous test for why GIT_DIR/GIT_WORK_TREE are cleared.
+      const gitEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+      try {
+        execSync('git init', { cwd: gitDir, env: gitEnv });
+        execSync(`git remote add origin ${remote}`, { cwd: gitDir, env: gitEnv });
+        process.chdir(gitDir);
+        process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+        process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+        const config = loadMcpConfig({ config: writeConfigFile({ repoUrlEnabled: false }) });
+        expect(config.repoUrl).toBeNull();
+        expect(config.projectId).toBe('widgets');
+        expect(JSON.stringify(config)).not.toContain('corp.internal');
+      } finally {
+        process.chdir(origDir);
+        rmSync(gitDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('orgId loaded from NEW_RELIC_AI_ORG_ID env var', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
