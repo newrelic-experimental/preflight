@@ -70,28 +70,29 @@ const EMBEDDED_CORRECTION_RE =
 
 const WONT_WORK_RE = /\bwon'?t work\b/i;
 
-/** A message that opens on a bare pronoun ("That won't work", "It still won't work, ...") names nothing of its own, so the pronoun points at the assistant's previous turn. A named option ("That approach won't work for X") is design discussion when a proposal follows. */
+/** A message that opens on a bare pronoun ("That won't work", "Hmm, that definitely won't work, ...") names nothing of its own, so the pronoun points at the assistant's previous turn. A named option ("That approach won't work for X") is design discussion when a proposal sits next to it. */
 const DEICTIC_WONT_WORK_RE = new RegExp(
-  `^${OPTIONAL_ACTUALLY}(that|this|it) (still )?won'?t work\\b`,
+  `^(?:[a-z]+[,.!]+\\s+)?${OPTIONAL_ACTUALLY}(that|this|it) (?:(?:still|just|also|even|[a-z]+ly) ){0,2}won'?t work\\b`,
   'i',
 );
 
-/** Proposing the next option ("..., let's use Y instead") marks design discussion rather than a rejection of the assistant's output. "because"/"since" are not signals either way: both forms give reasons. */
+/** Proposing the next option ("..., let's use Y instead") marks design discussion rather than a rejection of the assistant's output. A negated modal ("we can't lock the table") and "instead of" describe what something does, so neither counts. "because"/"since" are not signals either way: both forms give reasons. */
 const FORWARD_LOOKING_RE =
-  /\b(let'?s|let us|instead|we (should|could|can|need to|might|may)|we'?ll (need|have)|so we|should we|how about|what if|maybe we|i'?d (rather|prefer))\b/i;
+  /\b(let'?s|let us|instead(?!\s+of\b)|we (should|could|can|need to|might|may)(?!'t|\s+not\b)|we'?ll (need|have)|should we|how about|what if|maybe we|i'?d (rather|prefer))\b/i;
 
-/** A reference attached to the assistant's output (a built artifact, a past action, or a repeat failure), which overrides a forward-looking cue. Ruling out a plan ("your proposal") is design discussion, and a bare "still"/"again"/"fails" describes the option as often as the output ("we still need fresh reads"), so neither counts. */
+/** A reference attached to the assistant's output (a built artifact, a past action, or a repeat failure), which overrides a forward-looking cue. Ruling out a plan or answering a remark ("your proposal", "your solution", "the point you made") is design discussion, and a bare "still"/"again"/"fails" describes the option as often as the output ("we still need fresh reads"), so neither counts. */
 const PAST_REFERENCE_RE =
-  /\b(your (last |latest |previous |recent |new )?(fix|change|edit|code|version|patch|implementation|update|commit|refactor|migration|test|script|function|query|solution)s?|you('?ve| have)? (just |already )?(wrote|written|added|made|changed|did|done|used|tried|broke|broken|removed|edited|updated|implemented)|still won'?t work)\b/i;
+  /\b(your (last |latest |previous |recent |new )?(fix|change|edit|code|version|patch|implementation|update|commit|refactor|migration|test|script|function|query)s?|(?<!\b(?:point|argument|suggestion|proposal|plan|idea)s? )you('?ve| have)? (just |already )?(wrote|written|added|made|changed|did|done|used|tried|broke|broken|removed|edited|updated|implemented)|still won'?t work)\b/i;
 
 /** Whitespace after sentence-ending punctuation, or a newline. The lookbehind keeps the split linear: a quantified punctuation run followed by a required character backtracks quadratically on a long run of dots. */
 const SENTENCE_SPLIT_RE = /(?<=[.!?])\s+|\n\s*/;
 
 /**
  * "won't work" is a correction when the message opens on it with a bare pronoun, or when a sentence
- * using it has no forward-looking cue in itself or the sentence after it, or when either of those
- * sentences points back at the assistant's output. The one-sentence window makes "X won't work for Y.
- * Let's use Z." read the same as the comma form.
+ * using it has no forward-looking cue in itself or the sentences either side of it, or when any of
+ * those sentences points back at the assistant's output. The window reaches one sentence each way, so
+ * "X won't work for Y. Let's use Z." and "Let's use Z. X won't work for Y." read the same as the
+ * comma forms.
  */
 function hasWontWorkCorrection(text: string): boolean {
   if (!WONT_WORK_RE.test(text)) return false;
@@ -99,9 +100,9 @@ function hasWontWorkCorrection(text: string): boolean {
   const sentences = text.split(SENTENCE_SPLIT_RE);
   return sentences.some((sentence, i) => {
     if (!WONT_WORK_RE.test(sentence)) return false;
-    const pair = [sentence, sentences[i + 1] ?? ''];
-    if (pair.some((s) => PAST_REFERENCE_RE.test(s))) return true;
-    return !pair.some((s) => FORWARD_LOOKING_RE.test(s));
+    const nearby = [sentences[i - 1] ?? '', sentence, sentences[i + 1] ?? ''];
+    if (nearby.some((s) => PAST_REFERENCE_RE.test(s))) return true;
+    return !nearby.some((s) => FORWARD_LOOKING_RE.test(s));
   });
 }
 

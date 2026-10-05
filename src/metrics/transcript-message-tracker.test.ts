@@ -195,9 +195,15 @@ describe('TranscriptMessageTracker', () => {
     }
 
     const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+    const uncapitalize = (s: string): string =>
+      /^I\b/.test(s) ? s : s.charAt(0).toLowerCase() + s.slice(1);
+    const withoutLeadingSo = (s: string): string => s.replace(/^so\s+/i, '');
+
+    type Joiner = (clause: string, followUp: string) => string;
+    type Pair = readonly [string, string];
 
     /** Every [clause, follow-up] pair runs under each joiner, so a verdict can't hinge on punctuation. */
-    const JOINERS: ReadonlyArray<(clause: string, followUp: string) => string> = [
+    const JOINERS: readonly Joiner[] = [
       (c, f) => `${c}, ${f}.`,
       (c, f) => `${c}. ${capitalize(f)}.`,
       (c, f) => `${c}; ${f}.`,
@@ -205,8 +211,20 @@ describe('TranscriptMessageTracker', () => {
       (c, f) => `${c}\n${capitalize(f)}`,
     ];
 
-    const punctuationVariants = (pairs: ReadonlyArray<readonly [string, string]>): string[] =>
-      pairs.flatMap(([clause, followUp]) => JOINERS.map((join) => join(clause, followUp)));
+    /** The same joiners with the follow-up first ("Let's use Y. X won't work."), so a verdict can't hinge on clause order either. */
+    const REVERSED_JOINERS: readonly Joiner[] = [
+      (c, f) => `${capitalize(withoutLeadingSo(f))}, ${uncapitalize(c)}.`,
+      (c, f) => `${capitalize(withoutLeadingSo(f))}. ${capitalize(c)}.`,
+      (c, f) => `${capitalize(withoutLeadingSo(f))}; ${uncapitalize(c)}.`,
+      (c, f) => `${capitalize(withoutLeadingSo(f))} — ${uncapitalize(c)}.`,
+      (c, f) => `${capitalize(withoutLeadingSo(f))}\n${capitalize(c)}`,
+    ];
+
+    const variants = (pairs: readonly Pair[], joiners: readonly Joiner[]): string[] =>
+      pairs.flatMap(([clause, followUp]) => joiners.map((join) => join(clause, followUp)));
+    const punctuationVariants = (pairs: readonly Pair[]): string[] => variants(pairs, JOINERS);
+    const orderAndPunctuationVariants = (pairs: readonly Pair[]): string[] =>
+      variants(pairs, [...JOINERS, ...REVERSED_JOINERS]);
 
     const WONT_WORK_CORRECTIONS = [
       "That approach won't work because there's a race condition.",
@@ -221,21 +239,37 @@ describe('TranscriptMessageTracker', () => {
       "That won't work, let's try again.",
       "That won't work for empty arrays — the loop skips index 0.",
       "Your version won't work for us, let's go back to the old one.",
+      "That definitely won't work, let's use a map instead.",
+      "Hmm, that won't work, let's try again.",
+      "That approach won't work because we can't lock the table.",
+      "The migration won't work, it drops the index instead of renaming it.",
+      "The migration won't work, it drops the index rather than renaming it.",
     ];
 
-    /** Corrections followed by a forward-looking cue, caught by a bare-pronoun opener or a reference to the assistant's output. */
-    const WONT_WORK_CORRECTIONS_WITH_PROPOSAL = punctuationVariants([
-      ["That won't work", "let's use a map instead"],
-      ["It won't work", 'we should await the promise'],
-      ["That won't work", 'we need to handle the null case'],
-      ["Your fix won't work because the cache is never invalidated", 'we should clear it on write'],
-      ["The change you made won't work on Windows", "let's revert it"],
-      ["The migration still won't work", "let's try a different approach"],
-      ["What you just wrote won't work for empty input", 'we need to guard the loop'],
-    ]);
+    /**
+     * Corrections next to a forward-looking cue, caught by a bare-pronoun opener or a reference to the
+     * assistant's output. The bare-pronoun pairs only run reject-first: put the proposal first and the
+     * pronoun points at it ("Let's use a map instead. That won't work."), which is design discussion.
+     */
+    const WONT_WORK_CORRECTIONS_WITH_PROPOSAL = [
+      ...punctuationVariants([
+        ["That won't work", "let's use a map instead"],
+        ["It won't work", 'we should await the promise'],
+        ["That won't work", 'we need to handle the null case'],
+      ]),
+      ...orderAndPunctuationVariants([
+        [
+          "Your fix won't work because the cache is never invalidated",
+          'we should clear it on write',
+        ],
+        ["The change you made won't work on Windows", "let's revert it"],
+        ["The migration still won't work", "let's try a different approach"],
+        ["What you just wrote won't work for empty input", 'we need to guard the loop'],
+      ]),
+    ];
 
     /** Includes "still", "your", "fails" and "anymore" used about the option rather than the assistant's output. */
-    const WONT_WORK_DESIGN_DISCUSSION = punctuationVariants([
+    const WONT_WORK_DESIGN_DISCUSSION = orderAndPunctuationVariants([
       ["That approach won't work for X", "let's use Y instead"],
       ["A cache won't work here since we need fresh reads", "let's query the DB directly"],
       ["Polling won't work on Windows", 'so we should use fs.watch'],
@@ -252,6 +286,13 @@ describe('TranscriptMessageTracker', () => {
       ["Redis won't work for us anymore", "let's use SQLite"],
     ]);
 
+    const WONT_WORK_DESIGN_DISCUSSION_SINGLE = [
+      "Let's query the DB. A cache won't work here.",
+      "Let's query the DB, a cache won't work here.",
+      "A global lock won't work at scale. The point you made about contention holds, so let's shard by key.",
+      "Your solution won't work here, instead we should shard by key.",
+    ];
+
     // Known residuals, pinned to the current verdict so a rule change that
     // fixes or reopens one shows up here.
     const KNOWN_FALSE_POSITIVES = [
@@ -261,6 +302,10 @@ describe('TranscriptMessageTracker', () => {
       "It won't work on Windows, so we should use fs.watch.",
       // The proposal is two sentences away, outside the one-sentence window.
       "A cache won't work here. We need fresh reads. Let's query the DB.",
+      // "still won't work" marks a repeat failure of the assistant's attempt; a concessive "even with X" reads the same.
+      "Even with the polyfill, polling still won't work on Windows, so let's use fs.watch.",
+      // An imperative proposal. Imperatives carry corrections as often ("handle undefined too"), so they aren't a cue.
+      "Polling won't work on Windows, use fs.watch.",
     ];
 
     const KNOWN_MISSES = [
@@ -277,9 +322,12 @@ describe('TranscriptMessageTracker', () => {
       },
     );
 
-    it.each(WONT_WORK_DESIGN_DISCUSSION)('does not count %j as a correction', (text) => {
-      expect(countCorrections(text)).toBe(0);
-    });
+    it.each([...WONT_WORK_DESIGN_DISCUSSION, ...WONT_WORK_DESIGN_DISCUSSION_SINGLE])(
+      'does not count %j as a correction',
+      (text) => {
+        expect(countCorrections(text)).toBe(0);
+      },
+    );
 
     it.each(KNOWN_FALSE_POSITIVES)('counts %j (known false positive)', (text) => {
       expect(countCorrections(text)).toBe(1);
@@ -321,6 +369,7 @@ describe('TranscriptMessageTracker', () => {
       ],
       ['long run of sentence punctuation', `A cache won't work ${'.'.repeat(50_000)}x let's`],
       ['long run of mixed punctuation', `A cache won't work ${'.!?'.repeat(20_000)}x let's`],
+      ['long whitespace after a modal', `A cache won't work, we can${' '.repeat(100_000)}x`],
     ])('stays fast on a long adversarial message: %s', (_label, text) => {
       writeLines([userLine(text)]);
       const tracker = new TranscriptMessageTracker();
