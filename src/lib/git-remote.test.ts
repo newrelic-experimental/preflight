@@ -217,6 +217,12 @@ const MATRIX: readonly Row[] = [
     ['acme/widgets', null, 'C:/repos/acme/widgets'],
   ),
   row('../widgets', [null, null, null, '../widgets'], [null, null, '../widgets']),
+  // A one-letter host is an ssh alias unless a slash follows its colon.
+  row(
+    'g:acme/widgets.git',
+    ['acme/widgets', 'acme/widgets', null, 'g:acme/widgets.git'],
+    ['acme/widgets', null, 'g:acme/widgets.git'],
+  ),
   row('', [null, null, null, null], [null, null, null]),
   // One path segment: the host stands in for the owner in the local repo name.
   // CHANGED: projectId keeps only the name, since the host can be internal.
@@ -683,6 +689,17 @@ describe('parseGitRemote', () => {
   it('rejects local owner/name segments containing a control character', () => {
     expect(repoNameFromRemote('/Users/me/My\tDrive/widgets.git')).toBeNull();
     expect(repoNameFromRemote('/Users/me/Drive\x7f/widgets.git')).toBeNull();
+  });
+
+  it('reads a drive letter only before a slash or backslash', () => {
+    expect(parseGitRemote('C:/repos/acme/widgets')?.protocol).toBe('local');
+    expect(parseGitRemote('C:\\repos\\acme\\widgets')?.protocol).toBe('local');
+    expect(parseGitRemote('g:acme/widgets.git')).toMatchObject({
+      protocol: 'scp',
+      host: 'g',
+      user: null,
+      path: 'acme/widgets',
+    });
   });
 
   it('names a Windows path whose owner directory has a space', () => {

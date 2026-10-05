@@ -55,8 +55,9 @@ const FILE_URL_RE = /^(file):\/\/(?:([^/?#]*)@)?([^/?#]*)([^?#]*)/i;
 // [user@]host:path, git's scp-like syntax: a `:` with no `/` before it. The
 // user runs to the last `@` that is followed by `host:`, for the same reason.
 const SCP_FORM_RE = /^(?=[^/]*:)(?:([\s\S]*)@)?([^/:@]+):([^?#]*)/;
-// `C:/repos/x` and `C:\repos\x` are Windows paths, not scp syntax.
-const DRIVE_PATH_RE = /^[a-z]:/i;
+// `C:/repos/x` and `C:\repos\x` are Windows paths, not scp syntax. Without
+// the slash, `g:acme/widgets.git` names an ssh host alias `g`.
+const DRIVE_PATH_RE = /^[a-z]:[\\/]/i;
 // git's own test in transport_get() (transport.c): an optional
 // `[A-Za-z0-9][A-Za-z0-9+.-]*`, then `::`.
 const REMOTE_HELPER_RE = /^(?:[A-Za-z0-9][A-Za-z0-9+.-]*)?::/;
