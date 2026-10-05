@@ -399,17 +399,26 @@ describe('TranscriptMessageTracker', () => {
       }>;
     }
 
+    const readSets = (file: string): Readonly<Record<string, HeldOutSet>> =>
+      (
+        JSON.parse(readFileSync(resolve(__dirname, `../../test/fixtures/${file}`), 'utf-8')) as {
+          sets: Record<string, HeldOutSet>;
+        }
+      ).sets;
+
     // Model-written sets. A and B were read while writing the current rule, so they are development
-    // data. The scores are pinned measurements, not targets: a rule change updates them.
-    const HELD_OUT: Readonly<Record<string, HeldOutSet>> = (
-      JSON.parse(
-        readFileSync(resolve(__dirname, '../../test/fixtures/wont-work-held-out.json'), 'utf-8'),
-      ) as { sets: Record<string, HeldOutSet> }
-    ).sets;
+    // data. C was written before it and scored once after it was frozen, so C is the estimate of how
+    // the rule generalises. The scores are pinned measurements, not targets: a rule change updates
+    // them, and only a fresh set can say whether the change generalises.
+    const HELD_OUT: Readonly<Record<string, HeldOutSet>> = {
+      ...readSets('wont-work-held-out.json'),
+      ...readSets('wont-work-held-out-c.json'),
+    };
 
     it.each([
       ['A', { corrections: 25, counted: 24, design: 25, flagged: 2 }],
       ['B', { corrections: 25, counted: 7, design: 25, flagged: 0 }],
+      ['C', { corrections: 40, counted: 36, design: 40, flagged: 3 }],
     ])('scores held-out set %s', (name, expected) => {
       const rows = HELD_OUT[name].rows;
       const corrections = rows.filter((r) => r.label === 'correction');

@@ -1,7 +1,7 @@
 {
   "sets": {
     "C": {
-      "source": "claude-sonnet-4-6 through an LLM gateway, prompted with the correction/design definitions and no classifier code, rule description or cue words. Generated before the rule it scores was written, and scored once after that rule was frozen. Four rows that repeated a set A/B row near-verbatim were dropped, and the 40/40 split was restored by generation order. No label was changed.",
+      "source": "claude-sonnet-4-6 through an LLM gateway, prompted with the correction/design definitions and no classifier code, rule description or cue words. Generated before the rule frozen at b241f1b was written, and scored once after. Four rows that repeated a set A/B row near-verbatim were dropped, and the 40/40 split was restored by generation order. No label was changed.",
       "rows": [
         {
           "text": "that wont work, you hardcoded the port to 3000 but we read it from env at startup",
