@@ -5,11 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.57.3] - 2026-10-01
+## [1.57.4] - 2026-10-05
 
 ### Fixed
 
 - A session in the "Sessions today" tile no longer stays "Ready for review" after its pull request merges, including when the merge runs from a different session or worktree of the same repo. Preflight now records the number of the pull request that `gh pr create` opened, read from the PR URL in its output (only the number is kept). Sessions saved before this release have no recorded number, so their pull requests still read as open, and a command that opens more than one pull request, or whose output names more than one, records none. A `gh pr merge` counts only when it succeeded and didn't just turn auto-merge on or off. Success is the command's exit status, so in a compound command that status must be the merge's own: `gh pr merge 42 && git pull` counts, but `gh pr merge 42 | tail` and `gh pr merge 42 || echo failed` don't. Cursor and Windsurf hooks report no exit status, so a failed merge there still counts. A `gh pr create` or `gh pr merge` that may target another repo, through `-R`/`--repo`, `GH_REPO` or an earlier `cd` out of the repo, is never matched to this repo's pull requests.
+
+## [1.57.3] - 2026-10-01
+
+### Fixed
+
+- The Kiro Power manifest (`kiro-power/plugin.json`) now validates against the Agent Plugins 1.0.0 schema it declares. It carried a root `displayName` key, which the schema does not allow and which marketplaces validating against it rejected. Kiro's Powers documentation does not list `displayName` as a manifest field, so the key was removed rather than moved.
 
 ## [1.57.2] - 2026-09-29
 
