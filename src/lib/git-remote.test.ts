@@ -421,6 +421,16 @@ const MATRIX: readonly Row[] = [
     ],
     ['acme/my+repo', commit('github.com/acme/my+repo'), 'https://github.com/acme/my+repo.git'],
   ),
+  row(
+    '/Users/me/My Drive/widgets.git',
+    [null, 'My Drive/widgets', null, '/Users/me/My Drive/widgets.git'],
+    ['My Drive/widgets', null, '/Users/me/My Drive/widgets.git'],
+  ),
+  row(
+    'file:///Users/me/My Drive/widgets.git',
+    [null, 'My Drive/widgets', null, 'file:///Users/me/My Drive/widgets.git'],
+    ['My Drive/widgets', null, 'file:///Users/me/My Drive/widgets.git'],
+  ),
 ];
 
 describe('legacy parsers (characterization of the code #716 replaced)', () => {
@@ -665,8 +675,18 @@ describe('parseGitRemote', () => {
     expect(stripRemoteCredentials(remote)).toBeNull();
   });
 
-  it('rejects owner/name segments containing whitespace', () => {
+  it('rejects owner/name segments containing whitespace in a network remote', () => {
     expect(repoNameFromRemote('https://github.com/acme/wid gets')).toBeNull();
+    expect(repoNameFromRemote('git@github.com:acme/wid gets.git')).toBeNull();
+  });
+
+  it('rejects local owner/name segments containing a control character', () => {
+    expect(repoNameFromRemote('/Users/me/My\tDrive/widgets.git')).toBeNull();
+    expect(repoNameFromRemote('/Users/me/Drive\x7f/widgets.git')).toBeNull();
+  });
+
+  it('names a Windows path whose owner directory has a space', () => {
+    expect(repoNameFromRemote('C:\\Users\\me\\My Drive\\widgets')).toBe('My Drive/widgets');
   });
 });
 

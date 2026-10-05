@@ -67,14 +67,18 @@ const LOGIN_NAME_SCHEMES = new Set(['ssh', 'git+ssh', 'ssh+git']);
 const SSH_PROTOCOLS = new Set(['ssh', 'git+ssh', 'ssh+git', 'scp']);
 /** Protocols whose host serves a browsable web UI at `https://<host>/<path>`. */
 const BROWSABLE_PROTOCOLS = new Set([...HTTP_PROTOCOLS, ...SSH_PROTOCOLS]);
-/** Relative-path segments, whitespace, and control characters never form a real owner or repo name. */
-function isValidSegment(segment: string): boolean {
+/**
+ * Relative-path segments and control characters never form a real owner or
+ * repo name, and neither does whitespace in a network remote's path. A local
+ * directory name can contain spaces (`My Drive`).
+ */
+function isValidSegment(segment: string, allowWhitespace: boolean): boolean {
   if (segment === '.' || segment === '..') return false;
   for (let i = 0; i < segment.length; i++) {
     const code = segment.charCodeAt(i);
-    if (code <= 0x20 || code === 0x7f) return false;
+    if (code < 0x20 || code === 0x7f) return false;
   }
-  return !/\s/.test(segment);
+  return allowWhitespace || !/\s/.test(segment);
 }
 
 function normalizePath(rawPath: string): string {
@@ -86,7 +90,7 @@ function normalizePath(rawPath: string): string {
     .replace(/\/+$/, '');
 }
 
-function ownerRepoOf(host: string | null, path: string): string | null {
+function ownerRepoOf(host: string | null, path: string, local: boolean): string | null {
   // A null name matches every repo in GitEfficiencyTracker.replayTimeline(),
   // so a one-segment remote (Gerrit, cgit, gitolite) takes its host as owner.
   const segments = path.split('/').filter((s) => s.length > 0);
@@ -94,7 +98,7 @@ function ownerRepoOf(host: string | null, path: string): string | null {
   if (segments.length >= 2) pair = segments.slice(-2);
   else if (host && segments.length === 1) pair = [host, segments[0]];
   else return null;
-  if (!pair.every(isValidSegment)) return null;
+  if (!pair.every((segment) => isValidSegment(segment, local))) return null;
   return pair.join('/');
 }
 
@@ -142,7 +146,8 @@ function build(
   rawPath: string,
 ): ParsedGitRemote {
   const path = normalizePath(rawPath);
-  return { protocol, host, port, user, path, ownerRepo: ownerRepoOf(host, path) };
+  const local = protocol === 'local' || protocol === 'file';
+  return { protocol, host, port, user, path, ownerRepo: ownerRepoOf(host, path, local) };
 }
 
 /**
