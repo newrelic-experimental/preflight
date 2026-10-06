@@ -2007,35 +2007,27 @@ async function main(): Promise<void> {
 
     const capturedAlertEngine = alertEngine;
     const capturedAlertSnapshotCollector = alertSnapshotCollector;
+    // BudgetTracker invokes this from inside updateCost(), so an uncaught
+    // throw would skip its remaining periods and abort the caller's record
+    // handling. Guard it like the periodic evaluation tick, with the NR ingest
+    // and the local alert engine guarded separately so neither skips the other.
     budgetTracker.setOnThreshold((event) => {
-      capturedNrIngest?.ingestBudgetWarning(event);
       logger.warn('Budget threshold reached', {
         period: event.period,
         pct: event.thresholdPct,
         spentUsd: event.spentUsd.toFixed(4),
         budgetUsd: event.budgetUsd.toFixed(2),
       });
-      // Route into the local alert engine so configured rules can fire.
-      if (capturedAlertEngine) {
-        capturedAlertEngine.evaluate(
-          {
-            timestamp: event.timestamp,
-            cost: { sessionUsd: 0, todayUsd: 0, weekUsd: 0 },
-            efficiency: { score: null },
-            antiPatterns: [],
-            latency: [],
-            toolFailures: [],
-            budgetThresholds: [
-              {
-                period: event.period,
-                thresholdPct: event.thresholdPct,
-                spentUsd: event.spentUsd,
-                budgetUsd: event.budgetUsd,
-              },
-            ],
-          },
-          Date.now(),
-        );
+      try {
+        capturedNrIngest?.ingestBudgetWarning(event);
+      } catch (err) {
+        logger.warn('Budget warning ingest failed', { error: String(err) });
+      }
+      try {
+        // Route into the local alert engine so budget rules can fire.
+        capturedAlertEngine?.evaluateBudgetThreshold(event, Date.now());
+      } catch (err) {
+        logger.warn('Budget threshold alert evaluation failed', { error: String(err) });
       }
     });
     // Cross-references a subagent's type against its `agentId` — the ONLY link
@@ -3477,21 +3469,6 @@ function loadAlertRulesFromDisk(engine: LocalAlertEngine, rulesPath: string): vo
         invalidCount: invalid.length,
         validCount: valid.length,
       });
-    }
-    // Warn about cost.window rules with today/week period — the snapshot
-    // collector only populates sessionUsd, so today/week rules always read 0
-    // and never fire. Fires for both explicitly-configured AND defaulted
-    // values (default is 'session' but if a rules.json sets
-    // 'today' or 'week' explicitly, we still want the user to know it
-    // silently no-ops).
-    for (const rule of valid) {
-      if (rule.type === 'cost.window' && rule.costPeriod !== 'session') {
-        logger.warn(
-          `Rule '${rule.id}' uses costPeriod='${rule.costPeriod}', which is not yet implemented. ` +
-            `The rule will read 0 every cycle and never fire. ` +
-            `Use costPeriod='session' until daily/weekly cost aggregation is supported.`,
-        );
-      }
     }
     engine.loadRules(valid);
     logger.info('Alert rules loaded', { rulesPath, count: valid.length });

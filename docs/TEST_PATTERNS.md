@@ -13,7 +13,7 @@ This document covers the testing conventions, infrastructure, and patterns used 
 
 ### Jest configuration
 
-A single flat `jest.config.ts` at the repo root governs every test. There are no per-package configs and no base config to extend.
+A single flat `jest.config.ts` at the repo root governs every Jest test. There are no per-package configs and no base config to extend.
 
 Key settings:
 
@@ -22,6 +22,7 @@ Key settings:
 | `preset`                 | `ts-jest/presets/default-esm`                                   | ESM modules with TypeScript                                            |
 | `testEnvironment`        | `node`                                                          | No browser DOM needed                                                  |
 | `testMatch`              | `['<rootDir>/src/**/*.test.ts', '<rootDir>/test/**/*.test.ts']` | Co-located unit tests + dedicated `test/` folder                       |
+| `testPathIgnorePatterns` | includes `<rootDir>/src/web/`                                   | `src/web` belongs to Vitest                                            |
 | `moduleNameMapper`       | `'^(\\.{1,2}/.*)\\.js$': '$1'`                                  | Strips `.js` extensions in TS imports for ts-jest                      |
 | `extensionsToTreatAsEsm` | `['.ts']`                                                       | Tells Jest to treat `.ts` as ESM                                       |
 | `testTimeout`            | `15_000`                                                        | 15s default per test                                                   |
@@ -50,20 +51,48 @@ The web dashboard in `src/web/` uses a **separate test runner**: [Vitest](https:
 npm run test:web    # Run the Vitest suite
 ```
 
-Vitest is configured via the `root: resolve(__dirname, 'src/web')` setting in `vite.config.ts`, so it discovers tests only within `src/web/`.
+Vitest has its own config file, `vitest.config.ts` (separate from `vite.config.ts`, which configures the dashboard build). Its `include: ['src/web/**/*.test.{ts,tsx}']` is what confines discovery to `src/web/`.
 
 ### Key differences from Jest tests
 
-| Concern        | Jest (`src/**/*.test.ts`) | Vitest (`src/web/**/*.test.tsx`)  |
-| -------------- | ------------------------- | --------------------------------- |
-| File extension | `.test.ts`                | `.test.tsx`                       |
-| Import globals | `from '@jest/globals'`    | vitest globals (no import needed) |
-| Spy/mock       | `jest.spyOn`, `jest.fn`   | `vi.spyOn`, `vi.fn`               |
-| Run command    | `npm test`                | `npm run test:web`                |
-
-**Important:** Web test files must use `.test.tsx`, not `.test.ts`. Jest picks up `.test.ts` files under `src/web/` and fails on Vitest imports; the `.tsx` extension is what routes them to Vitest instead.
+| Concern        | Jest (outside `src/web`) | Vitest (`src/web`)                |
+| -------------- | ------------------------ | --------------------------------- |
+| File extension | `.test.ts`               | `.test.ts(x)`                     |
+| Import globals | `from '@jest/globals'`   | vitest globals (no import needed) |
+| Spy/mock       | `jest.spyOn`, `jest.fn`  | `vi.spyOn`, `vi.fn`               |
+| Run command    | `npm test`               | `npm run test:web`                |
 
 Web tests follow the same factory-function and spy patterns as Jest tests — just with `vi.*` instead of `jest.*`.
+
+---
+
+## Browser Tests (Playwright)
+
+`e2e/` runs the built dashboard in real Chromium against real `--local` servers. `playwright.config.ts` starts two, each over its own temp directory, which also stands in for `HOME`, so neither reads your credentials, your `~/.newrelic-preflight`, or your Claude Code transcripts:
+
+| Server | URL                                | Store                                                        |
+| ------ | ---------------------------------- | ------------------------------------------------------------ |
+| empty  | the default `baseURL`              | nothing                                                      |
+| seeded | `SEEDED_URL` from `e2e/servers.ts` | one persisted session from `e2e/fixtures/session-fixture.ts` |
+
+```bash
+npm run test:e2e                          # Build, then run the suite
+npx playwright test e2e/views.spec.ts     # One spec, against an existing build
+```
+
+### Adding a view smoke test
+
+`e2e/views.spec.ts` holds a smoke test per dashboard route, run once against each server. Each reaches the view from the sidebar, then again by reloading on its URL, and asserts the view's `<h1>`, no "Not found", and no console error, uncaught exception, failed request or unexpected 4xx/5xx while it loads. A new view needs one row in `VIEWS`; a test comparing `VIEWS` against the sidebar fails until it has one:
+
+```typescript
+{ nav: 'Workflows', path: '/workflows', heading: 'Workflows', query: /^\/api\/workflows$/ },
+```
+
+`nav` is the Sidebar button's label and `heading` the view's `<h1>` text. `query` matches the pathname of a request the view issues on mount; the test waits for it to be answered after the reload, so it must not be one the App shell makes (`/api/session/current`, `/api/anti-patterns`, `/api/health` and `/sse`, on every route). Another view may share it. It proves the request was answered, not that the view rendered its data, and the error checks cover the reloaded load: the sidebar visit is checked by URL and heading only, and its fetches are cancelled by the reload. If the view requests something that legitimately answers with an error status, add it to `EXPECTED_ERROR_RESPONSES` with a comment saying why, rather than loosening the check.
+
+To assert what a view shows with data, `test.use({ baseURL: SEEDED_URL })` in a `describe` and, if the fixture lacks what you need, extend `buildFixtureSession()`. Import the values you assert on from `session-fixture.ts` instead of repeating them.
+
+Smoke tests take no screenshots. Screenshots are per-platform baselines, and every new one means recording a Linux copy too — see [The three suites](../CONTRIBUTING.md#the-three-suites).
 
 ---
 
