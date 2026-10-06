@@ -51,6 +51,7 @@ import {
   resolveBinaryPath,
   resolveNamedBinaryOnPath,
 } from './schedule.js';
+import { HOMEBREW_UPGRADE_COMMAND, isHomebrewInstall } from './homebrew-install.js';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
 import { LocalStore } from '../storage/index.js';
 import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
@@ -502,6 +503,15 @@ async function handleUpdate(): Promise<void> {
     process.exit(1);
   }
 
+  // Checked before git: on Apple Silicon the Cellar sits inside Homebrew's own
+  // repo (/opt/homebrew), so the package-manager branch below would catch it
+  // and give npm advice that installs a second, competing copy.
+  if (isHomebrewInstall(repoRoot)) {
+    print('✗ preflight was installed with Homebrew.');
+    print(`  To update: ${HOMEBREW_UPGRADE_COMMAND}`);
+    process.exit(1);
+  }
+
   let gitRoot!: string;
   try {
     gitRoot = execFileSync('git', ['-C', repoRoot, 'rev-parse', '--show-toplevel'], {
@@ -589,6 +599,14 @@ function handleSchedule(options: { time?: string; disable?: boolean }): void {
   }
 
   if (options.time !== undefined) {
+    // The scheduled job runs `preflight update`, which can't update a keg.
+    // Status and --disable stay available so an existing job can be removed.
+    const repoRoot = findRepoRoot();
+    if (repoRoot !== null && isHomebrewInstall(repoRoot)) {
+      print("✗ The daily schedule runs `preflight update`, which can't update a Homebrew install.");
+      print(`  Keep preflight current with: ${HOMEBREW_UPGRADE_COMMAND}`);
+      process.exit(1);
+    }
     const match = options.time.match(/^(\d{1,2}):(\d{2})$/);
     if (!match) {
       print(`Invalid time format "${options.time}". Use HH:MM (e.g. 08:00).`);
