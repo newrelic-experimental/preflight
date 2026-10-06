@@ -1411,7 +1411,7 @@ describe('developer sanitization via loadMcpConfig()', () => {
     expect(config.repoUrl).not.toBeNull();
     expect(config.repoUrl).not.toContain('ghp_faketoken1234567890abcd');
     expect(config.repoUrl).not.toContain('someuser:');
-    expect(config.repoUrl).toContain('[REDACTED]');
+    expect(config.repoUrl).toBe('https://github.com/org/repo.git');
   });
 
   it('strips embedded credentials from an explicit NEW_RELIC_AI_REPO_URL env var', () => {
@@ -1424,7 +1424,36 @@ describe('developer sanitization via loadMcpConfig()', () => {
     expect(config.repoUrl).not.toBeNull();
     expect(config.repoUrl).not.toContain('ghp_faketoken1234567890abcd');
     expect(config.repoUrl).not.toContain('someuser:');
-    expect(config.repoUrl).toContain('[REDACTED]');
+    expect(config.repoUrl).toBe('https://github.com/org/repo.git');
+  });
+
+  it('strips a username-only token that no redaction pattern recognizes', () => {
+    // A GitLab/Bitbucket token used as the https username has no `user:pass`
+    // shape and no known prefix, so redactSensitive alone let it through.
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_REPO_URL = 'https://opaquetoken123@gitlab.example.com/org/repo.git';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.repoUrl).toBe('https://gitlab.example.com/org/repo.git');
+  });
+
+  it('strips a token from a git+https remote', () => {
+    // The `repository.url` shape in package.json. Only ssh-family schemes keep
+    // a userinfo login name; every other scheme loses the whole userinfo.
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_REPO_URL =
+      'git+https://opaquetoken123@gitlab.example.com/org/repo.git';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.repoUrl).toBe('git+https://gitlab.example.com/org/repo.git');
+  });
+
+  it('strips a password containing an unencoded slash', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_REPO_URL = 'https://user:pa/ss@github.com/acme/widgets.git';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.repoUrl).toBe('https://github.com/acme/widgets.git');
   });
 
   it('repoUrl strips embedded credentials from an inferred git remote', () => {
@@ -1454,12 +1483,37 @@ describe('developer sanitization via loadMcpConfig()', () => {
       expect(config.repoUrl).not.toBeNull();
       expect(config.repoUrl).not.toContain('ghp_faketoken1234567890abcd');
       expect(config.repoUrl).not.toContain('someuser:');
-      expect(config.repoUrl).toContain('[REDACTED]');
+      expect(config.repoUrl).toBe('https://github.com/org/repo.git');
+      expect(config.projectId).toBe('org/repo');
     } finally {
       process.chdir(origDir);
       rmSync(gitDir, { recursive: true, force: true });
     }
   });
+
+  it.each(['git@git.corp.internal:widgets.git', 'ssh://git@git.corp.internal:29418/widgets'])(
+    'keeps the git host of the one-segment remote %s out of projectId when repoUrl is off',
+    (remote) => {
+      const origDir = process.cwd();
+      const gitDir = mkdtempSync(resolve(tmpdir(), 'nr-mcp-test-repo-'));
+      // See the previous test for why GIT_DIR/GIT_WORK_TREE are cleared.
+      const gitEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+      try {
+        execSync('git init', { cwd: gitDir, env: gitEnv });
+        execSync(`git remote add origin ${remote}`, { cwd: gitDir, env: gitEnv });
+        process.chdir(gitDir);
+        process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+        process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+        const config = loadMcpConfig({ config: writeConfigFile({ repoUrlEnabled: false }) });
+        expect(config.repoUrl).toBeNull();
+        expect(config.projectId).toBe('widgets');
+        expect(JSON.stringify(config)).not.toContain('corp.internal');
+      } finally {
+        process.chdir(origDir);
+        rmSync(gitDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('orgId loaded from NEW_RELIC_AI_ORG_ID env var', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
