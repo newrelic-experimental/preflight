@@ -1030,6 +1030,25 @@ describe('computeWorkspaceMetrics — chained and failed git commands', () => {
     expect(metrics.pushCount).toBe(0);
   });
 
+  it.each([
+    ['git commit -m x || git commit --no-verify -m x', 'husky - pre-commit script failed (code 1)'],
+    ['git diff --quiet || git commit -am wip && git push', 'fatal: Authentication failed'],
+    ['git pull && git commit -m merge && git checkout other', CONFLICT],
+    [
+      'git commit -m x && git log --oneline | head -1',
+      'error: gpg failed to sign the data\nfatal: failed to write commit object',
+    ],
+  ])('counts no commit for `%s`', (command, error) => {
+    const t = Date.now();
+    const records = [
+      gitActivity('git merge main', 'ws-a', { timestamp: t, success: false, error: CONFLICT }),
+      ...chainActivities(command, 'ws-a', { timestamp: t + 1_000, success: false, error }),
+    ];
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.commitCount).toBe(0);
+    expect(metrics.conflictHistory.map((c) => c.resolution)).not.toContain('resolved');
+  });
+
   it('resolves a conflict with a commit whose message mentions --amendment', () => {
     const t = Date.now();
     const records = [

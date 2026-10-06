@@ -88,8 +88,9 @@ export interface GitEvent {
   readonly timestamp: number;
   readonly type: GitEventType;
   readonly command?: string;
-  /** For one segment of a chained command, false only when the command's
-   *  failure is attributed to that segment (see `classifyGitSegments`). */
+  /** For one segment of a chained command that failed, true only when the
+   *  shell's `&&` grouping shows the segment succeeded, and otherwise the
+   *  command's own `false` (see `classifyGitSegments`). */
   readonly success: boolean;
   readonly durationMs: number | null;
   /** `owner/name` of the repo this event belongs to, when known. */
@@ -342,50 +343,114 @@ function splitShellChain(command: string): ShellChain {
   return { segments, operators };
 }
 
-// Git verbs whose own output can report a merge/rebase conflict.
+// Git verbs whose own output can report a merge/rebase conflict. A plain
+// `git stash` or `git checkout <branch>` cannot.
 const GIT_CONFLICT_CAPABLE_RE =
-  /\bgit\s+(?:merge|rebase|pull|cherry-pick|revert|am|apply|stash|checkout|switch)\b/;
+  /\bgit\s+(?:merge|rebase|pull|cherry-pick|revert|am|apply|stash\s+(?:pop|apply|branch)|(?:checkout|switch)\b.*\s(?:-m|--merge)\b)/;
+
+// How bash reads a `ShellChain`. `;`, newline and `&` end an and-or list.
+// Within one, `&&` and `||` join pipelines left to right with equal
+// precedence, so `a || b && c` is `(a || b) && c`. `|` joins the commands of
+// one pipeline, whose exit status is its last command's.
+
+/** Whether `op` joins two commands of one pipeline. `|&` is a `|`. */
+function isPipe(op: string | undefined): boolean {
+  return op === '|' || op === '|&';
+}
+
+/** First segment of the `&&` run holding segment `i`: the pipelines `&&`
+ *  joins to it, back to a `||` or the start of its and-or list. */
+function andRunStart(operators: readonly string[], i: number): number {
+  let start = i;
+  while (start > 0 && (operators[start - 1] === '&&' || isPipe(operators[start - 1]))) start--;
+  return start;
+}
+
+/** Last segment of the pipeline that starts at segment `start`. */
+function pipelineEnd(operators: readonly string[], start: number): number {
+  let end = start;
+  while (isPipe(operators[end])) end++;
+  return end;
+}
 
 /**
- * Index of the git segment whose output `error` is, or -1 when no segment's
- * is. The hook payload carries one error for the whole command, not one per
- * segment. Conflict, rejection, and commit-failure text names the kind of
- * git command that printed it, so it goes to the last segment that can print
- * it: `git pull && git push` hands a conflict to the pull.
+ * Start of the segments before `target` that ran and succeeded if `target`
+ * ran: those that `&&` alone joins to it. A `|` or `||` between them ends
+ * the proof, and so does the `||` before an `&&` run: in `a || b && t`,
+ * which is `(a || b) && t`, `b` may not have run.
  */
-function errorSegmentIndex(gitSegments: readonly string[], error: string): number {
-  const hasConflict =
-    MERGE_CONFLICT_INDICATORS.some((re) => re.test(error)) || REBASE_CONFLICT_RE.test(error);
-  const hasRejection = REJECT_INDICATORS.some((re) => re.test(error));
-  const hasCommitFailure = COMMIT_FAILURE_INDICATORS.some((re) => re.test(error));
-  for (let i = gitSegments.length - 1; i >= 0; i--) {
-    const segment = gitSegments[i]!;
-    if (hasConflict && GIT_CONFLICT_CAPABLE_RE.test(segment)) return i;
-    if (hasRejection && GIT_PUSH_RE.test(segment)) return i;
-    if (hasCommitFailure && GIT_COMMIT_RE.test(segment)) return i;
+function provenSuccessStart(operators: readonly string[], target: number): number {
+  let from = target;
+  while (from > 0 && operators[from - 1] === '&&') from--;
+  const run = andRunStart(operators, from);
+  const afterOr = run > 0 && operators[run - 1] === '||';
+  return from < target && afterOr && pipelineEnd(operators, run) === from ? from + 1 : from;
+}
+
+/** Last segment that `&&` kept from running after segment `failed` failed;
+ *  `failed` itself when the next segment runs anyway, as it does when
+ *  `failed` is piped into another command. */
+function lastSkippedSegment(operators: readonly string[], failed: number): number {
+  if (isPipe(operators[failed])) return failed;
+  let last = failed;
+  while (operators[last] === '&&' || isPipe(operators[last])) last++;
+  return last;
+}
+
+/** Last segment that runs a command: the one the command's exit status
+ *  comes from, if it ran. */
+function lastCommandSegment(segments: readonly string[]): number {
+  let last = segments.length - 1;
+  while (last > 0 && runsNoCommand(segments[last]!)) last--;
+  return last;
+}
+
+/** Index of the last git segment matching `re`, or -1. */
+function lastGitSegment(
+  segments: readonly string[],
+  isGit: readonly boolean[],
+  re: RegExp,
+): number {
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (isGit[i] && re.test(segments[i]!)) return i;
   }
   return -1;
 }
 
-/** Index of the last segment that `&&` kept from running after segment
- *  `failed` failed; `failed` itself when the next segment runs anyway. */
-function lastSkippedSegment(operators: readonly string[], failed: number): number {
-  let last = failed;
-  while (operators[last] === '&&') last++;
-  return last;
-}
-
-/** First and last segment of the run of `&&` steps that ends the command:
- *  the steps its exit status can come from. */
-function finalAndRun(
-  segments: readonly string[],
-  operators: readonly string[],
-): { first: number; last: number } {
-  let last = segments.length - 1;
-  while (last > 0 && runsNoCommand(segments[last]!)) last--;
-  let first = last;
-  while (first > 0 && operators[first - 1] === '&&') first--;
-  return { first, last };
+/**
+ * Index of the git segment whose output `error` is, or -1 when no segment's
+ * is. The hook payload carries one error for the whole command, not one per
+ * segment, but conflict, rejection and commit-failure text names the kind of
+ * git command that printed it. Conflict text goes to the earliest segment
+ * that can print it in the last `&&` run holding one: a conflict stops the
+ * run, and any of those segments may be the one it stopped at, so the
+ * earliest counts no step as run that may not have. `git pull && git commit
+ * && git checkout other` hands it to the pull. Otherwise rejection text goes
+ * to the last `git push`, or commit-failure text to the last `git commit`,
+ * whichever comes later.
+ */
+function errorSegmentIndex(
+  { segments, operators }: ShellChain,
+  isGit: readonly boolean[],
+  error: string,
+): number {
+  if (MERGE_CONFLICT_INDICATORS.some((re) => re.test(error)) || REBASE_CONFLICT_RE.test(error)) {
+    const last = lastGitSegment(segments, isGit, GIT_CONFLICT_CAPABLE_RE);
+    if (last !== -1) {
+      const run = andRunStart(operators, last);
+      for (let i = run; i < last; i++) {
+        if (isGit[i] && GIT_CONFLICT_CAPABLE_RE.test(segments[i]!)) return i;
+      }
+      return last;
+    }
+  }
+  const push = REJECT_INDICATORS.some((re) => re.test(error))
+    ? lastGitSegment(segments, isGit, GIT_PUSH_RE)
+    : -1;
+  const commit = COMMIT_FAILURE_INDICATORS.some((re) => re.test(error))
+    ? lastGitSegment(segments, isGit, GIT_COMMIT_RE)
+    : -1;
+  return Math.max(push, commit);
 }
 
 /**
@@ -393,39 +458,52 @@ function finalAndRun(
  * chained `git commit -m x && git push` yields a commit AND a push instead
  * of whichever verb `classifyGitCommand` ranks first.
  *
- * The hook reports one success/error pair for the whole command. A failure
- * goes to the git segment the error text names (see `errorSegmentIndex`), and
- * the segments `&&` then kept from running are dropped. When the text names
- * none, any step of the final `&&` run may have failed, so the steps after
- * its first are dropped as possibly never run, and the first, which ran,
- * carries the failure only when it is the run's only step. Every other
- * segment counts as succeeded, so a commit before a rejected push or a
- * failing `gh pr create` still counts. The target directory comes from the
- * whole command, so a `cd dir &&` in an earlier segment still attributes
- * every git segment.
+ * The hook reports one success/error pair for the whole command, so for a
+ * failed command each segment's outcome is read off bash's grouping. The
+ * failure goes to the segment the error text names (see `errorSegmentIndex`),
+ * and the segments `&&` then kept from running are dropped. When the text
+ * names none, the failure is taken to be the last command's, but any step
+ * of the final `&&` run may be the one that failed, so the steps after its
+ * first are dropped as possibly never run. A segment is marked succeeded
+ * only when `&&` alone joins it to the step the failure goes to (see
+ * `provenSuccessStart`), so a commit before a rejected push or a failing
+ * `gh pr create` still counts. Every other segment keeps the command's
+ * `success`, which for a failed command cannot inflate a count. The target
+ * directory comes from the whole command, so a `cd dir &&` in an earlier
+ * segment still attributes every git segment.
  */
 export function classifyGitSegments(
   command: string,
   record: ToolCallRecord,
   resolveRepo: (dir: string | null) => string | null,
 ): ClassifiedGitSegment[] {
-  const { segments: all, operators } = splitShellChain(command);
-  const gitIndexes = all.flatMap((s, i) => (GIT_SEGMENT_RE.test(s) ? [i] : []));
-  const segments = gitIndexes.map((i) => all[i]!);
-  let owner = errorSegmentIndex(segments, (record.error as string) ?? '');
+  const chain = splitShellChain(command);
+  const { segments, operators } = chain;
+  const isGit = segments.map((s) => GIT_SEGMENT_RE.test(s));
+  let owner = errorSegmentIndex(chain, isGit, (record.error as string) ?? '');
+  // Segments [proven, failedAt) succeeded; (dropFrom, dropThrough] did not,
+  // or may not, have run.
   let failedAt = -1;
+  let dropFrom = -1;
+  let dropThrough = -1;
   if (!record.success && owner !== -1) {
-    failedAt = gitIndexes[owner]!;
+    failedAt = owner;
+    dropFrom = owner;
+    dropThrough = lastSkippedSegment(operators, owner);
   } else if (!record.success) {
-    const run = finalAndRun(all, operators);
-    failedAt = run.first;
-    if (run.first === run.last) owner = gitIndexes.indexOf(run.first);
+    failedAt = lastCommandSegment(segments);
+    dropFrom = pipelineEnd(operators, andRunStart(operators, failedAt));
+    dropThrough = failedAt;
+    if (dropFrom === failedAt && isGit[failedAt]) owner = failedAt;
   }
-  const skippedThrough = failedAt === -1 ? -1 : lastSkippedSegment(operators, failedAt);
+  const proven = failedAt === -1 ? -1 : provenSuccessStart(operators, failedAt);
   const targetDir = gitCommandTargetDir(command, record.cwd as string | undefined);
   return segments.flatMap((segment, i) => {
-    if (gitIndexes[i]! > failedAt && gitIndexes[i]! <= skippedThrough) return [];
-    const forSegment = i === owner ? record : { ...record, success: true, error: undefined };
+    if (!isGit[i] || (i > dropFrom && i <= dropThrough)) return [];
+    const forSegment =
+      i === owner
+        ? record
+        : { ...record, success: record.success || (i >= proven && i < failedAt), error: undefined };
     return [{ segment, event: classifyGitCommand(segment, forSegment, resolveRepo, targetDir) }];
   });
 }

@@ -466,6 +466,90 @@ describe('classifyGitSegments when the error names no step', () => {
   });
 });
 
+// Bash groups `&&` and `||` left to right with equal precedence and reads a
+// pipeline as one step, so `a || b && c` is `(a || b) && c`.
+describe('classifyGitSegments under bash && and || grouping', () => {
+  const resolveRepo = (): string | null => null;
+  const GPG = 'error: gpg failed to sign the data\nfatal: failed to write commit object';
+  const CONFLICT = 'CONFLICT (content): Merge conflict in a.ts\nAutomatic merge failed';
+
+  const outcomes = (command: string, error: string): [string, boolean][] =>
+    classifyGitSegments(command, makeRecord({ command, success: false, error }), resolveRepo).map(
+      ({ event }) => [event.type, event.success],
+    );
+
+  it('fails a commit whose || fallback ran', () => {
+    expect(
+      outcomes(
+        'git commit -m x || git commit --no-verify -m x',
+        'husky - pre-commit script failed (code 1)',
+      ),
+    ).toEqual([
+      ['commit', false],
+      ['commit', false],
+    ]);
+  });
+
+  it('does not mark succeeded a commit that the || before it may have skipped', () => {
+    expect(
+      outcomes(
+        'git diff --quiet || git commit -am wip && git push',
+        "fatal: Authentication failed for 'https://github.com/acme/widgets.git/'",
+      ),
+    ).toEqual([
+      ['diff', false],
+      ['commit', false],
+    ]);
+  });
+
+  it('gives conflict text to the earliest step of the && run that can conflict', () => {
+    expect(outcomes('git pull && git commit -m merge && git checkout other', CONFLICT)).toEqual([
+      ['merge_conflict', false],
+    ]);
+    expect(outcomes('git pull && git checkout -b feature', CONFLICT)).toEqual([
+      ['merge_conflict', false],
+    ]);
+  });
+
+  it('does not give conflict text to a stash push or a plain checkout', () => {
+    expect(outcomes('git stash && git pull && git stash pop', CONFLICT)).toEqual([
+      ['stash', true],
+      ['merge_conflict', false],
+    ]);
+    expect(outcomes('git checkout main && git pull', CONFLICT)).toEqual([
+      ['other_git', true],
+      ['merge_conflict', false],
+    ]);
+  });
+
+  it('reads a pipeline as one && step', () => {
+    expect(outcomes('git commit -m x && git log --oneline | head -1', GPG)).toEqual([
+      ['commit', false],
+    ]);
+  });
+
+  it('marks succeeded the && steps after the first one that follows a ||', () => {
+    expect(
+      outcomes(
+        'git fetch || git pull && git add -A && git commit -m x',
+        'husky - pre-commit script failed (code 1)',
+      ),
+    ).toEqual([
+      ['fetch', false],
+      ['pull', false],
+      ['other_git', true],
+      ['commit', false],
+    ]);
+  });
+
+  it('keeps the command outcome for a step after a ; that the error does not name', () => {
+    expect(outcomes('git merge feature; git push', CONFLICT)).toEqual([
+      ['merge_conflict', false],
+      ['push', false],
+    ]);
+  });
+});
+
 describe('classifyGitSegments shell splitting', () => {
   const resolveRepo = (): string | null => null;
   const NOTHING = 'nothing to commit, working tree clean';

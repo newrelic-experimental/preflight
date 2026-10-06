@@ -1789,6 +1789,40 @@ describe('GitEfficiencyTracker', () => {
       );
     });
 
+    // Bash groups `&&` and `||` left to right and reads a pipeline as one
+    // step, so in none of these did the commit run and succeed.
+    it.each([
+      [
+        'git commit -m x || git commit --no-verify -m x',
+        'husky - pre-commit script failed (code 1)',
+      ],
+      ['git diff --quiet || git commit -am wip && git push', 'fatal: Authentication failed'],
+      ['git pull && git commit -m merge && git checkout other', CONFLICT],
+      [
+        'git commit -m x && git log --oneline | head -1',
+        'error: gpg failed to sign the data\nfatal: failed to write commit object',
+      ],
+    ])('counts no commit for `%s`', (command, error) => {
+      tracker.recordToolCall(makeRecord({ command, success: false, error }));
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(0);
+      expect(metrics.riskIndicators.commitsSinceLastSync).toBe(0);
+    });
+
+    it('records the conflict on the pull, not on a checkout that never ran', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git pull && git commit -m merge && git checkout other',
+          success: false,
+          error: CONFLICT,
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.conflictHistory.map((c) => [c.resolution, c.command.trim()])).toEqual([
+        ['pending', 'git pull'],
+      ]);
+    });
+
     it('counts neither the commit nor the push when only untracked files were present', () => {
       tracker.recordToolCall(
         makeRecord({
