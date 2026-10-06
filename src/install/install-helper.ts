@@ -22,8 +22,6 @@ const MCP_SERVER_KEY = 'newrelic-preflight';
 const MCP_SERVER_COMMAND = 'preflight';
 const COLLECTOR_COMMAND = 'preflight-collector';
 
-export { HOOK_EVENT_TYPES, type HookEventType };
-
 /**
  * Alternation of every subcommand marker, for embedding in regexes that must
  * recognize any hook command this installer writes. Derived from
