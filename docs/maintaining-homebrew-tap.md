@@ -37,11 +37,14 @@ brew install preflight
 
 EOF
 
-# 6. Commit and push (replace X.Y.Z with the version in homebrew/Formula/preflight.rb)
-
+# 6. Commit and push a branch, then open a PR (replace X.Y.Z with the version in
+#    homebrew/Formula/preflight.rb). main requires a PR with one approving review,
+#    so a direct push to main is rejected.
+git checkout -b initial-formula
 git add -A
 git commit -m "preflight X.Y.Z"
-git push origin main
+git push origin initial-formula
+gh pr create --fill
 ````
 
 **Verify the tap works:**
@@ -77,12 +80,14 @@ scripts/update-homebrew.sh X.Y.Z
 # Review
 cat homebrew/Formula/preflight.rb
 
-# Copy to the tap repo and push
+# Copy to the tap repo, push a branch, and open a PR (main requires one approving review)
 cp homebrew/Formula/preflight.rb /path/to/homebrew-preflight/Formula/preflight.rb
 cd /path/to/homebrew-preflight
+git checkout -b bump-X.Y.Z
 git add Formula/preflight.rb
 git commit -m "preflight X.Y.Z"
-git push origin main
+git push origin bump-X.Y.Z
+gh pr create --fill
 ```
 
 ---
@@ -96,4 +101,6 @@ The sha256 in the formula doesn't match the downloaded tarball. Re-run `scripts/
 The tap repo doesn't exist yet or is private. Check `GH_HOST=github.com gh repo view newrelic-experimental/homebrew-preflight`.
 
 **`preflight --version` output doesn't match formula version**
-The formula version in the `url` field and the version field in `package.json` must match. They should always match when `update-homebrew.sh` is used.
+The formula version in the `url` field and the version field in `package.json` must match. They match whenever the Release workflow regenerates the formula with `update-homebrew.sh`.
+
+The copy of the formula checked in to this repo (`homebrew/Formula/preflight.rb`) is a template. Its `url` and `sha256` point at whichever published version it was last regenerated for, not necessarily the current `package.json` version. The tap's copy is the one users install, and the Release workflow overwrites it from this file on every release.
