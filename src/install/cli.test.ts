@@ -159,6 +159,36 @@ describe('schedule subcommand', () => {
     stdoutSpy.mockRestore();
     exitSpy.mockRestore();
     Object.defineProperty(process, 'platform', { value: savedPlatform, configurable: true });
+    const mFs = fsMod as unknown as { existsSync: jest.Mock; realpathSync: jest.Mock };
+    mFs.existsSync.mockImplementation(() => false);
+    mFs.realpathSync.mockImplementation((p: unknown) => p);
+  });
+
+  function mockHomebrewEntryPoint(): void {
+    const mFs = fsMod as unknown as { existsSync: jest.Mock; realpathSync: jest.Mock };
+    mFs.realpathSync.mockReturnValue(
+      '/opt/homebrew/Cellar/preflight/1.57.4/libexec/lib/node_modules/@newrelic/preflight/dist/index.js',
+    );
+    mFs.existsSync.mockImplementation(
+      (p: unknown) =>
+        String(p) ===
+        '/opt/homebrew/Cellar/preflight/1.57.4/libexec/lib/node_modules/@newrelic/preflight/package.json',
+    );
+  }
+
+  it('refuses --time on a Homebrew install and points at brew upgrade', async () => {
+    mockHomebrewEntryPoint();
+    await expect(runInstallCli(['schedule', '--time', '08:00'])).rejects.toThrow('process.exit(1)');
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('brew upgrade preflight');
+    expect(mockedSchedule.installSchedule).not.toHaveBeenCalled();
+  });
+
+  it('still allows --disable on a Homebrew install so an existing schedule can be removed', async () => {
+    mockHomebrewEntryPoint();
+    mockedSchedule.removeSchedule.mockReturnValue(true);
+    await runInstallCli(['schedule', '--disable']);
+    expect(mockedSchedule.removeSchedule).toHaveBeenCalled();
   });
 
   it('prints status when no flags given and no schedule installed', async () => {
@@ -1433,6 +1463,27 @@ describe('preflight update', () => {
     const output = getOutput();
     expect(output).toContain('package manager');
     expect(output).toContain('npm install -g @newrelic/preflight@latest');
+  });
+
+  it('exits 1 with the brew upgrade hint on a Homebrew install, without running git', async () => {
+    mFs.realpathSync.mockReturnValue(
+      '/opt/homebrew/Cellar/preflight/1.57.4/libexec/lib/node_modules/@newrelic/preflight/dist/index.js',
+    );
+    mFs.existsSync.mockImplementation(
+      (p: unknown) =>
+        String(p) ===
+        '/opt/homebrew/Cellar/preflight/1.57.4/libexec/lib/node_modules/@newrelic/preflight/package.json',
+    );
+    // On Apple Silicon the Cellar is inside Homebrew's own git repo.
+    mExec.execFileSync.mockImplementation((cmd: unknown, args: unknown) => {
+      if (cmd === 'git' && (args as string[]).includes('--show-toplevel')) return '/opt/homebrew';
+    });
+    await expect(runInstallCli(['update'])).rejects.toThrow('process.exit(1)');
+    const output = getOutput();
+    expect(output).toContain('installed with Homebrew');
+    expect(output).toContain('brew upgrade preflight');
+    expect(output).not.toContain('npm install -g');
+    expect(mExec.execFileSync).not.toHaveBeenCalled();
   });
 
   it('exits 1 with git-not-installed hint when git binary is absent', async () => {

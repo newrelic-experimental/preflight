@@ -5,12 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.58.1] - 2026-10-06
+## [1.58.2] - 2026-10-06
 
 ### Fixed
 
 - A session in the "Sessions today" tile no longer stays "Ready for review" after its pull request merges, including when the merge runs from a different session or worktree of the same repo. Preflight now records the number of the pull request that `gh pr create` opened, read from the PR URL in its output (only the number is kept). Sessions saved before this release have no recorded number, so their pull requests still read as open, and a command that opens more than one pull request, or whose output names more than one, records none. A `gh pr merge` counts only when it succeeded and didn't just turn auto-merge on or off. Success is the command's exit status, so in a compound command that status must be the merge's own: `gh pr merge 42 && git pull` counts, but `gh pr merge 42 | tail`, `gh pr merge 42 || echo failed`, `gh pr merge 42 &`, a merge in the `||` fallback of another command, and a merge in a Bash call run in the background don't. Cursor and Windsurf hooks report no exit status, so a failed merge there still counts. A `gh pr create` or `gh pr merge` that may target another repo, through `-R`/`--repo`, `GH_REPO` or an earlier `cd` or `pushd` out of the repo, is never matched to this repo's pull requests.
 - Chained shell commands are split the way bash reads them, for the pull request status above and the Git Efficiency page's counts: text inside quotes is never taken for a git or `gh pr` command, a backslash-newline joins two lines, a line ending in `&&`, `||` or `|` continues on the next, and `&` ends a command.
+
+## [1.58.1] - 2026-10-06
+
+### Fixed
+
+- **`preflight update` on a Homebrew install no longer tells you to `npm install -g`.** Following that advice created a second, competing copy of preflight on `PATH`. It now says `brew upgrade preflight`. `preflight schedule --time` refuses on a Homebrew install with the same hint, since the daily job runs `preflight update` and would fail every run; `preflight schedule` and `preflight schedule --disable` still work, so an existing job can be removed.
 
 ## [1.58.0] - 2026-10-06
 
