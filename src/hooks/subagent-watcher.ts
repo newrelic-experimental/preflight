@@ -93,13 +93,9 @@ const MAX_PARTIAL_LINE_BYTES = 1024 * 1024; // 1 MiB
  */
 export const MAX_META_SIDECAR_BYTES = 16 * 1024;
 /**
- * A tracked transcript the last poll saw modified within this window counts as
- * live for `readLiveTails()`. A subagent running a long tool call writes
- * nothing meanwhile, but that call's tool_use line was read by an earlier poll,
- * so the window only has to cover transcripts that are writing turns now.
+ * Most transcripts one `readLiveTails()` call stats: those spawned since the
+ * last poll first, then tracked ones, most recently modified first.
  */
-export const LIVE_TRANSCRIPT_WINDOW_MS = 10 * 60 * 1000;
-/** Most transcripts one `readLiveTails()` call stats, most recently modified first. */
 export const MAX_ON_DEMAND_FILES = 32;
 /** Most transcript bytes one `readLiveTails()` call reads in total; the poll reads the rest. */
 export const MAX_ON_DEMAND_BYTES = 1024 * 1024;
@@ -328,13 +324,23 @@ export class SubagentWatcher {
   private readonly agentTypeByPath = new Map<string, string>();
   // Transcript path -> bytes consumed so far, mirroring the persisted cursor so
   // readLiveTails() can compare a stat against it without reading the cursor
-  // file. Absent until a poll has read the file, and dropped when a read fails,
-  // so an unreadable file is left to the poll instead of being retried on every
+  // file. Absent until a read has committed, and dropped when a read fails, so
+  // an unreadable file is left to the poll instead of being retried on every
   // hook record. Bounded by the live file set via evictStalePartials().
   private readonly consumedBytesByPath = new Map<string, number>();
-  // Transcripts the last poll found modified within LIVE_TRANSCRIPT_WINDOW_MS,
-  // most recently modified first: the only files readLiveTails() considers.
-  private liveFiles: DiscoveredFile[] = [];
+  // The transcripts readLiveTails() stats: any it found since the last poll,
+  // then every one that poll discovered, most recently modified first. No
+  // mtime window applies, since a subagent's transcript stays unmodified for
+  // the whole of a long tool call; MAX_ON_DEMAND_FILES and the size check bound
+  // the cost.
+  private trackedFiles: DiscoveredFile[] = [];
+  // For finding transcripts spawned since the last poll: each session's ad-hoc
+  // `subagents/` directory the last poll listed (the newest-mtime one when a
+  // repo rename left two), and every transcript path in those directories the
+  // poll or readLiveTails() has seen, tracked or skipped as stale, so a stale
+  // one costs no stat. Rebuilt by every poll.
+  private readonly subagentsDirBySession = new Map<string, string>();
+  private readonly listedTranscripts = new Set<string>();
 
   // Health counters
   private filesWatched = 0;
@@ -399,7 +405,9 @@ export class SubagentWatcher {
 
   stop(): void {
     this.stopped = true;
-    this.liveFiles = [];
+    this.trackedFiles = [];
+    this.subagentsDirBySession.clear();
+    this.listedTranscripts.clear();
     if (!this.running) return;
     this.running = false;
     if (this.intervalId !== null) {
@@ -422,10 +430,7 @@ export class SubagentWatcher {
     try {
       const files = this.discoverFiles();
       this.filesWatched = files.length;
-      const now = Date.now();
-      this.liveFiles = files
-        .filter((f) => now - f.stat.mtimeMs <= LIVE_TRANSCRIPT_WINDOW_MS)
-        .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+      this.trackedFiles = [...files].sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
       for (const file of files) {
         this.processFile(file);
       }
@@ -437,31 +442,50 @@ export class SubagentWatcher {
   }
 
   /**
-   * Reads what live subagent transcripts gained since they were last read,
-   * through the same path as `poll()` (parent buffer, cursor, `onTurnRead`),
-   * and returns how many turns it read. Hook intake calls this for a record the
-   * `toolUseId` join cannot attribute yet, so the subagent's tool_use line for
-   * that call is read before the record is audited instead of on the next poll.
+   * Reads what subagent transcripts gained since they were last read, through
+   * the same path as `poll()` (cursor, parent buffer, `onTurnRead`), and
+   * returns how many turns it read. Hook intake calls this for every record the
+   * `toolUseId` join cannot attribute yet, parent calls included, so the
+   * subagent's tool_use line for that call is read before the record is audited
+   * instead of on the next poll.
    *
-   * Every parent-session call qualifies too, so with no live transcript this
-   * makes no syscall. Otherwise it stats each live transcript (`sessionId`'s
-   * only, when given; at most MAX_ON_DEMAND_FILES) and reads only from one
-   * that has grown past what was already consumed, up to MAX_ON_DEMAND_BYTES
-   * in total. A transcript created since the last poll is not tracked yet.
-   * Never throws.
+   * A session whose subagents directory the last poll did not list, and that
+   * has no tracked transcript, costs no syscall. Otherwise this lists the
+   * session's `subagents/` directory once for transcripts spawned since the
+   * poll, then stats the tracked transcripts of `sessionId` (of every session
+   * when undefined), at most MAX_ON_DEMAND_FILES stats in all, and reads only
+   * from one that has grown past what was already consumed, up to
+   * MAX_ON_DEMAND_BYTES in total. Not found before the next poll: a session's
+   * first subagent, whose transcript creates that directory, and a workflow's
+   * subagents, whose transcripts sit in per-run directories below it. Never
+   * throws.
    */
   readLiveTails(sessionId?: string): number {
-    if (this.stopped || this.liveFiles.length === 0) return 0;
+    if (this.stopped) return 0;
     let turns = 0;
     let byteBudget = MAX_ON_DEMAND_BYTES;
-    let checked = 0;
+    let statsLeft = MAX_ON_DEMAND_FILES;
     try {
-      for (const [i, tracked] of this.liveFiles.entries()) {
-        if (checked >= MAX_ON_DEMAND_FILES || byteBudget <= 0) break;
+      const spawned = this.findSpawnedSincePoll(
+        sessionId ?? this.parentSessionFilter ?? undefined,
+        statsLeft,
+      );
+      statsLeft -= spawned.stats;
+      if (spawned.files.length > 0) this.trackedFiles = [...spawned.files, ...this.trackedFiles];
+      for (const file of spawned.files) {
+        if (byteBudget <= 0) break;
+        const read = this.readToSize(file, byteBudget);
+        turns += read.turns;
+        byteBudget -= read.bytes;
+      }
+      for (let i = spawned.files.length; i < this.trackedFiles.length; i++) {
+        if (statsLeft <= 0 || byteBudget <= 0) break;
+        const tracked = this.trackedFiles[i];
+        if (tracked === undefined) break;
         if (sessionId !== undefined && tracked.parentSessionId !== sessionId) continue;
-        checked += 1;
         const consumed = this.consumedBytesByPath.get(tracked.path);
         if (consumed === undefined) continue;
+        statsLeft -= 1;
         let stat: Stats;
         try {
           stat = statSync(tracked.path);
@@ -470,19 +494,70 @@ export class SubagentWatcher {
         }
         if (stat.size <= consumed) continue;
         const file: DiscoveredFile = { ...tracked, stat };
-        this.liveFiles[i] = file;
-        while (byteBudget > 0) {
-          const read = this.processFile(file, Math.min(byteBudget, MAX_BYTES_PER_POLL));
-          turns += read.turns;
-          byteBudget -= read.bytes;
-          const caughtUp = (this.consumedBytesByPath.get(file.path) ?? stat.size) >= stat.size;
-          if (read.bytes === 0 || caughtUp) break;
-        }
+        this.trackedFiles[i] = file;
+        const read = this.readToSize(file, byteBudget);
+        turns += read.turns;
+        byteBudget -= read.bytes;
       }
     } catch (err) {
       this.recordError(err);
     }
     return turns;
+  }
+
+  /**
+   * Transcripts in `sessionId`'s known `subagents/` directory that the last
+   * poll did not list: subagents spawned since. One readdir, and at most
+   * `maxStats` stats of names not seen before.
+   */
+  private findSpawnedSincePoll(
+    sessionId: string | undefined,
+    maxStats: number,
+  ): { readonly files: DiscoveredFile[]; readonly stats: number } {
+    const files: DiscoveredFile[] = [];
+    const subDir = sessionId === undefined ? undefined : this.subagentsDirBySession.get(sessionId);
+    if (sessionId === undefined || subDir === undefined) return { files, stats: 0 };
+    let names: string[];
+    try {
+      names = readdirSync(subDir);
+    } catch {
+      return { files, stats: 0 };
+    }
+    let stats = 0;
+    for (const name of names) {
+      if (stats >= maxStats) break;
+      if (!name.startsWith('agent-') || !name.endsWith('.jsonl')) continue;
+      const agentId = name.slice('agent-'.length, -'.jsonl'.length);
+      if (!AGENT_ID_RE.test(agentId)) continue; // the poll announces these
+      const path = join(subDir, name);
+      if (this.listedTranscripts.has(path)) continue;
+      this.listedTranscripts.add(path);
+      stats += 1;
+      try {
+        const stat = statSync(path);
+        files.push({ path, parentSessionId: sessionId, agentId, workflowRunId: null, stat });
+      } catch {
+        /* removed again; the poll decides */
+      }
+    }
+    return { files, stats };
+  }
+
+  /** Reads `file` from its cursor until it reaches `file.stat.size` or reads `byteBudget` bytes. */
+  private readToSize(
+    file: DiscoveredFile,
+    byteBudget: number,
+  ): { readonly bytes: number; readonly turns: number } {
+    let bytes = 0;
+    let turns = 0;
+    while (bytes < byteBudget) {
+      const read = this.processFile(file, Math.min(byteBudget - bytes, MAX_BYTES_PER_POLL));
+      bytes += read.bytes;
+      turns += read.turns;
+      const consumed = this.consumedBytesByPath.get(file.path);
+      if (read.bytes === 0 || consumed === undefined || consumed >= file.stat.size) break;
+    }
+    return { bytes, turns };
   }
 
   /** Reset counters; for tests. */
@@ -513,6 +588,9 @@ export class SubagentWatcher {
 
   private discoverFiles(): DiscoveredFile[] {
     const out: DiscoveredFile[] = [];
+    this.subagentsDirBySession.clear();
+    this.listedTranscripts.clear();
+    const subagentsDirMtime = new Map<string, number>();
     if (!existsSync(this.projectsDir)) return out;
     const cutoffMs = Date.now() - this.discoveryHours * 60 * 60 * 1000;
 
@@ -588,6 +666,10 @@ export class SubagentWatcher {
           }
           if (wfDirStat === null || wfDirStat.mtimeMs < cutoffMs) continue;
         }
+        if (subStat.mtimeMs > (subagentsDirMtime.get(sessionId) ?? -Infinity)) {
+          subagentsDirMtime.set(sessionId, subStat.mtimeMs);
+          this.subagentsDirBySession.set(sessionId, subDir);
+        }
 
         // Ad-hoc: subagents/agent-*.jsonl
         try {
@@ -599,6 +681,7 @@ export class SubagentWatcher {
               continue;
             }
             const path = join(subDir, name);
+            this.listedTranscripts.add(path);
             const stat = this.filterByMtime(path, cutoffMs);
             if (stat) {
               out.push({ path, parentSessionId: sessionId, agentId, workflowRunId: null, stat });

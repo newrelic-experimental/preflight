@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -14,7 +15,6 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  LIVE_TRANSCRIPT_WINDOW_MS,
   MAX_META_SIDECAR_BYTES,
   MAX_ON_DEMAND_BYTES,
   MAX_ON_DEMAND_FILES,
@@ -24,24 +24,26 @@ import {
 } from './subagent-watcher.js';
 import { LocalStore } from '../storage/local-store.js';
 
-// Only statSync, openSync and writeFileSync are wrapped as spies (everything
-// else delegates to the real implementation) — needed to prove the unfiltered
-// discovery prune skips a stale session's individual agent files without ever
-// statting them, and that an on-demand read of an unchanged transcript never
-// opens it, which a pass/fail on emitted output alone can't distinguish from
-// "touched them and then discarded them for some other reason". writeFileSync
-// is wrapped so a test can fail the cursor write alone.
+// Only statSync, openSync, readdirSync and writeFileSync are wrapped as spies
+// (everything else delegates to the real implementation) — needed to prove the
+// unfiltered discovery prune skips a stale session's individual agent files
+// without ever statting them, and that an on-demand read of an unchanged
+// transcript never opens it, which a pass/fail on emitted output alone can't
+// distinguish from "touched them and then discarded them for some other
+// reason". writeFileSync is wrapped so a test can fail the cursor write alone.
 jest.mock('node:fs', () => {
   const real = jest.requireActual<typeof import('node:fs')>('node:fs');
   return {
     ...real,
     statSync: jest.fn(real.statSync),
     openSync: jest.fn(real.openSync),
+    readdirSync: jest.fn(real.readdirSync),
     writeFileSync: jest.fn(real.writeFileSync),
   };
 });
 const mockStatSync = statSync as jest.Mock;
 const mockOpenSync = openSync as jest.Mock;
+const mockReaddirSync = readdirSync as jest.Mock;
 const mockWriteFileSync = writeFileSync as jest.Mock;
 const realWriteFileSync = jest.requireActual<typeof import('node:fs')>('node:fs').writeFileSync as (
   ...args: unknown[]
@@ -1381,6 +1383,7 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
     turnsRead = [];
     mockStatSync.mockClear();
     mockOpenSync.mockClear();
+    mockReaddirSync.mockClear();
   });
 
   afterEach(() => {
@@ -1480,19 +1483,65 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
     expect(watcher.readLiveTails(PARENT_SESSION)).toBe(0);
     expect(mockStatSync).not.toHaveBeenCalled();
     expect(mockOpenSync).not.toHaveBeenCalled();
+    expect(mockReaddirSync).not.toHaveBeenCalled();
   });
 
-  it('touches no file when no tracked transcript was modified within the live window', () => {
-    const idle = (Date.now() - LIVE_TRANSCRIPT_WINDOW_MS - 60_000) / 1000;
+  it('touches no file for a session the last poll found no subagents directory for', () => {
+    const watcher = new SubagentWatcher({ storagePath, projectsDir });
+    watcher.poll();
+    mockStatSync.mockClear();
+    mockReaddirSync.mockClear();
+
+    expect(watcher.readLiveTails('bbbbbbbb-cccc-dddd-eeee-ffffffffffff')).toBe(0);
+    expect(mockStatSync).not.toHaveBeenCalled();
+    expect(mockReaddirSync).not.toHaveBeenCalled();
+  });
+
+  it('reads a tracked transcript that resumes after a tool call longer than ten minutes', () => {
+    // The subagent's last line was written 12 minutes ago, before a long
+    // tool call; the poll still tracks the transcript.
+    const idle = (Date.now() - 12 * 60 * 1000) / 1000;
     utimesSync(agentJsonl, idle, idle);
     const watcher = makeWatcher();
     watcher.poll();
-    mockStatSync.mockClear();
-    mockOpenSync.mockClear();
 
+    appendFileSync(agentJsonl, toolUseLine('msg_1', 'toolu_sub_1') + '\n');
+
+    expect(watcher.readLiveTails(PARENT_SESSION)).toBe(1);
+    expect(turnsRead[0]).toMatchObject({ agentId: AGENT_ID, toolUseIds: ['toolu_sub_1'] });
+  });
+
+  it("reads a subagent spawned since the last poll, from the session's subagents directory", () => {
+    const watcher = makeWatcher();
+    watcher.poll();
+    const spawnedId = 'a00000000000000ff';
+    writeFileSync(
+      join(subagentsDir, `agent-${spawnedId}.jsonl`),
+      promptLine() + '\n' + toolUseLine('msg_s', 'toolu_spawned') + '\n',
+    );
+    mockReaddirSync.mockClear();
+
+    expect(watcher.readLiveTails(PARENT_SESSION)).toBe(1);
+    expect(mockReaddirSync).toHaveBeenCalledTimes(1);
+    expect(turnsRead[0]).toMatchObject({ agentId: spawnedId, toolUseIds: ['toolu_spawned'] });
+    // Tracked from then on: the next record and the next poll do not repeat it.
     expect(watcher.readLiveTails(PARENT_SESSION)).toBe(0);
-    expect(mockStatSync).not.toHaveBeenCalled();
-    expect(mockOpenSync).not.toHaveBeenCalled();
+    watcher.poll();
+    expect(bufferedTurns().map((t) => t.messageId)).toEqual(['msg_s']);
+  });
+
+  it('does not stat a transcript in that directory the poll skipped as stale', () => {
+    const stalePath = join(subagentsDir, 'agent-a00000000000000ee.jsonl');
+    writeFileSync(stalePath, promptLine() + '\n');
+    const stale = (Date.now() - 48 * 60 * 60 * 1000) / 1000;
+    utimesSync(stalePath, stale, stale);
+    const watcher = makeWatcher();
+    watcher.poll();
+    mockStatSync.mockClear();
+
+    watcher.readLiveTails(PARENT_SESSION);
+
+    expect(stattedPaths()).toEqual([agentJsonl]);
   });
 
   it('stats a live transcript once and opens nothing when its size is unchanged', () => {
@@ -1572,6 +1621,20 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
       'toolu_sub_3',
       'toolu_sub_4',
     ]);
+  });
+
+  it('stats at most MAX_ON_DEMAND_FILES transcripts per call, spawned ones included', () => {
+    const watcher = makeWatcher();
+    watcher.poll();
+    for (let i = 0; i < MAX_ON_DEMAND_FILES + 3; i++) {
+      const agentId = `a${i.toString(16).padStart(16, '0')}`;
+      writeFileSync(join(subagentsDir, `agent-${agentId}.jsonl`), promptLine() + '\n');
+    }
+    mockStatSync.mockClear();
+
+    watcher.readLiveTails(PARENT_SESSION);
+
+    expect(mockStatSync).toHaveBeenCalledTimes(MAX_ON_DEMAND_FILES);
   });
 
   it('checks at most MAX_ON_DEMAND_FILES transcripts per call', () => {
