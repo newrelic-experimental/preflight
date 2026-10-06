@@ -18,14 +18,12 @@ permissions:
   contents: read
 
 env:
-  # The suite has an implicit, undocumented dependency on running under
-  # America/New_York (several date/bucket tests construct fixtures from
-  # local-midnight helpers without pinning TZ themselves) — it has only
-  # ever been run on developer machines defaulting to that zone. GitHub
-  # Actions runners default to UTC, which breaks those tests. Pin to the
-  # zone the suite actually assumes rather than debugging each test's
-  # local-time math; the individual tests remain non-portable and are a
-  # separate follow-up.
+  # The tests must pass in any zone. Both suites run under this one, which
+  # observes DST and is west of UTC, and again under UTC, the runner's default;
+  # Jest also runs under Pacific/Auckland, and the DST test under America/Havana.
+  # Jest can't pin a zone from inside a test (each file gets a copy of
+  # process.env), so a test that needs one has to derive its fixtures from the
+  # host's own zone.
   TZ: America/New_York
 
 jobs:
@@ -80,6 +78,32 @@ jobs:
 
       - name: Test (web)
         run: npm run test:web
+
+      - name: Test (UTC)
+        run: npm test
+        env:
+          TZ: UTC
+
+      - name: Test (web, UTC)
+        run: npm run test:web
+        env:
+          TZ: UTC
+
+      # UTC+12 or +13, where a UTC instant is often already the next local day.
+      # Its first 2026 DST transition makes a 25-hour day, so the dailyPeaks DST
+      # test in api-handler.test.ts runs its long-day branch here and its
+      # short-day branch under New York.
+      - name: Test (Pacific/Auckland)
+        run: npm test
+        env:
+          TZ: Pacific/Auckland
+
+      # Springs forward at local midnight, a transition the dailyPeaks DST test
+      # has to scan past.
+      - name: Test (DST, America/Havana)
+        run: npx jest src/dashboard/routes/api-handler.test.ts
+        env:
+          TZ: America/Havana
 
       - name: Check docs/code inventory drift
         run: npm run check:docs-inventory

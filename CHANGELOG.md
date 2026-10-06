@@ -5,13 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.58.3] - 2026-10-06
+## [1.58.4] - 2026-10-06
 
 ### Fixed
 
 - The per-session Git Efficiency view and the `ai.git.commit_count` gauge no longer count a standalone `git commit` that failed, such as one a pre-commit hook rejected, or an `--amend`, so they agree with the weekly/30-day panel. Expect the count to step down. A commit message that mentions `--amend` no longer reads as an amend.
 - A chained git command reports one exit status for all its steps, so each step's outcome is now inferred from the error text. A step whose error the text shows is recorded as failed, such as the pull in a conflicting `git pull && git push` or the commit in `git commit -m x && git push` with nothing to commit, and the steps `&&` then skipped are not recorded, so neither push counts in `ai.git.push_count`, the build-before-push practice or the weekly panel. When the text shows no step's error, the steps of the final `&&` chain after its first are not recorded, since any of them may not have run: a failing `npm test && git add -A && git commit -m x && git push` counts no commit and no push. That chain's first step still counts unless it is the only one, so the commit in `git commit -m x && gh pr create` counts when gh fails, and also when the commit failed with text that names no git failure, such as a gpg signing error.
 - Quoted text, such as a multi-line commit message or the `-m "$(cat <<'EOF' ... EOF)"` form, no longer splits a command into extra git steps, so the rules above apply to that commit and to a push chained after it.
+
+## [1.58.3] - 2026-10-06
+
+### Fixed
+
+- A session's "Session Quality" card no longer shows "Diff Apply NaN%" and "Test Pass NaN%" on sessions with no diff or test signals. The session detail response carried the session's raw signal counts under the key the dashboard reads the two rates from, and those counts have no rate fields. Such a session now hides the card, matching what the other session-detail paths already did.
 
 ## [1.58.2] - 2026-10-06
 
