@@ -9,6 +9,8 @@ class Preflight < Formula
 
   def install
     system "npm", "install", *std_npm_args
+    pkg = libexec/"lib/node_modules/@newrelic/preflight"
+    rewrite_shebang detected_node_shebang, pkg/"dist/index.js", pkg/"dist/hooks/collector-script.js"
     bin.install_symlink Dir["#{libexec}/bin/*"]
   end
 
