@@ -70,7 +70,8 @@ describe('buildCostForecast', () => {
   describe('daily-anchored forecast', () => {
     it('uses daily rate for both EoD and EoW when daily anchor is supplied', () => {
       // Session started yesterday; today's activity started 2 h ago at $1/h daily rate.
-      const nowMs = new Date('2024-01-03T14:00:00.000Z').getTime(); // Wednesday 14:00 UTC
+      // Wednesday 14:00 local, since the forecast reads the local weekday.
+      const nowMs = new Date(2024, 0, 3, 14).getTime();
       const sessionStartMs = nowMs - 16 * 60 * 60_000; // 16 h ago (crossed midnight)
       const dailyFirstActivityMs = nowMs - 2 * 60 * 60_000; // 2 h ago
       const dailySpentUsd = 2; // $1/h × 2 h
@@ -104,29 +105,29 @@ describe('buildCostForecast', () => {
   });
 
   // ISO week (Mon–Sun) end-of-week math — one test per weekday.
-  // Pinned to 2024-01-01 (Mon) through 2024-01-07 (Sun) at 12:00 UTC.
+  // Pinned to local noon on 2024-01-01 (Mon) through 2024-01-07 (Sun).
   //
   // msUntilEndOfWeek = daysRemaining * 86_400_000 + msUntilEndOfDay
   // where msUntilEndOfDay is computed from the *local* day boundary (the
-  // forecast aligns with the dashboard's local-time day bucketing). The
-  // expected value below is derived from localStartOfDay so the test passes
-  // in any host timezone — previously it hard-coded UTC and failed in PST.
+  // forecast aligns with the dashboard's local-time day bucketing), and the
+  // remaining days from the local weekday. Both the fixture instant and the
+  // expected value are local, so the test passes in any host timezone.
   describe('msUntilEndOfWeek is correct for each ISO weekday', () => {
     const MS_IN_DAY = 86_400_000;
 
-    const cases: Array<{ label: string; date: string; daysRemaining: number }> = [
-      { label: 'Monday', date: '2024-01-01', daysRemaining: 6 },
-      { label: 'Tuesday', date: '2024-01-02', daysRemaining: 5 },
-      { label: 'Wednesday', date: '2024-01-03', daysRemaining: 4 },
-      { label: 'Thursday', date: '2024-01-04', daysRemaining: 3 },
-      { label: 'Friday', date: '2024-01-05', daysRemaining: 2 },
-      { label: 'Saturday', date: '2024-01-06', daysRemaining: 1 },
-      { label: 'Sunday', date: '2024-01-07', daysRemaining: 0 },
+    const cases: Array<{ label: string; dayOfMonth: number; daysRemaining: number }> = [
+      { label: 'Monday', dayOfMonth: 1, daysRemaining: 6 },
+      { label: 'Tuesday', dayOfMonth: 2, daysRemaining: 5 },
+      { label: 'Wednesday', dayOfMonth: 3, daysRemaining: 4 },
+      { label: 'Thursday', dayOfMonth: 4, daysRemaining: 3 },
+      { label: 'Friday', dayOfMonth: 5, daysRemaining: 2 },
+      { label: 'Saturday', dayOfMonth: 6, daysRemaining: 1 },
+      { label: 'Sunday', dayOfMonth: 7, daysRemaining: 0 },
     ];
 
-    for (const { label, date, daysRemaining } of cases) {
+    for (const { label, dayOfMonth, daysRemaining } of cases) {
       it(`${label} has ${daysRemaining} day(s) remaining in the ISO week`, () => {
-        const nowMs = new Date(`${date}T12:00:00.000Z`).getTime();
+        const nowMs = new Date(2024, 0, dayOfMonth, 12).getTime();
         const startMs = nowMs - 60 * 60_000; // 1 hour elapsed
         const f = buildCostForecast(1.0, startMs, nowMs);
 
