@@ -10,9 +10,7 @@ import { join } from 'node:path';
 import { localDateKey } from '../lib/date.js';
 import {
   collectCommitsAcrossRepos,
-  commitUrlFromRemote,
   LocalSessionAggregator,
-  repoNameFromRemote,
   RepoNameResolver,
 } from './local-session-aggregator.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
@@ -250,56 +248,6 @@ describe('LocalSessionAggregator', () => {
       cwd: '/two',
     });
     expect(agg.cwds().sort()).toEqual(['/one', '/two']);
-  });
-});
-
-describe('repoNameFromRemote', () => {
-  it.each([
-    ['git@github.com:acme/widgets.git', 'acme/widgets'],
-    ['https://github.com/acme/widgets.git', 'acme/widgets'],
-    ['https://github.com/acme/widgets', 'acme/widgets'],
-    ['ssh://git@github.com/acme/widgets.git', 'acme/widgets'],
-  ])('parses %s', (remote, expected) => {
-    expect(repoNameFromRemote(remote)).toBe(expected);
-  });
-
-  it('returns null for a missing remote', () => {
-    expect(repoNameFromRemote(null)).toBeNull();
-    expect(repoNameFromRemote(undefined)).toBeNull();
-  });
-});
-
-describe('commitUrlFromRemote', () => {
-  const hash = 'abc1234';
-
-  it('builds a browsable URL from an SSH remote', () => {
-    expect(commitUrlFromRemote('git@github.com:acme/widgets.git', hash)).toBe(
-      `https://github.com/acme/widgets/commit/${hash}`,
-    );
-  });
-
-  it('builds a browsable URL from an HTTPS remote', () => {
-    expect(commitUrlFromRemote('https://github.com/acme/widgets.git', hash)).toBe(
-      `https://github.com/acme/widgets/commit/${hash}`,
-    );
-  });
-
-  it('strips embedded credentials rather than leaking them into the link', () => {
-    expect(commitUrlFromRemote('https://token@github.com/acme/widgets.git', hash)).toBe(
-      `https://github.com/acme/widgets/commit/${hash}`,
-    );
-  });
-
-  it('supports non-github hosts', () => {
-    expect(commitUrlFromRemote('git@gitlab.com:acme/widgets.git', hash)).toBe(
-      `https://gitlab.com/acme/widgets/commit/${hash}`,
-    );
-  });
-
-  it('returns null when the remote or hash is unusable, so the UI shows plain text', () => {
-    expect(commitUrlFromRemote(null, hash)).toBeNull();
-    expect(commitUrlFromRemote('/srv/local/repo.git', hash)).toBeNull();
-    expect(commitUrlFromRemote('git@github.com:acme/widgets.git', '')).toBeNull();
   });
 });
 
