@@ -5,11 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.58.1] - 2026-10-06
+## [1.58.2] - 2026-10-06
 
 ### Fixed
 
 - **Google Antigravity: every tool call failed after Preflight's `PostToolUse` hook ran.** Antigravity sends the same payload shape for `PreToolUse` and `PostToolUse`, so Preflight read each `PostToolUse` as `PreToolUse` and replied with `{"decision":"allow"}`, which Antigravity rejects for that event. Preflight now takes the event name from the hook command and replies `{}` to `PostToolUse`, and records it as the end of the tool call. Update `hooks.json` to run `preflight-collector PreToolUse` and `preflight-collector PostToolUse` (see the Antigravity section of `docs/ADAPTERS.md`). Without the argument, Preflight falls back to treating a payload with an `error` field as `PostToolUse`, so a successful call whose `PostToolUse` omits that field gets the `PreToolUse` reply and is recorded as a failed call.
+
+## [1.58.1] - 2026-10-06
+
+### Fixed
+
+- **`preflight update` on a Homebrew install no longer tells you to `npm install -g`.** Following that advice created a second, competing copy of preflight on `PATH`. It now says `brew upgrade preflight`. `preflight schedule --time` refuses on a Homebrew install with the same hint, since the daily job runs `preflight update` and would fail every run; `preflight schedule` and `preflight schedule --disable` still work, so an existing job can be removed.
 
 ## [1.58.0] - 2026-10-06
 
