@@ -70,9 +70,19 @@ const EMBEDDED_CORRECTION_RE =
 
 const WONT_WORK_RE = /\bwon'?t work\b/i;
 
-/** A message that opens on "won't work" with a bare pronoun or no subject at all ("That won't work", "Hmm, that definitely won't work, ...", "Nah, won't work —") names nothing of its own, so it points at the assistant's previous turn. */
+/** Interjections and conjunctions that can lead a verdict without being its subject ("Yeah that won't work", "But it won't work", "Hmm, no, won't work"). */
+const LEADING_FILLER =
+  'yeah|yep|yes|ok|okay|hm+|um+|uh+|ah|oh|well|so|but|and|nah|no|nope|sorry|ugh';
+
+/** A leading word: a filler with or without punctuation after it, or any other word with punctuation after it ("Agreed, ..."). The lookahead keeps the two alternatives disjoint, so the quantified group can't backtrack between them. */
+const LEADING_WORD = `(?:(?:${LEADING_FILLER})\\b[,.!]*|(?!(?:${LEADING_FILLER})\\b)[a-z]+[,.!]+)\\s+`;
+
+/** "I tried it and ..." reports that the assistant's output, which the pronoun stands in for, fails now. */
+const TRIED_IT = 'i (?:tried|ran|tested) (?:it|that|this),?\\s+(?:and|but)\\s+';
+
+/** A message that opens on "won't work" with a bare pronoun or no subject at all ("That won't work", "Hmm that definitely won't work, ...", "Nah, won't work —", "I tried it and it won't work"), after up to two leading words, names nothing of its own, so it points at the assistant's previous turn. */
 const DEICTIC_WONT_WORK_RE = new RegExp(
-  `^(?:[a-z]+[,.!]+\\s+)?${OPTIONAL_ACTUALLY}(?:(?:that|this|it) (?:(?:still|just|also|even|[a-z]+ly) ){0,2})?won'?t work\\b`,
+  `^(?:${LEADING_WORD}){0,2}(?:${TRIED_IT})?${OPTIONAL_ACTUALLY}(?:(?:that|this|it) (?:(?:still|just|also|even|[a-z]+ly) ){0,2})?won'?t work\\b`,
   'i',
 );
 
@@ -80,9 +90,9 @@ const DEICTIC_WONT_WORK_RE = new RegExp(
 const ASSISTANT_ARTIFACT =
   'fix|change|edit|code|version|patch|implementation|update|commit|refactor|migration|test|script|function|query';
 
-/** A hypothetical "you" ("if you add a cache") or one after a remark ("the point you made") is not about the assistant's output. */
+/** A conditional "you" ("if you add a cache", "when you set a TTL") or one after a remark ("the point you made") is not about the assistant's output. A causal "since you" is left out: "since you removed the check" is about it. */
 const NOT_ABOUT_OUTPUT_BEFORE_YOU =
-  '(?<!\\b(?:if|unless|(?:point|argument|suggestion|proposal|plan|idea)s?) )';
+  '(?<!\\b(?:if|unless|when|(?:point|argument|suggestion|proposal|plan|idea)s?) )';
 
 const ADVERB_AFTER_YOU =
   '(?:just|already|also|accidentally|only|then|now|still|again|clearly|probably|actually|never|always|not) ';

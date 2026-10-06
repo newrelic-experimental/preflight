@@ -247,6 +247,14 @@ describe('TranscriptMessageTracker', () => {
       "Your version won't work for us, let's go back to the old one.",
       "That definitely won't work, let's use a map instead.",
       "Hmm, that won't work, let's try again.",
+      // Up to two leading interjections or conjunctions, with or without punctuation after them.
+      "Yeah that won't work.",
+      "Yeah, that won't work.",
+      "Hmm that won't work",
+      "But that won't work.",
+      "Hmm, no, that won't work.",
+      // A first-person report that running the assistant's output fails now.
+      "I tried it and it won't work.",
     ];
 
     /**
@@ -299,6 +307,9 @@ describe('TranscriptMessageTracker', () => {
       "That approach won't work for production.",
       "A cache won't work here. We need fresh reads. Let's query the DB.",
       "Polling won't work on Windows, use fs.watch.",
+      // A leading conjunction doesn't stand in for a named subject.
+      "But a cache won't work here since we need fresh reads.",
+      "So polling won't work on Windows, let's use fs.watch.",
     ];
 
     // Known residuals, pinned to the current verdict so a rule change that
@@ -308,6 +319,14 @@ describe('TranscriptMessageTracker', () => {
       "It won't work on Windows, so we should use fs.watch.",
       // "still won't work" marks a repeat failure of the assistant's attempt; a concessive "even with X" reads the same.
       "Even with the polyfill, polling still won't work on Windows, so let's use fs.watch.",
+      // Any word followed by punctuation can lead the opener, so agreeing with the assistant's caveat reads the same.
+      "Agreed, that won't work, let's go with option B.",
+      // "you have" plus an adjective in -ed reads as a perfect ("you have limited the retries").
+      "Since you have limited memory, an in-memory cache won't work.",
+      // "your version" is the assistant's code as often as the user's environment.
+      "Top-level await won't work in your version of Node.",
+      // The window reaches the sentence before, which here closes an earlier topic.
+      "Thanks, you fixed the login bug. Next, a cache won't work here since we need fresh reads.",
     ];
 
     const KNOWN_MISSES = [
@@ -330,6 +349,8 @@ describe('TranscriptMessageTracker', () => {
       "The regex won't work for unicode, you only allowed ASCII.",
       "The command you ran won't work in CI.",
       "Nah, won't work — the value can be undefined too.",
+      // A causal "since you" is about the assistant's output, unlike a conditional "if you" or "when you".
+      "Since you removed the null check, the parser won't work.",
     ];
 
     /** Second person that is about an idea, a hypothetical or anyone, not the assistant's output. */
@@ -340,6 +361,7 @@ describe('TranscriptMessageTracker', () => {
       "Polling won't work, you can't hold connections on serverless.",
       "A lock won't work, you need a queue.",
       "If you added a cache it won't work across pods.",
+      "When you set a TTL, the cache won't work for live data.",
       "You're right that a cache won't work here.",
       "The plan you made won't work for us.",
     ];
@@ -408,26 +430,36 @@ describe('TranscriptMessageTracker', () => {
 
     // Model-written sets. A and B were read while writing the current rule, so they are development
     // data. C was written before it and scored once after it was frozen, so C is the estimate of how
-    // the rule generalises. The scores are pinned measurements, not targets: a rule change updates
-    // them, and only a fresh set can say whether the change generalises.
+    // the rule generalises. The results are pinned measurements, not targets: a rule change updates
+    // them, and only a fresh set can say whether the change generalises. Each set pins the row
+    // indices of the corrections it misses and the design rows it flags, so a change that swaps
+    // which rows pass at the same totals shows up too.
     const HELD_OUT: Readonly<Record<string, HeldOutSet>> = {
       ...readSets('wont-work-held-out.json'),
       ...readSets('wont-work-held-out-c.json'),
     };
 
     it.each([
-      ['A', { corrections: 25, counted: 24, design: 25, flagged: 2 }],
-      ['B', { corrections: 25, counted: 7, design: 25, flagged: 0 }],
-      ['C', { corrections: 40, counted: 36, design: 40, flagged: 3 }],
+      ['A', { corrections: 25, design: 25, missed: [48], flagged: [26, 43] }],
+      [
+        'B',
+        {
+          corrections: 25,
+          design: 25,
+          missed: [0, 1, 5, 6, 7, 9, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 24],
+          flagged: [],
+        },
+      ],
+      ['C', { corrections: 40, design: 40, missed: [21, 37, 45, 70], flagged: [22, 62, 79] }],
     ])('scores held-out set %s', (name, expected) => {
-      const rows = HELD_OUT[name].rows;
+      const rows = HELD_OUT[name].rows.map((row, index) => ({ ...row, index }));
       const corrections = rows.filter((r) => r.label === 'correction');
       const design = rows.filter((r) => r.label === 'design');
       expect({
         corrections: corrections.length,
-        counted: corrections.filter((r) => countCorrections(r.text) === 1).length,
         design: design.length,
-        flagged: design.filter((r) => countCorrections(r.text) === 1).length,
+        missed: corrections.filter((r) => countCorrections(r.text) === 0).map((r) => r.index),
+        flagged: design.filter((r) => countCorrections(r.text) === 1).map((r) => r.index),
       }).toEqual(expected);
     });
 
@@ -447,6 +479,12 @@ describe('TranscriptMessageTracker', () => {
       ['repeated "you" with an adverb', `A cache won't work ${'you just '.repeat(44_000)}`],
       ['repeated hypothetical "you"', `A cache won't work ${'if you unless you '.repeat(22_000)}`],
       ['long letter run before the phrase', `${'a'.repeat(400_000)} won't work`],
+      ['repeated leading filler', `${'hmm, '.repeat(80_000)}won't work`],
+      ['long letter run in a filler', `h${'m'.repeat(400_000)}x won't work`],
+      ['long punctuation run after a filler', `Hmm${','.repeat(400_000)}x won't work`],
+      ['long whitespace after a filler', `Hmm${' '.repeat(400_000)}x won't work`],
+      ['long whitespace after "I tried it"', `I tried it,${' '.repeat(400_000)}x won't work`],
+      ['repeated conditional "you"', `A cache won't work ${'when you '.repeat(44_000)}`],
     ])('stays fast on a long adversarial message: %s', (_label, text) => {
       writeLines([userLine(text)]);
       const tracker = new TranscriptMessageTracker();
