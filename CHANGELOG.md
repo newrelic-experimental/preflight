@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Preflight is now installable via Homebrew on macOS** (`brew tap newrelic-experimental/preflight && brew install preflight`), alongside the existing npm install path. The formula tracks the npm package; the Release workflow regenerates it and opens a PR against the tap repo on every release, documented in `docs/maintaining-homebrew-tap.md`.
+- **Preflight is now installable via Homebrew on macOS** (`brew tap newrelic-experimental/preflight && brew trust newrelic-experimental/preflight && brew install preflight`), alongside the existing npm install path. The formula tracks the npm package; the Release workflow regenerates it and opens a PR against the tap repo on every release, documented in `docs/maintaining-homebrew-tap.md`.
 
 ## [1.57.3] - 2026-10-01
 

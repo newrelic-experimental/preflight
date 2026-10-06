@@ -135,7 +135,10 @@ jobs:
       # PR with one approving review on its default branch, so this opens a
       # PR and arms auto-merge rather than pushing to main directly; a
       # maintainer still needs to approve it once before it merges.
+      # continue-on-error keeps a tap failure from blocking the MCP Registry
+      # publish below; the failure still shows as an annotation on the run.
       - name: Update Homebrew tap
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           ACTOR: ${{ github.actor }}

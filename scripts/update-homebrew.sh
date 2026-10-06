@@ -17,7 +17,7 @@ fi
 TARBALL_URL="https://registry.npmjs.org/@newrelic/preflight/-/preflight-${VERSION}.tgz"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 FORMULA_PATH="${REPO_ROOT}/homebrew/Formula/preflight.rb"
-TMPFILE="$(mktemp /tmp/preflight-XXXXXX.tgz)"
+TMPFILE="$(mktemp)"
 
 trap 'rm -f "$TMPFILE"' EXIT
 

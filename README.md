@@ -120,8 +120,11 @@ Restart your AI tool — hooks and the MCP server load at session start. Every t
 
 ```bash
 brew tap newrelic-experimental/preflight
+brew trust newrelic-experimental/preflight
 brew install preflight
 ```
+
+Run `preflight setup` afterwards for hook capture.
 
 ---
 

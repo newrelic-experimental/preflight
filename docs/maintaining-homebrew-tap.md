@@ -32,6 +32,7 @@ Homebrew tap for [@newrelic/preflight](https://github.com/newrelic-experimental/
 
 ```bash
 brew tap newrelic-experimental/preflight
+brew trust newrelic-experimental/preflight
 brew install preflight
 ```
 
@@ -50,7 +51,7 @@ gh pr create --fill
 **Verify the tap works:**
 
 ```bash
-brew tap newrelic-experimental/preflight && brew install preflight && preflight --version
+brew tap newrelic-experimental/preflight && brew trust newrelic-experimental/preflight && brew install preflight && preflight --version
 ```
 
 Expected: Homebrew installs `preflight` and `preflight --version` prints the version you copied into the formula.
