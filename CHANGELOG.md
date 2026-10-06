@@ -5,13 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.58.1] - 2026-10-06
+## [1.58.2] - 2026-10-06
 
 ### Fixed
 
 - Audit trail and security events for tool calls made inside a subagent now carry the subagent's id and type (for example `Explore`) on installs whose Claude Code hook payload leaves `agent_id` or `agent_type` out, so sensitive-file access and destructive commands can be attributed to the subagent that made them. Preflight finds the call in the subagent's transcript, reading the transcript's newest lines as the call's hook record arrives, and takes the type from the metadata file Claude Code writes next to each transcript when the subagent starts. Both can still be missing on a call Claude Code has not yet written to the transcript when Preflight processes it: Claude Code writes transcript lines about 0.1 seconds after the model produces them, and a fast `Read` or `Grep` can finish sooner. In `--local` mode they can also be missing on a new subagent's calls made before Preflight's next scan for new transcripts, which runs every 10 seconds. A type the hook payload does send is kept as is, unless it is over 128 characters or contains control characters: such a value is dropped and the type is filled in the same way.
 - Subagent turn events (`AiSubagentTurn`) and subagent cost by type get the subagent's type while it runs, from the same metadata file or from the type the hook payload sends with the subagent's tool calls, instead of only after the parent's `Agent` call returns.
 - The long-running `--local` daemon no longer keeps a record of every subagent tool call it has ever seen. Subagent attribution now keeps at most 10,000 tool calls and 1,000 subagents, and drops entries unused for 24 hours.
+
+## [1.58.1] - 2026-10-06
+
+### Fixed
+
+- **`preflight update` on a Homebrew install no longer tells you to `npm install -g`.** Following that advice created a second, competing copy of preflight on `PATH`. It now says `brew upgrade preflight`. `preflight schedule --time` refuses on a Homebrew install with the same hint, since the daily job runs `preflight update` and would fail every run; `preflight schedule` and `preflight schedule --disable` still work, so an existing job can be removed.
 
 ## [1.58.0] - 2026-10-06
 
