@@ -643,6 +643,34 @@ describe('api-handler GET /api/sessions/:id', () => {
     expect(JSON.parse(body())).toEqual(fakeSession);
   });
 
+  it('strips the persisted zero raw counts instead of returning them under qualityProxy', async () => {
+    const fakeSession = {
+      sessionId: 'sess-quality-zero',
+      qualityProxy: {
+        totalSignals: 0,
+        diffApplyCleanCount: 0,
+        diffFailCount: 0,
+        testPassCount: 0,
+        testFailCount: 0,
+        backtrackCount: 0,
+        selfCorrectionCount: 0,
+      },
+    };
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: (id: string) => (id === 'sess-quality-zero' ? fakeSession : null),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-quality-zero' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { qualityProxy?: { diffApplyRate?: number | null } };
+    expect(parsed.qualityProxy).toBeUndefined();
+  });
+
   it('attaches qualityProxy and session-filtered toolSelectionScore to the own-live-session branch', async () => {
     const handler = createApiHandler({
       sessionStore: {
@@ -4997,67 +5025,111 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     expect(result.dailyPeaks[2].date).toBe(localDateKey());
   });
 
-  it('keys dailyPeaks correctly across a DST transition, where a local day is 23h (not 86_400_000ms)', async () => {
-    const originalTz = process.env.TZ;
-    process.env.TZ = 'America/New_York';
-    jest.useFakeTimers();
-    try {
-      // 2026-03-08 is a "spring forward" DST transition day in
-      // America/New_York — local midnight to local midnight is only 23 real
-      // hours (82_800_000ms), not 86_400_000ms.
-      const mar8Start = new Date(2026, 2, 8, 0, 0, 0).getTime();
-      const mar9Start = mar8Start + 23 * 60 * 60_000;
-      // "Today" = March 9 mid-afternoon, so days=3 covers Mar 7, 8, 9.
-      jest.setSystemTime(new Date(mar9Start + 15 * 60 * 60_000));
+  // Jest gives each test file its own copy of `process.env`, so assigning
+  // `process.env.TZ` inside a test never reaches Node's time-zone hook: the
+  // zone cannot be pinned from here. Instead, find a DST transition in the
+  // host's own zone with the same local-date arithmetic the handler uses. In a
+  // zone without DST a local day is always 86_400_000ms, the fixed-ms bug this
+  // guards against cannot occur, and the test is skipped.
+  //
+  // The transition day and the day after must both begin at a real 00:00. In a
+  // zone that springs forward at local midnight (America/Havana, Africa/Cairo,
+  // Asia/Beirut, Atlantic/Azores), `new Date(y, m, d)` resolves the skipped
+  // midnight to 01:00, and the handler's own ranges for the transition day and
+  // the day after then overlap by that hour, a separate defect in
+  // `computeDailyPeakConcurrency` that no fixture here can pass around. The
+  // scan moves on to the same zone's fall-back transition, which still
+  // exercises the fixed-ms bug.
+  const dstTransitionDay = ((): { start: number; next: number } | null => {
+    const startsAtMidnight = (d: Date): boolean => d.getHours() === 0 && d.getMinutes() === 0;
+    for (let i = 0; i < 366; i++) {
+      const start = new Date(2026, 0, 1 + i);
+      const next = new Date(2026, 0, 2 + i);
+      if (next.getTime() - start.getTime() === 86_400_000) continue;
+      if (startsAtMidnight(start) && startsAtMidnight(next)) {
+        return { start: start.getTime(), next: next.getTime() };
+      }
+    }
+    return null;
+  })();
 
-      // Two overlapping sessions active 30 minutes into March 9 local time —
-      // after the *correct* boundary (mar9Start) but still before the
-      // *buggy* one (mar8Start + 86_400_000 = mar9Start + 1h).
-      const overlapTs = mar9Start + 30 * 60_000;
-      const sessions = [
-        { sessionId: 's1', timeline: [{ timestamp: overlapTs }] },
-        { sessionId: 's2', timeline: [{ timestamp: overlapTs }] },
-      ];
-
-      const handler = createApiHandler({
-        concurrencyTracker: makeConcurrencyTracker(),
-        liveSessionRegistry: makeLiveRegistry(),
-        sessionStore: {
-          loadTodaySessions: () => [],
-          loadAllSessions: () => sessions,
-          listSessions: () => [],
-          loadSession: () => null,
-        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-      });
-      const req = {
-        method: 'GET',
-        url: '/api/concurrency?view=history&days=3',
-      } as IncomingMessage;
-      const { res, status, body } = fakeRes();
-      await handler(req, res);
-      expect(status()).toBe(200);
-      const result = JSON.parse(body());
-      // 3-day window [Mar7, Mar8, Mar9] → indices [0, 1, 2].
-      expect(result.dailyPeaks[1].date).toBe('2026-03-08');
-      expect(result.dailyPeaks[2].date).toBe('2026-03-09');
-      // A naive `dayEndMs = mar8Start + 86_400_000` (March 9 01:00 local —
-      // an hour past the true DST-shortened boundary) would wrongly
-      // attribute this overlap to March 8 instead of 9.
-      expect(result.dailyPeaks[1].peak).toBe(0);
-      expect(result.dailyPeaks[2].peak).toBe(2);
-    } finally {
-      jest.useRealTimers();
-      // `process.env.TZ = undefined` coerces to the literal string
-      // "undefined" (env vars are always strings), which then makes
-      // `Intl.DateTimeFormat().resolvedOptions().timeZone` resolve to
-      // "undefined" and silently breaks local-time computation for every
-      // later test in this Jest worker (maxWorkers: 1) — including this
-      // file's own local-vs-UTC tests. Delete the key outright when TZ was
-      // never set, rather than assigning `undefined` to it.
-      if (originalTz === undefined) delete process.env.TZ;
-      else process.env.TZ = originalTz;
+  // The DST test below skips silently when the scan finds nothing, which is
+  // also what a misspelled `TZ` or a runner without that zone's data produces:
+  // Node falls back to UTC. So in CI, where every `TZ` is a canonical IANA
+  // name, the process zone must match what `TZ` names (an invalid name makes
+  // the explicit formatter throw a RangeError), and under the DST zones CI runs
+  // this file in, the scan must find a day. It doesn't run locally, because a
+  // valid POSIX-form `TZ` such as `:America/New_York` is honored by Node but
+  // rejected by the explicit formatter.
+  const CI_DST_ZONES = ['America/New_York', 'Pacific/Auckland', 'America/Havana'];
+  const requestedZone = process.env.TZ;
+  (requestedZone && process.env.CI ? it : it.skip)('runs under the time zone TZ requests', () => {
+    expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(
+      new Intl.DateTimeFormat('en', { timeZone: requestedZone }).resolvedOptions().timeZone,
+    );
+    if (requestedZone && CI_DST_ZONES.includes(requestedZone)) {
+      expect(dstTransitionDay).not.toBeNull();
     }
   });
+
+  (dstTransitionDay === null ? it.skip : it)(
+    'keys dailyPeaks correctly across a DST transition, where a local day is not 86_400_000ms',
+    async () => {
+      jest.useFakeTimers();
+      try {
+        const { start: transitionStart, next: nextStart } = dstTransitionDay as {
+          start: number;
+          next: number;
+        };
+        const isShortDay = nextStart - transitionStart < 86_400_000;
+        // "Today" = the day after the transition, mid-afternoon, so days=3
+        // covers [day before, transition day, day after].
+        jest.setSystemTime(new Date(nextStart + 15 * 60 * 60_000));
+
+        // Two overlapping sessions active halfway between the *correct*
+        // boundary (nextStart) and the *buggy* one (transitionStart +
+        // 86_400_000). On a short (spring-forward) day that instant belongs
+        // to the next day; on a long (fall-back) day, to the transition day.
+        const naiveEnd = transitionStart + 86_400_000;
+        const overlapTs = Math.round((nextStart + naiveEnd) / 2);
+        const sessions = [
+          { sessionId: 's1', timeline: [{ timestamp: overlapTs }] },
+          { sessionId: 's2', timeline: [{ timestamp: overlapTs }] },
+        ];
+
+        const handler = createApiHandler({
+          concurrencyTracker: makeConcurrencyTracker(),
+          liveSessionRegistry: makeLiveRegistry(),
+          sessionStore: {
+            loadTodaySessions: () => [],
+            loadAllSessions: () => sessions,
+            listSessions: () => [],
+            loadSession: () => null,
+          } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+        });
+        const req = {
+          method: 'GET',
+          url: '/api/concurrency?view=history&days=3',
+        } as IncomingMessage;
+        const { res, status, body } = fakeRes();
+        await handler(req, res);
+        expect(status()).toBe(200);
+        const result = JSON.parse(body());
+        // 3-day window [day before, transition, day after] → indices [0, 1, 2].
+        // The date checks only confirm that layout, since date keying has its
+        // own test ("view=history keys each day's dailyPeaks entry by local
+        // date"); the peak checks are the regression guard.
+        expect(result.dailyPeaks[1].date).toBe(localDateKey(transitionStart));
+        expect(result.dailyPeaks[2].date).toBe(localDateKey(nextStart));
+        // A naive `dayEndMs = transitionStart + 86_400_000` would attribute
+        // this overlap to the wrong one of the two days.
+        expect(result.dailyPeaks[1].peak).toBe(isShortDay ? 0 : 2);
+        expect(result.dailyPeaks[2].peak).toBe(isShortDay ? 2 : 0);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it('counts a session seen only via peekAllBuffers in the current field', async () => {
     const now = Date.now();

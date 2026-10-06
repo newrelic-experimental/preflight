@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { HomelabAccumulator } from './homelab-accumulator.js';
@@ -10,8 +10,7 @@ let tmpDir: string;
 
 beforeEach(() => {
   stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-  tmpDir = resolve(tmpdir(), `homelab-acc-test-${Date.now()}`);
-  mkdirSync(tmpDir, { recursive: true });
+  tmpDir = mkdtempSync(resolve(tmpdir(), 'homelab-acc-test-'));
 });
 
 afterEach(() => {
