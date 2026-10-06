@@ -5,11 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.57.4] - 2026-10-05
+## [1.58.1] - 2026-10-06
 
 ### Fixed
 
 - A message containing "won't work" no longer counts as a correction of the assistant unless it opens on the phrase with a bare pronoun or no subject ("That won't work, ...", "Hmm, that definitely won't work", "Nah, won't work —"), or its sentence or the sentence either side points back at the assistant's output: "you" with a past or -ing verb ("the regex you wrote", "you're mutating state"), "your" with something built ("your fix"), or "still won't work". A "you" that reports an idea ("the cache you suggested"), poses a hypothetical ("if you add"), or takes a present or modal verb ("you need a lock") is not such a reference. Design discussion that used the phrase ("A cache won't work here since we need fresh reads") inflated correction rate, the high-correction-rate recommendation, and the CLAUDE.md-change verdict. A correction that names the code and gives a reason without pointing back ("The migration won't work, it drops the index") is not counted either. Sessions recorded before this version keep their counts, so a CLAUDE.md before/after comparison that spans the upgrade can show a drop the edit didn't cause.
+
+## [1.58.0] - 2026-10-06
+
+### Added
+
+- **Preflight is now installable via Homebrew on macOS** (`brew tap newrelic-experimental/preflight && brew trust newrelic-experimental/preflight && brew install preflight`), alongside the existing npm install path. The formula tracks the npm package; the Release workflow regenerates it and opens a PR against the tap repo on every release, documented in `docs/maintaining-homebrew-tap.md`.
 
 ## [1.57.3] - 2026-10-01
 
