@@ -295,13 +295,17 @@ describe('SubagentAttributionIndex.attributeAtIntake', () => {
     expect(reader.calls).toEqual([]);
   });
 
-  it('does not read for a record without a toolUseId, which no join could attribute', () => {
+  it('reads for every record the backfill leaves without an agentId, whatever its toolUseId', () => {
+    // HookEventProcessor gives every record a toolUseId, falling back to a
+    // synthetic pairing key when the hook pair carried none, so the read has
+    // no toolUseId condition: a record without one is never produced.
     const index = new SubagentAttributionIndex();
     const reader = makeReader(index);
 
+    index.attributeAtIntake(makeRecord({ toolUseId: 'Read:1000:synthetic-pairing-key' }), reader);
     index.attributeAtIntake(makeRecord({ toolUseId: undefined }), reader);
 
-    expect(reader.calls).toEqual([]);
+    expect(reader.calls).toEqual(['sess-001', 'sess-001']);
   });
 
   it('returns the plain backfill, unattributed, when the read finds nothing or no reader exists', () => {

@@ -137,13 +137,13 @@ export class SubagentAttributionIndex {
    * Attributes a hook record as it arrives, before any consumer (notably the
    * audit trail) sees it. An envelope carrying both `agent_id` and
    * `agent_type` teaches the index that subagent's type, for turns that lack a
-   * sidecar. When the backfill still leaves `agentId` unknown for a record
-   * with a `toolUseId`, `reader` reads the live subagent transcripts now and
-   * the backfill runs again: a fast call's `tool_use` line is usually on disk
-   * but not yet polled, and the record would otherwise be audited without its
-   * subagent (#681). Parent-session calls take the same path, at the cost of
-   * one stat per live transcript. If the read throws, the record is returned
-   * as the first backfill left it.
+   * sidecar. When the backfill still leaves `agentId` unknown, `reader` reads
+   * the subagent transcripts now and the backfill runs again: a fast call's
+   * `tool_use` line is usually on disk but not yet polled, and the record would
+   * otherwise be audited without its subagent (#681). Parent-session calls
+   * take the same path, since nothing tells them apart before the read, at the
+   * cost `SubagentWatcher.readLiveTails()` bounds. If the read throws, the
+   * record is returned as the first backfill left it.
    */
   attributeAtIntake(
     record: ToolCallRecord,
@@ -153,13 +153,7 @@ export class SubagentAttributionIndex {
       this.recordSubagentType(record.agentId, normalizeAgentType(record.agentType));
     }
     const backfilled = this.backfill(record);
-    if (
-      reader === null ||
-      backfilled.agentId !== undefined ||
-      typeof backfilled.toolUseId !== 'string'
-    ) {
-      return backfilled;
-    }
+    if (reader === null || backfilled.agentId !== undefined) return backfilled;
     let turnsRead: number;
     try {
       turnsRead = reader.readLiveTails(record.sessionId ?? undefined);
