@@ -24,18 +24,42 @@ import {
 } from './subagent-watcher.js';
 import { LocalStore } from '../storage/local-store.js';
 
-// Only statSync and openSync are wrapped as spies (everything else delegates
-// to the real implementation) — needed to prove the unfiltered discovery prune
-// skips a stale session's individual agent files without ever statting them,
-// and that an on-demand read of an unchanged transcript never opens it, which
-// a pass/fail on emitted output alone can't distinguish from "touched them and
-// then discarded them for some other reason".
+// Only statSync, openSync and writeFileSync are wrapped as spies (everything
+// else delegates to the real implementation) — needed to prove the unfiltered
+// discovery prune skips a stale session's individual agent files without ever
+// statting them, and that an on-demand read of an unchanged transcript never
+// opens it, which a pass/fail on emitted output alone can't distinguish from
+// "touched them and then discarded them for some other reason". writeFileSync
+// is wrapped so a test can fail the cursor write alone.
 jest.mock('node:fs', () => {
   const real = jest.requireActual<typeof import('node:fs')>('node:fs');
-  return { ...real, statSync: jest.fn(real.statSync), openSync: jest.fn(real.openSync) };
+  return {
+    ...real,
+    statSync: jest.fn(real.statSync),
+    openSync: jest.fn(real.openSync),
+    writeFileSync: jest.fn(real.writeFileSync),
+  };
 });
 const mockStatSync = statSync as jest.Mock;
 const mockOpenSync = openSync as jest.Mock;
+const mockWriteFileSync = writeFileSync as jest.Mock;
+const realWriteFileSync = jest.requireActual<typeof import('node:fs')>('node:fs').writeFileSync as (
+  ...args: unknown[]
+) => void;
+
+/** Makes every cursor-file write throw, as a disk error would, until restoreCursorWrites(). */
+function failCursorWrites(): void {
+  mockWriteFileSync.mockImplementation((...args: unknown[]) => {
+    if (String(args[0]).includes('.subagent-pos-')) {
+      throw Object.assign(new Error('EIO: i/o error, write'), { code: 'EIO' });
+    }
+    realWriteFileSync(...args);
+  });
+}
+
+function restoreCursorWrites(): void {
+  mockWriteFileSync.mockImplementation(realWriteFileSync);
+}
 
 const STDERR_WRITE = process.stderr.write;
 
@@ -1361,6 +1385,7 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
 
   afterEach(() => {
     process.stderr.write = STDERR_WRITE;
+    restoreCursorWrites();
     rmSync(storagePath, { recursive: true, force: true });
     rmSync(projectsDir, { recursive: true, force: true });
   });
@@ -1580,6 +1605,56 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
     watcher.poll();
     expect(bufferedTurns().map((t) => t.messageId)).toEqual(['msg_1']);
     expect(turnsRead).toHaveLength(1);
+  });
+
+  it('emits nothing from a read whose cursor write fails, and the poll then emits each turn once', () => {
+    const watcher = makeWatcher();
+    watcher.poll();
+    appendFileSync(
+      agentJsonl,
+      toolUseLine('msg_1', 'toolu_sub_1') + '\n' + toolUseLine('msg_2', 'toolu_sub_2') + '\n',
+    );
+    failCursorWrites();
+
+    watcher.poll();
+
+    expect(bufferedTurns()).toEqual([]);
+    expect(turnsRead).toEqual([]);
+    restoreCursorWrites();
+    watcher.poll();
+    expect(bufferedTurns().map((t) => t.messageId)).toEqual(['msg_1', 'msg_2']);
+    expect(turnsRead.map((t) => t.messageId)).toEqual(['msg_1', 'msg_2']);
+  });
+
+  it('neither repeats nor corrupts a line when the cursor write fails during an on-demand read', () => {
+    const watcher = makeWatcher();
+    watcher.poll();
+    // Two small turns, then one that straddles the 64 KiB read boundary, so
+    // the first read ends with a partial line held in memory.
+    appendFileSync(
+      agentJsonl,
+      [
+        toolUseLine('msg_1', 'toolu_sub_1'),
+        toolUseLine('msg_2', 'toolu_sub_2'),
+        toolUseLine('msg_3', 'toolu_sub_3', 100_000),
+        toolUseLine('msg_4', 'toolu_sub_4'),
+      ].join('\n') + '\n',
+    );
+    failCursorWrites();
+
+    expect(watcher.readLiveTails(PARENT_SESSION)).toBe(0);
+    // Left to the poll, as after a failed read: the next record opens nothing.
+    mockOpenSync.mockClear();
+    expect(watcher.readLiveTails(PARENT_SESSION)).toBe(0);
+    expect(mockOpenSync).not.toHaveBeenCalled();
+    expect(bufferedTurns()).toEqual([]);
+
+    restoreCursorWrites();
+    watcher.poll();
+    watcher.poll();
+    expect(bufferedTurns().map((t) => t.messageId)).toEqual(['msg_1', 'msg_2', 'msg_3', 'msg_4']);
+    expect(turnsRead.map((t) => t.messageId)).toEqual(['msg_1', 'msg_2', 'msg_3', 'msg_4']);
+    expect(watcher.getHealthStats().parseErrors).toBe(0);
   });
 
   it('returns 0 when a tracked transcript has been removed since the poll', () => {

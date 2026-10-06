@@ -15,8 +15,10 @@
  *
  * Cursor durability: byte cursors persisted to
  * `~/.newrelic-preflight/.subagent-pos-<parentSessionId>-<agentId>` survive restart.
- * On crash mid-emit the next poll re-reads from the previous cursor →
- * potential duplicates which downstream dedupes by (agent_id, message.id).
+ * A read takes effect only once its advanced cursor is written: a read whose
+ * cursor write fails emits nothing and is redone from the old cursor, the same
+ * as a failed read. A crash between the cursor write and the buffer appends
+ * loses those turns instead.
  *
  * Startup-discovery budget: only files with mtime in the last 24h are eligible
  * for cold scan (configurable via `NR_AI_WATCHER_DISCOVERY_HOURS`); older
@@ -312,10 +314,11 @@ export class SubagentWatcher {
   // internally and transparently prepends it on the next write() call on the
   // same instance, so a split character reconstructs correctly across polls
   // without us tracking raw tail bytes ourselves. This state is in-memory
-  // only, not persisted to the byte cursor: a process restart landing
-  // exactly between the splitting poll and the completing poll still
-  // corrupts that one character, same as before this fix — narrower than
-  // the bug being fixed (a restart is rare; every poll boundary is not).
+  // only, not persisted to the byte cursor: a process restart (or a failed
+  // cursor write, which resets it) landing exactly between the splitting poll
+  // and the completing poll still corrupts that one character, same as before
+  // this fix — narrower than the bug being fixed (a restart is rare; every
+  // poll boundary is not).
   // Evicted alongside
   // partialByPath in evictStalePartials() — see that method's comment.
   private readonly decoderByPath = new Map<string, StringDecoder>();
@@ -860,9 +863,9 @@ export class SubagentWatcher {
       this.parseErrors += 1;
     }
 
-    // Emit token events for each parsed assistant turn
+    // Token events for each parsed assistant turn, emitted once the cursor is written.
     const agentType = lines.length > 0 ? this.readAgentType(file.path) : undefined;
-    let turns = 0;
+    const events: SubagentTokenEvent[] = [];
     for (const line of lines) {
       if (!line) continue;
       this.linesRead += 1;
@@ -895,16 +898,27 @@ export class SubagentWatcher {
         toolUseIds: parsed.toolUseIds,
         ...(agentType !== undefined ? { agentType } : {}),
       };
-      this.appendToParentBuffer(file.parentSessionId, event);
-      this.notifyTurnRead(event);
-      turns += 1;
+      events.push(event);
     }
 
     // Persist the advanced cursor plus the (bounded) trailing partial so a
-    // restart resumes exactly where we left off. Keep the in-memory mirror in
-    // sync; when the partial is empty, drop the key entirely so a fully-consumed
-    // file leaves no residual entry in the map.
-    this.writeCursor(cursorPath, nextBytePos, newPartial, file.path);
+    // restart resumes exactly where we left off. If that fails, the next read
+    // starts from this read's start again, so nothing this read found takes
+    // effect: emitting now would repeat these turns, and keeping its partial
+    // would prepend it to the same bytes. The decoder, which holds this read's
+    // trailing bytes, is reset as on a restart, and the mirror is dropped as on
+    // a failed read, leaving the file to the next poll.
+    if (!this.writeCursor(cursorPath, nextBytePos, newPartial, file.path)) {
+      this.decoderByPath.delete(file.path);
+      this.consumedBytesByPath.delete(file.path);
+      return nothingRead;
+    }
+    for (const event of events) {
+      this.appendToParentBuffer(file.parentSessionId, event);
+      this.notifyTurnRead(event);
+    }
+    // Keep the in-memory mirror in sync; when the partial is empty, drop the
+    // key entirely so a fully-consumed file leaves no residual entry in the map.
     this.consumedBytesByPath.set(file.path, nextBytePos);
     if (newPartial.length > 0) {
       this.partialByPath.set(file.path, newPartial);
@@ -927,7 +941,7 @@ export class SubagentWatcher {
         event: 'oversized_line_dropped',
       });
     }
-    return { bytes: actuallyRead, turns };
+    return { bytes: actuallyRead, turns: events.length };
   }
 
   private notifyTurnRead(event: SubagentTokenEvent): void {
@@ -1071,12 +1085,13 @@ export class SubagentWatcher {
     }
   }
 
+  /** Returns whether the cursor was written; a failure is recorded, not thrown. */
   private writeCursor(
     cursorPath: string,
     bytePos: number,
     partialLine: string,
     sourcePath: string,
-  ): void {
+  ): boolean {
     try {
       if (!existsSync(this.storagePath)) {
         mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
@@ -1086,8 +1101,10 @@ export class SubagentWatcher {
       writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine, path: sourcePath }), {
         mode: 0o600,
       });
+      return true;
     } catch (err) {
       this.recordError(err);
+      return false;
     }
   }
 
