@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   parseArgs,
   maskCredential,
@@ -1398,14 +1399,24 @@ describe('stdio integration', () => {
    * which arms its correction watch. With `viaNpmExec` it runs behind
    * NPM_EXEC_WRAPPER, as an `npx`-launched engine does, so this test process
    * is its parent-of-ppid; otherwise this test process is its ppid.
+   * `nodeArgs` go to the engine's own node process, which also pipes its
+   * stderr into `stderr()` when they are set.
    */
-  async function startCwdGuessedEngine(viaNpmExec: boolean): Promise<{
+  async function startCwdGuessedEngine(
+    viaNpmExec: boolean,
+    options: { readonly nodeArgs?: readonly string[] } = {},
+  ): Promise<{
     readonly storagePath: string;
     readonly ppidBreadcrumbDir: string;
     readonly readSessionId: () => Promise<string>;
     readonly waitForSessionId: (sessionId: string) => Promise<boolean>;
-    /** Appends one tool call under `sessionId` and waits until the engine has drained it. */
-    readonly drainToolCall: (sessionId: string) => Promise<void>;
+    /**
+     * Appends one tool call under `sessionId` to `buffer-<bufferSessionId>.jsonl`
+     * (default: the same id) and waits until the engine has drained it.
+     */
+    readonly drainToolCall: (sessionId: string, bufferSessionId?: string) => Promise<void>;
+    /** The engine's stderr so far; empty unless `nodeArgs` were set. */
+    readonly stderr: () => string;
     readonly close: () => Promise<void>;
   }> {
     const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
@@ -1423,9 +1434,11 @@ describe('stdio integration', () => {
 
     const env = { ...process.env };
     delete env.CLAUDE_JOB_DIR;
+    const engineArgs = [...(options.nodeArgs ?? []), binPath, '--stdio'];
     const transport = new StdioClientTransport({
       command: 'node',
-      args: viaNpmExec ? ['-e', NPM_EXEC_WRAPPER, '--', binPath, '--stdio'] : [binPath, '--stdio'],
+      args: viaNpmExec ? ['-e', NPM_EXEC_WRAPPER, '--', ...engineArgs] : engineArgs,
+      ...(options.nodeArgs ? { stderr: 'pipe' as const } : {}),
       cwd: projectCwd,
       env: {
         ...env,
@@ -1434,6 +1447,10 @@ describe('stdio integration', () => {
         NEW_RELIC_AI_MCP_STORAGE_PATH: storagePath,
         NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
       },
+    });
+    let stderr = '';
+    transport.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
     });
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     const cleanup = (): void => {
@@ -1466,12 +1483,12 @@ describe('stdio integration', () => {
         }
         return false;
       },
-      drainToolCall: async (sessionId) => {
+      drainToolCall: async (sessionId, bufferSessionId = sessionId) => {
         const before = (await readStats()).tool_calls;
         const toolUseId = `toolu_drain_${++toolUseCount}`;
         const ts = Date.now();
         appendFileSync(
-          resolve(storagePath, `buffer-${sessionId}.jsonl`),
+          resolve(storagePath, `buffer-${bufferSessionId}.jsonl`),
           [
             { mode: 'pre', tool: 'Bash', timestamp: ts, sessionId, toolUseId },
             { mode: 'post', tool: 'Bash', timestamp: ts + 1, sessionId, toolUseId, success: true },
@@ -1486,6 +1503,7 @@ describe('stdio integration', () => {
         }
         throw new Error(`engine never drained the tool call under ${sessionId}`);
       },
+      stderr: () => stderr,
       close: async () => {
         try {
           await client.close();
@@ -1612,6 +1630,69 @@ describe('stdio integration', () => {
     },
     30000,
   );
+
+  it('reports each tool call drained under the cwd guess to the correction watch, and no other', async () => {
+    // The watch acts on that report only off Linux and Windows, so this checks
+    // the drain-path wiring itself, on every platform: a loader hook wraps
+    // the listener the engine subscribes, and marks each call on stderr.
+    const hookDir = mkdtempSync(join(tmpdir(), 'nr-staleid-activity-hook-'));
+    const marker = 'pf-test: staleId activity reported';
+    const realResolver = pathToFileURL(
+      resolve(__dirname, '..', 'dist', 'hooks', 'session-resolver.js'),
+    ).href;
+    const shim = pathToFileURL(resolve(hookDir, 'session-resolver-shim.mjs')).href;
+    writeFileSync(
+      resolve(hookDir, 'session-resolver-shim.mjs'),
+      [
+        `export * from ${JSON.stringify(realResolver)};`,
+        `import { watchPpidBreadcrumb as realWatch } from ${JSON.stringify(realResolver)};`,
+        'export function watchPpidBreadcrumb(options = {}) {',
+        '  const subscribe = options.subscribeToStaleIdActivity;',
+        '  if (!subscribe) return realWatch(options);',
+        '  return realWatch({',
+        '    ...options,',
+        '    subscribeToStaleIdActivity: (onActivity) =>',
+        `      subscribe(() => { process.stderr.write(${JSON.stringify(`${marker}\n`)}); onActivity(); }),`,
+        '  });',
+        '}',
+      ].join('\n'),
+    );
+    writeFileSync(
+      resolve(hookDir, 'hooks.mjs'),
+      [
+        'export async function resolve(specifier, context, next) {',
+        '  const result = await next(specifier, context);',
+        `  if (result.url === ${JSON.stringify(realResolver)} && context.parentURL !== ${JSON.stringify(shim)}) {`,
+        `    return { ...result, url: ${JSON.stringify(shim)}, shortCircuit: true };`,
+        '  }',
+        '  return result;',
+        '}',
+      ].join('\n'),
+    );
+    writeFileSync(
+      resolve(hookDir, 'register.mjs'),
+      "import { register } from 'node:module';\nregister('./hooks.mjs', import.meta.url);\n",
+    );
+
+    const engine = await startCwdGuessedEngine(false, {
+      nodeArgs: ['--import', pathToFileURL(resolve(hookDir, 'register.mjs')).href],
+    });
+    const reports = (): number => engine.stderr().split(marker).length - 1;
+    try {
+      // Filed in the guessed session's buffer, but under another session id.
+      await engine.drainToolCall('other-session-id', 'neighbour-session-id');
+      await engine.drainToolCall('neighbour-session-id');
+      // stderr is ordered, so once the second call's report is in, a report
+      // for the first would be too.
+      for (let i = 0; i < 50 && reports() < 1; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(reports()).toBe(1);
+    } finally {
+      await engine.close();
+      rmSync(hookDir, { recursive: true, force: true });
+    }
+  }, 30000);
 
   it('does not follow the host to a new session once its ppid breadcrumb confirmed the cwd guess', async () => {
     // Pins the direct-launch side of the /clear case: the watch resolves on the
