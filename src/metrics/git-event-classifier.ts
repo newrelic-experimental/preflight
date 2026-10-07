@@ -517,7 +517,6 @@ export function classifyGitSegments(
   const isGit = segments.map((s) => GIT_SEGMENT_RE.test(s));
   const error = (record.error as string) ?? '';
   let owner = errorSegmentIndex(chain, isGit, error);
-  const rejected = rejectedPushIndex(segments, isGit, error);
   // Segments [proven, failedAt) succeeded; (dropFrom, dropThrough] did not,
   // or may not, have run.
   let failedAt = -1;
@@ -533,10 +532,21 @@ export function classifyGitSegments(
     dropThrough = failedAt;
     if (dropFrom === failedAt && isGit[failedAt]) owner = failedAt;
   }
+  const dropped = (i: number): boolean => i > dropFrom && i <= dropThrough;
+  // Rejection text names the last push that ran, so skip one `&&` dropped.
+  let rejected = -1;
+  if (REJECT_INDICATORS.some((re) => re.test(error))) {
+    for (let i = segments.length - 1; i >= 0; i--) {
+      if (isGit[i] && !dropped(i) && GIT_PUSH_RE.test(segments[i]!)) {
+        rejected = i;
+        break;
+      }
+    }
+  }
   const proven = failedAt === -1 ? -1 : provenSuccessStart(operators, failedAt);
   const targetDir = gitCommandTargetDir(command, record.cwd as string | undefined);
   return segments.flatMap((segment, i) => {
-    if (!isGit[i] || (i > dropFrom && i <= dropThrough)) return [];
+    if (!isGit[i] || dropped(i)) return [];
     const forSegment =
       i === owner
         ? record

@@ -598,6 +598,17 @@ describe('classifyGitSegments when the error holds two failures', () => {
     },
   );
 
+  it('types the push that ran rejected, not one && then kept from running', () => {
+    // The first push's rejection is why `||` ran the pull; its conflict then
+    // stopped the second push.
+    expect(
+      outcomes('git push || git pull --rebase && git push', `${REJECTED}\n${CONFLICT}`),
+    ).toEqual([
+      ['push_rejected', false],
+      ['merge_conflict', false],
+    ]);
+  });
+
   it('types a rejected push before the conflicting step rejected', () => {
     expect(outcomes('git push; git pull', `${REJECTED}\n${CONFLICT}`)).toEqual([
       ['push_rejected', false],
