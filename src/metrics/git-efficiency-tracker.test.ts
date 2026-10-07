@@ -1418,6 +1418,34 @@ describe('GitEfficiencyTracker', () => {
       expect(tracker.getMetrics().commitCount).toBe(1);
     });
 
+    // `--reset-author` moves the author time git log reports to the amend's,
+    // so only the replayed amend sits next to the hydrated copy.
+    it('does not count a git log commit beside a replayed amend that reset its author time', () => {
+      const commitTimestamp = Date.now() - 120_000;
+      const amendTimestamp = commitTimestamp + 30_000;
+      tracker.replayTimeline([
+        {
+          timestamp: commitTimestamp,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git commit -m x',
+        },
+        {
+          timestamp: amendTimestamp,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git commit --amend --reset-author --no-edit',
+        },
+      ]);
+      expect(tracker.getMetrics().commitCount).toBe(1);
+
+      tracker.hydrateGitLog([{ timestamp: amendTimestamp + 1_000, hash: 'def456' }]);
+
+      expect(tracker.getMetrics().commitCount).toBe(1);
+    });
+
     it('hydrateBranchDivergence sets ahead/behind counts on risk indicators', () => {
       tracker.hydrateBranchDivergence(3, 7);
 
