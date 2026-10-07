@@ -5,11 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.59.6] - 2026-10-07
+## [1.60.1] - 2026-10-07
 
 ### Fixed
 
 - A message containing "won't work" no longer counts as a correction of the assistant unless it opens on the phrase with a bare pronoun or no subject, after at most two leading words such as "yeah", "but" or "hmm, no," and an optional "I tried it and" ("That won't work, ...", "Yeah that definitely won't work", "Nah, won't work —", "I tried it and it won't work"), or its sentence or the sentence either side points back at the assistant's output: "you" with a past or -ing verb ("the regex you wrote", "you're mutating state"), "your" with something built ("your fix"), or "still won't work". A "you" that reports an idea ("the cache you suggested"), poses a condition with "if" or "unless" ("if you added a cache"), or takes a present or modal verb ("you need a lock") is not such a reference. Design discussion that used the phrase ("A cache won't work here since we need fresh reads") inflated correction rate, the high-correction-rate recommendation, and the CLAUDE.md-change verdict. A correction that names the code and gives a reason without pointing back ("The migration won't work, it drops the index") is not counted either. Sessions recorded before this version keep their counts, so a CLAUDE.md before/after comparison that spans the upgrade can show a drop the edit didn't cause.
+
+## [1.60.0] - 2026-10-07
+
+### Added
+
+- **Scripts and fleet tooling could read `preflight doctor` results only by parsing its human-readable output.** `preflight doctor --json` prints the diagnostic checks as a JSON array on stdout, with each check's `check`, `status`, `detail`, and `fix`. The exit code is the same in both modes: 0 when every check passes, 1 when any check fails, and 2 when the only problems are warnings.
 
 ## [1.59.5] - 2026-10-07
 
