@@ -540,17 +540,23 @@ function pipelineEnd(operators: readonly string[], start: number): number {
 }
 
 /**
- * Start of the segments before `target` that ran and succeeded if `target`
- * ran: those that `&&` alone joins to it. A `|` or `||` between them ends
- * the proof, and so does the `||` before an `&&` run: in `a || b && t`,
- * which is `(a || b) && t`, `b` may not have run.
+ * The commands `&&` runs segment `target` after, as a chain of their own,
+ * or null when `target` follows another operator. `target` ran only if that
+ * chain succeeded, so "did `target` running prove segment `i` succeeded" is
+ * `segmentSuccessFollowsCommand` asked of it, with that function's handling
+ * of `||` fallbacks, groups, pipelines and unbalanced quotes. A `target`
+ * piped from another command is taken to prove nothing before it, the
+ * reading that counts less in the case it decides: a failure that names no
+ * step with a pipeline last, as in `git commit -m x && git log | head -1`,
+ * where the commit may be the step that failed.
  */
-function provenSuccessStart(operators: readonly string[], target: number): number {
-  let from = target;
-  while (from > 0 && operators[from - 1] === '&&') from--;
-  const run = andRunStart(operators, from);
-  const afterOr = run > 0 && operators[run - 1] === '||';
-  return from < target && afterOr && pipelineEnd(operators, run) === from ? from + 1 : from;
+function chainRunBefore(chain: ShellChain, target: number): ShellChain | null {
+  if (target < 1 || chain.operators[target - 1] !== '&&') return null;
+  return {
+    segments: chain.segments.slice(0, target),
+    operators: chain.operators.slice(0, target - 1),
+    quotesBalanced: chain.quotesBalanced,
+  };
 }
 
 /** Last segment that `&&` kept from running after segment `failed` failed;
@@ -655,16 +661,19 @@ function errorSegmentIndex(
  * push`. When the text names none, the failure is taken to be the last
  * command's, but any step of the final `&&` run may be the one that failed,
  * so the steps after its first are dropped as possibly never run. A segment
- * is marked succeeded only when `&&` alone joins it to the step the failure
- * goes to (see `provenSuccessStart`), so a commit before a rejected push or
- * a failing `gh pr create` still counts. That proof needs the quotes to
+ * is marked succeeded only when the step the failure goes to running proves
+ * it did (see `chainRunBefore`), so a commit before a rejected push or a
+ * failing `gh pr create` still counts. That proof needs the quotes to
  * balance: bash refuses a command whose quote never closes, so the `&&` may
- * be quoted text and nothing may have run. Every other segment keeps the
- * command's `success`, which for a failed command counts no commit or push
- * (see `isCountedCommit` and `isCountedPush`), except that a segment `&`
- * runs in the background is never marked succeeded. The target directory
- * comes from the whole command, so a `cd dir &&` in an earlier segment
- * still attributes every git segment.
+ * be quoted text and nothing may have run. Dropping needs no such check,
+ * since a dropped step counts nowhere, while a kept one that never ran would
+ * still count in the totals that ignore `success`, such as `pullCount` and
+ * `forcePushes`. Every other segment keeps the command's `success`, which
+ * for a failed command counts no commit or push (see `isCountedCommit` and
+ * `isCountedPush`), except that a segment `&` runs in the background is
+ * never marked succeeded. The target directory comes from the whole
+ * command, so a `cd dir &&` in an earlier segment still attributes every
+ * git segment.
  */
 export function classifyGitSegments(
   command: string,
@@ -676,8 +685,7 @@ export function classifyGitSegments(
   const isGit = segments.map((s) => GIT_SEGMENT_RE.test(s));
   const error = (record.error as string) ?? '';
   let owner = errorSegmentIndex(chain, isGit, error);
-  // Segments [proven, failedAt) succeeded; (dropFrom, dropThrough] did not,
-  // or may not, have run.
+  // Segments (dropFrom, dropThrough] did not, or may not, have run.
   let failedAt = -1;
   let dropFrom = -1;
   let dropThrough = -1;
@@ -692,9 +700,9 @@ export function classifyGitSegments(
     if (dropFrom === failedAt && isGit[failedAt]) owner = failedAt;
   }
   const dropped = (i: number): boolean => i > dropFrom && i <= dropThrough;
-  const proven =
-    failedAt !== -1 && chain.quotesBalanced ? provenSuccessStart(operators, failedAt) : failedAt;
-  const provenSucceeded = (i: number): boolean => i >= proven && i < failedAt;
+  const before = chainRunBefore(chain, failedAt);
+  const provenSucceeded = (i: number): boolean =>
+    before !== null && i < failedAt && segmentSuccessFollowsCommand(before, i);
   // Rejection text names the last push that ran and may have failed: not one
   // `&&` kept from running, nor one `&&` proves succeeded.
   const rejected = rejectedPushIndex(

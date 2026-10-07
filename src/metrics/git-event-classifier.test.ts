@@ -533,6 +533,30 @@ describe('classifyGitSegments under bash && and || grouping', () => {
     ]);
   });
 
+  // `x || ( … ) && t` is `(x || ( … )) && t`: when `x` succeeds the group
+  // never runs.
+  it('does not mark succeeded a step in a group that is the fallback of a ||', () => {
+    const REJECTED = ' ! [rejected] main -> main (non-fast-forward)';
+    expect(outcomes('git fetch || (git add -A && git commit -m x) && git push', REJECTED)).toEqual([
+      ['fetch', false],
+      ['commit', false],
+      ['push_rejected', false],
+    ]);
+  });
+
+  it('marks succeeded a step that a pipeline joined by && separates from the failure', () => {
+    const REJECTED = ' ! [rejected] main -> main (non-fast-forward)';
+    expect(outcomes('git commit -m x && git log -1 | cat && git push', REJECTED)).toEqual([
+      ['commit', true],
+      ['log', false],
+      ['push_rejected', false],
+    ]);
+  });
+
+  it('does not mark succeeded a failed step when the quotes do not balance, nor drop less', () => {
+    expect(outcomes('npm test "x && git add -A && git commit -m x', 'FAIL a.test.ts')).toEqual([]);
+  });
+
   it('marks succeeded the && steps after the first one that follows a ||', () => {
     expect(
       outcomes(
