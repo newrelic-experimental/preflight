@@ -90,9 +90,9 @@ const DEICTIC_WONT_WORK_RE = new RegExp(
 const ASSISTANT_ARTIFACT =
   'fix|change|edit|code|version|patch|implementation|update|commit|refactor|migration|test|script|function|query';
 
-/** A conditional "you" ("if you add a cache", "when you set a TTL") or one after a remark ("the point you made") is not about the assistant's output. A causal "since you" is left out: "since you removed the check" is about it. */
+/** A conditional "you" ("if you added a cache") or one after a remark ("the point you made") is not about the assistant's output. A causal "since you" or a past "when you" is left out: "since you removed the check" and "when you renamed the env var" are about it. */
 const NOT_ABOUT_OUTPUT_BEFORE_YOU =
-  '(?<!\\b(?:if|unless|when|(?:point|argument|suggestion|proposal|plan|idea)s?) )';
+  '(?<!\\b(?:if|unless|(?:point|argument|suggestion|proposal|plan|idea)s?) )';
 
 const ADVERB_AFTER_YOU =
   '(?:just|already|also|accidentally|only|then|now|still|again|clearly|probably|actually|never|always|not) ';

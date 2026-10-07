@@ -327,6 +327,15 @@ describe('TranscriptMessageTracker', () => {
       "Top-level await won't work in your version of Node.",
       // The window reaches the sentence before, which here closes an earlier topic.
       "Thanks, you fixed the login bug. Next, a cache won't work here since we need fresh reads.",
+      // A "when you" or "once you" with a past form is a reference as often as a condition.
+      "When you set a TTL, the cache won't work for live data.",
+      "Once you set a TTL, the cache won't work for live data.",
+      // A named subject followed by punctuation leads the opener like an interjection does.
+      "Websockets, no, won't work behind the firewall, we'll poll.",
+      // A leading filler before a bare-pronoun opener, same as "It won't work on Windows, ...".
+      "So this won't work on Windows, let's use fs.watch.",
+      // A noun ending in "-ly" fills the adverb slot of the opener.
+      "This assembly won't work on ARM.",
     ];
 
     const KNOWN_MISSES = [
@@ -339,6 +348,9 @@ describe('TranscriptMessageTracker', () => {
       "The null check won't work, we need to handle undefined too.",
       // Curly apostrophe.
       'That won’t work.',
+      // A dash after the filler, or a leading adverb outside the list, isn't a leading word.
+      "Yeah — that won't work.",
+      "Honestly that won't work.",
     ];
 
     /** Second person that points back at the assistant's output, in the "won't work" sentence or next to it. */
@@ -349,8 +361,11 @@ describe('TranscriptMessageTracker', () => {
       "The regex won't work for unicode, you only allowed ASCII.",
       "The command you ran won't work in CI.",
       "Nah, won't work — the value can be undefined too.",
-      // A causal "since you" is about the assistant's output, unlike a conditional "if you" or "when you".
+      // A causal "since you" or a past "when you" is about the assistant's output, unlike a conditional "if you".
       "Since you removed the null check, the parser won't work.",
+      "When you renamed the env var, the deploy script won't work anymore.",
+      "When you added the retry, the tests won't work.",
+      "It broke when you changed the config. Now the parser won't work.",
     ];
 
     /** Second person that is about an idea, a hypothetical or anyone, not the assistant's output. */
@@ -361,7 +376,6 @@ describe('TranscriptMessageTracker', () => {
       "Polling won't work, you can't hold connections on serverless.",
       "A lock won't work, you need a queue.",
       "If you added a cache it won't work across pods.",
-      "When you set a TTL, the cache won't work for live data.",
       "You're right that a cache won't work here.",
       "The plan you made won't work for us.",
     ];
@@ -484,7 +498,7 @@ describe('TranscriptMessageTracker', () => {
       ['long punctuation run after a filler', `Hmm${','.repeat(400_000)}x won't work`],
       ['long whitespace after a filler', `Hmm${' '.repeat(400_000)}x won't work`],
       ['long whitespace after "I tried it"', `I tried it,${' '.repeat(400_000)}x won't work`],
-      ['repeated conditional "you"', `A cache won't work ${'when you '.repeat(44_000)}`],
+      ['repeated "when you"', `A cache won't work ${'when you '.repeat(44_000)}`],
     ])('stays fast on a long adversarial message: %s', (_label, text) => {
       writeLines([userLine(text)]);
       const tracker = new TranscriptMessageTracker();
