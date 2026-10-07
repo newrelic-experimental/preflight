@@ -707,6 +707,8 @@ describe('GitActivityRecorder', () => {
       'gh pr checks 42 --watch && gh pr merge 42 --squash &',
       'gh pr checks 42 # then && gh pr merge 42',
       'gh pr checks 42 --watch\n# && gh pr merge 42',
+      'gh pr merge 42 --squash ||\n  # retry via <<web\n  echo failed',
+      'gh pr merge 42 --body "see <<X" ||\n  echo failed',
     ])('drops `%s`: the command can succeed while the merge failed or never ran', (command) => {
       recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
       expect(merges()).toEqual([]);

@@ -394,8 +394,10 @@ export function segmentRunsNoCommand(segment: string): boolean {
  * piped into anything or put in the background, neither it nor a group
  * around it is the fallback of a `||`, and nothing follows it except `&&`
  * steps, which run only if it succeeded. A trailing `;` or newline runs
- * nothing more and is ignored. A chain whose quotes did not balance shows
- * none of this.
+ * nothing more and is ignored. bash can't end a list on `||`, `&&` or `|`,
+ * so a segment that runs nothing after one of those means text was stripped
+ * or misread (e.g. a `<<` in a comment taken for a heredoc), and the merge
+ * doesn't count. A chain whose quotes did not balance shows none of this.
  */
 export function segmentSuccessFollowsCommand(chain: ShellChain, index: number): boolean {
   const { segments, operators } = chain;
@@ -404,7 +406,7 @@ export function segmentSuccessFollowsCommand(chain: ShellChain, index: number): 
   while (
     lastRun > index &&
     segmentRunsNoCommand(segments[lastRun]) &&
-    operators[lastRun - 1] !== '&'
+    (operators[lastRun - 1] === ';' || operators[lastRun - 1] === '\n')
   ) {
     lastRun--;
   }
