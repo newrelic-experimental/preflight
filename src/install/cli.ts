@@ -6,9 +6,9 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, copyFileSync, realpathSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, copyFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { Command, Option } from 'commander';
 
@@ -51,7 +51,7 @@ import {
   resolveBinaryPath,
   resolveNamedBinaryOnPath,
 } from './schedule.js';
-import { HOMEBREW_UPGRADE_COMMAND, isHomebrewInstall } from './homebrew-install.js';
+import { detectUpdateSupport, updateBlockerLines } from './update-support.js';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
 import { LocalStore } from '../storage/index.js';
 import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
@@ -187,24 +187,6 @@ function printPathWarning(): void {
   print('  Fix: run `npm link` in the project directory, or install globally:');
   print('    npm install -g @newrelic/preflight');
   print('');
-}
-
-// ---------------------------------------------------------------------------
-// Repo root discovery (for update command and setup wizard)
-// ---------------------------------------------------------------------------
-
-export function findRepoRoot(): string | null {
-  try {
-    let dir = dirname(realpathSync(process.argv[1]));
-    while (true) {
-      if (existsSync(join(dir, 'package.json'))) return dir;
-      const parent = dirname(dir);
-      if (parent === dir) return null;
-      dir = parent;
-    }
-  } catch {
-    return null;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -495,54 +477,12 @@ async function handleLocal(options: { clean?: boolean }): Promise<void> {
 
 async function handleUpdate(): Promise<void> {
   migrateStoragePath();
-  const repoRoot = findRepoRoot();
-  if (!repoRoot) {
-    print(
-      '✗ Could not locate the repo root. Run this command from within the cloned repo or after npm link.',
-    );
+  const support = detectUpdateSupport();
+  if (!support.supported) {
+    for (const line of updateBlockerLines(support.blocker)) print(line);
     process.exit(1);
   }
-
-  // Checked before git: on Apple Silicon the Cellar sits inside Homebrew's own
-  // repo (/opt/homebrew), so the package-manager branch below would catch it
-  // and give npm advice that installs a second, competing copy.
-  if (isHomebrewInstall(repoRoot)) {
-    print('✗ preflight was installed with Homebrew.');
-    print(`  To update: ${HOMEBREW_UPGRADE_COMMAND}`);
-    process.exit(1);
-  }
-
-  let gitRoot!: string;
-  try {
-    gitRoot = execFileSync('git', ['-C', repoRoot, 'rev-parse', '--show-toplevel'], {
-      stdio: 'pipe',
-      env: { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined },
-    })
-      .toString()
-      .trim();
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      print('✗ git is not installed or not found on PATH.');
-      print('  Install git (https://git-scm.com) then retry: preflight update');
-    } else {
-      print('✗ preflight was installed via a package manager, not cloned from source.');
-      print('  (If your .git directory is missing or corrupt, re-clone the repo instead.)');
-      print('  To update, reinstall using your package manager, e.g.:');
-      print('    npm install -g @newrelic/preflight@latest');
-      print('    pnpm add -g @newrelic/preflight@latest');
-    }
-    process.exit(1);
-  }
-  // If repoRoot sits below a node_modules directory within the git tree,
-  // preflight is installed as a dependency — not a source clone.
-  // path.relative() normalises separators on all platforms (robust on Windows).
-  if (relative(gitRoot, repoRoot).split(sep).includes('node_modules')) {
-    print('✗ preflight was installed via a package manager, not cloned from source.');
-    print('  To update, reinstall using your package manager, e.g.:');
-    print('    npm install -g @newrelic/preflight@latest');
-    print('    pnpm add -g @newrelic/preflight@latest');
-    process.exit(1);
-  }
+  const { repoRoot } = support;
 
   print(`Updating Preflight from ${repoRoot}...\n`);
 
@@ -599,12 +539,10 @@ function handleSchedule(options: { time?: string; disable?: boolean }): void {
   }
 
   if (options.time !== undefined) {
-    // The scheduled job runs `preflight update`, which can't update a keg.
-    // Status and --disable stay available so an existing job can be removed.
-    const repoRoot = findRepoRoot();
-    if (repoRoot !== null && isHomebrewInstall(repoRoot)) {
-      print("✗ The daily schedule runs `preflight update`, which can't update a Homebrew install.");
-      print(`  Keep preflight current with: ${HOMEBREW_UPGRADE_COMMAND}`);
+    const support = detectUpdateSupport();
+    if (!support.supported) {
+      for (const line of updateBlockerLines(support.blocker)) print(line);
+      print('  The daily schedule runs `preflight update`, which cannot run on this install.');
       process.exit(1);
     }
     const match = options.time.match(/^(\d{1,2}):(\d{2})$/);

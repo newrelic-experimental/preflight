@@ -5,12 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.59.3] - 2026-10-07
+## [1.59.4] - 2026-10-07
 
 ### Fixed
 
 - When the config asks for cloud export (`mode: "cloud"` or `"both"`) but the `preflight --local` dashboard process can't see your credentials, the sessions it collects for you no longer fail to reach New Relic silently. This usually happens because the credentials are set only as shell environment variables, which the macOS dashboard LaunchAgent does not inherit. The dashboard now logs a warning once for each session it keeps only locally, and `GET /api/health` reports them under `unforwardedSessions`, with a count and the most recent session ids. To fix it, add `licenseKey` and `accountId` to the config file and restart the dashboard.
 - On macOS, an MCP server launched through `npx` that took its session id from the directory it started in can now correct that id once the host's own hooks report the real one. Before, a GitHub Copilot session started in a directory where Claude Code was already running could stay filed under the Claude Code session for its whole life.
+
+## [1.59.3] - 2026-10-07
+
+### Fixed
+
+- **A daily auto-update scheduled on an npm, pnpm, or Homebrew install failed every run, silently.** `preflight update` runs `git pull` and a rebuild, so it only works on a source clone, but setup offered the macOS LaunchAgent on every install. Setup now skips the auto-update prompt on a package-manager or Homebrew install and prints the upgrade command instead. `preflight schedule --time` refuses on such an install with the same hint and a non-zero exit. `preflight schedule --disable` still works. `preflight doctor` has a new "Update schedule" check that warns when `com.preflight.update.plist` is installed on an install where `preflight update` cannot run, and names the fix. One shared check decides whether `update` can run, so `update`, setup, `schedule`, and `doctor` agree.
 
 ## [1.59.2] - 2026-10-07
 
