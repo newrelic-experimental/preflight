@@ -2342,6 +2342,65 @@ describe('preflight doctor', () => {
     await prog.parseAsync(['node', 'preflight', 'doctor']);
     expect(process.exitCode).toBe(2);
   });
+
+  it('outputs JSON when --json flag is passed', async () => {
+    const checks = [
+      makeCheck({ check: 'Config valid', status: 'ok' }),
+      makeCheck({ check: 'Hooks wired', status: 'ok' }),
+    ];
+    mockedRunDiagnostics.mockResolvedValue(checks);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor', '--json']);
+    const jsonOutput = output.join('');
+    const parsed = JSON.parse(jsonOutput);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(2);
+    expect(parsed.map((c: DiagnosticCheck) => c.check)).toEqual(['Config valid', 'Hooks wired']);
+  });
+
+  it('exits with 0 when --json and all checks pass', async () => {
+    mockedRunDiagnostics.mockResolvedValue([makeCheck({ status: 'ok' })]);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor', '--json']);
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('exits with 1 when --json and a check fails', async () => {
+    mockedRunDiagnostics.mockResolvedValue([
+      makeCheck({ status: 'fail', detail: 'bad', fix: 'preflight install' }),
+    ]);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor', '--json']);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('exits with 2 when --json and only warnings', async () => {
+    mockedRunDiagnostics.mockResolvedValue([makeCheck({ status: 'warn', detail: 'mild' })]);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor', '--json']);
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('does not print banner when --json is passed', async () => {
+    mockedRunDiagnostics.mockResolvedValue([makeCheck({ status: 'ok' })]);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor', '--json']);
+    expect(output.join('')).not.toContain('Running diagnostics');
+  });
+
+  it('writes exactly one JSON line and nothing else when --json is passed', async () => {
+    const checks = [makeCheck({ check: 'Config valid', status: 'ok' })];
+    mockedRunDiagnostics.mockResolvedValue(checks);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor', '--json']);
+    expect(output.join('')).toBe(`${JSON.stringify(checks)}\n`);
+  });
 });
 
 // ---------------------------------------------------------------------------
