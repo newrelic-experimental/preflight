@@ -49,6 +49,29 @@ var CLAUDE_CODE_ENV_SIGNALS = [
   "CLAUDE_CODE_VERSION"
 ];
 
+// src/hook-subcommands.ts
+var HOOK_EVENT_TYPES = [
+  "PreToolUse",
+  "PostToolUse",
+  "PermissionRequest",
+  "PermissionDenied",
+  "StopFailure"
+];
+var HOOK_SUBCOMMANDS = {
+  PreToolUse: "pre-tool",
+  PostToolUse: "post-tool",
+  PermissionRequest: "permission-request",
+  PermissionDenied: "permission-denied",
+  StopFailure: "stop-failure"
+};
+function hookEventFromArg(arg) {
+  if (arg === void 0) return void 0;
+  const lower = arg.toLowerCase();
+  return HOOK_EVENT_TYPES.find(
+    (event) => event.toLowerCase() === lower || HOOK_SUBCOMMANDS[event] === lower
+  );
+}
+
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
 var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -448,7 +471,7 @@ function extractOutputMeta(toolName, output, input) {
 function getWindsurfToolInfo(data) {
   return data.tool_info !== null && typeof data.tool_info === "object" ? data.tool_info : {};
 }
-function processHook(raw) {
+function processHook(raw, cliEvent) {
   let data;
   try {
     data = JSON.parse(raw);
@@ -466,8 +489,11 @@ function processHook(raw) {
   const recordContent = getRecordContent();
   const maxContentLen = getMaxContentLength();
   const isGeminiCli = process.env.MCP_CLIENT === "gemini-cli" || process.env.NEW_RELIC_AI_PLATFORM === "gemini-cli";
-  const isAntigravityPre = data.toolCall !== void 0;
-  const isAntigravityPost = !isAntigravityPre && typeof data.stepIdx === "number" && data.hook_event_name === void 0 && data.agent_action_name === void 0;
+  const isAntigravityShape = data.hook_event_name === void 0 && data.agent_action_name === void 0 && (data.toolCall !== void 0 || typeof data.stepIdx === "number");
+  const agyCliEvent = hookEventFromArg(cliEvent);
+  const isAntigravityPost = isAntigravityShape && (agyCliEvent === "PostToolUse" || agyCliEvent !== "PreToolUse" && (data.error !== void 0 || data.toolCall === void 0));
+  const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
+  const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: String(data.stepIdx) } : {};
   let event;
   if (eventName === "pretooluse") {
     event = {
@@ -697,7 +723,7 @@ function processHook(raw) {
       timestamp,
       inputSize: sizeOf(data.toolCall?.args),
       inputHash: hashInput(data.toolCall?.args),
-      ...typeof data.stepIdx === "number" && { toolUseId: String(data.stepIdx) }
+      ...agyToolUseId
     };
     const inputMeta = extractInputMeta(agyToolName, data.toolCall?.args);
     if (inputMeta !== void 0) event.toolInput = inputMeta;
@@ -708,10 +734,10 @@ function processHook(raw) {
     const hasError = typeof data.error === "string" && data.error !== "";
     event = {
       mode: "post",
-      tool: "unknown",
+      tool: data.toolCall?.name ?? "unknown",
       timestamp,
       success: !hasError,
-      toolUseId: String(data.stepIdx),
+      ...agyToolUseId,
       ...typeof data.error === "string" && data.error !== "" && { error: redact(data.error) }
     };
   } else if (eventName === "stopfailure") {
@@ -848,7 +874,7 @@ if (_isDirectExecution) {
   try {
     const stdin = readStdinSync();
     if (stdin.trim()) {
-      processHook(stdin);
+      processHook(stdin, process.argv[2]);
     }
   } catch {
   }
