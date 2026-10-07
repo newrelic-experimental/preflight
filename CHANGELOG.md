@@ -5,11 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.58.4] - 2026-10-06
+## [1.59.1] - 2026-10-07
 
 ### Fixed
 
 - **Google Antigravity: every tool call failed after Preflight's `PostToolUse` hook ran.** Antigravity sends the same payload shape for `PreToolUse` and `PostToolUse`, so Preflight read each `PostToolUse` as `PreToolUse` and replied with `{"decision":"allow"}`, which Antigravity rejects for that event. Preflight now takes the event name from the hook command and replies `{}` to `PostToolUse`, and records it as the end of the tool call. Update `hooks.json` to run `preflight-collector PreToolUse` and `preflight-collector PostToolUse` (see the Antigravity section of `docs/ADAPTERS.md`). Without the argument, Preflight falls back to treating a payload with an `error` field as `PostToolUse`, so a successful call whose `PostToolUse` omits that field gets the `PreToolUse` reply and is recorded as a failed call.
+
+## [1.59.0] - 2026-10-07
+
+### Added
+
+- **The Claude Code plugin now captures permission, API failure, prompt, model switch, and session lifecycle events, not just tool calls.** `plugin/hooks/hooks.json` registers every hook event that `preflight install` writes, and a test keeps the two in sync.
+
+## [1.58.5] - 2026-10-07
+
+### Fixed
+
+- **The local dashboard counted a session twice once it was saved to disk.** Today's "Where today's spend went" Models table showed double the requests and cost of the "Spend today" tile beside it, and the Tool Selection and Quality panels counted the same calls and signals twice. Each session now counts once, before and after it is saved.
+
+## [1.58.4] - 2026-10-06
+
+### Fixed
+
+- **The "On pace for" projection on History and Today could read ~$0.00 for the week while the month beside it read over $1,000.** The week projection only extrapolated from spend since Monday, so after a quiet Monday, and before today's spend was counted, it projected nothing for the rest of the week. The month projection had the same gap on the 1st. Both now project the remaining days from your average daily spend over the last 28 days plus today, so the week and month figures use the same pace.
 
 ## [1.58.3] - 2026-10-06
 

@@ -12,8 +12,9 @@ the plugin is an additional distribution channel, not a replacement.
 
 ## What you get
 
-- **Hooks** — `PreToolUse`/`PostToolUse` capture for every built-in tool call,
-  same as the npm install's hook wiring (`preflight setup` / `preflight
+- **Hooks** — capture for every hook event
+  (tool calls, permissions, API failures, prompts, session lifecycle), same
+  as the npm install's hook wiring (`preflight setup` / `preflight
 install`). The plugin ships a small, dependency-free, precompiled copy of
   the hook collector (see [Packaging](#packaging) below) rather than relying
   on a globally-installed binary.
@@ -97,8 +98,8 @@ simply pointing it at this repo's own `dist/`:
   [esbuild](https://esbuild.github.io/) bundle of `collector-script.ts` (plus
   its two dependency-free local imports, `redaction-patterns.ts` and
   `record-content-gate.ts` — it has no npm dependencies to begin with),
-  committed to the repo. `plugin/hooks/hooks.json` points both `PreToolUse`
-  and `PostToolUse` at this one file via `${CLAUDE_PLUGIN_ROOT}`.
+  committed to the repo. `plugin/hooks/hooks.json` points every hook event
+  at this one file via `${CLAUDE_PLUGIN_ROOT}`.
 - **`plugin/.claude-plugin/plugin.json`** — the plugin manifest itself, at
   the location required relative to the plugin's own root (`plugin/`, not
   the repo root).
