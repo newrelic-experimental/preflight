@@ -10,7 +10,7 @@ export interface SessionStatusInput {
   readonly live: boolean;
   /** The session's most recent tool call, across buffer and persisted timeline. Null when neither has one. */
   readonly lastToolName: string | null;
-  /** PR 'create' events with no later 'merge' of the same prNumber (a null prNumber always counts as open). */
+  /** PR 'create' events with no later 'merge' of the same prNumber in the same repo, from any session (a null prNumber always counts as open). */
   readonly openPrCount: number;
 }
 
