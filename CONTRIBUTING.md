@@ -262,6 +262,12 @@ also stands in for `HOME`. So it needs no running server, and it reads none of y
 your real `~/.newrelic-preflight`, or your Claude Code and Copilot transcripts. See
 [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md#browser-tests-playwright) for adding a test.
 
+`.claude/skills/verify-preflight/` is the only project skill tracked in git. It launches an isolated
+Preflight from your checkout and drives it through the collector, the dashboard, and the stdio MCP
+tools (`.claude/skills/verify-preflight/SKILL.md`). Any other skill in `.claude/skills/`, including
+symlinks to skills kept elsewhere, stays ignored. To track a new project skill, add a
+`!.claude/skills/<name>/` line to `.gitignore`.
+
 Screenshot assertions compare against per-platform baselines in `e2e/*-snapshots/`. Two are
 committed for each screenshot: `-darwin`, recorded on a Mac, and `-linux`, recorded in the
 `mcr.microsoft.com/playwright` image whose tag matches `@playwright/test` in `package.json` —
