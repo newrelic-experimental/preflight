@@ -5,11 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.59.5] - 2026-10-07
+## [1.59.6] - 2026-10-07
 
 ### Fixed
 
 - A message containing "won't work" no longer counts as a correction of the assistant unless it opens on the phrase with a bare pronoun or no subject, after at most two leading words such as "yeah", "but" or "hmm, no," and an optional "I tried it and" ("That won't work, ...", "Yeah that definitely won't work", "Nah, won't work —", "I tried it and it won't work"), or its sentence or the sentence either side points back at the assistant's output: "you" with a past or -ing verb ("the regex you wrote", "you're mutating state"), "your" with something built ("your fix"), or "still won't work". A "you" that reports an idea ("the cache you suggested"), poses a condition with "if" or "unless" ("if you added a cache"), or takes a present or modal verb ("you need a lock") is not such a reference. Design discussion that used the phrase ("A cache won't work here since we need fresh reads") inflated correction rate, the high-correction-rate recommendation, and the CLAUDE.md-change verdict. A correction that names the code and gives a reason without pointing back ("The migration won't work, it drops the index") is not counted either. Sessions recorded before this version keep their counts, so a CLAUDE.md before/after comparison that spans the upgrade can show a drop the edit didn't cause.
+
+## [1.59.5] - 2026-10-07
+
+### Fixed
+
+- **Google Antigravity: every tool call failed after Preflight's `PostToolUse` hook ran.** Antigravity sends the same payload shape for `PreToolUse` and `PostToolUse`, so Preflight read each `PostToolUse` as `PreToolUse` and replied with `{"decision":"allow"}`, which Antigravity rejects for that event. Preflight now takes the event name from the hook command and replies `{}` to `PostToolUse`, and records it as the end of the tool call. Update `hooks.json` to run `preflight-collector PreToolUse` and `preflight-collector PostToolUse` (see the Antigravity section of `docs/ADAPTERS.md`). Without the argument, Preflight falls back to treating a payload with an `error` field as `PostToolUse`, so a successful call whose `PostToolUse` omits that field gets the `PreToolUse` reply and is recorded as a failed call.
 
 ## [1.59.4] - 2026-10-07
 
