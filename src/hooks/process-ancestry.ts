@@ -30,6 +30,9 @@
  *     session_id by PID. Claude Code on native Windows is unaffected — it
  *     launches the server directly and has the cwd breadcrumb as a fallback.
  *
+ * readParentAndCommand() reads one level only, with the pid's command line,
+ * for a caller that has to tell an `npm exec` wrapper apart from a host.
+ *
  * The `/proc` parsing here is deliberately duplicated from
  * `collector-script.ts`'s `getLinuxAncestorPids` rather than imported: that
  * module runs on every single tool call under a <5ms budget with a "no heavy
@@ -99,10 +102,10 @@ function parentPidFromProcStat(stat: string): number | null {
 
 /**
  * Builds a pid→ppid map for every process, via a single `ps` call.
- * Returns null on any failure (missing `ps`, non-zero exit, timeout,
+ * Returns an empty map on any failure (missing `ps`, non-zero exit, timeout,
  * unparseable output) so callers degrade to a depth-0 walk rather than throw.
  */
-function readProcessTable(execFileSync: ExecFileSyncFn): Map<number, number> | null {
+function readProcessTable(execFileSync: ExecFileSyncFn): Map<number, number> {
   const table = new Map<number, number>();
   let out: string;
   try {
@@ -118,9 +121,9 @@ function readProcessTable(execFileSync: ExecFileSyncFn): Map<number, number> | n
     // execFileSync throws on non-zero exit, timeout, and ENOENT alike. A
     // pathological injected fn could also throw synchronously — same handling.
     logger.debug('Could not read process table via ps', { error: String(err) });
-    return null;
+    return table;
   }
-  if (typeof out !== 'string') return null;
+  if (typeof out !== 'string') return table;
 
   for (const line of out.split('\n')) {
     const parts = line.trim().split(/\s+/);
@@ -130,20 +133,7 @@ function readProcessTable(execFileSync: ExecFileSyncFn): Map<number, number> | n
     if (!Number.isFinite(pid) || !Number.isFinite(ppid)) continue;
     table.set(pid, ppid);
   }
-  // `ps` always lists at least itself, so an empty table means bad output.
-  return table.size > 0 ? table : null;
-}
-
-/** What walkAncestorPids() found. */
-export interface AncestorWalk {
-  /** `[startPid, parent, grandparent, ...]`, as getAncestorPids() returns. */
-  readonly pids: number[];
-  /**
-   * True when the walk stopped because a lookup failed (`ps` failed or a
-   * `/proc` read threw) rather than at a natural end, so a later call may
-   * return more. False for a walk that ran to `maxDepth`, PID 1 or a cycle.
-   */
-  readonly lookupFailed: boolean;
+  return table;
 }
 
 /**
@@ -161,19 +151,7 @@ export interface AncestorWalk {
  * Never throws.
  */
 export function getAncestorPids(startPid: number, options: AncestorPidsOptions = {}): number[] {
-  return walkAncestorPids(startPid, options).pids;
-}
-
-/**
- * getAncestorPids(), plus whether the walk was cut short by a failed lookup.
- * For a caller that caches the result and should retry a degraded one rather
- * than keep it for the life of the process. Never throws.
- */
-export function walkAncestorPids(
-  startPid: number,
-  options: AncestorPidsOptions = {},
-): AncestorWalk {
-  if (!Number.isFinite(startPid) || startPid <= 0) return { pids: [], lookupFailed: false };
+  if (!Number.isFinite(startPid) || startPid <= 0) return [];
 
   const maxDepth = options.maxDepth ?? 4;
   const platform = options.platform ?? process.platform;
@@ -182,12 +160,12 @@ export function walkAncestorPids(
   if (platform === 'win32') {
     // Not implemented — see the module doc comment. Returning just the direct
     // pid keeps behavior identical to having no walk at all.
-    return { pids, lookupFailed: false };
+    return pids;
   }
 
   // On Linux read /proc directly; everywhere else pay for one `ps` call, and
   // only lazily — a walk that stops at depth 0 never spawns anything.
-  let table: Map<number, number> | null | undefined;
+  let table: Map<number, number> | undefined;
   const execFileSync = options.execFileSync ?? (nodeExecFileSync as unknown as ExecFileSyncFn);
 
   let pid = startPid;
@@ -198,11 +176,10 @@ export function walkAncestorPids(
       try {
         parentPid = parentPidFromProcStat(_procFs.readFile(`/proc/${pid}/stat`));
       } catch {
-        return { pids, lookupFailed: true };
+        break;
       }
     } else {
-      if (table === undefined) table = readProcessTable(execFileSync);
-      if (table === null) return { pids, lookupFailed: true };
+      table ??= readProcessTable(execFileSync);
       parentPid = table.get(pid) ?? null;
     }
 
@@ -212,5 +189,70 @@ export function walkAncestorPids(
     pid = parentPid;
   }
 
-  return { pids, lookupFailed: false };
+  return pids;
+}
+
+/** What readParentAndCommand() found. */
+export interface ParentAndCommand {
+  /** The parent PID, or null when it is PID 1 or below, as getAncestorPids() stops there. */
+  readonly parentPid: number | null;
+  /**
+   * The command line `ps -o args=` prints, trimmed. A process title set at
+   * runtime replaces it, which is how npm's wrapper shows as `npm exec ...`.
+   */
+  readonly command: string;
+}
+
+/**
+ * One process's parent and command line, from a single
+ * `ps -o ppid=,args= -p <pid>` call. The output is one row however many
+ * processes are running, which adding `args` to getAncestorPids()'s
+ * whole-table call would not be.
+ *
+ * Returns null when the lookup fails (`ps` fails or times out, the pid is
+ * gone, the output is unparseable), so a caller can retry, and on win32,
+ * which has no `ps`, without spawning anything. Never throws.
+ */
+export function readParentAndCommand(
+  pid: number,
+  options: Pick<AncestorPidsOptions, 'platform' | 'execFileSync'> = {},
+): ParentAndCommand | null {
+  if (!Number.isFinite(pid) || pid <= 0) return null;
+  if ((options.platform ?? process.platform) === 'win32') return null;
+  const execFileSync = options.execFileSync ?? (nodeExecFileSync as unknown as ExecFileSyncFn);
+
+  let out: string;
+  try {
+    // `-o ppid=,args=` = parent pid and full command line, no header; `-p` =
+    // this pid only. All POSIX. `ps` exits non-zero for a pid that is gone.
+    out = execFileSync('ps', ['-o', 'ppid=,args=', '-p', String(pid)], {
+      encoding: 'utf-8',
+      timeout: PS_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch (err) {
+    logger.debug('Could not read process command line via ps', { pid, error: String(err) });
+    return null;
+  }
+  if (typeof out !== 'string') return null;
+
+  const match = /^\s*(\d+)(?:\s+(.*))?$/.exec(out.split('\n')[0] ?? '');
+  if (!match) return null;
+  const parentPid = parseInt(match[1] ?? '', 10);
+  return {
+    parentPid: parentPid > 1 ? parentPid : null,
+    command: (match[2] ?? '').trim(),
+  };
+}
+
+/**
+ * Whether a readParentAndCommand() command line is npm's `npx` wrapper, the
+ * `npm exec` process between a host and a server it launched through `npx`.
+ * `npx` runs as `npm exec` (npm's bin/npx-cli.js), and npm sets its process
+ * title to `npm` plus its positional args (lib/npm.js), so `ps` shows
+ * `npm exec <package> ...`, or `npm x ...` for the alias. Other launchers
+ * (`pnpm dlx`, `yarn dlx`, `bunx`) are not recognized.
+ */
+export function isNpmExecWrapper(command: string): boolean {
+  return /^npm (?:exec|x)(?:\s|$)/.test(command);
 }

@@ -46,7 +46,12 @@ import {
 import { resolve, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { createLogger } from '../shared/index.js';
-import { getAncestorPids, walkAncestorPids, type AncestorPidsOptions } from './process-ancestry.js';
+import {
+  getAncestorPids,
+  isNpmExecWrapper,
+  readParentAndCommand,
+  type AncestorPidsOptions,
+} from './process-ancestry.js';
 
 import { redactSensitive } from '../config.js';
 import { hasLiveOwningEngine } from '../storage/local-store.js';
@@ -66,9 +71,6 @@ const WARN_AFTER_MS = 60_000;
  * progressively more shared between concurrent sessions on the same machine.
  */
 const READ_ANCESTOR_MAX_DEPTH = 4;
-
-/** How far above our own ppid watchPpidBreadcrumb() looks; see its doc comment. */
-const CORRECTION_ANCESTOR_MAX_DEPTH = 1;
 
 /** Which of the sources produced a resolveSessionId() result. */
 export type SessionIdSource = 'jobdir' | 'ppid' | 'ppid-ancestor' | 'cwd';
@@ -445,11 +447,11 @@ export async function resolveSessionId(
   });
 }
 
-export type PpidBreadcrumbWatchOptions = SessionResolverOptions & {
+export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorPids'> & {
   signal?: AbortSignal;
   /**
    * Test seam for the parent-of-ppid level: the platform it is gated on, and
-   * the `ps` call behind the ancestor walk off Linux.
+   * the `ps` call that reads our ppid's parent and command line.
    */
   readonly ancestry?: Pick<AncestorPidsOptions, 'platform' | 'execFileSync'>;
 } & (
@@ -472,13 +474,17 @@ export type PpidBreadcrumbWatchOptions = SessionResolverOptions & {
  * breadcrumb stays silent is expected, not alarming.
  *
  * With `includeParentOfPpid`, each tick also checks the breadcrumb of our
- * ppid's own parent. That covers an `npx`-launched engine, whose ppid is the
- * `npm exec` wrapper and never gets a breadcrumb, so the direct watch alone
- * can never correct a wrong cwd guess (#479: a Copilot engine started in a
- * directory where Claude Code is active adopts the Claude session's id).
- * One level reaches the host that launched `npx`. For an engine the host
- * launched directly, it is instead the host's own parent, a slot the host's
- * hooks never write, so a breadcrumb there names some other session. Hence:
+ * ppid's own parent, but only when our ppid is npm's `npm exec` wrapper.
+ * That covers an `npx`-launched engine: the wrapper never gets a breadcrumb,
+ * so the direct watch alone can never correct a wrong cwd guess (#479: a
+ * Copilot engine started in a directory where Claude Code is active adopts
+ * the Claude session's id), and one level up is the host that ran `npx`,
+ * where its hooks write theirs. The wrapper is recognized by its command
+ * line, read with its parent in one `ps` call (readParentAndCommand()). An
+ * engine its host launched directly never looks above its ppid: that level
+ * is the host's own parent, which can carry another host's session when
+ * that host's hooks run as its children (Copilot in the VS Code extension
+ * host that also runs the Claude Code extension, say). Behind the wrapper:
  *
  * - A parent-level hit is only ever a correction: one equal to `staleId` is
  *   never resolved, so `staleId` coming back always means our ppid's own
@@ -491,7 +497,7 @@ export type PpidBreadcrumbWatchOptions = SessionResolverOptions & {
  *   host's parent is routinely a shared slot (an editor's main process, a
  *   shell) carrying a concurrent session's id, which may have no engine of
  *   its own or not have adopted its id yet. Elsewhere the collector writes
- *   only its own ppid.
+ *   only its own ppid. Nor on Windows, which has no `ps`.
  */
 export async function watchPpidBreadcrumb(
   options: PpidBreadcrumbWatchOptions = {},
@@ -502,30 +508,35 @@ export async function watchPpidBreadcrumb(
 
   let attempt = 0;
   let tickCount = 0;
-  // [ppid, parent], kept once a walk succeeds. A walk cut short by a failed
-  // lookup (a `ps` timeout under load) is retried on ticks 1, 2, 4, 8, ...:
-  // soon enough to recover from a blip, rarely enough that a `ps` that keeps
-  // timing out (each attempt blocks for up to 2s) costs little.
+  // Kept once our ppid's lookup succeeds: [ppid, parent] when ppid is an
+  // `npm exec` wrapper, else [ppid], past which resolveFromAncestorBreadcrumb
+  // never reads. A failed lookup (a `ps` timeout under load) is retried on
+  // ticks 1, 2, 4, 8, ...: soon enough to recover from a blip, rarely enough
+  // that a `ps` that keeps timing out (each attempt blocks for up to 2s)
+  // costs little.
   let parentLevelPids: readonly number[] | undefined;
   const skippedParentIds = new Set<string>();
 
   const readParentLevelPids = (): readonly number[] => {
     if (parentLevelPids) return parentLevelPids;
-    if (options.ancestorPids) {
-      parentLevelPids = options.ancestorPids.slice(0, CORRECTION_ANCESTOR_MAX_DEPTH + 1);
-      return parentLevelPids;
-    }
     if ((tickCount & (tickCount - 1)) !== 0) return [ppid]; // not a power of two
-    const walk = walkAncestorPids(ppid, {
-      maxDepth: CORRECTION_ANCESTOR_MAX_DEPTH,
-      ...options.ancestry,
-    });
-    if (walk.lookupFailed) {
-      logger.debug('Ancestor walk failed; retrying on a later tick', { ppid, tick: tickCount });
-    } else {
-      parentLevelPids = walk.pids;
+    const lookup = readParentAndCommand(ppid, options.ancestry);
+    if (!lookup) {
+      logger.debug('Could not read the ppid command line; retrying on a later tick', {
+        ppid,
+        tick: tickCount,
+      });
+      return [ppid];
     }
-    return walk.pids;
+    if (lookup.parentPid !== null && isNpmExecWrapper(lookup.command)) {
+      parentLevelPids = [ppid, lookup.parentPid];
+    } else {
+      parentLevelPids = [ppid];
+      logger.debug('ppid is not an npm exec wrapper; not watching its parent breadcrumb', {
+        ppid,
+      });
+    }
+    return parentLevelPids;
   };
 
   return new Promise<string>((resolvePromise, rejectPromise) => {
@@ -557,7 +568,7 @@ export async function watchPpidBreadcrumb(
         resolvePromise(sid);
         return;
       }
-      if (options.includeParentOfPpid && platform !== 'linux') {
+      if (options.includeParentOfPpid && platform !== 'linux' && platform !== 'win32') {
         // resolveFromAncestorBreadcrumb skips index 0, our ppid.
         const fromParent = resolveFromAncestorBreadcrumb(storagePath, readParentLevelPids());
         if (fromParent && !skippedParentIds.has(fromParent.sessionId)) {
