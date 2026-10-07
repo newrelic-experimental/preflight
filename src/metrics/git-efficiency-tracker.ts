@@ -439,14 +439,10 @@ export class GitEfficiencyTracker {
       // timestamp proximity: a prior session's hook-observed `commit` event,
       // replayed via replayTimeline() before this method ever runs, has no
       // hash in its command text at all, so a hash match would never catch
-      // it and every restart would double-count that commit. Only a hook
-      // commit that succeeded can stand for this one: a commit the `;` rule
-      // marked failed may still have landed, and git log is what shows it
-      // did, as `reconcileHydratedCommits` reads it for the weekly panel. An
-      // amend that succeeded still stands for its commit, whose author time
-      // `--reset-author` moves to the amend's.
+      // it and every restart would double-count that commit.
+      // standsForHydratedCommit says which events can stand for this one.
       const isDuplicate = this.events.some((e) => {
-        if (e.type !== 'commit' || !e.success) return false;
+        if (!this.standsForHydratedCommit(e)) return false;
         const existingHash = e.command ? HYDRATED_COMMIT_HASH_RE.exec(e.command)?.[1] : undefined;
         if (existingHash !== undefined) {
           return existingHash === commit.hash;
@@ -467,6 +463,23 @@ export class GitEfficiencyTracker {
         this.hydratedThroughMs = commit.timestamp;
       }
     }
+  }
+
+  /**
+   * Whether a tracked event can stand for a `git log` commit near it in time.
+   * A counted commit can. A commit the `;` rule marked failed can't: it may
+   * still have landed, and git log is what shows it did, as
+   * `reconcileHydratedCommits` reads it for the weekly panel. A succeeded
+   * amend can when a counted commit came before it, since `--reset-author`
+   * moves the rewritten commit's author time to the amend's, so git log
+   * reports it next to the amend rather than the commit counted earlier. An
+   * amend of a commit nothing here counted (one made yesterday, or outside
+   * the hooks) can't, or that commit would count nowhere.
+   */
+  private standsForHydratedCommit(e: GitEvent): boolean {
+    if (isCountedCommit(e)) return true;
+    if (e.type !== 'commit' || !e.success) return false;
+    return this.events.some((o) => isCountedCommit(o) && o.timestamp < e.timestamp);
   }
 
   /**

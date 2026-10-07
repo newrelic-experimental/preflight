@@ -1446,6 +1446,26 @@ describe('GitEfficiencyTracker', () => {
       expect(tracker.getMetrics().commitCount).toBe(1);
     });
 
+    // With no counted commit before it, the amend rewrote one made yesterday
+    // or outside the hooks, which only git log shows.
+    it('counts a git log commit beside a replayed amend with no counted commit before it', () => {
+      const amendTimestamp = Date.now() - 60_000;
+      tracker.replayTimeline([
+        {
+          timestamp: amendTimestamp,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git commit --amend --reset-author --no-edit',
+        },
+      ]);
+      expect(tracker.getMetrics().commitCount).toBe(0);
+
+      tracker.hydrateGitLog([{ timestamp: amendTimestamp + 1_000, hash: 'fed789' }]);
+
+      expect(tracker.getMetrics().commitCount).toBe(1);
+    });
+
     it('hydrateBranchDivergence sets ahead/behind counts on risk indicators', () => {
       tracker.hydrateBranchDivergence(3, 7);
 
