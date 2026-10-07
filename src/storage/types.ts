@@ -326,7 +326,7 @@ export interface ToolCallRecord {
    * Which subagent made this tool call. Taken from the hook payload's own
    * `agent_id` (`PreHookEvent.agentId`/`PostHookEvent.agentId`), which
    * Claude Code documents as present on every hook event fired inside a
-   * subagent call. Some installs have been observed never sending it (#656),
+   * subagent call. Some installs have been observed never sending it,
    * so when it is absent it is backfilled via `backfillAgentId()`
    * (agent-partition.ts), joining on `toolUseId` against tool_use blocks
    * `SubagentWatcher` finds while tailing that subagent's own transcript, which
@@ -344,7 +344,7 @@ export interface ToolCallRecord {
    * subagent, or the session's own agent name (e.g. `claude`) on a parent
    * call when the session runs with `--agent` or the `agent` setting. So its
    * presence does not mean the call came from a subagent; `agentId` does.
-   * When the envelope leaves it out (some installs never send it, #656) or
+   * When the envelope leaves it out (some installs never send it) or
    * sends a value `normalizeAgentType()` rejects, it is backfilled via
    * `backfillAgentType()` (agent-partition.ts) once `agentId` is known, from
    * the subagent transcript's `agent-<id>.meta.json` sidecar (written at

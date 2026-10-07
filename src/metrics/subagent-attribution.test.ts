@@ -346,7 +346,7 @@ describe('SubagentAttributionIndex.attributeAtIntake', () => {
 });
 
 /**
- * The production order from #681's review: a subagent's fast tool call
+ * The production order: a subagent's fast tool call
  * reaches hook intake before any watcher poll has read its tool_use line,
  * on an install whose hook payload sends neither agent_id nor agent_type.
  * Wired as src/index.ts wires it: the watcher feeds the index from every line

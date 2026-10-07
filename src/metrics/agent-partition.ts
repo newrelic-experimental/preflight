@@ -49,7 +49,7 @@ export function partitionByAgent<T extends { readonly agentId?: string }>(
  * Fills in `ToolCallRecord.agentId` from a `toolUseId → agentId` map when the
  * record's own `agentId` is absent. Claude Code's hook envelope documents
  * `agent_id` as present on every hook event fired inside a subagent call, but
- * some installs have been observed never sending it (#656). `toolUseId`
+ * some installs have been observed never sending it. `toolUseId`
  * is reliable on both sides: it's already captured correctly on every
  * ToolCallRecord, and it's the same id Claude Code assigns to the matching
  * `tool_use` block in that subagent's own transcript, which `SubagentWatcher`
@@ -73,7 +73,7 @@ export function backfillAgentId(
  * `backfillAgentId()`, so run that first). Recent Claude Code sends
  * `agent_type` on the hook envelope itself, and a non-empty envelope value is
  * never overwritten; this covers the records where the envelope left it out
- * (as on the installs in #656). The map is filled from the subagent
+ * (as on installs that send neither). The map is filled from the subagent
  * transcript's meta sidecar and from the parent's own `Agent` tool call (see
  * `SubagentAttributionIndex`). Returns the same object reference when no
  * backfill applies.

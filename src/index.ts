@@ -2034,7 +2034,7 @@ async function main(): Promise<void> {
     // transcript's meta sidecar, the envelope, or the parent's own Agent tool
     // call) and gives onSubagentTurn the type for cost breakdown. Size-capped
     // with idle expiry so a long-running --local daemon doesn't keep one entry
-    // per subagent call forever (#682).
+    // per subagent call forever.
     const subagentAttribution = new SubagentAttributionIndex();
     eventProcessor = new HookEventProcessor({
       store: localStore,
@@ -2045,7 +2045,7 @@ async function main(): Promise<void> {
       drainAllSessions: !options.stdio || isProvisional,
       onRecord: (incomingRecord) => {
         // Attributed before any consumer (notably auditTrail below) sees the
-        // record, so audit/security events carry agentId and agentType (#681).
+        // record, so audit/security events carry agentId and agentType.
         // The watcher's on-demand read is synchronous, which is what keeps it
         // ahead of auditTrail.
         const rawRecord = subagentAttribution.attributeAtIntake(

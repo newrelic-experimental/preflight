@@ -362,7 +362,7 @@ interface HookInput {
   // as present on every hook event fired inside a subagent call, and
   // agent_type there too plus on parent calls when the session runs with
   // --agent. A live dogfooding check on Claude Code v2.1.236 with a real
-  // subagent spawn found neither (#656); later installs do send agent_type.
+  // subagent spawn found neither; later installs do send agent_type.
   // Whichever is absent is backfilled downstream (backfillAgentId /
   // backfillAgentType in agent-partition.ts), which never overwrites a value
   // parsed here.

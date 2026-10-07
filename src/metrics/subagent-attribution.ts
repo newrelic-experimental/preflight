@@ -63,7 +63,7 @@ export interface SubagentAttributionIndexSize {
  * subagent that made it when the hook envelope leaves `agent_id` or
  * `agent_type` out. Claude Code documents both on calls made inside a
  * subagent, and recent versions do send `agent_type`, but some installs have
- * been observed sending neither (#656):
+ * been observed sending neither:
  *
  * - `toolUseId → agentId`, from `tool_use` blocks `SubagentWatcher` finds
  *   while tailing each subagent's transcript (see `backfillAgentId()`).
@@ -140,7 +140,7 @@ export class SubagentAttributionIndex {
    * sidecar. When the backfill still leaves `agentId` unknown, `reader` reads
    * the subagent transcripts now and the backfill runs again: a fast call's
    * `tool_use` line is usually on disk but not yet polled, and the record would
-   * otherwise be audited without its subagent (#681). Parent-session calls
+   * otherwise be audited without its subagent. Parent-session calls
    * take the same path, since nothing tells them apart before the read, at the
    * cost `SubagentWatcher.readLiveTails()` bounds. If the read throws, the
    * record is returned as the first backfill left it.
