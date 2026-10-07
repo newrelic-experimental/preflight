@@ -549,7 +549,8 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
     });
     agg.recordTokenUsage(REAL_ID, {
       costUsd: 1,
-      timestamp: Date.parse('2026-09-10T12:00:00Z'),
+      // Local noon, so the turn's local day key is the baseline's '2026-09-10'.
+      timestamp: new Date(2026, 8, 10, 12).getTime(),
       agentId: 'agent-1',
     });
 

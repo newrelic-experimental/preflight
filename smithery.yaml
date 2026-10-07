@@ -42,7 +42,7 @@ startCommand:
     (config) => {
       const env = {};
       if (config.licenseKey) env.NEW_RELIC_LICENSE_KEY = config.licenseKey;
-      if (config.accountId)  env.NEW_RELIC_AI_ACCOUNT_ID = config.accountId;
+      if (config.accountId)  env.NEW_RELIC_ACCOUNT_ID = config.accountId;
       if (config.developer)  env.NEW_RELIC_AI_MCP_DEVELOPER = config.developer;
       if (config.mode)       env.NR_AI_MODE = config.mode;
       return {

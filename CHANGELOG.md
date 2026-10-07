@@ -5,11 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.58.3] - 2026-10-06
+## [1.59.3] - 2026-10-07
 
 ### Fixed
 
 - A message containing "won't work" no longer counts as a correction of the assistant unless it opens on the phrase with a bare pronoun or no subject, after at most two leading words such as "yeah", "but" or "hmm, no," and an optional "I tried it and" ("That won't work, ...", "Yeah that definitely won't work", "Nah, won't work —", "I tried it and it won't work"), or its sentence or the sentence either side points back at the assistant's output: "you" with a past or -ing verb ("the regex you wrote", "you're mutating state"), "your" with something built ("your fix"), or "still won't work". A "you" that reports an idea ("the cache you suggested"), poses a condition ("if you add", "when you set"), or takes a present or modal verb ("you need a lock") is not such a reference. Design discussion that used the phrase ("A cache won't work here since we need fresh reads") inflated correction rate, the high-correction-rate recommendation, and the CLAUDE.md-change verdict. A correction that names the code and gives a reason without pointing back ("The migration won't work, it drops the index") is not counted either. Sessions recorded before this version keep their counts, so a CLAUDE.md before/after comparison that spans the upgrade can show a drop the edit didn't cause.
+
+## [1.59.2] - 2026-10-07
+
+### Fixed
+
+- **Following the plugin's cloud-mode setup produced a server that would not start.** `docs/PLUGIN.md` now lists the three variables cloud mode needs, `NR_AI_MODE=cloud`, `NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_ACCOUNT_ID`, with a complete Claude Code `env` settings example. The account ID variable is `NEW_RELIC_ACCOUNT_ID`, the name config reads, on that page and in `smithery.yaml`.
+
+## [1.59.1] - 2026-10-07
+
+### Fixed
+
+- Audit trail and security events for tool calls made inside a subagent now carry the subagent's id and type (for example `Explore`) on installs whose Claude Code hook payload leaves `agent_id` or `agent_type` out, so sensitive-file access and destructive commands can be attributed to the subagent that made them. Preflight finds the call in the subagent's transcript, reading the transcript's newest lines as the call's hook record arrives, and takes the type from the metadata file Claude Code writes next to each transcript when the subagent starts. Both can still be missing on a call Claude Code has not yet written to the transcript when Preflight processes it: Claude Code writes transcript lines about 0.1 seconds after the model produces them, and a fast `Read` or `Grep` can finish sooner. They can also be missing on calls made before Preflight's scan for new transcripts, which runs every 2 seconds (10 seconds in `--local` mode), has found the subagent's transcript: a session's first subagent (in `--local` mode, its first in 24 hours), a subagent a workflow starts, and any subagent during the first scan interval after Preflight starts. Preflight checks at most 32 transcripts and reads at most 1 MiB per call, so a call can also be missed when its transcript is not among its session's 32 most recently written or sits behind more than 1 MiB of unread lines. A type the hook payload does send is kept as is, unless it is over 128 characters or contains control characters: such a value is dropped and the type is filled in the same way.
+- Subagent turn events (`AiSubagentTurn`) and subagent cost by type get the subagent's type while it runs, from the same metadata file or from the type the hook payload sends with the subagent's tool calls, instead of only after the parent's `Agent` call returns.
+- The long-running `--local` daemon no longer keeps a record of every subagent tool call it has ever seen. Subagent attribution now keeps at most 10,000 tool calls and 1,000 subagents, and drops entries unused for 24 hours.
+
+## [1.59.0] - 2026-10-07
+
+### Added
+
+- **The Claude Code plugin now captures permission, API failure, prompt, model switch, and session lifecycle events, not just tool calls.** `plugin/hooks/hooks.json` registers every hook event that `preflight install` writes, and a test keeps the two in sync.
+
+## [1.58.5] - 2026-10-07
+
+### Fixed
+
+- **The local dashboard counted a session twice once it was saved to disk.** Today's "Where today's spend went" Models table showed double the requests and cost of the "Spend today" tile beside it, and the Tool Selection and Quality panels counted the same calls and signals twice. Each session now counts once, before and after it is saved.
+
+## [1.58.4] - 2026-10-06
+
+### Fixed
+
+- **The "On pace for" projection on History and Today could read ~$0.00 for the week while the month beside it read over $1,000.** The week projection only extrapolated from spend since Monday, so after a quiet Monday, and before today's spend was counted, it projected nothing for the rest of the week. The month projection had the same gap on the 1st. Both now project the remaining days from your average daily spend over the last 28 days plus today, so the week and month figures use the same pace.
+
+## [1.58.3] - 2026-10-06
+
+### Fixed
+
+- A session's "Session Quality" card no longer shows "Diff Apply NaN%" and "Test Pass NaN%" on sessions with no diff or test signals. The session detail response carried the session's raw signal counts under the key the dashboard reads the two rates from, and those counts have no rate fields. Such a session now hides the card, matching what the other session-detail paths already did.
 
 ## [1.58.2] - 2026-10-06
 

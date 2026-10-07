@@ -26,3 +26,23 @@ export const AGENT_ID_PATTERN = 'a(?:[A-Za-z0-9_-]{1,64}-)?[a-f0-9]{16}';
 
 /** Anchored form of {@link AGENT_ID_PATTERN}, for validating a standalone agentId string. */
 export const AGENT_ID_RE = new RegExp(`^${AGENT_ID_PATTERN}$`);
+
+/** Longest subagent type accepted from a transcript sidecar or buffer line. */
+export const MAX_AGENT_TYPE_LENGTH = 128;
+
+/**
+ * Returns `value` when it is a usable subagent type (e.g. `Explore`): a
+ * non-empty string of at most {@link MAX_AGENT_TYPE_LENGTH} characters with
+ * no C0 control characters or DEL. Anything else yields `undefined`. The type
+ * ends up as an NR event attribute, so a malformed or oversized value is
+ * dropped rather than shipped.
+ */
+export function normalizeAgentType(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  if (value.length === 0 || value.length > MAX_AGENT_TYPE_LENGTH) return undefined;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return undefined;
+  }
+  return value;
+}

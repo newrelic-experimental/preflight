@@ -315,25 +315,19 @@ Tests that touch the filesystem create a unique temp directory per test and clea
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = resolve(
-    tmpdir(),
-    `nr-localstore-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  );
+  tmpDir = mkdtempSync(resolve(tmpdir(), 'nr-localstore-test-'));
 });
 
 afterEach(() => {
-  if (existsSync(tmpDir)) {
-    rmSync(tmpDir, { recursive: true, force: true });
-  }
+  rmSync(tmpDir, { recursive: true, force: true });
 });
 ```
 
-The directory name includes both `Date.now()` and a random suffix to guarantee uniqueness across parallel runs and rapid re-runs. Tests call `mkdirSync(tmpDir, { recursive: true })` or `store.initialize()` at the start of each test case.
+`mkdtempSync` creates the directory under a name no other process holds. A name built from `Date.now()` alone collides when two Jest processes start a test in the same millisecond, and the first to finish deletes the directory under the other; older tests that add a `Math.random()` suffix to it are also safe.
 
 ```typescript
 it('round-trips a single event', () => {
   const store = new LocalStore(tmpDir);
-  mkdirSync(tmpDir, { recursive: true });
 
   const event = makeEvent({ tool: 'Write' });
   store.appendToBuffer(event);
@@ -370,6 +364,14 @@ it('fires events harvest at 5s intervals', async () => {
 ```
 
 **Important:** Use `jest.advanceTimersByTimeAsync()` (not the sync version) when the code under test uses `async/await` or Promises. Always call `scheduler.stop()` or equivalent cleanup before the test ends.
+
+### Time-zone-dependent tests
+
+Tests must pass in any host zone; CI runs both suites under `America/New_York` and under `UTC`, and the Jest suite under `Pacific/Auckland` as well. Build day-boundary fixtures with the same local-date helpers the code uses (`localStartOfDay`, `localDateKey` from `src/lib/date.ts`, or `new Date(y, m, d)`), or pass an explicit IANA `tz` to helpers that accept one. Don't hardcode a zone's offset or DST dates. A UTC instant such as `Date.parse('2026-09-10T12:00:00Z')` is already September 11 from UTC+12 eastward, so give a fixture that the code reads as a local day a local time instead (`new Date(2026, 8, 10, 12)`).
+
+Jest gives each test file its own copy of `process.env`, so `process.env.TZ = '...'` inside a Jest test has no effect. A test that needs a zone property, such as a DST transition, derives it from the host zone and skips when the host has none (see the `dailyPeaks` DST test in `src/dashboard/routes/api-handler.test.ts`). In a zone that springs forward at local midnight (`America/Havana`, `Africa/Cairo`), `new Date(y, m, d)` for that day resolves to 01:00, so check that a derived day start reads 00:00. A test that skips on a missing zone property can also skip because CI's `TZ` is misspelled or its zone data is missing, so pair it with a CI-only guard that the zone resolved (the `runs under the time zone TZ requests` test beside it).
+
+Vitest does honor a runtime `process.env.TZ`. Assert that the pin took effect (for example with `getTimezoneOffset()`): if it silently stopped working, the test would run in the host's zone, and on a host where its bug can't occur, such as UTC, it would pass against buggy code. Restore it with `delete process.env.TZ` when it was unset, since assigning `undefined` stores the string `"undefined"`.
 
 ### Transport / HTTP tests
 
