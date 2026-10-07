@@ -365,7 +365,9 @@ const GIT_CONFLICT_CAPABLE_RE =
 // precedence, so `a || b && c` is `(a || b) && c`. `|` joins the commands of
 // one pipeline, whose exit status is its last command's.
 
-/** Whether `op` joins two commands of one pipeline. `|&` is a `|`. */
+/** Whether `op` joins two commands of one pipeline. `|&` is a `|`.
+ *  `splitShellChain` emits no `|&` or `&`; #824's splitter, which replaces it
+ *  once #824 merges, emits both. */
 function isPipe(op: string | undefined): boolean {
   return op === '|' || op === '|&';
 }
