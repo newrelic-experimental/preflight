@@ -501,12 +501,15 @@ export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorP
  * - The slot is also read each time the caller reports draining activity
  *   under `staleId` (subscribeToStaleIdActivity). The host's hook writes the
  *   slot before it appends the event, so this catches a slot that named the
- *   guess only between two ticks. A wrong guess drains the guessed session's
- *   events too, and those never latch: our host's slot does not name that
- *   session. Activity reported before any lookup has succeeded can't be
- *   checked against the slot. If a lookup fails before or after it, that
- *   activity stops the parent level too, so a wrong guess goes uncorrected
- *   only when the guessed session's activity coincides with a failed `ps`.
+ *   guess only between two ticks, provided a tool call drained in that gap.
+ *   Only paired tool calls are reported, so a prompt with a text-only reply
+ *   followed by `/clear` inside one tick gap still goes unseen. A wrong
+ *   guess drains the guessed session's events too, and those never latch:
+ *   our host's slot does not name that session. Activity reported before
+ *   any lookup has succeeded can't be checked against the slot. If a lookup
+ *   fails before or after it, that activity stops the parent level too, so
+ *   a wrong guess goes uncorrected only when the guessed session's activity
+ *   coincides with a failed `ps`.
  * - A parent-level session that already has a live owning engine is not
  *   ours. Once skipped, an id stays skipped, so a neighbour whose engine
  *   later exits is not adopted then.
