@@ -615,22 +615,63 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
   return Object.keys(meta).length > 0 ? meta : undefined;
 }
 
+// `https://<host>/<owner>/<repo>/pull/<N>`: what `gh pr create` prints on
+// success and what an MCP create_pull_request result carries as html_url.
+const PR_URL_RE = /https?:\/\/[^\s"'/]+\/[^\s"'/]+\/[^\s"'/]+\/pull\/(\d{1,9})\b/g;
+const GH_PR_CREATE_RE = /(?:^|[\s;&|(])gh\s+pr\s+create\b/;
+
+/** The PR number named by the PR URLs in a tool's output text, or undefined
+ *  when they name none or several, since then the created one is unknown (a
+ *  second create, or a `gh pr comment` URL on another PR). Only the digits
+ *  leave this function; the output itself is never kept. */
+function findCreatedPrNumber(output: Record<string, unknown> | unknown[]): string | undefined {
+  const texts: string[] = [];
+  const blocks = Array.isArray(output) ? output : output.content;
+  if (!Array.isArray(output) && typeof output.stdout === 'string') texts.push(output.stdout);
+  if (Array.isArray(blocks)) {
+    for (const block of blocks) if (hasStringText(block)) texts.push(block.text);
+  }
+  const prNumbers = new Set<string>();
+  for (const text of texts) {
+    for (const match of text.matchAll(PR_URL_RE)) prNumbers.add(match[1]);
+  }
+  return prNumbers.size === 1 ? [...prNumbers][0] : undefined;
+}
+
 /**
  * Extract only the metadata fields from tool_response that the tool-specific
  * parsers need.
  */
-function extractOutputMeta(toolName: string, output: unknown): Record<string, unknown> | undefined {
+function extractOutputMeta(
+  toolName: string,
+  output: unknown,
+  input?: unknown,
+): Record<string, unknown> | undefined {
   if (output === null || output === undefined || typeof output !== 'object') return undefined;
   const obj = output as Record<string, unknown>;
 
+  if (toolName.endsWith('create_pull_request')) {
+    const createdPrNumber = findCreatedPrNumber(output as Record<string, unknown> | unknown[]);
+    return createdPrNumber === undefined ? undefined : { createdPrNumber };
+  }
+
   if (toolName === 'Bash') {
+    const meta: Record<string, unknown> = {};
     if (typeof obj.exitCode === 'number') {
-      return { exitCode: obj.exitCode };
-    }
-    if (typeof obj.exitCode === 'string') {
+      meta.exitCode = obj.exitCode;
+    } else if (typeof obj.exitCode === 'string') {
       const parsed = Number(obj.exitCode);
-      if (!Number.isNaN(parsed)) return { exitCode: parsed };
+      if (!Number.isNaN(parsed)) meta.exitCode = parsed;
     }
+    const command =
+      input !== null && typeof input === 'object'
+        ? (input as Record<string, unknown>).command
+        : undefined;
+    if (typeof command === 'string' && GH_PR_CREATE_RE.test(command)) {
+      const createdPrNumber = findCreatedPrNumber(obj);
+      if (createdPrNumber !== undefined) meta.createdPrNumber = createdPrNumber;
+    }
+    if (Object.keys(meta).length > 0) return meta;
   }
 
   if (toolName === 'Edit') {
@@ -839,7 +880,7 @@ function processHook(raw: string): void {
     if (postInputMeta !== undefined) event.toolInput = postInputMeta;
 
     // Store only the metadata fields needed for tool-specific parsing
-    const outputMeta = extractOutputMeta(toolName, toolResponse);
+    const outputMeta = extractOutputMeta(toolName, toolResponse, data.tool_input);
     if (outputMeta !== undefined) event.toolOutput = outputMeta;
 
     if (recordContent && toolResponse !== undefined) {
@@ -927,7 +968,7 @@ function processHook(raw: string): void {
     const postInputMeta = extractInputMeta(toolName, data.tool_input);
     if (postInputMeta !== undefined) event.toolInput = postInputMeta;
 
-    const outputMeta = extractOutputMeta(toolName, data.tool_response);
+    const outputMeta = extractOutputMeta(toolName, data.tool_response, data.tool_input);
     if (outputMeta !== undefined) event.toolOutput = outputMeta;
 
     if (recordContent && data.tool_response !== undefined) {

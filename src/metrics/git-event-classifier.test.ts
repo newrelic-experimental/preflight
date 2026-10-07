@@ -691,11 +691,60 @@ describe('classifyGitSegments shell splitting', () => {
     ]);
   });
 
-  it('splits on every operator when the quotes do not balance', () => {
+  // bash refuses a command whose quote never closes, so in a failed one the
+  // `&&` may be text inside the open quote and nothing may have run.
+  it('marks no step succeeded by && when the quotes of a failed command do not balance', () => {
     const REJECTED = ' ! [rejected] main -> main (non-fast-forward)';
     expect(outcomes('git commit -m "x && git push', REJECTED)).toEqual([
-      ['commit', true],
+      ['commit', false],
       ['push_rejected', false],
+    ]);
+  });
+
+  const succeeded = (command: string): [string, boolean][] =>
+    classifyGitSegments(command, makeRecord({ command, success: true }), resolveRepo).map(
+      ({ event }) => [event.type, event.success],
+    );
+
+  // A command that ran had balanced quotes, so the scan misread them, and
+  // its steps keep the command's success.
+  it('keeps every step of a succeeded command whose quotes do not balance', () => {
+    expect(succeeded("git commit -m $'it\\'s done' && git push")).toEqual([
+      ['commit', true],
+      ['push', true],
+    ]);
+  });
+
+  // A background job's exit status never reaches the command's.
+  it.each([
+    [
+      'git commit -m x & git push',
+      [
+        ['commit', false],
+        ['push', true],
+      ],
+    ],
+    ['git push &', [['push', false]]],
+    [
+      'git add -A && git commit -m x & wait',
+      [
+        ['other_git', false],
+        ['commit', false],
+      ],
+    ],
+  ])('does not mark a step that `&` backgrounds in `%s` succeeded', (command, expected) => {
+    expect(succeeded(command)).toEqual(expected);
+  });
+
+  it('leaves a # comment out of the step it follows', () => {
+    expect(succeeded('git push origin main # not --force yet')).toEqual([['push', true]]);
+    expect(succeeded('git commit -m x # --amend later')).toEqual([['commit', true]]);
+  });
+
+  it('reads a # after an escaped space as text', () => {
+    expect(succeeded('git commit -m fix\\ #12 && git push')).toEqual([
+      ['commit', true],
+      ['push', true],
     ]);
   });
 });
