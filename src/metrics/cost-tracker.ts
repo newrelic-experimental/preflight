@@ -45,11 +45,11 @@ export interface TokenRecordContext {
   readonly workflowRunId?: string | null;
   readonly agentId?: string;
   /**
-   * Best-effort subagent type, cross-referenced by the caller from a
-   * `ToolCallRecord` sharing the same `agentId` (the transcript-derived
-   * subagent token pipeline carries no type of its own — see
-   * `subagentByAgentType`'s doc comment). Absent when no such record has
-   * been seen yet for this `agentId`.
+   * Best-effort subagent type for this `agentId`, supplied by the caller from
+   * the subagent transcript's `agent-<id>.meta.json` sidecar, the hook
+   * envelope of one of that subagent's tool calls, or, failing those, the
+   * parent's `Agent` tool call (see `SubagentAttributionIndex`). Absent when
+   * none has been seen yet for this `agentId`.
    */
   readonly agentType?: string;
   /**
@@ -137,10 +137,9 @@ export interface CostMetrics {
   readonly subagentCostByDayUsd: Record<string, number>;
   /**
    * Subagent-attributed spend bucketed by `ctx.agentType` (best-effort — see
-   * `TokenRecordContext.agentType`). Entries only appear for `agentId`s a
-   * `ToolCallRecord` with a matching type has already been seen for; a
-   * subagent that never makes a hook-visible tool call has its cost counted
-   * in `subagentCostUsd` but not broken out here. `count` is the number of
+   * `TokenRecordContext.agentType`). Only token events whose `agentId` had a
+   * known type when recorded land here; the rest are counted in
+   * `subagentCostUsd` but not broken out by type. `count` is the number of
    * token events attributed to that agent type; `durationMs` is always 0 (no
    * per-call duration signal reaches this tracker). In-memory only — unlike
    * `costByModel`, this does NOT survive a process restart.

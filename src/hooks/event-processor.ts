@@ -16,6 +16,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createLogger } from '../shared/index.js';
+import { normalizeAgentType } from '../lib/agent-id.js';
 import { createDefaultRegistry, GENERIC_MCP_PLATFORM_NAME } from '../platforms/index.js';
 import type { PlatformAdapter } from '../platforms/types.js';
 import type { LocalStore } from '../storage/local-store.js';
@@ -132,6 +133,8 @@ export interface SubagentTurnEvent {
   readonly stopReason: string | null;
   readonly schemaFingerprint: string;
   readonly toolUseIds: readonly string[];
+  /** Subagent type from the transcript's meta sidecar; absent when unknown or invalid. */
+  readonly agentType?: string;
 }
 
 /** Wire-shape data extracted from a `mode: 'observability_health'` entry. */
@@ -215,12 +218,15 @@ function numAttr(v: unknown): number {
 /**
  * The attribution fields every record shape carries. Pre wins over post for
  * `cwd`, `agentId`, `agentType`, and `platform`: the collector stamps both,
- * and pre is the event that observed the call start.
+ * and pre is the event that observed the call start. The collector copies the
+ * envelope's `agent_type` raw, so it passes `normalizeAgentType()` here like
+ * every other type source; an invalid value counts as absent, which leaves it
+ * for `backfillAgentType()` to fill.
  */
 function attributionFields(pre: PreHookEvent | undefined, post?: PostHookEvent) {
   const cwd = pre?.cwd ?? post?.cwd;
   const agentId = pre?.agentId ?? post?.agentId;
-  const agentType = pre?.agentType ?? post?.agentType;
+  const agentType = normalizeAgentType(pre?.agentType) ?? normalizeAgentType(post?.agentType);
   const platform = pre?.platform ?? post?.platform;
   return {
     ...(pre?.inputSize !== undefined && { inputSizeBytes: pre.inputSize }),
@@ -927,6 +933,7 @@ export class HookEventProcessor {
     if (!agentId || !messageId) return;
     if (this.subagentDedupRegistry.hasAndAdd(agentId, messageId)) return;
 
+    const agentType = normalizeAgentType(event.agentType);
     const turn: SubagentTurnEvent = {
       timestampMs:
         typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
@@ -946,6 +953,7 @@ export class HookEventProcessor {
       stopReason: event.stopReason ?? null,
       schemaFingerprint: event.schemaFingerprint ?? '',
       toolUseIds: event.toolUseIds ?? [],
+      ...(agentType !== undefined ? { agentType } : {}),
     };
     if (this.onSubagentTurn) {
       try {
