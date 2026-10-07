@@ -356,6 +356,12 @@ describe('TranscriptMessageTracker', () => {
       // A dash after the filler, or a leading adverb outside the list, isn't a leading word.
       "Yeah — that won't work.",
       "Honestly that won't work.",
+      "Wait that won't work.",
+      "Hold on, that won't work.",
+      // An adverb between "I" and "tried" isn't part of the "I tried it" lead.
+      "I just tried it and it won't work.",
+      // A negated past verb ("didn't") isn't one of the past forms a "you" reference takes.
+      "The cache won't work. You didn't invalidate it.",
     ];
 
     /** Second person that points back at the assistant's output, in the "won't work" sentence or next to it. */
@@ -447,11 +453,11 @@ describe('TranscriptMessageTracker', () => {
       ).sets;
 
     // Model-written sets. A and B were read while writing the current rule, so they are development
-    // data. C was written before it and scored once after it was frozen, so C is the estimate of how
-    // the rule generalises. The results are pinned measurements, not targets: a rule change updates
-    // them, and only a fresh set can say whether the change generalises. Each set pins the row
-    // indices of the corrections it misses and the design rows it flags, so a change that swaps
-    // which rows pass at the same totals shows up too.
+    // data. C was written before it and first scored at b241f1b, then re-checked after each later
+    // rule change, so C is the estimate of how the rule generalises. The results are pinned
+    // measurements, not targets: a rule change updates them, and only a fresh set can say whether
+    // the change generalises. Each set pins the row indices of the corrections it misses and the
+    // design rows it flags, so a change that swaps which rows pass at the same totals shows up too.
     const HELD_OUT: Readonly<Record<string, HeldOutSet>> = {
       ...readSets('wont-work-held-out.json'),
       ...readSets('wont-work-held-out-c.json'),
