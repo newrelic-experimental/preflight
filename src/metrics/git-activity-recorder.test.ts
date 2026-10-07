@@ -7,7 +7,12 @@ import {
 } from 'node:child_process';
 import { jest } from '@jest/globals';
 import { GitActivityRecorder } from './git-activity-recorder.js';
-import { processGhCommand, splitShellSegments } from './git-event-classifier.js';
+import {
+  processGhCommand,
+  segmentRunsNoCommand,
+  splitShellChain,
+  splitShellSegments,
+} from './git-event-classifier.js';
 import { ActivityStore } from './git-activity-store.js';
 import type { GitActivityRecord } from './git-activity-recorder.js';
 import { WorktreeIdentityResolver } from './git-workspace-identity.js';
@@ -476,6 +481,36 @@ describe('GitActivityRecorder', () => {
       expect(pushRecord?.kind === 'git' && pushRecord.gitEvent.type).toBe('push');
     });
 
+    it('counts the commands after a comment line holding an apostrophe', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: "git add -A\n# Claude's fix for the login bug\ngit commit -m x && git push",
+          cwd: repoDir,
+          timestamp: 5000,
+        }),
+      );
+
+      const types = store
+        .query({ since: 0, until: 10000 })
+        .flatMap((r) => (r.kind === 'git' ? [r.gitEvent.type] : []));
+      expect(types).toEqual(['other_git', 'commit', 'push']);
+    });
+
+    it('still counts the git commands of a command whose quotes do not balance', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: "echo $'it\\'s done' && git commit -m x && git push",
+          cwd: repoDir,
+          timestamp: 5000,
+        }),
+      );
+
+      const types = store
+        .query({ since: 0, until: 10000 })
+        .flatMap((r) => (r.kind === 'git' ? [r.gitEvent.type] : []));
+      expect(types).toEqual(['commit', 'push']);
+    });
+
     it('ignores a segment that only mentions git inside quoted text', () => {
       recorder.recordToolCall(
         makeRecord({
@@ -670,6 +705,8 @@ describe('GitActivityRecorder', () => {
       'gh pr view 42 --json state | grep -q MERGED || { echo merging; gh pr merge 42; }',
       'gh pr merge 42 --squash &',
       'gh pr checks 42 --watch && gh pr merge 42 --squash &',
+      'gh pr checks 42 # then && gh pr merge 42',
+      'gh pr checks 42 --watch\n# && gh pr merge 42',
     ])('drops `%s`: the command can succeed while the merge failed or never ran', (command) => {
       recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
       expect(merges()).toEqual([]);
@@ -688,6 +725,8 @@ describe('GitActivityRecorder', () => {
       '{ git fetch && gh pr merge 42 --squash; }',
       'gh pr merge 42 --squash &>/dev/null',
       'sleep 1 & gh pr merge 42 --squash',
+      "# Claude's merge, once checks pass\ngh pr checks 42 --watch && gh pr merge 42 --squash",
+      'echo issue#12 ${#arr} $# "#" && gh pr merge 42 --squash',
     ])('counts `%s`, whose success means the merge succeeded', (command) => {
       recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
       expect(merges()).toEqual([{ action: 'merge', prNumber: '42' }]);
@@ -709,6 +748,15 @@ describe('GitActivityRecorder', () => {
       'gh pr comment 7 --body "LGTM.\ngh pr merge 42 once CI is green"',
     ])('finds no merge in quoted text: `%s`', (command) => {
       recorder.recordToolCall(makeRecord({ command, cwd: repoDir }));
+      expect(merges()).toEqual([]);
+    });
+
+    it('drops a merge from a command whose quotes the splitter cannot balance', () => {
+      // bash reads `$'it\'s green'` as one string, but the splitter sees a quote
+      // left open, so where the merge's segment ends is a guess.
+      recorder.recordToolCall(
+        makeRecord({ command: "echo $'it\\'s green' && gh pr merge 42 --squash", cwd: repoDir }),
+      );
       expect(merges()).toEqual([]);
     });
 
@@ -876,6 +924,82 @@ describe('GitActivityRecorder', () => {
         'git fetch ',
         ' git status 2>&1 >/dev/null &>/dev/null',
       ]);
+    });
+  });
+
+  describe('splitShellChain', () => {
+    it('skips a comment line without opening the quote in it', () => {
+      expect(splitShellChain("git add -A\n# Claude's fix\ngit commit -m x && git push")).toEqual({
+        segments: ['git add -A', '', 'git commit -m x ', ' git push'],
+        operators: ['\n', '\n', '&&'],
+        quotesBalanced: true,
+      });
+    });
+
+    it('does not split on an operator inside a trailing comment', () => {
+      expect(splitShellChain('gh pr checks 5 # then && gh pr merge 5')).toEqual({
+        segments: ['gh pr checks 5 '],
+        operators: [],
+        quotesBalanced: true,
+      });
+    });
+
+    it('starts a comment after an operator or `(`, and ends it at the newline past a backslash', () => {
+      expect(splitShellChain('a;# x && y\n(# z\nb) # w \\\nc')).toEqual({
+        segments: ['a', '', '(', 'b) ', 'c'],
+        operators: [';', '\n', '\n', '\n'],
+        quotesBalanced: true,
+      });
+    });
+
+    it('starts a continued segment at its command, past comment lines', () => {
+      expect(splitShellChain('a &&\n  # check first\n  git push')).toEqual({
+        segments: ['a ', '  git push'],
+        operators: ['&&'],
+        quotesBalanced: true,
+      });
+    });
+
+    it('does not start a comment at a # inside a word or quotes', () => {
+      expect(
+        splitShellChain(
+          `git commit -m "fix #12; it's done" && echo issue#12 \${#arr} $# a\\ #b 'c #d' && git push`,
+        ),
+      ).toEqual({
+        segments: [
+          `git commit -m "fix #12; it's done" `,
+          ` echo issue#12 \${#arr} $# a\\ #b 'c #d' `,
+          ' git push',
+        ],
+        operators: ['&&', '&&'],
+        quotesBalanced: true,
+      });
+    });
+
+    it('reports `|&` as `|`', () => {
+      expect(splitShellChain('git push 2>&1 |& tee log & wait')).toEqual({
+        segments: ['git push 2>&1 ', ' tee log ', ' wait'],
+        operators: ['|', '&'],
+        quotesBalanced: true,
+      });
+    });
+
+    it('splits on every operator, quoted or commented, when a quote never closes', () => {
+      expect(splitShellChain("echo $'it\\'s done' # note && git commit -m 'a; b'")).toEqual({
+        segments: ["echo $'it\\'s done' # note ", " git commit -m 'a", " b'"],
+        operators: ['&&', ';'],
+        quotesBalanced: false,
+      });
+    });
+  });
+
+  describe('segmentRunsNoCommand', () => {
+    it.each(['', '  ', ' )', ' ) }', '  # note'])('is true for %j', (segment) => {
+      expect(segmentRunsNoCommand(segment)).toBe(true);
+    });
+
+    it.each([' git push', ' x)', 'echo #', ') x'])('is false for %j', (segment) => {
+      expect(segmentRunsNoCommand(segment)).toBe(false);
     });
   });
 });

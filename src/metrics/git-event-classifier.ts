@@ -224,26 +224,51 @@ const GH_PR_VERB_ACTION: Record<string, PrEvent['action']> = {
 export interface ShellChain {
   readonly segments: readonly string[];
   readonly operators: readonly string[];
+  /** False when a quote never closed, so where each segment ends is a guess
+   *  (see `splitShellChain`). */
+  readonly quotesBalanced: boolean;
 }
 
-// Line breaks, blank lines and comments right after `||`, `&&` or `|`,
+// Line breaks, blank lines and comment lines right after `||`, `&&` or `|`,
 // where bash reads on to the next line for the rest of the command.
 const CONTINUED_LINES_RE = /(?:[ \t]*(?:#[^\n]*)?\n)+/y;
 
+// Characters that end a word. `)` is left out because it also closes a
+// `$( … )` inside a word.
+const WORD_BREAK_RE = /[ \t(<>]/;
+
 /**
  * Splits a shell command on its top-level `||`, `&&`, `;`, `|`, `&` and
- * newline operators, read the way bash reads them: an operator inside quotes
- * is text, a backslash-newline joins two lines, and a line ending in `||`,
- * `&&` or `|` goes on to the next. `|&` is a `|`, and the `&` of a
- * redirection (`2>&1`, `&>file`) is not an operator. An unclosed quote runs
- * to the end of the command. Strip heredoc bodies first so a surviving
- * newline really does start a new command.
+ * newline operators, read the way bash reads them. An operator inside quotes
+ * or a comment is text. A `#` at the start of the command, after an operator
+ * or after a `WORD_BREAK_RE` character starts a comment, which runs to the end
+ * of its line and is left out of the segment. A backslash-newline joins two
+ * lines, and after `||`, `&&` or `|` the line breaks and comment lines before
+ * the next command are skipped, so every segment begins at its command.
+ * Segments are not trimmed. `|&` is reported as `|`, and the `&` of a
+ * redirection (`2>&1`, `&>file`) is not an operator. Strip heredoc bodies
+ * first so a surviving newline really does start a new command.
+ *
+ * bash stops with an error at a quote that never closes, so meeting one in a
+ * command that succeeded means this scan misread it, as it does `$'it\'s'`.
+ * Such a command is split on every operator, quoted or commented, which keeps
+ * every command it holds, and `quotesBalanced` is false.
  */
 export function splitShellChain(command: string): ShellChain {
+  const chain = scanShellChain(command, true);
+  return chain.quotesBalanced
+    ? chain
+    : { ...scanShellChain(command, false), quotesBalanced: false };
+}
+
+/** `splitShellChain`'s scan. With `readQuotes` false, quote characters and
+ *  `#` are plain text. */
+function scanShellChain(command: string, readQuotes: boolean): ShellChain {
   const segments: string[] = [];
   const operators: string[] = [];
   let current = '';
   let quote: string | null = null;
+  let wordStart = true;
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
     if (quote === "'") {
@@ -252,7 +277,10 @@ export function splitShellChain(command: string): ShellChain {
       continue;
     }
     if (ch === '\\') {
-      if (command[i + 1] !== '\n') current += command.slice(i, i + 2);
+      if (command[i + 1] !== '\n') {
+        current += command.slice(i, i + 2);
+        wordStart = false;
+      }
       i++;
       continue;
     }
@@ -261,9 +289,15 @@ export function splitShellChain(command: string): ShellChain {
       if (ch === '"') quote = null;
       continue;
     }
-    if (ch === '"' || ch === "'") {
+    if (readQuotes && (ch === '"' || ch === "'")) {
       current += ch;
       quote = ch;
+      wordStart = false;
+      continue;
+    }
+    if (readQuotes && ch === '#' && wordStart) {
+      const lineEnd = command.indexOf('\n', i);
+      i = (lineEnd === -1 ? command.length : lineEnd) - 1;
       continue;
     }
     const pair = command.slice(i, i + 2);
@@ -282,18 +316,20 @@ export function splitShellChain(command: string): ShellChain {
       operator = ch;
     } else {
       current += ch;
+      wordStart = WORD_BREAK_RE.test(ch);
       continue;
     }
     segments.push(current);
     operators.push(operator);
     current = '';
+    wordStart = true;
     if (operator === '||' || operator === '&&' || operator === '|') {
       CONTINUED_LINES_RE.lastIndex = i + 1;
       if (CONTINUED_LINES_RE.test(command)) i = CONTINUED_LINES_RE.lastIndex - 1;
     }
   }
   segments.push(current);
-  return { segments, operators };
+  return { segments, operators, quotesBalanced: quote === null };
 }
 
 /** The segments of `splitShellChain`, without the operators. */
@@ -330,9 +366,9 @@ export function ghPrMergeTogglesAuto(segment: string): boolean {
   return GH_PR_AUTO_MERGE_RE.test(segment);
 }
 
-// A segment that runs nothing: blank, or only the `)`/`}` closing groups
-// that end with the segment before it.
-const NO_COMMAND_RE = /^[\s)}]*$/;
+// Blank, a comment, or only the `)`/`}` closing groups that end with the
+// segment before it.
+const NO_COMMAND_RE = /^[\s)}]*(?:#[^\n]*)?$/;
 const QUOTED_SPAN_RE = /"(?:[^"\\]|\\.)*"|'[^']*'/g;
 
 /** Net groups (`( … )`, `{ … }`, `$( … )`) a segment opens, ignoring quoted
@@ -342,6 +378,11 @@ function groupsOpened(segment: string): number {
   return (bare.match(/[({]/g)?.length ?? 0) - (bare.match(/[)}]/g)?.length ?? 0);
 }
 
+/** True when a segment runs no command of its own. */
+export function segmentRunsNoCommand(segment: string): boolean {
+  return NO_COMMAND_RE.test(segment);
+}
+
 /**
  * True when the command succeeding means its segment `index` ran and
  * succeeded. A hook reports one exit status for the whole command, so that
@@ -349,14 +390,16 @@ function groupsOpened(segment: string): number {
  * piped into anything or put in the background, neither it nor a group
  * around it is the fallback of a `||`, and nothing follows it except `&&`
  * steps, which run only if it succeeded. A trailing `;` or newline runs
- * nothing more and is ignored.
+ * nothing more and is ignored. A chain whose quotes did not balance shows
+ * none of this.
  */
 export function segmentSuccessFollowsCommand(chain: ShellChain, index: number): boolean {
   const { segments, operators } = chain;
+  if (!chain.quotesBalanced) return false;
   let lastRun = operators.length;
   while (
     lastRun > index &&
-    NO_COMMAND_RE.test(segments[lastRun]) &&
+    segmentRunsNoCommand(segments[lastRun]) &&
     operators[lastRun - 1] !== '&'
   ) {
     lastRun--;
