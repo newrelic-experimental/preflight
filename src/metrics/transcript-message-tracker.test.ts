@@ -362,6 +362,14 @@ describe('TranscriptMessageTracker', () => {
       "I just tried it and it won't work.",
       // A negated past verb ("didn't") isn't one of the past forms a "you" reference takes.
       "The cache won't work. You didn't invalidate it.",
+      // "I tried it" leads the opener only with "and" or "but" after it.
+      "I tried it. It won't work.",
+      "I tried it, it won't work.",
+      // A past form with an auxiliary ("had created", "been caching") isn't one a "you" reference takes.
+      "The index you had created won't work.",
+      "You've been caching the response, so the cache won't work.",
+      // A contraction can't be a leading word.
+      "You're wrong, it won't work.",
     ];
 
     /** Second person that points back at the assistant's output, in the "won't work" sentence or next to it. */
@@ -497,7 +505,7 @@ describe('TranscriptMessageTracker', () => {
       ],
       ['long run of sentence punctuation', `A cache won't work ${'.'.repeat(50_000)}x let's`],
       ['long run of mixed punctuation', `A cache won't work ${'.!?'.repeat(20_000)}x let's`],
-      ['long whitespace after a modal', `A cache won't work, we can${' '.repeat(100_000)}x`],
+      ['long whitespace inside the sentence', `A cache won't work, we can${' '.repeat(100_000)}x`],
       ['long word after "you"', `A cache won't work, you ${'e'.repeat(400_000)}x`],
       ['long word after "you\'re"', `A cache won't work, you're ${'i'.repeat(400_000)}x`],
       ['repeated "you" with an adverb', `A cache won't work ${'you just '.repeat(44_000)}`],
@@ -508,7 +516,10 @@ describe('TranscriptMessageTracker', () => {
       ['long punctuation run after a filler', `Hmm${','.repeat(400_000)}x won't work`],
       ['long whitespace after a filler', `Hmm${' '.repeat(400_000)}x won't work`],
       ['long whitespace after "I tried it"', `I tried it,${' '.repeat(400_000)}x won't work`],
-      ['repeated "when you"', `A cache won't work ${'when you '.repeat(44_000)}`],
+      [
+        'repeated "when you" in the reference scan',
+        `A cache won't work ${'when you '.repeat(44_000)}`,
+      ],
     ])('stays fast on a long adversarial message: %s', (_label, text) => {
       writeLines([userLine(text)]);
       const tracker = new TranscriptMessageTracker();
@@ -516,6 +527,8 @@ describe('TranscriptMessageTracker', () => {
       const start = Date.now();
       tracker.refresh();
       expect(Date.now() - start).toBeLessThan(1_000);
+      // A line over the read cap is skipped unread, which would pass the timing for free.
+      expect(tracker.getMetrics().userMessages).toBe(1);
     });
   });
 
