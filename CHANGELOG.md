@@ -5,13 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.58.4] - 2026-10-06
+## [1.59.1] - 2026-10-07
 
 ### Fixed
 
 - The per-session Git Efficiency view and the `ai.git.commit_count` gauge no longer count a standalone `git commit` that failed, such as one a pre-commit hook rejected, or an `--amend`, so they agree with the weekly/30-day panel. Expect the count to step down. A commit message that mentions `--amend` no longer reads as an amend.
 - A chained git command reports one exit status for all its steps, so each step's outcome is now inferred from the error text and from bash's grouping, which reads `&&` and `||` left to right and a pipeline as one step whose status is its last command's. The failure goes to the step the text names: the push in `git commit -m x && git push` with a rejected push, the commit in that chain with nothing to commit, or, for conflict text, the earliest step of the `&&` run that can conflict (a plain `git stash` or `git checkout <branch>` cannot), such as the pull in `git pull && git commit -m merge && git checkout other`. The steps `&&` then skipped are not recorded, so they count in none of `ai.git.commit_count`, `ai.git.push_count`, the build-before-push practice or the weekly panel. A step is recorded as succeeded only when `&&` alone joins it to the step the failure goes to, such as the commit before that rejected push. Every other step keeps the command's failure, so neither commit in `git commit -m x || git commit --no-verify -m x` counts, nor the commit in `git diff --quiet || git commit -am wip && git push`, which the `||` may have skipped. When the text names no step, the failure goes to the last command, and the steps of the final `&&` run after its first are not recorded, since any of them may not have run: a failing `npm test && git add -A && git commit -m x && git push` counts no commit and no push. That run's first step counts when `&&` alone joins it to the last command, so the commit in `git commit -m x && gh pr create` counts when gh fails, and also when the commit failed with text that names no git failure, such as a gpg signing error. In `git commit -m x && git log --oneline | head -1` the `|` keeps it from counting.
 - Quoted text, such as a multi-line commit message or the `-m "$(cat <<'EOF' ... EOF)"` form, no longer splits a command into extra git steps, so the rules above apply to that commit and to a push chained after it.
+
+## [1.59.0] - 2026-10-07
+
+### Added
+
+- **The Claude Code plugin now captures permission, API failure, prompt, model switch, and session lifecycle events, not just tool calls.** `plugin/hooks/hooks.json` registers every hook event that `preflight install` writes, and a test keeps the two in sync.
+
+## [1.58.5] - 2026-10-07
+
+### Fixed
+
+- **The local dashboard counted a session twice once it was saved to disk.** Today's "Where today's spend went" Models table showed double the requests and cost of the "Spend today" tile beside it, and the Tool Selection and Quality panels counted the same calls and signals twice. Each session now counts once, before and after it is saved.
+
+## [1.58.4] - 2026-10-06
+
+### Fixed
+
+- **The "On pace for" projection on History and Today could read ~$0.00 for the week while the month beside it read over $1,000.** The week projection only extrapolated from spend since Monday, so after a quiet Monday, and before today's spend was counted, it projected nothing for the rest of the week. The month projection had the same gap on the 1st. Both now project the remaining days from your average daily spend over the last 28 days plus today, so the week and month figures use the same pace.
 
 ## [1.58.3] - 2026-10-06
 
