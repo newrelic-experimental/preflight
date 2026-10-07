@@ -50,11 +50,32 @@ start, same as the npm install.
 
 Local mode (no New Relic account needed, dashboard at `localhost:7777`) is
 the default when the plugin's MCP server sees no license key. To send
-telemetry to New Relic, set the same environment variables the npm install's
-`preflight install --mode cloud` would configure — e.g.
-`NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_AI_ACCOUNT_ID` — in your shell profile
-or in Claude Code's own `env` settings. See [ADVANCED.md](./ADVANCED.md) for
-the full field reference.
+telemetry to New Relic, set three environment variables:
+
+| Variable                | Value                                                   |
+| ----------------------- | ------------------------------------------------------- |
+| `NR_AI_MODE`            | `cloud` (or `both` to keep the local dashboard as well) |
+| `NEW_RELIC_LICENSE_KEY` | Your New Relic ingest license key                       |
+| `NEW_RELIC_ACCOUNT_ID`  | Your numeric New Relic account ID (1 to 12 digits)      |
+
+`NR_AI_MODE` is required. A license key with no explicit mode fails at
+startup, because telemetry export is opt-in, and the plugin's tools do not
+appear.
+
+Set them in your shell profile or in Claude Code's `env` settings. This is the
+shape an admin puts in `settings.json` or managed settings:
+
+```json
+{
+  "env": {
+    "NR_AI_MODE": "cloud",
+    "NEW_RELIC_LICENSE_KEY": "<your-license-key>",
+    "NEW_RELIC_ACCOUNT_ID": "1234567"
+  }
+}
+```
+
+See [ADVANCED.md](./ADVANCED.md) for the full field reference.
 
 ## Packaging
 
