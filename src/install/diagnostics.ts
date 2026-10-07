@@ -10,15 +10,14 @@ import { VERSION } from '../version.js';
 import { validateConfigFile, loadMcpConfig, DEFAULT_STORAGE_PATH } from '../config.js';
 import { getDashboardDaemonStatus, findExecutableNodeDir, getScheduleStatus } from './schedule.js';
 import { detectUpdateSupport, upgradeCommandFor } from './update-support.js';
+import { HOOK_EVENT_TYPES, type HookEventType } from '../hook-subcommands.js';
 import {
   detectSettingsPath,
   entryContainsNrObserve,
   entryHasAnyCommandHook,
-  HOOK_EVENT_TYPES,
   HOOK_SUBCOMMAND_PATTERN,
   NR_HOOK_RE,
 } from './install-helper.js';
-import type { HookEventType } from './install-helper.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { LocalStore } from '../storage/index.js';
 import { createDefaultRegistry } from '../platforms/index.js';
