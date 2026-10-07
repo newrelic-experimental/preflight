@@ -559,6 +559,20 @@ describe('classifyGitSegments under bash && and || grouping', () => {
       ]);
     },
   );
+
+  it.each([
+    ['git merge-base HEAD origin/main && git rebase origin/main', 'git rebase origin/main'],
+    ['git mergetool && git rebase --continue', 'git rebase --continue'],
+  ])('gives conflict text in `%s` to the step that can conflict', (command, conflicted) => {
+    const conflicts = classifyGitSegments(
+      command,
+      makeRecord({ command, success: false, error: CONFLICT }),
+      resolveRepo,
+    )
+      .filter(({ event }) => event.type === 'merge_conflict' || event.type === 'rebase_conflict')
+      .map(({ segment }) => segment.trim());
+    expect(conflicts).toEqual([conflicted]);
+  });
 });
 
 // One error can hold two failures' text, such as a pull's conflict and the

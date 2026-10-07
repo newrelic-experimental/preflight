@@ -355,9 +355,10 @@ function splitShellChain(command: string): ShellChain {
 }
 
 // Git verbs whose own output can report a merge/rebase conflict. A plain
-// `git stash` or `git checkout <branch>` cannot.
+// `git stash` or `git checkout <branch>` cannot, nor can `git merge-base` or
+// `git mergetool`, which `(?![\w-])` keeps from matching as `git merge`.
 const GIT_CONFLICT_CAPABLE_RE =
-  /\bgit\s+(?:merge|rebase|pull|cherry-pick|revert|am|apply|stash\s+(?:pop|apply|branch)|(?:checkout|switch)\b.*\s(?:-m|--merge)\b)/;
+  /\bgit\s+(?:merge|rebase|pull|cherry-pick|revert|am|apply|stash\s+(?:pop|apply|branch)|(?:checkout|switch)\b.*\s(?:-m|--merge))(?![\w-])/;
 
 // How bash reads a `ShellChain`. `;`, newline and `&` end an and-or list.
 // Within one, `&&` and `||` join pipelines left to right with equal
