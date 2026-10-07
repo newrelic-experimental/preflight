@@ -486,12 +486,15 @@ export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorP
  * that host's hooks run as its children (Copilot in the VS Code extension
  * host that also runs the Claude Code extension, say). Behind the wrapper:
  *
- * - A parent-level hit is only ever a correction: one equal to `staleId` is
- *   never resolved, so `staleId` coming back always means our ppid's own
- *   breadcrumb confirmed the guess.
+ * - A parent-level hit is only ever a correction. Once the slot names
+ *   `staleId` the guess was right, and the parent level is not read again:
+ *   a later change there is the host switching sessions (`/clear`,
+ *   `/resume`), and adopting that as a correction would carry the old
+ *   session's tool calls into the new one. So `staleId` coming back always
+ *   means our ppid's own breadcrumb confirmed the guess.
  * - A parent-level session that already has a live owning engine is not
- *   ours. Once skipped for either reason, an id stays skipped, so a
- *   neighbour whose engine later exits is not adopted then.
+ *   ours. Once skipped, an id stays skipped, so a neighbour whose engine
+ *   later exits is not adopted then.
  * - Never on Linux. The collector writes a breadcrumb at each of its
  *   ancestors there (collector-script.ts's writePpidBreadcrumb()), so the
  *   host's parent is routinely a shared slot (an editor's main process, a
@@ -515,6 +518,8 @@ export async function watchPpidBreadcrumb(
   // that a `ps` that keeps timing out (each attempt blocks for up to 2s)
   // costs little.
   let parentLevelPids: readonly number[] | undefined;
+  // Set once the parent slot names staleId; see the doc comment.
+  let parentLevelDone = false;
   const skippedParentIds = new Set<string>();
 
   const readParentLevelPids = (): readonly number[] => {
@@ -568,18 +573,29 @@ export async function watchPpidBreadcrumb(
         resolvePromise(sid);
         return;
       }
-      if (options.includeParentOfPpid && platform !== 'linux' && platform !== 'win32') {
+      if (
+        options.includeParentOfPpid &&
+        !parentLevelDone &&
+        platform !== 'linux' &&
+        platform !== 'win32'
+      ) {
         // resolveFromAncestorBreadcrumb skips index 0, our ppid.
         const fromParent = resolveFromAncestorBreadcrumb(storagePath, readParentLevelPids());
         if (fromParent && !skippedParentIds.has(fromParent.sessionId)) {
           const { sessionId, pid } = fromParent;
-          const skipReason =
-            sessionId === options.staleId
-              ? 'matches the cwd guess'
-              : hasLiveOwningEngine(storagePath, sessionId)
-                ? 'has a live owning engine'
-                : undefined;
-          if (!skipReason) {
+          if (sessionId === options.staleId) {
+            parentLevelDone = true;
+            logger.debug('The ppid parent breadcrumb matches the cwd guess; no longer reading it', {
+              sessionId,
+              pid,
+            });
+          } else if (hasLiveOwningEngine(storagePath, sessionId)) {
+            skippedParentIds.add(sessionId);
+            logger.debug('Ignoring the ppid parent breadcrumb: its session has a live owner', {
+              sessionId,
+              pid,
+            });
+          } else {
             logger.debug('Resolved corrected session_id from the ppid parent breadcrumb', {
               sessionId,
               pid,
@@ -588,8 +604,6 @@ export async function watchPpidBreadcrumb(
             resolvePromise(sessionId);
             return;
           }
-          skippedParentIds.add(sessionId);
-          logger.debug('Ignoring the ppid parent breadcrumb', { sessionId, pid, skipReason });
         }
       }
       const delay = nextDelayMs(attempt++);

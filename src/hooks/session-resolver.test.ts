@@ -752,23 +752,44 @@ describe('session-resolver', () => {
         expect(result).toBe('sess-direct');
       });
 
-      it('never reads a parent breadcrumb equal to the cwd guess as confirmation', async () => {
-        // An npx engine started in a directory where Claude session A is live:
-        // the cwd guess is A, and the host's slot carries A's id too (another
-        // host's hooks can run under the same process). That match proves
-        // nothing about this engine, so the watch keeps polling until the
-        // slot names a different session.
+      it('stops reading the parent level once it names the cwd guess', async () => {
+        // The default Claude Code plugin launch: an npx engine whose cwd guess
+        // A is right, so the host's slot names A too. A later /clear or
+        // /resume rewrites that slot to B. That is the host switching
+        // sessions, not a correction of a wrong guess, and adopting B as one
+        // would carry A's tool calls into B with only B's cost.
         const npmExecPid = 88013;
         const hostPid = 88014;
         writeBreadcrumb(hostPid, 'sess-claude-a');
-        setTimeout(() => writeBreadcrumb(hostPid, 'sess-copilot'), 350);
+        setTimeout(() => writeBreadcrumb(hostPid, 'sess-claude-b'), 350);
 
-        const result = await watchUntil(2000, {
+        const result = await watchUntil(1500, {
           ppid: npmExecPid,
           staleId: 'sess-claude-a',
           execFileSync: psRow(hostPid, npmExec).fn,
         });
-        expect(result).toBe('sess-copilot');
+        expect(result).toBe('aborted');
+      });
+
+      it('never resolves the cwd guess from the parent level, only from the direct ppid', async () => {
+        // A match at the parent level is not a confirmation, but the watch
+        // keeps checking our own ppid's breadcrumb after it.
+        const ppid = 88029;
+        const hostPid = 88030;
+        writeBreadcrumb(hostPid, 'sess-claude-a');
+        let ownWritten = false;
+        setTimeout(() => {
+          writeBreadcrumb(ppid, 'sess-claude-a');
+          ownWritten = true;
+        }, 350);
+
+        const result = await watchUntil(2000, {
+          ppid,
+          staleId: 'sess-claude-a',
+          execFileSync: psRow(hostPid, npmExec).fn,
+        });
+        expect(result).toBe('sess-claude-a');
+        expect(ownWritten).toBe(true);
       });
 
       it('skips a parent breadcrumb whose session has a live owning engine', async () => {

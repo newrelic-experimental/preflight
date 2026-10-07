@@ -1501,13 +1501,29 @@ describe('stdio integration', () => {
   );
 
   itOffLinux(
-    'reads the parent-of-ppid breadcrumb behind an npm exec wrapper only as a correction (#479)',
+    'corrects a wrong cwd guess from the host breadcrumb behind an npm exec wrapper (#479)',
     async () => {
       // Behind the wrapper the level above ppid is the host that ran npx: this
-      // test process. That slot naming the cwd guess must not confirm it
-      // (another host's hooks can write there too): confirming would seed this
-      // engine from that session's checkpoint, start overwriting it, and stop
-      // the watch for good.
+      // test process. Its breadcrumb naming another session is the correction.
+      const engine = await startCwdGuessedEngine(true);
+      try {
+        writeFileSync(resolve(engine.ppidBreadcrumbDir, `${process.pid}.txt`), 'own-session-id');
+        expect(await engine.waitForSessionId('own-session-id')).toBe(true);
+      } finally {
+        await engine.close();
+      }
+    },
+    30000,
+  );
+
+  itOffLinux(
+    'does not follow the host to a new session once its breadcrumb matched the cwd guess, behind an npm exec wrapper (#479)',
+    async () => {
+      // The default plugin launch: the cwd guess is right, so the host's slot
+      // names it. That is not a confirmation (only our own ppid's breadcrumb
+      // is), and a later /clear rewriting the slot is the host switching
+      // sessions. Adopting it as a correction would reset the cost trackers
+      // but keep the old session's tool calls under the new id.
       const engine = await startCwdGuessedEngine(true);
       try {
         const hostBreadcrumb = resolve(engine.ppidBreadcrumbDir, `${process.pid}.txt`);
@@ -1522,15 +1538,43 @@ describe('stdio integration', () => {
           ),
         ).toBe(false);
 
-        // Once the host's slot names another session, that is the correction.
-        writeFileSync(hostBreadcrumb, 'own-session-id');
-        expect(await engine.waitForSessionId('own-session-id')).toBe(true);
+        writeFileSync(hostBreadcrumb, 'cleared-session-id');
+        await new Promise((r) => setTimeout(r, 3500));
+        expect(await engine.readSessionId()).toBe('neighbour-session-id');
       } finally {
         await engine.close();
       }
     },
     30000,
   );
+
+  it('does not follow the host to a new session once its ppid breadcrumb confirmed the cwd guess', async () => {
+    // Pins the direct-launch side of the /clear case: the watch resolves on the
+    // confirmation and is not re-armed, so a later rewrite of the breadcrumb
+    // (the host starting a new session) leaves the engine on the confirmed id.
+    const engine = await startCwdGuessedEngine(false);
+    try {
+      const hostBreadcrumb = resolve(engine.ppidBreadcrumbDir, `${process.pid}.txt`);
+      writeFileSync(hostBreadcrumb, 'neighbour-session-id');
+      // Confirmation ends checkpoint suppression, so the session file appears.
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const sessionFile = (id: string): string =>
+        resolve(engine.storagePath, 'sessions', `${dateStr}_${id}.json`);
+      let confirmed = false;
+      for (let i = 0; i < 20 && !confirmed; i++) {
+        confirmed = existsSync(sessionFile('neighbour-session-id'));
+        if (!confirmed) await new Promise((r) => setTimeout(r, 300));
+      }
+      expect(confirmed).toBe(true);
+
+      writeFileSync(hostBreadcrumb, 'cleared-session-id');
+      await new Promise((r) => setTimeout(r, 3500));
+      expect(await engine.readSessionId()).toBe('neighbour-session-id');
+      expect(existsSync(sessionFile('cleared-session-id'))).toBe(false);
+    } finally {
+      await engine.close();
+    }
+  }, 30000);
 
   it('resets accumulated cost when the PPID breadcrumb corrects to a different session id', async () => {
     const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
