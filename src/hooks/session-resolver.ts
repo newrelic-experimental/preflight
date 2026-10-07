@@ -511,7 +511,8 @@ export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorP
  *   level too. A failed lookup is retried only on ticks 2, 4, 8, 16, ...
  *   (about 0.3s, 1.8s, 9.8s and 26s into the watch), so a wrong guess goes
  *   uncorrected whenever the guessed session's activity arrives while the
- *   lookup is failing, which can last tens of seconds.
+ *   lookup is failing. The retries keep spreading out, so that window lasts
+ *   as long as `ps` keeps failing, not only tens of seconds.
  * - A parent-level session that already has a live owning engine is not
  *   ours. Once skipped, an id stays skipped, so a neighbour whose engine
  *   later exits is not adopted then.
@@ -536,10 +537,10 @@ export async function watchPpidBreadcrumb(
   let tickCount = 0;
   // Kept once our ppid's lookup succeeds: [ppid, parent] when ppid is an
   // `npm exec` wrapper, else [ppid], past which resolveFromAncestorBreadcrumb
-  // never reads. A failed lookup (a `ps` timeout under load) is retried on
-  // ticks 1, 2, 4, 8, ...: soon enough to recover from a blip, rarely enough
-  // that a `ps` that keeps timing out (each attempt blocks for up to 2s)
-  // costs little.
+  // never reads. The lookup runs on ticks 1, 2, 4, 8, ... until one succeeds,
+  // so a failed one (a `ps` timeout under load) is retried soon enough to
+  // recover from a blip, rarely enough that a `ps` that keeps timing out
+  // (each attempt blocks for up to 2s) costs little.
   let parentLevelPids: readonly number[] | undefined;
   // Set once the parent slot names staleId, or staleId activity can't be
   // checked against it; see the doc comment.

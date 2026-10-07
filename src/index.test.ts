@@ -1677,22 +1677,27 @@ describe('stdio integration', () => {
       "import { register } from 'node:module';\nregister('./hooks.mjs', import.meta.url);\n",
     );
 
-    const engine = await startCwdGuessedEngine(false, {
-      nodeArgs: ['--import', pathToFileURL(resolve(hookDir, 'register.mjs')).href],
-    });
-    const reports = (): number => engine.stderr().split(marker).length - 1;
+    let engine: Awaited<ReturnType<typeof startCwdGuessedEngine>> | undefined;
     try {
+      engine = await startCwdGuessedEngine(false, {
+        nodeArgs: ['--import', pathToFileURL(resolve(hookDir, 'register.mjs')).href],
+      });
+      const { stderr } = engine;
+      const reports = (): number => stderr().split(marker).length - 1;
+      const settledReports = async (expected: number): Promise<number> => {
+        for (let i = 0; i < 50 && reports() < expected; i++) {
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        return reports();
+      };
       // Filed in the guessed session's buffer, but under another session id.
       await engine.drainToolCall('other-session-id', 'neighbour-session-id');
+      // No report is due for it; the wait gives a wrong one time to arrive.
+      expect(await settledReports(1)).toBe(0);
       await engine.drainToolCall('neighbour-session-id');
-      // stderr is ordered, so once the second call's report is in, a report
-      // for the first would be too.
-      for (let i = 0; i < 50 && reports() < 1; i++) {
-        await new Promise((r) => setTimeout(r, 20));
-      }
-      expect(reports()).toBe(1);
+      expect(await settledReports(1)).toBe(1);
     } finally {
-      await engine.close();
+      await engine?.close();
       rmSync(hookDir, { recursive: true, force: true });
     }
   }, 30000);
