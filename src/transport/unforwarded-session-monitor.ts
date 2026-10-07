@@ -10,7 +10,8 @@
  * environment variable, which the dashboard LaunchAgent does not inherit —
  * `--local` falls back to local mode and those sessions never reach New
  * Relic. This monitor records each such session, warns once per session, and
- * backs the `unforwardedSessions` field on `GET /api/health`.
+ * backs the `unforwardedSessions` field on `GET /api/health`. The fix-it
+ * hint is logged once, by the caller's startup warning, not per session.
  */
 
 import { createLogger } from '../shared/index.js';
@@ -76,7 +77,8 @@ export interface UnforwardedSessionMonitorOptions {
   readonly now?: () => number;
 }
 
-const HINT =
+/** How to fix the gap. Log it once at startup; the per-session warnings omit it. */
+export const UNFORWARDED_SESSIONS_HINT =
   'This dashboard process is not forwarding to New Relic because it cannot see your cloud ' +
   'credentials. Add licenseKey and accountId to the config file (the dashboard LaunchAgent ' +
   'does not inherit shell environment variables), then restart the dashboard.';
@@ -150,11 +152,7 @@ export class UnforwardedSessionMonitor {
         this.warnedUntracked = true;
         this.warn(
           'Tool calls with no trackable session id are not reaching New Relic; counting them as untrackedToolCalls',
-          {
-            reason: this.gap.reason,
-            requestedMode: this.gap.requestedMode,
-            hint: HINT,
-          },
+          { reason: this.gap.reason, requestedMode: this.gap.requestedMode },
         );
       }
       return;
@@ -169,7 +167,6 @@ export class UnforwardedSessionMonitor {
       sessionId,
       reason: this.gap.reason,
       requestedMode: this.gap.requestedMode,
-      hint: HINT,
     });
   }
 
@@ -187,7 +184,7 @@ export class UnforwardedSessionMonitor {
       untrackedToolCalls: this.untrackedToolCalls,
       sessions,
       truncated: sessions.length < this.sessions.size,
-      hint: HINT,
+      hint: UNFORWARDED_SESSIONS_HINT,
     };
   }
 }

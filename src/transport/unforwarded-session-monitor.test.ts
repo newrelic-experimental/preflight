@@ -2,6 +2,7 @@ import { describe, it, expect } from '@jest/globals';
 
 import { MissingCloudCredentialError, type Mode } from '../config.js';
 import {
+  UNFORWARDED_SESSIONS_HINT,
   UnforwardedSessionMonitor,
   detectCloudForwardingGap,
   type CloudForwardingGap,
@@ -92,6 +93,22 @@ describe('UnforwardedSessionMonitor', () => {
       reason: 'missing-license-key',
       requestedMode: 'both',
     });
+  });
+
+  it('leaves the fix-it hint out of every warning it logs', () => {
+    // A first --local start after a credential gap can drain hundreds of
+    // ownerless buffers. The caller logs the hint once at startup instead.
+    const { monitor, warns } = makeMonitor();
+    monitor.recordToolCall('sess-a');
+    monitor.recordToolCall('sess-b');
+    monitor.recordToolCall(undefined);
+
+    expect(warns).toHaveLength(3);
+    for (const { message, fields } of warns) {
+      expect(fields).not.toHaveProperty('hint');
+      expect(JSON.stringify({ message, fields })).not.toContain(UNFORWARDED_SESSIONS_HINT);
+    }
+    expect(monitor.getSnapshot().hint).toBe(UNFORWARDED_SESSIONS_HINT);
   });
 
   it('snapshots per-session counts, most recently active first', () => {

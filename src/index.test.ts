@@ -33,6 +33,7 @@ import type { DashboardServer } from './dashboard/dashboard-server.js';
 import type { LocalStore } from './storage/index.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
 import type { NrIngestManager } from './transport/nr-ingest.js';
+import { UNFORWARDED_SESSIONS_HINT } from './transport/unforwarded-session-monitor.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -1697,26 +1698,28 @@ describe('--local with cloud export configured but no credentials (#479)', () =>
     // the dashboard LaunchAgent case.
     writeFileSync(configPath, JSON.stringify({ mode: 'both' }));
 
-    // An ownerless buffer: no active-<id>.pid heartbeat, so --local drains it.
-    const sessionId = 'copilot-orphan-session';
+    // Ownerless buffers: no active-<id>.pid heartbeat, so --local drains them.
+    const sessionIds = ['copilot-orphan-session', 'copilot-orphan-session-2'];
     const ts = Date.now() - 1000;
-    writeFileSync(
-      resolve(tmpStoragePath, `buffer-${sessionId}.jsonl`),
-      [
-        { mode: 'pre', tool: 'Bash', timestamp: ts, sessionId, toolUseId: 'toolu_1' },
-        {
-          mode: 'post',
-          tool: 'Bash',
-          timestamp: ts + 1,
-          sessionId,
-          toolUseId: 'toolu_1',
-          success: true,
-        },
-      ]
-        .map((e) => JSON.stringify(e))
-        .join('\n') + '\n',
-      { mode: 0o600 },
-    );
+    for (const sessionId of sessionIds) {
+      writeFileSync(
+        resolve(tmpStoragePath, `buffer-${sessionId}.jsonl`),
+        [
+          { mode: 'pre', tool: 'Bash', timestamp: ts, sessionId, toolUseId: 'toolu_1' },
+          {
+            mode: 'post',
+            tool: 'Bash',
+            timestamp: ts + 1,
+            sessionId,
+            toolUseId: 'toolu_1',
+            success: true,
+          },
+        ]
+          .map((e) => JSON.stringify(e))
+          .join('\n') + '\n',
+        { mode: 0o600 },
+      );
+    }
 
     const port = await new Promise<number>((resolvePort, reject) => {
       const srv = createNetServer();
@@ -1753,7 +1756,7 @@ describe('--local with cloud export configured but no credentials (#479)', () =>
         try {
           const res = await fetch(`http://127.0.0.1:${port}/api/health`);
           const body = (await res.json()) as { unforwardedSessions?: Record<string, unknown> };
-          if ((body.unforwardedSessions?.count as number | undefined) === 1) {
+          if ((body.unforwardedSessions?.count as number | undefined) === 2) {
             unforwarded = body.unforwardedSessions;
             break;
           }
@@ -1766,12 +1769,24 @@ describe('--local with cloud export configured but no credentials (#479)', () =>
       expect(unforwarded).toMatchObject({
         reason: 'missing-license-key',
         requestedMode: 'both',
-        count: 1,
-        sessions: [{ sessionId, toolCalls: 1 }],
+        count: 2,
+        hint: UNFORWARDED_SESSIONS_HINT,
       });
-      expect(stderr).toContain(
-        'Session has no owning --stdio engine and is not reaching New Relic',
+      expect(unforwarded?.sessions).toEqual(
+        expect.arrayContaining(
+          sessionIds.map((sessionId) => expect.objectContaining({ sessionId, toolCalls: 1 })),
+        ),
       );
+
+      // One warning per session, and the fix-it hint only once, at startup.
+      const occurrences = (needle: string): number => stderr.split(needle).length - 1;
+      const perSession = 'Session has no owning --stdio engine and is not reaching New Relic';
+      const stderrDeadline = Date.now() + 5_000;
+      while (occurrences(perSession) < 2 && Date.now() < stderrDeadline) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(occurrences(perSession)).toBe(2);
+      expect(occurrences(UNFORWARDED_SESSIONS_HINT)).toBe(1);
     } finally {
       child.kill('SIGKILL');
       rmSync(tmpStoragePath, { recursive: true, force: true });

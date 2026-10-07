@@ -121,6 +121,7 @@ import { TaskSpanTracker } from './tracing/task-span-tracker.js';
 import { emitToolCallSpan } from './tracing/tool-call-span.js';
 import { NrIngestManager } from './transport/nr-ingest.js';
 import {
+  UNFORWARDED_SESSIONS_HINT,
   UnforwardedSessionMonitor,
   detectCloudForwardingGap,
 } from './transport/unforwarded-session-monitor.js';
@@ -1095,7 +1096,7 @@ async function main(): Promise<void> {
         unforwardedSessionMonitor = new UnforwardedSessionMonitor({ gap });
         logger.warn(
           `Cloud export is configured (mode='${gap.requestedMode}') but this --local process has no ${gap.missingField}; sessions it drains will not reach New Relic`,
-          { reason: gap.reason, requestedMode: gap.requestedMode },
+          { reason: gap.reason, requestedMode: gap.requestedMode, hint: UNFORWARDED_SESSIONS_HINT },
         );
       }
 
