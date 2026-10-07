@@ -439,9 +439,12 @@ export class GitEfficiencyTracker {
       // timestamp proximity: a prior session's hook-observed `commit` event,
       // replayed via replayTimeline() before this method ever runs, has no
       // hash in its command text at all, so a hash match would never catch
-      // it and every restart would double-count that commit.
+      // it and every restart would double-count that commit. Only a counted
+      // hook commit can stand for this one: a commit the `;` rule marked
+      // failed may still have landed, and git log is what shows it did, as
+      // `reconcileHydratedCommits` reads it for the weekly panel.
       const isDuplicate = this.events.some((e) => {
-        if (e.type !== 'commit') return false;
+        if (!isCountedCommit(e)) return false;
         const existingHash = e.command ? HYDRATED_COMMIT_HASH_RE.exec(e.command)?.[1] : undefined;
         if (existingHash !== undefined) {
           return existingHash === commit.hash;

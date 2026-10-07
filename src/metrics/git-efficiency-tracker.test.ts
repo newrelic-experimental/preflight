@@ -1398,6 +1398,26 @@ describe('GitEfficiencyTracker', () => {
       expect(tracker.getMetrics().commitCount).toBe(1);
     });
 
+    // The `;` rule gives the commit the push's failure, so it doesn't count
+    // as a hook commit, and `git log` is what shows it landed.
+    it('counts a commit from git log beside a replayed hook commit marked failed', () => {
+      const commitTimestamp = Date.now() - 60_000;
+      tracker.replayTimeline([
+        {
+          timestamp: commitTimestamp,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: false,
+          command: 'git commit -m x; git push',
+        },
+      ]);
+      expect(tracker.getMetrics().commitCount).toBe(0);
+
+      tracker.hydrateGitLog([{ timestamp: commitTimestamp + 1_000, hash: 'abc123' }]);
+
+      expect(tracker.getMetrics().commitCount).toBe(1);
+    });
+
     it('hydrateBranchDivergence sets ahead/behind counts on risk indicators', () => {
       tracker.hydrateBranchDivergence(3, 7);
 
