@@ -250,7 +250,7 @@ Both `AgentConfig` and `McpServerConfig` are frozen with `Object.freeze()` immed
 
 Records are persisted to disk in real time via `LocalStore.appendAuditLog()`, so the trail survives unclean shutdowns.
 
-Classification patterns are configurable via constructor options. The log is queryable via `getSensitiveAccessLog()` and is also sent as NR events for dashboarding. Records carry `agentId` and `agentType` when a subagent (Task or Workflow tool) made the call, so subagent activity is attributable on disk, in the dashboard, and in New Relic.
+Classification patterns are configurable via constructor options. The log is queryable via `getSensitiveAccessLog()` and is also sent as NR events for dashboarding. Records carry `agentId` when a subagent (Task or Workflow tool) made the call, and `agentType` when it is known: the subagent's type, or on a parent call the session's own agent name when Claude Code runs with `--agent`. Subagent activity is therefore attributable on disk, in the dashboard, and in New Relic; filter on `agentId`, not `agentType`, to separate it from parent-session activity.
 
 ---
 
