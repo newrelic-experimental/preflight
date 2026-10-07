@@ -253,6 +253,8 @@ describe('TranscriptMessageTracker', () => {
       "Hmm that won't work",
       "But that won't work.",
       "Hmm, no, that won't work.",
+      // No subject at all after the interjection.
+      "Nah, won't work — the value can be undefined too.",
       // A first-person report that running the assistant's output fails now.
       "I tried it and it won't work.",
     ];
@@ -336,6 +338,9 @@ describe('TranscriptMessageTracker', () => {
       "So this won't work on Windows, let's use fs.watch.",
       // A noun ending in "-ly" fills the adverb slot of the opener.
       "This assembly won't work on ARM.",
+      // A progressive "you're <verb>ing" after a temporal "when" or a causal "since" reads as a reference.
+      "Polling won't work when you're running on Windows, let's use fs.watch.",
+      "Since you're using Windows, symlinks won't work.",
     ];
 
     const KNOWN_MISSES = [
@@ -360,7 +365,6 @@ describe('TranscriptMessageTracker', () => {
       "You already removed the watcher. Polling won't work now.",
       "The regex won't work for unicode, you only allowed ASCII.",
       "The command you ran won't work in CI.",
-      "Nah, won't work — the value can be undefined too.",
       // A causal "since you" or a past "when you" is about the assistant's output, unlike a conditional "if you".
       "Since you removed the null check, the parser won't work.",
       "When you renamed the env var, the deploy script won't work anymore.",
