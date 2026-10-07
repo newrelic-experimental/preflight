@@ -713,6 +713,8 @@ describe('GitActivityRecorder', () => {
       'gh pr merge 42 --squash && grep -q MERGED <<<"$(gh pr view 42 --json state)"\necho done',
       'gh pr merge 42 --squash && echo "<<EOF"\necho done',
       'gh pr merge 42 --squash && echo $((1<<N))\necho done',
+      'gh pr merge 42 --squash &&',
+      'gh pr merge 42 --squash && # then pull',
     ])('drops `%s`: the command can succeed while the merge failed or never ran', (command) => {
       recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
       expect(merges()).toEqual([]);
