@@ -14,7 +14,7 @@
  */
 
 import { createLogger } from '../shared/index.js';
-import { MissingCloudCredentialError } from '../config.js';
+import { MissingCloudCredentialError, type Mode } from '../config.js';
 
 const logger = createLogger('unforwarded-session-monitor');
 
@@ -31,7 +31,7 @@ export interface CloudForwardingGap {
   /** The config field named by `reason`. */
   readonly missingField: 'licenseKey' | 'accountId';
   /** The mode the config asked for before the fallback (`cloud` or `both`). */
-  readonly requestedMode: string;
+  readonly requestedMode: Mode;
 }
 
 export interface UnforwardedSessionEntry {
@@ -43,7 +43,7 @@ export interface UnforwardedSessionEntry {
 
 export interface UnforwardedSessionsSnapshot {
   readonly reason: CloudForwardingGapReason;
-  readonly requestedMode: string;
+  readonly requestedMode: Mode;
   /**
    * Distinct identified sessions drained without forwarding, among those
    * still tracked: past the cap the least recently active are evicted.

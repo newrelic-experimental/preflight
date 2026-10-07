@@ -1,6 +1,6 @@
 import { describe, it, expect } from '@jest/globals';
 
-import { MissingCloudCredentialError } from '../config.js';
+import { MissingCloudCredentialError, type Mode } from '../config.js';
 import {
   UnforwardedSessionMonitor,
   detectCloudForwardingGap,
@@ -53,6 +53,17 @@ describe('detectCloudForwardingGap', () => {
       missingField: 'accountId',
       requestedMode: 'cloud',
     });
+  });
+
+  it("keeps the error's Mode type on the gap and the snapshot", () => {
+    const gap = detectCloudForwardingGap(
+      new MissingCloudCredentialError('licenseKey', 'cloud', '/home/u/config.json'),
+    );
+    // Typed assignments: these stop compiling if either field widens to string.
+    const fromGap: Mode | undefined = gap?.requestedMode;
+    const fromSnapshot: Mode = new UnforwardedSessionMonitor({ gap: gap! }).getSnapshot()
+      .requestedMode;
+    expect([fromGap, fromSnapshot]).toEqual(['cloud', 'cloud']);
   });
 
   it('returns null for any other error so --local rethrows it', () => {
