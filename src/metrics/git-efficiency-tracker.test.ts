@@ -1752,6 +1752,59 @@ describe('GitEfficiencyTracker', () => {
       );
     });
 
+    // The pull's conflict leaves the branch behind the remote, so the push
+    // the `;` or newline then runs is rejected.
+    it.each(['git pull; git push', 'git pull\ngit push'])(
+      'counts no push and one rejection when `%s` conflicts and the push is rejected',
+      (command) => {
+        tracker.recordToolCall(
+          makeRecord({ command, success: false, error: `${CONFLICT}\n${REJECTED}` }),
+        );
+        const metrics = tracker.getMetrics();
+        expect(metrics.pushCount).toBe(0);
+        expect(metrics.riskIndicators.pushRejections).toBe(1);
+        expect(metrics.mergeConflicts).toBe(1);
+      },
+    );
+
+    it('does not record a push that failed after a conflict in a ; list', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({ command: 'npm test', isTestCommand: true, timestamp: t }),
+      );
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git pull; git push',
+          success: false,
+          error: CONFLICT,
+          timestamp: t + 1_000,
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.pushCount).toBe(0);
+      expect(metrics.velocityMetrics.buildBeforePush).toBeNull();
+      expect(metrics.bestPractices.find((p) => p.id === 'verify_before_push')?.detail).toBe(
+        'No pushes yet.',
+      );
+    });
+
+    it('does not count a push or force push that failed without rejection text', () => {
+      for (const command of ['git push', 'git push --force', 'git push --force-with-lease']) {
+        tracker.recordToolCall(
+          makeRecord({
+            command,
+            success: false,
+            error: "fatal: Authentication failed for 'https://github.com/acme/widgets.git/'",
+          }),
+        );
+      }
+      const metrics = tracker.getMetrics();
+      expect(metrics.pushCount).toBe(0);
+      expect(metrics.velocityMetrics.buildBeforePush).toBeNull();
+      // The force-push checks judge the command run, so the attempts count there.
+      expect(metrics.forcePushes).toBe(2);
+    });
+
     it('does not count a heredoc-message commit that failed with unrecognized text', () => {
       const t = Date.now();
       tracker.recordToolCall(

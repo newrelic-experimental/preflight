@@ -1016,6 +1016,36 @@ describe('computeWorkspaceMetrics — chained and failed git commands', () => {
     expect(metrics.mergeConflicts).toBe(1);
   });
 
+  it.each(['git pull; git push', 'git pull\ngit push'])(
+    'counts no push and one rejection when `%s` conflicts and the push is rejected',
+    (command) => {
+      const records = chainActivities(command, 'ws-a', {
+        success: false,
+        error: `${CONFLICT}\n${REJECTED}`,
+      });
+      const metrics = computeWorkspaceMetrics(records, identity, null);
+      expect(metrics.pushCount).toBe(0);
+      expect(metrics.riskIndicators.pushRejections).toBe(1);
+      expect(metrics.mergeConflicts).toBe(1);
+    },
+  );
+
+  it('does not record a push or force push that failed', () => {
+    const records = [
+      ...chainActivities('git pull; git push', 'ws-a', { success: false, error: CONFLICT }),
+      ...['git push --force', 'git push --force-with-lease'].map((command) =>
+        gitActivity(command, 'ws-a', {
+          success: false,
+          error: "fatal: Authentication failed for 'https://github.com/acme/widgets.git/'",
+        }),
+      ),
+    ];
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.pushCount).toBe(0);
+    expect(metrics.lastPushTimestamp).toBeNull();
+    expect(metrics.velocityMetrics.buildBeforePush).toBeNull();
+  });
+
   it('counts neither the commit nor the push when a non-git step ahead of them failed', () => {
     const records = chainActivities(
       'npm test && git add -A && git commit -m x && git push',

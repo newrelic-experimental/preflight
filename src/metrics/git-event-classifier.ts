@@ -156,6 +156,17 @@ export function isCountedCommit(event: GitEvent): boolean {
   return event.type === 'commit' && event.success && !isAmendCommit(event.command ?? '');
 }
 
+/** A plain or force push that succeeded. A failed push keeps its push type
+ *  when its error shows no rejection, as when it fails on auth or exits a
+ *  `;` list after another step's conflict. Both reducers count pushes with
+ *  this, as they do commits with `isCountedCommit`. */
+export function isCountedPush(event: GitEvent): boolean {
+  return (
+    event.success &&
+    (event.type === 'push' || event.type === 'force_push' || event.type === 'force_push_lease')
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Classifier
 // ---------------------------------------------------------------------------
@@ -417,6 +428,26 @@ function lastGitSegment(
   return -1;
 }
 
+/** Index of the last `git push` when `error` holds rejection text, or -1. */
+function rejectedPushIndex(
+  segments: readonly string[],
+  isGit: readonly boolean[],
+  error: string,
+): number {
+  return REJECT_INDICATORS.some((re) => re.test(error))
+    ? lastGitSegment(segments, isGit, GIT_PUSH_RE)
+    : -1;
+}
+
+/** The lines of `error` that report a rejected push, so a push classified on
+ *  them is not typed by the conflict text beside them. */
+function rejectionText(error: string): string {
+  return error
+    .split('\n')
+    .filter((line) => REJECT_INDICATORS.some((re) => re.test(line)))
+    .join('\n');
+}
+
 /**
  * Index of the git segment whose output `error` is, or -1 when no segment's
  * is. The hook payload carries one error for the whole command, not one per
@@ -444,9 +475,7 @@ function errorSegmentIndex(
       return last;
     }
   }
-  const push = REJECT_INDICATORS.some((re) => re.test(error))
-    ? lastGitSegment(segments, isGit, GIT_PUSH_RE)
-    : -1;
+  const push = rejectedPushIndex(segments, isGit, error);
   const commit = COMMIT_FAILURE_INDICATORS.some((re) => re.test(error))
     ? lastGitSegment(segments, isGit, GIT_COMMIT_RE)
     : -1;
@@ -461,16 +490,19 @@ function errorSegmentIndex(
  * The hook reports one success/error pair for the whole command, so for a
  * failed command each segment's outcome is read off bash's grouping. The
  * failure goes to the segment the error text names (see `errorSegmentIndex`),
- * and the segments `&&` then kept from running are dropped. When the text
- * names none, the failure is taken to be the last command's, but any step
- * of the final `&&` run may be the one that failed, so the steps after its
- * first are dropped as possibly never run. A segment is marked succeeded
- * only when `&&` alone joins it to the step the failure goes to (see
+ * and the segments `&&` then kept from running are dropped. Rejection text
+ * also names the last push when other text names another segment, as the
+ * pull's conflict does in `git pull; git push`. When the text names none,
+ * the failure is taken to be the last command's, but any step of the final
+ * `&&` run may be the one that failed, so the steps after its first are
+ * dropped as possibly never run. A segment is marked succeeded only when
+ * `&&` alone joins it to the step the failure goes to (see
  * `provenSuccessStart`), so a commit before a rejected push or a failing
  * `gh pr create` still counts. Every other segment keeps the command's
- * `success`, which for a failed command cannot inflate a count. The target
- * directory comes from the whole command, so a `cd dir &&` in an earlier
- * segment still attributes every git segment.
+ * `success`, which for a failed command counts no commit or push (see
+ * `isCountedCommit` and `isCountedPush`). The target directory comes from
+ * the whole command, so a `cd dir &&` in an earlier segment still
+ * attributes every git segment.
  */
 export function classifyGitSegments(
   command: string,
@@ -480,7 +512,9 @@ export function classifyGitSegments(
   const chain = splitShellChain(command);
   const { segments, operators } = chain;
   const isGit = segments.map((s) => GIT_SEGMENT_RE.test(s));
-  let owner = errorSegmentIndex(chain, isGit, (record.error as string) ?? '');
+  const error = (record.error as string) ?? '';
+  let owner = errorSegmentIndex(chain, isGit, error);
+  const rejected = rejectedPushIndex(segments, isGit, error);
   // Segments [proven, failedAt) succeeded; (dropFrom, dropThrough] did not,
   // or may not, have run.
   let failedAt = -1;
@@ -503,7 +537,13 @@ export function classifyGitSegments(
     const forSegment =
       i === owner
         ? record
-        : { ...record, success: record.success || (i >= proven && i < failedAt), error: undefined };
+        : i === rejected
+          ? { ...record, success: false, error: rejectionText(error) }
+          : {
+              ...record,
+              success: record.success || (i >= proven && i < failedAt),
+              error: undefined,
+            };
     return [{ segment, event: classifyGitCommand(segment, forSegment, resolveRepo, targetDir) }];
   });
 }

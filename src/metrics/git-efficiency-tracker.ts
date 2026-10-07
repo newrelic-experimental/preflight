@@ -5,6 +5,7 @@ import {
   classifyGitSegments,
   isAmendCommit,
   isCountedCommit,
+  isCountedPush,
   processGhCommand,
   splitShellSegments,
   type GitEvent,
@@ -516,9 +517,7 @@ export class GitEfficiencyTracker {
     const resetHards = this.events.filter((e) => e.type === 'reset_hard').length;
     const discardedChanges = this.events.filter((e) => e.type === 'discard_changes').length;
     const pullCount = this.events.filter((e) => e.type === 'pull').length;
-    const pushCount = this.events.filter(
-      (e) => e.type === 'push' || e.type === 'force_push' || e.type === 'force_push_lease',
-    ).length;
+    const pushCount = this.events.filter(isCountedPush).length;
     const commitCount = this.events.filter(isCountedCommit).length;
     const branchOperations = this.events.filter((e) => e.type === 'branch').length;
 
@@ -810,6 +809,10 @@ export class GitEfficiencyTracker {
         break;
 
       case 'push': {
+        this.statusChecksSinceLastAction = 0;
+        // A failed push changed nothing on the remote, so it leaves the
+        // last-push state below as it was. The commit arm gates the same way.
+        if (!event.success) break;
         // buildBeforePush is only meaningful if the build/test happened AFTER the
         // most recent commit — a stale test from session start with many commits
         // in between doesn't protect the pushed code.
@@ -822,7 +825,6 @@ export class GitEfficiencyTracker {
           this.lastBuildOrTestTimestamp !== null &&
           (lastCommitTs === null || this.lastBuildOrTestTimestamp > lastCommitTs);
         this.consecutiveFailedPushes = 0;
-        this.statusChecksSinceLastAction = 0;
         break;
       }
 
@@ -849,6 +851,10 @@ export class GitEfficiencyTracker {
         ) {
           this.forceAfterReject++;
         }
+        this.statusChecksSinceLastAction = 0;
+        // The force-push checks above judge the command run, so a failed one
+        // still counts there; only a push that succeeded moves the state below.
+        if (!event.success) break;
         this.lastPushTimestamp = event.timestamp;
         {
           const lastCt =
@@ -860,11 +866,12 @@ export class GitEfficiencyTracker {
             (lastCt === null || this.lastBuildOrTestTimestamp > lastCt);
         }
         this.consecutiveFailedPushes = 0;
-        this.statusChecksSinceLastAction = 0;
         break;
 
       case 'force_push_lease':
         this.hasUsedForceWithLease = true;
+        this.statusChecksSinceLastAction = 0;
+        if (!event.success) break;
         this.lastPushTimestamp = event.timestamp;
         {
           const lastCt =
@@ -876,7 +883,6 @@ export class GitEfficiencyTracker {
             (lastCt === null || this.lastBuildOrTestTimestamp > lastCt);
         }
         this.consecutiveFailedPushes = 0;
-        this.statusChecksSinceLastAction = 0;
         break;
 
       case 'worktree':

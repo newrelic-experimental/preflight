@@ -1,4 +1,4 @@
-import { classifyGitCommand, classifyGitSegments } from './git-event-classifier.js';
+import { classifyGitCommand, classifyGitSegments, type GitEvent } from './git-event-classifier.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 const makeRecord = (overrides?: Partial<ToolCallRecord>): ToolCallRecord => ({
@@ -354,7 +354,12 @@ describe('classifyGitSegments error attribution', () => {
       'merge_conflict',
       'status',
     ]);
-    expect(classify('git pull; git push', CONFLICT)).toEqual(['merge_conflict', 'push']);
+    // The pull's conflict leaves the branch behind, so the push it then runs
+    // is rejected, and the rejection text still names the push.
+    expect(classify('git pull; git push', `${CONFLICT}\n${REJECTED}`)).toEqual([
+      'merge_conflict',
+      'push_rejected',
+    ]);
   });
 
   it('keeps every segment of a chain that succeeded', () => {
@@ -542,10 +547,62 @@ describe('classifyGitSegments under bash && and || grouping', () => {
     ]);
   });
 
-  it('keeps the command outcome for a step after a ; that the error does not name', () => {
-    expect(outcomes('git merge feature; git push', CONFLICT)).toEqual([
+  // A `;` or newline list exits with its last command's status, so a failed
+  // list's last step failed even when the error names an earlier one. The
+  // push keeps its `push` type, and its `false` keeps it out of the counts.
+  it.each(['git merge feature; git push', 'git merge feature\ngit push'])(
+    'keeps a failed final step in `%s` failed when the error names an earlier one',
+    (command) => {
+      expect(outcomes(command, CONFLICT)).toEqual([
+        ['merge_conflict', false],
+        ['push', false],
+      ]);
+    },
+  );
+});
+
+// One error can hold two failures' text, such as a pull's conflict and the
+// rejection of the push it left behind the remote.
+describe('classifyGitSegments when the error holds two failures', () => {
+  const resolveRepo = (): string | null => null;
+  const CONFLICT = 'CONFLICT (content): Merge conflict in a.ts\nAutomatic merge failed';
+  const REJECTED = ' ! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs';
+
+  const events = (command: string, error: string): GitEvent[] =>
+    classifyGitSegments(command, makeRecord({ command, success: false, error }), resolveRepo).map(
+      ({ event }) => event,
+    );
+  const outcomes = (command: string, error: string): [string, boolean][] =>
+    events(command, error).map((event) => [event.type, event.success]);
+
+  it.each(['git pull; git push', 'git pull\ngit push'])(
+    'types the push in `%s` rejected when conflict text names the pull',
+    (command) => {
+      const [pull, push] = events(command, `${CONFLICT}\n${REJECTED}`);
+      expect([pull!.type, pull!.success, pull!.files]).toEqual(['merge_conflict', false, ['a.ts']]);
+      expect([push!.type, push!.success, push!.files]).toEqual(['push_rejected', false, undefined]);
+    },
+  );
+
+  it('types a rejected push before the conflicting step rejected', () => {
+    expect(outcomes('git push; git pull', `${REJECTED}\n${CONFLICT}`)).toEqual([
+      ['push_rejected', false],
       ['merge_conflict', false],
-      ['push', false],
+    ]);
+  });
+
+  it('types a rejected push before a commit that names the error rejected', () => {
+    expect(
+      outcomes('git push; git commit -m x', `${REJECTED}\nnothing to commit, working tree clean`),
+    ).toEqual([
+      ['push_rejected', false],
+      ['commit', false],
+    ]);
+  });
+
+  it('records no push that the conflict kept from running', () => {
+    expect(outcomes('git pull && git push', `${CONFLICT}\n${REJECTED}`)).toEqual([
+      ['merge_conflict', false],
     ]);
   });
 });
