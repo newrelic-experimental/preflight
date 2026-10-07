@@ -5,12 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.59.1] - 2026-10-07
+## [1.59.2] - 2026-10-07
 
 ### Fixed
 
 - A session in the "Sessions today" tile no longer stays "Ready for review" after its pull request merges, including when the merge runs from a different session or worktree of the same repo. Preflight now records the number of the pull request that `gh pr create` opened, read from the PR URL in its output (only the number is kept). Sessions saved before this release have no recorded number, so their pull requests still read as open, and a command that opens more than one pull request, or whose output names more than one, records none. A `gh pr merge` counts only when it succeeded and didn't just turn auto-merge on or off. Success is the command's exit status, so in a compound command that status must be the merge's own: `gh pr merge 42 && git pull` counts, but `gh pr merge 42 | tail`, `gh pr merge 42 || echo failed`, `gh pr merge 42 &`, a merge in the `||` fallback of another command, a merge in a command whose quotes don't pair up, and a merge in a Bash call run in the background don't. Cursor and Windsurf hooks report no exit status, so a failed merge there still counts. A `gh pr create` or `gh pr merge` that may target another repo, through `-R`/`--repo`, `GH_REPO` or an earlier `cd` or `pushd` out of the repo, is never matched to this repo's pull requests.
 - Chained shell commands are split the way bash reads them, for the pull request status above and the Git Efficiency page's counts: text inside quotes or a `#` comment is not taken for a git or `gh pr` command, a backslash-newline joins two lines, a line ending in `&&`, `||` or `|` continues on the next, and `&` ends a command. A command whose quotes don't pair up is split on every operator.
+
+## [1.59.1] - 2026-10-07
+
+### Fixed
+
+- Audit trail and security events for tool calls made inside a subagent now carry the subagent's id and type (for example `Explore`) on installs whose Claude Code hook payload leaves `agent_id` or `agent_type` out, so sensitive-file access and destructive commands can be attributed to the subagent that made them. Preflight finds the call in the subagent's transcript, reading the transcript's newest lines as the call's hook record arrives, and takes the type from the metadata file Claude Code writes next to each transcript when the subagent starts. Both can still be missing on a call Claude Code has not yet written to the transcript when Preflight processes it: Claude Code writes transcript lines about 0.1 seconds after the model produces them, and a fast `Read` or `Grep` can finish sooner. They can also be missing on calls made before Preflight's scan for new transcripts, which runs every 2 seconds (10 seconds in `--local` mode), has found the subagent's transcript: a session's first subagent (in `--local` mode, its first in 24 hours), a subagent a workflow starts, and any subagent during the first scan interval after Preflight starts. Preflight checks at most 32 transcripts and reads at most 1 MiB per call, so a call can also be missed when its transcript is not among its session's 32 most recently written or sits behind more than 1 MiB of unread lines. A type the hook payload does send is kept as is, unless it is over 128 characters or contains control characters: such a value is dropped and the type is filled in the same way.
+- Subagent turn events (`AiSubagentTurn`) and subagent cost by type get the subagent's type while it runs, from the same metadata file or from the type the hook payload sends with the subagent's tool calls, instead of only after the parent's `Agent` call returns.
+- The long-running `--local` daemon no longer keeps a record of every subagent tool call it has ever seen. Subagent attribution now keeps at most 10,000 tool calls and 1,000 subagents, and drops entries unused for 24 hours.
 
 ## [1.59.0] - 2026-10-07
 

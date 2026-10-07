@@ -1,4 +1,9 @@
-import { AGENT_ID_PATTERN, AGENT_ID_RE } from './agent-id.js';
+import {
+  AGENT_ID_PATTERN,
+  AGENT_ID_RE,
+  MAX_AGENT_TYPE_LENGTH,
+  normalizeAgentType,
+} from './agent-id.js';
 
 describe('AGENT_ID_RE', () => {
   it('matches the plain anonymous-spawn shape', () => {
@@ -29,5 +34,25 @@ describe('AGENT_ID_PATTERN', () => {
     const re = new RegExp(`^prefix-(${AGENT_ID_PATTERN})-suffix$`);
     const match = re.exec('prefix-aconfluence-istio-investigator-ca0143b626a86424-suffix');
     expect(match?.[1]).toBe('aconfluence-istio-investigator-ca0143b626a86424');
+  });
+});
+
+describe('normalizeAgentType', () => {
+  it('accepts ordinary subagent types', () => {
+    expect(normalizeAgentType('Explore')).toBe('Explore');
+    expect(normalizeAgentType('general-purpose')).toBe('general-purpose');
+    expect(normalizeAgentType('nr-ui:ds-reviewer')).toBe('nr-ui:ds-reviewer');
+  });
+
+  it('rejects non-strings, empty, oversized, and control-character values', () => {
+    expect(normalizeAgentType(undefined)).toBeUndefined();
+    expect(normalizeAgentType(7)).toBeUndefined();
+    expect(normalizeAgentType('')).toBeUndefined();
+    expect(normalizeAgentType('x'.repeat(MAX_AGENT_TYPE_LENGTH + 1))).toBeUndefined();
+    expect(normalizeAgentType('x'.repeat(MAX_AGENT_TYPE_LENGTH))).toHaveLength(
+      MAX_AGENT_TYPE_LENGTH,
+    );
+    expect(normalizeAgentType('Explore\nInjected')).toBeUndefined();
+    expect(normalizeAgentType('Explore\u007f')).toBeUndefined();
   });
 });
