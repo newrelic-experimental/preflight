@@ -431,15 +431,19 @@ function lastGitSegment(
   return -1;
 }
 
-/** Index of the last `git push` when `error` holds rejection text, or -1. */
+/** Index of the last `git push` that `skip` doesn't rule out when `error`
+ *  holds rejection text, or -1. */
 function rejectedPushIndex(
   segments: readonly string[],
   isGit: readonly boolean[],
   error: string,
+  skip: (i: number) => boolean = () => false,
 ): number {
-  return REJECT_INDICATORS.some((re) => re.test(error))
-    ? lastGitSegment(segments, isGit, GIT_PUSH_RE)
-    : -1;
+  if (!REJECT_INDICATORS.some((re) => re.test(error))) return -1;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (isGit[i] && !skip(i) && GIT_PUSH_RE.test(segments[i]!)) return i;
+  }
+  return -1;
 }
 
 /** The lines of `error` that report a rejected push, so a push classified on
@@ -494,8 +498,8 @@ function errorSegmentIndex(
  * failed command each segment's outcome is read off bash's grouping. The
  * failure goes to the segment the error text names (see `errorSegmentIndex`),
  * and the segments `&&` then kept from running are dropped. Rejection text
- * also names the last push when other text names another segment, as the
- * pull's conflict does in `git pull; git push`. When the text names none,
+ * also names the last push that ran and may have failed when other text names
+ * another segment, as the pull's conflict does in `git pull; git push`. When the text names none,
  * the failure is taken to be the last command's, but any step of the final
  * `&&` run may be the one that failed, so the steps after its first are
  * dropped as possibly never run. A segment is marked succeeded only when
@@ -533,17 +537,16 @@ export function classifyGitSegments(
     if (dropFrom === failedAt && isGit[failedAt]) owner = failedAt;
   }
   const dropped = (i: number): boolean => i > dropFrom && i <= dropThrough;
-  // Rejection text names the last push that ran, so skip one `&&` dropped.
-  let rejected = -1;
-  if (REJECT_INDICATORS.some((re) => re.test(error))) {
-    for (let i = segments.length - 1; i >= 0; i--) {
-      if (isGit[i] && !dropped(i) && GIT_PUSH_RE.test(segments[i]!)) {
-        rejected = i;
-        break;
-      }
-    }
-  }
   const proven = failedAt === -1 ? -1 : provenSuccessStart(operators, failedAt);
+  const provenSucceeded = (i: number): boolean => i >= proven && i < failedAt;
+  // Rejection text names the last push that ran and may have failed: not one
+  // `&&` kept from running, nor one `&&` proves succeeded.
+  const rejected = rejectedPushIndex(
+    segments,
+    isGit,
+    error,
+    (i) => dropped(i) || provenSucceeded(i),
+  );
   const targetDir = gitCommandTargetDir(command, record.cwd as string | undefined);
   return segments.flatMap((segment, i) => {
     if (!isGit[i] || dropped(i)) return [];
@@ -554,7 +557,7 @@ export function classifyGitSegments(
           ? { ...record, success: false, error: rejectionText(error) }
           : {
               ...record,
-              success: record.success || (i >= proven && i < failedAt),
+              success: record.success || provenSucceeded(i),
               error: undefined,
             };
     return [{ segment, event: classifyGitCommand(segment, forSegment, resolveRepo, targetDir) }];

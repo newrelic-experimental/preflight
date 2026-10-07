@@ -609,6 +609,15 @@ describe('classifyGitSegments when the error holds two failures', () => {
     ]);
   });
 
+  it('keeps a push && proves succeeded when conflict output mentions a rejection', () => {
+    // A rebase that stops on a commit whose subject says "non-fast-forward".
+    const stopped = `CONFLICT (content): Merge conflict in a.ts\nerror: could not apply 1a2b3c... Handle non-fast-forward retry`;
+    expect(outcomes('git push && git pull --rebase && git push', stopped)).toEqual([
+      ['push', true],
+      ['merge_conflict', false],
+    ]);
+  });
+
   it('types a rejected push before the conflicting step rejected', () => {
     expect(outcomes('git push; git pull', `${REJECTED}\n${CONFLICT}`)).toEqual([
       ['push_rejected', false],
