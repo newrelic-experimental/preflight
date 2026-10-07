@@ -1248,6 +1248,17 @@ export const fetchContextComposition = (
 export const fetchContextEfficiency = (signal?: AbortSignal): Promise<ContextEfficiencyResponse> =>
   getJson<ContextEfficiencyResponse>('/api/context-efficiency', signal);
 
+// Org-reported spend a person typed into Settings (#742). Separate from, and
+// never folded into, Preflight's local estimate. `asOf` is epoch ms, set by
+// the server on save.
+export type ReportedSpendPeriod = 'daily' | 'weekly';
+
+export interface ReportedSpend {
+  readonly periodKind: ReportedSpendPeriod;
+  readonly amountUsd: number;
+  readonly asOf: number;
+}
+
 export interface SettingsPatch {
   developer?: string;
   teamId?: string | null;
@@ -1257,6 +1268,7 @@ export interface SettingsPatch {
   retainSessionsDays?: number | null;
   digestWebhookUrl?: string | null;
   digestSchedule?: string;
+  reportedSpend?: { periodKind: ReportedSpendPeriod; amountUsd: number } | null;
   alerts?: {
     personal?: {
       dailyCostUsd?: number;
@@ -1313,6 +1325,7 @@ export interface SettingsResponse {
   readonly retainSessionsDays: number | null;
   readonly digestWebhookUrl: string | null;
   readonly digestSchedule: string;
+  readonly reportedSpend: ReportedSpend | null;
   readonly alerts: {
     readonly personal: {
       readonly dailyCostUsd: number;

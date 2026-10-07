@@ -17,6 +17,7 @@ vi.mock('../api/client', () => ({
     dailyBudgetUsd: null,
     weeklyBudgetUsd: null,
     retainSessionsDays: null,
+    reportedSpend: null,
   })),
   fetchDiagnostics: vi.fn(async () => []),
   fetchObservabilityHealth: vi.fn(async () => ({
@@ -146,5 +147,85 @@ describe('Identity & Account save flow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save identity' }));
 
     expect(await screen.findByText(/disk full/)).toBeInTheDocument();
+  });
+});
+
+describe('Reported spend field', () => {
+  const baseSettings = {
+    developer: 'dev',
+    teamId: null,
+    accountId: null,
+    appName: 'preflight',
+    mode: 'local',
+    storagePath: '~/.newrelic-preflight',
+    highSecurity: false,
+    licenseKey: null,
+    sessionBudgetUsd: null,
+    dailyBudgetUsd: 10,
+    weeklyBudgetUsd: null,
+    retainSessionsDays: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('saves a daily reported value and offers no Clear button before one exists', async () => {
+    vi.mocked(client.fetchSettings).mockResolvedValue({
+      ...baseSettings,
+      reportedSpend: null,
+    } as never);
+    wrap(<Settings />);
+    const input = await screen.findByLabelText('Reported spend today');
+    expect(screen.queryByRole('button', { name: 'Clear' })).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: '7.5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save reported' }));
+    await waitFor(() =>
+      expect(client.patchSettings).toHaveBeenCalledWith({
+        reportedSpend: { periodKind: 'daily', amountUsd: 7.5 },
+      }),
+    );
+  });
+
+  it('switches the label and period to this week', async () => {
+    vi.mocked(client.fetchSettings).mockResolvedValue({
+      ...baseSettings,
+      reportedSpend: null,
+    } as never);
+    wrap(<Settings />);
+    await screen.findByLabelText('Reported spend today');
+    fireEvent.change(screen.getByLabelText('Reported spend period'), {
+      target: { value: 'weekly' },
+    });
+    fireEvent.change(screen.getByLabelText('Reported spend this week'), {
+      target: { value: '40' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save reported' }));
+    await waitFor(() =>
+      expect(client.patchSettings).toHaveBeenCalledWith({
+        reportedSpend: { periodKind: 'weekly', amountUsd: 40 },
+      }),
+    );
+  });
+
+  it('shows the saved value with its as-of time and clears it', async () => {
+    vi.mocked(client.fetchSettings).mockResolvedValue({
+      ...baseSettings,
+      reportedSpend: { periodKind: 'daily', amountUsd: 6.25, asOf: Date.now() },
+    } as never);
+    wrap(<Settings />);
+    expect(await screen.findByText(/\$6\.25 today, as of/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    await waitFor(() => expect(client.patchSettings).toHaveBeenCalledWith({ reportedSpend: null }));
+  });
+
+  it('keeps Save disabled until an amount is entered', async () => {
+    vi.mocked(client.fetchSettings).mockResolvedValue({
+      ...baseSettings,
+      reportedSpend: null,
+    } as never);
+    wrap(<Settings />);
+    await screen.findByLabelText('Reported spend today');
+    expect(screen.getByRole('button', { name: 'Save reported' })).toBeDisabled();
   });
 });

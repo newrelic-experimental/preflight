@@ -626,6 +626,13 @@ export interface ApiHandlerDeps {
   readonly localStore?: { peekAllBuffers: () => readonly { readonly [key: string]: unknown }[] };
 }
 
+/** Org-reported spend entered in Settings; `asOf` is epoch ms, stamped on save. */
+interface ReportedSpend {
+  readonly periodKind: 'daily' | 'weekly';
+  readonly amountUsd: number;
+  readonly asOf: number;
+}
+
 type RouteFn = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
 function jsonOk(res: ServerResponse, body: unknown): void {
@@ -3013,6 +3020,20 @@ export function createApiHandler(
 
   // ── Settings endpoints ──────────────────────────────────────────────────
 
+  // Org-reported spend a person typed into Settings (#742). Display-only: it is
+  // never fed to BudgetTracker, so the local estimate and its alerts are
+  // unaffected. A malformed on-disk value reads as absent rather than a 500.
+  const parseReportedSpend = (value: unknown): ReportedSpend | null => {
+    if (typeof value !== 'object' || value === null) return null;
+    const v = value as Record<string, unknown>;
+    if (v.periodKind !== 'daily' && v.periodKind !== 'weekly') return null;
+    if (typeof v.amountUsd !== 'number' || !Number.isFinite(v.amountUsd) || v.amountUsd < 0) {
+      return null;
+    }
+    if (typeof v.asOf !== 'number' || !Number.isFinite(v.asOf)) return null;
+    return { periodKind: v.periodKind, amountUsd: v.amountUsd, asOf: v.asOf };
+  };
+
   routes.set('GET /api/settings', (_req, res) => {
     if (!deps.config) return unavailable(res, 'config');
     const c = deps.config;
@@ -3050,6 +3071,7 @@ export function createApiHandler(
         'digestWebhookUrl' in disk ? (disk.digestWebhookUrl as string | null) : c.digestWebhookUrl,
       digestSchedule:
         typeof disk.digestSchedule === 'string' ? disk.digestSchedule : c.digestSchedule,
+      reportedSpend: parseReportedSpend(disk.reportedSpend),
       alerts: {
         personal: {
           dailyCostUsd:
@@ -3190,6 +3212,32 @@ export function createApiHandler(
         existing.digestSchedule = body.digestSchedule;
         digestUrlOnly = false;
       }
+    }
+    if ('reportedSpend' in body) {
+      const rs = body.reportedSpend;
+      if (rs === null) {
+        delete existing.reportedSpend;
+      } else {
+        const v = (typeof rs === 'object' ? rs : {}) as Record<string, unknown>;
+        if (
+          (v.periodKind !== 'daily' && v.periodKind !== 'weekly') ||
+          typeof v.amountUsd !== 'number' ||
+          !Number.isFinite(v.amountUsd) ||
+          v.amountUsd < 0
+        ) {
+          errors.push(
+            "reportedSpend must be null or { periodKind: 'daily' | 'weekly', amountUsd: non-negative number }",
+          );
+        } else {
+          // asOf is stamped here, never taken from the client.
+          existing.reportedSpend = {
+            periodKind: v.periodKind,
+            amountUsd: v.amountUsd,
+            asOf: Date.now(),
+          } satisfies ReportedSpend;
+        }
+      }
+      // GET /api/settings reads this from disk, so no restart is needed.
     }
     if ('alerts' in body) {
       const alertsBody = body.alerts as Record<string, unknown> | undefined;

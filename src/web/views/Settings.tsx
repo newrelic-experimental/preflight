@@ -10,9 +10,12 @@ import {
   qk,
   type DiagnosticCheck,
   type ObservabilityHealthResponse,
+  type ReportedSpend,
+  type ReportedSpendPeriod,
 } from '../api/client';
 import type { SettingsPatch } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
+import { fmtDateTime, formatUsd } from '../lib/format';
 import { Button, Card, Eyebrow, SectionHeader } from '../components/ui';
 
 interface SettingsData {
@@ -28,6 +31,7 @@ interface SettingsData {
   readonly dailyBudgetUsd: number | null;
   readonly weeklyBudgetUsd: number | null;
   readonly retainSessionsDays: number | null;
+  readonly reportedSpend: ReportedSpend | null;
 }
 
 function ReadOnlyField({ label, value }: { label: string; value: string | null | undefined }) {
@@ -69,6 +73,83 @@ function NullableNumberInput({
         }}
         className="text-xs bg-surface-3 border border-border-subtle rounded-md px-2 py-1 w-32 focus:outline-none focus:border-accent-green text-ink-base placeholder:text-ink-muted"
       />
+    </div>
+  );
+}
+
+const REPORTED_LABEL: Record<ReportedSpendPeriod, string> = {
+  daily: 'Reported spend today',
+  weekly: 'Reported spend this week',
+};
+
+/**
+ * Org-reported spend, typed in by hand (#742). Stored beside the budget caps
+ * but never feeds them: the Today meter draws it as a separate bar, and budget
+ * alerts keep firing on Preflight's own estimate.
+ */
+function ReportedSpendField({
+  current,
+  pending,
+  onSave,
+}: {
+  current: ReportedSpend | null;
+  pending: boolean;
+  onSave: (value: { periodKind: ReportedSpendPeriod; amountUsd: number } | null) => void;
+}): JSX.Element {
+  const [periodKind, setPeriodKind] = useState<ReportedSpendPeriod>(current?.periodKind ?? 'daily');
+  const [amount, setAmount] = useState<number | null>(null);
+  const canSave = amount !== null && Number.isFinite(amount) && amount >= 0;
+
+  return (
+    <div className="mt-4 pt-3 border-t border-border-subtle">
+      <div className="flex items-center gap-3 py-1.5">
+        <label htmlFor="reported-spend-amount" className="text-xs text-ink-muted w-36 shrink-0">
+          {REPORTED_LABEL[periodKind]}
+        </label>
+        <input
+          id="reported-spend-amount"
+          type="number"
+          min={0}
+          step="any"
+          value={amount ?? ''}
+          placeholder={current ? String(current.amountUsd) : 'USD'}
+          onChange={(e) => setAmount(e.target.value === '' ? null : Number(e.target.value))}
+          className="text-xs bg-surface-3 border border-border-subtle rounded-md px-2 py-1 w-32 focus:outline-none focus:border-accent-green text-ink-base placeholder:text-ink-muted"
+        />
+        <select
+          aria-label="Reported spend period"
+          value={periodKind}
+          onChange={(e) => setPeriodKind(e.target.value as ReportedSpendPeriod)}
+          className="text-xs bg-surface-3 border border-border-subtle rounded-md px-2 py-1 text-ink-base"
+        >
+          <option value="daily">today</option>
+          <option value="weekly">this week</option>
+        </select>
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={!canSave || pending}
+          onClick={() => {
+            if (amount === null) return;
+            onSave({ periodKind, amountUsd: amount });
+            setAmount(null);
+          }}
+        >
+          Save reported
+        </Button>
+        {current && (
+          <Button variant="ghost" size="sm" disabled={pending} onClick={() => onSave(null)}>
+            Clear
+          </Button>
+        )}
+      </div>
+      <p className="text-[10px] text-ink-muted">
+        {current
+          ? `${formatUsd(current.amountUsd)} ${current.periodKind === 'daily' ? 'today' : 'this week'}, as of ${fmtDateTime(current.asOf)}. `
+          : ''}
+        Your org&apos;s own figure, shown beside Preflight&apos;s estimate on Today. It does not
+        change the estimate or budget alerts, and takes effect without a restart.
+      </p>
     </div>
   );
 }
@@ -339,6 +420,12 @@ export function Settings(): JSX.Element {
           </Button>
         </div>
         {restartBanner('budgets')}
+
+        <ReportedSpendField
+          current={data.reportedSpend ?? null}
+          pending={mutation.isPending}
+          onSave={(reportedSpend) => mutation.mutate({ reportedSpend })}
+        />
       </Card>
 
       {/* Observability */}

@@ -9,6 +9,7 @@ import {
   type AntiPatternEvent,
 } from '../store/liveStore';
 import { Kpi } from '../components/Kpi';
+import { BudgetMeter } from '../components/BudgetMeter';
 import { AnimatedCard } from '../components/AnimatedCard';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
 import { EmptyState } from '../components/EmptyState';
@@ -62,6 +63,10 @@ import {
   fetchTodayAggregate,
   fetchObservabilityHealth,
   fetchUsageInsights,
+  fetchBudget,
+  fetchSettings,
+  type BudgetStatus,
+  type SettingsResponse,
   TodayAggregateResponse,
   type SessionStatus,
   ActivityHeatmapTodayResponse,
@@ -270,6 +275,20 @@ export function Today(): JSX.Element {
     refetchInterval: 10_000,
   });
 
+  // Same key and cadence as Alerts' Budget Status, so the two views share one
+  // cache entry. Settings supplies only the org-reported figure (#742).
+  const { data: budget } = useQuery<BudgetStatus>({
+    queryKey: qk.budget,
+    queryFn: ({ signal }) => fetchBudget(signal),
+    refetchInterval: 10_000,
+  });
+  const { data: settings } = useQuery<SettingsResponse>({
+    queryKey: qk.settings,
+    queryFn: ({ signal }) => fetchSettings(signal),
+    refetchInterval: 30_000,
+  });
+  const hasDailyBudget = budget?.daily != null && budget.daily.budgetUsd !== null;
+
   const persistedTodaySpend = useMemo(
     () => computeTodaySpend(todaySessions ?? []),
     [todaySessions],
@@ -445,7 +464,7 @@ export function Today(): JSX.Element {
         <>
           <AnimatedCard index={0} className="mb-4">
             <Card padding="lg" tone="elevated" glow="green">
-              <div className="grid grid-cols-5 gap-4">
+              <div className={`grid ${hasDailyBudget ? 'grid-cols-6' : 'grid-cols-5'} gap-4`}>
                 <Kpi
                   label="efficiency"
                   hero
@@ -491,6 +510,7 @@ export function Today(): JSX.Element {
                   animate
                   numericValue={flagsCount}
                 />
+                <BudgetMeter daily={budget?.daily} reported={settings?.reportedSpend ?? null} />
               </div>
             </Card>
             {watcherOff && (

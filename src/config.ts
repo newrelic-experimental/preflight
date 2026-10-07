@@ -206,6 +206,16 @@ export const ConfigFileSchema = z
     dataResidencyPremium: z.boolean().optional(),
     digestWebhookUrl: z.string().nullable().optional(),
     digestSchedule: z.string().optional(),
+    // Display-only org-reported spend (#742), written by PATCH /api/settings
+    // and read back from disk by GET. Never reaches BudgetTracker.
+    reportedSpend: z
+      .object({
+        periodKind: z.enum(['daily', 'weekly']),
+        amountUsd: z.number().nonnegative(),
+        asOf: z.number(),
+      })
+      .nullable()
+      .optional(),
     retainSessionsDays: z.number().nullable().optional(),
     // Legacy flat OTLP fields — deprecated in favor of the nested `otlp`
     // object below, but still accepted for backward compatibility (using

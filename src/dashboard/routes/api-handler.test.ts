@@ -16,6 +16,7 @@ import {
   toToolSelectionSummary,
 } from '../../metrics/tool-selection-scorer.js';
 import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
+import { BudgetTracker } from '../../metrics/budget-tracker.js';
 import { makeUsage } from '../../__test-utils__/token-usage.js';
 import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
@@ -5479,6 +5480,81 @@ describe('api-handler PATCH /api/settings', () => {
     const written = JSON.parse(fs.readFileSync(configFilePath, 'utf-8'));
     expect(written).toEqual({ teamId: 'team-a' });
   });
+
+  describe('reportedSpend', () => {
+    it('stores the value with a server-stamped asOf and needs no restart', async () => {
+      const configFilePath = makeConfigFilePath({ dailyBudgetUsd: 10 });
+      const handler = createApiHandler({ configFilePath });
+      const before = Date.now();
+      const req = makePatchRequest({
+        reportedSpend: { periodKind: 'daily', amountUsd: 7.25, asOf: 1 },
+      });
+      const { res, status, body } = fakeRes();
+      await handler(req, res);
+      expect(status()).toBe(200);
+      expect(JSON.parse(body())).toEqual({ ok: true, restartRequired: false });
+      const written = JSON.parse(fs.readFileSync(configFilePath, 'utf-8'));
+      expect(written.dailyBudgetUsd).toBe(10);
+      expect(written.reportedSpend.periodKind).toBe('daily');
+      expect(written.reportedSpend.amountUsd).toBe(7.25);
+      // The client-supplied asOf is ignored.
+      expect(written.reportedSpend.asOf).toBeGreaterThanOrEqual(before);
+    });
+
+    it('removes the value when patched with null', async () => {
+      const configFilePath = makeConfigFilePath({
+        reportedSpend: { periodKind: 'weekly', amountUsd: 40, asOf: 1 },
+      });
+      const handler = createApiHandler({ configFilePath });
+      const { res, status } = fakeRes();
+      await handler(makePatchRequest({ reportedSpend: null }), res);
+      expect(status()).toBe(200);
+      const written = JSON.parse(fs.readFileSync(configFilePath, 'utf-8'));
+      expect('reportedSpend' in written).toBe(false);
+    });
+
+    it.each([
+      ['a bad period', { periodKind: 'monthly', amountUsd: 1 }],
+      ['a negative amount', { periodKind: 'daily', amountUsd: -1 }],
+      ['a non-number amount', { periodKind: 'daily', amountUsd: '5' }],
+      ['a non-object', 5],
+    ])('rejects %s', async (_label, reportedSpend) => {
+      const configFilePath = makeConfigFilePath({});
+      const handler = createApiHandler({ configFilePath });
+      const { res, status, body } = fakeRes();
+      await handler(makePatchRequest({ reportedSpend }), res);
+      expect(status()).toBe(400);
+      expect(JSON.parse(body()).errors).toEqual([
+        "reportedSpend must be null or { periodKind: 'daily' | 'weekly', amountUsd: non-negative number }",
+      ]);
+    });
+
+    it('leaves BudgetTracker and GET /api/budget untouched', async () => {
+      const configFilePath = makeConfigFilePath({ dailyBudgetUsd: 10 });
+      const budgetTracker = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: 10,
+        weeklyBudgetUsd: null,
+      });
+      budgetTracker.updateCost(1, 8.5, 8.5);
+      const updateCost = jest.spyOn(budgetTracker, 'updateCost');
+      const handler = createApiHandler({ configFilePath, budgetTracker });
+      const statusBefore = budgetTracker.getStatus();
+
+      const { res: patchRes, status: patchStatus } = fakeRes();
+      await handler(
+        makePatchRequest({ reportedSpend: { periodKind: 'daily', amountUsd: 50 } }),
+        patchRes,
+      );
+      expect(patchStatus()).toBe(200);
+
+      const { res, body } = fakeRes();
+      await handler({ method: 'GET', url: '/api/budget' } as IncomingMessage, res);
+      expect(updateCost).not.toHaveBeenCalled();
+      expect(JSON.parse(body())).toEqual(JSON.parse(JSON.stringify(statusBefore)));
+      expect(budgetTracker.getStatus().daily.spentUsd).toBe(8.5);
+    });
+  });
 });
 
 describe('api-handler GET /api/settings', () => {
@@ -5644,6 +5720,23 @@ describe('api-handler GET /api/settings', () => {
     await handler(req, res);
     expect(status()).toBe(200);
     expect(JSON.parse(body()).licenseKey).toBeNull();
+  });
+  it('returns reportedSpend from disk, or null when absent or malformed', async () => {
+    const read = async (content: Record<string, unknown>) => {
+      const handler = createApiHandler({
+        config: fakeStartupConfig(),
+        configFilePath: makeConfigFile(content),
+      });
+      const { res, body } = fakeRes();
+      await handler({ method: 'GET', url: '/api/settings' } as IncomingMessage, res);
+      return JSON.parse(body()).reportedSpend;
+    };
+    const stored = { periodKind: 'daily', amountUsd: 6, asOf: 1_700_000_000_000 };
+    expect(await read({ reportedSpend: stored })).toEqual(stored);
+    expect(await read({})).toBeNull();
+    expect(
+      await read({ reportedSpend: { periodKind: 'daily', amountUsd: 'x', asOf: 1 } }),
+    ).toBeNull();
   });
 });
 

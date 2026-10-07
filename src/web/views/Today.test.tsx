@@ -2718,3 +2718,64 @@ describe('buildSpendTodaySeries()', () => {
     expect(series.every((d) => d.projectedUsd === null)).toBe(true);
   });
 });
+
+describe('Today view — daily budget meter', () => {
+  function stubBudget(dailyBudgetUsd: number | null, reportedSpend: unknown = null): void {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      const json = (v: unknown) =>
+        new Response(JSON.stringify(v), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      if (url.startsWith('/api/budget')) {
+        const period = (budgetUsd: number | null) => ({
+          budgetUsd,
+          spentUsd: 8.5,
+          pctUsed: budgetUsd === null ? null : (8.5 / budgetUsd) * 100,
+          exceeded: false,
+        });
+        return json({
+          session: period(null),
+          daily: period(dailyBudgetUsd),
+          weekly: period(null),
+          alerts: [],
+        });
+      }
+      if (url.startsWith('/api/settings')) return json({ reportedSpend });
+      return json([]);
+    }) as typeof fetch;
+  }
+
+  beforeEach(() => {
+    resetStore();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows the meter in the KPI strip when a daily budget is set', async () => {
+    stubBudget(10);
+    renderToday();
+    expect(await screen.findByText('daily budget')).toBeInTheDocument();
+    expect(screen.getByText('$8.50 / $10.00')).toBeInTheDocument();
+    expect(screen.getByText('85% used')).toBeInTheDocument();
+  });
+
+  it('leaves the strip unchanged when no daily budget is set', async () => {
+    stubBudget(null);
+    renderToday();
+    await waitFor(() =>
+      expect(globalThis.fetch).toHaveBeenCalledWith('/api/budget', expect.anything()),
+    );
+    expect(screen.queryByText('daily budget')).not.toBeInTheDocument();
+    expect(screen.getByText('flags').closest('.grid')?.className).toMatch(/grid-cols-5/);
+  });
+
+  it('adds the reported bar from Settings beside the estimate', async () => {
+    stubBudget(10, { periodKind: 'daily', amountUsd: 6, asOf: Date.now() });
+    renderToday();
+    expect(await screen.findByTestId('budget-meter-reported')).toBeInTheDocument();
+    expect(screen.getByText('$8.50 / $10.00')).toBeInTheDocument();
+  });
+});
