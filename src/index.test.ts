@@ -1635,24 +1635,23 @@ describe('stdio integration', () => {
     // The watch acts on that report only off Linux and Windows, so this checks
     // the drain-path wiring itself, on every platform: a loader hook wraps
     // the listener the engine subscribes, and marks each call on stderr.
+    // The hook files are fixed text, with no paths or values spliced in: the
+    // hook finds the built resolver by its URL suffix, hands its importers the
+    // shim, and resolves the shim's own sentinel import to the real module.
     const hookDir = mkdtempSync(join(tmpdir(), 'nr-staleid-activity-hook-'));
     const marker = 'pf-test: staleId activity reported';
-    const realResolver = pathToFileURL(
-      resolve(__dirname, '..', 'dist', 'hooks', 'session-resolver.js'),
-    ).href;
-    const shim = pathToFileURL(resolve(hookDir, 'session-resolver-shim.mjs')).href;
     writeFileSync(
       resolve(hookDir, 'session-resolver-shim.mjs'),
       [
-        `export * from ${JSON.stringify(realResolver)};`,
-        `import { watchPpidBreadcrumb as realWatch } from ${JSON.stringify(realResolver)};`,
+        "export * from 'pf-test-real-session-resolver';",
+        "import { watchPpidBreadcrumb as realWatch } from 'pf-test-real-session-resolver';",
         'export function watchPpidBreadcrumb(options = {}) {',
         '  const subscribe = options.subscribeToStaleIdActivity;',
         '  if (!subscribe) return realWatch(options);',
         '  return realWatch({',
         '    ...options,',
         '    subscribeToStaleIdActivity: (onActivity) =>',
-        `      subscribe(() => { process.stderr.write(${JSON.stringify(`${marker}\n`)}); onActivity(); }),`,
+        "      subscribe(() => { process.stderr.write('pf-test: staleId activity reported\\n'); onActivity(); }),",
         '  });',
         '}',
       ].join('\n'),
@@ -1660,10 +1659,14 @@ describe('stdio integration', () => {
     writeFileSync(
       resolve(hookDir, 'hooks.mjs'),
       [
+        "const SHIM = new URL('./session-resolver-shim.mjs', import.meta.url).href;",
+        'let realUrl;',
         'export async function resolve(specifier, context, next) {',
+        "  if (specifier === 'pf-test-real-session-resolver') return { url: realUrl, shortCircuit: true };",
         '  const result = await next(specifier, context);',
-        `  if (result.url === ${JSON.stringify(realResolver)} && context.parentURL !== ${JSON.stringify(shim)}) {`,
-        `    return { ...result, url: ${JSON.stringify(shim)}, shortCircuit: true };`,
+        "  if (result.url.endsWith('/dist/hooks/session-resolver.js')) {",
+        '    realUrl = result.url;',
+        '    return { ...result, url: SHIM, shortCircuit: true };',
         '  }',
         '  return result;',
         '}',
