@@ -207,7 +207,11 @@ const GIT_SEGMENT_RE = new RegExp(String.raw`^\s*${ENV_PREFIX}(?:\S*\/)?git\s+`)
 // Anchored the same way so a segment that only mentions "gh pr create"
 // partway through (a piped JSON fixture, a `gh pr comment` body, a commit
 // message) never matches.
-const GH_PR_COMMAND_RE = new RegExp(String.raw`^\s*${ENV_PREFIX}gh\s+pr\s+(\w+)\b(?:\s+(\d+))?`);
+// The number must end its word, so `gh pr merge 123-fix-login` names a
+// branch, not #123; a `)` closing a subshell also ends it.
+const GH_PR_COMMAND_RE = new RegExp(
+  String.raw`^\s*${ENV_PREFIX}gh\s+pr\s+(\w+)\b(?:\s+(\d+)(?=[\s)]|$))?`,
+);
 
 /** `gh pr <verb>` actions this tracks; any other verb returns null. */
 const GH_PR_VERB_ACTION: Record<string, PrEvent['action']> = {

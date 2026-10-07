@@ -727,6 +727,7 @@ describe('GitActivityRecorder', () => {
       'sleep 1 & gh pr merge 42 --squash',
       "# Claude's merge, once checks pass\ngh pr checks 42 --watch && gh pr merge 42 --squash",
       'echo issue#12 ${#arr} $# "#" && gh pr merge 42 --squash',
+      '(git fetch; gh pr merge 42)',
     ])('counts `%s`, whose success means the merge succeeded', (command) => {
       recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
       expect(merges()).toEqual([{ action: 'merge', prNumber: '42' }]);
@@ -891,6 +892,17 @@ describe('GitActivityRecorder', () => {
         action: 'merge',
         prNumber: '5',
       });
+    });
+
+    it.each(['gh pr merge 123-fix-login', 'gh pr merge 123-fix-login --squash'])(
+      'takes no PR number from a branch name that starts with digits: `%s`',
+      (command) => {
+        expect(processGhCommand(command, 1000)).toMatchObject({ action: 'merge', prNumber: null });
+      },
+    );
+
+    it('takes the PR number before the `)` closing a subshell', () => {
+      expect(processGhCommand('gh pr merge 5)', 1000)).toMatchObject({ prNumber: '5' });
     });
   });
 
