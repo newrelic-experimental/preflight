@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.59.3] - 2026-10-07
+## [1.59.4] - 2026-10-07
 
 ### Fixed
 
@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A chained git command reports one exit status for all its steps, so each step's outcome is now inferred from the error text and from bash's grouping, which reads `&&` and `||` left to right and a pipeline as one step whose status is its last command's. The failure goes to the step the text names: the push in `git commit -m x && git push` with a rejected push, the commit in that chain with nothing to commit, or, for conflict text, the earliest step of the `&&` run that can conflict (a plain `git stash` or `git checkout <branch>` cannot, nor can `git merge-base` or `git mergetool`), such as the pull in `git pull && git commit -m merge && git checkout other`. The steps `&&` then skipped are not recorded, so they count in none of `ai.git.commit_count`, `ai.git.push_count`, the build-before-push practice or the weekly panel. A step is recorded as succeeded only when `&&` alone joins it to the step the failure goes to, such as the commit before that rejected push. Every other step keeps the command's failure, so neither commit in `git commit -m x || git commit --no-verify -m x` counts, nor the commit in `git diff --quiet || git commit -am wip && git push`, which the `||` may have skipped. When the text names no step, the failure goes to the last command, and the steps of the final `&&` run after its first are not recorded, since any of them may not have run: a failing `npm test && git add -A && git commit -m x && git push` counts no commit and no push. That run's first step counts when `&&` alone joins it to the last command, so the commit in `git commit -m x && gh pr create` counts when gh fails, and also when the commit failed with text that names no git failure, such as a gpg signing error. In `git commit -m x && git log --oneline | head -1` the `|` keeps it from counting.
 - `ai.git.push_count` and the weekly panel count a push, and the build-before-push practice judges one, only when it succeeded. A push that fails on auth no longer counts, nor does the push in `git pull; git push`, or the two on separate lines, after the pull conflicts: a `;` or newline list exits with its last command's status, so the command's failure is the push's. When that push's error also shows a rejection, it counts as a rejected push, and the rejection goes to the last push that ran, not one `&&` then skipped. A push followed by a failing non-git step in a `;` or newline list, such as `git push -u origin feat` and a failing `gh pr create --fill` on the next line, doesn't count either, because nothing shows which step failed. A failed force push still counts in `ai.git.force_push_count` and the `--force-with-lease` practice, which judge the command run. Expect the push count to step down, including in the weekly panel for history recorded before this release, where a push chained with a later failing step was stored as failed.
 - Quoted text, such as a multi-line commit message or the `-m "$(cat <<'EOF' ... EOF)"` form, no longer splits a command into extra git steps, so the rules above apply to that commit and to a push chained after it.
+
+## [1.59.3] - 2026-10-07
+
+### Fixed
+
+- **A daily auto-update scheduled on an npm, pnpm, or Homebrew install failed every run, silently.** `preflight update` runs `git pull` and a rebuild, so it only works on a source clone, but setup offered the macOS LaunchAgent on every install. Setup now skips the auto-update prompt on a package-manager or Homebrew install and prints the upgrade command instead. `preflight schedule --time` refuses on such an install with the same hint and a non-zero exit. `preflight schedule --disable` still works. `preflight doctor` has a new "Update schedule" check that warns when `com.preflight.update.plist` is installed on an install where `preflight update` cannot run, and names the fix. One shared check decides whether `update` can run, so `update`, setup, `schedule`, and `doctor` agree.
 
 ## [1.59.2] - 2026-10-07
 
