@@ -709,6 +709,10 @@ describe('GitActivityRecorder', () => {
       'gh pr checks 42 --watch\n# && gh pr merge 42',
       'gh pr merge 42 --squash ||\n  # retry via <<web\n  echo failed',
       'gh pr merge 42 --body "see <<X" ||\n  echo failed',
+      'gh pr merge 42 --body "see <<X" &&\ngit pull\necho done',
+      'gh pr merge 42 --squash && grep -q MERGED <<<"$(gh pr view 42 --json state)"\necho done',
+      'gh pr merge 42 --squash && echo "<<EOF"\necho done',
+      'gh pr merge 42 --squash && echo $((1<<N))\necho done',
     ])('drops `%s`: the command can succeed while the merge failed or never ran', (command) => {
       recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
       expect(merges()).toEqual([]);
@@ -730,6 +734,13 @@ describe('GitActivityRecorder', () => {
       "# Claude's merge, once checks pass\ngh pr checks 42 --watch && gh pr merge 42 --squash",
       'echo issue#12 ${#arr} $# "#" && gh pr merge 42 --squash',
       '(git fetch; gh pr merge 42)',
+      "gh pr merge 42 --squash --body-file - <<'EOF'\nMerged.\nEOF",
+      'gh pr merge 42 --squash --body "$(cat <<\'EOF\'\nMerged after review.\nEOF\n)" && git pull',
+      'gh pr merge 42 --squash --body-file - <<-EOF &&\n\tMerged.\n\tEOF\ngit pull',
+      'gh pr merge 42 --squash && grep -q MERGED <<<"$(gh pr view 42 --json state)"',
+      'gh pr merge 42 --squash --body "see <<X"',
+      'gh pr merge 42 --body "see <<X" &&\n  git pull',
+      'gh pr merge 42 --squash && echo $((1<<2))',
     ])('counts `%s`, whose success means the merge succeeded', (command) => {
       recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
       expect(merges()).toEqual([{ action: 'merge', prNumber: '42' }]);

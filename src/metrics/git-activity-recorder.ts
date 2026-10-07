@@ -16,7 +16,7 @@ import {
   type GitEvent,
 } from './git-event-classifier.js';
 import { UNATTRIBUTED_WORKSPACE_KEY, WorktreeIdentityResolver } from './git-workspace-identity.js';
-import { stripHeredocBodies } from './local-session-aggregator.js';
+import { stripHeredocs } from './local-session-aggregator.js';
 import type { PrEvent } from './git-efficiency-tracker.js';
 
 /** `sessionId` used for commit records hydrated from `git log` rather than
@@ -124,7 +124,7 @@ export class GitActivityRecorder {
     if (!rawCommand) return;
     // Classify on the command *minus* any inline script bodies: a heredoc
     // that merely mentions git/gh words is not a git or PR operation.
-    const command = stripHeredocBodies(rawCommand);
+    const { text: command, unclosed: heredocUnclosed } = stripHeredocs(rawCommand);
     const chain = splitShellChain(command);
     const { segments } = chain;
 
@@ -142,14 +142,17 @@ export class GitActivityRecorder {
       // nothing, so neither counts; nor does a merge that only toggles
       // auto-merge, or one whose outcome the command's exit status doesn't
       // show (`gh pr merge 5 | tail`, or a Bash call run in the background,
-      // which reports success as soon as it starts). Every other verb stays
-      // real even on failure: `gh pr checks` exits non-zero when checks are
-      // failing, and that's still a genuine checks view.
+      // which reports success as soon as it starts). A heredoc that never
+      // closed hid the rest of the command, so what follows the merge is
+      // unknown. Every other verb stays real even on failure: `gh pr checks`
+      // exits non-zero when checks are failing, and that's still a genuine
+      // checks view.
       const changesPr = parsed.action === 'create' || parsed.action === 'merge';
       if (changesPr && record.success === false) continue;
       if (
         parsed.action === 'merge' &&
         (record.runInBackground === true ||
+          heredocUnclosed ||
           ghPrMergeTogglesAuto(segment) ||
           !segmentSuccessFollowsCommand(chain, i))
       ) {

@@ -1793,4 +1793,13 @@ describe('GitEfficiencyTracker heredoc misclassification', () => {
     const [event] = tracker.getMetrics().gitCommandTimeline;
     expect(event?.type).toBe('commit');
   });
+
+  it.each([
+    'grep -q MERGED <<<"$(gh pr view 42 --json state)"\ngit push',
+    'gh pr comment 42 --body "see <<X"\ngit push',
+  ])('counts the git command after a << that starts no heredoc: `%s`', (command) => {
+    const tracker = new GitEfficiencyTracker();
+    tracker.recordToolCall(makeRecord({ command } as Partial<ToolCallRecord>));
+    expect(tracker.getMetrics().pushCount).toBe(1);
+  });
 });

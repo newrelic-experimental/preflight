@@ -12,6 +12,7 @@ import {
   collectCommitsAcrossRepos,
   LocalSessionAggregator,
   RepoNameResolver,
+  stripHeredocs,
 } from './local-session-aggregator.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
 
@@ -644,5 +645,38 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
     const [summary] = summariesOf(agg);
     expect(summary?.estimatedCostUsd).toBe(2);
     expect(summary?.subagentCostUsd).toBe(2);
+  });
+});
+
+describe('stripHeredocs', () => {
+  it.each([
+    ['a closed heredoc', "cat <<'EOF'\ngit push\nEOF\ngit log", "cat <<'EOF'\ngit log"],
+    [
+      'a heredoc inside "$( … )"',
+      'git commit -m "$(cat <<\'EOF\'\nfix: git push\nEOF\n)" && git push',
+      'git commit -m "$(cat <<\'EOF\'\n)" && git push',
+    ],
+    ['a <<- heredoc', 'cat <<-EOF\n\tgit push\n\tEOF\ngit log', 'cat <<-EOF\ngit log'],
+    ['a here-string', 'grep -q x <<<"$(gh pr view 1)"\ngit push', null],
+    ['a double-quoted <<', 'gh pr comment 1 --body "see <<X"\ngit push', null],
+    ['a single-quoted <<', "echo 'a <<B'\ngit push", null],
+    ['a quoted "<<EOF"', 'echo "<<EOF"\ngit push', null],
+    ['a << in a comment with an apostrophe', "# don't <<X\ngit push", null],
+    ['a << before a number', 'echo $((1<<2))\ngit push', null],
+    [
+      'a quoted << before a real heredoc',
+      'echo "see <<X" && cat <<EOF\ngit push\nEOF\ngit log',
+      'echo "see <<X" && cat <<EOF\ngit log',
+    ],
+  ])('reads %s and reports no unclosed heredoc', (_label, command, text) => {
+    expect(stripHeredocs(command)).toEqual({ text: text ?? command, unclosed: false });
+  });
+
+  it.each([
+    ['a heredoc whose terminator never comes', 'cat <<EOF\ngit log\n', 'cat <<EOF'],
+    ['an unquoted << in arithmetic', 'echo $((1<<N))\ngit push', 'echo $((1<<N))'],
+    ['a quoted << whose quote never closes', 'echo "see <<X\ngit push', 'echo "see <<X'],
+  ])('drops the lines after %s and reports it unclosed', (_label, command, text) => {
+    expect(stripHeredocs(command)).toEqual({ text, unclosed: true });
   });
 });
