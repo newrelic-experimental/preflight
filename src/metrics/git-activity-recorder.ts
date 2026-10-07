@@ -124,7 +124,9 @@ export class GitActivityRecorder {
     if (!rawCommand) return;
     // Classify on the command *minus* any inline script bodies: a heredoc
     // that merely mentions git/gh words is not a git or PR operation.
-    const { text: command, unclosed: heredocUnclosed } = stripHeredocs(rawCommand);
+    const heredocs = stripHeredocs(rawCommand);
+    const command = heredocs.text;
+    const heredocsUncertain = heredocs.unclosed || heredocs.readingsDiffer;
     const chain = splitShellChain(command);
     const { segments } = chain;
 
@@ -143,16 +145,16 @@ export class GitActivityRecorder {
       // auto-merge, or one whose outcome the command's exit status doesn't
       // show (`gh pr merge 5 | tail`, or a Bash call run in the background,
       // which reports success as soon as it starts). A heredoc that never
-      // closed hid the rest of the command, so what follows the merge is
-      // unknown. Every other verb stays real even on failure: `gh pr checks`
-      // exits non-zero when checks are failing, and that's still a genuine
-      // checks view.
+      // closed hid the rest of the command, and a `<<` whose reading depends
+      // on quotes may have, so what follows the merge is unknown. Every other
+      // verb stays real even on failure: `gh pr checks` exits non-zero when
+      // checks are failing, and that's still a genuine checks view.
       const changesPr = parsed.action === 'create' || parsed.action === 'merge';
       if (changesPr && record.success === false) continue;
       if (
         parsed.action === 'merge' &&
         (record.runInBackground === true ||
-          heredocUnclosed ||
+          heredocsUncertain ||
           ghPrMergeTogglesAuto(segment) ||
           !segmentSuccessFollowsCommand(chain, i))
       ) {

@@ -129,6 +129,10 @@ export interface StrippedHeredocs {
    *  usually means a `<<` that bash doesn't read as a heredoc was taken for
    *  one, such as `$((1<<N))`, and the text left is not what bash ran. */
   readonly unclosed: boolean;
+  /** True when reading quotes changes which lines are kept, as when a `<<`
+   *  sits in quoted text. Which lines bash ran then rests on a quote reading
+   *  the scan can get wrong (`$'it\'s'`), so `text` may not be what ran. */
+  readonly readingsDiffer: boolean;
 }
 
 // `<<` or `<<-` and its delimiter word, but not the `<<<` of a here-string.
@@ -150,14 +154,17 @@ const COMMENT_AFTER_RE = /[\s;&|(<>]/;
  * (`$'it\'s'`) could otherwise hide a real one. When one of its heredocs never
  * closes, a second reading that knows quotes, `$( … )` and `#` comments
  * replaces it if that reading's quotes balance and all of its heredocs close,
- * so a `<<` in quoted text (`--body "see <<X"`) drops no lines.
+ * so a `<<` in quoted text (`--body "see <<X"`) drops no lines. Both readings
+ * always run, because a quoted `<<` that a real heredoc's terminator closes
+ * leaves the first reading closed but missing lines; `readingsDiffer` reports
+ * that.
  */
 export function stripHeredocs(command: string): StrippedHeredocs {
-  if (!command.includes('<<')) return { text: command, unclosed: false };
+  if (!command.includes('<<')) return { text: command, unclosed: false, readingsDiffer: false };
   const blind = scanHeredocs(command, false);
-  const quoted = blind.unclosed ? scanHeredocs(command, true) : null;
-  const { text, unclosed } = quoted?.balanced && !quoted.unclosed ? quoted : blind;
-  return { text, unclosed };
+  const quoted = scanHeredocs(command, true);
+  const { text, unclosed } = blind.unclosed && quoted.balanced && !quoted.unclosed ? quoted : blind;
+  return { text, unclosed, readingsDiffer: blind.text !== quoted.text };
 }
 
 /** The text of `stripHeredocs`. */
@@ -170,7 +177,7 @@ export function stripHeredocBodies(command: string): string {
 function scanHeredocs(
   command: string,
   readQuotes: boolean,
-): StrippedHeredocs & { readonly balanced: boolean } {
+): { readonly text: string; readonly unclosed: boolean; readonly balanced: boolean } {
   const kept: string[] = [];
   const pending: { tag: string; stripTabs: boolean }[] = [];
   // Open quotes and `(`/`$(` groups, innermost last, carried across lines.
@@ -179,8 +186,10 @@ function scanHeredocs(
   for (const line of command.split('\n')) {
     if (pending.length > 0) {
       const current = pending[0];
-      const candidate = current.stripTabs ? line.replace(/^\t+/, '') : line;
-      if (candidate.trim() === current.tag) pending.shift();
+      // bash ends a heredoc only on a line that is exactly its delimiter;
+      // `<<-` strips leading tabs, not spaces. A trailing `\r` is a CRLF line end.
+      const candidate = (current.stripTabs ? line.replace(/^\t+/, '') : line).replace(/\r$/, '');
+      if (candidate === current.tag) pending.shift();
       continue;
     }
 
