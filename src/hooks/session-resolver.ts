@@ -507,9 +507,11 @@ export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorP
  *   guess drains the guessed session's events too, and those never latch:
  *   our host's slot does not name that session. Activity reported before
  *   any lookup has succeeded can't be checked against the slot. If a lookup
- *   fails before or after it, that activity stops the parent level too, so
- *   a wrong guess goes uncorrected only when the guessed session's activity
- *   coincides with a failed `ps`.
+ *   fails, before or after that activity, the activity stops the parent
+ *   level too. A failed lookup is retried only on ticks 2, 4, 8, 16, ...
+ *   (about 0.3s, 1.8s, 9.8s and 26s into the watch), so a wrong guess goes
+ *   uncorrected whenever the guessed session's activity arrives while the
+ *   lookup is failing, which can last tens of seconds.
  * - A parent-level session that already has a live owning engine is not
  *   ours. Once skipped, an id stays skipped, so a neighbour whose engine
  *   later exits is not adopted then.
