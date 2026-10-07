@@ -882,6 +882,9 @@ async function main(): Promise<void> {
   // only when the initial resolution came from the collision-prone cwd
   // fallback — see resolvedViaCwdOnly) when shutdown fires.
   let ppidCorrectionAbort: AbortController | undefined;
+  // That watch's listener for tool calls drained under the cwd guess, set
+  // while it runs (see subscribeToStaleIdActivity in session-resolver.ts).
+  let cwdGuessActivity: { readonly staleId: string; readonly onActivity: () => void } | null = null;
 
   // True whenever the live sessionTraceId came from the collision-prone cwd
   // fallback and hasn't yet been ppid-confirmed. While true, the periodic
@@ -2074,6 +2077,9 @@ async function main(): Promise<void> {
           logger.warn('onRecord called before full initialization; skipping');
           return;
         }
+        if (cwdGuessActivity && rawRecord.sessionId === cwdGuessActivity.staleId) {
+          cwdGuessActivity.onActivity();
+        }
 
         // Capture active task ID before recordToolCall may close the current task
         const taskIdBeforeRecord =
@@ -3097,11 +3103,16 @@ async function main(): Promise<void> {
       // can (see the win32 branch's own comment), but a shared flag makes
       // that a documented invariant rather than an accident of timing.
       let corrected = false;
+      let activityListener: typeof cwdGuessActivity = null;
       void watchPpidBreadcrumb({
         storagePath: config!.storagePath,
         signal: ppidCorrectionAbort.signal,
         includeParentOfPpid: true,
         staleId,
+        subscribeToStaleIdActivity: (onActivity) => {
+          activityListener = { staleId, onActivity };
+          cwdGuessActivity = activityListener;
+        },
       })
         .then(async (ppidId) => {
           if (ppidCorrectionAbort?.signal.aborted || corrected) return;
@@ -3131,6 +3142,9 @@ async function main(): Promise<void> {
             logger.warn('PPID correction watch failed', { error: String(err) });
           }
           clearPendingConfirmation();
+        })
+        .finally(() => {
+          if (cwdGuessActivity === activityListener) cwdGuessActivity = null;
         });
 
       // On native Windows the ppid breadcrumb above never matches (see #686

@@ -629,16 +629,25 @@ describe('session-resolver', () => {
           readonly staleId: string;
           readonly execFileSync: ExecFileSyncFn;
           readonly platform?: NodeJS.Platform;
+          /** Times (ms after the watch starts) at which staleId activity is reported. */
+          readonly staleIdActivityAtMs?: readonly number[];
         },
       ): Promise<string | 'aborted'> {
         const ac = new AbortController();
         const timer = setTimeout(() => ac.abort(), abortAfterMs);
+        let onActivity: (() => void) | undefined;
+        const activityTimers = (options.staleIdActivityAtMs ?? []).map((ms) =>
+          setTimeout(() => onActivity?.(), ms),
+        );
         try {
           return await watchPpidBreadcrumb({
             ppid: options.ppid,
             storagePath: tmpDir,
             includeParentOfPpid: true,
             staleId: options.staleId,
+            subscribeToStaleIdActivity: (listener) => {
+              onActivity = listener;
+            },
             ancestry: {
               platform: options.platform ?? 'darwin',
               execFileSync: options.execFileSync,
@@ -650,6 +659,7 @@ describe('session-resolver', () => {
           throw err;
         } finally {
           clearTimeout(timer);
+          activityTimers.forEach(clearTimeout);
         }
       }
 
@@ -858,6 +868,108 @@ describe('session-resolver', () => {
           expect(result).toBe('aborted');
           expect(ps.calls).toBe(0);
         }
+      });
+
+      describe('with staleId activity reported', () => {
+        // Ticks land at ~100, 300, 800, 1800 and 3800ms.
+        const npmExecPid = 88031;
+        const hostPid = 88032;
+
+        /** `ps` fails on its first call only, like a one-off timeout under load. */
+        const psFailingOnce = (): { fn: ExecFileSyncFn; calls: number } => {
+          const state = { calls: 0, fn: (() => '') as ExecFileSyncFn };
+          state.fn = () => {
+            state.calls++;
+            if (state.calls === 1) throw new Error('spawnSync ps ETIMEDOUT');
+            return `${hostPid} ${npmExec}\n`;
+          };
+          return state;
+        };
+
+        it('stops reading the parent level once activity is drained while it names the guess', async () => {
+          // The host's hook writes its slot before appending the event the
+          // caller drains, so the slot named A when that activity arrived. No
+          // tick read it: all of A's activity and the /clear rewriting the
+          // slot to B fell between the 800ms and 1800ms ticks.
+          setTimeout(() => writeBreadcrumb(hostPid, 'sess-claude-a'), 1000);
+          setTimeout(() => writeBreadcrumb(hostPid, 'sess-claude-b'), 1200);
+
+          const result = await watchUntil(2600, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: psRow(hostPid, npmExec).fn,
+            staleIdActivityAtMs: [1100],
+          });
+          expect(result).toBe('aborted');
+        });
+
+        it('still corrects from the parent level while the guessed session stays active (#479)', async () => {
+          // The wrongly guessed Claude Code session stays active: its events
+          // drain under staleId before the first lookup, before our host's
+          // slot exists, and after the slot names the Copilot session.
+          setTimeout(() => writeBreadcrumb(hostPid, 'sess-copilot'), 1000);
+
+          const result = await watchUntil(2600, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude',
+            execFileSync: psRow(hostPid, npmExec).fn,
+            staleIdActivityAtMs: [50, 500, 900, 1100],
+          });
+          expect(result).toBe('sess-copilot');
+        });
+
+        it('stops reading the parent level after activity while the lookup is failing', async () => {
+          // With no parent pid cached the slot can't be read, so this activity
+          // could be ours under a slot that has since moved to B.
+          writeBreadcrumb(hostPid, 'sess-claude-b');
+
+          const result = await watchUntil(1000, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: psFailingOnce().fn,
+            staleIdActivityAtMs: [200],
+          });
+          expect(result).toBe('aborted');
+        });
+
+        it('stops reading the parent level when the lookup after unchecked activity fails', async () => {
+          writeBreadcrumb(hostPid, 'sess-claude-b');
+
+          const result = await watchUntil(1000, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: psFailingOnce().fn,
+            staleIdActivityAtMs: [50],
+          });
+          expect(result).toBe('aborted');
+        });
+
+        it('still confirms the guess from the direct ppid after activity latched the parent level', async () => {
+          setTimeout(() => writeBreadcrumb(hostPid, 'sess-claude-a'), 1000);
+          setTimeout(() => writeBreadcrumb(hostPid, 'sess-claude-b'), 1200);
+          setTimeout(() => writeBreadcrumb(npmExecPid, 'sess-claude-a'), 1300);
+
+          const result = await watchUntil(2600, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: psRow(hostPid, npmExec).fn,
+            staleIdActivityAtMs: [1100],
+          });
+          expect(result).toBe('sess-claude-a');
+        });
+
+        it('still confirms the guess from the direct ppid after unchecked activity', async () => {
+          writeBreadcrumb(hostPid, 'sess-claude-b');
+          setTimeout(() => writeBreadcrumb(npmExecPid, 'sess-claude-a'), 400);
+
+          const result = await watchUntil(1500, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: psFailingOnce().fn,
+            staleIdActivityAtMs: [200],
+          });
+          expect(result).toBe('sess-claude-a');
+        });
       });
 
       describe('reading the ppid command line', () => {

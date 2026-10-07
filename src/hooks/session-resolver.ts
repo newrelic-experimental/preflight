@@ -460,6 +460,12 @@ export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorP
         readonly includeParentOfPpid: true;
         /** The cwd-guessed id the caller already adopted. */
         readonly staleId: string;
+        /**
+         * Called once, synchronously, with a listener for the caller to invoke
+         * each time it drains hook activity filed under `staleId`. The
+         * listener never runs `ps`, and does nothing once the watch settles.
+         */
+        readonly subscribeToStaleIdActivity?: (onActivity: () => void) => void;
       }
   );
 
@@ -492,6 +498,15 @@ export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorP
  *   `/resume`), and adopting that as a correction would carry the old
  *   session's tool calls into the new one. So `staleId` coming back always
  *   means our ppid's own breadcrumb confirmed the guess.
+ * - The slot is also read each time the caller reports draining activity
+ *   under `staleId` (subscribeToStaleIdActivity). The host's hook writes the
+ *   slot before it appends the event, so this catches a slot that named the
+ *   guess only between two ticks. A wrong guess drains the guessed session's
+ *   events too, and those never latch: our host's slot does not name that
+ *   session. Activity reported before any lookup has succeeded can't be
+ *   checked against the slot. If a lookup fails before or after it, that
+ *   activity stops the parent level too, so a wrong guess goes uncorrected
+ *   only when the guessed session's activity coincides with a failed `ps`.
  * - A parent-level session that already has a live owning engine is not
  *   ours. Once skipped, an id stays skipped, so a neighbour whose engine
  *   later exits is not adopted then.
@@ -508,6 +523,9 @@ export async function watchPpidBreadcrumb(
   const ppid = options.ppid ?? process.ppid;
   const storagePath = options.storagePath ?? DEFAULT_STORAGE_DIR;
   const platform = options.ancestry?.platform ?? process.platform;
+  const staleId = options.includeParentOfPpid ? options.staleId : undefined;
+  const watchesParentLevel =
+    options.includeParentOfPpid === true && platform !== 'linux' && platform !== 'win32';
 
   let attempt = 0;
   let tickCount = 0;
@@ -518,9 +536,20 @@ export async function watchPpidBreadcrumb(
   // that a `ps` that keeps timing out (each attempt blocks for up to 2s)
   // costs little.
   let parentLevelPids: readonly number[] | undefined;
-  // Set once the parent slot names staleId; see the doc comment.
+  // Set once the parent slot names staleId, or staleId activity can't be
+  // checked against it; see the doc comment.
   let parentLevelDone = false;
+  let lookupFailed = false;
+  // staleId activity reported before any lookup ran. A successful lookup
+  // clears it: its tick reads the slot straight away.
+  let uncheckedActivity = false;
+  let settled = false;
   const skippedParentIds = new Set<string>();
+
+  const stopReadingParentLevel = (reason: string): void => {
+    parentLevelDone = true;
+    logger.debug(`${reason}; no longer reading the ppid parent breadcrumb`, { ppid, staleId });
+  };
 
   const readParentLevelPids = (): readonly number[] => {
     if (parentLevelPids) return parentLevelPids;
@@ -531,8 +560,11 @@ export async function watchPpidBreadcrumb(
         ppid,
         tick: tickCount,
       });
+      lookupFailed = true;
+      if (uncheckedActivity) stopReadingParentLevel('Activity under the cwd guess went unchecked');
       return [ppid];
     }
+    uncheckedActivity = false;
     if (lookup.parentPid !== null && isNpmExecWrapper(lookup.command)) {
       parentLevelPids = [ppid, lookup.parentPid];
     } else {
@@ -544,8 +576,26 @@ export async function watchPpidBreadcrumb(
     return parentLevelPids;
   };
 
+  // Reads the slot from the cached pids only: this runs on the caller's
+  // drain path, where a `ps` call could block for up to 2s.
+  const onStaleIdActivity = (): void => {
+    if (settled || !watchesParentLevel || parentLevelDone) return;
+    if (!parentLevelPids) {
+      if (lookupFailed) stopReadingParentLevel('Activity under the cwd guess went unchecked');
+      else uncheckedActivity = true;
+      return;
+    }
+    if (resolveFromAncestorBreadcrumb(storagePath, parentLevelPids)?.sessionId === staleId) {
+      stopReadingParentLevel(
+        'The ppid parent breadcrumb named the cwd guess as its activity drained',
+      );
+    }
+  };
+  if (options.includeParentOfPpid) options.subscribeToStaleIdActivity?.(onStaleIdActivity);
+
   return new Promise<string>((resolvePromise, rejectPromise) => {
     const onAbort = () => {
+      settled = true;
       rejectPromise(new Error('session resolution aborted'));
     };
     if (options.signal) {
@@ -570,20 +620,16 @@ export async function watchPpidBreadcrumb(
       if (sid) {
         logger.debug('Resolved corrected session_id from ppid breadcrumb', { sessionId: sid });
         if (options.signal) options.signal.removeEventListener('abort', onAbort);
+        settled = true;
         resolvePromise(sid);
         return;
       }
-      if (
-        options.includeParentOfPpid &&
-        !parentLevelDone &&
-        platform !== 'linux' &&
-        platform !== 'win32'
-      ) {
+      if (watchesParentLevel && !parentLevelDone) {
         // resolveFromAncestorBreadcrumb skips index 0, our ppid.
         const fromParent = resolveFromAncestorBreadcrumb(storagePath, readParentLevelPids());
         if (fromParent && !skippedParentIds.has(fromParent.sessionId)) {
           const { sessionId, pid } = fromParent;
-          if (sessionId === options.staleId) {
+          if (sessionId === staleId) {
             parentLevelDone = true;
             logger.debug('The ppid parent breadcrumb matches the cwd guess; no longer reading it', {
               sessionId,
@@ -601,6 +647,7 @@ export async function watchPpidBreadcrumb(
               pid,
             });
             if (options.signal) options.signal.removeEventListener('abort', onAbort);
+            settled = true;
             resolvePromise(sessionId);
             return;
           }

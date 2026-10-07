@@ -9,6 +9,7 @@ import {
   utimesSync,
   realpathSync,
   readFileSync,
+  appendFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
@@ -1403,6 +1404,8 @@ describe('stdio integration', () => {
     readonly ppidBreadcrumbDir: string;
     readonly readSessionId: () => Promise<string>;
     readonly waitForSessionId: (sessionId: string) => Promise<boolean>;
+    /** Appends one tool call under `sessionId` and waits until the engine has drained it. */
+    readonly drainToolCall: (sessionId: string) => Promise<void>;
     readonly close: () => Promise<void>;
   }> {
     const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
@@ -1445,11 +1448,13 @@ describe('stdio integration', () => {
       throw err;
     }
 
-    const readSessionId = async (): Promise<string> => {
+    const readStats = async (): Promise<{ session_id: string; tool_calls: number }> => {
       const result = await client.callTool({ name: 'nr_observe_get_session_stats', arguments: {} });
       const content = result.content as Array<{ type: string; text: string }>;
-      return (JSON.parse(content[0]?.text ?? '{}') as { session_id: string }).session_id;
+      return JSON.parse(content[0]?.text ?? '{}') as { session_id: string; tool_calls: number };
     };
+    const readSessionId = async (): Promise<string> => (await readStats()).session_id;
+    let toolUseCount = 0;
     return {
       storagePath,
       ppidBreadcrumbDir,
@@ -1460,6 +1465,26 @@ describe('stdio integration', () => {
           await new Promise((r) => setTimeout(r, 500));
         }
         return false;
+      },
+      drainToolCall: async (sessionId) => {
+        const before = (await readStats()).tool_calls;
+        const toolUseId = `toolu_drain_${++toolUseCount}`;
+        const ts = Date.now();
+        appendFileSync(
+          resolve(storagePath, `buffer-${sessionId}.jsonl`),
+          [
+            { mode: 'pre', tool: 'Bash', timestamp: ts, sessionId, toolUseId },
+            { mode: 'post', tool: 'Bash', timestamp: ts + 1, sessionId, toolUseId, success: true },
+          ]
+            .map((e) => JSON.stringify(e))
+            .join('\n') + '\n',
+          { mode: 0o600 },
+        );
+        for (let i = 0; i < 100; i++) {
+          if ((await readStats()).tool_calls > before) return;
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        throw new Error(`engine never drained the tool call under ${sessionId}`);
       },
       close: async () => {
         try {
@@ -1541,6 +1566,46 @@ describe('stdio integration', () => {
         writeFileSync(hostBreadcrumb, 'cleared-session-id');
         await new Promise((r) => setTimeout(r, 3500));
         expect(await engine.readSessionId()).toBe('neighbour-session-id');
+      } finally {
+        await engine.close();
+      }
+    },
+    30000,
+  );
+
+  itOffLinux(
+    'does not follow the host to a new session after a tool call drained under the cwd guess, behind an npm exec wrapper (#479)',
+    async () => {
+      // The host's slot names the guess only until its tool call is drained,
+      // then a /clear rewrites it, all between two ticks of the watch. The
+      // drained tool call is what stops the parent level.
+      const engine = await startCwdGuessedEngine(true);
+      try {
+        // Past the watch's early ticks, which come faster than every 2s.
+        await new Promise((r) => setTimeout(r, 4000));
+        const hostBreadcrumb = resolve(engine.ppidBreadcrumbDir, `${process.pid}.txt`);
+        writeFileSync(hostBreadcrumb, 'neighbour-session-id');
+        await engine.drainToolCall('neighbour-session-id');
+        writeFileSync(hostBreadcrumb, 'cleared-session-id');
+        await new Promise((r) => setTimeout(r, 3500));
+        expect(await engine.readSessionId()).toBe('neighbour-session-id');
+      } finally {
+        await engine.close();
+      }
+    },
+    30000,
+  );
+
+  itOffLinux(
+    'corrects a wrong cwd guess after draining tool calls of the guessed session, behind an npm exec wrapper (#479)',
+    async () => {
+      // A wrong guess drains the guessed session's tool calls under the
+      // guess. They don't stop the host's own breadcrumb correcting it.
+      const engine = await startCwdGuessedEngine(true);
+      try {
+        await engine.drainToolCall('neighbour-session-id');
+        writeFileSync(resolve(engine.ppidBreadcrumbDir, `${process.pid}.txt`), 'own-session-id');
+        expect(await engine.waitForSessionId('own-session-id')).toBe(true);
       } finally {
         await engine.close();
       }
