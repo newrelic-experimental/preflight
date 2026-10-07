@@ -5,11 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.59.3] - 2026-10-07
+## [1.59.4] - 2026-10-07
 
 ### Fixed
 
 - **Google Antigravity: every tool call failed after Preflight's `PostToolUse` hook ran.** Antigravity sends the same payload shape for `PreToolUse` and `PostToolUse`, so Preflight read each `PostToolUse` as `PreToolUse` and replied with `{"decision":"allow"}`, which Antigravity rejects for that event. Preflight now takes the event name from the hook command and replies `{}` to `PostToolUse`, and records it as the end of the tool call. Update `hooks.json` to run `preflight-collector PreToolUse` and `preflight-collector PostToolUse` (see the Antigravity section of `docs/ADAPTERS.md`). Without the argument, Preflight falls back to treating a payload with an `error` field as `PostToolUse`, so a successful call whose `PostToolUse` omits that field gets the `PreToolUse` reply and is recorded as a failed call.
+
+## [1.59.3] - 2026-10-07
+
+### Fixed
+
+- **A daily auto-update scheduled on an npm, pnpm, or Homebrew install failed every run, silently.** `preflight update` runs `git pull` and a rebuild, so it only works on a source clone, but setup offered the macOS LaunchAgent on every install. Setup now skips the auto-update prompt on a package-manager or Homebrew install and prints the upgrade command instead. `preflight schedule --time` refuses on such an install with the same hint and a non-zero exit. `preflight schedule --disable` still works. `preflight doctor` has a new "Update schedule" check that warns when `com.preflight.update.plist` is installed on an install where `preflight update` cannot run, and names the fix. One shared check decides whether `update` can run, so `update`, setup, `schedule`, and `doctor` agree.
 
 ## [1.59.2] - 2026-10-07
 
