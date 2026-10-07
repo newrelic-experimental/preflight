@@ -5,6 +5,7 @@ import {
   computeCrossProcessTodaySessionIds,
   buildContextReplayEvents,
 } from './api-handler.js';
+import { spawnSync } from 'node:child_process';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import * as fs from 'node:fs';
@@ -19,6 +20,7 @@ import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
 import { makeUsage } from '../../__test-utils__/token-usage.js';
 import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
+import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
 
 import type { ToolCallRecord } from '../../storage/types.js';
 import type { GitWorkspaceReport } from '../../metrics/git-workspace-report.js';
@@ -4201,6 +4203,281 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     const parsed = JSON.parse(body()) as SessionStatusPayload;
     expect(parsed.sessionStatus.counts.ready_for_review).toBe(1);
     expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['pr-session-1']);
+  });
+
+  it('clears ready_for_review once the PR number captured at create is merged', async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'pr-merged-1',
+            timeline: [
+              {
+                timestamp: startMs + 10_000,
+                durationMs: 500,
+                toolName: 'Bash',
+                success: true,
+                command: 'gh pr create --fill',
+                createdPrNumber: '42',
+              },
+              {
+                timestamp: startMs + 20_000,
+                durationMs: 500,
+                toolName: 'Bash',
+                success: true,
+                command: 'gh pr merge 42 --squash',
+              },
+            ],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const parsed = JSON.parse(body()) as SessionStatusPayload;
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    expect(parsed.sessionStatus.sessionIds.completed).toEqual(['pr-merged-1']);
+  });
+
+  const prSession = (
+    sessionId: string,
+    offsetMs: number,
+    command: string,
+    extra: {
+      repoName?: string;
+      cwd?: string;
+      createdPrNumber?: string;
+      success?: boolean;
+      runInBackground?: boolean;
+    },
+  ) => {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    return {
+      sessionId,
+      repoName: extra.repoName,
+      timeline: [
+        {
+          timestamp: startOfDay.getTime() + offsetMs,
+          durationMs: 500,
+          toolName: 'Bash',
+          success: extra.success ?? true,
+          command,
+          cwd: extra.cwd,
+          createdPrNumber: extra.createdPrNumber,
+          runInBackground: extra.runInBackground,
+        },
+      ],
+    };
+  };
+
+  const statusFor = async (sessions: unknown[]): Promise<SessionStatusPayload> => {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => sessions,
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    return JSON.parse(body()) as SessionStatusPayload;
+  };
+
+  it('clears ready_for_review when the same repo merges the PR from another session', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42 --squash', { repoName: 'acme/app' }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+  });
+
+  it('keeps ready_for_review when the same PR number is merged in a different repo', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42', { repoName: 'acme/other' }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it('keeps ready_for_review when a piped merge exits 0 but the merge itself may have failed', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42 --squash 2>&1 | tail -5', {
+        repoName: 'acme/app',
+      }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it('keeps ready_for_review when the merge ran in the background', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr checks 42 --watch && gh pr merge 42 --squash', {
+        repoName: 'acme/app',
+        runInBackground: true,
+      }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it('matches a merge run from the primary checkout to a PR created in a linked worktree', async () => {
+    const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+    const git = (cwd: string, ...args: string[]) =>
+      spawnSync('git', args, { cwd, env, stdio: 'ignore' });
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pr-773-')));
+    const primary = path.join(root, 'primary');
+    const linked = path.join(root, 'linked');
+    try {
+      fs.mkdirSync(primary);
+      git(primary, 'init', '-q');
+      git(
+        primary,
+        '-c',
+        'user.email=t@t',
+        '-c',
+        'user.name=t',
+        'commit',
+        '--allow-empty',
+        '-qm',
+        'i',
+      );
+      git(primary, 'worktree', 'add', '-q', linked);
+
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: linked, createdPrNumber: '42' }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: primary }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not match a merge to a create across sessions when neither has a repo', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', { createdPrNumber: '42' }),
+      prSession('merger', 20_000, 'gh pr merge 42', {}),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  // Claude Code reports a non-zero `gh pr merge` (pending checks, a conflict,
+  // branch protection) through PostToolUseFailure, persisted as success: false.
+  it('keeps ready_for_review when another session in the same repo fails to merge the PR', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42 --squash', {
+        repoName: 'acme/app',
+        success: false,
+      }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it.each(['gh pr merge 42 --auto --squash', 'gh pr merge 42 --disable-auto'])(
+    'keeps ready_for_review when `%s` only toggles auto-merge',
+    async (command) => {
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', {
+          repoName: 'acme/app',
+          createdPrNumber: '42',
+        }),
+        prSession('merger', 20_000, command, { repoName: 'acme/app' }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    },
+  );
+
+  it.each([
+    'gh pr merge 42 -R acme/other',
+    'gh pr merge 42 --repo=acme/other --squash',
+    'GH_REPO=acme/other gh pr merge 42',
+  ])('keeps ready_for_review when `%s` merges the same number in another repo', async (command) => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, command, { repoName: 'acme/app' }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it('resolves no worktree identity for buffer tool calls that record no git or PR activity', async () => {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const outsideRepo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pr-773-no-repo-')));
+    const bufferEvents = Array.from({ length: 5 }, (_, i) => {
+      const base = {
+        sessionId: 'reader',
+        toolUseId: `read-${i}`,
+        tool: 'Read',
+        cwd: outsideRepo,
+        timestamp: startOfDay.getTime() + 10_000 + i,
+      };
+      return [
+        { ...base, mode: 'pre', toolInput: { file_path: path.join(outsideRepo, `f${i}`) } },
+        { ...base, mode: 'post', success: true },
+      ];
+    }).flat();
+    const resolveSpy = jest.spyOn(WorktreeIdentityResolver.prototype, 'resolve');
+    try {
+      const handler = createApiHandler({
+        localStore: { peekAllBuffers: () => bufferEvents },
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+      const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+      const { res, status } = fakeRes();
+      await handler(req, res);
+      expect(status()).toBe(200);
+      expect(resolveSpy).not.toHaveBeenCalled();
+    } finally {
+      resolveSpy.mockRestore();
+      fs.rmSync(outsideRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps ready_for_review for a PR created in another repo with -R when the cwd repo merges that number', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill -R acme/other', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42', { repoName: 'acme/app' }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
   });
 
   it('marks a live session with ordinary tool calls as working', async () => {

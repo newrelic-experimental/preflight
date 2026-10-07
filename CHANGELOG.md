@@ -5,11 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.59.4] - 2026-10-07
+## [1.59.5] - 2026-10-07
 
 ### Fixed
 
 - A message containing "won't work" no longer counts as a correction of the assistant unless it opens on the phrase with a bare pronoun or no subject, after at most two leading words such as "yeah", "but" or "hmm, no," and an optional "I tried it and" ("That won't work, ...", "Yeah that definitely won't work", "Nah, won't work —", "I tried it and it won't work"), or its sentence or the sentence either side points back at the assistant's output: "you" with a past or -ing verb ("the regex you wrote", "you're mutating state"), "your" with something built ("your fix"), or "still won't work". A "you" that reports an idea ("the cache you suggested"), poses a condition with "if" or "unless" ("if you added a cache"), or takes a present or modal verb ("you need a lock") is not such a reference. Design discussion that used the phrase ("A cache won't work here since we need fresh reads") inflated correction rate, the high-correction-rate recommendation, and the CLAUDE.md-change verdict. A correction that names the code and gives a reason without pointing back ("The migration won't work, it drops the index") is not counted either. Sessions recorded before this version keep their counts, so a CLAUDE.md before/after comparison that spans the upgrade can show a drop the edit didn't cause.
+
+## [1.59.4] - 2026-10-07
+
+### Fixed
+
+- A session in the "Sessions today" tile no longer stays "Ready for review" after its pull request merges, including when the merge runs from a different session or worktree of the same repo. Preflight now records the number of the pull request that `gh pr create` opened, read from the PR URL in its output (only the number is kept). Sessions saved before this release have no recorded number, so their pull requests still read as open, and a command that opens more than one pull request, or whose output names more than one, records none. A `gh pr merge` counts only when it succeeded and didn't just turn auto-merge on or off. Success is the command's exit status, so in a compound command that status must be the merge's own: `gh pr merge 42 && git pull` counts, but `gh pr merge 42 | tail`, `gh pr merge 42 || echo failed`, `gh pr merge 42 &`, a merge in the `||` fallback of another command, a merge in a command whose quotes don't pair up, a merge in a command with a `<<` heredoc that no later line ends (which usually means text such as `$((1<<N))` was misread as one) or a `<<` in quoted text with lines after it, a merge whose `||`, `&&` or `|` is followed by nothing Preflight can read as a command, and a merge in a Bash call run in the background don't. Cursor and Windsurf hooks report no exit status, so a failed merge there still counts. A `gh pr create` or `gh pr merge` that may target another repo, through `-R`/`--repo`, `GH_REPO` or an earlier `cd` or `pushd` out of the repo, is never matched to this repo's pull requests.
+- Chained shell commands are split the way bash reads them, for the pull request status above and the Git Efficiency page's counts: text inside quotes or a `#` comment is not taken for a git or `gh pr` command, a backslash-newline joins two lines, a line ending in `&&`, `||` or `|` continues on the next, and `&` ends a command. A command whose quotes don't pair up is split on every operator. A `<<<` here-string is no longer taken for a heredoc, and neither is a `<<` inside quotes or a `#` comment that no later line ends, so the commands after it count. As in bash, a heredoc ends only on a line that is exactly its delimiter, and `<<-` strips leading tabs but not spaces.
 
 ## [1.59.3] - 2026-10-07
 
