@@ -33,7 +33,10 @@ import { ActivityStore } from '../../metrics/git-activity-store.js';
 import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
 import { resolveScopeParam, resolveWindowParam } from '../../metrics/git-window-params.js';
 import type { WorktreeIdentity } from '../../metrics/git-workspace-identity.js';
-import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
+import {
+  UNATTRIBUTED_WORKSPACE_KEY,
+  WorktreeIdentityResolver,
+} from '../../metrics/git-workspace-identity.js';
 import type { ScopeRef } from '../../metrics/git-workspace-report.js';
 import { ReplaySessionCache } from '../../metrics/git-workspace-reporter.js';
 import type { GitWorkspaceReportWithWindow } from '../../metrics/git-workspace-reporter.js';
@@ -1313,24 +1316,38 @@ function isPrRecord(
   return record.kind === 'pr';
 }
 
-// A 'create' with a null prNumber can never be matched by a later 'merge'
-// (gh/MCP always resolve a real number once one exists), so it always counts
-// as open. `records` must be sorted ascending by timestamp.
-function countOpenPrs(records: readonly Extract<GitActivityRecord, { kind: 'pr' }>[]): number {
+type PrRecord = Extract<GitActivityRecord, { kind: 'pr' }>;
+
+// Identifies the PR a numbered record refers to: the repo (the git common dir,
+// shared by every worktree of one clone) plus the number. A merge run from
+// another session or worktree of the same repo matches; the same number in
+// another repo does not. A record with no resolvable repo matches only within
+// its own session.
+function prMatchKey(record: PrRecord, repoKeyByWorkspace: ReadonlyMap<string, string>): string {
+  const repo =
+    record.workspaceKey === UNATTRIBUTED_WORKSPACE_KEY
+      ? `${UNATTRIBUTED_WORKSPACE_KEY}:${record.sessionId}`
+      : (repoKeyByWorkspace.get(record.workspaceKey) ?? record.workspaceKey);
+  return `${repo}#${record.prEvent.prNumber ?? ''}`;
+}
+
+// A 'create' whose number was never captured (no PR URL in its output, or a
+// session persisted before createdPrNumber existed) can't be matched, so it
+// always counts as open. `mergeTimesByKey` spans every session in the window.
+function countOpenPrs(
+  records: readonly PrRecord[],
+  mergeTimesByKey: ReadonlyMap<string, readonly number[]>,
+  repoKeyByWorkspace: ReadonlyMap<string, string>,
+): number {
   let open = 0;
-  for (let i = 0; i < records.length; i++) {
-    const event = records[i].prEvent;
-    if (event.action !== 'create') continue;
-    if (event.prNumber === null) {
+  for (const record of records) {
+    if (record.prEvent.action !== 'create') continue;
+    if (record.prEvent.prNumber === null) {
       open++;
       continue;
     }
-    const merged = records
-      .slice(i + 1)
-      .some(
-        (later) => later.prEvent.action === 'merge' && later.prEvent.prNumber === event.prNumber,
-      );
-    if (!merged) open++;
+    const merges = mergeTimesByKey.get(prMatchKey(record, repoKeyByWorkspace)) ?? [];
+    if (!merges.some((ts) => ts >= record.timestamp)) open++;
   }
   return open;
 }
@@ -1385,16 +1402,29 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
     peeked as unknown as readonly HookEvent[],
   ).filter((record) => record.timestamp >= startMs);
   for (const record of bufferToolCalls) activityRecorder.recordToolCall(record);
+  // Only replayed sessions contribute repo keys. Buffer records carry no cwd
+  // (pairToolCallsFromBufferEvents doesn't copy it), so their PR activity is
+  // 'unattributed' and matches within its own session until the periodic
+  // session checkpoint persists it with a cwd.
+  const repoKeyByWorkspace = new Map<string, string>();
   for (const session of todaySessions) {
     const replayed = input.replayCache.replay(session, identityResolver);
     for (const record of replayed.records) activityStore.ingest(record);
+    for (const [key, identity] of replayed.identities)
+      repoKeyByWorkspace.set(key, identity.repoKey);
   }
-  const prRecordsBySession = new Map<string, Array<Extract<GitActivityRecord, { kind: 'pr' }>>>();
+  const prRecordsBySession = new Map<string, PrRecord[]>();
+  const mergeTimesByKey = new Map<string, number[]>();
   for (const record of activityStore.query({ since: startMs, until: now })) {
     if (!isPrRecord(record)) continue;
     const list = prRecordsBySession.get(record.sessionId);
     if (list) list.push(record);
     else prRecordsBySession.set(record.sessionId, [record]);
+    if (record.prEvent.action !== 'merge' || record.prEvent.prNumber === null) continue;
+    const key = prMatchKey(record, repoKeyByWorkspace);
+    const times = mergeTimesByKey.get(key);
+    if (times) times.push(record.timestamp);
+    else mergeTimesByKey.set(key, [record.timestamp]);
   }
 
   const counts = Object.fromEntries(SESSION_STATUSES.map((s) => [s, 0])) as Record<
@@ -1408,7 +1438,11 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
     const status = deriveSessionStatus({
       live: liveSet.has(sessionId),
       lastToolName: lastToolBySession.get(sessionId)?.toolName ?? null,
-      openPrCount: countOpenPrs(prRecordsBySession.get(sessionId) ?? []),
+      openPrCount: countOpenPrs(
+        prRecordsBySession.get(sessionId) ?? [],
+        mergeTimesByKey,
+        repoKeyByWorkspace,
+      ),
     });
     counts[status]++;
     idsByStatus[status].push(sessionId);

@@ -207,7 +207,11 @@ const GIT_SEGMENT_RE = new RegExp(String.raw`^\s*${ENV_PREFIX}(?:\S*\/)?git\s+`)
 // Anchored the same way so a segment that only mentions "gh pr create"
 // partway through (a piped JSON fixture, a `gh pr comment` body, a commit
 // message) never matches.
-const GH_PR_COMMAND_RE = new RegExp(String.raw`^\s*${ENV_PREFIX}gh\s+pr\s+(\w+)\b(?:\s+(\d+))?`);
+// The number must end its word, so `gh pr merge 123-fix-login` names a
+// branch, not #123; a `)` closing a subshell also ends it.
+const GH_PR_COMMAND_RE = new RegExp(
+  String.raw`^\s*${ENV_PREFIX}gh\s+pr\s+(\w+)\b(?:\s+(\d+)(?=[\s)]|$))?`,
+);
 
 /** `gh pr <verb>` actions this tracks; any other verb returns null. */
 const GH_PR_VERB_ACTION: Record<string, PrEvent['action']> = {
@@ -219,11 +223,122 @@ const GH_PR_VERB_ACTION: Record<string, PrEvent['action']> = {
   view: 'view',
 };
 
-/** Splits a shell command into its top-level segments on `||`, `&&`, `;`,
- *  `|`, and newline. Strip heredoc bodies first so a surviving newline really
- *  does start a new command. */
+/** A shell command's segments and the operators between them:
+ *  `operators[i]` joins `segments[i]` to `segments[i + 1]`. */
+export interface ShellChain {
+  readonly segments: readonly string[];
+  readonly operators: readonly string[];
+  /** False when a quote never closed, so where each segment ends is a guess
+   *  (see `splitShellChain`). */
+  readonly quotesBalanced: boolean;
+}
+
+// Line breaks, blank lines and comment lines right after `||`, `&&` or `|`,
+// where bash reads on to the next line for the rest of the command.
+const CONTINUED_LINES_RE = /(?:[ \t]*(?:#[^\n]*)?\n)+/y;
+
+// Characters that end a word. `)` is left out because it also closes a
+// `$( … )` inside a word.
+const WORD_BREAK_RE = /[ \t(<>]/;
+
+/**
+ * Splits a shell command on its top-level `||`, `&&`, `;`, `|`, `&` and
+ * newline operators, read the way bash reads them. An operator inside quotes
+ * or a comment is text. A `#` at the start of the command, after an operator
+ * or after a `WORD_BREAK_RE` character starts a comment, which runs to the end
+ * of its line and is left out of the segment. A backslash-newline joins two
+ * lines, and after `||`, `&&` or `|` the line breaks and comment lines before
+ * the next command are skipped, so every segment begins at its command.
+ * Segments are not trimmed. `|&` is reported as `|`, and the `&` of a
+ * redirection (`2>&1`, `&>file`) is not an operator. Strip heredoc bodies
+ * first so a surviving newline really does start a new command.
+ *
+ * bash stops with an error at a quote that never closes, so meeting one in a
+ * command that succeeded means this scan misread it, as it does `$'it\'s'`.
+ * Such a command is split on every operator, quoted or commented, which keeps
+ * every command it holds, and `quotesBalanced` is false.
+ */
+export function splitShellChain(command: string): ShellChain {
+  const chain = scanShellChain(command, true);
+  return chain.quotesBalanced
+    ? chain
+    : { ...scanShellChain(command, false), quotesBalanced: false };
+}
+
+/** `splitShellChain`'s scan. With `readQuotes` false, quote characters and
+ *  `#` are plain text. */
+function scanShellChain(command: string, readQuotes: boolean): ShellChain {
+  const segments: string[] = [];
+  const operators: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+  let wordStart = true;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote === "'") {
+      current += ch;
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (ch === '\\') {
+      if (command[i + 1] !== '\n') {
+        current += command.slice(i, i + 2);
+        wordStart = false;
+      }
+      i++;
+      continue;
+    }
+    if (quote === '"') {
+      current += ch;
+      if (ch === '"') quote = null;
+      continue;
+    }
+    if (readQuotes && (ch === '"' || ch === "'")) {
+      current += ch;
+      quote = ch;
+      wordStart = false;
+      continue;
+    }
+    if (readQuotes && ch === '#' && wordStart) {
+      const lineEnd = command.indexOf('\n', i);
+      i = (lineEnd === -1 ? command.length : lineEnd) - 1;
+      continue;
+    }
+    const pair = command.slice(i, i + 2);
+    let operator: string;
+    if (pair === '||' || pair === '&&' || pair === '|&') {
+      operator = pair === '|&' ? '|' : pair;
+      i++;
+    } else if (ch === '|' || ch === ';' || ch === '\n') {
+      operator = ch;
+    } else if (
+      ch === '&' &&
+      command[i - 1] !== '>' &&
+      command[i - 1] !== '<' &&
+      command[i + 1] !== '>'
+    ) {
+      operator = ch;
+    } else {
+      current += ch;
+      wordStart = WORD_BREAK_RE.test(ch);
+      continue;
+    }
+    segments.push(current);
+    operators.push(operator);
+    current = '';
+    wordStart = true;
+    if (operator === '||' || operator === '&&' || operator === '|') {
+      CONTINUED_LINES_RE.lastIndex = i + 1;
+      if (CONTINUED_LINES_RE.test(command)) i = CONTINUED_LINES_RE.lastIndex - 1;
+    }
+  }
+  segments.push(current);
+  return { segments, operators, quotesBalanced: quote === null };
+}
+
+/** The segments of `splitShellChain`, without the operators. */
 export function splitShellSegments(command: string): string[] {
-  return command.split(/\|\||&&|;|\||\n/);
+  return [...splitShellChain(command).segments];
 }
 
 /** The PrEvent a `gh pr <verb>` segment denotes, or null when it is not one. */
@@ -233,6 +348,107 @@ export function processGhCommand(command: string, timestamp: number): PrEvent | 
   const action = GH_PR_VERB_ACTION[match[1]];
   if (!action) return null;
   return { timestamp, action, prNumber: match[2] ?? null };
+}
+
+// `-R`/`--repo` and a `GH_REPO=` prefix point gh at a repo other than the
+// cwd's. Any short-flag cluster holding an `R` (`-dR`) counts too, which errs
+// toward treating the segment as aimed elsewhere.
+const GH_REPO_OVERRIDE_RE = /(?:^|\s)(?:-[A-Za-z]*R|--repo(?=[\s=]|$)|GH_REPO=)/;
+
+// `--auto` queues a merge until its requirements pass and `--disable-auto`
+// cancels one, so neither merged anything when it ran.
+const GH_PR_AUTO_MERGE_RE = /(?:^|\s)--(?:auto|disable-auto)(?=[\s=]|$)/;
+
+/** True when a `gh` segment names its repo explicitly, so a PR number in it
+ *  may belong to a repo other than the cwd's. */
+export function ghSegmentOverridesRepo(segment: string): boolean {
+  return GH_REPO_OVERRIDE_RE.test(segment);
+}
+
+/** True when a `gh pr merge` segment only enables or disables auto-merge. */
+export function ghPrMergeTogglesAuto(segment: string): boolean {
+  return GH_PR_AUTO_MERGE_RE.test(segment);
+}
+
+// Blank, a comment, or only the `)`/`}` closing groups that end with the
+// segment before it.
+const NO_COMMAND_RE = /^[\s)}]*(?:#[^\n]*)?$/;
+const QUOTED_SPAN_RE = /"(?:[^"\\]|\\.)*"|'[^']*'/g;
+
+/** Net groups (`( … )`, `{ … }`, `$( … )`) a segment opens, ignoring quoted
+ *  brackets. */
+function groupsOpened(segment: string): number {
+  const bare = segment.replace(QUOTED_SPAN_RE, '');
+  return (bare.match(/[({]/g)?.length ?? 0) - (bare.match(/[)}]/g)?.length ?? 0);
+}
+
+/** True when a segment runs no command of its own. */
+export function segmentRunsNoCommand(segment: string): boolean {
+  return NO_COMMAND_RE.test(segment);
+}
+
+/**
+ * True when the command succeeding means its segment `index` ran and
+ * succeeded. A hook reports one exit status for the whole command, so that
+ * holds only when the segment's own status decides it: the segment is not
+ * piped into anything or put in the background, neither it nor a group
+ * around it is the fallback of a `||`, and nothing follows it except `&&`
+ * steps, which run only if it succeeded. A trailing `;` or newline runs
+ * nothing more and is ignored. bash can't end a list on `||`, `&&` or `|`,
+ * so a segment that runs nothing after one of those means text was stripped
+ * or misread, and the merge doesn't count. A chain whose quotes did not
+ * balance shows none of this.
+ */
+export function segmentSuccessFollowsCommand(chain: ShellChain, index: number): boolean {
+  const { segments, operators } = chain;
+  if (!chain.quotesBalanced) return false;
+  let lastRun = operators.length;
+  while (
+    lastRun > index &&
+    segmentRunsNoCommand(segments[lastRun]) &&
+    (operators[lastRun - 1] === ';' || operators[lastRun - 1] === '\n')
+  ) {
+    lastRun--;
+  }
+  for (let j = index; j < lastRun; j++) {
+    // `&& x | y` is one `&&` step.
+    if (operators[j] !== '&&' && (operators[j] !== '|' || j === index)) return false;
+    if (segmentRunsNoCommand(segments[j + 1])) return false;
+  }
+  // The segment, then the segment opening each group it sits in.
+  const starts = [index];
+  let opened = 0;
+  for (let j = index - 1; j >= 0; j--) {
+    opened += groupsOpened(segments[j]);
+    if (opened > 0) {
+      starts.push(j);
+      opened = 0;
+    }
+  }
+  return starts.every((start) => {
+    let pipelineStart = start;
+    while (pipelineStart > 0 && operators[pipelineStart - 1] === '|') pipelineStart--;
+    return pipelineStart === 0 || operators[pipelineStart - 1] !== '||';
+  });
+}
+
+// `cd [dir]` or `pushd [dir]` opening a segment, including as the first
+// command of a subshell or brace group and behind `builtin` or `command`.
+const CD_SEGMENT_RE =
+  /^[\s({]*(?:(?:builtin|command)\s+)?(?:cd|pushd)(?:\s+(?:"([^"]*)"|'([^']*)'|([^\s;)}]+)))?(?=[\s;)}]|$)/;
+const GH_REPO_ASSIGNMENT_RE = /(?:^|\s)GH_REPO=/;
+
+/** The directory a segment's leading `cd` or `pushd` moves to: `''` for a
+ *  bare one (`cd` goes home), null when the segment does not start with one. */
+export function cdSegmentTarget(segment: string): string | null {
+  const match = CD_SEGMENT_RE.exec(segment);
+  return match ? (match[1] ?? match[2] ?? match[3] ?? '') : null;
+}
+
+/** True when a segment assigns `GH_REPO`, which can point the gh calls after
+ *  it at another repo. */
+export function segmentAssignsGhRepo(segment: string): boolean {
+  return GH_REPO_ASSIGNMENT_RE.test(segment);
 }
 
 export interface ClassifiedGitSegment {

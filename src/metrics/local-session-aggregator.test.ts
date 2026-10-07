@@ -12,6 +12,7 @@ import {
   collectCommitsAcrossRepos,
   LocalSessionAggregator,
   RepoNameResolver,
+  stripHeredocs,
 } from './local-session-aggregator.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
 
@@ -348,6 +349,34 @@ describe('LocalSessionAggregator timeline persistence', () => {
     });
   });
 
+  it('persists the created PR number so a replay can match it to a later merge', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 100,
+      command: 'gh pr create --fill',
+      createdPrNumber: '42',
+    });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]?.createdPrNumber).toBe('42');
+  });
+
+  it('persists a background run, whose success predates the command finishing', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 100,
+      command: 'gh pr merge 42',
+      runInBackground: true,
+    });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Bash', timestamp: 200, command: 'ls' });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]?.runInBackground).toBe(true);
+    expect(timeline[1]).not.toHaveProperty('runInBackground');
+  });
+
   it('omits the timeline entirely when nothing was recorded for it', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
@@ -617,4 +646,70 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
     expect(summary?.estimatedCostUsd).toBe(2);
     expect(summary?.subagentCostUsd).toBe(2);
   });
+});
+
+describe('stripHeredocs', () => {
+  it.each([
+    ['a closed heredoc', "cat <<'EOF'\ngit push\nEOF\ngit log", "cat <<'EOF'\ngit log", false],
+    [
+      'a heredoc inside "$( … )"',
+      'git commit -m "$(cat <<\'EOF\'\nfix: git push\nEOF\n)" && git push',
+      'git commit -m "$(cat <<\'EOF\'\n)" && git push',
+      false,
+    ],
+    ['a <<- heredoc', 'cat <<-EOF\n\tgit push\n\tEOF\ngit log', 'cat <<-EOF\ngit log', false],
+    [
+      'a heredoc with CRLF line ends',
+      'cat <<EOF\r\ngit push\r\nEOF\r\ngit log',
+      'cat <<EOF\r\ngit log',
+      false,
+    ],
+    ['a here-string', 'grep -q x <<<"$(gh pr view 1)"\ngit push', null, false],
+    ['a double-quoted <<', 'gh pr comment 1 --body "see <<X"\ngit push', null, true],
+    ['a single-quoted <<', "echo 'a <<B'\ngit push", null, true],
+    ['a quoted "<<EOF"', 'echo "<<EOF"\ngit push', null, true],
+    ['a << in a comment with an apostrophe', "# don't <<X\ngit push", null, true],
+    ['a << before a number', 'echo $((1<<2))\ngit push', null, false],
+    [
+      'a quoted << before a real heredoc',
+      'echo "see <<X" && cat <<EOF\ngit push\nEOF\ngit log',
+      'echo "see <<X" && cat <<EOF\ngit log',
+      true,
+    ],
+    [
+      'a quoted <<EOF that a real heredoc closes',
+      'gh pr merge 1 --body "see <<EOF"\ngh pr comment 1 <<\'EOF\'\nDone.\nEOF',
+      'gh pr merge 1 --body "see <<EOF"',
+      true,
+    ],
+  ])('reads %s and reports no unclosed heredoc', (_label, command, text, readingsDiffer) => {
+    expect(stripHeredocs(command)).toEqual({
+      text: text ?? command,
+      unclosed: false,
+      readingsDiffer,
+    });
+  });
+
+  it.each([
+    ['a heredoc whose terminator never comes', 'cat <<EOF\ngit log\n', 'cat <<EOF', false],
+    ['an unquoted << in arithmetic', 'echo $((1<<N))\ngit push', 'echo $((1<<N))', false],
+    ['a quoted << whose quote never closes', 'echo "see <<X\ngit push', 'echo "see <<X', true],
+    [
+      'a <<- terminator indented with spaces',
+      'cat <<-EOF\n  git push\n  EOF\ngit log',
+      'cat <<-EOF',
+      false,
+    ],
+    [
+      'a terminator with a trailing space',
+      'cat <<EOF\ngit push\nEOF \ngit log',
+      'cat <<EOF',
+      false,
+    ],
+  ])(
+    'drops the lines after %s and reports it unclosed',
+    (_label, command, text, readingsDiffer) => {
+      expect(stripHeredocs(command)).toEqual({ text, unclosed: true, readingsDiffer });
+    },
+  );
 });

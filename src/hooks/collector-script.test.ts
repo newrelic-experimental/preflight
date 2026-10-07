@@ -396,6 +396,93 @@ describe('collector-script', () => {
       expect(event.toolOutput).toEqual({ exitCode: 0 });
     });
 
+    it('keeps only the PR number from a gh pr create URL, never the output text', () => {
+      const response = {
+        stdout: 'Creating pull request for fix into main\n\nhttps://github.com/acme/app/pull/42\n',
+        stderr: '',
+      };
+      processHook(
+        makePostToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr create --fill' },
+          tool_response: response,
+        }),
+      );
+
+      const event = readBufferEvents()[0]!;
+      expect(event.toolOutput).toEqual({ createdPrNumber: '42' });
+    });
+
+    it.each([
+      [
+        'two creates',
+        'gh pr create --base main --fill && gh pr create --base part-1 --fill',
+        'https://github.com/acme/app/pull/41\nhttps://github.com/acme/app/pull/42\n',
+      ],
+      [
+        'a comment on another PR',
+        'gh pr create --fill && gh pr comment 40 --body "supersedes #40"',
+        'https://github.com/acme/app/pull/41\nhttps://github.com/acme/app/pull/40#issuecomment-9\n',
+      ],
+    ])(
+      'keeps no PR number when the output names more than one PR (%s)',
+      (_label, command, stdout) => {
+        processHook(
+          makePostToolUse({
+            tool_name: 'Bash',
+            tool_input: { command },
+            tool_response: { stdout },
+          }),
+        );
+
+        expect(readBufferEvents()[0]!.toolOutput).toBeUndefined();
+      },
+    );
+
+    it('keeps the PR number when every PR URL in the output names the same PR', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr create --fill && gh pr comment --body "ready"' },
+          tool_response: {
+            stdout:
+              'https://github.com/acme/app/pull/41\nhttps://github.com/acme/app/pull/41#issuecomment-9\n',
+          },
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '41' });
+    });
+
+    it('ignores a PR URL in the output of a command that is not gh pr create', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr view 7' },
+          tool_response: { stdout: 'https://github.com/acme/app/pull/7\n' },
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolOutput).toBeUndefined();
+    });
+
+    it('keeps the PR number from an MCP create_pull_request result', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'mcp__github__create_pull_request',
+          tool_input: { owner: 'acme', repo: 'app', title: 't', head: 'b', base: 'main' },
+          tool_response: [
+            {
+              type: 'text',
+              text: '{"number":57,"html_url":"https://github.com/acme/app/pull/57"}',
+            },
+          ],
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '57' });
+    });
+
     it('omits toolOutput when no parseable output fields exist', () => {
       const response = { filePath: '/tmp/out.ts', success: true };
       processHook(makePostToolUse({ tool_response: response }));
