@@ -644,6 +644,9 @@ const UNMERGED_COMMIT_RE = /Committing is not possible/i;
 // Lines that carry a commit's subject rather than a failure: the summary a
 // commit that landed prints, and a rebase or revert conflict's echoes of the
 // one it stopped at (`error: could not apply …`, then `Could not apply …`).
+// The summary line a commit that landed prints: `[main 522d323] subject`.
+const COMMIT_SUMMARY_LINE_RE = /^\[[^\]\n]+ [0-9a-f]{7,}\]/m;
+
 const COMMIT_SUBJECT_LINE_RE =
   /^\[[^\]\n]+ [0-9a-f]{7,}\]|^(?:error: )?could not (?:apply|revert) /i;
 
@@ -706,19 +709,17 @@ function errorSegmentIndex(
         lastGitSegment(segments.slice(0, run), isGit, GIT_CONFLICT_CAPABLE_RE) !== -1;
       // The refusal is the commit's whatever printed the conflict text, unless
       // a commit after the conflict-capable step may be the one that refused.
-      // When a `git status` follows that step, its block may report what the
-      // step left (`git checkout -m` and `git apply --3way` print no CONFLICT
-      // line), so any later commit may be the refuser. Otherwise unmerged
-      // paths with no text a conflicting step prints mean only a status
-      // before the run printed them and the step never ran, and a later
-      // commit counts only if it can run after the step fails. Other
-      // commit-only text counts when an earlier step can own the conflict.
+      // A commit that landed prints its summary line, so with one in the
+      // output the refusal can be any later commit's: the step ran and left
+      // the paths unmerged, even when it printed no CONFLICT line (`git
+      // checkout -m`, `git apply --3way`). Without one, the refusal is a later
+      // commit's only when text a conflicting step prints shows the step ran
+      // and that commit can run after it fails; unmerged paths alone may
+      // predate the command. Other commit-only text counts when an earlier
+      // step can own the conflict.
       const output = commitOutputLines(error);
       const lastCommit = lastGitSegment(segments, isGit, GIT_COMMIT_RE);
-      const statusAfterConflict = segments.some(
-        (segment, i) => i > conflict && isGit[i] && GIT_STATUS_RE.test(segment),
-      );
-      const laterCommit = statusAfterConflict
+      const laterCommit = COMMIT_SUMMARY_LINE_RE.test(error)
         ? lastCommit > conflict
         : STEP_CONFLICT_INDICATORS.some((re) => re.test(error)) &&
           lastCommit > lastSkippedSegment(operators, conflict);

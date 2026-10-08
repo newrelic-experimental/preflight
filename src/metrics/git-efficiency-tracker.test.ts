@@ -1665,7 +1665,7 @@ describe('GitEfficiencyTracker', () => {
   });
 
   // Same rule as the weekly/30-day panel's isCountedCommit
-  // (git-workspace-report.ts), so both views agree on the same activity.
+  // (git-event-classifier.ts), so both views agree on the same activity.
   describe('counted commits', () => {
     it('does not count a failed commit, e.g. a pre-commit hook rejection', () => {
       tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"' }));

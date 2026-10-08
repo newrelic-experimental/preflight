@@ -910,6 +910,19 @@ describe('classifyGitSegments when the error holds two failures', () => {
     ]);
   });
 
+  // git 2.54 in a repo already mid-merge: commit a refuses, `&&` skips the
+  // rebase, and the status reports the paths an earlier command left.
+  it('fails a refusing commit when the unmerged paths predate the command', () => {
+    const STATUS = 'Unmerged paths:\n\tboth modified:   f';
+    const UNMERGED = 'error: Committing is not possible because you have unmerged files.';
+    const steps = outcomes(
+      'git commit -m a && git rebase main; git status; git commit -m b',
+      `${UNMERGED}\n${STATUS}\n${UNMERGED}`,
+    );
+    expect(steps[0]).toEqual(['commit', false]);
+    expect(steps.map(([type]) => type)).not.toContain('merge_conflict');
+  });
+
   it('types the push that ran rejected, not one && then kept from running', () => {
     // The first push's rejection is why `||` ran the pull; its conflict then
     // stopped the second push.
