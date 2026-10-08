@@ -623,26 +623,40 @@ const CONFLICT_TEXT_INDICATORS: readonly RegExp[] = [
   REBASE_CONFLICT_RE,
 ];
 
+/** A commit's refusal to run over unmerged files, which neither a stash
+ *  pop's status block nor a usual commit subject prints. */
+const UNMERGED_COMMIT_RE = /Committing is not possible/i;
+
+/** The git segment whose output `error` is, and whether it is a commit that
+ *  refused over files an earlier step left unmerged. */
+interface ErrorOwner {
+  /** The segment index, or -1 when no segment's output `error` is. */
+  readonly owner: number;
+  /** The owner is a commit that stopped a conflict's `&&` run. Its own lines
+   *  are the refusal, and the conflict text is an earlier step's. */
+  readonly commitOverConflict: boolean;
+}
+
 /**
- * Index of the git segment whose output `error` is, or -1 when no segment's
- * is. The hook payload carries one error for the whole command, not one per
- * segment, but conflict, rejection and commit-failure text names the kind of
- * git command that printed it. Conflict and commit-failure text go to the
- * earliest segment that can print them in the last `&&` run holding one: the
- * failure stops the run, and any of those segments may be the one it stopped
- * at, so the earliest counts no step as run that may not have. `git pull &&
- * git commit && git checkout other` hands a conflict to the pull, and `git
- * commit -m a && git commit -m b` hands a failed hook to the first commit.
- * When both are present and that commit comes first in the conflict's run,
- * the commit is what stopped it, so it takes the failure. Otherwise
- * rejection text goes to the last `git push`, or commit-failure text to its
- * commit, whichever comes later.
+ * The git segment whose output `error` is. The hook payload carries one error
+ * for the whole command, not one per segment, but conflict, rejection and
+ * commit-failure text names the kind of git command that printed it.
+ * Conflict and commit-failure text go to the earliest segment that can print
+ * them in the last `&&` run holding one: the failure stops the run, and any
+ * of those segments may be the one it stopped at, so the earliest counts no
+ * step as run that may not have. `git pull && git commit && git checkout
+ * other` hands a conflict to the pull, and `git commit -m a && git commit -m
+ * b` hands a failed hook to the first commit. A commit in the conflict's run,
+ * before the step that can conflict, that refused over unmerged files is what
+ * stopped the run, as in `git stash pop; git commit -am x && git pull`, so it
+ * takes the failure. Otherwise rejection text goes to the last `git push`, or
+ * commit-failure text to its commit, whichever comes later.
  */
 function errorSegmentIndex(
   { segments, operators }: ShellChain,
   isGit: readonly boolean[],
   error: string,
-): number {
+): ErrorOwner {
   const earliestInLastRun = (re: RegExp): number => {
     const last = lastGitSegment(segments, isGit, re);
     if (last === -1) return -1;
@@ -651,21 +665,24 @@ function errorSegmentIndex(
     }
     return last;
   };
-  const commit = COMMIT_FAILURE_INDICATORS.some((re) => re.test(error))
-    ? earliestInLastRun(GIT_COMMIT_RE)
-    : -1;
-  if (MERGE_CONFLICT_INDICATORS.some((re) => re.test(error)) || REBASE_CONFLICT_RE.test(error)) {
+  if (CONFLICT_TEXT_INDICATORS.some((re) => re.test(error))) {
     const conflict = earliestInLastRun(GIT_CONFLICT_CAPABLE_RE);
     if (conflict !== -1) {
-      // A failed commit earlier in the conflict's `&&` run stopped it there,
-      // as after `git stash pop; git commit -am x && git pull` leaves files
-      // unmerged: the conflict text is the stash pop's, behind the `;`.
-      const stoppedFirst = commit !== -1 && commit < conflict;
-      return stoppedFirst && andRunStart(operators, conflict) <= commit ? commit : conflict;
+      if (UNMERGED_COMMIT_RE.test(error)) {
+        for (let i = andRunStart(operators, conflict); i < conflict; i++) {
+          if (isGit[i] && GIT_COMMIT_RE.test(segments[i]!)) {
+            return { owner: i, commitOverConflict: true };
+          }
+        }
+      }
+      return { owner: conflict, commitOverConflict: false };
     }
   }
   const push = rejectedPushIndex(segments, isGit, error);
-  return Math.max(push, commit);
+  const commit = COMMIT_FAILURE_INDICATORS.some((re) => re.test(error))
+    ? earliestInLastRun(GIT_COMMIT_RE)
+    : -1;
+  return { owner: Math.max(push, commit), commitOverConflict: false };
 }
 
 /**
@@ -705,7 +722,8 @@ export function classifyGitSegments(
   const { segments, operators } = chain;
   const isGit = segments.map((s) => GIT_SEGMENT_RE.test(s));
   const error = (record.error as string) ?? '';
-  let owner = errorSegmentIndex(chain, isGit, error);
+  const errorOwner = errorSegmentIndex(chain, isGit, error);
+  let owner = errorOwner.owner;
   // Segments (dropFrom, dropThrough] did not, or may not, have run.
   let failedAt = -1;
   let dropFrom = -1;
@@ -736,10 +754,7 @@ export function classifyGitSegments(
   // gets only its own lines, and the conflict goes to the conflict-capable
   // step before it that printed it, such as the `git stash pop` in
   // `git stash pop; git commit -am x && git pull`.
-  const commitOverConflict =
-    owner !== -1 &&
-    GIT_COMMIT_RE.test(segments[owner]!) &&
-    CONFLICT_TEXT_INDICATORS.some((re) => re.test(error));
+  const { commitOverConflict } = errorOwner;
   const conflictAt = commitOverConflict
     ? lastGitSegment(segments.slice(0, owner), isGit, GIT_CONFLICT_CAPABLE_RE)
     : -1;

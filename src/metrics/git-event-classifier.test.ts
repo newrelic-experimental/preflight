@@ -669,6 +669,47 @@ describe('classifyGitSegments when the error holds two failures', () => {
     expect(rest).toEqual([]);
   });
 
+  // git 2.54's output for a stash pop that conflicts after the commit ran:
+  // its status block ends in a line that reads like a commit failure.
+  it('keeps a commit before a conflicting stash pop succeeded', () => {
+    const STASH_POP = [
+      '[main 522d323] x',
+      'CONFLICT (content): Merge conflict in a.ts',
+      'Unmerged paths:',
+      '  (use "git restore --staged <file>..." to unstage)',
+      '\tboth modified:   a.ts',
+      'no changes added to commit (use "git add" and/or "git commit -a")',
+    ].join('\n');
+    expect(outcomes('git commit -m x && git stash pop', STASH_POP)).toEqual([
+      ['commit', true],
+      ['merge_conflict', false],
+    ]);
+  });
+
+  it('does not take a rebase conflict that echoes a commit subject for a failed commit', () => {
+    const REBASE =
+      'error: could not apply abc1234... Fix pre-commit hook failed on Windows\n' +
+      'CONFLICT (content): Merge conflict in a.ts';
+    expect(outcomes('git commit -am x && git pull --rebase', REBASE)).toEqual([
+      ['commit', true],
+      ['merge_conflict', false],
+    ]);
+  });
+
+  it('looks for the refusing commit in the run of the conflict, not a later one', () => {
+    const UNMERGED = 'error: Committing is not possible because you have unmerged files.';
+    expect(
+      outcomes(
+        'git stash pop; git commit -am a && git pull --rebase; git commit -am b',
+        `${CONFLICT}\n${UNMERGED}\n${UNMERGED}`,
+      ),
+    ).toEqual([
+      ['merge_conflict', false],
+      ['commit', false],
+      ['commit', false],
+    ]);
+  });
+
   it('types the push that ran rejected, not one && then kept from running', () => {
     // The first push's rejection is why `||` ran the pull; its conflict then
     // stopped the second push.
