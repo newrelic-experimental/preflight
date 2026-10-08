@@ -633,6 +633,20 @@ const CONFLICT_TEXT_INDICATORS: readonly RegExp[] = [
  *  pop's status block nor a usual commit subject prints. */
 const UNMERGED_COMMIT_RE = /Committing is not possible/i;
 
+// Lines that carry a commit's subject rather than a failure: the summary a
+// commit that landed prints, and a rebase conflict's echo of the one it
+// stopped at.
+const COMMIT_SUBJECT_LINE_RE = /^\[[^\]\n]+ [0-9a-f]{7,}\]|could not apply/i;
+
+/** `error` without the lines that echo a commit subject, so a subject such as
+ *  "Fix pre-commit hook failed on CI" doesn't read as a commit failure. */
+function commitOutputLines(error: string): string {
+  return error
+    .split('\n')
+    .filter((line) => !COMMIT_SUBJECT_LINE_RE.test(line))
+    .join('\n');
+}
+
 /** The git segment whose output `error` is, and whether it is a commit that
  *  failed beside conflict text another step printed. */
 interface ErrorOwner {
@@ -681,7 +695,13 @@ function errorSegmentIndex(
       const run = andRunStart(operators, conflict);
       const conflictBeforeRun =
         lastGitSegment(segments.slice(0, run), isGit, GIT_CONFLICT_CAPABLE_RE) !== -1;
-      if (conflictBeforeRun && OWN_COMMIT_FAILURE_INDICATORS.some((re) => re.test(error))) {
+      // The refusal is the commit's whatever printed the conflict text; other
+      // commit-only text counts when an earlier step can own the conflict.
+      const commitStopped =
+        UNMERGED_COMMIT_RE.test(error) ||
+        (conflictBeforeRun &&
+          OWN_COMMIT_FAILURE_INDICATORS.some((re) => re.test(commitOutputLines(error))));
+      if (commitStopped) {
         for (let i = run; i < conflict; i++) {
           if (isGit[i] && GIT_COMMIT_RE.test(segments[i]!)) {
             return { owner: i, commitOverConflict: true };

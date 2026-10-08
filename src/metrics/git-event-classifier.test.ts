@@ -737,6 +737,43 @@ describe('classifyGitSegments when the error holds two failures', () => {
     ]);
   });
 
+  // git 2.54 during an unresolved merge: the status block names the unmerged
+  // path, the commit refuses, and `&&` never runs the pull. The status, behind
+  // a `;`, keeps the command's failure, as every step `&&` doesn't prove does.
+  it('fails a commit refusing over unmerged files before a later conflict-capable step', () => {
+    const OUTPUT = [
+      'Unmerged paths:',
+      '\tboth modified:   a.ts',
+      'no changes added to commit (use "git add" and/or "git commit -a")',
+      'error: Committing is not possible because you have unmerged files.',
+    ].join('\n');
+    expect(outcomes('git status; git commit -m x && git pull', OUTPUT)).toEqual([
+      ['status', false],
+      ['commit', false],
+    ]);
+  });
+
+  // The commit landed and printed its subject; the pull then conflicted.
+  it('does not read the subject of a landed commit as its failure', () => {
+    const OUTPUT = [
+      '[main abc1234] Fix pre-commit hook failed on CI',
+      ' 1 file changed, 1 insertion(+)',
+      'CONFLICT (content): Merge conflict in a.ts',
+      'Automatic merge failed; fix conflicts and then commit the result.',
+    ].join('\n');
+    expect(
+      outcomes(
+        'git stash pop; git add -A && git commit -m "Fix pre-commit hook failed on CI" && git pull',
+        OUTPUT,
+      ),
+    ).toEqual([
+      ['stash', false],
+      ['other_git', true],
+      ['commit', true],
+      ['merge_conflict', false],
+    ]);
+  });
+
   it('types the push that ran rejected, not one && then kept from running', () => {
     // The first push's rejection is why `||` ran the pull; its conflict then
     // stopped the second push.
