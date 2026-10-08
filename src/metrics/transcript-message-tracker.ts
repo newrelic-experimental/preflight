@@ -15,9 +15,10 @@ export interface TranscriptMessageMetrics {
 }
 
 /**
- * What the assistant did between the last real user message and the next one: `acted` when it
- * called a tool in `MUTATING_TOOLS`, `talked` when its entries called none, and `unknown` when no
- * assistant entry came between them (the first message, or two user messages in a row). It is also
+ * What the assistant did between the last user entry that ended its turn (`endsAssistantTurn`) and
+ * the next real user message: `acted` when it called a tool in `MUTATING_TOOLS`, `talked` when its
+ * entries called none, and `unknown` when no assistant entry came between them (the first message,
+ * or two user messages in a row). It is also
  * `unknown` until the transcript has shown a tool call at all, since a format that doesn't record
  * tool calls makes a turn that acted look like one that talked.
  */
@@ -320,6 +321,54 @@ function isSyntheticText(text: string): boolean {
   return SYNTHETIC_TEXT_PREFIXES.some((prefix) => text.startsWith(prefix));
 }
 
+/** The text Claude Code writes as a user entry when the user presses Esc, with " for tool use]" after it when a tool call was rejected. */
+const INTERRUPT_MARKER = '[Request interrupted by user';
+
+/** A tool result echoed back as a user entry: by the field Claude Code sets, or by its content block when the field is missing. */
+function isToolResult(entry: RawTranscriptEntry): boolean {
+  if (entry.toolUseResult !== undefined) return true;
+  const content = (entry.message as { content?: unknown } | undefined)?.content;
+  return (
+    Array.isArray(content) &&
+    content.some(
+      (block: unknown) =>
+        typeof block === 'object' &&
+        block !== null &&
+        (block as { type?: unknown }).type === 'tool_result',
+    )
+  );
+}
+
+/**
+ * Whether a user entry ends the assistant's turn, so the next message is read against what the
+ * assistant does after it. An entry can end the turn with no text to count, and have text to count
+ * without ending it.
+ *
+ * - The user writing something ends it, even when the entry opens on a pasted image. So does an entry
+ *   marked `origin.kind: 'human'` that opens on a `SYNTHETIC_TEXT_PREFIXES` prefix: Claude Code marks
+ *   a typed message with a system reminder in front of it that way, and a prompt-style slash command
+ *   the assistant then answers.
+ * - An interrupt doesn't. The user pressed Esc on what the assistant was doing, so their next message
+ *   reacts to that.
+ * - A compaction summary doesn't. Claude Code writes it, mid-turn when compaction is automatic, and it
+ *   changes nothing the assistant did.
+ * - A task notification doesn't. It reports a background task the assistant started, and what the
+ *   assistant does about it adds to the turn the user hasn't answered yet.
+ * - Any other entry that opens on a `SYNTHETIC_TEXT_PREFIXES` prefix doesn't. Most are the harness
+ *   reporting something: a reminder, a notification, another session's message, a command's output.
+ *   The rest echo a local slash command such as /model or /compact, which the assistant doesn't
+ *   answer, so the user's next message still answers its last turn.
+ * - A sidechain, meta or tool-result entry is part of the assistant's own work.
+ */
+function endsAssistantTurn(entry: RawTranscriptEntry): boolean {
+  if (entry.isSidechain === true || entry.isMeta === true || isToolResult(entry)) return false;
+  const text = getEffectiveText(entry.message);
+  if (text !== null && text.startsWith(INTERRUPT_MARKER)) return false;
+  if (entry.origin?.kind === 'human') return true;
+  if (entry.isCompactSummary === true || entry.origin?.kind === 'task-notification') return false;
+  return text === null || !isSyntheticText(text);
+}
+
 /** Returns the entry's real message text, or null if it isn't a real human-typed message. */
 function classifyUserEntry(entry: RawTranscriptEntry): string | null {
   if (entry.isSidechain === true) return null;
@@ -347,7 +396,7 @@ export class TranscriptMessageTracker {
   private userMessages = 0;
   private assistantMessages = 0;
   private userCorrections = 0;
-  /** What the assistant's entries did since the last real user message. */
+  /** What the assistant's entries did since the last user entry that ended its turn. */
   private assistantSinceUser: 'none' | 'talked' | 'acted' = 'none';
   /** Whether the transcript has shown a tool call yet, so a turn without one can be read as talking. */
   private seenToolUse = false;
@@ -442,8 +491,8 @@ export class TranscriptMessageTracker {
         if (isCorrectionMessage(text.trim(), this.turnState())) {
           this.userCorrections++;
         }
-        this.assistantSinceUser = 'none';
       }
+      if (endsAssistantTurn(entry)) this.assistantSinceUser = 'none';
     } else if (entry.type === 'assistant') {
       if (isRealAssistantTurn(entry)) {
         this.assistantMessages++;

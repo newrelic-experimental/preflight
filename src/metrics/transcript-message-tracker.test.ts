@@ -271,6 +271,133 @@ describe('TranscriptMessageTracker', () => {
       ).toBe(1);
     });
 
+    /** Counts after a turn that acted, and not after one that talked or with no turn to go on. */
+    const NAMED_SUBJECT = "The migration won't work on prod.";
+
+    it.each(['[Request interrupted by user]', '[Request interrupted by user for tool use]'])(
+      'keeps a turn acting through the %j marker',
+      (marker) => {
+        // Rejecting a tool call writes its tool result before the marker.
+        const rejection = marker.endsWith('for tool use]')
+          ? [
+              userLine([{ type: 'tool_result', content: 'The user rejected this tool use.' }], {
+                toolUseResult: 'User rejected tool use',
+              }),
+            ]
+          : [];
+        expect(
+          corrections([
+            ...EARLIER_EXCHANGE,
+            toolUseLine('Edit'),
+            ...rejection,
+            userLine([{ type: 'text', text: marker }]),
+            userLine(NAMED_SUBJECT),
+          ]),
+        ).toBe(1);
+      },
+    );
+
+    it('starts the turn over at a user message that opens on an image', () => {
+      const screenshot = userLine(
+        [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0K' } },
+          { type: 'text', text: 'the layout is off' },
+        ],
+        { origin: { kind: 'human' } },
+      );
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          toolUseLine('Edit'),
+          screenshot,
+          assistantLine(),
+          userLine("Redis won't work for us, let's use SQLite."),
+        ]),
+      ).toBe(0);
+    });
+
+    it.each([
+      [
+        'a compaction summary',
+        userLine('This session is being continued from a previous conversation.', {
+          isCompactSummary: true,
+        }),
+        false,
+      ],
+      [
+        'a /model command',
+        userLine('<command-name>/model</command-name>\n<command-args>opus</command-args>'),
+        false,
+      ],
+      [
+        'a local command output',
+        userLine('<local-command-stdout>Set model to Opus</local-command-stdout>'),
+        false,
+      ],
+      [
+        'a task notification',
+        userLine('<task-notification>\n<task-id>a1</task-id>\n</task-notification>', {
+          origin: { kind: 'task-notification' },
+        }),
+        true,
+      ],
+      [
+        'a harness reminder',
+        userLine('<system-reminder>\nCI failed on the PR.\n</system-reminder>'),
+        true,
+      ],
+      ["another session's message", userLine('Another Claude session sent a message:\nhi'), true],
+    ])('keeps a turn acting through %s', (_label, entry, answered) => {
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          toolUseLine('Edit'),
+          entry,
+          ...(answered ? [assistantLine()] : []),
+          userLine(NAMED_SUBJECT),
+        ]),
+      ).toBe(1);
+    });
+
+    it.each([
+      [
+        'a typed message with a system reminder in front of it',
+        userLine(
+          [
+            { type: 'text', text: '<system-reminder>\nYou are in a worktree.\n</system-reminder>' },
+            { type: 'text', text: 'now explain the retry logic' },
+          ],
+          { origin: { kind: 'human' } },
+        ),
+      ],
+      [
+        'a prompt-style slash command',
+        userLine(
+          '<command-message>review</command-message>\n<command-name>/review</command-name>',
+          {
+            origin: { kind: 'human' },
+          },
+        ),
+      ],
+      [
+        'a message that opens on an image, with no origin',
+        userLine([
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0K' } },
+          { type: 'text', text: 'the layout is off' },
+        ]),
+      ],
+    ])('starts the turn over at %s', (_label, entry) => {
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          toolUseLine('Edit'),
+          entry,
+          assistantLine(),
+          userLine(NAMED_SUBJECT),
+        ]),
+      ).toBe(0);
+    });
+
     it('starts each turn over at a real user message', () => {
       expect(
         corrections([
