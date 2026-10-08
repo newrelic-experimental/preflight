@@ -48,4 +48,40 @@ describe('recent model pricing', () => {
       expect(calculateCost(model, usage(1_000_000)).totalUsd).toBeCloseTo(longContextTotal, 6);
     },
   );
+
+  it('counts cache reads toward the 272K tier of a GPT-6 request', () => {
+    // 100K uncached + 200K cache read is a 300K prompt, past the 272K tier even
+    // though fresh input alone is not.
+    const usage = (cacheReadTokens: number) => ({
+      inputTokens: 100_000,
+      outputTokens: 0,
+      thinkingTokens: 0,
+      cacheReadTokens,
+      cacheCreationTokens: 0,
+      totalTokens: 100_000 + cacheReadTokens,
+    });
+    // gpt-6-sol: input $2 / cache read $0.20; tier 2x input, 2x cache read.
+    expect(calculateCost('gpt-6-sol', usage(100_000)).totalUsd).toBeCloseTo(0.1 * 2 + 0.1 * 0.2, 6);
+    expect(calculateCost('gpt-6-sol', usage(200_000)).totalUsd).toBeCloseTo(0.1 * 4 + 0.2 * 0.4, 6);
+  });
+
+  it('bills a cache-heavy claude-haiku-5-5 request over 100K at the long-context rates', () => {
+    const usage = (cacheReadTokens: number) => ({
+      inputTokens: 10_000,
+      outputTokens: 1_000_000,
+      thinkingTokens: 0,
+      cacheReadTokens,
+      cacheCreationTokens: 0,
+      totalTokens: 10_000 + 1_000_000 + cacheReadTokens,
+    });
+    // 90K prompt: base rates. 110K prompt: 5x tier rates.
+    expect(calculateCost('claude-haiku-5-5', usage(80_000)).totalUsd).toBeCloseTo(
+      0.01 * 0.1 + 0.5 + 0.08 * 0.01,
+      6,
+    );
+    expect(calculateCost('claude-haiku-5-5', usage(100_000)).totalUsd).toBeCloseTo(
+      0.01 * 0.5 + 2.5 + 0.1 * 0.05,
+      6,
+    );
+  });
 });
