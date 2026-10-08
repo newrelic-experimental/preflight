@@ -527,6 +527,33 @@ describe('emitMetrics()', () => {
     }
   });
 
+  it.each(['computeScore', 'updateScore'] as const)(
+    'keeps the stored model when %s re-scores an already-scored task',
+    (method) => {
+      const costTracker = new CostTracker(new SessionTracker('s1'));
+      costTracker.recordTokenUsage(makeUsage(), 'claude-sonnet-5');
+      const scorer = new EfficiencyScorer({ costTracker });
+
+      scorer.computeScore(makeTask({ taskId: 't1' }));
+      costTracker.recordTokenUsage(makeUsage(), 'claude-haiku-4-5');
+      scorer[method](makeTask({ taskId: 't1' }));
+
+      const recorded: Array<Record<string, unknown>> = [];
+      const aggregator = {
+        record(_name: string, _value: number, attrs: Record<string, unknown> = {}) {
+          recorded.push(attrs);
+        },
+      } as unknown as import('../shared/index.js').MetricAggregator;
+
+      scorer.emitMetrics(aggregator);
+
+      expect(recorded).toHaveLength(5);
+      for (const attrs of recorded) {
+        expect(attrs.model).toBe('claude-sonnet-5');
+      }
+    },
+  );
+
   it('omits the model attr when no costTracker is provided', () => {
     const scorer = new EfficiencyScorer();
     scorer.computeScore(makeTask({ taskId: 't1' }));
@@ -540,6 +567,7 @@ describe('emitMetrics()', () => {
 
     scorer.emitMetrics(aggregator);
 
+    expect(recorded).toHaveLength(5);
     for (const attrs of recorded) {
       expect(attrs.model).toBeUndefined();
     }

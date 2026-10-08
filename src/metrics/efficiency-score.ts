@@ -39,12 +39,13 @@ export interface EfficiencyScore {
   readonly taskId: string;
   readonly timestamp: number;
   /**
-   * The model current on `costTracker` at the moment this score was
-   * computed, not at emit time — a task's score must keep the model that
-   * produced it even if a later token report (e.g. a subagent on a
-   * different model) changes `costTracker`'s current model before the next
-   * `emitMetrics()` call. `null` when no `costTracker` was supplied or it
-   * had no current model yet.
+   * The model current on `costTracker` when this task was first scored, not
+   * at emit time or on a later re-score — a later token report (e.g. a
+   * subagent on a different model) changes `costTracker`'s current model, so
+   * re-scoring the same task keeps the stored model. This is the model
+   * current at score time, which can itself be a subagent's if its report
+   * was the latest before the task was scored. `null` when no `costTracker`
+   * was supplied or it had no current model yet.
    */
   readonly model: string | null;
 }
@@ -154,6 +155,12 @@ export class EfficiencyScorer implements Resettable {
     this.costTracker = options?.costTracker ?? null;
   }
 
+  private modelFor(taskId: string): string | null {
+    const existing = this.scores.find((s) => s.taskId === taskId);
+    if (existing) return existing.model;
+    return this.costTracker?.getMetrics().model ?? null;
+  }
+
   /**
    * Compute the efficiency score for a completed task.
    * Anti-patterns are optional — if not provided, first-attempt quality defaults to 1.0.
@@ -167,7 +174,7 @@ export class EfficiencyScorer implements Resettable {
       components,
       taskId: task.taskId,
       timestamp: task.endTime,
-      model: this.costTracker?.getMetrics().model ?? null,
+      model: this.modelFor(task.taskId),
     };
 
     const idx = this.scores.findIndex((s) => s.taskId === task.taskId);
@@ -262,7 +269,7 @@ export class EfficiencyScorer implements Resettable {
       components,
       taskId: task.taskId,
       timestamp: task.endTime,
-      model: this.costTracker?.getMetrics().model ?? null,
+      model: this.modelFor(task.taskId),
     };
 
     if (idx >= 0) {

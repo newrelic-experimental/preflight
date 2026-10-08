@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `ai.efficiency.*` gauges now carry a `model` attribute, matching `ai.cost.*`. `ai.cost.*`, `ai.efficiency.*`, and `ai.api.*` gauges also carry a `provider` attribute (`anthropic`, `google`, `openai`, `mistral`, `cohere`, or `bedrock` for any model routed through AWS Bedrock) derived from the model ID, so dashboards can facet directly on either without joining against the corresponding event.
+- `ai.efficiency.*` gauges now carry a `model` attribute, matching `ai.cost.*`. `ai.cost.*`, `ai.efficiency.*`, and `ai.api.*` gauges also carry a `provider` attribute (`anthropic`, `google`, `openai`, `mistral`, `cohere`, or `bedrock` for the Bedrock model IDs in the pricing table) derived from the model ID, so dashboards can facet directly on either without joining against the corresponding event.
 
 ## [1.62.0] - 2026-10-08
 
