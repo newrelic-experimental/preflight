@@ -448,8 +448,9 @@ export class GitEfficiencyTracker {
       // hooks) git log is the only place it shows up. The cost is that an
       // amend with `--reset-author`, which moves the author time git log
       // reports to the amend's, counts its commit again on the next git log
-      // refresh (every 5 minutes, or a restart); a plain `--amend` keeps the
-      // original's author time and still matches it.
+      // refresh (every 5 minutes, or a restart). A plain `--amend` keeps the
+      // original's author time, so it still matches on the refreshes that read
+      // `%at`; the day-boundary one reads committer time, which an amend moves.
       const isDuplicate = this.events.some((e) => {
         if (!isCountedCommit(e)) return false;
         const existingHash = e.command ? HYDRATED_COMMIT_HASH_RE.exec(e.command)?.[1] : undefined;

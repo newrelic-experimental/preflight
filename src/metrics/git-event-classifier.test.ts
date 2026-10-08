@@ -654,6 +654,21 @@ describe('classifyGitSegments when the error holds two failures', () => {
     },
   );
 
+  // The stash pop's conflict leaves unmerged files, the commit then refuses
+  // to run, and `&&` skips the pull, so the run stopped at the commit.
+  it('fails a commit that stopped the && run before the conflict-capable step', () => {
+    const UNMERGED = 'error: Committing is not possible because you have unmerged files.';
+    const command = 'git stash pop; git commit -am wip && git pull --rebase';
+    const [stash, commit, ...rest] = events(command, `${CONFLICT}\n${UNMERGED}`);
+    expect([stash!.type, stash!.success, stash!.files]).toEqual([
+      'merge_conflict',
+      false,
+      ['a.ts'],
+    ]);
+    expect([commit!.type, commit!.success]).toEqual(['commit', false]);
+    expect(rest).toEqual([]);
+  });
+
   it('types the push that ran rejected, not one && then kept from running', () => {
     // The first push's rejection is why `||` ran the pull; its conflict then
     // stopped the second push.

@@ -604,14 +604,24 @@ function rejectedPushIndex(
   return -1;
 }
 
+/** The lines of `error` that any of `indicators` match. */
+function linesMatching(error: string, indicators: readonly RegExp[]): string {
+  return error
+    .split('\n')
+    .filter((line) => indicators.some((re) => re.test(line)))
+    .join('\n');
+}
+
 /** The lines of `error` that report a rejected push, so a push classified on
  *  them is not typed by the conflict text beside them. */
 function rejectionText(error: string): string {
-  return error
-    .split('\n')
-    .filter((line) => REJECT_INDICATORS.some((re) => re.test(line)))
-    .join('\n');
+  return linesMatching(error, REJECT_INDICATORS);
 }
+
+const CONFLICT_TEXT_INDICATORS: readonly RegExp[] = [
+  ...MERGE_CONFLICT_INDICATORS,
+  REBASE_CONFLICT_RE,
+];
 
 /**
  * Index of the git segment whose output `error` is, or -1 when no segment's
@@ -623,8 +633,10 @@ function rejectionText(error: string): string {
  * at, so the earliest counts no step as run that may not have. `git pull &&
  * git commit && git checkout other` hands a conflict to the pull, and `git
  * commit -m a && git commit -m b` hands a failed hook to the first commit.
- * Otherwise rejection text goes to the last `git push`, or commit-failure
- * text to its commit, whichever comes later.
+ * When both are present and that commit comes first in the conflict's run,
+ * the commit is what stopped it, so it takes the failure. Otherwise
+ * rejection text goes to the last `git push`, or commit-failure text to its
+ * commit, whichever comes later.
  */
 function errorSegmentIndex(
   { segments, operators }: ShellChain,
@@ -639,14 +651,20 @@ function errorSegmentIndex(
     }
     return last;
   };
-  if (MERGE_CONFLICT_INDICATORS.some((re) => re.test(error)) || REBASE_CONFLICT_RE.test(error)) {
-    const conflict = earliestInLastRun(GIT_CONFLICT_CAPABLE_RE);
-    if (conflict !== -1) return conflict;
-  }
-  const push = rejectedPushIndex(segments, isGit, error);
   const commit = COMMIT_FAILURE_INDICATORS.some((re) => re.test(error))
     ? earliestInLastRun(GIT_COMMIT_RE)
     : -1;
+  if (MERGE_CONFLICT_INDICATORS.some((re) => re.test(error)) || REBASE_CONFLICT_RE.test(error)) {
+    const conflict = earliestInLastRun(GIT_CONFLICT_CAPABLE_RE);
+    if (conflict !== -1) {
+      // A failed commit earlier in the conflict's `&&` run stopped it there,
+      // as after `git stash pop; git commit -am x && git pull` leaves files
+      // unmerged: the conflict text is the stash pop's, behind the `;`.
+      const stoppedFirst = commit !== -1 && commit < conflict;
+      return stoppedFirst && andRunStart(operators, conflict) <= commit ? commit : conflict;
+    }
+  }
+  const push = rejectedPushIndex(segments, isGit, error);
   return Math.max(push, commit);
 }
 
@@ -714,19 +732,34 @@ export function classifyGitSegments(
     error,
     (i) => dropped(i) || provenSucceeded(i),
   );
+  // A commit that took the failure over conflict text (see errorSegmentIndex)
+  // gets only its own lines, and the conflict goes to the conflict-capable
+  // step before it that printed it, such as the `git stash pop` in
+  // `git stash pop; git commit -am x && git pull`.
+  const commitOverConflict =
+    owner !== -1 &&
+    GIT_COMMIT_RE.test(segments[owner]!) &&
+    CONFLICT_TEXT_INDICATORS.some((re) => re.test(error));
+  const conflictAt = commitOverConflict
+    ? lastGitSegment(segments.slice(0, owner), isGit, GIT_CONFLICT_CAPABLE_RE)
+    : -1;
   const targetDir = gitCommandTargetDir(command, record.cwd as string | undefined);
   return segments.flatMap((segment, i) => {
     if (!isGit[i] || dropped(i)) return [];
     const forSegment =
       i === owner
-        ? record
-        : i === rejected
-          ? { ...record, success: false, error: rejectionText(error) }
-          : {
-              ...record,
-              success: (record.success || provenSucceeded(i)) && !inBackground(operators, i),
-              error: undefined,
-            };
+        ? commitOverConflict
+          ? { ...record, error: linesMatching(error, COMMIT_FAILURE_INDICATORS) }
+          : record
+        : i === conflictAt
+          ? { ...record, success: false, error: linesMatching(error, CONFLICT_TEXT_INDICATORS) }
+          : i === rejected
+            ? { ...record, success: false, error: rejectionText(error) }
+            : {
+                ...record,
+                success: (record.success || provenSucceeded(i)) && !inBackground(operators, i),
+                error: undefined,
+              };
     return [{ segment, event: classifyGitCommand(segment, forSegment, resolveRepo, targetDir) }];
   });
 }
