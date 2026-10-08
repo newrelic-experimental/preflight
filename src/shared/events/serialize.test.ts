@@ -677,9 +677,9 @@ describe('GenAI semantic convention attributes', () => {
       expect(data['gen_ai.usage.input_tokens']).toBe(1600); // 1000 + 600
     });
 
-    it('Gemini: gen_ai.usage.input_tokens uses inputTokens only (cache is a subset, not additive)', () => {
-      // Gemini: promptTokenCount (inputTokens=1000) already includes cached content;
-      // cachedContentTokenCount (cacheReadTokens=600) is a subset — NOT additive.
+    it('Gemini: gen_ai.usage.input_tokens adds cache reads back to the uncached inputTokens', () => {
+      // extractGeminiTokens subtracts cachedContentTokenCount from promptTokenCount,
+      // so inputTokens (1000) and cacheReadTokens (600) are disjoint.
       const event = createAiResponse({
         provider: 'google',
         model: 'gemini-2.0-flash',
@@ -690,12 +690,12 @@ describe('GenAI semantic convention attributes', () => {
         appName: 'test',
       });
       const data = aiResponseToNrEvent(event);
-      expect(data['gen_ai.usage.input_tokens']).toBe(1000); // NOT 1600
+      expect(data['gen_ai.usage.input_tokens']).toBe(1600);
     });
 
-    it('OpenAI: gen_ai.usage.input_tokens uses inputTokens only (cached_tokens is a subset)', () => {
-      // OpenAI: prompt_tokens (inputTokens=1000) includes cached portion;
-      // cached_tokens (cacheReadTokens=400) is a subset — NOT additive.
+    it('OpenAI: gen_ai.usage.input_tokens adds cache reads back to the uncached inputTokens', () => {
+      // extractOpenAITokens subtracts cached_tokens from prompt_tokens, so
+      // inputTokens (1000) and cacheReadTokens (400) are disjoint.
       const event = createAiResponse({
         provider: 'openai',
         model: 'gpt-4o',
@@ -706,7 +706,7 @@ describe('GenAI semantic convention attributes', () => {
         appName: 'test',
       });
       const data = aiResponseToNrEvent(event);
-      expect(data['gen_ai.usage.input_tokens']).toBe(1000); // NOT 1400
+      expect(data['gen_ai.usage.input_tokens']).toBe(1400);
     });
 
     it('emits gen_ai.response.finish_reason when stopReason is set', () => {

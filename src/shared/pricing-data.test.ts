@@ -1,4 +1,5 @@
 import { DEFAULT_PRICING_TABLE } from './pricing-data.js';
+import { resolveModelPricing } from './pricing.js';
 
 describe('DEFAULT_PRICING_TABLE', () => {
   describe('Anthropic models', () => {
@@ -35,6 +36,22 @@ describe('DEFAULT_PRICING_TABLE', () => {
       expect(p.contextWindow).toBe(200_000);
     });
 
+    it('has claude-haiku-5-5 with prompt-length tiered rates', () => {
+      expect(DEFAULT_PRICING_TABLE['claude-haiku-5-5']).toEqual({
+        inputPerMTok: 0.1,
+        outputPerMTok: 0.5,
+        thinkingPerMTok: 0.5,
+        cacheReadPerMTok: 0.01,
+        cacheCreationPerMTok: 0.125,
+        contextWindow: 1_000_000,
+        tierThreshold: 100_000,
+        tierInputPerMTok: 0.5,
+        tierOutputPerMTok: 2.5,
+        tierThinkingPerMTok: 2.5,
+        tierCacheReadPerMTok: 0.05,
+      });
+    });
+
     it('has claude-sonnet-4-20250514 with correct rates', () => {
       const p = DEFAULT_PRICING_TABLE['claude-sonnet-4-20250514'];
       expect(p).toBeDefined();
@@ -59,6 +76,21 @@ describe('DEFAULT_PRICING_TABLE', () => {
   });
 
   describe('Google Gemini models', () => {
+    it('has gemini-robotics-er-2-preview with introductory rates', () => {
+      expect(DEFAULT_PRICING_TABLE['gemini-robotics-er-2-preview']).toEqual({
+        inputPerMTok: 1,
+        outputPerMTok: 5,
+        thinkingPerMTok: 5,
+        contextWindow: 131_072,
+      });
+    });
+
+    it('resolves gemini-3.1-pro-preview-customtools to the 3.1 Pro Preview rates', () => {
+      expect(resolveModelPricing('gemini-3.1-pro-preview-customtools')).toEqual(
+        DEFAULT_PRICING_TABLE['gemini-3.1-pro-preview'],
+      );
+    });
+
     it('has gemini-2.5-pro with tiered pricing', () => {
       const p = DEFAULT_PRICING_TABLE['gemini-2.5-pro'];
       expect(p).toBeDefined();
@@ -206,6 +238,39 @@ describe('DEFAULT_PRICING_TABLE', () => {
       expect(DEFAULT_PRICING_TABLE['gpt-3.5-turbo']).toBeDefined();
     });
 
+    it.each([
+      ['gpt-5.5-pro', 30, 180, undefined, 1_050_000],
+      ['gpt-5.4-pro', 30, 180, undefined, 1_050_000],
+      ['gpt-5.2', 1.75, 14, 0.175, 400_000],
+      ['gpt-5.2-pro', 21, 168, undefined, 400_000],
+      ['gpt-5.1', 1.25, 10, 0.125, 400_000],
+      ['gpt-5-nano', 0.05, 0.4, 0.005, 400_000],
+      ['gpt-5-pro', 15, 120, undefined, 400_000],
+      ['gpt-5.6-cyber', 12.5, 75, 1.25, 400_000],
+      ['gpt-4.1', 2, 8, 0.5, 1_047_576],
+      ['gpt-4.1-mini', 0.4, 1.6, 0.1, 1_047_576],
+      ['gpt-4.1-nano', 0.1, 0.4, 0.025, 1_047_576],
+      ['o1-pro', 150, 600, undefined, 200_000],
+      ['o3-pro', 20, 80, undefined, 200_000],
+      ['gpt-4o-2024-05-13', 5, 15, undefined, 128_000],
+      ['gpt-4-0613', 30, 60, undefined, 8_192],
+      ['gpt-3.5-turbo-instruct', 1.5, 2, undefined, 4_096],
+    ])('has %s catalog-gap entry with vendor rates', (key, input, output, cacheRead, ctx) => {
+      const p = DEFAULT_PRICING_TABLE[key];
+      expect(p.inputPerMTok).toBe(input);
+      expect(p.outputPerMTok).toBe(output);
+      expect(p.cacheReadPerMTok).toBe(cacheRead);
+      expect(p.contextWindow).toBe(ctx);
+    });
+
+    it.each(['gpt-5.5-pro', 'gpt-5.4-pro'])('%s re-prices the full request above 272k', (key) => {
+      const p = DEFAULT_PRICING_TABLE[key];
+      expect(p.tierThreshold).toBe(272_000);
+      expect(p.tierInputPerMTok).toBe(60);
+      expect(p.tierOutputPerMTok).toBe(270);
+      expect(p.tierMode).toBeUndefined();
+    });
+
     it('all OpenAI entries have required fields', () => {
       const openaiModels = [
         'gpt-4o',
@@ -239,12 +304,20 @@ describe('DEFAULT_PRICING_TABLE', () => {
     it('prices bare anthropic.* keys at 1.1x their global.anthropic.* counterpart', () => {
       const currentGenModels = [
         'anthropic.claude-sonnet-5',
+        'anthropic.claude-sonnet-5-5',
+        'anthropic.claude-opus-5-5',
         'anthropic.claude-fable-5',
         'anthropic.claude-opus-5',
         'anthropic.claude-opus-4-8',
         'anthropic.claude-opus-4-7',
         'anthropic.claude-sonnet-4-6',
         'anthropic.claude-haiku-4-5-20251001-v1:0',
+        'anthropic.claude-opus-4-6-v1',
+        'anthropic.claude-opus-4-5-20251101-v1:0',
+        'anthropic.claude-sonnet-4-5-20250929-v1:0',
+        'anthropic.claude-haiku-5-5',
+        'anthropic.claude-fable-5-1',
+        'anthropic.claude-mythos-5-1',
       ];
       for (const model of currentGenModels) {
         const geo = DEFAULT_PRICING_TABLE[model];
@@ -257,6 +330,29 @@ describe('DEFAULT_PRICING_TABLE', () => {
         expect(geo.cacheCreationPerMTok).toBeCloseTo(global.cacheCreationPerMTok! * 1.1, 5);
         expect(geo.contextWindow).toBe(global.contextWindow);
       }
+    });
+
+    it('has Mythos and legacy Claude geo rates matching the AWS pricing page', () => {
+      const mythos = DEFAULT_PRICING_TABLE['anthropic.claude-mythos-preview'];
+      expect([
+        mythos.inputPerMTok,
+        mythos.outputPerMTok,
+        mythos.cacheCreationPerMTok,
+        mythos.cacheReadPerMTok,
+      ]).toEqual([27.5, 137.5, 34.375, 2.75]);
+      const opus41 = DEFAULT_PRICING_TABLE['anthropic.claude-opus-4-1-20250805-v1:0'];
+      expect([
+        opus41.inputPerMTok,
+        opus41.outputPerMTok,
+        opus41.cacheCreationPerMTok,
+        opus41.cacheReadPerMTok,
+      ]).toEqual([15, 75, 18.75, 1.5]);
+      const haiku3 = DEFAULT_PRICING_TABLE['anthropic.claude-3-haiku-20240307-v1:0'];
+      expect([haiku3.inputPerMTok, haiku3.outputPerMTok, haiku3.cacheReadPerMTok]).toEqual([
+        0.25,
+        1.25,
+        undefined,
+      ]);
     });
 
     it('has claude-sonnet-5 Geo/In-region rate confirmed exactly against AWS pricing data', () => {
