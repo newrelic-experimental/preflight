@@ -316,8 +316,28 @@ describe('TranscriptMessageTracker', () => {
       'WebSearch',
       'TodoWrite',
       'mcp__github__get_issue',
+      'mcp__filesystem__read_file',
+      'mcp__github__get_commit',
+      'mcp__newrelic__execute_nrql_query',
+      // A name led by its service doesn't open on the verb.
+      'mcp__slack__slack_send_message',
     ])('reads a turn that only called %s as talking', (tool) => {
       expect(corrections([...EARLIER_EXCHANGE, toolUseLine(tool), userLine(TEXT_ONLY)])).toBe(0);
+    });
+
+    it.each([
+      'mcp__filesystem__write_file',
+      'mcp__filesystem__edit_file',
+      'mcp__github__create_pull_request',
+      'mcp__atlassian__editJiraIssue',
+    ])('reads a turn that called %s as acting', (tool) => {
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          toolUseLine(tool),
+          userLine("That won't work, the header is missing."),
+        ]),
+      ).toBe(1);
     });
 
     it('reads a text-only turn as talking once the transcript has shown a tool call', () => {

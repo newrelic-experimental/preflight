@@ -281,9 +281,13 @@ function isCorrectionMessage(rawText: string, state: AssistantTurnState): boolea
  * - Bash runs a command, which `isMutatingToolUse` reads as talking when every command in it only
  *   reads (`isReadOnlyCommand`). A command is output the user corrects too ("the command you ran
  *   won't work in CI"), so any other, such as `npm test` or `cd src && ls`, acts.
+ * - An MCP tool acts when its name opens on a verb that changes something (`isWritingMcpTool`):
+ *   `write_file`, `create_pull_request`. Tool names usually lead with the verb, and a reading one
+ *   can hold a write word later (`get_commit`), so only the first word counts. `execute` and `run`
+ *   open reading tools too (`execute_nrql_query`), so they count as talking, as does a name led by
+ *   its service (`slack_send_message`).
  * Every other tool counts as talking: Read, Grep, Glob, WebFetch and WebSearch look things up and
- * TodoWrite tracks the plan. That includes MCP tools, since the name alone doesn't say whether one
- * changed anything.
+ * TodoWrite tracks the plan.
  */
 const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'Edit',
@@ -360,6 +364,40 @@ function isReadOnlyCommand(command: unknown): boolean {
   return chain.quotesBalanced && commands.length > 0 && commands.every(commandOnlyReads);
 }
 
+/** Verbs that open the name of an MCP tool that changes something. */
+const MCP_WRITE_VERBS: ReadonlySet<string> = new Set([
+  'write',
+  'edit',
+  'create',
+  'update',
+  'delete',
+  'remove',
+  'patch',
+  'apply',
+  'rename',
+  'move',
+  'insert',
+  'replace',
+  'append',
+  'modify',
+  'set',
+  'add',
+  'push',
+  'merge',
+  'commit',
+  'upload',
+  'send',
+  'post',
+]);
+
+/** Whether an MCP tool's name, `mcp__<server>__<tool>`, opens on a verb in `MCP_WRITE_VERBS`, in snake or camel case. */
+function isWritingMcpTool(name: string): boolean {
+  if (!name.startsWith('mcp__')) return false;
+  const tool = name.slice(name.lastIndexOf('__') + 2);
+  const verb = /^[A-Za-z][a-z]*/.exec(tool)?.[0].toLowerCase() ?? '';
+  return MCP_WRITE_VERBS.has(verb);
+}
+
 interface ToolUse {
   readonly name: string;
   readonly input: unknown;
@@ -374,7 +412,7 @@ function isMutatingToolUse({ name, input }: ToolUse): boolean {
         : undefined;
     return !isReadOnlyCommand(command);
   }
-  return MUTATING_TOOLS.has(name);
+  return MUTATING_TOOLS.has(name) || isWritingMcpTool(name);
 }
 
 /** The `tool_use` blocks in an assistant entry's `message.content`. */
