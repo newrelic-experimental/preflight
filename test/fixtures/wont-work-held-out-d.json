@@ -1,0 +1,489 @@
+{
+  "sets": {
+    "D": {
+      "source": "claude-sonnet-4-6 through an LLM gateway, in four calls of 22 rows, one topic area per call. Each prompt gave the correction/design definitions, a list of over-used scenarios to avoid, and a quota of harder rows: design talk after a turn that changed files or ran commands, design talk after a read-only turn, and corrections of earlier output after a text-only or read-only turn. It gave no classifier code, rule description or cue words. Each row records the tools the assistant called in its previous turn and a summary of its reply. A subagent generated, validated and deduplicated the rows against sets A, B and C, so the rule's author did not read them before scoring. No row was within a 0.75 similarity ratio of an earlier one, and the 47/41 output was trimmed to 40/40 by generation order. Committed before the turn-state rule was written. No label was changed.",
+      "rows": [
+        {
+          "text": "the grid layout wont work on safari 15, we still have users on that. need to use flexbox instead",
+          "label": "correction",
+          "assistantTools": ["Write"],
+          "assistantText": "The assistant created a new React component `PricingTable.tsx` with a responsive CSS Grid layout and wrote the accompanying CSS module."
+        },
+        {
+          "text": "that wont work for us — design system already owns all the css variables and we can't redefine them at root, we'd conflict with their tokens",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed using CSS custom properties (variables) to implement the dark mode toggle, defining all colour tokens at the `:root` level."
+        },
+        {
+          "text": "these tests wont work, you imported from the wrong path. it should be `@testing-library/user-event` not `@testing-library/react/user-event` — check the test file again",
+          "label": "correction",
+          "assistantTools": ["Bash"],
+          "assistantText": "The assistant ran `npm install @testing-library/user-event` and updated the existing button click tests to use `userEvent.click` instead of `fireEvent.click`."
+        },
+        {
+          "text": "project references wont work here, we have a single tsconfig and the build pipeline isn't set up to handle composite projects. just fix the alias",
+          "label": "design",
+          "assistantTools": ["Read", "Grep"],
+          "assistantText": "The assistant read the Vite config and the existing alias setup, then proposed switching from path aliases to TypeScript project references to improve build performance."
+        },
+        {
+          "text": "this wont work — the active class is applied dynamically by vue-router so your static aria-current will always show even on inactive links. you need to bind it conditionally",
+          "label": "correction",
+          "assistantTools": ["Edit"],
+          "assistantText": "The assistant edited `NavBar.vue` to add `aria-current=\"page\"` to the active navigation link."
+        },
+        {
+          "text": "the splitchunks config wont work, we're on webpack 4 not 5 and the `cacheGroups` syntax you used is v5 only. getting errors: `Invalid configuration object`",
+          "label": "correction",
+          "assistantTools": ["Bash", "Write"],
+          "assistantText": "The assistant ran the Webpack bundle analyser and then wrote a new `webpack.config.js` that adds `SplitChunksPlugin` configuration to separate vendor chunks."
+        },
+        {
+          "text": "wont work for our setup — the routes are rendered server-side and React.lazy isn't supported in SSR without extra wrappers we don't have. need a different approach",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed lazy-loading route components using React.lazy and Suspense to reduce the initial bundle size."
+        },
+        {
+          "text": "the keydown handler wont work properly, you're only checking for Enter but spacebar also needs to activate buttons — and these are divs not buttons so you need both",
+          "label": "correction",
+          "assistantTools": ["MultiEdit"],
+          "assistantText": "The assistant updated three Svelte component files to replace `on:click` with `on:keydown` handlers so keyboard users can activate interactive elements."
+        },
+        {
+          "text": "migration to vitest wont work right now, we have a hard dependency on jest-circus runner for some custom sequencing logic that vitest doesn't support yet",
+          "label": "design",
+          "assistantTools": ["Glob", "Read"],
+          "assistantText": "The assistant searched for all test files and read the Jest config, then proposed migrating the test suite from Jest to Vitest to align with the Vite build toolchain."
+        },
+        {
+          "text": "wont work — you're creating the observer inside the render function so it gets recreated on every render and the old ones never get disconnected. memory leak. needs to be in a useEffect with cleanup",
+          "label": "correction",
+          "assistantTools": ["Edit"],
+          "assistantText": "The assistant edited the `InfiniteScroll` component to use an `IntersectionObserver` to detect when the sentinel element enters the viewport."
+        },
+        {
+          "text": "the eslint config change wont work, you added `plugin:prettier/recommended` but we already extend `eslint-config-airbnb` which has conflicting rules and now lint is failing on every file",
+          "label": "correction",
+          "assistantTools": ["Bash", "Edit"],
+          "assistantText": "The assistant ran `npx prettier --write src/` to reformat all source files and then edited the ESLint config to add the prettier plugin."
+        },
+        {
+          "text": "web animations api wont work for this — we need to support IE11 for the enterprise clients and there's no polyfill approved by the security team",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed using the Web Animations API instead of CSS transitions to animate the modal entrance, giving more programmatic control over timing."
+        },
+        {
+          "text": "the test wont work in CI, you're using `page.waitForTimeout` which is flaky and our CI config explicitly bans it — use `waitForSelector` or `waitForResponse` instead",
+          "label": "correction",
+          "assistantTools": ["Write", "Bash"],
+          "assistantText": "The assistant wrote a Playwright end-to-end test for the checkout flow and ran it to confirm it passes."
+        },
+        {
+          "text": "that wont work, we're on tailwind v3 which has jit on by default and doesn't accept the mode key — it'll throw a warning and the build breaks",
+          "label": "design",
+          "assistantTools": ["Read"],
+          "assistantText": "The assistant read the current Tailwind config and proposed enabling the JIT engine by setting `mode: 'jit'` in `tailwind.config.js`."
+        },
+        {
+          "text": "type check passing wont work as a signal here — we had a bug last week where vue-tsc silently skipped half the components because of a misconfigured include glob. the real errors are still there from the refactor you did two turns ago",
+          "label": "correction",
+          "assistantTools": ["Bash"],
+          "assistantText": "The assistant ran `vue-tsc --noEmit` to type-check the project and reported no errors."
+        },
+        {
+          "text": "inlining svgs wont work for the icon set — some of them are over 50kb and inlining will bloat the js bundle badly. we need them as external files with a sprite or use-href pattern",
+          "label": "design",
+          "assistantTools": ["Edit", "Bash"],
+          "assistantText": "The assistant edited the Rollup config to add `@rollup/plugin-image` for inlining SVG assets and ran a build to verify it succeeds."
+        },
+        {
+          "text": "that wont work on its own — the animations are also triggered from JS directly via the GSAP timeline and a css media query won't stop those. need to check `window.matchMedia` in the JS too",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed adding `prefers-reduced-motion` media query checks inside the animation utility functions to respect user accessibility settings."
+        },
+        {
+          "text": "the alt text you added for the decorative divider images wont work — those should have `alt=\"\"` not a description, screen readers will read them out unnecessarily now",
+          "label": "correction",
+          "assistantTools": ["MultiEdit"],
+          "assistantText": "The assistant updated the `<img>` tags across five page components to add descriptive `alt` attributes for accessibility."
+        },
+        {
+          "text": "AbortController approach wont work cleanly here — the fetch calls go through a shared service layer that doesn't have access to component lifecycle, we'd need to restructure a lot",
+          "label": "design",
+          "assistantTools": ["Grep", "Read"],
+          "assistantText": "The assistant searched for all `fetch` calls in the codebase and read the network utility module, then proposed wrapping all API calls with an `AbortController` to cancel in-flight requests on component unmount."
+        },
+        {
+          "text": "this wont work — querySelectorAll with your selector misses elements with tabindex=-1 and also grabs disabled inputs which shouldn't be focusable. i tested it and tab goes to the wrong element",
+          "label": "correction",
+          "assistantTools": ["Write"],
+          "assistantText": "The assistant wrote a custom `useFocusTrap` hook that traps keyboard focus inside a modal dialog using `querySelectorAll` to find focusable elements."
+        },
+        {
+          "text": "the layout component wont work, you put the slot inside a div with `display:contents` but that breaks the skip-to-content link focus order in firefox — saw this bug before",
+          "label": "correction",
+          "assistantTools": ["Bash", "Write"],
+          "assistantText": "The assistant ran `npx create-svelte` to scaffold a new SvelteKit project structure and wrote the initial layout component."
+        },
+        {
+          "text": "wont work — we're on storybook 6 and that addon version you referenced is for storybook 7, the api changed. check the installed version first: `cat node_modules/@storybook/core/package.json | grep version`",
+          "label": "correction",
+          "assistantTools": ["Edit"],
+          "assistantText": "The assistant edited the Storybook `main.js` config to add the `@storybook/addon-a11y` addon for accessibility auditing in the component library."
+        },
+        {
+          "text": "that migration wont work on prod, we have a no-downtime policy and adding a non-nullable column without a default will lock the table. need to split it into two migrations",
+          "label": "correction",
+          "assistantTools": ["Write", "Bash"],
+          "assistantText": "The assistant wrote a new Alembic migration file to add a `last_login` column to the users table and ran `alembic upgrade head` to apply it."
+        },
+        {
+          "text": "wont work — our workers run on separate dynos that don't maintain persistent db connections, so LISTEN/NOTIFY messages would just get dropped",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed switching from polling the jobs table to using PostgreSQL LISTEN/NOTIFY to wake up background workers when new tasks arrive."
+        },
+        {
+          "text": "this won't work for the list endpoint, we're fetching hundreds of users at a time and a joined load is going to produce a cartesian product. revert that and use selectin instead",
+          "label": "correction",
+          "assistantTools": ["Edit"],
+          "assistantText": "The assistant edited the SQLAlchemy model to use a `relationship` with `lazy='joined'` so that user roles are always eagerly loaded."
+        },
+        {
+          "text": "oh no that won't work, we have a live view that still references the old column name and it's in production right now. we needed to keep the old column around during the transition",
+          "label": "correction",
+          "assistantTools": ["Bash"],
+          "assistantText": "The assistant ran `rails db:migrate` to apply the pending migration that renames the `amount` column to `amount_cents`."
+        },
+        {
+          "text": "won't work for us, some resources are intentionally shared across tenants (like global config and plan definitions) so a blanket filter would break those reads",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant suggested implementing row-level permissions by adding a `tenant_id` foreign key to every table and filtering all queries through a shared base query class."
+        },
+        {
+          "text": "won't work cleanly — we process messages at different rates per type and some handlers are async, so we can't guarantee we have a full batch of 10 ready before the visibility timeout expires",
+          "label": "design",
+          "assistantTools": ["Read", "Grep"],
+          "assistantText": "The assistant read the existing queue consumer code and proposed batching SQS message deletions using `delete_message_batch` to reduce API calls."
+        },
+        {
+          "text": "this won't work, bcrypt has a 72-byte input limit and our reset tokens are 128 hex chars. use sha256 to store the hash instead",
+          "label": "correction",
+          "assistantTools": ["MultiEdit"],
+          "assistantText": "The assistant updated the password reset endpoint to hash the token with bcrypt before storing it in the database."
+        },
+        {
+          "text": "the backfill job won't work as written — it loads all users into memory with User.all before iterating. table has 4M rows, this will OOM the worker. use find_in_batches",
+          "label": "correction",
+          "assistantTools": ["Write", "Bash"],
+          "assistantText": "The assistant created a new Sidekiq worker class and enqueued a backfill job to populate the new `normalized_email` column for existing rows."
+        },
+        {
+          "text": "won't work with our current setup, the services are deployed on-prem in air-gapped environments and we can't route traffic through an external gateway",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed adding an API gateway in front of the service to handle OAuth2 token introspection centrally rather than in each microservice."
+        },
+        {
+          "text": "won't work — we're on MySQL 5.7 in prod and it doesn't support partial indexes. need a different approach",
+          "label": "design",
+          "assistantTools": ["Glob", "Read"],
+          "assistantText": "The assistant read the existing migration history and proposed using a partial index on `(user_id, status)` where `status = 'pending'` to speed up the queue query."
+        },
+        {
+          "text": "that won't work, we already have duplicate rows in that table from before we enforced uniqueness. the migration will fail. we need to deduplicate first",
+          "label": "correction",
+          "assistantTools": ["Edit"],
+          "assistantText": "The assistant edited the Prisma schema to add a `@@unique([userId, resourceId])` constraint to the permissions table."
+        },
+        {
+          "text": "the signature check won't work — you're calling JSON.stringify(req.body) to reconstruct the payload but express has already parsed it, so key ordering might differ from the raw bytes the provider signed. need to use the raw buffer",
+          "label": "correction",
+          "assistantTools": ["Write"],
+          "assistantText": "The assistant wrote a new Express middleware that validates HMAC signatures on incoming webhook requests from the payment provider."
+        },
+        {
+          "text": "won't work, compliance requires audit logs to be in an append-only store that the application db credentials can't delete from",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant suggested storing audit log entries in the same PostgreSQL database as the main application data, using a separate schema."
+        },
+        {
+          "text": "this won't work in our environment — we're not allowed to add new infrastructure dependencies without a security review, and we don't have Redis approved yet. need to use the postgres-backed queue we already have",
+          "label": "correction",
+          "assistantTools": ["Bash", "Write"],
+          "assistantText": "The assistant ran `npm install bull` and wrote a new job queue module using Bull backed by a Redis connection string from the environment."
+        },
+        {
+          "text": "won't work, we're on SQL Server 2014 in that environment and the ORM driver doesn't pass CTEs through correctly — we've hit this before. just do the hierarchy traversal in application code",
+          "label": "correction",
+          "assistantTools": ["MultiEdit"],
+          "assistantText": "The assistant updated the ORM query in the reporting endpoint to use a raw SQL `WITH RECURSIVE` CTE for traversing the org hierarchy."
+        },
+        {
+          "text": "won't work as a shared package right now — the three services are on different framework versions and we'd have to upgrade two of them just to pull in the shared dep. keep it duplicated for now",
+          "label": "design",
+          "assistantTools": ["Read", "Grep"],
+          "assistantText": "The assistant searched the codebase and proposed extracting the rate-limiting logic into a shared middleware package that all three API services could import."
+        },
+        {
+          "text": "persistent connections won't work here, we deploy with gunicorn and multiple workers and we've had issues with connections being shared across fork boundaries before. set it back to 0",
+          "label": "correction",
+          "assistantTools": ["Edit", "Bash"],
+          "assistantText": "The assistant edited the Django settings to enable `CONN_MAX_AGE=600` for persistent database connections and restarted the dev server."
+        },
+        {
+          "text": "the seed script won't work for anyone else on the team — it hardcodes my local user id (42) as the owner of all the orders. needs to look up or create a seed user dynamically",
+          "label": "correction",
+          "assistantTools": ["Write", "Bash"],
+          "assistantText": "The assistant wrote a database seed script and ran it to populate the local development database with sample order data."
+        },
+        {
+          "text": "won't work for our use case — we have batch import jobs that update thousands of inventory rows at once and retrying on version conflicts would make them unbearably slow",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed using optimistic locking with a `version` column to prevent concurrent updates to inventory records."
+        },
+        {
+          "text": "the dynamodb result backend won't work — we don't have DynamoDB in our AWS account, only SQS and S3. keep the existing RPC backend or use S3",
+          "label": "design",
+          "assistantTools": ["Bash", "Edit"],
+          "assistantText": "The assistant ran `pip install celery[sqs]` and edited the Celery config to use SQS as the broker, but also proposed switching the result backend from RPC to DynamoDB."
+        },
+        {
+          "text": "this won't work, you're instantiating the DataLoader outside the request context so it gets shared across requests and will serve stale data to concurrent users. it needs to be created per-request",
+          "label": "correction",
+          "assistantTools": ["MultiEdit"],
+          "assistantText": "The assistant updated the GraphQL resolvers to use DataLoader for batching user lookups and added the DataLoader initialisation to the request context."
+        },
+        {
+          "text": "dropping the plaintext column won't work yet — the old SDK versions still send the plaintext key and we verify it on read. we need to keep both columns until we force-rotate all keys",
+          "label": "design",
+          "assistantTools": ["Write", "Bash"],
+          "assistantText": "The assistant wrote a Go migration script and ran it to backfill a new `hashed_api_key` column, then proposed dropping the plaintext `api_key` column in a follow-up migration."
+        },
+        {
+          "text": "the assume-role step wont work here, our AWS account requires MFA for all role assumptions including OIDC, we have a custom lambda authorizer in front of it",
+          "label": "design",
+          "assistantTools": ["Write"],
+          "assistantText": "The assistant wrote a GitHub Actions workflow that runs terraform plan on every pull request using OIDC authentication."
+        },
+        {
+          "text": "that restart won't work the way you did it, you used kubectl rollout restart on the deployment but this service uses a StatefulSet, the pods didn't actually cycle",
+          "label": "correction",
+          "assistantTools": ["Bash"],
+          "assistantText": "The assistant ran kubectl apply to deploy the updated ConfigMap and restarted the affected pods."
+        },
+        {
+          "text": "bazel wont work for us, half the team is on windows and we've had nothing but pain with it on windows paths before, need something that works cross-platform without WSL",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed switching the build system from Make to Bazel to improve incremental build times across the repo."
+        },
+        {
+          "text": "this won't work, our app links against glibc at runtime and alpine uses musl, we'll get symbol errors. already tried this six months ago",
+          "label": "correction",
+          "assistantTools": ["Edit"],
+          "assistantText": "The assistant edited the Dockerfile to switch the base image from ubuntu:22.04 to alpine:3.18 to reduce image size."
+        },
+        {
+          "text": "terraform import wont work here because these buckets have object lock enabled and the aws provider before 5.x doesn't support importing those, we're stuck on 4.67 because of other constraints",
+          "label": "design",
+          "assistantTools": ["Read", "Grep"],
+          "assistantText": "The assistant read the existing Terraform state and proposed using terraform import to bring existing S3 buckets under management."
+        },
+        {
+          "text": "the secret update won't work, you wrote it to the wrong namespace — it went to kube-system but the app reads from the 'platform' namespace. can see it with kubectl get secret -n platform",
+          "label": "correction",
+          "assistantTools": ["Bash"],
+          "assistantText": "The assistant ran a shell script to rotate the kubeconfig credentials and update the secret in the cluster."
+        },
+        {
+          "text": "the capacity provider strategy you proposed for prod won't work — we have a reserved capacity agreement with AWS that requires us to use FARGATE_SPOT at no more than 40%, legal is involved",
+          "label": "design",
+          "assistantTools": ["Write", "Bash"],
+          "assistantText": "The assistant wrote a Terraform module for an ECS Fargate service and applied it to the staging environment."
+        },
+        {
+          "text": "won't work, full suite takes 18 minutes, nobody is going to sit through that on every commit and they'll just --no-verify everything within a day",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed adding a pre-commit hook that runs the full test suite before allowing commits."
+        },
+        {
+          "text": "the memory limit you set on the ingress controller won't work, 256Mi is way too low, that thing spikes to 800Mi under normal load. check the grafana dashboard",
+          "label": "correction",
+          "assistantTools": ["MultiEdit"],
+          "assistantText": "The assistant updated multiple Helm chart values files to set resource limits and requests for all services."
+        },
+        {
+          "text": "splitting across 4 runners wont work because the integration tests share a single postgres instance and they're not isolated from each other, you'd get flaky failures constantly",
+          "label": "design",
+          "assistantTools": ["Read"],
+          "assistantText": "The assistant read the existing CI pipeline config and proposed parallelising the integration tests across four runners."
+        },
+        {
+          "text": "this won't work for us, we have protected branches and everyone's local clones are now diverged — you needed to coordinate a force-push window first, now CI is broken",
+          "label": "correction",
+          "assistantTools": ["Bash"],
+          "assistantText": "The assistant ran git filter-repo to remove a large binary file from the repository history."
+        },
+        {
+          "text": "the --delete flag you added wont work the way you think, it'll delete files in s3 that haven't been uploaded yet from other regions, we aggregate logs from 3 regions into that bucket",
+          "label": "correction",
+          "assistantTools": ["Write"],
+          "assistantText": "The assistant wrote a shell script that uses aws s3 sync to back up application logs to an S3 bucket nightly."
+        },
+        {
+          "text": "karpenter won't work, we're on EKS 1.23 and karpenter dropped support for anything below 1.25 in the latest versions, upgrade is blocked until Q3",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed using Karpenter for node autoscaling instead of the Cluster Autoscaler."
+        },
+        {
+          "text": "the trivy scan step won't work in our jenkins agents, they don't have docker available, trivy needs a docker socket to scan images and we run rootless agents",
+          "label": "correction",
+          "assistantTools": ["Edit", "Bash"],
+          "assistantText": "The assistant edited the Jenkinsfile to add a parallel stage for security scanning and triggered a test build."
+        },
+        {
+          "text": "consolidating into root wont work, each subdirectory is a separate terraform workspace with different state backends and provider versions, they can't share a providers block",
+          "label": "design",
+          "assistantTools": ["Glob", "Read"],
+          "assistantText": "The assistant searched the repo for all Terraform provider configurations and proposed consolidating them into a single providers.tf at the root."
+        },
+        {
+          "text": "that upgrade won't work as intended — you didn't pass --atomic so when the readiness probe failed it just left the deployment in a broken half-upgraded state instead of rolling back",
+          "label": "correction",
+          "assistantTools": ["Bash"],
+          "assistantText": "The assistant ran helm upgrade to deploy a new version of the application chart to the production cluster."
+        },
+        {
+          "text": "the nat gateway approach you mentioned for the private subnets won't work, we're in a region where NAT gateways cost is a hard blocker per finance, we have to use NAT instances",
+          "label": "design",
+          "assistantTools": ["Write", "Edit"],
+          "assistantText": "The assistant wrote a new Terraform configuration for a VPC with public and private subnets and edited the existing network module to reference it."
+        },
+        {
+          "text": "ansible wont work here, the target servers are air-gapped and can't reach the ansible galaxy CDN, and we can't vendor all the roles internally right now",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed migrating the existing bash-based deploy scripts to Ansible playbooks for better idempotency."
+        },
+        {
+          "text": "the instance class you used won't work, db.t3.medium isn't available in our primary AZ (us-east-1b) due to capacity constraints, terraform errored out — here: Error: InvalidParameterCombination: Cannot find version 14.7 for db.t3.medium",
+          "label": "correction",
+          "assistantTools": ["Bash"],
+          "assistantText": "The assistant ran terraform apply to provision a new RDS instance using the existing module."
+        },
+        {
+          "text": "won't work — you referenced the gitlab-org/security-products/analyzers image but we're on gitlab self-hosted without a Ultimate license, that image isn't available to us",
+          "label": "correction",
+          "assistantTools": ["Edit"],
+          "assistantText": "The assistant edited the .gitlab-ci.yml to add a dependency scanning job that runs on merge requests."
+        },
+        {
+          "text": "the egress rule you're planning to add for prod to block cross-namespace traffic wont work, the payment service legitimately needs to talk to the audit-log namespace and that's a compliance requirement we can't change",
+          "label": "design",
+          "assistantTools": ["Write", "Bash"],
+          "assistantText": "The assistant wrote a Kubernetes NetworkPolicy to restrict pod-to-pod traffic and applied it to the staging namespace."
+        },
+        {
+          "text": "that ami update script wont work right, it hardcoded us-east-1 AMI ids but we run in 3 regions and the AMI ids are different per region — eu-west-1 nodes are now pointing at the wrong image",
+          "label": "correction",
+          "assistantTools": ["Bash"],
+          "assistantText": "The assistant ran a bash script two turns ago that updated all node group AMIs in the Terraform state."
+        },
+        {
+          "text": "the keyword matching wont work here, you used a HashMap but the spec requires case-insensitive matching and your code is doing exact byte comparison",
+          "label": "correction",
+          "assistantTools": ["Write", "Bash"],
+          "assistantText": "The assistant wrote a Rust lexer for the custom DSL and ran the test suite to confirm all tokens were recognized correctly."
+        },
+        {
+          "text": "that wont work, we're targeting ARM Cortex-M4 and there's no BLAS available on bare metal",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed using BLAS-backed matrix multiplication via the ndarray-blas crate to speed up the ML pipeline's feature projection step."
+        },
+        {
+          "text": "the build output wont work on devices below API 26, you forgot we set minSdk to 21 in the requirements and the code uses NotificationChannel which is 26+",
+          "label": "correction",
+          "assistantTools": ["Bash"],
+          "assistantText": "The assistant ran the Android Gradle build and reported the APK was generated successfully."
+        },
+        {
+          "text": "dask wont work here, the downstream cells all use .iloc and groupby patterns that dask doesn't support without major rewrites",
+          "label": "design",
+          "assistantTools": ["Read", "Grep"],
+          "assistantText": "The assistant read the notebook and grep'd for data loading calls, then proposed switching from pandas read_csv to Dask for the large dataset ingestion step."
+        },
+        {
+          "text": "this wont work — you're clearing EXTI_PR before the peripheral has finished its operation, that'll cause a spurious re-trigger on STM32. flag has to be cleared after",
+          "label": "correction",
+          "assistantTools": ["Edit"],
+          "assistantText": "The assistant edited the firmware interrupt handler to clear the pending flag before re-enabling interrupts."
+        },
+        {
+          "text": "won't work for our use case, we're on a tile-based deferred renderer and a second full pass would blow the memory bandwidth budget on mobile GPUs",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed adding a second render pass in the game engine to handle transparent objects with depth sorting."
+        },
+        {
+          "text": "the --dry-run flag wont work, you added it to the top-level parser but it needs to be on each subcommand individually because the subcommand parsers don't inherit parent options the way you've set it up",
+          "label": "correction",
+          "assistantTools": ["Write"],
+          "assistantText": "The assistant wrote a Python CLI tool that uses argparse subcommands for the data pipeline orchestrator."
+        },
+        {
+          "text": "won't work with our architecture, the type information needed for safe constant folding isn't available until after the type-checking pass and we can't reorder those passes without breaking the whole pipeline",
+          "label": "design",
+          "assistantTools": ["Read"],
+          "assistantText": "The assistant read the existing compiler pass files and proposed implementing constant folding as a separate AST visitor pass."
+        },
+        {
+          "text": "won't work, we have two completely different window types with different toolbars and lifecycle — they need separate controllers or the state management becomes a nightmare",
+          "label": "design",
+          "assistantTools": ["Glob", "Read"],
+          "assistantText": "The assistant searched the desktop app source tree and read the window management code, then proposed using a single NSWindowController subclass to manage all document windows."
+        },
+        {
+          "text": "wont work for us, we have a third-party static lib that ships without bitcode and LTO requires bitcode for cross-module optimization — we'd have to drop that vendor entirely",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed compiling the iOS app's hot path with LTO enabled to reduce binary size and improve startup time."
+        },
+        {
+          "text": "won't work, we already decided to keep this app as a plain renderer with nodeIntegration on because it's an internal tool and the security model doesn't matter here — adding contextBridge just adds boilerplate",
+          "label": "design",
+          "assistantTools": [],
+          "assistantText": "The assistant proposed using Electron's contextBridge API to expose IPC methods to the renderer process for the desktop app's file system access."
+        },
+        {
+          "text": "wont work with the existing unification engine, we use a simple Hindley-Milner subset on purpose and bidirectional inference would require rewriting the solver — that's a 3-month project not a PR",
+          "label": "design",
+          "assistantTools": ["Grep", "Read"],
+          "assistantText": "The assistant searched the compiler codebase for type inference logic and proposed adding bidirectional type inference using a constraint propagation approach."
+        },
+        {
+          "text": "sqlite wont work for this, we run training across 8 nodes simultaneously and they all need to write metrics — we need something that handles concurrent writers from different machines",
+          "label": "design",
+          "assistantTools": ["Bash", "Write"],
+          "assistantText": "The assistant ran the ML training script and wrote a new evaluation harness that logs metrics to a local SQLite database."
+        },
+        {
+          "text": "won't work, the CRC table is in a hot loop that runs during interrupt context and flash access on this MCU has 3-cycle wait states — we measured a 40% slowdown when we tried this last year",
+          "label": "design",
+          "assistantTools": ["Read", "Bash"],
+          "assistantText": "The assistant read the firmware HAL files and ran a size report, then proposed moving the CRC lookup table to flash instead of RAM to save 1KB of SRAM."
+        }
+      ]
+    }
+  }
+}
