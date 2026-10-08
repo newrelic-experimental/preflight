@@ -3004,6 +3004,7 @@ async function main(): Promise<void> {
         storagePath: config!.storagePath,
         dashboardUrl: `http://${config!.dashboard.host}:${config!.dashboard.port}`,
         configFilePath,
+        companionMode: config!.companionMode,
       };
       registerTools(mcpServer!.server, {
         sessionTracker: sessionTracker!,
@@ -3157,6 +3158,7 @@ async function main(): Promise<void> {
             storagePath: config.storagePath,
             dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
             configFilePath: pendingConfigFilePath,
+            companionMode: config.companionMode,
           },
         });
         logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
@@ -3223,6 +3225,7 @@ async function main(): Promise<void> {
           storagePath: config.storagePath,
           dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
           configFilePath,
+          companionMode: config.companionMode,
         };
         registerTools(mcpServer!.server, {
           sessionTracker,
