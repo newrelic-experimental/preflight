@@ -651,6 +651,29 @@ function parseProxyUpstreams(
   return [];
 }
 
+/**
+ * Thrown by `loadMcpConfig()` when the mode exports to New Relic but a
+ * credential it needs is unset. `--local` falls back to local mode on this
+ * type (#479), so the message can change without breaking that fallback.
+ */
+export class MissingCloudCredentialError extends Error {
+  readonly missingField: 'licenseKey' | 'accountId';
+  readonly mode: Mode;
+
+  constructor(missingField: 'licenseKey' | 'accountId', mode: Mode, configFilePath: string) {
+    const envVar = missingField === 'licenseKey' ? 'NEW_RELIC_LICENSE_KEY' : 'NEW_RELIC_ACCOUNT_ID';
+    super(
+      `Missing required configuration: ${missingField} (mode='${mode}'). ` +
+        `Set the ${envVar} environment variable or add "${missingField}" to ` +
+        configFilePath +
+        ", or switch to mode='local' to skip cloud transport.",
+    );
+    this.name = 'MissingCloudCredentialError';
+    this.missingField = missingField;
+    this.mode = mode;
+  }
+}
+
 export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpServerConfig> {
   const configFilePath = cliOptions?.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
   const file = loadConfigFile(configFilePath);
@@ -771,12 +794,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
   }
 
   if (mode !== 'local' && !licenseKeyRaw) {
-    throw new Error(
-      `Missing required configuration: licenseKey (mode='${mode}'). ` +
-        'Set the NEW_RELIC_LICENSE_KEY environment variable or add "licenseKey" to ' +
-        configFilePath +
-        ", or switch to mode='local' to skip cloud transport.",
-    );
+    throw new MissingCloudCredentialError('licenseKey', mode, configFilePath);
   }
   // Reject the literal string "null" — it's truthy but not a valid key
   // and would cause silent auth failures at transport time.
@@ -794,12 +812,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     process.env.NEW_RELIC_ACCOUNT_ID ??
     (typeof file.accountId === 'string' ? file.accountId : undefined);
   if (mode !== 'local' && !accountIdRaw) {
-    throw new Error(
-      `Missing required configuration: accountId (mode='${mode}'). ` +
-        'Set the NEW_RELIC_ACCOUNT_ID environment variable or add "accountId" to ' +
-        configFilePath +
-        ", or switch to mode='local' to skip cloud transport.",
-    );
+    throw new MissingCloudCredentialError('accountId', mode, configFilePath);
   }
   if (accountIdRaw && !/^\d{1,12}$/.test(accountIdRaw)) {
     throw new Error(

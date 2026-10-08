@@ -30,6 +30,9 @@
  *     session_id by PID. Claude Code on native Windows is unaffected — it
  *     launches the server directly and has the cwd breadcrumb as a fallback.
  *
+ * readParentAndCommand() reads one level only, with the pid's command line,
+ * for a caller that has to tell an `npm exec` wrapper apart from a host.
+ *
  * The `/proc` parsing here is deliberately duplicated from
  * `collector-script.ts`'s `getLinuxAncestorPids` rather than imported: that
  * module runs on every single tool call under a <5ms budget with a "no heavy
@@ -187,4 +190,69 @@ export function getAncestorPids(startPid: number, options: AncestorPidsOptions =
   }
 
   return pids;
+}
+
+/** What readParentAndCommand() found. */
+export interface ParentAndCommand {
+  /** The parent PID, or null when it is PID 1 or below, as getAncestorPids() stops there. */
+  readonly parentPid: number | null;
+  /**
+   * The command line `ps -o args=` prints, trimmed. A process title set at
+   * runtime replaces it, which is how npm's wrapper shows as `npm exec ...`.
+   */
+  readonly command: string;
+}
+
+/**
+ * One process's parent and command line, from a single
+ * `ps -o ppid=,args= -p <pid>` call. The output is one row however many
+ * processes are running, which adding `args` to getAncestorPids()'s
+ * whole-table call would not be.
+ *
+ * Returns null when the lookup fails (`ps` fails or times out, the pid is
+ * gone, the output is unparseable), so a caller can retry, and on win32,
+ * which has no `ps`, without spawning anything. Never throws.
+ */
+export function readParentAndCommand(
+  pid: number,
+  options: Pick<AncestorPidsOptions, 'platform' | 'execFileSync'> = {},
+): ParentAndCommand | null {
+  if (!Number.isFinite(pid) || pid <= 0) return null;
+  if ((options.platform ?? process.platform) === 'win32') return null;
+  const execFileSync = options.execFileSync ?? (nodeExecFileSync as unknown as ExecFileSyncFn);
+
+  let out: string;
+  try {
+    // `-o ppid=,args=` = parent pid and full command line, no header; `-p` =
+    // this pid only. All POSIX. `ps` exits non-zero for a pid that is gone.
+    out = execFileSync('ps', ['-o', 'ppid=,args=', '-p', String(pid)], {
+      encoding: 'utf-8',
+      timeout: PS_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch (err) {
+    logger.debug('Could not read process command line via ps', { pid, error: String(err) });
+    return null;
+  }
+  if (typeof out !== 'string') return null;
+
+  const match = /^\s*(\d+)(?:\s+(.*))?$/.exec(out.split('\n')[0] ?? '');
+  if (!match) return null;
+  const parentPid = parseInt(match[1] ?? '', 10);
+  return {
+    parentPid: parentPid > 1 ? parentPid : null,
+    command: (match[2] ?? '').trim(),
+  };
+}
+
+/**
+ * Whether a readParentAndCommand() command line is npm's `npx` wrapper, the
+ * `npm exec` process between a host and a server it launched through `npx`.
+ * `npx` runs as `npm exec` (npm's bin/npx-cli.js), and npm sets its process
+ * title to `npm` plus its positional args (lib/npm.js), so `ps` shows
+ * `npm exec <package> ...`, or `npm x ...` for the alias. Other launchers
+ * (`pnpm dlx`, `yarn dlx`, `bunx`) are not recognized.
+ */
+export function isNpmExecWrapper(command: string): boolean {
+  return /^npm (?:exec|x)(?:\s|$)/.test(command);
 }
