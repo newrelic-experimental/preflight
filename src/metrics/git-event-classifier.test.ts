@@ -658,7 +658,7 @@ describe('classifyGitSegments when the error holds two failures', () => {
   // to run, and `&&` skips the pull, so the run stopped at the commit.
   it('fails a commit that stopped the && run before the conflict-capable step', () => {
     const UNMERGED = 'error: Committing is not possible because you have unmerged files.';
-    const command = 'git stash pop; git commit -am wip && git pull --rebase';
+    const command = 'git stash pop; git commit -m wip && git pull --rebase';
     const [stash, commit, ...rest] = events(command, `${CONFLICT}\n${UNMERGED}`);
     expect([stash!.type, stash!.success, stash!.files]).toEqual([
       'merge_conflict',
@@ -700,12 +700,39 @@ describe('classifyGitSegments when the error holds two failures', () => {
     const UNMERGED = 'error: Committing is not possible because you have unmerged files.';
     expect(
       outcomes(
-        'git stash pop; git commit -am a && git pull --rebase; git commit -am b',
+        'git stash pop; git commit -m a && git pull --rebase; git commit -m b',
         `${CONFLICT}\n${UNMERGED}\n${UNMERGED}`,
       ),
     ).toEqual([
       ['merge_conflict', false],
       ['commit', false],
+      ['commit', false],
+    ]);
+  });
+
+  // The merge's conflict leaves markers that `git add -A` stages, and the
+  // commit's hook rejects them, so `&&` never runs the rebase.
+  it('fails a commit whose hook stopped the run after an earlier conflict', () => {
+    const HUSKY = 'husky - pre-commit script failed (code 1)';
+    const MERGE = `${CONFLICT}; fix conflicts and then commit the result.`;
+    expect(
+      outcomes(
+        'git merge x; git add -A && git commit -m m && git rebase main',
+        `${MERGE}\n${HUSKY}`,
+      ),
+    ).toEqual([
+      ['merge_conflict', false],
+      ['other_git', true],
+      ['commit', false],
+    ]);
+  });
+
+  // `git status` prints the unmerged paths, and no step here can conflict.
+  it('types a commit refusing over unmerged files from another command as a commit', () => {
+    const STATUS = 'Unmerged paths:\n\tboth modified:   a.ts';
+    const UNMERGED = 'error: Committing is not possible because you have unmerged files.';
+    expect(outcomes('git status && git commit -m x', `${STATUS}\n${UNMERGED}`)).toEqual([
+      ['status', true],
       ['commit', false],
     ]);
   });

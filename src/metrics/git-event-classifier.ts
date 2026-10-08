@@ -49,15 +49,21 @@ const REJECT_INDICATORS = [
   /Updates were rejected/i,
 ];
 
-// What a failed `git commit` prints: its own refusals, or a hook failure
+// What only a failed `git commit` prints: its own refusals, or a hook failure
 // (husky prints "husky - pre-commit script failed (code 1)").
-const COMMIT_FAILURE_INDICATORS = [
+const OWN_COMMIT_FAILURE_INDICATORS = [
   /nothing to commit/i,
-  /nothing added to commit/i,
-  /no changes added to commit/i,
   /Committing is not possible/i,
   /Aborting commit/i,
   /\b(?:pre-commit|commit-msg)\b.*\b(?:failed|exited)\b/i,
+];
+
+// What a failed `git commit` prints. The last two also end the status block
+// a conflicting `git stash pop` or `git merge` prints.
+const COMMIT_FAILURE_INDICATORS = [
+  ...OWN_COMMIT_FAILURE_INDICATORS,
+  /nothing added to commit/i,
+  /no changes added to commit/i,
 ];
 
 // Conflict file path extraction: "CONFLICT (content): Merge conflict in <path>"
@@ -628,12 +634,13 @@ const CONFLICT_TEXT_INDICATORS: readonly RegExp[] = [
 const UNMERGED_COMMIT_RE = /Committing is not possible/i;
 
 /** The git segment whose output `error` is, and whether it is a commit that
- *  refused over files an earlier step left unmerged. */
+ *  failed beside conflict text another step printed. */
 interface ErrorOwner {
   /** The segment index, or -1 when no segment's output `error` is. */
   readonly owner: number;
-  /** The owner is a commit that stopped a conflict's `&&` run. Its own lines
-   *  are the refusal, and the conflict text is an earlier step's. */
+  /** The owner is a commit that failed while the error also holds conflict
+   *  text it didn't print: a conflict-capable step before its `&&` run did,
+   *  or none in the command did. The commit's own lines are its failure. */
   readonly commitOverConflict: boolean;
 }
 
@@ -646,11 +653,13 @@ interface ErrorOwner {
  * of those segments may be the one it stopped at, so the earliest counts no
  * step as run that may not have. `git pull && git commit && git checkout
  * other` hands a conflict to the pull, and `git commit -m a && git commit -m
- * b` hands a failed hook to the first commit. A commit in the conflict's run,
- * before the step that can conflict, that refused over unmerged files is what
- * stopped the run, as in `git stash pop; git commit -am x && git pull`, so it
- * takes the failure. Otherwise rejection text goes to the last `git push`, or
- * commit-failure text to its commit, whichever comes later.
+ * b` hands a failed hook to the first commit. When a conflict-capable step
+ * before the conflict's run can have printed the conflict text, a commit in
+ * that run, before the step that can conflict, that printed a failure of its
+ * own is what stopped the run, as in `git stash pop; git commit -m x && git
+ * pull` or `git merge x; git add -A && git commit -m m && git rebase main`,
+ * so it takes the failure. Otherwise rejection text goes to the last `git
+ * push`, or commit-failure text to its commit, whichever comes later.
  */
 function errorSegmentIndex(
   { segments, operators }: ShellChain,
@@ -665,11 +674,15 @@ function errorSegmentIndex(
     }
     return last;
   };
-  if (CONFLICT_TEXT_INDICATORS.some((re) => re.test(error))) {
+  const conflictText = CONFLICT_TEXT_INDICATORS.some((re) => re.test(error));
+  if (conflictText) {
     const conflict = earliestInLastRun(GIT_CONFLICT_CAPABLE_RE);
     if (conflict !== -1) {
-      if (UNMERGED_COMMIT_RE.test(error)) {
-        for (let i = andRunStart(operators, conflict); i < conflict; i++) {
+      const run = andRunStart(operators, conflict);
+      const conflictBeforeRun =
+        lastGitSegment(segments.slice(0, run), isGit, GIT_CONFLICT_CAPABLE_RE) !== -1;
+      if (conflictBeforeRun && OWN_COMMIT_FAILURE_INDICATORS.some((re) => re.test(error))) {
+        for (let i = run; i < conflict; i++) {
           if (isGit[i] && GIT_COMMIT_RE.test(segments[i]!)) {
             return { owner: i, commitOverConflict: true };
           }
@@ -682,7 +695,12 @@ function errorSegmentIndex(
   const commit = COMMIT_FAILURE_INDICATORS.some((re) => re.test(error))
     ? earliestInLastRun(GIT_COMMIT_RE)
     : -1;
-  return { owner: Math.max(push, commit), commitOverConflict: false };
+  const owner = Math.max(push, commit);
+  // No step here can conflict, so a commit refusing over unmerged files saw
+  // conflict text another command left, as `git status` prints it.
+  const refusedOverUnmerged =
+    owner !== -1 && owner === commit && conflictText && UNMERGED_COMMIT_RE.test(error);
+  return { owner, commitOverConflict: refusedOverUnmerged };
 }
 
 /**
@@ -753,7 +771,7 @@ export function classifyGitSegments(
   // A commit that took the failure over conflict text (see errorSegmentIndex)
   // gets only its own lines, and the conflict goes to the conflict-capable
   // step before it that printed it, such as the `git stash pop` in
-  // `git stash pop; git commit -am x && git pull`.
+  // `git stash pop; git commit -m x && git pull`.
   const { commitOverConflict } = errorOwner;
   const conflictAt = commitOverConflict
     ? lastGitSegment(segments.slice(0, owner), isGit, GIT_CONFLICT_CAPABLE_RE)
