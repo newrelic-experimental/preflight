@@ -1104,13 +1104,15 @@ describe('TranscriptMessageTracker', () => {
 
     // Model-written sets. A, B and C were read while writing the turn-state rule, so they are
     // development data. D was written and committed (0cf775d) before that rule, which was frozen at
-    // 3dd6853 and then scored on D once, so D is the estimate of how it generalises. C played that
-    // part for the text-alone rule, first scored at b241f1b. The
-    // results are pinned measurements, not targets: a rule change updates them, and only a fresh set
-    // can say whether the change generalises. Each set pins the row indices of the corrections it
-    // misses and the design rows it flags, so a change that swaps which rows pass at the same totals
-    // shows up too. Each also caps its misses at the recall the rule was accepted at, so a recall drop
-    // fails even when the indices are re-pinned. Raising a cap is a decision to lose recall.
+    // 3dd6853 and then scored on D once, so D is the estimate of how it generalises. The turn
+    // boundary, Bash, MCP and acted-exclusion changes after it leave every verdict on D as it was,
+    // so D doesn't measure them: its rows list tool names, with no Bash commands or MCP tools. C
+    // played that part for the text-alone rule, first scored at b241f1b. The results are pinned
+    // measurements, not targets: a rule change updates them, and only a fresh set can say whether
+    // the change generalises. Each set pins the row indices of the corrections it misses and the
+    // design rows it flags, so a change that swaps which rows pass at the same totals shows up too.
+    // Each also caps its misses at the recall the rule was accepted at, so a recall drop fails even
+    // when the indices are re-pinned. Raising a cap is a decision to lose recall.
     const CONTEXT_SETS: Readonly<Record<string, HeldOutSet<ContextRow>>> = {
       ...readSets<ContextRow>('wont-work-held-out.json'),
       ...readSets<ContextRow>('wont-work-held-out-c.json'),
