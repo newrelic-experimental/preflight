@@ -36,12 +36,13 @@ import {
   watchCwdBreadcrumbForCorrection,
   watchPpidBreadcrumb,
 } from './hooks/session-resolver.js';
-import { SubagentWatcher } from './hooks/subagent-watcher.js';
+import { SubagentWatcher, type SubagentTokenEvent } from './hooks/subagent-watcher.js';
 import { WorkflowWatcher } from './hooks/workflow-watcher.js';
 import { migrateStoragePath } from './install/migrate.js';
 import { checkNodeVersion } from './install/node-version-check.js';
 import { localDateKey, todayPortionOfSessionCost } from './lib/date.js';
-import { backfillAgentId } from './metrics/agent-partition.js';
+import { repoNameFromRemote } from './lib/git-remote.js';
+import { SubagentAttributionIndex } from './metrics/subagent-attribution.js';
 import { AntiPatternDetector } from './metrics/anti-patterns.js';
 import { ApiFailureTracker, mapClaudeCodeErrorType } from './metrics/api-failure-tracker.js';
 import { SessionResumeTracker } from './metrics/session-resume-tracker.js';
@@ -1415,11 +1416,8 @@ async function main(): Promise<void> {
     const remoteName = 'origin';
     let defaultBranch = 'main';
     if (remoteResult.status === 0 && branchResult.status === 0) {
-      const remoteUrl = remoteResult.stdout.trim();
       const branch = branchResult.stdout.trim();
-      // Extract repo name from remote URL (handles both HTTPS and SSH)
-      const repoMatch = remoteUrl.match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
-      const repoName = repoMatch ? repoMatch[1] : null;
+      const repoName = repoNameFromRemote(remoteResult.stdout);
       currentRepoName = repoName;
 
       const symbolicRefResult = spawnSync(
@@ -2007,49 +2005,37 @@ async function main(): Promise<void> {
 
     const capturedAlertEngine = alertEngine;
     const capturedAlertSnapshotCollector = alertSnapshotCollector;
+    // BudgetTracker invokes this from inside updateCost(), so an uncaught
+    // throw would skip its remaining periods and abort the caller's record
+    // handling. Guard it like the periodic evaluation tick, with the NR ingest
+    // and the local alert engine guarded separately so neither skips the other.
     budgetTracker.setOnThreshold((event) => {
-      capturedNrIngest?.ingestBudgetWarning(event);
       logger.warn('Budget threshold reached', {
         period: event.period,
         pct: event.thresholdPct,
         spentUsd: event.spentUsd.toFixed(4),
         budgetUsd: event.budgetUsd.toFixed(2),
       });
-      // Route into the local alert engine so configured rules can fire.
-      if (capturedAlertEngine) {
-        capturedAlertEngine.evaluate(
-          {
-            timestamp: event.timestamp,
-            cost: { sessionUsd: 0, todayUsd: 0, weekUsd: 0 },
-            efficiency: { score: null },
-            antiPatterns: [],
-            latency: [],
-            toolFailures: [],
-            budgetThresholds: [
-              {
-                period: event.period,
-                thresholdPct: event.thresholdPct,
-                spentUsd: event.spentUsd,
-                budgetUsd: event.budgetUsd,
-              },
-            ],
-          },
-          Date.now(),
-        );
+      try {
+        capturedNrIngest?.ingestBudgetWarning(event);
+      } catch (err) {
+        logger.warn('Budget warning ingest failed', { error: String(err) });
+      }
+      try {
+        // Route into the local alert engine so budget rules can fire.
+        capturedAlertEngine?.evaluateBudgetThreshold(event, Date.now());
+      } catch (err) {
+        logger.warn('Budget threshold alert evaluation failed', { error: String(err) });
       }
     });
-    // Cross-references a subagent's type against its `agentId` — the ONLY link
-    // between the native hook pipeline and the transcript-derived
-    // subagent-token pipeline (onSubagentTurn below), which has no type of its
-    // own. Populated from the parent's own Agent tool call (see onRecord), the
-    // one record that carries both signals. Best effort: a subagent whose
-    // spawning Agent call was never paired by the hook processor has no entry
-    // here, so its cost is still counted but not broken out by type.
-    const agentTypeByAgentId = new Map<string, string>();
-    // toolUseId -> agentId, built from SubagentWatcher's tool_use extraction
-    // (see agent-partition.ts's backfillAgentId doc comment for why this join
-    // exists instead of trusting the hook envelope's own agent_id field).
-    const toolUseIdToAgentId = new Map<string, string>();
+    // Attributes hook records to the subagent that made them where the hook
+    // envelope left agent_id/agent_type out (agentId via a toolUseId join
+    // against SubagentWatcher's transcript tail, agentType via the
+    // transcript's meta sidecar, the envelope, or the parent's own Agent tool
+    // call) and gives onSubagentTurn the type for cost breakdown. Size-capped
+    // with idle expiry so a long-running --local daemon doesn't keep one entry
+    // per subagent call forever.
+    const subagentAttribution = new SubagentAttributionIndex();
     eventProcessor = new HookEventProcessor({
       store: localStore,
       // --local mode and the provisional --stdio window own no specific Claude
@@ -2058,7 +2044,14 @@ async function main(): Promise<void> {
       // is hot-swapped to the scoped store via replaceStore().
       drainAllSessions: !options.stdio || isProvisional,
       onRecord: (incomingRecord) => {
-        const rawRecord = backfillAgentId(incomingRecord, toolUseIdToAgentId);
+        // Attributed before any consumer (notably auditTrail below) sees the
+        // record, so audit/security events carry agentId and agentType.
+        // The watcher's on-demand read is synchronous, which is what keeps it
+        // ahead of auditTrail.
+        const rawRecord = subagentAttribution.attributeAtIntake(
+          incomingRecord,
+          activeSubagentWatcher,
+        );
         if (!config || !sessionTracker || !taskDetector) {
           logger.warn('onRecord called before full initialization; skipping');
           return;
@@ -2074,20 +2067,10 @@ async function main(): Promise<void> {
         if (rawRecord.sessionId) {
           liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
         }
-        // The hook envelope's own agent_id/agent_type never populate in practice
-        // — correlate via the Agent tool's own record instead: its
-        // subagentType (tool_input.subagent_type, already captured) and
-        // spawnedAgentId (tool_response.agentId) are both real, working signals
-        // that live on the same ToolCallRecord.
-        if (rawRecord.toolName === 'Agent') {
-          const spawnedAgentId =
-            typeof rawRecord.spawnedAgentId === 'string' ? rawRecord.spawnedAgentId : undefined;
-          const subagentType =
-            typeof rawRecord.subagentType === 'string' ? rawRecord.subagentType : undefined;
-          if (spawnedAgentId && subagentType) {
-            agentTypeByAgentId.set(spawnedAgentId, subagentType);
-          }
-        }
+        // Fallback type source: the parent's Agent call, for subagents whose
+        // transcript has no meta sidecar (see onSubagentTurn). Its PostToolUse
+        // normally fires only after a foreground subagent returns.
+        subagentAttribution.recordAgentToolCall(rawRecord);
 
         if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
           // Emit tool call span — parent is the active task span (or session span if no task)
@@ -2284,9 +2267,7 @@ async function main(): Promise<void> {
             platform: typeof firstRecord?.platform === 'string' ? firstRecord.platform : undefined,
             taskId: task.taskId,
           };
-          const enrichedToolCalls = task.toolCalls.map((r) =>
-            backfillAgentId(r, toolUseIdToAgentId),
-          );
+          const enrichedToolCalls = task.toolCalls.map((r) => subagentAttribution.backfill(r));
           const { patterns } = antiPatternDetector.analyze(enrichedToolCalls);
           efficiencyScorer.computeScore(task, patterns);
           for (const pattern of patterns) {
@@ -2418,11 +2399,11 @@ async function main(): Promise<void> {
       // `AiSubagentTurn` event per turn for NR-side queryability.
       onSubagentTurn: (turn) => {
         if (!costTracker || !config) return;
-        for (const toolUseId of turn.toolUseIds) {
-          toolUseIdToAgentId.set(toolUseId, turn.agentId);
-        }
-        // Best-effort — see agentTypeByAgentId's doc comment above.
-        const agentType = agentTypeByAgentId.get(turn.agentId);
+        // The watcher's onTurnRead already joined this turn when it read it;
+        // repeating it here covers turns an earlier process's watcher left in
+        // the buffer.
+        subagentAttribution.recordSubagentTurn(turn);
+        const agentType = subagentAttribution.agentTypeFor(turn.agentId);
         const usage: TokenUsage = {
           inputTokens: turn.inputTokens,
           outputTokens: turn.outputTokens,
@@ -2789,6 +2770,7 @@ async function main(): Promise<void> {
           // Only meaningful when unfiltered (--local) — lets discoverFiles()
           // skip sessions that already have a live --stdio owner tailing them.
           localStore,
+          onTurnRead: (turn: SubagentTokenEvent) => subagentAttribution.recordSubagentTurn(turn),
         };
         activeSubagentWatcher = new SubagentWatcher(
           isStdioWatcher
@@ -3022,6 +3004,7 @@ async function main(): Promise<void> {
         storagePath: config!.storagePath,
         dashboardUrl: `http://${config!.dashboard.host}:${config!.dashboard.port}`,
         configFilePath,
+        companionMode: config!.companionMode,
       };
       registerTools(mcpServer!.server, {
         sessionTracker: sessionTracker!,
@@ -3175,6 +3158,7 @@ async function main(): Promise<void> {
             storagePath: config.storagePath,
             dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
             configFilePath: pendingConfigFilePath,
+            companionMode: config.companionMode,
           },
         });
         logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
@@ -3241,6 +3225,7 @@ async function main(): Promise<void> {
           storagePath: config.storagePath,
           dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
           configFilePath,
+          companionMode: config.companionMode,
         };
         registerTools(mcpServer!.server, {
           sessionTracker,
@@ -3477,21 +3462,6 @@ function loadAlertRulesFromDisk(engine: LocalAlertEngine, rulesPath: string): vo
         invalidCount: invalid.length,
         validCount: valid.length,
       });
-    }
-    // Warn about cost.window rules with today/week period — the snapshot
-    // collector only populates sessionUsd, so today/week rules always read 0
-    // and never fire. Fires for both explicitly-configured AND defaulted
-    // values (default is 'session' but if a rules.json sets
-    // 'today' or 'week' explicitly, we still want the user to know it
-    // silently no-ops).
-    for (const rule of valid) {
-      if (rule.type === 'cost.window' && rule.costPeriod !== 'session') {
-        logger.warn(
-          `Rule '${rule.id}' uses costPeriod='${rule.costPeriod}', which is not yet implemented. ` +
-            `The rule will read 0 every cycle and never fire. ` +
-            `Use costPeriod='session' until daily/weekly cost aggregation is supported.`,
-        );
-      }
     }
     engine.loadRules(valid);
     logger.info('Alert rules loaded', { rulesPath, count: valid.length });

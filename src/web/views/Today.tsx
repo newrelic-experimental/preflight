@@ -1,7 +1,7 @@
 import { useMemo, useState, useRef, useEffect } from 'react';
-import type { JSX } from 'react';
+import type { JSX, ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useLocation } from 'wouter';
+import { Link, useLocation } from 'wouter';
 import {
   useLiveStore,
   useSubagentStats,
@@ -63,6 +63,7 @@ import {
   fetchObservabilityHealth,
   fetchUsageInsights,
   TodayAggregateResponse,
+  type SessionStatus,
   ActivityHeatmapTodayResponse,
   LiveSessionEntry,
   NotFoundError,
@@ -480,6 +481,7 @@ export function Today(): JSX.Element {
                 <Kpi
                   label="sessions today"
                   value={!aggregate ? '—' : String(aggregate.sessionCount)}
+                  sub={buildSessionStatusSub(aggregate?.sessionStatus)}
                   {...(aggregate ? { animate: true, numericValue: aggregate.sessionCount } : {})}
                 />
                 <Kpi
@@ -539,6 +541,50 @@ export function Today(): JSX.Element {
         </>
       )}
     </section>
+  );
+}
+
+// --- Sessions today KPI sub-label ---
+
+// Excludes 'completed' — the brief keeps the tile's existing (empty)
+// sub-label when only completed sessions exist today.
+const SESSION_STATUS_SUB_ORDER: readonly SessionStatus[] = [
+  'needs_input',
+  'ready_for_review',
+  'working',
+];
+
+function sessionStatusPhrase(status: SessionStatus, count: number): string {
+  if (status === 'needs_input') return count === 1 ? 'needs input' : 'need input';
+  if (status === 'ready_for_review') return 'ready for review';
+  return 'working';
+}
+
+export function buildSessionStatusSub(
+  sessionStatus: TodayAggregateResponse['sessionStatus'],
+): ReactNode | undefined {
+  if (!sessionStatus) return undefined;
+  const entries = SESSION_STATUS_SUB_ORDER.map((status) => ({
+    status,
+    count: sessionStatus.counts[status],
+    sessionIds: sessionStatus.sessionIds[status],
+  })).filter((entry) => entry.count > 0);
+  if (entries.length === 0) return undefined;
+
+  return (
+    <>
+      {entries.map((entry, i) => (
+        <span key={entry.status}>
+          {i > 0 ? ' · ' : null}
+          <Link
+            href={`/sessions?sessionIds=${entry.sessionIds.map(encodeURIComponent).join(',')}`}
+            className="text-accent-cyan hover:underline"
+          >
+            {entry.count} {sessionStatusPhrase(entry.status, entry.count)}
+          </Link>
+        </span>
+      ))}
+    </>
   );
 }
 

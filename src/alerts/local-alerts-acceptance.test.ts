@@ -1,6 +1,7 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { LiveEventBus, type AlertEvent } from '../dashboard/live-event-bus.js';
 import { BudgetTracker } from '../metrics/budget-tracker.js';
+import { AlertSnapshotCollector } from './alert-snapshot-collector.js';
 import { LocalAlertEngine, type AlertSnapshot } from './local-alert-engine.js';
 import type { LocalAlertRule } from './local-alert-rule.js';
 
@@ -44,26 +45,9 @@ describe('Local alerts — simple acceptance', () => {
       weeklyBudgetUsd: null,
     });
 
+    // Same wiring as src/index.ts's setOnThreshold callback.
     tracker.setOnThreshold((event) => {
-      engine.evaluate(
-        {
-          timestamp: event.timestamp,
-          cost: { sessionUsd: event.spentUsd, todayUsd: 0, weekUsd: 0 },
-          efficiency: { score: null },
-          antiPatterns: [],
-          latency: [],
-          toolFailures: [],
-          budgetThresholds: [
-            {
-              period: event.period,
-              thresholdPct: event.thresholdPct,
-              spentUsd: event.spentUsd,
-              budgetUsd: event.budgetUsd,
-            },
-          ],
-        },
-        Date.now(),
-      );
+      engine.evaluateBudgetThreshold(event, Date.now());
     });
 
     const received: AlertEvent[] = [];
@@ -343,4 +327,57 @@ describe('Local alerts — acceptance (full starter rule set)', () => {
       ]),
     );
   });
+});
+
+describe('Local alerts — cost.window today/week via BudgetTracker', () => {
+  function makeCostRule(costPeriod: 'today' | 'week'): LocalAlertRule {
+    return {
+      id: `${costPeriod}-cost`,
+      name: `${costPeriod} cost > $20`,
+      type: 'cost.window',
+      severity: 'critical',
+      enabled: true,
+      threshold: 20,
+      operator: 'above',
+      deduplicateSeconds: 0,
+      windowSeconds: 3600,
+      costPeriod,
+      channels: ['banner'],
+    };
+  }
+
+  it.each([
+    ['today', 25, 5, 25],
+    ['week', 5, 25, 25],
+  ] as const)(
+    "fires a costPeriod='%s' rule once BudgetTracker's spend crosses the threshold",
+    (costPeriod, dailyUsd, weeklyUsd, expectedValue) => {
+      const tracker = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: null,
+        weeklyBudgetUsd: null,
+      });
+      const collector = new AlertSnapshotCollector({ budgetTracker: tracker });
+      const engine = new LocalAlertEngine();
+      engine.loadRules([makeCostRule(costPeriod)]);
+
+      const t0 = 1700000000000;
+      tracker.updateCost(0, 1, 1);
+      const before = collector.snapshot(t0, engine.getRequiredWindows());
+      expect(engine.evaluate(before, t0)).toHaveLength(0);
+
+      // Only the bucket the rule names crosses the threshold; the other stays under it.
+      // today > week can't happen for real, but it's what makes each row fail
+      // if the engine reads the wrong bucket — don't make the pair consistent.
+      tracker.updateCost(0, dailyUsd, weeklyUsd);
+      const events = engine.evaluate(
+        collector.snapshot(t0 + 1000, engine.getRequiredWindows()),
+        t0 + 1000,
+      );
+      expect(events).toHaveLength(1);
+      expect(events[0]!.id).toBe(`${costPeriod}-cost`);
+      expect(events[0]!.state).toBe('firing');
+      expect(events[0]!.value).toBe(expectedValue);
+    },
+  );
 });

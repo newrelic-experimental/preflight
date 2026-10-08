@@ -205,8 +205,11 @@ function makeAntigravityPreToolUse(overrides?: Record<string, unknown>): string 
   });
 }
 
+// Per https://antigravity.google/docs/hooks#posttooluse, PostToolUse carries
+// the same `toolCall` object as PreToolUse — only the optional `error` differs.
 function makeAntigravityPostToolUse(overrides?: Record<string, unknown>): string {
   return JSON.stringify({
+    toolCall: { name: 'run_command', args: { CommandLine: 'npm test', Cwd: '/workspace/project' } },
     stepIdx: 19,
     error: '',
     conversationId: 'agy-conv-001',
@@ -394,6 +397,93 @@ describe('collector-script', () => {
       const event = readBufferEvents()[0]!;
       // Only exitCode is extracted, not raw stdout
       expect(event.toolOutput).toEqual({ exitCode: 0 });
+    });
+
+    it('keeps only the PR number from a gh pr create URL, never the output text', () => {
+      const response = {
+        stdout: 'Creating pull request for fix into main\n\nhttps://github.com/acme/app/pull/42\n',
+        stderr: '',
+      };
+      processHook(
+        makePostToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr create --fill' },
+          tool_response: response,
+        }),
+      );
+
+      const event = readBufferEvents()[0]!;
+      expect(event.toolOutput).toEqual({ createdPrNumber: '42' });
+    });
+
+    it.each([
+      [
+        'two creates',
+        'gh pr create --base main --fill && gh pr create --base part-1 --fill',
+        'https://github.com/acme/app/pull/41\nhttps://github.com/acme/app/pull/42\n',
+      ],
+      [
+        'a comment on another PR',
+        'gh pr create --fill && gh pr comment 40 --body "supersedes #40"',
+        'https://github.com/acme/app/pull/41\nhttps://github.com/acme/app/pull/40#issuecomment-9\n',
+      ],
+    ])(
+      'keeps no PR number when the output names more than one PR (%s)',
+      (_label, command, stdout) => {
+        processHook(
+          makePostToolUse({
+            tool_name: 'Bash',
+            tool_input: { command },
+            tool_response: { stdout },
+          }),
+        );
+
+        expect(readBufferEvents()[0]!.toolOutput).toBeUndefined();
+      },
+    );
+
+    it('keeps the PR number when every PR URL in the output names the same PR', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr create --fill && gh pr comment --body "ready"' },
+          tool_response: {
+            stdout:
+              'https://github.com/acme/app/pull/41\nhttps://github.com/acme/app/pull/41#issuecomment-9\n',
+          },
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '41' });
+    });
+
+    it('ignores a PR URL in the output of a command that is not gh pr create', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr view 7' },
+          tool_response: { stdout: 'https://github.com/acme/app/pull/7\n' },
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolOutput).toBeUndefined();
+    });
+
+    it('keeps the PR number from an MCP create_pull_request result', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'mcp__github__create_pull_request',
+          tool_input: { owner: 'acme', repo: 'app', title: 't', head: 'b', base: 'main' },
+          tool_response: [
+            {
+              type: 'text',
+              text: '{"number":57,"html_url":"https://github.com/acme/app/pull/57"}',
+            },
+          ],
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '57' });
     });
 
     it('omits toolOutput when no parseable output fields exist', () => {
@@ -2487,7 +2577,7 @@ describe('collector-script', () => {
     it('writes a pre event with tool from toolCall.name and toolUseId from stepIdx', () => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
-      processHook(makeAntigravityPreToolUse());
+      processHook(makeAntigravityPreToolUse(), 'PreToolUse');
 
       const events = readBufferLines('agy-conv-001');
       expect(events).toHaveLength(1);
@@ -2499,20 +2589,20 @@ describe('collector-script', () => {
     });
 
     it('replies with {"decision":"allow"} on stdout for PreToolUse', () => {
-      processHook(makeAntigravityPreToolUse());
+      processHook(makeAntigravityPreToolUse(), 'PreToolUse');
       expect(stdoutSpy).toHaveBeenCalledWith('{"decision":"allow"}\n');
     });
 
-    it('writes a post event with tool "unknown" and toolUseId from stepIdx', () => {
+    it('writes a post event with tool from toolCall.name and toolUseId from stepIdx', () => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
-      processHook(makeAntigravityPostToolUse());
+      processHook(makeAntigravityPostToolUse(), 'PostToolUse');
 
       const events = readBufferLines('agy-conv-001');
       expect(events).toHaveLength(1);
       const event = events[0]!;
       expect(event.mode).toBe('post');
-      expect(event.tool).toBe('unknown');
+      expect(event.tool).toBe('run_command');
       expect(event.toolUseId).toBe('19');
       expect(event.success).toBe(true);
     });
@@ -2520,7 +2610,7 @@ describe('collector-script', () => {
     it('reports success: false when PostToolUse carries a non-empty error', () => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
-      processHook(makeAntigravityPostToolUse({ error: 'exit status 1' }));
+      processHook(makeAntigravityPostToolUse({ error: 'exit status 1' }), 'PostToolUse');
 
       const events = readBufferLines('agy-conv-001');
       const event = events[0]!;
@@ -2528,9 +2618,74 @@ describe('collector-script', () => {
       expect(event.error).toBe('exit status 1');
     });
 
-    it('replies with {} on stdout for PostToolUse', () => {
-      processHook(makeAntigravityPostToolUse());
+    it('omits toolUseId from both events when stepIdx is not a number', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      processHook(makeAntigravityPreToolUse({ stepIdx: undefined }), 'PreToolUse');
+      processHook(makeAntigravityPostToolUse({ stepIdx: undefined }), 'PostToolUse');
+
+      const events = readBufferLines('agy-conv-001');
+      expect(events.map((e) => e.mode)).toEqual(['pre', 'post']);
+      for (const event of events) expect(event).not.toHaveProperty('toolUseId');
+    });
+
+    it('replies with only {} on stdout for PostToolUse, never a decision field (#793)', () => {
+      processHook(makeAntigravityPostToolUse(), 'PostToolUse');
+      expect(stdoutSpy).toHaveBeenCalledTimes(1);
       expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
+    });
+
+    it('matches the event-name argument case-insensitively', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      processHook(makeAntigravityPostToolUse(), 'posttooluse');
+
+      expect(readBufferLines('agy-conv-001')[0]!.mode).toBe('post');
+      expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
+    });
+
+    it("accepts the post-tool / pre-tool markers other platforms' hook commands use", () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      // No error key, so only the argument can mark this one as PostToolUse.
+      processHook(makeAntigravityPostToolUse({ error: undefined }), 'post-tool');
+      processHook(makeAntigravityPostToolUse(), 'pre-tool');
+
+      expect(readBufferLines('agy-conv-001').map((e) => e.mode)).toEqual(['post', 'pre']);
+      expect(stdoutSpy).toHaveBeenNthCalledWith(1, '{}\n');
+      expect(stdoutSpy).toHaveBeenNthCalledWith(2, '{"decision":"allow"}\n');
+    });
+
+    it('the PreToolUse argument wins over a payload carrying an error key', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      processHook(makeAntigravityPostToolUse(), 'PreToolUse');
+
+      expect(readBufferLines('agy-conv-001')[0]!.mode).toBe('pre');
+      expect(stdoutSpy).toHaveBeenCalledWith('{"decision":"allow"}\n');
+    });
+
+    it('without an event-name argument, treats a payload carrying an error key as PostToolUse', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      processHook(makeAntigravityPostToolUse());
+
+      expect(readBufferLines('agy-conv-001')[0]!.mode).toBe('post');
+      expect(stdoutSpy).toHaveBeenCalledTimes(1);
+      expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
+    });
+
+    it('without an event-name argument, still treats a toolCall payload with no error key as PreToolUse', () => {
+      processHook(makeAntigravityPreToolUse());
+      expect(stdoutSpy).toHaveBeenCalledWith('{"decision":"allow"}\n');
+    });
+
+    it('ignores the event-name argument for payloads that name their own event', () => {
+      processHook(makePreToolUse(), 'PostToolUse');
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0]!.mode).toBe('pre');
+      expect(stdoutSpy).not.toHaveBeenCalled();
     });
 
     it('does not misfire on a Claude Code PreToolUse payload (no toolCall key)', () => {

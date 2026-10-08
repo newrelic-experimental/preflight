@@ -31,10 +31,12 @@ The MCP server uses a common transport layer (`src/shared/`) for event buffering
 ```bash
 nvm install        # Install the right Node version (v24, from .nvmrc)
 nvm use            # Activate it
-npm install        # Install dependencies
-npm run build      # Build TypeScript and chmod +x the CLI binaries
+npm ci             # Install dependencies from the lockfile
+npm run build      # Build the server and the dashboard bundle, chmod +x the CLI binaries
 npm link           # Register preflight on PATH (required for Claude Code hooks)
-npm test           # Verify everything works
+npm test           # Jest suite — server, CLI, metrics
+npm run test:web   # Vitest suite — dashboard UI
+preflight setup    # Interactive wizard that inits NR keys, Claude Code hooks, dashboards
 ```
 
 To pull the latest changes and rebuild later:
@@ -45,26 +47,33 @@ preflight update
 
 ### Commands
 
-| Command                             | What it does                                                                                |
-| ----------------------------------- | ------------------------------------------------------------------------------------------- |
-| `npm run build`                     | Build TypeScript (`tsc --build`) and chmod the CLI binaries                                 |
-| `npm run build:clean`               | Remove build output                                                                         |
-| `npm test`                          | Run the full Jest suite (`maxWorkers: 1`)                                                   |
-| `npm run lint`                      | ESLint over `src/`                                                                          |
-| `npm run format`                    | Prettier write                                                                              |
-| `npm run format:check`              | Prettier check (no writes)                                                                  |
-| `npm run deploy:dashboard`          | Deploy the default NR dashboard                                                             |
-| `npm run deploy:dashboard:all`      | Deploy every pre-built dashboard                                                            |
-| `npm run deploy:dashboard:update`   | Sync every pre-built dashboard in place (preserves GUID/URL)                                |
-| `npm run deploy:dashboard:teardown` | Delete every pre-built dashboard (matches by name; missing = skipped)                       |
-| `npm run deploy:alerts`             | Deploy the alert policy + conditions to NR                                                  |
-| `npm run deploy:alerts:update`      | Sync conditions on the existing alert policy in place                                       |
-| `npm run deploy:alerts:teardown`    | Delete the alert policy and all its conditions                                              |
-| `npm run backfill:sessions`         | Backfill local session JSON files from NR event history                                     |
-| `npm run dev`                       | Start local dashboard server (`--local`); assumes `dist/` already built                     |
-| `npm run dev:all`                   | Build then start local dashboard (`npm run build && npm run dev`)                           |
-| `npm run dev:full`                  | Build backend, then start backend + Vite dev server together (open `http://localhost:5173`) |
-| `npm run start:local`               | Alias for `npm run dev`                                                                     |
+| Command                             | What it does                                                                                 |
+| ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| `npm run build`                     | Build the server (`tsc --build`), chmod the CLI binaries, then typecheck and build `src/web` |
+| `npm run build:clean`               | Remove build output                                                                          |
+| `npm test`                          | Run the full Jest suite (`maxWorkers: 1`) — everything except `src/web`                      |
+| `npm run test:web`                  | Run the Vitest suite — the `src/web` dashboard UI                                            |
+| `npm run test:e2e`                  | Run the Playwright suite in `e2e/` (rebuilds first via `pretest:e2e`)                        |
+| `npm run test:e2e:update`           | Rewrite the Playwright screenshot baselines for the OS you are on                            |
+| `npm run test:e2e:update:linux`     | Rewrite the `-linux` baselines in the Playwright image CI uses (needs Docker)                |
+| `npm run test:integration`          | Run `src/multi-instance.integration.test.ts`                                                 |
+| `npx tsc -p tsconfig.web.json`      | Typecheck `src/web`, tests included (`npm run build` checks source only)                     |
+| `npx tsc -p tsconfig.tools.json`    | Typecheck `scripts/`, `e2e/` and the root `*.config.ts` files, which no other config reaches |
+| `npm run lint`                      | ESLint over `src/`, `scripts/`, `e2e/` and the root `*.config.ts` files                      |
+| `npm run format`                    | Prettier write                                                                               |
+| `npm run format:check`              | Prettier check (no writes)                                                                   |
+| `npm run deploy:dashboard`          | Deploy the default NR dashboard                                                              |
+| `npm run deploy:dashboard:all`      | Deploy every pre-built dashboard                                                             |
+| `npm run deploy:dashboard:update`   | Sync every pre-built dashboard in place (preserves GUID/URL)                                 |
+| `npm run deploy:dashboard:teardown` | Delete every pre-built dashboard (matches by name; missing = skipped)                        |
+| `npm run deploy:alerts`             | Deploy the alert policy + conditions to NR                                                   |
+| `npm run deploy:alerts:update`      | Sync conditions on the existing alert policy in place                                        |
+| `npm run deploy:alerts:teardown`    | Delete the alert policy and all its conditions                                               |
+| `npm run backfill:sessions`         | Backfill local session JSON files from NR event history                                      |
+| `npm run dev`                       | Start local dashboard server (`--local`); assumes `dist/` already built                      |
+| `npm run dev:all`                   | Build then start local dashboard (`npm run build && npm run dev`)                            |
+| `npm run dev:full`                  | Build backend, then start backend + Vite dev server together (open `http://localhost:5173`)  |
+| `npm run start:local`               | Alias for `npm run dev`                                                                      |
 
 To run a single test file:
 
@@ -77,6 +86,17 @@ To build directly without the chmod step:
 
 ```bash
 npx tsc -b .
+```
+
+### Git worktrees
+
+A new worktree starts with no `node_modules/` and no `.husky/_` — both are generated rather than
+tracked, so neither comes across with the checkout. Install in the worktree before working in it:
+
+```bash
+git worktree add ../preflight-my-feature -b fix/my-feature
+cd ../preflight-my-feature
+npm ci             # Installs deps and regenerates .husky/_ via the prepare script
 ```
 
 ### Working with shared code
@@ -221,6 +241,52 @@ Logger writes to **stderr** as JSON. Never write to stdout — it's reserved for
 
 Tests live next to the code they test (`foo.test.ts` alongside `foo.ts`).
 
+### The three suites
+
+`npm test` is not the whole story — there are three runners, split by what they can execute:
+
+| Suite   | Command            | Covers                                                         | Runner                    |
+| ------- | ------------------ | -------------------------------------------------------------- | ------------------------- |
+| Server  | `npm test`         | `src/**/*.test.ts` outside `src/web`, plus `test/**/*.test.ts` | Jest, `node` env          |
+| Web     | `npm run test:web` | `src/web/**/*.test.{ts,tsx}`                                   | Vitest, `jsdom` env       |
+| Browser | `npm run test:e2e` | `e2e/*.spec.ts`                                                | Playwright, real Chromium |
+
+Two files sit outside all three: `jest.config.ts` also ignores `src/shared/index.test.ts`, which
+asserts an invariant that does not hold for vendored source, and
+`src/multi-instance.integration.test.ts`, which spawns real processes and runs on demand via
+`npm run test:integration`. Both carry a comment saying why.
+
+`npm run test:e2e` installs its browser if needed, rebuilds, then starts two dashboards itself —
+one over an empty store, one over a seeded one — each against its own temp directory, which
+also stands in for `HOME`. So it needs no running server, and it reads none of your credentials,
+your real `~/.newrelic-preflight`, or your Claude Code and Copilot transcripts. See
+[TEST_PATTERNS.md](./docs/TEST_PATTERNS.md#browser-tests-playwright) for adding a test.
+
+`.claude/skills/verify-preflight/` is the only project skill tracked in git. It launches an isolated
+Preflight from your checkout and drives it through the collector, the dashboard, and the stdio MCP
+tools (`.claude/skills/verify-preflight/SKILL.md`). Any other skill in `.claude/skills/`, including
+symlinks to skills kept elsewhere, stays ignored. To track a new project skill, add a
+`!.claude/skills/<name>/` line to `.gitignore`.
+
+Screenshot assertions compare against per-platform baselines in `e2e/*-snapshots/`. Two are
+committed for each screenshot: `-darwin`, recorded on a Mac, and `-linux`, recorded in the
+`mcr.microsoft.com/playwright` image whose tag matches `@playwright/test` in `package.json` —
+the image CI's `e2e` job runs in, so CI checks the Linux one. When a deliberate UI change makes
+them stale, re-record both and commit the result:
+
+- **macOS:** `npm run test:e2e:update`.
+- **Linux:** `npm run test:e2e:update:linux`, from any OS with Docker running. It records in the
+  pinned image as `linux/amd64`, so on Apple Silicon it runs emulated and takes a few minutes.
+  Your checkout has to be under a directory Docker shares with its VM (your home directory,
+  by default).
+
+A Linux desktop run compares against the committed `-linux` baseline and may fail on font
+differences alone; the container is the reference. There is no Windows baseline: a first run
+on Windows writes one and fails, and later runs compare against it. Keep it uncommitted, since
+nothing in CI checks it. Adding a new screenshot means committing its `-darwin` and `-linux`
+files together. CI's `e2e` job fails on a missing `-linux` one; it runs Linux only, so nothing
+catches a missing or stale `-darwin` one but the next macOS run.
+
 ### Writing tests
 
 ```typescript
@@ -250,7 +316,12 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 
 - [ ] `npm run build` succeeds
 - [ ] `npm test` passes
+- [ ] `npm run test:web` passes (if you touched `src/web`)
+- [ ] `npm run test:e2e` passes (if you changed the dashboard UI; CI runs it too, against the `-linux` baselines — see [The three suites](#the-three-suites) for re-recording them)
+- [ ] `npx tsc -p tsconfig.web.json` passes (if you touched `src/web`; `npm run build` checks source only)
+- [ ] `npx tsc -p tsconfig.tools.json` passes (if you touched `scripts/`, `e2e/` or a root `*.config.ts`)
 - [ ] `npm run lint` passes
+- [ ] `npm run format:check` passes (the `pre-commit` hook runs this too)
 - [ ] You've reviewed your own diff
 
 ---
@@ -262,7 +333,7 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 1. Fork the repo on GitHub
 2. Clone your fork: `git clone https://github.com/<your-username>/preflight`
 3. Create a branch: `git checkout -b fix/my-fix`
-4. Make your changes, run `npm test` and `npm run lint`
+4. Make your changes, then run the checks in [Before opening a PR](#before-opening-a-pr)
 5. Push to your fork and open a PR against `main`
 
 ### Commit messages
@@ -394,7 +465,7 @@ After making changes, run through these checkpoints to confirm end-to-end behavi
 git clone https://github.com/newrelic-experimental/preflight
 cd preflight
 nvm use
-npm install
+npm ci
 npm run build
 npm link
 ```

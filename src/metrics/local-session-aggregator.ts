@@ -23,6 +23,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { localDateKey } from '../lib/date.js';
+import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
 import { hasAttributableActivity, type FullSessionSummary } from '../storage/session-store.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
@@ -120,12 +121,25 @@ export interface LocalSessionRollup {
   successCount: number;
 }
 
-/** Parse `owner/name` out of a git remote URL. Null when it isn't recognizable. */
-export function repoNameFromRemote(remote: string | null | undefined): string | null {
-  if (typeof remote !== 'string') return null;
-  const match = remote.trim().match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
-  return match?.[1] ?? null;
+/** A command with its heredoc bodies stripped (see `stripHeredocs`). */
+export interface StrippedHeredocs {
+  readonly text: string;
+  /** True when a heredoc never reached its terminator line, so every line
+   *  after its `<<` was dropped. Heredocs that agents write close, so this
+   *  usually means a `<<` that bash doesn't read as a heredoc was taken for
+   *  one, such as `$((1<<N))`, and the text left is not what bash ran. */
+  readonly unclosed: boolean;
+  /** True when reading quotes changes which lines are kept, as when a `<<`
+   *  sits in quoted text. Which lines bash ran then rests on a quote reading
+   *  the scan can get wrong (`$'it\'s'`), so `text` may not be what ran. */
+  readonly readingsDiffer: boolean;
 }
+
+// `<<` or `<<-` and its delimiter word, but not the `<<<` of a here-string.
+const HEREDOC_START_RE = /(?<!<)<<(?!<)(-?)\s*(?:'([^']+)'|"([^"]+)"|\\?([A-Za-z_][A-Za-z0-9_]*))/y;
+
+// Characters after which a `#` starts a comment, as in `splitShellChain`.
+const COMMENT_AFTER_RE = /[\s;&|(<>]/;
 
 /**
  * Strips heredoc bodies from a shell command so its *text* is not mistaken for
@@ -135,32 +149,89 @@ export function repoNameFromRemote(remote: string | null | undefined): string | 
  *
  * The line introducing the heredoc is kept — `git commit -F- <<'MSG'` is still
  * a commit.
+ *
+ * The first reading takes every `<<` for a heredoc, because a misread quote
+ * (`$'it\'s'`) could otherwise hide a real one. When one of its heredocs never
+ * closes, a second reading that knows quotes, `$( … )` and `#` comments
+ * replaces it if that reading's quotes balance and all of its heredocs close,
+ * so a `<<` in quoted text (`--body "see <<X"`) drops no lines. Both readings
+ * always run, because a quoted `<<` that a real heredoc's terminator closes
+ * leaves the first reading closed but missing lines; `readingsDiffer` reports
+ * that.
  */
-export function stripHeredocBodies(command: string): string {
-  if (!command.includes('<<')) return command;
+export function stripHeredocs(command: string): StrippedHeredocs {
+  if (!command.includes('<<')) return { text: command, unclosed: false, readingsDiffer: false };
+  const blind = scanHeredocs(command, false);
+  const quoted = scanHeredocs(command, true);
+  const { text, unclosed } = blind.unclosed && quoted.balanced && !quoted.unclosed ? quoted : blind;
+  return { text, unclosed, readingsDiffer: blind.text !== quoted.text };
+}
 
-  const startRe = /<<(-?)\s*(?:'([^']+)'|"([^"]+)"|\\?([A-Za-z_][A-Za-z0-9_]*))/g;
+/** The text of `stripHeredocs`. */
+export function stripHeredocBodies(command: string): string {
+  return stripHeredocs(command).text;
+}
+
+/** `stripHeredocs`' scan. With `readQuotes` false, quotes, parentheses and
+ *  `#` are plain text. `balanced` is false when a quote or group is left open. */
+function scanHeredocs(
+  command: string,
+  readQuotes: boolean,
+): { readonly text: string; readonly unclosed: boolean; readonly balanced: boolean } {
   const kept: string[] = [];
   const pending: { tag: string; stripTabs: boolean }[] = [];
+  // Open quotes and `(`/`$(` groups, innermost last, carried across lines.
+  const open: string[] = [];
 
   for (const line of command.split('\n')) {
     if (pending.length > 0) {
       const current = pending[0];
-      const candidate = current.stripTabs ? line.replace(/^\t+/, '') : line;
-      if (candidate.trim() === current.tag) pending.shift();
+      // bash ends a heredoc only on a line that is exactly its delimiter;
+      // `<<-` strips leading tabs, not spaces. A trailing `\r` is a CRLF line end.
+      const candidate = (current.stripTabs ? line.replace(/^\t+/, '') : line).replace(/\r$/, '');
+      if (candidate === current.tag) pending.shift();
       continue;
     }
 
     kept.push(line);
-    startRe.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = startRe.exec(line)) !== null) {
-      const tag = match[2] ?? match[3] ?? match[4];
-      if (tag) pending.push({ tag, stripTabs: match[1] === '-' });
+    let wordStart = true;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      const inner = open.at(-1);
+      if (inner === "'") {
+        if (ch === "'") open.pop();
+        continue;
+      }
+      if (readQuotes && ch === '\\') {
+        i++;
+        wordStart = false;
+        continue;
+      }
+      if (inner === '"') {
+        if (ch === '"') {
+          open.pop();
+        } else if (line.startsWith('$(', i)) {
+          open.push('(');
+          i++;
+        }
+        continue;
+      }
+      if (readQuotes) {
+        if (ch === '#' && wordStart) break;
+        if (ch === "'" || ch === '"' || ch === '(') open.push(ch);
+        else if (ch === ')' && inner === '(') open.pop();
+      }
+      wordStart = COMMENT_AFTER_RE.test(ch);
+      if (ch !== '<') continue;
+      HEREDOC_START_RE.lastIndex = i;
+      const match = HEREDOC_START_RE.exec(line);
+      if (!match) continue;
+      pending.push({ tag: match[2] ?? match[3] ?? match[4], stripTabs: match[1] === '-' });
+      i = HEREDOC_START_RE.lastIndex - 1;
     }
   }
 
-  return kept.join('\n');
+  return { text: kept.join('\n'), unclosed: pending.length > 0, balanced: open.length === 0 };
 }
 
 /**
@@ -306,6 +377,8 @@ export class LocalSessionAggregator {
     errorType?: unknown;
     platform?: string | null;
     agentId?: unknown;
+    createdPrNumber?: unknown;
+    runInBackground?: unknown;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
     const timestamp = record.timestamp ?? Date.now();
@@ -361,6 +434,10 @@ export class LocalSessionAggregator {
         ...(record.isLintCommand === true && { isLintCommand: true }),
         ...(typeof record.errorType === 'string' && { errorType: record.errorType }),
         ...(typeof record.agentId === 'string' && { agentId: record.agentId }),
+        ...(typeof record.createdPrNumber === 'string' && {
+          createdPrNumber: record.createdPrNumber,
+        }),
+        ...(record.runInBackground === true && { runInBackground: true }),
       });
     }
 
@@ -585,24 +662,6 @@ export interface CollectedCommit {
    *  `collectCommitsAcrossRepos`'s two-pass ordering for how that's chosen
    *  among several roots that can all see the same commit. */
   root: string;
-}
-
-/**
- * Build a browsable GitHub commit URL from a git remote. Handles both SSH
- * (`git@github.com:owner/repo.git`) and HTTPS remotes, and returns null for
- * hosts we can't confidently map so the UI degrades to plain text rather than
- * rendering a broken link.
- */
-export function commitUrlFromRemote(remote: string | null, hash: string): string | null {
-  if (!remote || !hash) return null;
-  const trimmed = remote.trim().replace(/\.git$/, '');
-  const ssh = /^(?:ssh:\/\/)?[^@]+@([^:/]+)[:/](.+)$/.exec(trimmed);
-  const https = /^https?:\/\/(?:[^@/]+@)?([^/]+)\/(.+)$/.exec(trimmed);
-  const match = ssh ?? https;
-  if (!match) return null;
-  const [, host, path] = match;
-  if (!host || !path) return null;
-  return `https://${host}/${path}/commit/${hash}`;
 }
 
 function gitOut(root: string, args: readonly string[]): string | null {

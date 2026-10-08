@@ -116,6 +116,16 @@ Restart your AI tool — hooks and the MCP server load at session start. Every t
 
 **Cursor** — [Add to Cursor](https://cursor.com/en/install-mcp?name=newrelic-preflight&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBuZXdyZWxpYy9wcmVmbGlnaHQiLCItLXN0ZGlvIl19) installs the MCP server via a one-click deeplink; run `preflight setup` afterwards for hook capture.
 
+**Homebrew (macOS)**:
+
+```bash
+brew tap newrelic-experimental/preflight
+brew trust newrelic-experimental/preflight
+brew install preflight
+```
+
+Run `preflight setup` afterwards for hook capture.
+
 ---
 
 ## Works With
@@ -185,7 +195,7 @@ You'll need a **license key** (telemetry ingest) and your **account ID**, plus a
 ```bash
 preflight doctor               # Run 10 diagnostic checks and print actionable fix commands
 preflight validate             # Check config for syntax errors and unknown keys
-preflight update               # Pull latest version, rebuild, and offer to restart a running dashboard (source installs only — npm installs: npm install -g @newrelic/preflight@latest)
+preflight update               # Pull latest version, rebuild, and offer to restart a running dashboard (source installs only — npm installs: npm install -g @newrelic/preflight@latest; Homebrew installs: brew upgrade preflight)
 preflight local                # List running --local dashboard processes and live --stdio MCP processes
 preflight local --clean        # Kill orphaned --local processes and --stdio processes with a missing binary (prompts for confirmation)
 preflight uninstall            # Remove hooks and MCP config (prompts with a summary first)
@@ -223,8 +233,8 @@ Develop, test, or run the latest unreleased version:
 git clone https://github.com/newrelic-experimental/preflight
 cd preflight
 nvm use              # Switch to Node v24
-npm install          # Install dependencies
-npm run build        # Compile TypeScript
+npm ci               # Install dependencies from the lockfile
+npm run build        # Build the server and the dashboard bundle
 npm link             # Register preflight on PATH
 ```
 

@@ -7,8 +7,9 @@ Flat single-package repo providing observability for AI coding assistants (MCP s
 ```bash
 npm run build              # TypeScript build
 npm run build:clean        # Clean build output
-npm test                   # Run all tests (Jest, maxWorkers: 1)
-npm run lint               # ESLint across src/
+npm test                   # Jest suite, everything outside src/web (maxWorkers: 1)
+npm run test:web           # Vitest suite, src/web
+npm run lint               # ESLint across src/, scripts/, e2e/ and the root configs
 npm run format             # Prettier (write)
 npm run format:check       # Prettier (check only)
 ```
@@ -243,6 +244,10 @@ Run `npm run lint` before committing to verify the lint target is still met.
 ## Testing Conventions
 
 - Co-located test files: `foo.ts` → `foo.test.ts` (same directory)
+- Vitest claims `src/web/**/*.test.{ts,tsx}` (`npm run test:web`); Jest claims
+  `*.test.ts` elsewhere under `src/` and `test/` (`npm test`). Inside `src/web` either
+  extension runs, so use `.tsx` when the file contains JSX. A `.test.tsx` outside
+  `src/web` is claimed by neither runner, so put JSX tests under `src/web`
 - Jest with `ts-jest/presets/default-esm` preset, `node` environment
 - `maxWorkers: 1` to avoid stdio deadlocks
 - Tests mock `process.stderr.write` to suppress logger output
@@ -262,4 +267,4 @@ Run `npm run lint` before committing to verify the lint target is still met.
 
 - Title: short, under 72 characters
 - Body: Summary (bullet points), Test plan (checklist)
-- Always run `npm run build && npm test` before opening
+- Always run the checks in CONTRIBUTING.md's "Before opening a PR" first

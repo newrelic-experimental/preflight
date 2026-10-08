@@ -1247,6 +1247,20 @@ describe('GitEfficiencyTracker', () => {
       expect(metrics.prMetrics.created).toBe(1);
     });
 
+    it('counts the commands after a comment line holding an apostrophe', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command:
+            "# Claude's fix for the login bug\ngit commit -m x && git push\ngh pr create --fill",
+        }),
+      );
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(1);
+      expect(metrics.pushCount).toBe(1);
+      expect(metrics.prMetrics.created).toBe(1);
+    });
+
     it('detects a gh command separated by ";" or "|" from a preceding git command', () => {
       tracker.recordToolCall(makeRecord({ command: 'git push origin main; gh pr create --fill' }));
       tracker.recordToolCall(makeRecord({ command: 'git status | gh pr checks 42' }));
@@ -1778,5 +1792,14 @@ describe('GitEfficiencyTracker heredoc misclassification', () => {
     );
     const [event] = tracker.getMetrics().gitCommandTimeline;
     expect(event?.type).toBe('commit');
+  });
+
+  it.each([
+    'grep -q MERGED <<<"$(gh pr view 42 --json state)"\ngit push',
+    'gh pr comment 42 --body "see <<X"\ngit push',
+  ])('counts the git command after a << that starts no heredoc: `%s`', (command) => {
+    const tracker = new GitEfficiencyTracker();
+    tracker.recordToolCall(makeRecord({ command } as Partial<ToolCallRecord>));
+    expect(tracker.getMetrics().pushCount).toBe(1);
   });
 });

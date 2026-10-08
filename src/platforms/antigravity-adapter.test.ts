@@ -128,6 +128,12 @@ describe('AntigravityAdapter', () => {
       expect(instructions).toContain('mcp_config.json');
       expect(instructions).toContain('hooks.json');
     });
+
+    it('passes the event name to preflight-collector for each hook (#793)', () => {
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain('"command": "preflight-collector PreToolUse"');
+      expect(instructions).toContain('"command": "preflight-collector PostToolUse"');
+    });
   });
 
   describe('initialize', () => {

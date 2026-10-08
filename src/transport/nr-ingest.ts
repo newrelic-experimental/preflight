@@ -502,10 +502,8 @@ export interface SubagentTurnMetrics {
   readonly workflow_run_id: string | null;
   readonly agent_id: string;
   /**
-   * Best-effort subagent type, cross-referenced by the caller from a
-   * `ToolCallRecord` sharing this `agent_id` — see
-   * `TokenRecordContext.agentType` in cost-tracker.ts. Absent when no such
-   * record has been seen yet for this agent.
+   * Best-effort subagent type — see `TokenRecordContext.agentType` in
+   * cost-tracker.ts. Absent when no type has been seen yet for this agent.
    */
   readonly agent_type?: string;
   readonly parent_session_id: string;

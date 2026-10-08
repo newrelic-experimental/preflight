@@ -947,6 +947,107 @@ describe('Today view — aggregate endpoint', () => {
   });
 });
 
+describe('Today view — sessions today status sub-label', () => {
+  beforeEach(() => {
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: null,
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+      activeSessionId: null,
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function mockAggregate(sessionStatus?: {
+    counts: Record<string, number>;
+    sessionIds: Record<string, readonly string[]>;
+  }) {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 1,
+            totalCostUsd: 0.01,
+            antiPatternCount: 0,
+            avgDurationMs: 100,
+            sessionCount: 3,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [1] },
+            ...(sessionStatus ? { sessionStatus } : {}),
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+  }
+
+  it('renders a link per non-zero, non-completed status in display order', async () => {
+    mockAggregate({
+      counts: { needs_input: 2, ready_for_review: 1, working: 3, completed: 5 },
+      sessionIds: {
+        needs_input: ['n1', 'n2'],
+        ready_for_review: ['r1'],
+        working: ['w1', 'w2', 'w3'],
+        completed: ['c1'],
+      },
+    });
+
+    renderToday();
+
+    const needsInputLink = await screen.findByRole('link', { name: '2 need input' });
+    expect(needsInputLink).toHaveAttribute('href', '/sessions?sessionIds=n1,n2');
+
+    const reviewLink = screen.getByRole('link', { name: '1 ready for review' });
+    expect(reviewLink).toHaveAttribute('href', '/sessions?sessionIds=r1');
+
+    const workingLink = screen.getByRole('link', { name: '3 working' });
+    expect(workingLink).toHaveAttribute('href', '/sessions?sessionIds=w1,w2,w3');
+
+    expect(screen.queryByRole('link', { name: /completed/ })).toBeNull();
+  });
+
+  it('uses singular "needs input" when exactly one session needs input', async () => {
+    mockAggregate({
+      counts: { needs_input: 1, ready_for_review: 0, working: 0, completed: 0 },
+      sessionIds: { needs_input: ['n1'], ready_for_review: [], working: [], completed: [] },
+    });
+
+    renderToday();
+
+    expect(await screen.findByRole('link', { name: '1 needs input' })).toBeInTheDocument();
+  });
+
+  it('renders no sub-label link when only completed sessions exist', async () => {
+    mockAggregate({
+      counts: { needs_input: 0, ready_for_review: 0, working: 0, completed: 4 },
+      sessionIds: { needs_input: [], ready_for_review: [], working: [], completed: ['c1'] },
+    });
+
+    renderToday();
+
+    await screen.findByText('3');
+    expect(screen.queryByRole('link', { name: /working|review|input/ })).toBeNull();
+  });
+
+  it('renders the sessions today tile unchanged when sessionStatus is absent', async () => {
+    mockAggregate(undefined);
+
+    renderToday();
+
+    await screen.findByText('3');
+    expect(screen.queryByRole('link', { name: /working|review|input/ })).toBeNull();
+  });
+});
+
 describe('Today view — selector default + Session ended badge', () => {
   beforeEach(() => {
     useLiveStore.setState({

@@ -130,6 +130,9 @@ export interface SessionReplayResponse {
   readonly worstSegment: AntiPatternSegment | null;
 }
 
+// Mirrors src/metrics/session-status.ts's SessionStatus.
+export type SessionStatus = 'needs_input' | 'ready_for_review' | 'working' | 'completed';
+
 export interface TodayAggregateResponse {
   readonly toolCallCount: number;
   readonly totalCostUsd: number;
@@ -160,6 +163,10 @@ export interface TodayAggregateResponse {
     readonly totalCacheReadTokens: number;
     readonly totalCacheCreationTokens: number;
     readonly totalSavingsUsd: number;
+  };
+  readonly sessionStatus?: {
+    readonly counts: Record<SessionStatus, number>;
+    readonly sessionIds: Record<SessionStatus, readonly string[]>;
   };
 }
 

@@ -5,11 +5,129 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.58.0] - 2026-09-18
+## [1.63.0] - 2026-10-08
 
 ### Added
 
 - `ai.efficiency.*` gauges now carry a `model` attribute, matching `ai.cost.*`. `ai.cost.*`, `ai.efficiency.*`, and `ai.api.*` gauges also carry a `provider` attribute (`anthropic`, `google`, `openai`, `mistral`, `cohere`, or `bedrock` for any model routed through AWS Bedrock) derived from the model ID, so dashboards can facet directly on either without joining against the corresponding event.
+
+## [1.62.0] - 2026-10-08
+
+### Added
+
+- **Adding Preflight to an org that already exports Claude Code's OTel metrics to New Relic doubled its reported cost and tokens until someone turned on companion mode.** Companion mode now turns on by itself when Claude Code's telemetry is on, `OTEL_METRICS_EXPORTER` includes `otlp`, and the OTLP endpoint is an `nr-data.net` host. `NR_AI_COMPANION_MODE` or `companionMode` in the config file still wins in either direction, so `NR_AI_COMPANION_MODE=false` turns it off. `preflight doctor` shows the resolved value and its source, and `nr_observe_get_config` shows the value.
+
+## [1.61.0] - 2026-10-07
+
+### Added
+
+- Fleet admins can hold the Claude Code plugin's MCP server on a specific version. The plugin's `.mcp.json` now launches `@newrelic/preflight@${NEW_RELIC_AI_PREFLIGHT_VERSION:-latest}`, which Claude Code expands at session start, so setting `NEW_RELIC_AI_PREFLIGHT_VERSION` in the managed settings `env` pins every machine that receives it, stages a rollout per device group, and rolls back without a new release. Unset, the server follows `latest` as before. `docs/PLUGIN.md` has a managed settings example that also pins the plugin to its release tag so the bundled hook collector and the server stay in lockstep.
+
+## [1.60.0] - 2026-10-07
+
+### Added
+
+- **Scripts and fleet tooling could read `preflight doctor` results only by parsing its human-readable output.** `preflight doctor --json` prints the diagnostic checks as a JSON array on stdout, with each check's `check`, `status`, `detail`, and `fix`. The exit code is the same in both modes: 0 when every check passes, 1 when any check fails, and 2 when the only problems are warnings.
+
+## [1.59.5] - 2026-10-07
+
+### Fixed
+
+- **Google Antigravity: every tool call failed after Preflight's `PostToolUse` hook ran.** Antigravity sends the same payload shape for `PreToolUse` and `PostToolUse`, so Preflight read each `PostToolUse` as `PreToolUse` and replied with `{"decision":"allow"}`, which Antigravity rejects for that event. Preflight now takes the event name from the hook command and replies `{}` to `PostToolUse`, and records it as the end of the tool call. Update `hooks.json` to run `preflight-collector PreToolUse` and `preflight-collector PostToolUse` (see the Antigravity section of `docs/ADAPTERS.md`). Without the argument, Preflight falls back to treating a payload with an `error` field as `PostToolUse`, so a successful call whose `PostToolUse` omits that field gets the `PreToolUse` reply and is recorded as a failed call.
+
+## [1.59.4] - 2026-10-07
+
+### Fixed
+
+- A session in the "Sessions today" tile no longer stays "Ready for review" after its pull request merges, including when the merge runs from a different session or worktree of the same repo. Preflight now records the number of the pull request that `gh pr create` opened, read from the PR URL in its output (only the number is kept). Sessions saved before this release have no recorded number, so their pull requests still read as open, and a command that opens more than one pull request, or whose output names more than one, records none. A `gh pr merge` counts only when it succeeded and didn't just turn auto-merge on or off. Success is the command's exit status, so in a compound command that status must be the merge's own: `gh pr merge 42 && git pull` counts, but `gh pr merge 42 | tail`, `gh pr merge 42 || echo failed`, `gh pr merge 42 &`, a merge in the `||` fallback of another command, a merge in a command whose quotes don't pair up, a merge in a command with a `<<` heredoc that no later line ends (which usually means text such as `$((1<<N))` was misread as one) or a `<<` in quoted text with lines after it, a merge whose `||`, `&&` or `|` is followed by nothing Preflight can read as a command, and a merge in a Bash call run in the background don't. Cursor and Windsurf hooks report no exit status, so a failed merge there still counts. A `gh pr create` or `gh pr merge` that may target another repo, through `-R`/`--repo`, `GH_REPO` or an earlier `cd` or `pushd` out of the repo, is never matched to this repo's pull requests.
+- Chained shell commands are split the way bash reads them, for the pull request status above and the Git Efficiency page's counts: text inside quotes or a `#` comment is not taken for a git or `gh pr` command, a backslash-newline joins two lines, a line ending in `&&`, `||` or `|` continues on the next, and `&` ends a command. A command whose quotes don't pair up is split on every operator. A `<<<` here-string is no longer taken for a heredoc, and neither is a `<<` inside quotes or a `#` comment that no later line ends, so the commands after it count. As in bash, a heredoc ends only on a line that is exactly its delimiter, and `<<-` strips leading tabs but not spaces.
+
+## [1.59.3] - 2026-10-07
+
+### Fixed
+
+- **A daily auto-update scheduled on an npm, pnpm, or Homebrew install failed every run, silently.** `preflight update` runs `git pull` and a rebuild, so it only works on a source clone, but setup offered the macOS LaunchAgent on every install. Setup now skips the auto-update prompt on a package-manager or Homebrew install and prints the upgrade command instead. `preflight schedule --time` refuses on such an install with the same hint and a non-zero exit. `preflight schedule --disable` still works. `preflight doctor` has a new "Update schedule" check that warns when `com.preflight.update.plist` is installed on an install where `preflight update` cannot run, and names the fix. One shared check decides whether `update` can run, so `update`, setup, `schedule`, and `doctor` agree.
+
+## [1.59.2] - 2026-10-07
+
+### Fixed
+
+- **Following the plugin's cloud-mode setup produced a server that would not start.** `docs/PLUGIN.md` now lists the three variables cloud mode needs, `NR_AI_MODE=cloud`, `NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_ACCOUNT_ID`, with a complete Claude Code `env` settings example. The account ID variable is `NEW_RELIC_ACCOUNT_ID`, the name config reads, on that page and in `smithery.yaml`.
+
+## [1.59.1] - 2026-10-07
+
+### Fixed
+
+- Audit trail and security events for tool calls made inside a subagent now carry the subagent's id and type (for example `Explore`) on installs whose Claude Code hook payload leaves `agent_id` or `agent_type` out, so sensitive-file access and destructive commands can be attributed to the subagent that made them. Preflight finds the call in the subagent's transcript, reading the transcript's newest lines as the call's hook record arrives, and takes the type from the metadata file Claude Code writes next to each transcript when the subagent starts. Both can still be missing on a call Claude Code has not yet written to the transcript when Preflight processes it: Claude Code writes transcript lines about 0.1 seconds after the model produces them, and a fast `Read` or `Grep` can finish sooner. They can also be missing on calls made before Preflight's scan for new transcripts, which runs every 2 seconds (10 seconds in `--local` mode), has found the subagent's transcript: a session's first subagent (in `--local` mode, its first in 24 hours), a subagent a workflow starts, and any subagent during the first scan interval after Preflight starts. Preflight checks at most 32 transcripts and reads at most 1 MiB per call, so a call can also be missed when its transcript is not among its session's 32 most recently written or sits behind more than 1 MiB of unread lines. A type the hook payload does send is kept as is, unless it is over 128 characters or contains control characters: such a value is dropped and the type is filled in the same way.
+- Subagent turn events (`AiSubagentTurn`) and subagent cost by type get the subagent's type while it runs, from the same metadata file or from the type the hook payload sends with the subagent's tool calls, instead of only after the parent's `Agent` call returns.
+- The long-running `--local` daemon no longer keeps a record of every subagent tool call it has ever seen. Subagent attribution now keeps at most 10,000 tool calls and 1,000 subagents, and drops entries unused for 24 hours.
+
+## [1.59.0] - 2026-10-07
+
+### Added
+
+- **The Claude Code plugin now captures permission, API failure, prompt, model switch, and session lifecycle events, not just tool calls.** `plugin/hooks/hooks.json` registers every hook event that `preflight install` writes, and a test keeps the two in sync.
+
+## [1.58.5] - 2026-10-07
+
+### Fixed
+
+- **The local dashboard counted a session twice once it was saved to disk.** Today's "Where today's spend went" Models table showed double the requests and cost of the "Spend today" tile beside it, and the Tool Selection and Quality panels counted the same calls and signals twice. Each session now counts once, before and after it is saved.
+
+## [1.58.4] - 2026-10-06
+
+### Fixed
+
+- **The "On pace for" projection on History and Today could read ~$0.00 for the week while the month beside it read over $1,000.** The week projection only extrapolated from spend since Monday, so after a quiet Monday, and before today's spend was counted, it projected nothing for the rest of the week. The month projection had the same gap on the 1st. Both now project the remaining days from your average daily spend over the last 28 days plus today, so the week and month figures use the same pace.
+
+## [1.58.3] - 2026-10-06
+
+### Fixed
+
+- A session's "Session Quality" card no longer shows "Diff Apply NaN%" and "Test Pass NaN%" on sessions with no diff or test signals. The session detail response carried the session's raw signal counts under the key the dashboard reads the two rates from, and those counts have no rate fields. Such a session now hides the card, matching what the other session-detail paths already did.
+
+## [1.58.2] - 2026-10-06
+
+### Fixed
+
+- A git remote with a token in it no longer leaks the token. With a remote such as `https://<token>@github.com/widgets.git` or `ssh://git@github.com/widgets.git`, the repository name recorded on session summaries and shown in the dashboard header came out as `<token>@github.com/widgets`; it is now `github.com/widgets`. `repo_url` also drops the credential part of the remote now, including a token used as the username, which the secret patterns did not always catch; before, the value kept the token or had the whole host replaced by `[REDACTED]`. Only `ssh://`-style and `git@host:path` remotes keep a login name, and only the name. Every other kind, including the `git+https://` form used in `package.json`, loses everything up to the `@`, even when a password contains an unencoded `/`. A remote that goes through a remote helper, such as `hg::https://...` or `gcrypt::https://...`, gives no repository name, `project_id`, commit link, or `repo_url` at all, because only the helper can parse what follows the `::`; before, a token in one could reach the repository name. Without a repository name, such a checkout is handled like one with no remote: its sessions and the same day's sessions in other repositories count toward each other's git totals, on the dashboard and in the `ai.git.*` metrics. Session summaries saved before the upgrade keep the repository name they were saved with, token included, and the dashboard can still show it. Edit or delete the `repoName` field in those files, under `~/.newrelic-preflight/sessions/` by default, to remove it.
+- Repository names and commit links now work for remotes with a trailing slash, an uppercase `.GIT` suffix, or a query string, and commit links from `ssh://` remotes with a port no longer put the port in the link's path. A remote whose path has no owner segment, such as `git@host:repo.git`, gets the repository name `host/repo` and the `project_id` `repo`. The host can name an internal git server, so it is sent only in `repo_url`, which can be turned off, and never in `project_id`, which goes on every event. Before, its `project_id` was `host/repo` for an `https://` remote and missing for most ssh ones. A repository name with characters other than letters, digits, `.`, `_`, and `-`, such as `~jdoe/widgets`, `acme/my+repo`, or a local `My Drive/widgets`, also gives a `project_id` now; before, it gave none. For a remote ending in `.GIT` or carrying a query string, the repository name changes (from `acme/widgets.GIT` to `acme/widgets`), so on the day of the upgrade, git activity from sessions saved earlier that day under the old name is left out of that day's git stats.
+
+## [1.58.1] - 2026-10-06
+
+### Fixed
+
+- **`preflight update` on a Homebrew install no longer tells you to `npm install -g`.** Following that advice created a second, competing copy of preflight on `PATH`. It now says `brew upgrade preflight`. `preflight schedule --time` refuses on a Homebrew install with the same hint, since the daily job runs `preflight update` and would fail every run; `preflight schedule` and `preflight schedule --disable` still work, so an existing job can be removed.
+
+## [1.58.0] - 2026-10-06
+
+### Added
+
+- **Preflight is now installable via Homebrew on macOS** (`brew tap newrelic-experimental/preflight && brew trust newrelic-experimental/preflight && brew install preflight`), alongside the existing npm install path. The formula tracks the npm package; the Release workflow regenerates it and opens a PR against the tap repo on every release, documented in `docs/maintaining-homebrew-tap.md`.
+
+## [1.57.3] - 2026-10-01
+
+### Fixed
+
+- The Kiro Power manifest (`kiro-power/plugin.json`) now validates against the Agent Plugins 1.0.0 schema it declares. It carried a root `displayName` key, which the schema does not allow and which marketplaces validating against it rejected. Kiro's Powers documentation does not list `displayName` as a manifest field, so the key was removed rather than moved.
+
+## [1.57.2] - 2026-09-29
+
+### Fixed
+
+- Crossing a budget threshold no longer clears other local alerts that are still true. A firing `cost.window` rule reported "cleared" and could not fire again for its `deduplicateSeconds`, and a firing `budget.session` rule cleared whenever a daily or weekly threshold crossed. A budget-threshold crossing now evaluates only budget rules, and every other rule is left to the periodic alert check. When the cost trackers cannot be read, cost rules skip that check instead of reading $0.
+
+## [1.57.1] - 2026-09-29
+
+### Fixed
+
+- Loading an alert rules file no longer warns that `cost.window` rules with `costPeriod: "today"` or `"week"` are not yet implemented. Those periods have worked since the snapshot collector started reading daily and weekly spend from the budget tracker, so the warning was false and appeared on every load and reload of the rules file.
+
+## [1.57.0] - 2026-09-17
+
+### Added
+
+- Today's "Sessions today" tile now says how many of the day's sessions need input, are ready for review, or are still working, each linking to those sessions. A session needs input when its last tool call asked you a question; it is ready for review when it opened a pull request that has not merged; it is working when it is live; otherwise it is completed.
 
 ## [1.56.0] - 2026-09-17
 

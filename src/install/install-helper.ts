@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
 import type { PlatformTarget } from '../config.js';
+import { HOOK_EVENT_TYPES, HOOK_SUBCOMMANDS, type HookEventType } from '../hook-subcommands.js';
 import { readJsonFileStrict } from './json-utils.js';
 
 // ---------------------------------------------------------------------------
@@ -20,27 +21,6 @@ const HOOK_MATCHER = '';
 const MCP_SERVER_KEY = 'newrelic-preflight';
 const MCP_SERVER_COMMAND = 'preflight';
 const COLLECTOR_COMMAND = 'preflight-collector';
-
-/** Every Claude Code hook event this installer registers (and must be able to remove). */
-export const HOOK_EVENT_TYPES = [
-  'PreToolUse',
-  'PostToolUse',
-  'PermissionRequest',
-  'PermissionDenied',
-  'StopFailure',
-] as const;
-export type HookEventType = (typeof HOOK_EVENT_TYPES)[number];
-
-// The collector ignores this argv marker (it dispatches on the payload's
-// hook_event_name) — it exists so hook commands are identifiable in settings
-// files, and NR_HOOK_RE below recognizes exactly this vocabulary.
-const HOOK_SUBCOMMANDS = {
-  PreToolUse: 'pre-tool',
-  PostToolUse: 'post-tool',
-  PermissionRequest: 'permission-request',
-  PermissionDenied: 'permission-denied',
-  StopFailure: 'stop-failure',
-} as const satisfies Record<HookEventType, string>;
 
 /**
  * Alternation of every subcommand marker, for embedding in regexes that must
