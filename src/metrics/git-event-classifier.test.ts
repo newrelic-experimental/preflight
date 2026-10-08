@@ -453,6 +453,15 @@ describe('classifyGitSegments per-segment outcome', () => {
     ]);
   });
 
+  it('does not read a landed commit subject as its failure before a failed push', () => {
+    expect(
+      outcomes(
+        'git commit -m "Fix pre-commit hook failed on CI" && git push',
+        '[main abc1234] Fix pre-commit hook failed on CI\nfatal: Authentication failed',
+      ),
+    ).toEqual([['commit', true]]);
+  });
+
   it('attributes "nothing added to commit" to the commit, not a later push', () => {
     expect(
       outcomes(
@@ -768,6 +777,40 @@ describe('classifyGitSegments when the error holds two failures', () => {
       ),
     ).toEqual([
       ['stash', false],
+      ['other_git', true],
+      ['commit', true],
+      ['merge_conflict', false],
+    ]);
+  });
+
+  // git 2.54: the first commit lands, the merge conflicts, and the commit
+  // after the `;` is the one that refuses over the unmerged files.
+  it('leaves a refusal to the commit after a conflict, not one that landed before it', () => {
+    const OUTPUT = [
+      '[main 0327490] wip',
+      'CONFLICT (content): Merge conflict in a.ts',
+      'Automatic merge failed; fix conflicts and then commit the result.',
+      'error: Committing is not possible because you have unmerged files.',
+    ].join('\n');
+    expect(outcomes('git commit -m wip && git merge other; git commit --no-edit', OUTPUT)).toEqual([
+      ['commit', true],
+      ['merge_conflict', false],
+      ['commit', false],
+    ]);
+  });
+
+  it('does not read a refusal named in a landed commit subject as the refusal', () => {
+    const OUTPUT = [
+      '[main abc1234] Document Committing is not possible error',
+      'CONFLICT (content): Merge conflict in a.ts',
+      'Automatic merge failed; fix conflicts and then commit the result.',
+    ].join('\n');
+    expect(
+      outcomes(
+        'git add -A && git commit -m "Document Committing is not possible error" && git pull --no-rebase origin main',
+        OUTPUT,
+      ),
+    ).toEqual([
       ['other_git', true],
       ['commit', true],
       ['merge_conflict', false],

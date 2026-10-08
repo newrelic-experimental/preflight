@@ -634,9 +634,9 @@ const CONFLICT_TEXT_INDICATORS: readonly RegExp[] = [
 const UNMERGED_COMMIT_RE = /Committing is not possible/i;
 
 // Lines that carry a commit's subject rather than a failure: the summary a
-// commit that landed prints, and a rebase conflict's echo of the one it
-// stopped at.
-const COMMIT_SUBJECT_LINE_RE = /^\[[^\]\n]+ [0-9a-f]{7,}\]|could not apply/i;
+// commit that landed prints, and a rebase or revert conflict's echo of the
+// one it stopped at.
+const COMMIT_SUBJECT_LINE_RE = /^\[[^\]\n]+ [0-9a-f]{7,}\]|could not (?:apply|revert)/i;
 
 /** `error` without the lines that echo a commit subject, so a subject such as
  *  "Fix pre-commit hook failed on CI" doesn't read as a commit failure. */
@@ -695,12 +695,14 @@ function errorSegmentIndex(
       const run = andRunStart(operators, conflict);
       const conflictBeforeRun =
         lastGitSegment(segments.slice(0, run), isGit, GIT_CONFLICT_CAPABLE_RE) !== -1;
-      // The refusal is the commit's whatever printed the conflict text; other
-      // commit-only text counts when an earlier step can own the conflict.
+      // The refusal is the commit's whatever printed the conflict text, unless
+      // a commit after the conflict-capable step may be the one that refused.
+      // Other commit-only text counts when an earlier step can own the conflict.
+      const output = commitOutputLines(error);
+      const laterCommit = lastGitSegment(segments, isGit, GIT_COMMIT_RE) > conflict;
       const commitStopped =
-        UNMERGED_COMMIT_RE.test(error) ||
-        (conflictBeforeRun &&
-          OWN_COMMIT_FAILURE_INDICATORS.some((re) => re.test(commitOutputLines(error))));
+        (UNMERGED_COMMIT_RE.test(output) && !laterCommit) ||
+        (conflictBeforeRun && OWN_COMMIT_FAILURE_INDICATORS.some((re) => re.test(output)));
       if (commitStopped) {
         for (let i = run; i < conflict; i++) {
           if (isGit[i] && GIT_COMMIT_RE.test(segments[i]!)) {
@@ -712,14 +714,15 @@ function errorSegmentIndex(
     }
   }
   const push = rejectedPushIndex(segments, isGit, error);
-  const commit = COMMIT_FAILURE_INDICATORS.some((re) => re.test(error))
+  const output = commitOutputLines(error);
+  const commit = COMMIT_FAILURE_INDICATORS.some((re) => re.test(output))
     ? earliestInLastRun(GIT_COMMIT_RE)
     : -1;
   const owner = Math.max(push, commit);
   // No step here can conflict, so a commit refusing over unmerged files saw
   // conflict text another command left, as `git status` prints it.
   const refusedOverUnmerged =
-    owner !== -1 && owner === commit && conflictText && UNMERGED_COMMIT_RE.test(error);
+    owner !== -1 && owner === commit && conflictText && UNMERGED_COMMIT_RE.test(output);
   return { owner, commitOverConflict: refusedOverUnmerged };
 }
 
