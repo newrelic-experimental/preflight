@@ -862,7 +862,9 @@ describe('classifyGitSegments when the error holds two failures', () => {
 
   // git 2.54: `git checkout -m` leaves the path unmerged without a CONFLICT
   // line, and the status after it reports it, so commit b is the refuser.
-  it('keeps a landed commit when a status after checkout -m names the conflict', () => {
+  // Nothing in the output proves the checkout ran, so commit a takes the
+  // refusal: pinned as the known undercount.
+  it('undercounts a landed commit when a status after checkout -m names the conflict', () => {
     const OUTPUT = [
       '[main 792a4f1] a',
       "Switched to branch 'other'",
@@ -875,11 +877,12 @@ describe('classifyGitSegments when the error holds two failures', () => {
       'git commit -m a && git checkout -m other && git status && git commit -m b',
       OUTPUT,
     );
-    expect(steps[0]).toEqual(['commit', true]);
+    expect(steps[0]).toEqual(['commit', false]);
   });
 
-  // git 2.54: `git apply --3way` prints no CONFLICT line either.
-  it('keeps a landed commit when a status after apply --3way names the conflict', () => {
+  // git 2.54: `git apply --3way` prints no CONFLICT line either. Pinned as
+  // the same known undercount.
+  it('undercounts a landed commit when a status after apply --3way names the conflict', () => {
     const OUTPUT = [
       '[main 792a4f1] a',
       "Applied patch to 'f' with conflicts.",
@@ -892,7 +895,7 @@ describe('classifyGitSegments when the error holds two failures', () => {
       'git commit -m a && git apply --3way fix.patch; git status; git commit -m b',
       OUTPUT,
     );
-    expect(steps[0]).toEqual(['commit', true]);
+    expect(steps[0]).toEqual(['commit', false]);
   });
 
   // git 2.54's rebase conflict echoes the stopped commit twice, the second
@@ -920,6 +923,23 @@ describe('classifyGitSegments when the error holds two failures', () => {
       `${UNMERGED}\n${STATUS}\n${UNMERGED}`,
     );
     expect(steps[0]).toEqual(['commit', false]);
+    expect(steps.map(([type]) => type)).not.toContain('merge_conflict');
+  });
+
+  // git 2.54 mid-merge: commit a refuses, `&&` skips the pull, then
+  // `git commit -am` stages the conflicted file and lands.
+  it('fails a refusing commit even when a later commit lands', () => {
+    const OUTPUT = [
+      'Unmerged paths:',
+      '\tboth modified:   f',
+      'error: Committing is not possible because you have unmerged files.',
+      '[main 1403a49] wip',
+    ].join('\n');
+    const steps = outcomes(
+      'git status; git commit -m a && git pull; git commit -am wip; false',
+      OUTPUT,
+    );
+    expect(steps[1]).toEqual(['commit', false]);
     expect(steps.map(([type]) => type)).not.toContain('merge_conflict');
   });
 
