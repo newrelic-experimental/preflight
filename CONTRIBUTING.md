@@ -322,6 +322,7 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 - [ ] `npx tsc -p tsconfig.tools.json` passes (if you touched `scripts/`, `e2e/` or a root `*.config.ts`)
 - [ ] `npm run lint` passes
 - [ ] `npm run format:check` passes (the `pre-commit` hook runs this too)
+- [ ] You added a changeset if the PR changes anything that ships, and left the version and `CHANGELOG.md` alone (see [Changesets](#changesets); CI's `changeset` job checks both)
 - [ ] You've reviewed your own diff
 
 ---
@@ -353,6 +354,79 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 ### Branches
 
 Use descriptive branch names: `yourname/short-description` or `fix/issue-description`.
+
+### Changesets
+
+A PR never bumps Preflight's version or edits `CHANGELOG.md`; only the release PR does (see
+[Releasing](#releasing)). Instead, the PR adds a changeset: a Markdown file in
+[`.changeset/`](./.changeset/) that names the semver bump the change needs and holds its
+CHANGELOG entry.
+
+```md
+---
+'@newrelic/preflight': minor
+---
+
+**Scripts and fleet tooling could read `preflight doctor` results only by parsing its
+human-readable output.** `preflight doctor --json` prints the checks as a JSON array on stdout,
+with the same exit codes as the human-readable mode.
+```
+
+Create one with `npx changeset`, which asks for the bump and the summary, or in one line with
+`npx changeset --patch @newrelic/preflight -m "..."` (or `--minor`, `--major`). You can also
+write the file by hand. If you do, give it a name that says what it's about, such as
+`.changeset/fix-doctor-windows-hook-path.md`. Commit it along with the change it describes. A PR
+that makes several changes worth their own entries can add several changesets.
+
+Changesets don't conflict the way version bumps did. Every PR used to bump the version in five
+files and add its entry at the top of the CHANGELOG, so each merge put every other open PR in
+conflict. Each changeset is its own file, and the release PR is the only thing that bumps the
+version.
+
+**Which PRs need one.** CI's `changeset` job fails when a PR changes a file that ships and adds
+no changeset. The files that ship are listed under `changedFilePatterns` in
+`.changeset/config.json`: everything in `src/` except tests, the plugin and Kiro power, the data
+directories, `package.json`, `server.json`, and `smithery.yaml`. A PR that touches only docs,
+tests, CI, or scripts needs no changeset. If a PR changes a shipped file in a way users won't
+notice, such as a devDependency bump in `package.json`, add an empty changeset with
+`npx changeset --empty`. That satisfies the check without adding a CHANGELOG entry.
+
+**Picking the bump.** The release takes the highest bump among its pending changesets.
+
+- `patch`: fixes, and changes users won't notice.
+- `minor`: anything new a user can use, such as a config field, a CLI command or flag, an MCP
+  tool, an event type or attribute, or a dashboard view.
+- `major`: anything that breaks a working setup, such as removing or renaming a config field,
+  CLI flag, MCP tool, or event attribute that dashboards and alerts query, or raising the
+  minimum Node.js version.
+
+**Writing the entry.** Write it the way the existing CHANGELOG entries read: for someone who
+uses Preflight, about what changed for them and why, not how the code changed. A fix says what
+was wrong and what happens now. When an entry runs long, lead with one bolded sentence. The
+summary goes into the CHANGELOG exactly as written, and Prettier checks `.changeset/` files
+like any others, so run `npm run format` before committing.
+
+### Releasing
+
+1. While `main` has changesets that need a release,
+   [`release-pr.yml`](./.github/workflows/release-pr.yml) keeps a **Chore: Release x.y.z** PR
+   open. It runs `npm run version-packages`, which bumps `package.json`, adds the CHANGELOG
+   entry, and deletes the changesets it used. Then `scripts/release-files.ts` copies the new
+   version into `package-lock.json`, `server.json`, and both plugin manifests, and dates the
+   entry. Each push to `main` rebuilds the PR, so to change an entry, edit its changeset on
+   `main` instead of pushing to the PR's branch. The entry's date is the day the PR was last
+   rebuilt. If that's stale, rerun the Release PR workflow from the Actions tab before merging.
+2. Review and merge the release PR. GitHub doesn't let a PR opened by the built-in
+   `GITHUB_TOKEN` start workflows, so CI doesn't run on it by itself. Close and reopen the PR
+   to run CI.
+3. Run the Release workflow ([`release.yml`](./.github/workflows/release.yml)) on `main` from
+   the Actions tab. It checks that every version file agrees (`npm run check:release-files`),
+   tags `vX.Y.Z`, creates the GitHub release, and publishes to npm, the Homebrew tap, and the
+   MCP Registry.
+
+Changesets that merge after the release PR are left for the next one. If the Release PR
+workflow can't run, `npm run version-packages` on a branch off `main` does the same thing:
+commit the result and open the PR yourself.
 
 ---
 

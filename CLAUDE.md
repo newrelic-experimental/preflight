@@ -256,6 +256,20 @@ Run `npm run lint` before committing to verify the lint target is still met.
 - Temp directories via `os.tmpdir()` + cleanup in `afterEach` for storage tests
 - See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for full conventions
 
+## Versioning and CHANGELOG
+
+**Never bump the version or edit `CHANGELOG.md` in a PR.** The version is written in `package.json`, `package-lock.json`, `server.json`, `plugin/.claude-plugin/plugin.json`, and `kiro-power/plugin.json`, and only the release PR (`npm run version-packages`) changes them. Instead, add a changeset holding the change's CHANGELOG entry:
+
+```md
+---
+'@newrelic/preflight': patch
+---
+
+The CHANGELOG entry, written for someone who uses Preflight: what changed for them and why.
+```
+
+Save it as `.changeset/<short-descriptive-name>.md`, or run `npx changeset --patch @newrelic/preflight -m "..."`. Use `patch` for fixes, `minor` for new things a user can use (config fields, CLI flags, MCP tools, event attributes), and `major` for breaking changes. A PR that touches only docs, tests, CI, or scripts needs no changeset. One that changes a shipped file without anything a user would notice gets an empty one (`npx changeset --empty`). CI's `changeset` job enforces all of this. See [Changesets](./CONTRIBUTING.md#changesets) for which files count as shipped and how to write the entry.
+
 ## Git Commit Conventions
 
 - Format: `Type: Short description` (e.g., `Fix #13: Re-queue events on send failure`)
