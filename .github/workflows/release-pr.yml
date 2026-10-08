@@ -1,0 +1,105 @@
+name: Release PR
+
+# Keeps one "Chore: Release x.y.z" PR open whenever main has changesets waiting to be released.
+# `npm run version-packages` turns them into the release: it bumps the version in every file
+# that carries it, adds their CHANGELOG entry, and deletes the changesets it used. Every push to
+# main rebuilds the PR from scratch on changeset-release/main, so anything pushed to that branch
+# is lost; to change an entry, edit its changeset on main.
+#
+# Merging the PR publishes nothing. Run the Release workflow (release.yml) afterwards.
+#
+# The PR is opened with the built-in GITHUB_TOKEN, and GitHub doesn't let events from that token
+# start other workflows, so CI doesn't run on the release PR by itself. Close and reopen the PR
+# to run it.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to main supersedes a run still building the PR from an older one.
+concurrency:
+  group: release-pr
+  cancel-in-progress: true
+
+permissions:
+  contents: write # to push the changeset-release/main branch
+  pull-requests: write # to open, update, or close the release PR
+
+jobs:
+  release-pr:
+    # A fork's main has no release to prepare.
+    if: github.repository == 'newrelic-experimental/preflight'
+    runs-on: ubuntu-latest
+    env:
+      HUSKY: 0 # disable git hooks in CI
+      BRANCH: changeset-release/main
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # changeset version looks up the commit that added each changeset.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `changeset version` fails when there are no changesets, and changes nothing but the
+      # .changeset/ directory when every pending one is empty (`npx changeset --empty`), so in
+      # either case there's no version to release.
+      - name: Version packages
+        id: version
+        run: |
+          before="$(node -p "require('./package.json').version")"
+          if find .changeset -maxdepth 1 -name '*.md' ! -name README.md | grep -q .; then
+            npm run version-packages
+          fi
+          after="$(node -p "require('./package.json').version")"
+          if [ "$after" != "$before" ]; then
+            echo "version=$after" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Close the release PR
+        if: steps.version.outputs.version == ''
+        run: |
+          PR="$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$PR" ]; then
+            gh pr close "$PR" --delete-branch \
+              --comment "main has no changesets left that need a release, so this PR has nothing to release."
+          fi
+
+      - name: Open or update the release PR
+        if: steps.version.outputs.version != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/release.yml
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          git add -A
+          git commit -m "Chore: Release $VERSION"
+          git push --force origin "$BRANCH"
+
+          BODY="$RUNNER_TEMP/release-pr-body.md"
+          {
+            echo "Merging this PR releases \`@newrelic/preflight\` $VERSION. It doesn't publish anything by itself: once it merges, run the [Release workflow]($RELEASE_WORKFLOW_URL) on \`main\` to tag v$VERSION, create the GitHub release, and publish to npm, the Homebrew tap, and the MCP Registry."
+            echo
+            echo "This PR is rebuilt every time a change lands on \`main\`, so anything pushed to its branch is lost. To change an entry, edit its changeset on \`main\`. CI doesn't run here by itself; close and reopen the PR to run it."
+            echo
+            echo "## CHANGELOG entry"
+            echo
+            npx tsx scripts/release-files.ts notes
+          } > "$BODY"
+
+          PR="$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
+          if [ -z "$PR" ]; then
+            gh pr create --base main --head "$BRANCH" --title "Chore: Release $VERSION" --body-file "$BODY"
+          else
+            gh pr edit "$PR" --title "Chore: Release $VERSION" --body-file "$BODY"
+          fi
