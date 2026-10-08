@@ -507,9 +507,14 @@ export interface ClassifiedGitSegment {
 
 // Git verbs whose own output can report a merge/rebase conflict. A plain
 // `git stash` or `git checkout <branch>` cannot, nor can `git merge-base` or
-// `git mergetool`, which `(?![\w-])` keeps from matching as `git merge`.
+// `git mergetool`, which `(?![\w-])` keeps from matching as `git merge`. Nor
+// can a `--abort` or `--quit` right after the verb, where `MERGE_ABORT_RE`
+// reads one, since it applies nothing, or `git merge --continue`, which only
+// commits the resolved merge. A rebase, cherry-pick, revert or am's
+// `--continue` or `--skip` applies the next commit or patch, which can
+// conflict.
 const GIT_CONFLICT_CAPABLE_RE =
-  /\bgit\s+(?:merge|rebase|pull|cherry-pick|revert|am|apply|stash\s+(?:pop|apply|branch)|(?:checkout|switch)\b.*\s(?:-m|--merge))(?![\w-])/;
+  /\bgit\s+(?:merge(?!\s+--continue\b)|rebase|pull|cherry-pick|revert|am|apply|stash\s+(?:pop|apply|branch)|(?:checkout|switch)\b.*\s(?:-m|--merge))(?![\w-])(?!\s+--(?:abort|quit)\b)/;
 
 // How bash reads a `ShellChain`. `;`, newline and `&` end an and-or list.
 // Within one, `&&` and `||` join pipelines left to right with equal

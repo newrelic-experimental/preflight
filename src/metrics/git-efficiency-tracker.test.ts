@@ -148,6 +148,36 @@ describe('GitEfficiencyTracker', () => {
     expect(metrics.conflictHistory[0].resolutionTimeMs).toBe(5000);
   });
 
+  it('aborts the pending conflict before a chained pull that conflicts again', () => {
+    const t = Date.now();
+    tracker.recordToolCall(
+      makeRecord({
+        command: 'git merge main',
+        timestamp: t,
+        success: false,
+        error: 'CONFLICT (content): Merge conflict in src/file.ts',
+      }),
+    );
+    tracker.recordToolCall(
+      makeRecord({
+        command: 'git merge --abort && git pull',
+        timestamp: t + 5000,
+        success: false,
+        error:
+          'CONFLICT (content): Merge conflict in src/other.ts\n' +
+          'Automatic merge failed; fix conflicts and then commit the result.',
+      }),
+    );
+    tracker.recordToolCall(makeRecord({ command: 'git commit -m "resolve"', timestamp: t + 9000 }));
+    const metrics = tracker.getMetrics();
+    expect(metrics.abortedOperations).toBe(1);
+    expect(metrics.staleBranchPulls).toBe(1);
+    expect(metrics.conflictHistory.map((c) => [c.resolution, c.files])).toEqual([
+      ['aborted', ['src/file.ts']],
+      ['resolved', ['src/other.ts']],
+    ]);
+  });
+
   it('tracks conflict resolved by commit', () => {
     const t = Date.now();
     tracker.recordToolCall(

@@ -150,6 +150,65 @@ describe('classifyGitCommand', () => {
 
       expect(event.type).toBe('cherry_pick_abort');
     });
+
+    const MERGE_CONFLICT =
+      'CONFLICT (content): Merge conflict in a.ts\n' +
+      'Automatic merge failed; fix conflicts and then commit the result.';
+    // Lines git 2.50 prints when a rebase or cherry-pick stops on a conflict.
+    const APPLY_CONFLICT =
+      'CONFLICT (content): Merge conflict in a.ts\nerror: could not apply 466ee9d... feat: a';
+    const outcomes = (command: string, error: string): [string, boolean][] =>
+      classifyGitSegments(
+        command,
+        makeRecord({ command, success: false, error }),
+        resolveRepoSpy,
+      ).map(({ event }) => [event.type, event.success]);
+
+    // `&&` ran the step after the abort, so the abort succeeded and the step
+    // after it printed the conflict.
+    it.each([
+      ['git merge --abort && git pull', MERGE_CONFLICT, 'merge_abort'],
+      ['git rebase --abort && git pull --rebase', APPLY_CONFLICT, 'rebase_abort'],
+      ['git cherry-pick --abort && git cherry-pick 466ee9d', APPLY_CONFLICT, 'cherry_pick_abort'],
+    ])('keeps the abort in `%s` before the step that conflicted', (command, error, abort) => {
+      expect(outcomes(command, error)).toEqual([
+        [abort, true],
+        ['merge_conflict', false],
+      ]);
+    });
+
+    it.each(['git merge --quit && git pull', 'git merge --continue && git pull'])(
+      'gives the conflict in `%s` to the pull',
+      (command) => {
+        expect(outcomes(command, MERGE_CONFLICT)).toEqual([
+          ['merge', true],
+          ['merge_conflict', false],
+        ]);
+      },
+    );
+
+    // Each applies the next commit, which can conflict, so `&&` skips the push.
+    it.each(['git rebase --skip && git push', 'git cherry-pick --continue && git push'])(
+      'gives the conflict in `%s` to the step before the push',
+      (command) => {
+        expect(outcomes(command, APPLY_CONFLICT)).toEqual([['merge_conflict', false]]);
+      },
+    );
+
+    // The merge conflicts, the abort undoes it, and the commit then finds
+    // nothing to commit, so `&&` never runs the pull.
+    it('gives the conflict to the merge before an abort, and the refusal to the commit', () => {
+      expect(
+        outcomes(
+          'git merge feature; git merge --abort && git commit -am wip && git pull',
+          `${MERGE_CONFLICT}\nnothing to commit, working tree clean`,
+        ),
+      ).toEqual([
+        ['merge_conflict', false],
+        ['merge_abort', true],
+        ['commit', false],
+      ]);
+    });
   });
 
   describe('repo resolution', () => {
