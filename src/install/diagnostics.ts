@@ -7,7 +7,12 @@ import { checkNodeVersion, MIN_SUPPORTED_NODE_MAJOR } from './node-version-check
 import { isNewerVersion, fetchLatestNpmVersion } from './npm-version-check.js';
 import { VERSION } from '../version.js';
 
-import { validateConfigFile, loadMcpConfig, DEFAULT_STORAGE_PATH } from '../config.js';
+import {
+  validateConfigFile,
+  loadMcpConfig,
+  DEFAULT_STORAGE_PATH,
+  resolveCompanionMode,
+} from '../config.js';
 import { getDashboardDaemonStatus, findExecutableNodeDir, getScheduleStatus } from './schedule.js';
 import { detectUpdateSupport, upgradeCommandFor } from './update-support.js';
 import { HOOK_EVENT_TYPES, type HookEventType } from '../hook-subcommands.js';
@@ -40,6 +45,8 @@ type DiagnosticsContext = {
   readonly nrSkipReason: string | null;
   // Raw file.mode, for checkTelemetryMode's source reporting — see validateConfigFile.
   readonly fileMode: string | undefined;
+  // Raw file.companionMode, for checkCompanionMode's source reporting — see validateConfigFile.
+  readonly fileCompanionMode: boolean | undefined;
 };
 
 function checkConfigValid(
@@ -105,7 +112,12 @@ function checkConfigValid(
 
   return {
     check,
-    context: { storagePath, nrSkipReason, fileMode: validation.mode },
+    context: {
+      storagePath,
+      nrSkipReason,
+      fileMode: validation.mode,
+      fileCompanionMode: validation.companionMode,
+    },
   };
 }
 
@@ -144,6 +156,15 @@ function checkTelemetryMode(configPath: string, fileMode: string | undefined): D
       fix: 'Apply the remedy named in the message, then re-run doctor.',
     };
   }
+}
+
+function checkCompanionMode(fileValue: boolean | undefined): DiagnosticCheck {
+  const resolved = resolveCompanionMode(process.env, fileValue);
+  return {
+    check: 'Companion mode',
+    status: 'ok',
+    detail: `Resolved to ${resolved.value} (source: ${resolved.source})`,
+  };
 }
 
 function checkDaemon(): DiagnosticCheck[] {
@@ -647,6 +668,7 @@ export async function runDiagnostics(opts?: {
   const configPath = opts?.configPath ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
   const { check: configCheck, context } = checkConfigValid(configPath, opts?.storagePath);
   const modeCheck = checkTelemetryMode(configPath, context.fileMode);
+  const companionModeCheck = checkCompanionMode(context.fileCompanionMode);
 
   const settingsPaths: string[] = [detectSettingsPath('user')];
   if (isWsl()) {
@@ -657,6 +679,7 @@ export async function runDiagnostics(opts?: {
   return [
     configCheck,
     modeCheck,
+    companionModeCheck,
     checkNodeVersionDiagnostic(),
     ...checkDaemon(),
     checkUpdateSchedule(),
