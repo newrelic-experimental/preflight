@@ -14,6 +14,15 @@ export interface TranscriptMessageMetrics {
   readonly userCorrections: number;
 }
 
+/**
+ * What the assistant did between the last real user message and the next one: `acted` when it
+ * called a tool in `MUTATING_TOOLS`, `talked` when its entries called none, and `unknown` when no
+ * assistant entry came between them (the first message, or two user messages in a row). It is also
+ * `unknown` until the transcript has shown a tool call at all, since a format that doesn't record
+ * tool calls makes a turn that acted look like one that talked.
+ */
+export type AssistantTurnState = 'acted' | 'talked' | 'unknown';
+
 // ---------------------------------------------------------------------------
 // Classification
 // ---------------------------------------------------------------------------
@@ -87,7 +96,8 @@ const TRIED_IT =
 
 /**
  * Things the assistant builds, singular or plural. "your proposal", "your solution", "your approach"
- * and "your idea" can name a plan, which is design discussion, so they are left out.
+ * and "your idea" can name a plan, which is design discussion, so they are left out. After a turn
+ * that acted they count anyway, since the rule there doesn't need a reference.
  */
 const ASSISTANT_ARTIFACT =
   '(?:fix|patch)(?:es)?|quer(?:y|ies)|(?:change|edit|code|version|implementation|update|commit|refactor|migration|test|script|function)s?';
@@ -129,34 +139,103 @@ const YOU_PROGRESSIVE = `\\b${NOT_ABOUT_OUTPUT_BEFORE_YOU}you(?:'re| are) (?:${A
 const STILL_WONT_WORK = `\\bstill won'?t work\\b`;
 
 /**
- * A reference back to the assistant's output: "your" plus a built artifact, second person plus a past
- * or present-progressive verb ("you wrote", "you've added", "you're mutating"), or a repeat failure
- * ("still won't work"). A present-tense or modal "you" ("you need a lock", "you can't hold
- * connections") is as often impersonal, so it doesn't count.
+ * A reference back to something the assistant built: "your" plus a built artifact, second person plus
+ * a past verb ("you wrote", "you've added"), or a repeat failure ("still won't work"). A present-tense
+ * or modal "you" ("you need a lock", "you can't hold connections") is as often impersonal, so it
+ * doesn't count.
  */
+const BUILT_REFERENCE_RE = new RegExp([YOUR_ARTIFACT, YOU_PAST, STILL_WONT_WORK].join('|'), 'i');
+
+/** A built reference, or a present progressive that describes the output as it stands ("you're mutating state"). */
 const ASSISTANT_REFERENCE_RE = new RegExp(
   [YOUR_ARTIFACT, YOU_PAST, YOU_PROGRESSIVE, STILL_WONT_WORK].join('|'),
+  'i',
+);
+
+/**
+ * A "you" that names where an idea came from, a determiner plus a word for one ("that idea", "the
+ * proposal"), or "your plan". "the plan" and "this option" are left out: a Terraform plan and a CLI
+ * option are things the assistant builds.
+ */
+const IDEA_REFERENCE_RE = new RegExp(
+  [
+    `\\byou(?:'ve| have|'re| are)? (?:${ADVERB_AFTER_YOU})?${IDEA_SOURCE_VERB}`,
+    `\\b(?:your|the|that|this|these|those) (?:idea|proposal|suggestion|recommendation)s?\\b`,
+    `\\byour plans?\\b`,
+  ].join('|'),
+  'i',
+);
+
+/** A hypothetical about "you" or "we" ("if you added a cache", "if we do it that way"). Tested only on the text before "won't work": one after it ("that won't work if we deploy to Windows") says when the output fails. */
+const HYPOTHETICAL_OPTION_RE = new RegExp(`\\b(?:${HYPOTHETICAL}) (?:you|we)\\b`, 'i');
+
+/** Agreeing with the assistant ("You're right that a cache won't work", "Agreed, that won't work") repeats its own caveat back to it. */
+const AGREEMENT_RE = new RegExp(
+  `^(?:(?:${LEADING_FILLER})\\b${LEADING_PUNCTUATION}*\\s+)?(?:(?:you'?re|you are) (?:totally |absolutely |completely )?right|agreed|i agree|good (?:point|call)|fair (?:point|enough)|true)\\b`,
   'i',
 );
 
 /** Whitespace after sentence-ending punctuation, or a newline. The lookbehind keeps the split linear: a quantified punctuation run followed by a required character backtracks quadratically on a long run of dots. */
 const SENTENCE_SPLIT_RE = /(?<=[.!?])\s+|\n\s*/;
 
-/**
- * "won't work" is a correction when the message opens on it with a bare pronoun or no subject, or when
- * a sentence using it, or the sentence either side of it, points back at the assistant's output.
- * Otherwise it states a constraint on an option, which is design discussion whether or not a proposal
- * follows.
- */
-function hasWontWorkCorrection(text: string): boolean {
-  if (!WONT_WORK_RE.test(text)) return false;
-  if (DEICTIC_WONT_WORK_RE.test(text)) return true;
+/** Runs `test` on each sentence that uses "won't work", with the sentences either side of it. */
+function someWontWorkSentence(
+  text: string,
+  test: (sentence: string, before: string, after: string) => boolean,
+): boolean {
   const sentences = text.split(SENTENCE_SPLIT_RE);
-  return sentences.some((sentence, i) => {
-    if (!WONT_WORK_RE.test(sentence)) return false;
-    const nearby = [sentences[i - 1] ?? '', sentence, sentences[i + 1] ?? ''];
-    return nearby.some((s) => ASSISTANT_REFERENCE_RE.test(s));
-  });
+  return sentences.some(
+    (sentence, i) =>
+      WONT_WORK_RE.test(sentence) && test(sentence, sentences[i - 1] ?? '', sentences[i + 1] ?? ''),
+  );
+}
+
+/**
+ * After a turn that changed something, "won't work" rejects what it changed, unless the sentence
+ * frames an option as hypothetical, agrees with the assistant, or names an idea the assistant
+ * proposed rather than built.
+ */
+function rejectsActionOutput(sentence: string, before: string): boolean {
+  const lead = sentence.slice(0, sentence.search(WONT_WORK_RE));
+  return (
+    !HYPOTHETICAL_OPTION_RE.test(lead) &&
+    !AGREEMENT_RE.test(sentence) &&
+    !AGREEMENT_RE.test(before) &&
+    !IDEA_REFERENCE_RE.test(sentence)
+  );
+}
+
+/**
+ * Whether "won't work" in `text` rejects something the assistant built or did, given its previous turn.
+ *
+ * - `acted`: it rejects what the turn changed, with the exceptions in `rejectsActionOutput`.
+ * - `talked`: the turn only answered or proposed, so "won't work" rejects an option or states a
+ *   constraint unless the sentence, or one either side, points back at something built earlier
+ *   ("the migration you wrote still won't work"). A present progressive doesn't count here: after a
+ *   proposal, "you're assuming a sorted list" describes the proposal as often as the code.
+ * - `unknown`: the text decides alone. The message counts when it opens on "won't work" with a bare
+ *   pronoun or no subject, or when a "won't work" sentence, or one either side, points back at the
+ *   assistant's output.
+ */
+function hasWontWorkCorrection(text: string, state: AssistantTurnState): boolean {
+  if (!WONT_WORK_RE.test(text)) return false;
+  switch (state) {
+    case 'acted':
+      return someWontWorkSentence(text, (sentence, before) =>
+        rejectsActionOutput(sentence, before),
+      );
+    case 'talked':
+      return someWontWorkSentence(text, (...nearby) =>
+        nearby.some((s) => BUILT_REFERENCE_RE.test(s)),
+      );
+    case 'unknown':
+      return (
+        DEICTIC_WONT_WORK_RE.test(text) ||
+        someWontWorkSentence(text, (...nearby) =>
+          nearby.some((s) => ASSISTANT_REFERENCE_RE.test(s)),
+        )
+      );
+  }
 }
 
 /** A curly apostrophe (U+2019), as macOS and phone keyboards type it, reads like a straight one in every pattern above. */
@@ -164,7 +243,7 @@ function normalizeApostrophes(text: string): string {
   return text.replace(/\u2019/g, "'");
 }
 
-function isCorrectionMessage(rawText: string): boolean {
+function isCorrectionMessage(rawText: string, state: AssistantTurnState): boolean {
   const text = normalizeApostrophes(rawText);
   return (
     LEADING_NO_RE.test(text) ||
@@ -173,8 +252,43 @@ function isCorrectionMessage(rawText: string): boolean {
     LEADING_INTERJECTION_RE.test(text) ||
     TARGETED_UNDO_RE.test(text) ||
     EMBEDDED_CORRECTION_RE.test(text) ||
-    hasWontWorkCorrection(text)
+    hasWontWorkCorrection(text, state)
   );
+}
+
+/**
+ * Tools whose call is something the assistant did that the user can reject.
+ * - Edit, Write, MultiEdit and NotebookEdit change files.
+ * - Bash runs a command. Many commands only read (`ls`, `git status`), but a command is itself output
+ *   the user corrects ("the command you ran won't work in CI"), and telling the read-only ones apart
+ *   would take a shell parser.
+ * - Task, and Agent as it is now named, hands work to a subagent, which often edits files. The
+ *   subagent's own entries are sidechains, which this tracker skips, so the spawn is the only trace
+ *   in the turn of what it did.
+ * Every other tool counts as talking: Read, Grep, Glob, WebFetch and WebSearch look things up and
+ * TodoWrite tracks the plan. That includes MCP tools, since the name alone doesn't say whether one
+ * changed anything.
+ */
+const MUTATING_TOOLS: ReadonlySet<string> = new Set([
+  'Edit',
+  'Write',
+  'MultiEdit',
+  'NotebookEdit',
+  'Bash',
+  'Task',
+  'Agent',
+]);
+
+/** The names of the `tool_use` blocks in an assistant entry's `message.content`. */
+function toolUseNames(message: unknown): string[] {
+  if (message === null || typeof message !== 'object') return [];
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((block: unknown) => {
+    if (typeof block !== 'object' || block === null) return [];
+    const { type, name } = block as { type?: unknown; name?: unknown };
+    return type === 'tool_use' && typeof name === 'string' ? [name] : [];
+  });
 }
 
 /** A content block carrying a `text` field — narrows before reading `.text`. */
@@ -233,6 +347,10 @@ export class TranscriptMessageTracker {
   private userMessages = 0;
   private assistantMessages = 0;
   private userCorrections = 0;
+  /** What the assistant's entries did since the last real user message. */
+  private assistantSinceUser: 'none' | 'talked' | 'acted' = 'none';
+  /** Whether the transcript has shown a tool call yet, so a turn without one can be read as talking. */
+  private seenToolUse = false;
 
   /** Cheap; captures the first non-empty path seen and ignores later calls. No I/O. */
   observeTranscriptPath(path: string | undefined): void {
@@ -321,15 +439,29 @@ export class TranscriptMessageTracker {
       const text = classifyUserEntry(entry);
       if (text !== null) {
         this.userMessages++;
-        if (isCorrectionMessage(text.trim())) {
+        if (isCorrectionMessage(text.trim(), this.turnState())) {
           this.userCorrections++;
         }
+        this.assistantSinceUser = 'none';
       }
     } else if (entry.type === 'assistant') {
       if (isRealAssistantTurn(entry)) {
         this.assistantMessages++;
+        const tools = toolUseNames(entry.message);
+        if (tools.length > 0) this.seenToolUse = true;
+        if (tools.some((name) => MUTATING_TOOLS.has(name))) {
+          this.assistantSinceUser = 'acted';
+        } else if (this.assistantSinceUser === 'none') {
+          this.assistantSinceUser = 'talked';
+        }
       }
     }
+  }
+
+  private turnState(): AssistantTurnState {
+    if (this.assistantSinceUser === 'acted') return 'acted';
+    if (this.assistantSinceUser === 'talked' && this.seenToolUse) return 'talked';
+    return 'unknown';
   }
 
   getMetrics(): TranscriptMessageMetrics {
@@ -347,5 +479,7 @@ export class TranscriptMessageTracker {
     this.userMessages = 0;
     this.assistantMessages = 0;
     this.userCorrections = 0;
+    this.assistantSinceUser = 'none';
+    this.seenToolUse = false;
   }
 }

@@ -56,6 +56,20 @@ function assistantLine(overrides: Record<string, unknown> = {}): string {
   });
 }
 
+/** An assistant entry whose only content block calls the tool `name`. */
+function toolUseLine(name: string, overrides: Record<string, unknown> = {}): string {
+  return assistantLine({
+    message: {
+      role: 'assistant',
+      model: 'claude-opus-4-6',
+      content: [
+        { type: 'tool_use', id: `t-${Math.random().toString(36).slice(2)}`, name, input: {} },
+      ],
+    },
+    ...overrides,
+  });
+}
+
 function writeLines(lines: string[]): void {
   writeFileSync(transcriptPath, lines.join('\n') + '\n');
 }
@@ -189,10 +203,122 @@ describe('TranscriptMessageTracker', () => {
     expect(tracker.getMetrics().userCorrections).toBe(0);
   });
 
+  // #677: "won't work" reads the assistant's turn before the message. These
+  // pin how the transcript sets that turn state; the corpus below pins what
+  // each state decides.
+  describe("turn state for won't work (#677)", () => {
+    /** Read before an unrelated exchange, so the transcript has shown it records tool calls. */
+    const EARLIER_EXCHANGE = [toolUseLine('Read'), userLine('go ahead')];
+    /** Counts in every turn state, so it shows the state matters only for "won't work". */
+    const ANY_STATE = "That's wrong, please redo it.";
+    /** Counts after a turn that acted, and not after one that talked. */
+    const ACTED_ONLY = "That approach won't work because there's a race condition.";
+    /** Counts on its text alone, and not after a turn that talked. */
+    const TEXT_ONLY = "That won't work.";
+
+    function corrections(lines: string[]): number {
+      writeLines(lines);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      return tracker.getMetrics().userCorrections;
+    }
+
+    it.each(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'Task', 'Agent'])(
+      'reads a turn that called %s as acting',
+      (tool) => {
+        expect(corrections([...EARLIER_EXCHANGE, toolUseLine(tool), userLine(ACTED_ONLY)])).toBe(1);
+      },
+    );
+
+    it.each([
+      'Read',
+      'Grep',
+      'Glob',
+      'WebFetch',
+      'WebSearch',
+      'TodoWrite',
+      'mcp__github__get_issue',
+    ])('reads a turn that only called %s as talking', (tool) => {
+      expect(corrections([...EARLIER_EXCHANGE, toolUseLine(tool), userLine(TEXT_ONLY)])).toBe(0);
+    });
+
+    it('reads a text-only turn as talking once the transcript has shown a tool call', () => {
+      expect(corrections([...EARLIER_EXCHANGE, assistantLine(), userLine(TEXT_ONLY)])).toBe(0);
+      expect(corrections([...EARLIER_EXCHANGE, assistantLine(), userLine(ANY_STATE)])).toBe(1);
+    });
+
+    it('decides on the text alone before the transcript has shown a tool call', () => {
+      expect(corrections([assistantLine(), userLine(TEXT_ONLY)])).toBe(1);
+      expect(corrections([assistantLine(), userLine(ACTED_ONLY)])).toBe(0);
+    });
+
+    it('decides on the text alone when no assistant entry came since the last user message', () => {
+      expect(corrections([toolUseLine('Edit'), userLine('ok'), userLine(ACTED_ONLY)])).toBe(0);
+      expect(corrections([toolUseLine('Read'), userLine('ok'), userLine(TEXT_ONLY)])).toBe(1);
+    });
+
+    it('keeps a turn acting through the text and tool results that follow the action', () => {
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          toolUseLine('Edit'),
+          userLine([{ type: 'tool_result', content: 'ok' }], { toolUseResult: { ok: true } }),
+          toolUseLine('Read'),
+          assistantLine(),
+          userLine(ACTED_ONLY),
+        ]),
+      ).toBe(1);
+    });
+
+    it('starts each turn over at a real user message', () => {
+      expect(
+        corrections([
+          toolUseLine('Edit'),
+          userLine('thanks, now explain the retry logic'),
+          assistantLine(),
+          userLine(ACTED_ONLY),
+        ]),
+      ).toBe(0);
+    });
+
+    it('ignores sidechain and synthetic assistant entries', () => {
+      const syntheticEdit = assistantLine({
+        message: {
+          role: 'assistant',
+          model: '<synthetic>',
+          content: [{ type: 'tool_use', id: 't-synthetic', name: 'Edit', input: {} }],
+        },
+      });
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          assistantLine(),
+          toolUseLine('Edit', { isSidechain: true }),
+          syntheticEdit,
+          userLine(ACTED_ONLY),
+        ]),
+      ).toBe(0);
+    });
+
+    it('reset() forgets the turn state', () => {
+      writeLines([toolUseLine('Edit')]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      tracker.reset();
+      writeLines([userLine(ACTED_ONLY)]);
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      expect(tracker.getMetrics().userCorrections).toBe(0);
+    });
+  });
+
   // #677: labeled corpus for the "won't work" clause. Corrections reject
   // something the assistant already produced; design discussion rules out an
   // option before anything was built, with or without proposing the next one.
   describe("won't work corpus (#677)", () => {
+    /** Classifies `text` with no assistant entry before it, so the text decides alone. */
     function countCorrections(text: string): number {
       writeLines([userLine(text)]);
       const tracker = new TranscriptMessageTracker();
@@ -200,6 +326,27 @@ describe('TranscriptMessageTracker', () => {
       tracker.refresh();
       return tracker.getMetrics().userCorrections;
     }
+
+    /**
+     * Classifies `text` after an assistant turn that called `tools`, in order. An empty list is a
+     * text-only reply. An unrelated exchange comes first, in which the assistant reads a file, so the
+     * transcript has shown it records tool calls.
+     */
+    function countCorrectionsAfterTurn(text: string, tools: readonly string[]): number {
+      writeLines([
+        toolUseLine('Read'),
+        userLine('go ahead'),
+        ...(tools.length === 0 ? [assistantLine()] : tools.map((name) => toolUseLine(name))),
+        userLine(text),
+      ]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      return tracker.getMetrics().userCorrections;
+    }
+
+    const ACTED: readonly string[] = ['Edit'];
+    const TALKED: readonly string[] = [];
 
     const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
     const uncapitalize = (s: string): string =>
@@ -455,15 +602,6 @@ describe('TranscriptMessageTracker', () => {
       expect(countCorrections(text)).toBe(0);
     });
 
-    it.each([
-      ['Don’t do that.', 1],
-      ['You’re right that a cache won’t work here.', 0],
-      ['No, that’s fine, it’s only a draft.', 0],
-    ])('reads curly apostrophes like straight ones in %j', (text, expected) => {
-      expect(countCorrections(text)).toBe(expected);
-      expect(countCorrections(text.replace(/\u2019/g, "'"))).toBe(expected);
-    });
-
     it('counts a bare "That won\'t work." opener when the next sentence adds a task', () => {
       expect(countCorrections("That won't work. Let's also add a test for the empty case.")).toBe(
         1,
@@ -486,37 +624,266 @@ describe('TranscriptMessageTracker', () => {
       ).toBe(1);
     });
 
-    interface HeldOutSet {
-      readonly source: string;
-      readonly rows: ReadonlyArray<{
-        readonly text: string;
-        readonly label: 'correction' | 'design';
-        readonly context: string;
-      }>;
+    // The lists above classify the text alone, as when no assistant entry came before it. The
+    // lists below classify it after a turn that acted (called a tool in MUTATING_TOOLS) or talked
+    // (called none).
+
+    /** After a turn that changed something, "won't work" rejects what it changed, whatever its subject. */
+    const ACTED_CORRECTIONS = [
+      "That won't work if the list is empty.",
+      // "going to" is future tense here, not a report of an idea.
+      "That won't work, you're going to need a lock around it.",
+      "That terraform plan won't work, you're creating the bucket and its policy in one apply.",
+      "A singleton won't work here, every request needs its own client.",
+      "Your approach won't work for us, let's go back.",
+    ];
+
+    /** A hypothetical option, agreement with the assistant, or an idea it proposed is design discussion after a turn that acted too. */
+    const ACTED_DESIGN = [
+      "If you added a cache it won't work across pods.",
+      "If we do it that way it won't work offline, so let's cache the manifest.",
+      "Suppose you added a cache, it won't work across pods.",
+      "You're right that a cache won't work here.",
+      "Agreed, that won't work, let's go with option B.",
+      "You're right. That won't work on Windows, let's add a fallback.",
+      "The cache you suggested won't work, we need fresh reads.",
+      "As you explained, a cache won't work here.",
+      "The approach you floated won't work at scale, let's shard by key.",
+      "That idea won't work, you're going to need a queue.",
+      "Your proposal won't work here, instead we should shard by key.",
+      "Your plan won't work for us.",
+      "A cache won't work the way you're describing.",
+    ];
+
+    /** After a turn that acted, design talk about an option the turn didn't touch reads as rejecting the change. */
+    const ACTED_KNOWN_FALSE_POSITIVES = [
+      "Redis won't work for us, let's use SQLite.",
+      "Have you tried Redis? Polling won't work on Windows.",
+      "Polling won't work, you can't hold connections on serverless.",
+      // An idea named in the sentence before doesn't count, only one in the "won't work" sentence.
+      "A global lock won't work at scale. The point you made about contention holds, so let's shard by key.",
+      // "plan" names an idea only after "your", since "the plan" is also a Terraform plan.
+      "The plan you made won't work for us.",
+    ];
+
+    /** After a turn that only answered, "won't work" counts when it points back at something built earlier. */
+    const TALKED_CORRECTIONS = [
+      "The migration you wrote still won't work.",
+      "Your fix from earlier won't work on Windows.",
+      "It still won't work.",
+      "When you renamed the env var, the deploy script won't work anymore.",
+      "The regex you added yesterday won't work for unicode.",
+      "That approach won't work. Your migration drops the index, let's add it back.",
+      "At this point you've broken the build, so the deploy won't work.",
+    ];
+
+    /** After a turn that only answered or proposed, a "won't work" that doesn't point back rejects the proposal. */
+    const TALKED_DESIGN = [
+      "That won't work.",
+      "That won't work, let's use a map instead.",
+      "Nah, won't work — the value can be undefined too.",
+      "That approach won't work because there's a race condition.",
+      // The user ran an option the assistant only proposed.
+      "I tried it and it won't work.",
+      // After a proposal, a present progressive describes the proposal as often as the code.
+      "A cache won't work here, you're reading from the replica.",
+    ];
+
+    const TALKED_KNOWN_FALSE_POSITIVES = [
+      // "still won't work" marks a repeat failure; a concessive "even with X" reads the same.
+      "Even with the polyfill, polling still won't work on Windows, so let's use fs.watch.",
+      // "your" plus "test" reads as the assistant's test.
+      "Your test environment has a single node. A cache won't work at our write volume.",
+    ];
+
+    const TALKED_KNOWN_MISSES = [
+      // Names output built earlier without pointing back at it, which reads like rejecting a proposal.
+      "The migration won't work, it drops the index instead of renaming it.",
+    ];
+
+    it.each([
+      ...ACTED_CORRECTIONS,
+      // Every text-alone correction, and every text-alone miss.
+      ...WONT_WORK_CORRECTIONS,
+      ...WONT_WORK_CORRECTIONS_WITH_PROPOSAL,
+      ...WONT_WORK_YOU_REFERENCES,
+      ...KNOWN_MISSES,
+    ])('counts %j after a turn that acted', (text) => {
+      expect(countCorrectionsAfterTurn(text, ACTED)).toBe(1);
+    });
+
+    it.each(ACTED_DESIGN)('does not count %j after a turn that acted', (text) => {
+      expect(countCorrectionsAfterTurn(text, ACTED)).toBe(0);
+    });
+
+    it.each(ACTED_KNOWN_FALSE_POSITIVES)(
+      'counts %j after a turn that acted (known false positive)',
+      (text) => {
+        expect(countCorrectionsAfterTurn(text, ACTED)).toBe(1);
+      },
+    );
+
+    it.each(TALKED_CORRECTIONS)('counts %j after a turn that talked', (text) => {
+      expect(countCorrectionsAfterTurn(text, TALKED)).toBe(1);
+    });
+
+    it.each([
+      ...TALKED_DESIGN,
+      // Every text-alone design row, since a turn that talked counts a subset of what the text alone does.
+      ...WONT_WORK_DESIGN_DISCUSSION,
+      ...WONT_WORK_DESIGN_DISCUSSION_SINGLE,
+      ...WONT_WORK_YOU_NOT_ABOUT_OUTPUT,
+    ])('does not count %j after a turn that talked', (text) => {
+      expect(countCorrectionsAfterTurn(text, TALKED)).toBe(0);
+    });
+
+    it.each(TALKED_KNOWN_FALSE_POSITIVES)(
+      'counts %j after a turn that talked (known false positive)',
+      (text) => {
+        expect(countCorrectionsAfterTurn(text, TALKED)).toBe(1);
+      },
+    );
+
+    it.each(TALKED_KNOWN_MISSES)(
+      'does not count %j after a turn that talked (known miss)',
+      (text) => {
+        expect(countCorrectionsAfterTurn(text, TALKED)).toBe(0);
+      },
+    );
+
+    it.each([
+      ['That approach won’t work because there’s a race condition.', 0, 1, 0],
+      ['You’re right that a cache won’t work here.', 0, 0, 0],
+      ['The migration you wrote still won’t work.', 1, 1, 1],
+      // The apostrophe matters outside "won't work" too.
+      ['Don’t do that.', 1, 1, 1],
+      ['No, that’s fine, it’s only a draft.', 0, 0, 0],
+    ])(
+      'reads curly apostrophes like straight ones in %j',
+      (text, textAlone, afterActing, afterTalking) => {
+        const straight = text.replace(/\u2019/g, "'");
+        expect([
+          countCorrections(text),
+          countCorrectionsAfterTurn(text, ACTED),
+          countCorrectionsAfterTurn(text, TALKED),
+        ]).toEqual([textAlone, afterActing, afterTalking]);
+        expect([
+          countCorrections(straight),
+          countCorrectionsAfterTurn(straight, ACTED),
+          countCorrectionsAfterTurn(straight, TALKED),
+        ]).toEqual([textAlone, afterActing, afterTalking]);
+      },
+    );
+
+    interface HeldOutRow {
+      readonly text: string;
+      readonly label: 'correction' | 'design';
     }
 
-    const readSets = (file: string): Readonly<Record<string, HeldOutSet>> =>
+    interface HeldOutSet<Row extends HeldOutRow> {
+      readonly source: string;
+      readonly rows: readonly Row[];
+    }
+
+    /** Sets A, B and C describe the assistant's previous turn in prose. */
+    type ContextRow = HeldOutRow & { readonly context: string };
+
+    const readSets = <Row extends HeldOutRow>(
+      file: string,
+    ): Readonly<Record<string, HeldOutSet<Row>>> =>
       (
         JSON.parse(readFileSync(resolve(__dirname, `../../test/fixtures/${file}`), 'utf-8')) as {
-          sets: Record<string, HeldOutSet>;
+          sets: Record<string, HeldOutSet<Row>>;
         }
       ).sets;
 
-    // Model-written sets. A and B were read while writing the current rule, so they are development
-    // data. C was written before it and first scored at b241f1b, then re-checked after each later
-    // rule change, so C is the estimate of how the rule generalises. The results are pinned
-    // measurements, not targets: a rule change updates them, and only a fresh set can say whether
-    // the change generalises. Each set pins the row indices of the corrections it misses and the
-    // design rows it flags, so a change that swaps which rows pass at the same totals shows up too.
-    const HELD_OUT: Readonly<Record<string, HeldOutSet>> = {
-      ...readSets('wont-work-held-out.json'),
-      ...readSets('wont-work-held-out-c.json'),
+    interface Score {
+      readonly corrections: number;
+      readonly design: number;
+      readonly missed: readonly number[];
+      readonly flagged: readonly number[];
+    }
+
+    function score<Row extends HeldOutRow>(
+      rows: readonly Row[],
+      count: (row: Row) => number,
+    ): Score {
+      const indexed = rows.map((row, index) => ({ row, index }));
+      const corrections = indexed.filter(({ row }) => row.label === 'correction');
+      const design = indexed.filter(({ row }) => row.label === 'design');
+      return {
+        corrections: corrections.length,
+        design: design.length,
+        missed: corrections.filter(({ row }) => count(row) === 0).map(({ index }) => index),
+        flagged: design.filter(({ row }) => count(row) === 1).map(({ index }) => index),
+      };
+    }
+
+    /** The ceiling is checked first, so a recall drop fails even after the pinned indices are updated. */
+    function expectScore(actual: Score, expected: Score, maxMissed: number): void {
+      expect(actual.missed.length).toBeLessThanOrEqual(maxMissed);
+      expect(actual).toEqual(expected);
+    }
+
+    /**
+     * The first verb of a set A, B or C `context` says whether the assistant built or did something
+     * in its previous turn, or only answered. A verb missing here fails the test rather than
+     * defaulting to either state.
+     */
+    const CONTEXT_VERB_TURN = new Map<string, readonly string[]>([
+      // Built or did something: an Edit stands in for the turn.
+      ...[
+        'added',
+        'applied',
+        'called',
+        'changed',
+        'configured',
+        'edited',
+        'generated',
+        'implemented',
+        'mocked',
+        'optimized',
+        'produced',
+        'ran',
+        'refactored',
+        'renamed',
+        'rewrote',
+        'set',
+        'simplified',
+        'used',
+        'wrote',
+      ].map((verb): [string, readonly string[]] => [verb, ACTED]),
+      // Only answered: asked, proposed or weighed an option ("was weighing", "was discussing").
+      ...['asked', 'proposed', 'recommended', 'suggested', 'was'].map(
+        (verb): [string, readonly string[]] => [verb, TALKED],
+      ),
+    ]);
+
+    function contextTurn(context: string): readonly string[] {
+      const verb = /^(?:the )?assistant (\w+)/i.exec(context)?.[1] ?? '';
+      const tools = CONTEXT_VERB_TURN.get(verb);
+      if (tools === undefined) throw new Error(`No turn for context verb ${JSON.stringify(verb)}`);
+      return tools;
+    }
+
+    // Model-written sets. A, B and C were read while writing the turn-state rule, so they are
+    // development data. D was written and committed before that rule, and is scored once after the
+    // rule is frozen. C played that part for the text-alone rule, first scored at b241f1b. The
+    // results are pinned measurements, not targets: a rule change updates them, and only a fresh set
+    // can say whether the change generalises. Each set pins the row indices of the corrections it
+    // misses and the design rows it flags, so a change that swaps which rows pass at the same totals
+    // shows up too. Each also caps its misses at the recall the rule was accepted at, so a recall drop
+    // fails even when the indices are re-pinned. Raising a cap is a decision to lose recall.
+    const CONTEXT_SETS: Readonly<Record<string, HeldOutSet<ContextRow>>> = {
+      ...readSets<ContextRow>('wont-work-held-out.json'),
+      ...readSets<ContextRow>('wont-work-held-out-c.json'),
     };
 
     it.each([
-      ['A', { corrections: 25, design: 25, missed: [48], flagged: [26, 43] }],
+      ['A', 1, { corrections: 25, design: 25, missed: [48], flagged: [26, 43] }],
       [
         'B',
+        17,
         {
           corrections: 25,
           design: 25,
@@ -524,23 +891,38 @@ describe('TranscriptMessageTracker', () => {
           flagged: [],
         },
       ],
-      ['C', { corrections: 40, design: 40, missed: [21, 37, 45, 70], flagged: [22, 62, 79] }],
-    ])('scores held-out set %s', (name, expected) => {
-      const rows = HELD_OUT[name].rows.map((row, index) => ({ ...row, index }));
-      const corrections = rows.filter((r) => r.label === 'correction');
-      const design = rows.filter((r) => r.label === 'design');
-      expect({
-        corrections: corrections.length,
-        design: design.length,
-        missed: corrections.filter((r) => countCorrections(r.text) === 0).map((r) => r.index),
-        flagged: design.filter((r) => countCorrections(r.text) === 1).map((r) => r.index),
-      }).toEqual(expected);
+      ['C', 4, { corrections: 40, design: 40, missed: [21, 37, 45, 70], flagged: [22, 62, 79] }],
+    ] as const)('scores held-out set %s on its text alone', (name, maxMissed, expected) => {
+      expectScore(
+        score(CONTEXT_SETS[name].rows, (row) => countCorrections(row.text)),
+        expected,
+        maxMissed,
+      );
     });
+
+    it.each([
+      ['A', 0, { corrections: 25, design: 25, missed: [], flagged: [] }],
+      // The four rows B's source note counts as rejecting a suggestion, which its context says was only proposed.
+      ['B', 4, { corrections: 25, design: 25, missed: [7, 16, 18, 24], flagged: [] }],
+      ['C', 0, { corrections: 40, design: 40, missed: [], flagged: [] }],
+    ] as const)(
+      'scores held-out set %s with the turn its context describes',
+      (name, maxMissed, expected) => {
+        expectScore(
+          score(CONTEXT_SETS[name].rows, (row) =>
+            countCorrectionsAfterTurn(row.text, contextTurn(row.context)),
+          ),
+          expected,
+          maxMissed,
+        );
+      },
+    );
 
     // Fake timers freeze Date.now(), so they can't time a regex. Each input is
     // sized so a backtracking pattern takes seconds while the linear one takes
-    // about a millisecond, which keeps the budget far from the line.
-    it.each([
+    // about a millisecond, which keeps the budget far from the line. Each runs
+    // in every turn state, since each state reads the message with other patterns.
+    const ADVERSARIAL_MESSAGES: ReadonlyArray<readonly [string, string]> = [
       [
         'repeated phrase with no punctuation',
         `${"won't work ".repeat(5_000)}${'x '.repeat(50_000)}let's`,
@@ -552,9 +934,12 @@ describe('TranscriptMessageTracker', () => {
       ['long word after "you\'re"', `A cache won't work, you're ${'i'.repeat(400_000)}x`],
       ['repeated "you" with an adverb', `A cache won't work ${'you just '.repeat(44_000)}`],
       ['repeated hypothetical "you"', `A cache won't work ${'if you unless you '.repeat(22_000)}`],
+      ['repeated hypothetical before the phrase', `${'if you '.repeat(60_000)}won't work`],
+      ['repeated idea source', `A cache won't work ${'you just suggested '.repeat(20_000)}`],
       ['repeated "at this point you"', `A cache won't work ${'at this point you '.repeat(22_000)}`],
       ['long letter run before the phrase', `${'a'.repeat(400_000)} won't work`],
       ['repeated leading filler', `${'hmm, '.repeat(80_000)}won't work`],
+      ['repeated agreement', `${'agreed, '.repeat(50_000)}that won't work`],
       ['long letter run in a filler', `h${'m'.repeat(400_000)}x won't work`],
       ['long punctuation run after a filler', `Hmm${','.repeat(400_000)}x won't work`],
       ['long question-mark run after a word', `Huh${'?'.repeat(400_000)}x won't work`],
@@ -565,16 +950,34 @@ describe('TranscriptMessageTracker', () => {
         'repeated "when you" in the reference scan',
         `A cache won't work ${'when you '.repeat(44_000)}`,
       ],
-    ])('stays fast on a long adversarial message: %s', (_label, text) => {
-      writeLines([userLine(text)]);
-      const tracker = new TranscriptMessageTracker();
-      tracker.observeTranscriptPath(transcriptPath);
-      const start = Date.now();
-      tracker.refresh();
-      expect(Date.now() - start).toBeLessThan(1_000);
-      // A line over the read cap is skipped unread, which would pass the timing for free.
-      expect(tracker.getMetrics().userMessages).toBe(1);
-    });
+    ];
+
+    /** The entries before the message, and how many real user messages they hold. */
+    const TURNS: ReadonlyArray<readonly [string, readonly string[], number]> = [
+      ['no turn', [], 0],
+      ['a turn that acted', [toolUseLine('Read'), userLine('go ahead'), toolUseLine('Edit')], 1],
+      ['a turn that talked', [toolUseLine('Read'), userLine('go ahead'), assistantLine()], 1],
+    ];
+
+    it.each(
+      ADVERSARIAL_MESSAGES.flatMap(([label, text]) =>
+        TURNS.map(
+          ([turn, lines, earlierMessages]) => [label, turn, text, lines, earlierMessages] as const,
+        ),
+      ),
+    )(
+      'stays fast on a long adversarial message: %s, after %s',
+      (_label, _turn, text, lines, earlierMessages) => {
+        writeLines([...lines, userLine(text)]);
+        const tracker = new TranscriptMessageTracker();
+        tracker.observeTranscriptPath(transcriptPath);
+        const start = Date.now();
+        tracker.refresh();
+        expect(Date.now() - start).toBeLessThan(1_000);
+        // A line over the read cap is skipped unread, which would pass the timing for free.
+        expect(tracker.getMetrics().userMessages).toBe(earlierMessages + 1);
+      },
+    );
   });
 
   it('only processes new lines across multiple refresh() calls (no double-counting)', () => {
