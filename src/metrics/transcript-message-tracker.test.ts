@@ -70,6 +70,24 @@ function toolUseLine(name: string, overrides: Record<string, unknown> = {}): str
   });
 }
 
+/** An assistant entry that runs `command` through Bash. */
+function bashLine(command: string): string {
+  return assistantLine({
+    message: {
+      role: 'assistant',
+      model: 'claude-opus-4-6',
+      content: [
+        {
+          type: 'tool_use',
+          id: `t-${Math.random().toString(36).slice(2)}`,
+          name: 'Bash',
+          input: { command, description: 'Run a command' },
+        },
+      ],
+    },
+  });
+}
+
 function writeLines(lines: string[]): void {
   writeFileSync(transcriptPath, lines.join('\n') + '\n');
 }
@@ -230,6 +248,65 @@ describe('TranscriptMessageTracker', () => {
         expect(corrections([...EARLIER_EXCHANGE, toolUseLine(tool), userLine(ACTED_ONLY)])).toBe(1);
       },
     );
+
+    it.each([
+      'git log --oneline -10',
+      'git status && git diff --stat',
+      'git -C /repo log -p | head -50',
+      'git --no-pager show HEAD',
+      'git branch -a',
+      'ls -la src',
+      'cat package.json | head -20',
+      'grep -rn "won\'t work" src | wc -l',
+      "rg -n 'a|b' src",
+      "find . -name '*.ts' -newer package.json",
+      'pwd; ls\ntail -n 5 notes.txt',
+    ])('reads a turn whose Bash call only reads (%j) as talking', (command) => {
+      expect(corrections([...EARLIER_EXCHANGE, bashLine(command), userLine(TEXT_ONLY)])).toBe(0);
+    });
+
+    it.each([
+      'npm test',
+      'cd src && ls',
+      'echo done',
+      'git commit -m "wip"',
+      'git branch feature/x',
+      'git branch -D feature/x',
+      'git diff --output=patch.diff',
+      'git log > log.txt',
+      'ls 2>/dev/null',
+      'cat a | tee b',
+      'grep -l foo src | xargs rm',
+      "sed -i 's/a/b/' f",
+      "find . -name '*.tmp' -delete",
+      'find . -type f -exec rm {} +',
+      'rg --pre ./decode foo',
+      'cat $(git ls-files)',
+      'cat <<EOF\nhi\nEOF',
+      'ls "unclosed',
+      'FOO=1 ls',
+      '',
+    ])('reads a turn whose Bash call (%j) may write as acting', (command) => {
+      expect(corrections([...EARLIER_EXCHANGE, bashLine(command), userLine(ACTED_ONLY)])).toBe(1);
+    });
+
+    it('reads design talk after a read-only Bash call and a question as talking', () => {
+      const question = assistantLine({
+        message: {
+          role: 'assistant',
+          model: 'claude-opus-4-6',
+          content: [{ type: 'text', text: 'Redis or Postgres?' }],
+        },
+      });
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          bashLine('git log --oneline -20'),
+          question,
+          userLine("Postgres won't work here since we're serverless."),
+        ]),
+      ).toBe(0);
+    });
 
     it.each([
       'Read',

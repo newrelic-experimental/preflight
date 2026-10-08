@@ -1,6 +1,7 @@
 import { openSync, closeSync, readSync, statSync, constants as fsConstants } from 'node:fs';
 
 import { isRealAssistantTurn } from '../lib/subagent-transcript-parser.js';
+import { splitShellChain } from './git-event-classifier.js';
 
 import type { RawTranscriptEntry } from '../lib/transcript-types.js';
 
@@ -16,11 +17,11 @@ export interface TranscriptMessageMetrics {
 
 /**
  * What the assistant did between the last user entry that ended its turn (`endsAssistantTurn`) and
- * the next real user message: `acted` when it called a tool in `MUTATING_TOOLS`, `talked` when its
- * entries called none, and `unknown` when no assistant entry came between them (the first message,
- * or two user messages in a row). It is also
- * `unknown` until the transcript has shown a tool call at all, since a format that doesn't record
- * tool calls makes a turn that acted look like one that talked.
+ * the next real user message: `acted` when it called a tool that changes something
+ * (`isMutatingToolUse`), `talked` when its entries called none, and `unknown` when no assistant
+ * entry came between them (the first message, or two user messages in a row). It is also `unknown`
+ * until the transcript has shown a tool call at all, since a format that doesn't record tool calls
+ * makes a turn that acted look like one that talked.
  */
 export type AssistantTurnState = 'acted' | 'talked' | 'unknown';
 
@@ -260,12 +261,12 @@ function isCorrectionMessage(rawText: string, state: AssistantTurnState): boolea
 /**
  * Tools whose call is something the assistant did that the user can reject.
  * - Edit, Write, MultiEdit and NotebookEdit change files.
- * - Bash runs a command. Many commands only read (`ls`, `git status`), but a command is itself output
- *   the user corrects ("the command you ran won't work in CI"), and telling the read-only ones apart
- *   would take a shell parser.
  * - Task, and Agent as it is now named, hands work to a subagent, which often edits files. The
  *   subagent's own entries are sidechains, which this tracker skips, so the spawn is the only trace
  *   in the turn of what it did.
+ * - Bash runs a command, which `isMutatingToolUse` reads as talking when every command in it only
+ *   reads (`isReadOnlyCommand`). A command is output the user corrects too ("the command you ran
+ *   won't work in CI"), so any other, such as `npm test` or `cd src && ls`, acts.
  * Every other tool counts as talking: Read, Grep, Glob, WebFetch and WebSearch look things up and
  * TodoWrite tracks the plan. That includes MCP tools, since the name alone doesn't say whether one
  * changed anything.
@@ -275,20 +276,102 @@ const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'Write',
   'MultiEdit',
   'NotebookEdit',
-  'Bash',
   'Task',
   'Agent',
 ]);
 
-/** The names of the `tool_use` blocks in an assistant entry's `message.content`. */
-function toolUseNames(message: unknown): string[] {
+/** Commands that only read, apart from the arguments in `WRITING_ARGS`. */
+const READ_ONLY_COMMANDS: ReadonlySet<string> = new Set([
+  'ls',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'pwd',
+  'grep',
+  'rg',
+  'find',
+]);
+
+/** The `find` actions that delete, run a command or write a file, and `rg --pre`, which runs one. */
+const WRITING_ARGS: ReadonlyMap<string, RegExp> = new Map([
+  ['find', /(?:^|[\s"'=])-(?:delete|exec|ok|fprint|fls)/],
+  ['rg', /(?:^|[\s"'=])--pre\b/],
+]);
+
+/** git subcommands that only read, unless given `--output`, which writes a file. */
+const GIT_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(['status', 'log', 'diff', 'show']);
+
+/** Arguments that keep `git branch` listing branches. Any other creates, renames or deletes one. */
+const GIT_BRANCH_LIST_ARGS: ReadonlySet<string> = new Set([
+  '-a',
+  '-r',
+  '-v',
+  '-vv',
+  '--all',
+  '--remotes',
+  '--verbose',
+  '--list',
+  '--show-current',
+]);
+
+/** A redirection, a process or command substitution, or a heredoc, anywhere in the command, quoted or not. */
+const REDIRECT_OR_SUBSTITUTION_RE = /[<>`]|\$\(/;
+
+/** Whether a git command's arguments, after `git`, only read. `--no-pager` and `-C <dir>` may lead. */
+function gitOnlyReads(args: readonly string[]): boolean {
+  let i = 0;
+  while (args[i] === '--no-pager' || args[i] === '-C') i += args[i] === '-C' ? 2 : 1;
+  const [subcommand = '', ...rest] = args.slice(i);
+  if (subcommand === 'branch') return rest.every((arg) => GIT_BRANCH_LIST_ARGS.has(arg));
+  return GIT_READ_SUBCOMMANDS.has(subcommand) && !rest.some((arg) => arg.startsWith('--output'));
+}
+
+/** Whether one command of a shell chain only reads. A quoted or prefixed command name isn't recognised. */
+function commandOnlyReads(command: string): boolean {
+  const [name = '', ...args] = command.split(/\s+/);
+  if (name === 'git') return gitOnlyReads(args);
+  return READ_ONLY_COMMANDS.has(name) && WRITING_ARGS.get(name)?.test(command) !== true;
+}
+
+/**
+ * Whether a Bash `command` only reads: every command in the chain is in `READ_ONLY_COMMANDS` or is
+ * a reading git command, with no redirection or substitution anywhere. Anything this can't read,
+ * including quotes that don't balance, counts as writing.
+ */
+function isReadOnlyCommand(command: unknown): boolean {
+  if (typeof command !== 'string' || REDIRECT_OR_SUBSTITUTION_RE.test(command)) return false;
+  const chain = splitShellChain(command);
+  const commands = chain.segments.map((segment) => segment.trim()).filter((s) => s.length > 0);
+  return chain.quotesBalanced && commands.length > 0 && commands.every(commandOnlyReads);
+}
+
+interface ToolUse {
+  readonly name: string;
+  readonly input: unknown;
+}
+
+/** Whether a tool call is something the assistant did that the user can reject (`MUTATING_TOOLS`). */
+function isMutatingToolUse({ name, input }: ToolUse): boolean {
+  if (name === 'Bash') {
+    const command =
+      typeof input === 'object' && input !== null
+        ? (input as { command?: unknown }).command
+        : undefined;
+    return !isReadOnlyCommand(command);
+  }
+  return MUTATING_TOOLS.has(name);
+}
+
+/** The `tool_use` blocks in an assistant entry's `message.content`. */
+function toolUses(message: unknown): ToolUse[] {
   if (message === null || typeof message !== 'object') return [];
   const content = (message as { content?: unknown }).content;
   if (!Array.isArray(content)) return [];
   return content.flatMap((block: unknown) => {
     if (typeof block !== 'object' || block === null) return [];
-    const { type, name } = block as { type?: unknown; name?: unknown };
-    return type === 'tool_use' && typeof name === 'string' ? [name] : [];
+    const { type, name, input } = block as { type?: unknown; name?: unknown; input?: unknown };
+    return type === 'tool_use' && typeof name === 'string' ? [{ name, input }] : [];
   });
 }
 
@@ -499,9 +582,9 @@ export class TranscriptMessageTracker {
     } else if (entry.type === 'assistant') {
       if (isRealAssistantTurn(entry)) {
         this.assistantMessages++;
-        const tools = toolUseNames(entry.message);
+        const tools = toolUses(entry.message);
         if (tools.length > 0) this.seenToolUse = true;
-        if (tools.some((name) => MUTATING_TOOLS.has(name))) {
+        if (tools.some(isMutatingToolUse)) {
           this.assistantSinceUser = 'acted';
         } else if (this.assistantSinceUser === 'none') {
           this.assistantSinceUser = 'talked';
