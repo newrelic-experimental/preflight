@@ -272,6 +272,8 @@ describe('TranscriptMessageTracker', () => {
       "That fix won't work.",
       "This change won't work.",
       "These changes won't work.",
+      // A curly apostrophe reads like a straight one.
+      'That won’t work.',
     ];
 
     /**
@@ -370,8 +372,6 @@ describe('TranscriptMessageTracker', () => {
       "The migration won't work, it drops the index instead of renaming it.",
       "The migration won't work, it drops the index rather than renaming it.",
       "The null check won't work, we need to handle undefined too.",
-      // Curly apostrophe.
-      'That won’t work.',
       // A dash after the filler, or a leading adverb outside the list, isn't a leading word.
       "Yeah — that won't work.",
       "Honestly that won't work.",
@@ -405,6 +405,7 @@ describe('TranscriptMessageTracker', () => {
       "Your fixes won't work.",
       "Your patches won't work on Windows.",
       "Your queries won't work against the replica.",
+      'Your fix won’t work.',
       // "raised" and "pointed" are edits here, not ways of making a point.
       "The timeout you raised won't work, the gateway still cuts at 30s.",
       "You pointed the client at the replica, so the migration won't work.",
@@ -452,6 +453,15 @@ describe('TranscriptMessageTracker', () => {
 
     it.each(KNOWN_MISSES)('does not count %j (known miss)', (text) => {
       expect(countCorrections(text)).toBe(0);
+    });
+
+    it.each([
+      ['Don’t do that.', 1],
+      ['You’re right that a cache won’t work here.', 0],
+      ['No, that’s fine, it’s only a draft.', 0],
+    ])('reads curly apostrophes like straight ones in %j', (text, expected) => {
+      expect(countCorrections(text)).toBe(expected);
+      expect(countCorrections(text.replace(/\u2019/g, "'"))).toBe(expected);
     });
 
     it('counts a bare "That won\'t work." opener when the next sentence adds a task', () => {

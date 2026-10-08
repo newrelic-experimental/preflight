@@ -68,6 +68,7 @@ const TARGETED_UNDO_RE = new RegExp(
 const EMBEDDED_CORRECTION_RE =
   /\b(you (missed|forgot|broke)|that'?s (not (right|correct|what)|wrong|incorrect)|not what (i|you)'?d? (meant|asked|wanted|said)|this is the (\d+|second|third|fourth|fifth|\w+th) time)\b/i;
 
+/** "won't work", with or without the apostrophe. Text is read after `normalizeApostrophes`. */
 const WONT_WORK_RE = /\bwon'?t work\b/i;
 
 /** Interjections and conjunctions that can lead a verdict without being its subject ("Yeah that won't work", "But it won't work", "Hmm, no, won't work", "Now it won't work"). */
@@ -158,7 +159,13 @@ function hasWontWorkCorrection(text: string): boolean {
   });
 }
 
-function isCorrectionMessage(text: string): boolean {
+/** A curly apostrophe (U+2019), as macOS and phone keyboards type it, reads like a straight one in every pattern above. */
+function normalizeApostrophes(text: string): string {
+  return text.replace(/\u2019/g, "'");
+}
+
+function isCorrectionMessage(rawText: string): boolean {
+  const text = normalizeApostrophes(rawText);
   return (
     LEADING_NO_RE.test(text) ||
     BARE_REJECTION_RE.test(text) ||
