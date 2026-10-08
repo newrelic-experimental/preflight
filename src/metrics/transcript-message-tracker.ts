@@ -226,6 +226,11 @@ function nearBuiltReference(...nearby: readonly string[]): boolean {
   return nearby.some((s) => BUILT_REFERENCE_RE.test(s));
 }
 
+/** Whether the sentence, or one either side of it, points back at the assistant's output (`ASSISTANT_REFERENCE_RE`). */
+function nearAssistantReference(...nearby: readonly string[]): boolean {
+  return nearby.some((s) => ASSISTANT_REFERENCE_RE.test(s));
+}
+
 /**
  * Whether a "won't work" sentence agrees with the assistant: it opens on agreement, or follows a
  * sentence that does, and the text from the agreement to "won't work" holds no contrast
@@ -242,13 +247,14 @@ function agreesWithAssistant(sentence: string, before: string, lead: string): bo
 }
 
 /**
- * After a turn that changed something, "won't work" rejects what it changed. It counts whenever it
- * would after a turn that talked (`nearBuiltReference`), so a turn that acted never needs more
- * evidence. Otherwise it counts unless the sentence frames an option as hypothetical, agrees with
- * the assistant (`agreesWithAssistant`), or names an idea the assistant proposed rather than built.
+ * After a turn that changed something, "won't work" rejects what it changed. It counts whenever the
+ * sentence, or one either side, points back at the assistant's output (`nearAssistantReference`),
+ * a present progressive included, since after a change "you're mutating state" describes it.
+ * Otherwise it counts unless the sentence frames an option as hypothetical, agrees with the
+ * assistant (`agreesWithAssistant`), or names an idea the assistant proposed rather than built.
  */
 function rejectsActionOutput(sentence: string, before: string, after: string): boolean {
-  if (nearBuiltReference(sentence, before, after)) return true;
+  if (nearAssistantReference(sentence, before, after)) return true;
   const lead = sentence.slice(0, sentence.search(WONT_WORK_RE));
   return (
     !HYPOTHETICAL_OPTION_RE.test(lead) &&
@@ -261,7 +267,7 @@ function rejectsActionOutput(sentence: string, before: string, after: string): b
  * Whether "won't work" in `text` rejects something the assistant built or did, given its previous turn.
  *
  * - `acted`: it rejects what the turn changed (`rejectsActionOutput`). It counts wherever `talked`
- *   does, and in most other sentences too.
+ *   does, wherever `unknown` does through a reference, and in most other sentences too.
  * - `talked`: the turn only answered or proposed, so "won't work" rejects an option or states a
  *   constraint unless the sentence, or one either side, points back at something built earlier
  *   ("the migration you wrote still won't work"). A present progressive doesn't count here: after a
@@ -278,12 +284,7 @@ function hasWontWorkCorrection(text: string, state: AssistantTurnState): boolean
     case 'talked':
       return someWontWorkSentence(text, nearBuiltReference);
     case 'unknown':
-      return (
-        DEICTIC_WONT_WORK_RE.test(text) ||
-        someWontWorkSentence(text, (...nearby) =>
-          nearby.some((s) => ASSISTANT_REFERENCE_RE.test(s)),
-        )
-      );
+      return DEICTIC_WONT_WORK_RE.test(text) || someWontWorkSentence(text, nearAssistantReference);
   }
 }
 

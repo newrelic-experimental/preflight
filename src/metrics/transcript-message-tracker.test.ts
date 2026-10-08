@@ -939,6 +939,8 @@ describe('TranscriptMessageTracker', () => {
       "Good point, but I disagree. The migration won't work on prod.",
       "Good point, although the migration won't work on prod.",
       "Good point, though the migration won't work on prod.",
+      // A present progressive describes what the turn changed, as it does with no turn to read.
+      "You're right, you're mutating state there, so it won't work.",
       // A reference to something built counts whatever else the sentence does, as after a turn that talked.
       "You're right, but it still won't work.",
       "The fix you suggested still won't work.",
@@ -1294,10 +1296,9 @@ describe('TranscriptMessageTracker', () => {
       );
     });
 
-    // A turn that acted needs less evidence than one that talked, so the same text can't count
-    // less after it. The acted rule counts whatever the talked rule does before its exceptions.
-    it('never counts a message less after a turn that acted than after one that talked', () => {
-      const corpus = new Set([
+    /** Every message above and in the held-out sets, for the orderings between turn states. */
+    const ORDERING_CORPUS: readonly string[] = [
+      ...new Set([
         ...WONT_WORK_CORRECTIONS,
         ...WONT_WORK_CORRECTIONS_WITH_PROPOSAL,
         ...WONT_WORK_DESIGN_DISCUSSION,
@@ -1315,13 +1316,29 @@ describe('TranscriptMessageTracker', () => {
         ...TALKED_KNOWN_MISSES,
         ...Object.values(CONTEXT_SETS).flatMap((set) => set.rows.map((row) => row.text)),
         ...TOOL_SETS.D.rows.map((row) => row.text),
-      ]);
+      ]),
+    ];
+
+    // A turn that acted needs less evidence than one that talked, so the same text can't count
+    // less after it. The acted rule counts whatever the talked rule does before its exceptions.
+    it('never counts a message less after a turn that acted than after one that talked', () => {
       expect(
-        [...corpus].filter(
+        ORDERING_CORPUS.filter(
           (text) =>
             countCorrectionsAfterTurn(text, ACTED) < countCorrectionsAfterTurn(text, TALKED),
         ),
       ).toEqual([]);
+    });
+
+    // The acted rule counts every reference to the assistant's output that the text alone counts.
+    // Only the bare-pronoun opener can count with no turn and not after one that acted, since the
+    // acted rule's exceptions apply to it: here, agreement.
+    it('never counts a message less after a turn that acted than on its text alone, but for the opener', () => {
+      expect(
+        ORDERING_CORPUS.filter(
+          (text) => countCorrectionsAfterTurn(text, ACTED) < countCorrections(text),
+        ),
+      ).toEqual(["Agreed, that won't work, let's go with option B."]);
     });
 
     // Fake timers freeze Date.now(), so they can't time a regex. Each input is
