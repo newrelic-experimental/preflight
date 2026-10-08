@@ -190,12 +190,19 @@ const AGREEMENT_RE = new RegExp(
 );
 
 /**
- * A contrast that opens the text or a clause in it ("But the migration ...", "Good call on the
- * logging, but the migration ..."). Read on the text between an agreement and "won't work", it turns
- * away from the agreement.
+ * A contrast, which turns away from an agreement before it. "but", "however" and "although" count
+ * wherever they fall ("Good call on the logging but the migration ..."). "though" counts when a word
+ * follows it ("Good point, though the migration ..."): one that closes a clause ("You're right
+ * though, that won't work") concedes the point. "still", "yet" and "that said" count where they open
+ * the text or follow a comma, semicolon, colon or dash, since inside a clause the first two are
+ * adverbs that keep agreeing ("we still need fresh reads", "we haven't shipped yet").
  */
-const CLAUSE_CONTRAST_RE = new RegExp(
-  `(?:^|[,;:\u2013\u2014])\\s*${OPTIONAL_LEADING_FILLER}(?:but|however|still|yet|that said)\\b`,
+const CONTRAST_RE = new RegExp(
+  [
+    '\\b(?:but|however|although)\\b',
+    '\\bthough(?=\\s+[a-z])',
+    `(?:^|[,;:\u2013\u2014])\\s*${OPTIONAL_LEADING_FILLER}(?:still|yet|that said)\\b`,
+  ].join('|'),
   'i',
 );
 
@@ -221,14 +228,17 @@ function nearBuiltReference(...nearby: readonly string[]): boolean {
 
 /**
  * Whether a "won't work" sentence agrees with the assistant: it opens on agreement, or follows a
- * sentence that does, and no clause between the agreement and "won't work" opens on a contrast.
- * "You're right that a cache won't work here" agrees, and "You're right, but the migration won't
- * work" and "Good call on the logging, but ..." don't.
+ * sentence that does, and the text from the agreement to "won't work" holds no contrast
+ * (`CONTRAST_RE`). That text runs across the sentence break, which ends the clause before it: "Good
+ * call on the logging, but the migration is the problem. It won't work" turns away, as it does with a
+ * colon for the period. "You're right that a cache won't work here" agrees.
  */
 function agreesWithAssistant(sentence: string, before: string, lead: string): boolean {
-  const agreement = AGREEMENT_RE.exec(sentence);
-  if (agreement !== null) return !CLAUSE_CONTRAST_RE.test(lead.slice(agreement[0].length));
-  return AGREEMENT_RE.test(before) && !CLAUSE_CONTRAST_RE.test(lead);
+  const opening = AGREEMENT_RE.exec(sentence);
+  if (opening !== null) return !CONTRAST_RE.test(lead.slice(opening[0].length));
+  const previous = AGREEMENT_RE.exec(before);
+  if (previous === null) return false;
+  return !CONTRAST_RE.test(before.slice(previous[0].length)) && !CONTRAST_RE.test(lead);
 }
 
 /**

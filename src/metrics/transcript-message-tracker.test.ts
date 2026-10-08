@@ -928,11 +928,17 @@ describe('TranscriptMessageTracker', () => {
       "That terraform plan won't work, you're creating the bucket and its policy in one apply.",
       "A singleton won't work here, every request needs its own client.",
       "Your approach won't work for us, let's go back.",
-      // A contrast turns away from agreeing in the sentence before, or earlier in the same sentence.
+      // A contrast between the agreement and "won't work" turns away from agreeing, wherever it
+      // falls and whatever punctuation is around it.
       "Good call on the logging. But the migration won't work on prod.",
       "Fair point. However, the migration won't work on prod.",
       "Good call on the logging, but the migration won't work on prod.",
       "You're right, but the migration won't work on prod.",
+      "Good call on the logging but the migration won't work on prod.",
+      "Good call on the logging, but the migration is the problem. It won't work on prod.",
+      "Good point, but I disagree. The migration won't work on prod.",
+      "Good point, although the migration won't work on prod.",
+      "Good point, though the migration won't work on prod.",
       // A reference to something built counts whatever else the sentence does, as after a turn that talked.
       "You're right, but it still won't work.",
       "The fix you suggested still won't work.",
@@ -951,6 +957,10 @@ describe('TranscriptMessageTracker', () => {
       "You're right that a cache won't work here.",
       "Agreed, that won't work, let's go with option B.",
       "You're right. That won't work on Windows, let's add a fallback.",
+      // A "though" that ends a clause concedes, and "still" or "yet" inside a clause keeps agreeing.
+      "You're right though, that won't work.",
+      "You're right, we still need fresh reads, so a cache won't work.",
+      "Good point. We haven't shipped yet, so that won't work.",
       "The cache you suggested won't work, we need fresh reads.",
       "As you explained, a cache won't work here.",
       "The approach you floated won't work at scale, let's shard by key.",
@@ -972,6 +982,8 @@ describe('TranscriptMessageTracker', () => {
       // A hypothetical whose verb takes "it" reads as when the output fails, as "if you run it" does,
       // though "cache it" proposes a change. Telling the verbs apart would need a list of them.
       "If we cache it, it won't work across pods.",
+      // "but" anywhere after the agreement turns away from it, including the "but" of "not X but Y".
+      "You're right, it's not the cache but the queue that won't work.",
     ];
 
     /** After a turn that only answered, "won't work" counts when it points back at something built earlier. */
@@ -1032,6 +1044,26 @@ describe('TranscriptMessageTracker', () => {
         expect(countCorrectionsAfterTurn(text, ACTED)).toBe(1);
       },
     );
+
+    /** Joins clause `a` to clause `b`, capitalising `b` after a period. */
+    const PUNCTUATION_JOINS: readonly Joiner[] = [', ', ' ', ': ', '. ', '; ', ' — '].map(
+      (mark) => (a, b) => `${a}${mark}${mark === '. ' ? capitalize(b) : b}`,
+    );
+
+    it('reads agreement and a contrast after it the same whatever punctuation joins them', () => {
+      // Every join between the agreement and the contrast, and between the contrast and "won't work".
+      const turnedAway = PUNCTUATION_JOINS.flatMap((first) =>
+        PUNCTUATION_JOINS.map(
+          (second) =>
+            `${second(first('Good call on the logging', 'but the migration is the problem'), "it won't work on prod")}.`,
+        ),
+      );
+      const agreeing = PUNCTUATION_JOINS.map((join) =>
+        join("You're right", "that won't work on Windows."),
+      );
+      expect(turnedAway.filter((text) => countCorrectionsAfterTurn(text, ACTED) !== 1)).toEqual([]);
+      expect(agreeing.filter((text) => countCorrectionsAfterTurn(text, ACTED) !== 0)).toEqual([]);
+    });
 
     it.each(TALKED_CORRECTIONS)('counts %j after a turn that talked', (text) => {
       expect(countCorrectionsAfterTurn(text, TALKED)).toBe(1);
@@ -1342,6 +1374,11 @@ describe('TranscriptMessageTracker', () => {
         'long clause before the phrase after agreement',
         `Good point. ${', still'.repeat(60_000)}x won't work`,
       ],
+      [
+        'long clause after agreement in the sentence before',
+        `Good point${', hmm'.repeat(80_000)}. It won't work`,
+      ],
+      ['long whitespace after "though"', `Agreed though${' '.repeat(400_000)}, it won't work`],
       ['long letter run in a filler', `h${'m'.repeat(400_000)}x won't work`],
       ['long punctuation run after a filler', `Hmm${','.repeat(400_000)}x won't work`],
       ['long question-mark run after a word', `Huh${'?'.repeat(400_000)}x won't work`],
