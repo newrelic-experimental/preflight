@@ -919,15 +919,17 @@ describe('TranscriptMessageTracker', () => {
       // A reference to something built counts whatever else the sentence does, as after a turn that talked.
       "You're right, but it still won't work.",
       "The fix you suggested still won't work.",
-      // A hypothetical whose verb takes "it" says when the output fails.
+      // A hypothetical whose verb takes "it" says when the output fails, with or without an adverb.
       "If you run it on Windows, it won't work.",
       "If we deploy it like this it won't work.",
+      "If you just run it on Windows, it won't work.",
     ];
 
     /** A hypothetical option, agreement with the assistant, or an idea it proposed is design discussion after a turn that acted too. */
     const ACTED_DESIGN = [
       "If you added a cache it won't work across pods.",
       "If we do it that way it won't work offline, so let's cache the manifest.",
+      "If we just do it that way it won't work offline.",
       "Suppose you added a cache, it won't work across pods.",
       "You're right that a cache won't work here.",
       "Agreed, that won't work, let's go with option B.",
@@ -950,6 +952,9 @@ describe('TranscriptMessageTracker', () => {
       "A global lock won't work at scale. The point you made about contention holds, so let's shard by key.",
       // "plan" names an idea only after "your", since "the plan" is also a Terraform plan.
       "The plan you made won't work for us.",
+      // A hypothetical whose verb takes "it" reads as when the output fails, as "if you run it" does,
+      // though "cache it" proposes a change. Telling the verbs apart would need a list of them.
+      "If we cache it, it won't work across pods.",
     ];
 
     /** After a turn that only answered, "won't work" counts when it points back at something built earlier. */
@@ -1292,6 +1297,14 @@ describe('TranscriptMessageTracker', () => {
         `${'if you run it '.repeat(30_000)}won't work`,
       ],
       ['long word after a hypothetical', `if you ${'r'.repeat(400_000)} it won't work`],
+      [
+        'long word after a hypothetical and an adverb',
+        `if you just ${'r'.repeat(400_000)} it won't work`,
+      ],
+      [
+        'repeated hypothetical with an adverb about "it" before the phrase',
+        `${'if you just run it '.repeat(20_000)}won't work`,
+      ],
       ['repeated contrast after agreement', `Agreed. ${'but '.repeat(100_000)}it won't work`],
       ['repeated idea source', `A cache won't work ${'you just suggested '.repeat(20_000)}`],
       ['repeated "at this point you"', `A cache won't work ${'at this point you '.repeat(22_000)}`],

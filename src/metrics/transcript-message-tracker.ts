@@ -171,11 +171,12 @@ const IDEA_REFERENCE_RE = new RegExp(
 /**
  * A hypothetical about "you" or "we" ("if you added a cache", "if we do it that way"). Tested only on
  * the text before "won't work": one after it ("that won't work if we deploy to Windows") says when
- * the output fails. One whose verb takes "it" ("if you run it on Windows, it won't work") says that
- * too, so it doesn't match, except with "do": "do it" stands in for an option.
+ * the output fails. One whose verb takes "it", after up to one adverb ("if you just run it on
+ * Windows, it won't work"), says that too, so it doesn't match, except with "do": "do it" stands in
+ * for an option.
  */
 const HYPOTHETICAL_OPTION_RE = new RegExp(
-  `\\b(?:${HYPOTHETICAL}) (?:you|we)\\b(?! (?!(?:do|does|did)\\b)[a-z]+ it\\b)`,
+  `\\b(?:${HYPOTHETICAL}) (?:you|we)\\b(?! (?:${ADVERB_AFTER_YOU})?(?!(?:do|does|did)\\b)[a-z]+ it\\b)`,
   'i',
 );
 
