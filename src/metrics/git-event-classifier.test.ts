@@ -421,6 +421,38 @@ describe('classifyGitSegments per-segment outcome', () => {
     ).toEqual([['commit', false]]);
   });
 
+  // The text doesn't say which commit failed, and a failed first one stops
+  // the `&&` run, so the earliest commit in it takes the failure.
+  it('gives commit-failure text to the earliest commit of the && run', () => {
+    expect(
+      outcomes(
+        'git add a.ts && git commit -m "feat: a" && git add b.ts && git commit -m "feat: b"',
+        'husky - pre-commit script failed (code 1)',
+      ),
+    ).toEqual([
+      ['other_git', true],
+      ['commit', false],
+    ]);
+    expect(
+      outcomes(
+        'git commit -m a && git commit -m b && git push',
+        'nothing to commit, working tree clean',
+      ),
+    ).toEqual([['commit', false]]);
+  });
+
+  it('gives commit-failure text to the commit after the || in its own && run', () => {
+    expect(
+      outcomes(
+        'git commit -m x || git commit --no-verify -m x',
+        'husky - pre-commit script failed',
+      ),
+    ).toEqual([
+      ['commit', false],
+      ['commit', false],
+    ]);
+  });
+
   it('attributes "nothing added to commit" to the commit, not a later push', () => {
     expect(
       outcomes(

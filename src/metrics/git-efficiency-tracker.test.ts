@@ -1422,7 +1422,7 @@ describe('GitEfficiencyTracker', () => {
     // so only the replayed amend sits next to the hydrated copy, and an amend
     // doesn't stand for a git log commit: nothing shows which one it rewrote.
     // Pinned as the known cost of that rule.
-    it('counts the commit a reset-author amend rewrote again from git log after a restart', () => {
+    it('counts the commit a reset-author amend rewrote again on the next git log refresh', () => {
       const commitTimestamp = Date.now() - 120_000;
       const amendTimestamp = commitTimestamp + 30_000;
       tracker.replayTimeline([

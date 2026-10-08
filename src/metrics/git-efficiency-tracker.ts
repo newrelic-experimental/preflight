@@ -447,8 +447,9 @@ export class GitEfficiencyTracker {
       // that one was never counted (yesterday's, or one made outside the
       // hooks) git log is the only place it shows up. The cost is that an
       // amend with `--reset-author`, which moves the author time git log
-      // reports to the amend's, counts its commit again after a restart; a
-      // plain `--amend` keeps the original's author time and still matches it.
+      // reports to the amend's, counts its commit again on the next git log
+      // refresh (every 5 minutes, or a restart); a plain `--amend` keeps the
+      // original's author time and still matches it.
       const isDuplicate = this.events.some((e) => {
         if (!isCountedCommit(e)) return false;
         const existingHash = e.command ? HYDRATED_COMMIT_HASH_RE.exec(e.command)?.[1] : undefined;

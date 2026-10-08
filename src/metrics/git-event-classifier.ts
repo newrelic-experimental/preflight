@@ -617,32 +617,35 @@ function rejectionText(error: string): string {
  * Index of the git segment whose output `error` is, or -1 when no segment's
  * is. The hook payload carries one error for the whole command, not one per
  * segment, but conflict, rejection and commit-failure text names the kind of
- * git command that printed it. Conflict text goes to the earliest segment
- * that can print it in the last `&&` run holding one: a conflict stops the
- * run, and any of those segments may be the one it stopped at, so the
- * earliest counts no step as run that may not have. `git pull && git commit
- * && git checkout other` hands it to the pull. Otherwise rejection text goes
- * to the last `git push`, or commit-failure text to the last `git commit`,
- * whichever comes later.
+ * git command that printed it. Conflict and commit-failure text go to the
+ * earliest segment that can print them in the last `&&` run holding one: the
+ * failure stops the run, and any of those segments may be the one it stopped
+ * at, so the earliest counts no step as run that may not have. `git pull &&
+ * git commit && git checkout other` hands a conflict to the pull, and `git
+ * commit -m a && git commit -m b` hands a failed hook to the first commit.
+ * Otherwise rejection text goes to the last `git push`, or commit-failure
+ * text to its commit, whichever comes later.
  */
 function errorSegmentIndex(
   { segments, operators }: ShellChain,
   isGit: readonly boolean[],
   error: string,
 ): number {
-  if (MERGE_CONFLICT_INDICATORS.some((re) => re.test(error)) || REBASE_CONFLICT_RE.test(error)) {
-    const last = lastGitSegment(segments, isGit, GIT_CONFLICT_CAPABLE_RE);
-    if (last !== -1) {
-      const run = andRunStart(operators, last);
-      for (let i = run; i < last; i++) {
-        if (isGit[i] && GIT_CONFLICT_CAPABLE_RE.test(segments[i]!)) return i;
-      }
-      return last;
+  const earliestInLastRun = (re: RegExp): number => {
+    const last = lastGitSegment(segments, isGit, re);
+    if (last === -1) return -1;
+    for (let i = andRunStart(operators, last); i < last; i++) {
+      if (isGit[i] && re.test(segments[i]!)) return i;
     }
+    return last;
+  };
+  if (MERGE_CONFLICT_INDICATORS.some((re) => re.test(error)) || REBASE_CONFLICT_RE.test(error)) {
+    const conflict = earliestInLastRun(GIT_CONFLICT_CAPABLE_RE);
+    if (conflict !== -1) return conflict;
   }
   const push = rejectedPushIndex(segments, isGit, error);
   const commit = COMMIT_FAILURE_INDICATORS.some((re) => re.test(error))
-    ? lastGitSegment(segments, isGit, GIT_COMMIT_RE)
+    ? earliestInLastRun(GIT_COMMIT_RE)
     : -1;
   return Math.max(push, commit);
 }
