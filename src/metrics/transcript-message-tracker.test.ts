@@ -456,6 +456,57 @@ describe('TranscriptMessageTracker', () => {
       ).toBe(1);
     });
 
+    /** `!npm test` as the CLI writes it: the command, then its output, neither with an `origin`. Since 2.1.280 the output carries `turnOrigin`. */
+    const BASH_MODE_CLI = [
+      userLine('<bash-input>npm test</bash-input>', { promptId: 'p-bash', entrypoint: 'cli' }),
+      userLine('<bash-stdout>FAIL src/migrate.test.ts</bash-stdout><bash-stderr></bash-stderr>', {
+        promptId: 'p-bash',
+        entrypoint: 'cli',
+        turnOrigin: 'human',
+      }),
+    ];
+
+    /** The same command as the desktop app writes it: one entry, marked as typed. */
+    const BASH_MODE_DESKTOP = [
+      userLine(
+        '<bash-input>npm test</bash-input><bash-stdout>FAIL src/migrate.test.ts</bash-stdout><bash-stderr></bash-stderr>',
+        {
+          origin: { kind: 'human' },
+          turnOrigin: 'human',
+          promptSource: 'sdk',
+          entrypoint: 'claude-desktop-3p',
+        },
+      ),
+    ];
+
+    it.each([
+      ['as the CLI writes it', BASH_MODE_CLI, false],
+      // Current versions prompt the assistant to answer the command's output.
+      ['as the CLI writes it, with the assistant answering it', BASH_MODE_CLI, true],
+      ['as the desktop app writes it, with the assistant answering it', BASH_MODE_DESKTOP, true],
+      [
+        'whose output opens on stderr',
+        [BASH_MODE_CLI[0], userLine('<bash-stderr>sh: jest: not found</bash-stderr>')],
+        false,
+      ],
+    ])('keeps a turn acting through a ! command %s', (_label, entries, answered) => {
+      writeLines([
+        ...EARLIER_EXCHANGE,
+        toolUseLine('Edit'),
+        ...entries,
+        ...(answered ? [assistantLine()] : []),
+        userLine(NAMED_SUBJECT),
+      ]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      expect(tracker.getMetrics()).toMatchObject({
+        userCorrections: 1,
+        // The command's entries still count as user messages, as they do on main.
+        userMessages: 1 + entries.length + 1,
+      });
+    });
+
     it.each([
       [
         'a typed message with a system reminder in front of it',

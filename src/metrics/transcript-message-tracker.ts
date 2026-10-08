@@ -459,6 +459,18 @@ function isSyntheticText(text: string): boolean {
 /** The text Claude Code writes as a user entry when the user presses Esc, with " for tool use]" after it when a tool call was rejected. */
 const INTERRUPT_MARKER = '[Request interrupted by user';
 
+/**
+ * How the entries for a `!` bash-mode command open. The CLI writes the command and its output as
+ * two entries, `<bash-input>` and then `<bash-stdout>` (with `<bash-stderr>` after it), and the
+ * desktop app writes both in one entry. Neither carries a structural field that marks it, apart
+ * from the desktop app's `origin.kind: 'human'`.
+ */
+const BASH_MODE_PREFIXES = ['<bash-input>', '<bash-stdout>', '<bash-stderr>'];
+
+function isBashModeText(text: string): boolean {
+  return BASH_MODE_PREFIXES.some((prefix) => text.startsWith(prefix));
+}
+
 /** A tool result echoed back as a user entry: by the field Claude Code sets, or by its content block when the field is missing. */
 function isToolResult(entry: RawTranscriptEntry): boolean {
   if (entry.toolUseResult !== undefined) return true;
@@ -485,6 +497,10 @@ function isToolResult(entry: RawTranscriptEntry): boolean {
  *   the assistant then answers.
  * - An interrupt doesn't. The user pressed Esc on what the assistant was doing, so their next message
  *   reacts to that.
+ * - A `!` bash-mode command doesn't, even as the desktop app writes it, marked `origin.kind: 'human'`.
+ *   The user ran a command of their own rather than answering the assistant. What the assistant says
+ *   about the command's output, which current versions prompt it for, adds to the turn the user
+ *   hasn't answered yet, as with a task notification. The entries still count as user messages.
  * - A compaction summary doesn't. Claude Code writes it, mid-turn when compaction is automatic, and it
  *   changes nothing the assistant did.
  * - A task notification doesn't. It reports a background task the assistant started, and what the
@@ -498,7 +514,7 @@ function isToolResult(entry: RawTranscriptEntry): boolean {
 function endsAssistantTurn(entry: RawTranscriptEntry): boolean {
   if (entry.isSidechain === true || entry.isMeta === true || isToolResult(entry)) return false;
   const text = getEffectiveText(entry.message);
-  if (text !== null && text.startsWith(INTERRUPT_MARKER)) return false;
+  if (text !== null && (text.startsWith(INTERRUPT_MARKER) || isBashModeText(text))) return false;
   if (entry.origin?.kind === 'human') return true;
   if (entry.isCompactSummary === true || entry.origin?.kind === 'task-notification') return false;
   return text === null || !isSyntheticText(text);
