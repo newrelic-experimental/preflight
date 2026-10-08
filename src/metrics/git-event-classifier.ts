@@ -642,9 +642,10 @@ const CONFLICT_TEXT_INDICATORS: readonly RegExp[] = [
 const UNMERGED_COMMIT_RE = /Committing is not possible/i;
 
 // Lines that carry a commit's subject rather than a failure: the summary a
-// commit that landed prints, and a rebase or revert conflict's echo of the
-// one it stopped at.
-const COMMIT_SUBJECT_LINE_RE = /^\[[^\]\n]+ [0-9a-f]{7,}\]|^error: could not (?:apply|revert) /i;
+// commit that landed prints, and a rebase or revert conflict's echoes of the
+// one it stopped at (`error: could not apply …`, then `Could not apply …`).
+const COMMIT_SUBJECT_LINE_RE =
+  /^\[[^\]\n]+ [0-9a-f]{7,}\]|^(?:error: )?could not (?:apply|revert) /i;
 
 /** `error` without the lines that echo a commit subject, so a subject such as
  *  "Fix pre-commit hook failed on CI" doesn't read as a commit failure. */
@@ -704,14 +705,23 @@ function errorSegmentIndex(
       const conflictBeforeRun =
         lastGitSegment(segments.slice(0, run), isGit, GIT_CONFLICT_CAPABLE_RE) !== -1;
       // The refusal is the commit's whatever printed the conflict text, unless
-      // the conflict-capable step printed it and a commit that can still run
-      // after it fails may be the one that refused. A status block's unmerged
-      // paths alone mean that step never ran. Other commit-only text counts
-      // when an earlier step can own the conflict.
+      // a commit after the conflict-capable step may be the one that refused.
+      // When a `git status` follows that step, its block may report what the
+      // step left (`git checkout -m` and `git apply --3way` print no CONFLICT
+      // line), so any later commit may be the refuser. Otherwise unmerged
+      // paths with no text a conflicting step prints mean only a status
+      // before the run printed them and the step never ran, and a later
+      // commit counts only if it can run after the step fails. Other
+      // commit-only text counts when an earlier step can own the conflict.
       const output = commitOutputLines(error);
-      const laterCommit =
-        STEP_CONFLICT_INDICATORS.some((re) => re.test(error)) &&
-        lastGitSegment(segments, isGit, GIT_COMMIT_RE) > lastSkippedSegment(operators, conflict);
+      const lastCommit = lastGitSegment(segments, isGit, GIT_COMMIT_RE);
+      const statusAfterConflict = segments.some(
+        (segment, i) => i > conflict && isGit[i] && GIT_STATUS_RE.test(segment),
+      );
+      const laterCommit = statusAfterConflict
+        ? lastCommit > conflict
+        : STEP_CONFLICT_INDICATORS.some((re) => re.test(error)) &&
+          lastCommit > lastSkippedSegment(operators, conflict);
       const commitStopped =
         (UNMERGED_COMMIT_RE.test(output) && !laterCommit) ||
         (conflictBeforeRun && OWN_COMMIT_FAILURE_INDICATORS.some((re) => re.test(output)));

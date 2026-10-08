@@ -860,6 +860,56 @@ describe('classifyGitSegments when the error holds two failures', () => {
     ]);
   });
 
+  // git 2.54: `git checkout -m` leaves the path unmerged without a CONFLICT
+  // line, and the status after it reports it, so commit b is the refuser.
+  it('keeps a landed commit when a status after checkout -m names the conflict', () => {
+    const OUTPUT = [
+      '[main 792a4f1] a',
+      "Switched to branch 'other'",
+      'M\tf',
+      'Unmerged paths:',
+      '\tboth modified:   f',
+      'error: Committing is not possible because you have unmerged files.',
+    ].join('\n');
+    const steps = outcomes(
+      'git commit -m a && git checkout -m other && git status && git commit -m b',
+      OUTPUT,
+    );
+    expect(steps[0]).toEqual(['commit', true]);
+  });
+
+  // git 2.54: `git apply --3way` prints no CONFLICT line either.
+  it('keeps a landed commit when a status after apply --3way names the conflict', () => {
+    const OUTPUT = [
+      '[main 792a4f1] a',
+      "Applied patch to 'f' with conflicts.",
+      'U f',
+      'Unmerged paths:',
+      '\tboth modified:   f',
+      'error: Committing is not possible because you have unmerged files.',
+    ].join('\n');
+    const steps = outcomes(
+      'git commit -m a && git apply --3way fix.patch; git status; git commit -m b',
+      OUTPUT,
+    );
+    expect(steps[0]).toEqual(['commit', true]);
+  });
+
+  // git 2.54's rebase conflict echoes the stopped commit twice, the second
+  // time with no `error:` prefix.
+  it('does not read either rebase echo of a commit subject as a failure', () => {
+    const OUTPUT = [
+      'error: could not apply 660f0d8... Fix pre-commit hook failed on CI',
+      'CONFLICT (content): Merge conflict in a.ts',
+      'Could not apply 660f0d8... # Fix pre-commit hook failed on CI',
+    ].join('\n');
+    expect(outcomes('git stash pop; git commit -m x && git rebase main', OUTPUT)).toEqual([
+      ['stash', false],
+      ['commit', true],
+      ['merge_conflict', false],
+    ]);
+  });
+
   it('types the push that ran rejected, not one && then kept from running', () => {
     // The first push's rejection is why `||` ran the pull; its conflict then
     // stopped the second push.
