@@ -18,9 +18,9 @@ function compare(a: readonly number[], b: readonly number[]): number {
 
 const covered = highestVersion(readFileSync('docs/WHATS_NEW.md', 'utf8'));
 const changelog = readFileSync('CHANGELOG.md', 'utf8');
-const sections = changelog.split(/^(?=## \[)/m).slice(1);
+const sections = changelog.split(/^(?=## \d)/m).slice(1);
 const pending = sections.filter((s) => {
-  const m = /^## \[(\d+)\.(\d+)\.(\d+)\]/.exec(s);
+  const m = /^## (\d+)\.(\d+)\.(\d+)/.exec(s);
   return m !== null && compare([Number(m[1]), Number(m[2]), Number(m[3])], covered) > 0;
 });
 

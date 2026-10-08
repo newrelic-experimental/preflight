@@ -1,0 +1,29 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@4.0.1/schema.json",
+  "baseBranch": "main",
+  "access": "public",
+  "format": "auto",
+  "changelog": "./changelog.mjs",
+  "commit": false,
+  "changedFilePatterns": [
+    "src/**",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__test-utils__/**",
+    "!src/**/__fixtures__/**",
+    "!src/web/test-setup.ts",
+    "alerts/**",
+    "dashboards/**",
+    "pricing-overlay/**",
+    "copilot-sdk-extension/**",
+    "examples/**",
+    "plugin/**",
+    "plugin/.claude-plugin/**",
+    "plugin/.mcp.json",
+    ".claude-plugin/**",
+    "kiro-power/**",
+    "package.json",
+    "server.json",
+    "smithery.yaml"
+  ]
+}
