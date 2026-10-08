@@ -319,8 +319,13 @@ describe('TranscriptMessageTracker', () => {
       'mcp__filesystem__read_file',
       'mcp__github__get_commit',
       'mcp__newrelic__execute_nrql_query',
+      // These verbs also open tools that only look something up.
+      'mcp__context7__resolve-library-id',
+      'mcp__chrome-devtools__navigate_page',
+      'mcp__chrome-devtools__hover',
       // A name led by its service doesn't open on the verb.
       'mcp__slack__slack_send_message',
+      'mcp__playwright__browser_type',
     ])('reads a turn that only called %s as talking', (tool) => {
       expect(corrections([...EARLIER_EXCHANGE, toolUseLine(tool), userLine(TEXT_ONLY)])).toBe(0);
     });
@@ -330,6 +335,18 @@ describe('TranscriptMessageTracker', () => {
       'mcp__filesystem__edit_file',
       'mcp__github__create_pull_request',
       'mcp__atlassian__editJiraIssue',
+      'mcp__github__close_issue',
+      'mcp__atlassian__transitionJiraIssue',
+      'mcp__forms__submit_form',
+      'mcp__vercel__deploy_project',
+      'mcp__github__approve_pull_request',
+      'mcp__linear__comment_on_issue',
+      'mcp__ccd_session_mgmt__archive_session',
+      'mcp__terminal__stop_terminal_tab',
+      'mcp__chrome-devtools__click',
+      'mcp__chrome-devtools__fill_form',
+      'mcp__chrome-devtools__type_text',
+      'mcp__chrome-devtools__press_key',
     ])('reads a turn that called %s as acting', (tool) => {
       expect(
         corrections([

@@ -305,10 +305,12 @@ function isCorrectionMessage(rawText: string, state: AssistantTurnState): boolea
  *   reads (`isReadOnlyCommand`). A command is output the user corrects too ("the command you ran
  *   won't work in CI"), so any other, such as `npm test` or `cd src && ls`, acts.
  * - An MCP tool acts when its name opens on a verb that changes something (`isWritingMcpTool`):
- *   `write_file`, `create_pull_request`. Tool names usually lead with the verb, and a reading one
- *   can hold a write word later (`get_commit`), so only the first word counts. `execute` and `run`
- *   open reading tools too (`execute_nrql_query`), so they count as talking, as does a name led by
- *   its service (`slack_send_message`).
+ *   `write_file`, `create_pull_request`, `close_issue`, `deploy_project`, `click`. Tool names usually
+ *   lead with the verb, and a reading one can hold a write word later (`get_commit`), so only the
+ *   first word counts. A verb that also opens reading tools counts as talking: `execute` and `run`
+ *   (`execute_nrql_query`), `resolve` (`resolve-library-id`), and `navigate` and `hover`, which load
+ *   or point at a page to read it. So does a name led by its service (`slack_send_message`,
+ *   `browser_type`).
  * Every other tool counts as talking: Read, Grep, Glob, WebFetch and WebSearch look things up and
  * TodoWrite tracks the plan.
  */
@@ -389,6 +391,7 @@ function isReadOnlyCommand(command: unknown): boolean {
 
 /** Verbs that open the name of an MCP tool that changes something. */
 const MCP_WRITE_VERBS: ReadonlySet<string> = new Set([
+  // Files, code and records.
   'write',
   'edit',
   'create',
@@ -405,12 +408,84 @@ const MCP_WRITE_VERBS: ReadonlySet<string> = new Set([
   'modify',
   'set',
   'add',
+  'upsert',
+  'copy',
+  'clone',
+  'fork',
+  'save',
+  'drop',
+  'purge',
+  'destroy',
+  'clean',
+  'clear',
+  'reset',
+  'restore',
+  'revert',
+  'rollback',
+  'discard',
+  'change',
+  'toggle',
+  'sync',
   'push',
   'merge',
   'commit',
   'upload',
+  // Issues, reviews, sessions and access.
+  'close',
+  'reopen',
+  'transition',
+  'assign',
+  'unassign',
+  'approve',
+  'reject',
+  'accept',
+  'submit',
+  'comment',
+  'reply',
+  'respond',
+  'archive',
+  'unarchive',
+  'dismiss',
+  'lock',
+  'unlock',
+  'pin',
+  'unpin',
+  'share',
+  'invite',
+  'grant',
+  'revoke',
+  'bind',
+  'unbind',
+  'attach',
+  'detach',
+  // Messages and schedules.
   'send',
   'post',
+  'notify',
+  'publish',
+  'unpublish',
+  'schedule',
+  'cancel',
+  // Deployments, services and packages.
+  'deploy',
+  'start',
+  'stop',
+  'restart',
+  'kill',
+  'terminate',
+  'launch',
+  'trigger',
+  'dispatch',
+  'enable',
+  'disable',
+  'install',
+  'uninstall',
+  // A browser page.
+  'click',
+  'type',
+  'fill',
+  'press',
+  'drag',
 ]);
 
 /** Whether an MCP tool's name, `mcp__<server>__<tool>`, opens on a verb in `MCP_WRITE_VERBS`, in snake or camel case. */
