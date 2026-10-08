@@ -52,6 +52,18 @@ describe('DEFAULT_PRICING_TABLE', () => {
       });
     });
 
+    it('prices Bedrock claude-haiku-5-5 with the same 100k flat tier as first-party', () => {
+      const first = DEFAULT_PRICING_TABLE['claude-haiku-5-5'];
+      const global = DEFAULT_PRICING_TABLE['global.anthropic.claude-haiku-5-5'];
+      const geo = DEFAULT_PRICING_TABLE['anthropic.claude-haiku-5-5'];
+      expect(global).toEqual({ ...first });
+      expect(geo.tierThreshold).toBe(100_000);
+      expect(geo.tierInputPerMTok).toBeCloseTo(first.tierInputPerMTok! * 1.1, 5);
+      expect(geo.tierOutputPerMTok).toBeCloseTo(first.tierOutputPerMTok! * 1.1, 5);
+      expect(geo.tierThinkingPerMTok).toBeCloseTo(first.tierThinkingPerMTok! * 1.1, 5);
+      expect(geo.tierCacheReadPerMTok).toBeCloseTo(first.tierCacheReadPerMTok! * 1.1, 5);
+    });
+
     it('has claude-sonnet-4-20250514 with correct rates', () => {
       const p = DEFAULT_PRICING_TABLE['claude-sonnet-4-20250514'];
       expect(p).toBeDefined();

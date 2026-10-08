@@ -18,6 +18,7 @@ export const MODEL_ALIASES: Record<string, string> = {
   'claude-opus-4': 'claude-opus-4-8',
   'claude-sonnet-4': 'claude-sonnet-4-6',
   'claude-haiku-4': 'claude-haiku-4-5',
+  'claude-haiku-5': 'claude-haiku-5-5',
   'claude-haiku-3-5': 'claude-haiku-3-5-20241022',
 
   // Google Gemini current-gen shortcuts
@@ -45,6 +46,13 @@ export const MODEL_ALIASES: Record<string, string> = {
   // this file aliased 'gpt-5' -> 'gpt-5.5', which over-billed real `gpt-5`
   // calls by several times ($1.25/$10 actual vs $5/$30 aliased).
   'gpt-5.6': 'gpt-5.6-sol',
+  // OpenAI's bare 'gpt-4' API alias points at the gpt-4-0613 snapshot. Pinned
+  // so it does not depend on forward-prefix matching.
+  'gpt-4': 'gpt-4-0613',
+
+  // Mistral: bare family name routes to the current generation, not to
+  // whichever 'mistral-large-*' key forward-prefix matching happens to pick.
+  'mistral-large': 'mistral-large-4',
 
   // AWS Bedrock geo cross-region inference profile IDs. These are a
   // different kind of alias than the family-name shortcuts above — each is
@@ -688,10 +696,9 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // superseded by GPT-6. Same flat long-context tiering as GPT-5.5 (2x
   // input/1.5x output above 272k).
   // Cache writes are billed at 1.25x uncached input on this family — not
-  // modeled here: extractOpenAITokens() in tokens.ts hardcodes
-  // cacheCreationTokens to 0 (OpenAI's usage shape has no cache-write
-  // count), so a cacheCreationPerMTok here would be dead data until that
-  // extractor gains a field for it.
+  // modeled here: no cacheCreationPerMTok is set, so any cache-write tokens
+  // that extractOpenAITokens() reports (prompt_tokens_details.cache_write_tokens)
+  // are billed at $0.
   // The GPT-5.5/5.6 pages (verified 2026-10-08) say the >272k tier is "2x
   // input and 1.5x output" and are silent on cached input, so no
   // tierCacheReadPerMTok is set for them (unlike GPT-6, which states 2x
@@ -1102,12 +1109,21 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     contextWindow: 200_000,
   },
   // Haiku 5.5: IDs from its AWS model card, rates from the AWS pricing page (2026-10-07).
+  // The page's "Long Context Pricing" table lists 5x input/output/cache-read; it
+  // states no threshold, so the first-party 100k flat threshold is assumed. Cache
+  // writes stay at the base rate, as on the first-party entry.
   'anthropic.claude-haiku-5-5': {
     inputPerMTok: 0.11,
     outputPerMTok: 0.55,
+    thinkingPerMTok: 0.55,
     cacheReadPerMTok: 0.011,
     cacheCreationPerMTok: 0.1375,
     contextWindow: 1_000_000,
+    tierThreshold: 100_000,
+    tierInputPerMTok: 0.55,
+    tierOutputPerMTok: 2.75,
+    tierThinkingPerMTok: 2.75,
+    tierCacheReadPerMTok: 0.055,
   },
   // Older and Mythos-line Claude models, geo/in-region rates read from AWS's
   // pricing page (2026-10-07); IDs confirmed against AWS model cards except
@@ -1284,9 +1300,15 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   'global.anthropic.claude-haiku-5-5': {
     inputPerMTok: 0.1,
     outputPerMTok: 0.5,
+    thinkingPerMTok: 0.5,
     cacheReadPerMTok: 0.01,
     cacheCreationPerMTok: 0.125,
     contextWindow: 1_000_000,
+    tierThreshold: 100_000,
+    tierInputPerMTok: 0.5,
+    tierOutputPerMTok: 2.5,
+    tierThinkingPerMTok: 2.5,
+    tierCacheReadPerMTok: 0.05,
   },
   // Fable 5.1 and Mythos 5.1: AWS model cards confirm these global IDs exist, but
   // the pricing page lists no Global-tier row. Rates are DERIVED from the geo row

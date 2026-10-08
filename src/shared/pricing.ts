@@ -27,13 +27,17 @@ export interface ModelPricing {
    */
   readonly audioCacheReadPerMTok?: number;
   readonly contextWindow: number;
-  /** Input-token count above which tier rates apply. */
+  /**
+   * Prompt-token count above which tier rates apply. The prompt is
+   * `inputTokens + cacheReadTokens + cacheCreationTokens`, since `inputTokens`
+   * excludes cached tokens.
+   */
   readonly tierThreshold?: number;
   readonly tierInputPerMTok?: number;
   readonly tierOutputPerMTok?: number;
   readonly tierThinkingPerMTok?: number;
   /**
-   * Cache-read rate once `inputTokens > tierThreshold`. Only applied in
+   * Cache-read rate once the prompt exceeds `tierThreshold`. Only applied in
    * `'flat'` mode (like the other `tier*` output rates); ignored in
    * `'marginal'` mode. Falls back to `cacheReadPerMTok` when unset, e.g.
    * OpenAI GPT-6 and xAI Grok double the cached-input rate in their
@@ -41,7 +45,7 @@ export interface ModelPricing {
    */
   readonly tierCacheReadPerMTok?: number;
   /**
-   * How tier rates are applied once `inputTokens > tierThreshold`. Defaults to
+   * How tier rates are applied once the prompt exceeds `tierThreshold`. Defaults to
    * `'flat'` (current behavior, matches Gemini 1.5/2.5 Pro semantics).
    *
    * - `'flat'`: the **entire request** (input, output, thinking, cache reads) is
@@ -585,9 +589,10 @@ export function initPricing(customFilePath?: string | null): void {
  *    MODEL_ALIASES in pricing-data.ts. Aliases are the *primary* mechanism
  *    for routing family names to current-generation pricing.
  * 3. Forward prefix — table key starts with modelName followed by a
- *    digit-led suffix. No built-in model name exercises this today (every
- *    real family name already has an alias); reachable via a custom pricing
- *    entry whose key extends a shorter query name.
+ *    digit-led suffix. Built-in bare names that would otherwise land here
+ *    (`claude-haiku-5`, `gpt-4`, `mistral-large`) have explicit aliases so
+ *    they never depend on this guess; other unaliased bare prefixes (e.g.
+ *    `claude-haiku`) still resolve to the longest matching key.
  * 4. Reverse prefix — modelName starts with table key's base (date stripped)
  *    (e.g. `claude-opus-4-99` matches base `claude-opus-4` from a dated key)
  * 5. Return `null` and log a warning if nothing matches.
@@ -671,14 +676,10 @@ function computeCost(pricing: ModelPricing, usage: TokenUsage): CostBreakdown {
   const totalUsd = inputUsd + outputUsd + thinkingUsd + cacheReadUsd + cacheCreationUsd;
 
   // Savings: what the cache-read tokens would have cost at the full input rate.
-  // In marginal mode, the savings rate depends on whether the fresh input
-  // exceeded the tier threshold — above-threshold tokens save at the tier rate,
+  // In marginal mode, a prompt over the tier threshold saves at the tier rate,
   // not the base rate.
   const savingsInputRate =
-    useTier &&
-    tierMode === 'marginal' &&
-    pricing.tierInputPerMTok !== undefined &&
-    usage.inputTokens > (pricing.tierThreshold ?? Infinity)
+    useTier && tierMode === 'marginal' && pricing.tierInputPerMTok !== undefined
       ? pricing.tierInputPerMTok
       : inputRate;
   // Clamp to >= 0 — a misconfigured custom pricing entry where cacheReadRate

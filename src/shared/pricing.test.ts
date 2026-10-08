@@ -6,7 +6,7 @@ import {
   loadCustomPricing,
   PricingTable,
 } from './pricing.js';
-import { DEFAULT_PRICING_TABLE } from './pricing-data.js';
+import { DEFAULT_PRICING_TABLE, MODEL_ALIASES } from './pricing-data.js';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -365,6 +365,17 @@ describe('calculateCost', () => {
       expect(costBelow.savingsFromCacheUsd).toBeCloseTo(0.02, 6);
     });
 
+    it('computes cache savings at tier rate when only input plus cache reads exceed the threshold', () => {
+      loadMarginalPricing();
+      // 50k input + 60k cache read = 110k prompt > 100k threshold
+      // savings = 60_000 * (4 - 0) / 1_000_000 = 0.24
+      const cost = calculateCost(
+        'marginal-test',
+        usage({ inputTokens: 50_000, cacheReadTokens: 60_000, outputTokens: 0 }),
+      );
+      expect(cost.savingsFromCacheUsd).toBeCloseTo(0.24, 6);
+    });
+
     it('defaults to flat mode when tierMode is omitted (regression: gemini-2.5-pro behavior)', () => {
       // gemini-2.5-pro has no tierMode set — must continue to bill flat
       const cost = calculateCost(
@@ -459,6 +470,18 @@ describe('resolveModelPricing', () => {
     // Resolves to the dateless current-gen entry (via alias → dateless key)
     expect(haiku4!.inputPerMTok).toBe(1);
     expect(haiku4!.outputPerMTok).toBe(5);
+  });
+
+  it.each([
+    ['claude-haiku-5', 0.1, 0.5],
+    ['gpt-4', 30, 60],
+    ['mistral-large', 0.68, 2.09],
+  ])('resolves bare %s through an explicit alias', (name, input, output) => {
+    const pricing = resolveModelPricing(name);
+    expect(pricing).not.toBeNull();
+    expect(pricing!.inputPerMTok).toBe(input);
+    expect(pricing!.outputPerMTok).toBe(output);
+    expect(MODEL_ALIASES[name]).toBeDefined();
   });
 
   it('resolves gpt-5 via exact match, gemini-2.5/gemini-2.0 via added MODEL_ALIASES', () => {
