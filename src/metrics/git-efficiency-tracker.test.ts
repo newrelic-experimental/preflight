@@ -1419,8 +1419,10 @@ describe('GitEfficiencyTracker', () => {
     });
 
     // `--reset-author` moves the author time git log reports to the amend's,
-    // so only the replayed amend sits next to the hydrated copy.
-    it('does not count a git log commit beside a replayed amend that reset its author time', () => {
+    // so only the replayed amend sits next to the hydrated copy, and an amend
+    // doesn't stand for a git log commit: nothing shows which one it rewrote.
+    // Pinned as the known cost of that rule.
+    it('counts the commit a reset-author amend rewrote again from git log after a restart', () => {
       const commitTimestamp = Date.now() - 120_000;
       const amendTimestamp = commitTimestamp + 30_000;
       tracker.replayTimeline([
@@ -1443,7 +1445,7 @@ describe('GitEfficiencyTracker', () => {
 
       tracker.hydrateGitLog([{ timestamp: amendTimestamp + 1_000, hash: 'def456' }]);
 
-      expect(tracker.getMetrics().commitCount).toBe(1);
+      expect(tracker.getMetrics().commitCount).toBe(2);
     });
 
     // With no counted commit before it, the amend rewrote one made yesterday
@@ -1464,6 +1466,34 @@ describe('GitEfficiencyTracker', () => {
       tracker.hydrateGitLog([{ timestamp: amendTimestamp + 1_000, hash: 'fed789' }]);
 
       expect(tracker.getMetrics().commitCount).toBe(1);
+    });
+
+    // An earlier counted commit, here on another branch, says nothing about
+    // which commit the amend rewrote.
+    it('counts a git log commit beside a replayed amend that follows an unrelated counted commit', () => {
+      const commitTimestamp = Date.now() - 5 * 60 * 60_000;
+      const amendTimestamp = Date.now() - 60_000;
+      tracker.replayTimeline([
+        {
+          timestamp: commitTimestamp,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git commit -m "feat: A"',
+        },
+        {
+          timestamp: amendTimestamp,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git commit --amend --reset-author --no-edit',
+        },
+      ]);
+      expect(tracker.getMetrics().commitCount).toBe(1);
+
+      tracker.hydrateGitLog([{ timestamp: amendTimestamp + 1_000, hash: 'abc999' }]);
+
+      expect(tracker.getMetrics().commitCount).toBe(2);
     });
 
     it('hydrateBranchDivergence sets ahead/behind counts on risk indicators', () => {

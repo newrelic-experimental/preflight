@@ -439,10 +439,18 @@ export class GitEfficiencyTracker {
       // timestamp proximity: a prior session's hook-observed `commit` event,
       // replayed via replayTimeline() before this method ever runs, has no
       // hash in its command text at all, so a hash match would never catch
-      // it and every restart would double-count that commit.
-      // standsForHydratedCommit says which events can stand for this one.
+      // it and every restart would double-count that commit. Only a counted
+      // commit can stand for this one. A commit the `;` rule marked failed
+      // may still have landed, and git log is what shows it did, as
+      // `reconcileHydratedCommits` reads it for the weekly panel. An amend
+      // can't either: nothing here shows which commit it rewrote, and when
+      // that one was never counted (yesterday's, or one made outside the
+      // hooks) git log is the only place it shows up. The cost is that an
+      // amend with `--reset-author`, which moves the author time git log
+      // reports to the amend's, counts its commit again after a restart; a
+      // plain `--amend` keeps the original's author time and still matches it.
       const isDuplicate = this.events.some((e) => {
-        if (!this.standsForHydratedCommit(e)) return false;
+        if (!isCountedCommit(e)) return false;
         const existingHash = e.command ? HYDRATED_COMMIT_HASH_RE.exec(e.command)?.[1] : undefined;
         if (existingHash !== undefined) {
           return existingHash === commit.hash;
@@ -463,23 +471,6 @@ export class GitEfficiencyTracker {
         this.hydratedThroughMs = commit.timestamp;
       }
     }
-  }
-
-  /**
-   * Whether a tracked event can stand for a `git log` commit near it in time.
-   * A counted commit can. A commit the `;` rule marked failed can't: it may
-   * still have landed, and git log is what shows it did, as
-   * `reconcileHydratedCommits` reads it for the weekly panel. A succeeded
-   * amend can when a counted commit came before it, since `--reset-author`
-   * moves the rewritten commit's author time to the amend's, so git log
-   * reports it next to the amend rather than the commit counted earlier. An
-   * amend of a commit nothing here counted (one made yesterday, or outside
-   * the hooks) can't, or that commit would count nowhere.
-   */
-  private standsForHydratedCommit(e: GitEvent): boolean {
-    if (isCountedCommit(e)) return true;
-    if (e.type !== 'commit' || !e.success) return false;
-    return this.events.some((o) => isCountedCommit(o) && o.timestamp < e.timestamp);
   }
 
   /**
