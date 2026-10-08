@@ -5,12 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.61.1] - 2026-10-07
+## [1.62.1] - 2026-10-08
 
 ### Fixed
 
 - When the config asks for cloud export (`mode: "cloud"` or `"both"`) but the `preflight --local` dashboard process can't see your credentials, the sessions it collects for you no longer fail to reach New Relic silently. This usually happens because the credentials are set only as shell environment variables, which the macOS dashboard LaunchAgent does not inherit. The dashboard now logs a warning once for each session it keeps only locally, and `GET /api/health` reports them under `unforwardedSessions`, with a count and the most recent session ids. To fix it, add `licenseKey` and `accountId` to the config file and restart the dashboard.
 - On macOS, an MCP server launched through `npx` that took its session id from the directory it started in can now correct that id once the host's own hooks report the real one. Before, a GitHub Copilot session started in a directory where Claude Code was already running could stay filed under the Claude Code session for its whole life.
+
+## [1.62.0] - 2026-10-08
+
+### Added
+
+- **Adding Preflight to an org that already exports Claude Code's OTel metrics to New Relic doubled its reported cost and tokens until someone turned on companion mode.** Companion mode now turns on by itself when Claude Code's telemetry is on, `OTEL_METRICS_EXPORTER` includes `otlp`, and the OTLP endpoint is an `nr-data.net` host. `NR_AI_COMPANION_MODE` or `companionMode` in the config file still wins in either direction, so `NR_AI_COMPANION_MODE=false` turns it off. `preflight doctor` shows the resolved value and its source, and `nr_observe_get_config` shows the value.
 
 ## [1.61.0] - 2026-10-07
 
