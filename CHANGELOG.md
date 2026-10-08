@@ -5,11 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.63.1] - 2026-10-08
+## [1.63.2] - 2026-10-08
 
 ### Fixed
 
 - A message containing "won't work" no longer counts as a correction of the assistant unless it opens on the phrase with a bare pronoun or no subject, after at most two leading words such as "yeah", "but" or "hmm, no," and an optional "I tried it and" ("That won't work, ...", "Yeah that definitely won't work", "Nah, won't work —", "I tried it and it won't work"), or its sentence or the sentence either side points back at the assistant's output: "you" with a past or -ing verb ("the regex you wrote", "you're mutating state"), "your" with something built ("your fix"), or "still won't work". A "you" that reports an idea ("the cache you suggested"), poses a condition with "if" or "unless" ("if you added a cache"), or takes a present or modal verb ("you need a lock") is not such a reference. Design discussion that used the phrase ("A cache won't work here since we need fresh reads") inflated correction rate, the high-correction-rate recommendation, and the CLAUDE.md-change verdict. A correction that names the code and gives a reason without pointing back ("The migration won't work, it drops the index") is not counted either. Sessions recorded before this version keep their counts, so a CLAUDE.md before/after comparison that spans the upgrade can show a drop the edit didn't cause.
+
+## [1.63.1] - 2026-10-08
+
+### Fixed
+
+- When the config asks for cloud export (`mode: "cloud"` or `"both"`) but the `preflight --local` dashboard process can't see your credentials, the sessions it collects for you no longer fail to reach New Relic silently. This usually happens because the credentials are set only as shell environment variables, which the macOS dashboard LaunchAgent does not inherit. The dashboard now logs a warning once for each session it keeps only locally, and `GET /api/health` reports them under `unforwardedSessions`, with a count and the most recent session ids. To fix it, add `licenseKey` and `accountId` to the config file and restart the dashboard.
+- On macOS, an MCP server launched through `npx` that took its session id from the directory it started in can now correct that id once the host's own hooks report the real one. Before, a GitHub Copilot session started in a directory where Claude Code was already running could stay filed under the Claude Code session for its whole life.
 
 ## [1.63.0] - 2026-10-08
 
