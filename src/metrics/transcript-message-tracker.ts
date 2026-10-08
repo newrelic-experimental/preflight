@@ -751,7 +751,9 @@ export class TranscriptMessageTracker {
       const text = classifyUserEntry(entry);
       if (text !== null) {
         this.userMessages++;
-        if (isCorrectionMessage(text.trim(), this.turnState())) {
+        // A `!` command's entries hold the user's command and the program's output, neither of
+        // them a reply to the assistant.
+        if (!isBashModeText(text) && isCorrectionMessage(text.trim(), this.turnState())) {
           this.userCorrections++;
         }
       }

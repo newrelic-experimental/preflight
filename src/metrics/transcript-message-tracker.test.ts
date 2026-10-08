@@ -526,6 +526,42 @@ describe('TranscriptMessageTracker', () => {
 
     it.each([
       [
+        'as the CLI writes it',
+        [
+          BASH_MODE_CLI[0],
+          userLine("<bash-stdout>Error: config won't work with node 18</bash-stdout>"),
+        ],
+      ],
+      [
+        'as the desktop app writes it',
+        [
+          userLine(
+            "<bash-input>npm start</bash-input><bash-stdout>Error: config won't work with node 18</bash-stdout><bash-stderr></bash-stderr>",
+            { origin: { kind: 'human' } },
+          ),
+        ],
+      ],
+      [
+        'on stderr, with a phrase that counts after any turn',
+        [
+          BASH_MODE_CLI[0],
+          userLine("<bash-stderr>error: that's wrong, expected a number</bash-stderr>"),
+        ],
+      ],
+    ])('does not read a ! command and its output %s for a correction', (_label, entries) => {
+      writeLines([...EARLIER_EXCHANGE, toolUseLine('Edit'), ...entries]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      expect(tracker.getMetrics()).toMatchObject({
+        userCorrections: 0,
+        // The entries still count as user messages.
+        userMessages: 1 + entries.length,
+      });
+    });
+
+    it.each([
+      [
         'a typed message with a system reminder in front of it',
         userLine(
           [
