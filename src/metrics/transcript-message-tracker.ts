@@ -420,9 +420,12 @@ export class TranscriptMessageTracker {
     }
 
     if (size < this.offset) {
-      // File was rotated/truncated — restart from the beginning.
+      // File was rotated/truncated — restart from the beginning, with no turn carried over from
+      // the old file.
       this.offset = 0;
       this.skippingOversizedLine = false;
+      this.assistantSinceUser = 'none';
+      this.seenToolUse = false;
     }
     if (size <= this.offset) return;
 

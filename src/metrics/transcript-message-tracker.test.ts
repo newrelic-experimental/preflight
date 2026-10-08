@@ -1182,6 +1182,34 @@ describe('TranscriptMessageTracker', () => {
     expect(tracker.getMetrics().userMessages).toBe(3);
   });
 
+  /** Padded so the rotated file is shorter, which is how the tracker detects rotation. */
+  const PADDED_REPLY = userLine(`go ahead ${'.'.repeat(1_000)}`);
+
+  it.each([
+    // With the old file's Edit carried over, this would count as rejecting it.
+    [
+      'the last turn',
+      [toolUseLine('Read'), PADDED_REPLY, toolUseLine('Edit')],
+      [userLine("The migration won't work on prod.")],
+      0,
+    ],
+    // With the old file's Read carried over, a text-only turn would read as talking.
+    [
+      'that tool calls were seen',
+      [toolUseLine('Read'), PADDED_REPLY],
+      [assistantLine(), userLine("That won't work.")],
+      1,
+    ],
+  ])('forgets %s when the file shrinks (rotation)', (_label, before, rotated, expected) => {
+    writeLines(before);
+    const tracker = new TranscriptMessageTracker();
+    tracker.observeTranscriptPath(transcriptPath);
+    tracker.refresh();
+    writeLines(rotated);
+    tracker.refresh();
+    expect(tracker.getMetrics().userCorrections).toBe(expected);
+  });
+
   it('is a no-op when no transcript path has been observed', () => {
     const tracker = new TranscriptMessageTracker();
     tracker.refresh();
