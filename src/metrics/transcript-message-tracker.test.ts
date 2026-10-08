@@ -257,6 +257,21 @@ describe('TranscriptMessageTracker', () => {
       "Nah, won't work — the value can be undefined too.",
       // A first-person report that running the assistant's output fails now.
       "I tried it and it won't work.",
+      "I just tried it and it won't work.",
+      "I tried it. It won't work.",
+      "I tried it, it won't work.",
+      "Tried it, won't work.",
+      "Tried it and it won't work.",
+      // A leading word may end in a question mark or a colon, and "now" and "wait" lead like fillers.
+      "Huh? That won't work.",
+      "Argh: that won't work.",
+      "Wait? That won't work.",
+      "Wait that won't work.",
+      "Now it won't work.",
+      // A pronoun and something built is a pronoun too.
+      "That fix won't work.",
+      "This change won't work.",
+      "These changes won't work.",
     ];
 
     /**
@@ -341,6 +356,10 @@ describe('TranscriptMessageTracker', () => {
       // A progressive "you're <verb>ing" after a temporal "when" or a causal "since" reads as a reference.
       "Polling won't work when you're running on Windows, let's use fs.watch.",
       "Since you're using Windows, symlinks won't work.",
+      // "your" plus "test" reads as the assistant's test, here in the sentence before.
+      "Your test environment has a single node. A cache won't work at our write volume.",
+      // A question mark after a named subject closes a leading word like it does after "Huh".
+      "Redis? That won't work for us.",
     ];
 
     const KNOWN_MISSES = [
@@ -356,20 +375,18 @@ describe('TranscriptMessageTracker', () => {
       // A dash after the filler, or a leading adverb outside the list, isn't a leading word.
       "Yeah — that won't work.",
       "Honestly that won't work.",
-      "Wait that won't work.",
       "Hold on, that won't work.",
-      // An adverb between "I" and "tried" isn't part of the "I tried it" lead.
-      "I just tried it and it won't work.",
       // A negated past verb ("didn't") isn't one of the past forms a "you" reference takes.
       "The cache won't work. You didn't invalidate it.",
-      // "I tried it" leads the opener only with "and" or "but" after it.
-      "I tried it. It won't work.",
-      "I tried it, it won't work.",
       // A past form with an auxiliary ("had created", "been caching") isn't one a "you" reference takes.
       "The index you had created won't work.",
       "You've been caching the response, so the cache won't work.",
       // A contraction can't be a leading word.
       "You're wrong, it won't work.",
+      // The opener is read only at the start of the message, not after pasted output.
+      "Ran npm test:\nFAIL src/auth.test.ts\nThat won't work.",
+      // "your approach" can name a plan, like "your proposal" and "your solution", so it isn't a built artifact.
+      "Your approach won't work for us, let's go back.",
     ];
 
     /** Second person that points back at the assistant's output, in the "won't work" sentence or next to it. */
@@ -384,6 +401,15 @@ describe('TranscriptMessageTracker', () => {
       "When you renamed the env var, the deploy script won't work anymore.",
       "When you added the retry, the tests won't work.",
       "It broke when you changed the config. Now the parser won't work.",
+      // Plural artifacts.
+      "Your fixes won't work.",
+      "Your patches won't work on Windows.",
+      "Your queries won't work against the replica.",
+      // "raised" and "pointed" are edits here, not ways of making a point.
+      "The timeout you raised won't work, the gateway still cuts at 30s.",
+      "You pointed the client at the replica, so the migration won't work.",
+      // "At this point" is an idiom, not a remark the assistant made.
+      "At this point you've broken the build, so the deploy won't work.",
     ];
 
     /** Second person that is about an idea, a hypothetical or anyone, not the assistant's output. */
@@ -396,6 +422,12 @@ describe('TranscriptMessageTracker', () => {
       "If you added a cache it won't work across pods.",
       "You're right that a cache won't work here.",
       "The plan you made won't work for us.",
+      "As you explained, a cache won't work here.",
+      "The approach you floated won't work at scale, let's shard by key.",
+      "Suppose you added a cache, it won't work across pods.",
+      "Assuming you added a cache, it won't work across pods.",
+      // An inverted "have you" asks or suggests rather than reporting what the assistant did.
+      "Have you tried Redis? Polling won't work on Windows.",
     ];
 
     it.each([
@@ -478,7 +510,7 @@ describe('TranscriptMessageTracker', () => {
         {
           corrections: 25,
           design: 25,
-          missed: [0, 1, 5, 6, 7, 9, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 24],
+          missed: [0, 1, 5, 7, 9, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 24],
           flagged: [],
         },
       ],
@@ -510,12 +542,15 @@ describe('TranscriptMessageTracker', () => {
       ['long word after "you\'re"', `A cache won't work, you're ${'i'.repeat(400_000)}x`],
       ['repeated "you" with an adverb', `A cache won't work ${'you just '.repeat(44_000)}`],
       ['repeated hypothetical "you"', `A cache won't work ${'if you unless you '.repeat(22_000)}`],
+      ['repeated "at this point you"', `A cache won't work ${'at this point you '.repeat(22_000)}`],
       ['long letter run before the phrase', `${'a'.repeat(400_000)} won't work`],
       ['repeated leading filler', `${'hmm, '.repeat(80_000)}won't work`],
       ['long letter run in a filler', `h${'m'.repeat(400_000)}x won't work`],
       ['long punctuation run after a filler', `Hmm${','.repeat(400_000)}x won't work`],
+      ['long question-mark run after a word', `Huh${'?'.repeat(400_000)}x won't work`],
       ['long whitespace after a filler', `Hmm${' '.repeat(400_000)}x won't work`],
       ['long whitespace after "I tried it"', `I tried it,${' '.repeat(400_000)}x won't work`],
+      ['long whitespace after "Tried it."', `Tried it.${' '.repeat(400_000)}x won't work`],
       [
         'repeated "when you" in the reference scan',
         `A cache won't work ${'when you '.repeat(44_000)}`,

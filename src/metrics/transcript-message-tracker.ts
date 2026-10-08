@@ -70,40 +70,62 @@ const EMBEDDED_CORRECTION_RE =
 
 const WONT_WORK_RE = /\bwon'?t work\b/i;
 
-/** Interjections and conjunctions that can lead a verdict without being its subject ("Yeah that won't work", "But it won't work", "Hmm, no, won't work"). */
+/** Interjections and conjunctions that can lead a verdict without being its subject ("Yeah that won't work", "But it won't work", "Hmm, no, won't work", "Now it won't work"). */
 const LEADING_FILLER =
-  'yeah|yep|yes|ok|okay|hm+|um+|uh+|ah|oh|well|so|but|and|nah|no|nope|sorry|ugh';
+  'yeah|yep|yes|ok|okay|hm+|um+|uh+|ah|oh|well|so|but|and|nah|no|nope|sorry|ugh|now|wait';
+
+/** Punctuation that can close a leading word ("Agreed,", "Huh?", "Argh:"). */
+const LEADING_PUNCTUATION = '[,.!?:]';
 
 /** A leading word: a filler with or without punctuation after it, or any other word with punctuation after it ("Agreed, ..."). The lookahead keeps the two alternatives disjoint, so the quantified group can't backtrack between them. */
-const LEADING_WORD = `(?:(?:${LEADING_FILLER})\\b[,.!]*|(?!(?:${LEADING_FILLER})\\b)[a-z]+[,.!]+)\\s+`;
+const LEADING_WORD = `(?:(?:${LEADING_FILLER})\\b${LEADING_PUNCTUATION}*|(?!(?:${LEADING_FILLER})\\b)[a-z]+${LEADING_PUNCTUATION}+)\\s+`;
 
-/** "I tried it and ..." reports that the assistant's output, which the pronoun stands in for, fails now. */
-const TRIED_IT = 'i (?:tried|ran|tested) (?:it|that|this),?\\s+(?:and|but)\\s+';
+/** "I tried it and ...", "Tried it, ..." or "I just tried it. ..." reports that the assistant's output, which the pronoun stands in for, fails now. */
+const TRIED_IT =
+  '(?:i )?(?:just )?(?:tried|ran|tested) (?:it|that|this)(?:,?\\s+(?:and|but)|[,.])\\s+';
 
-/** A message that opens on "won't work" with a bare pronoun or no subject at all ("That won't work", "Hmm that definitely won't work, ...", "Nah, won't work —", "I tried it and it won't work"), after up to two leading words, names nothing of its own, so it points at the assistant's previous turn. */
+/**
+ * Things the assistant builds, singular or plural. "your proposal", "your solution", "your approach"
+ * and "your idea" can name a plan, which is design discussion, so they are left out.
+ */
+const ASSISTANT_ARTIFACT =
+  '(?:fix|patch)(?:es)?|quer(?:y|ies)|(?:change|edit|code|version|implementation|update|commit|refactor|migration|test|script|function)s?';
+
+/** A message that opens on "won't work" with a bare pronoun, a pronoun and something built, or no subject at all ("That won't work", "That fix won't work", "Hmm that definitely won't work, ...", "Nah, won't work —", "I tried it and it won't work"), after up to two leading words, names nothing of its own, so it points at the assistant's previous turn. */
 const DEICTIC_WONT_WORK_RE = new RegExp(
-  `^(?:${LEADING_WORD}){0,2}(?:${TRIED_IT})?${OPTIONAL_ACTUALLY}(?:(?:that|this|it) (?:(?:still|just|also|even|[a-z]+ly) ){0,2})?won'?t work\\b`,
+  `^(?:${LEADING_WORD}){0,2}(?:${TRIED_IT})?${OPTIONAL_ACTUALLY}(?:(?:(?:that|this|these|those)(?: (?:${ASSISTANT_ARTIFACT}))?|it) (?:(?:still|just|also|even|[a-z]+ly) ){0,2})?won'?t work\\b`,
   'i',
 );
 
-/** Things the assistant builds. "your proposal", "your solution" and "your idea" rule out a plan, which is design discussion. */
-const ASSISTANT_ARTIFACT =
-  'fix|change|edit|code|version|patch|implementation|update|commit|refactor|migration|test|script|function|query';
+/** Words that make what follows hypothetical ("if you added a cache", "suppose we shard", "assuming you cached it"). */
+const HYPOTHETICAL = 'if|unless|suppose|supposing|assuming|imagine';
 
-/** A conditional "you" ("if you added a cache") or one after a remark ("the point you made") is not about the assistant's output. A causal "since you" or a past "when you" is left out: "since you removed the check" and "when you renamed the env var" are about it. */
-const NOT_ABOUT_OUTPUT_BEFORE_YOU =
-  '(?<!\\b(?:if|unless|(?:point|argument|suggestion|proposal|plan|idea)s?) )';
+/**
+ * A "you" that isn't about the assistant's output: a hypothetical one, an inverted question ("have you
+ * tried Redis?"), or one after a remark ("the point you made", but not "at this point you've broken
+ * it"). A causal "since you" or a past "when you" is left out: "since you removed the check" and
+ * "when you renamed the env var" are about it.
+ */
+const NOT_ABOUT_OUTPUT_BEFORE_YOU = `(?<!\\b(?:${HYPOTHETICAL}|have|had|(?:argument|suggestion|proposal|plan|idea)s?|(?<!\\b(?:this|that) )points?) )`;
 
 const ADVERB_AFTER_YOU =
   '(?:just|already|also|accidentally|only|then|now|still|again|clearly|probably|actually|never|always|not) ';
 
+/** Stems of verbs that say where an idea came from ("the cache you suggested", "as you explained", "the approach you floated"). */
+const IDEA_SOURCE_VERB =
+  '(?:(?:suggest|propos|mention|recommend|describ|outlin|offer|explain|warn|note|float|pitch)\\w*|point(?:s|ed|ing)? out)\\b';
+
 /** Stems of verbs that report what the assistant said, thought or planned rather than what it built ("you suggested", "you're proposing", "the way you're thinking", "you're going to need"). Rejecting those is design discussion. */
-const IDEA_VERB =
-  '(?:(?:suggest|propos|mention|recommend|describ|outlin|ask|think|plan|consider|imagin|list|point|want|expect|offer|rais|say|talk|mean|agree)\\w*|going)\\b';
+const IDEA_VERB = `(?:${IDEA_SOURCE_VERB}|(?:ask|think|plan|consider|imagin|list|want|expect|say|talk|mean|agree)\\w*\\b|going\\b)`;
 
 /** A past tense or participle. "-eed" words ("you need", "you proceed") are present tense, so the letter before "ed" can't be "e". */
 const PAST_VERB =
   '[a-z]*[a-df-z]ed|wrote|written|rewrote|rewritten|made|did|done|undid|undone|broke|broken|ran|put|set|cast|left|built|kept|sent|split|gave|given|took|taken|forgot|forgotten|hid|hidden';
+
+const YOUR_ARTIFACT = `\\byour (?:last |latest |previous |recent |new )?(?:${ASSISTANT_ARTIFACT})\\b`;
+const YOU_PAST = `\\b${NOT_ABOUT_OUTPUT_BEFORE_YOU}you(?:'ve| have)? (?:${ADVERB_AFTER_YOU})?(?!${IDEA_VERB})(?:${PAST_VERB})\\b`;
+const YOU_PROGRESSIVE = `\\b${NOT_ABOUT_OUTPUT_BEFORE_YOU}you(?:'re| are) (?:${ADVERB_AFTER_YOU})?(?!${IDEA_VERB})[a-z]+ing\\b`;
+const STILL_WONT_WORK = `\\bstill won'?t work\\b`;
 
 /**
  * A reference back to the assistant's output: "your" plus a built artifact, second person plus a past
@@ -112,12 +134,7 @@ const PAST_VERB =
  * connections") is as often impersonal, so it doesn't count.
  */
 const ASSISTANT_REFERENCE_RE = new RegExp(
-  [
-    `\\byour (?:last |latest |previous |recent |new )?(?:${ASSISTANT_ARTIFACT})s?\\b`,
-    `\\b${NOT_ABOUT_OUTPUT_BEFORE_YOU}you(?:'ve| have)? (?:${ADVERB_AFTER_YOU})?(?!${IDEA_VERB})(?:${PAST_VERB})\\b`,
-    `\\b${NOT_ABOUT_OUTPUT_BEFORE_YOU}you(?:'re| are) (?:${ADVERB_AFTER_YOU})?(?!${IDEA_VERB})[a-z]+ing\\b`,
-    `\\bstill won'?t work\\b`,
-  ].join('|'),
+  [YOUR_ARTIFACT, YOU_PAST, YOU_PROGRESSIVE, STILL_WONT_WORK].join('|'),
   'i',
 );
 
