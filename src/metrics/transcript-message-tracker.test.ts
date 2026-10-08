@@ -840,6 +840,12 @@ describe('TranscriptMessageTracker', () => {
       "That terraform plan won't work, you're creating the bucket and its policy in one apply.",
       "A singleton won't work here, every request needs its own client.",
       "Your approach won't work for us, let's go back.",
+      // A contrast turns away from agreeing in the sentence before.
+      "Good call on the logging. But the migration won't work on prod.",
+      "Fair point. However, the migration won't work on prod.",
+      // A hypothetical whose verb takes "it" says when the output fails.
+      "If you run it on Windows, it won't work.",
+      "If we deploy it like this it won't work.",
     ];
 
     /** A hypothetical option, agreement with the assistant, or an idea it proposed is design discussion after a turn that acted too. */
@@ -1171,6 +1177,12 @@ describe('TranscriptMessageTracker', () => {
       ['repeated "you" with an adverb', `A cache won't work ${'you just '.repeat(44_000)}`],
       ['repeated hypothetical "you"', `A cache won't work ${'if you unless you '.repeat(22_000)}`],
       ['repeated hypothetical before the phrase', `${'if you '.repeat(60_000)}won't work`],
+      [
+        'repeated hypothetical about "it" before the phrase',
+        `${'if you run it '.repeat(30_000)}won't work`,
+      ],
+      ['long word after a hypothetical', `if you ${'r'.repeat(400_000)} it won't work`],
+      ['repeated contrast after agreement', `Agreed. ${'but '.repeat(100_000)}it won't work`],
       ['repeated idea source', `A cache won't work ${'you just suggested '.repeat(20_000)}`],
       ['repeated "at this point you"', `A cache won't work ${'at this point you '.repeat(22_000)}`],
       ['long letter run before the phrase', `${'a'.repeat(400_000)} won't work`],

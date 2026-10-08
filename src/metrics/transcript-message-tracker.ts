@@ -168,12 +168,29 @@ const IDEA_REFERENCE_RE = new RegExp(
   'i',
 );
 
-/** A hypothetical about "you" or "we" ("if you added a cache", "if we do it that way"). Tested only on the text before "won't work": one after it ("that won't work if we deploy to Windows") says when the output fails. */
-const HYPOTHETICAL_OPTION_RE = new RegExp(`\\b(?:${HYPOTHETICAL}) (?:you|we)\\b`, 'i');
+/**
+ * A hypothetical about "you" or "we" ("if you added a cache", "if we do it that way"). Tested only on
+ * the text before "won't work": one after it ("that won't work if we deploy to Windows") says when
+ * the output fails. One whose verb takes "it" ("if you run it on Windows, it won't work") says that
+ * too, so it doesn't match, except with "do": "do it" stands in for an option.
+ */
+const HYPOTHETICAL_OPTION_RE = new RegExp(
+  `\\b(?:${HYPOTHETICAL}) (?:you|we)\\b(?! (?!(?:do|does|did)\\b)[a-z]+ it\\b)`,
+  'i',
+);
+
+/** Up to one leading interjection or conjunction, with any punctuation after it. */
+const OPTIONAL_LEADING_FILLER = `(?:(?:${LEADING_FILLER})\\b${LEADING_PUNCTUATION}*\\s+)?`;
 
 /** Agreeing with the assistant ("You're right that a cache won't work", "Agreed, that won't work") repeats its own caveat back to it. */
 const AGREEMENT_RE = new RegExp(
-  `^(?:(?:${LEADING_FILLER})\\b${LEADING_PUNCTUATION}*\\s+)?(?:(?:you'?re|you are) (?:totally |absolutely |completely )?right|agreed|i agree|good (?:point|call)|fair (?:point|enough)|true)\\b`,
+  `^${OPTIONAL_LEADING_FILLER}(?:(?:you'?re|you are) (?:totally |absolutely |completely )?right|agreed|i agree|good (?:point|call)|fair (?:point|enough)|true)\\b`,
+  'i',
+);
+
+/** A sentence that opens on a contrast ("Good call on the logging. But the migration won't work") turns away from agreement in the sentence before it. */
+const CONTRAST_RE = new RegExp(
+  `^${OPTIONAL_LEADING_FILLER}(?:but|however|still|yet|that said)\\b`,
   'i',
 );
 
@@ -194,17 +211,14 @@ function someWontWorkSentence(
 
 /**
  * After a turn that changed something, "won't work" rejects what it changed, unless the sentence
- * frames an option as hypothetical, agrees with the assistant, or names an idea the assistant
- * proposed rather than built.
+ * frames an option as hypothetical, agrees with the assistant or follows a sentence that does
+ * without opening on a contrast, or names an idea the assistant proposed rather than built.
  */
 function rejectsActionOutput(sentence: string, before: string): boolean {
   const lead = sentence.slice(0, sentence.search(WONT_WORK_RE));
-  return (
-    !HYPOTHETICAL_OPTION_RE.test(lead) &&
-    !AGREEMENT_RE.test(sentence) &&
-    !AGREEMENT_RE.test(before) &&
-    !IDEA_REFERENCE_RE.test(sentence)
-  );
+  const agrees =
+    AGREEMENT_RE.test(sentence) || (AGREEMENT_RE.test(before) && !CONTRAST_RE.test(sentence));
+  return !HYPOTHETICAL_OPTION_RE.test(lead) && !agrees && !IDEA_REFERENCE_RE.test(sentence);
 }
 
 /**
