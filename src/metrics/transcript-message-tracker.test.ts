@@ -788,6 +788,12 @@ describe('TranscriptMessageTracker', () => {
     /** Sets A, B and C describe the assistant's previous turn in prose. */
     type ContextRow = HeldOutRow & { readonly context: string };
 
+    /** Set D lists the tools the assistant called in its previous turn, and summarises its reply. */
+    type ToolRow = HeldOutRow & {
+      readonly assistantTools: readonly string[];
+      readonly assistantText: string;
+    };
+
     const readSets = <Row extends HeldOutRow>(
       file: string,
     ): Readonly<Record<string, HeldOutSet<Row>>> =>
@@ -867,8 +873,9 @@ describe('TranscriptMessageTracker', () => {
     }
 
     // Model-written sets. A, B and C were read while writing the turn-state rule, so they are
-    // development data. D was written and committed before that rule, and is scored once after the
-    // rule is frozen. C played that part for the text-alone rule, first scored at b241f1b. The
+    // development data. D was written and committed (0cf775d) before that rule, which was frozen at
+    // 3dd6853 and then scored on D once, so D is the estimate of how it generalises. C played that
+    // part for the text-alone rule, first scored at b241f1b. The
     // results are pinned measurements, not targets: a rule change updates them, and only a fresh set
     // can say whether the change generalises. Each set pins the row indices of the corrections it
     // misses and the design rows it flags, so a change that swaps which rows pass at the same totals
@@ -917,6 +924,31 @@ describe('TranscriptMessageTracker', () => {
         );
       },
     );
+
+    const TOOL_SETS = readSets<ToolRow>('wont-work-held-out-d.json');
+
+    it('scores held-out set D on its text alone', () => {
+      expectScore(
+        score(TOOL_SETS.D.rows, (row) => countCorrections(row.text)),
+        {
+          corrections: 40,
+          design: 40,
+          missed: [0, 29, 38, 39, 57, 59, 65],
+          flagged: [
+            1, 6, 13, 16, 23, 26, 27, 30, 31, 34, 37, 40, 51, 67, 71, 73, 74, 75, 76, 77, 79,
+          ],
+        },
+        7,
+      );
+    });
+
+    it('scores held-out set D with the tools its assistant called', () => {
+      expectScore(
+        score(TOOL_SETS.D.rows, (row) => countCorrectionsAfterTurn(row.text, row.assistantTools)),
+        { corrections: 40, design: 40, missed: [], flagged: [15, 41, 43, 44, 64, 78, 79] },
+        0,
+      );
+    });
 
     // Fake timers freeze Date.now(), so they can't time a regex. Each input is
     // sized so a backtracking pattern takes seconds while the linear one takes
