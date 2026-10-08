@@ -14,7 +14,8 @@
  *     Fails if any of those files disagrees with package.json, or if the newest CHANGELOG
  *     entry isn't for package.json's version; release.yml runs this before tagging. With
  *     --base it also fails if this branch has changed the version or an already-released
- *     CHANGELOG entry since it branched from <ref>; CI runs that on every PR except the release PR.
+ *     CHANGELOG entry since it branched from <ref>; CI runs that on every PR except the
+ *     release PR.
  *   tsx scripts/release-files.ts notes
  *     Prints the CHANGELOG entry for package.json's version, which becomes the release PR's
  *     description.

@@ -375,7 +375,7 @@ with the same exit codes as the human-readable mode.
 Create one with `npx changeset`, which asks for the bump and the summary, or in one line with
 `npx changeset --patch @newrelic/preflight -m "..."` (or `--minor`, `--major`). You can also
 write the file by hand. If you do, give it a name that says what it's about, such as
-`.changeset/fix-doctor-windows-hook-path.md`. Commit it along with the change it describes. A PR
+`.changeset/doctor-json-output.md`. Commit it along with the change it describes. A PR
 that makes several changes worth their own entries can add several changesets.
 
 Changesets don't conflict the way version bumps did. Every PR used to bump the version in five
