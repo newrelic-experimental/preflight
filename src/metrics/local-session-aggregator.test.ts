@@ -10,10 +10,9 @@ import { join } from 'node:path';
 import { localDateKey } from '../lib/date.js';
 import {
   collectCommitsAcrossRepos,
-  commitUrlFromRemote,
   LocalSessionAggregator,
-  repoNameFromRemote,
   RepoNameResolver,
+  stripHeredocs,
 } from './local-session-aggregator.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
 
@@ -253,56 +252,6 @@ describe('LocalSessionAggregator', () => {
   });
 });
 
-describe('repoNameFromRemote', () => {
-  it.each([
-    ['git@github.com:acme/widgets.git', 'acme/widgets'],
-    ['https://github.com/acme/widgets.git', 'acme/widgets'],
-    ['https://github.com/acme/widgets', 'acme/widgets'],
-    ['ssh://git@github.com/acme/widgets.git', 'acme/widgets'],
-  ])('parses %s', (remote, expected) => {
-    expect(repoNameFromRemote(remote)).toBe(expected);
-  });
-
-  it('returns null for a missing remote', () => {
-    expect(repoNameFromRemote(null)).toBeNull();
-    expect(repoNameFromRemote(undefined)).toBeNull();
-  });
-});
-
-describe('commitUrlFromRemote', () => {
-  const hash = 'abc1234';
-
-  it('builds a browsable URL from an SSH remote', () => {
-    expect(commitUrlFromRemote('git@github.com:acme/widgets.git', hash)).toBe(
-      `https://github.com/acme/widgets/commit/${hash}`,
-    );
-  });
-
-  it('builds a browsable URL from an HTTPS remote', () => {
-    expect(commitUrlFromRemote('https://github.com/acme/widgets.git', hash)).toBe(
-      `https://github.com/acme/widgets/commit/${hash}`,
-    );
-  });
-
-  it('strips embedded credentials rather than leaking them into the link', () => {
-    expect(commitUrlFromRemote('https://token@github.com/acme/widgets.git', hash)).toBe(
-      `https://github.com/acme/widgets/commit/${hash}`,
-    );
-  });
-
-  it('supports non-github hosts', () => {
-    expect(commitUrlFromRemote('git@gitlab.com:acme/widgets.git', hash)).toBe(
-      `https://gitlab.com/acme/widgets/commit/${hash}`,
-    );
-  });
-
-  it('returns null when the remote or hash is unusable, so the UI shows plain text', () => {
-    expect(commitUrlFromRemote(null, hash)).toBeNull();
-    expect(commitUrlFromRemote('/srv/local/repo.git', hash)).toBeNull();
-    expect(commitUrlFromRemote('git@github.com:acme/widgets.git', '')).toBeNull();
-  });
-});
-
 describe('collectCommitsAcrossRepos', () => {
   let repoDir: string;
   let initialBranch: string;
@@ -398,6 +347,34 @@ describe('LocalSessionAggregator timeline persistence', () => {
       command: 'npm test',
       isTestCommand: true,
     });
+  });
+
+  it('persists the created PR number so a replay can match it to a later merge', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 100,
+      command: 'gh pr create --fill',
+      createdPrNumber: '42',
+    });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]?.createdPrNumber).toBe('42');
+  });
+
+  it('persists a background run, whose success predates the command finishing', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 100,
+      command: 'gh pr merge 42',
+      runInBackground: true,
+    });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Bash', timestamp: 200, command: 'ls' });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]?.runInBackground).toBe(true);
+    expect(timeline[1]).not.toHaveProperty('runInBackground');
   });
 
   it('omits the timeline entirely when nothing was recorded for it', () => {
@@ -601,7 +578,8 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
     });
     agg.recordTokenUsage(REAL_ID, {
       costUsd: 1,
-      timestamp: Date.parse('2026-09-10T12:00:00Z'),
+      // Local noon, so the turn's local day key is the baseline's '2026-09-10'.
+      timestamp: new Date(2026, 8, 10, 12).getTime(),
       agentId: 'agent-1',
     });
 
@@ -668,4 +646,70 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
     expect(summary?.estimatedCostUsd).toBe(2);
     expect(summary?.subagentCostUsd).toBe(2);
   });
+});
+
+describe('stripHeredocs', () => {
+  it.each([
+    ['a closed heredoc', "cat <<'EOF'\ngit push\nEOF\ngit log", "cat <<'EOF'\ngit log", false],
+    [
+      'a heredoc inside "$( … )"',
+      'git commit -m "$(cat <<\'EOF\'\nfix: git push\nEOF\n)" && git push',
+      'git commit -m "$(cat <<\'EOF\'\n)" && git push',
+      false,
+    ],
+    ['a <<- heredoc', 'cat <<-EOF\n\tgit push\n\tEOF\ngit log', 'cat <<-EOF\ngit log', false],
+    [
+      'a heredoc with CRLF line ends',
+      'cat <<EOF\r\ngit push\r\nEOF\r\ngit log',
+      'cat <<EOF\r\ngit log',
+      false,
+    ],
+    ['a here-string', 'grep -q x <<<"$(gh pr view 1)"\ngit push', null, false],
+    ['a double-quoted <<', 'gh pr comment 1 --body "see <<X"\ngit push', null, true],
+    ['a single-quoted <<', "echo 'a <<B'\ngit push", null, true],
+    ['a quoted "<<EOF"', 'echo "<<EOF"\ngit push', null, true],
+    ['a << in a comment with an apostrophe', "# don't <<X\ngit push", null, true],
+    ['a << before a number', 'echo $((1<<2))\ngit push', null, false],
+    [
+      'a quoted << before a real heredoc',
+      'echo "see <<X" && cat <<EOF\ngit push\nEOF\ngit log',
+      'echo "see <<X" && cat <<EOF\ngit log',
+      true,
+    ],
+    [
+      'a quoted <<EOF that a real heredoc closes',
+      'gh pr merge 1 --body "see <<EOF"\ngh pr comment 1 <<\'EOF\'\nDone.\nEOF',
+      'gh pr merge 1 --body "see <<EOF"',
+      true,
+    ],
+  ])('reads %s and reports no unclosed heredoc', (_label, command, text, readingsDiffer) => {
+    expect(stripHeredocs(command)).toEqual({
+      text: text ?? command,
+      unclosed: false,
+      readingsDiffer,
+    });
+  });
+
+  it.each([
+    ['a heredoc whose terminator never comes', 'cat <<EOF\ngit log\n', 'cat <<EOF', false],
+    ['an unquoted << in arithmetic', 'echo $((1<<N))\ngit push', 'echo $((1<<N))', false],
+    ['a quoted << whose quote never closes', 'echo "see <<X\ngit push', 'echo "see <<X', true],
+    [
+      'a <<- terminator indented with spaces',
+      'cat <<-EOF\n  git push\n  EOF\ngit log',
+      'cat <<-EOF',
+      false,
+    ],
+    [
+      'a terminator with a trailing space',
+      'cat <<EOF\ngit push\nEOF \ngit log',
+      'cat <<EOF',
+      false,
+    ],
+  ])(
+    'drops the lines after %s and reports it unclosed',
+    (_label, command, text, readingsDiffer) => {
+      expect(stripHeredocs(command)).toEqual({ text, unclosed: true, readingsDiffer });
+    },
+  );
 });

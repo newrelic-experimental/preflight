@@ -6,9 +6,9 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, copyFileSync, realpathSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, copyFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { Command, Option } from 'commander';
 
@@ -51,9 +51,11 @@ import {
   resolveBinaryPath,
   resolveNamedBinaryOnPath,
 } from './schedule.js';
+import { detectUpdateSupport, updateBlockerLines } from './update-support.js';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
 import { LocalStore } from '../storage/index.js';
 import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
+import type { DiagnosticCheck } from './diagnostics.js';
 
 const logger = createLogger('cli');
 
@@ -186,24 +188,6 @@ function printPathWarning(): void {
   print('  Fix: run `npm link` in the project directory, or install globally:');
   print('    npm install -g @newrelic/preflight');
   print('');
-}
-
-// ---------------------------------------------------------------------------
-// Repo root discovery (for update command and setup wizard)
-// ---------------------------------------------------------------------------
-
-export function findRepoRoot(): string | null {
-  try {
-    let dir = dirname(realpathSync(process.argv[1]));
-    while (true) {
-      if (existsSync(join(dir, 'package.json'))) return dir;
-      const parent = dirname(dir);
-      if (parent === dir) return null;
-      dir = parent;
-    }
-  } catch {
-    return null;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -494,45 +478,12 @@ async function handleLocal(options: { clean?: boolean }): Promise<void> {
 
 async function handleUpdate(): Promise<void> {
   migrateStoragePath();
-  const repoRoot = findRepoRoot();
-  if (!repoRoot) {
-    print(
-      '✗ Could not locate the repo root. Run this command from within the cloned repo or after npm link.',
-    );
+  const support = detectUpdateSupport();
+  if (!support.supported) {
+    for (const line of updateBlockerLines(support.blocker)) print(line);
     process.exit(1);
   }
-
-  let gitRoot!: string;
-  try {
-    gitRoot = execFileSync('git', ['-C', repoRoot, 'rev-parse', '--show-toplevel'], {
-      stdio: 'pipe',
-      env: { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined },
-    })
-      .toString()
-      .trim();
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      print('✗ git is not installed or not found on PATH.');
-      print('  Install git (https://git-scm.com) then retry: preflight update');
-    } else {
-      print('✗ preflight was installed via a package manager, not cloned from source.');
-      print('  (If your .git directory is missing or corrupt, re-clone the repo instead.)');
-      print('  To update, reinstall using your package manager, e.g.:');
-      print('    npm install -g @newrelic/preflight@latest');
-      print('    pnpm add -g @newrelic/preflight@latest');
-    }
-    process.exit(1);
-  }
-  // If repoRoot sits below a node_modules directory within the git tree,
-  // preflight is installed as a dependency — not a source clone.
-  // path.relative() normalises separators on all platforms (robust on Windows).
-  if (relative(gitRoot, repoRoot).split(sep).includes('node_modules')) {
-    print('✗ preflight was installed via a package manager, not cloned from source.');
-    print('  To update, reinstall using your package manager, e.g.:');
-    print('    npm install -g @newrelic/preflight@latest');
-    print('    pnpm add -g @newrelic/preflight@latest');
-    process.exit(1);
-  }
+  const { repoRoot } = support;
 
   print(`Updating Preflight from ${repoRoot}...\n`);
 
@@ -589,6 +540,12 @@ function handleSchedule(options: { time?: string; disable?: boolean }): void {
   }
 
   if (options.time !== undefined) {
+    const support = detectUpdateSupport();
+    if (!support.supported) {
+      for (const line of updateBlockerLines(support.blocker)) print(line);
+      print('  The daily schedule runs `preflight update`, which cannot run on this install.');
+      process.exit(1);
+    }
     const match = options.time.match(/^(\d{1,2}):(\d{2})$/);
     if (!match) {
       print(`Invalid time format "${options.time}". Use HH:MM (e.g. 08:00).`);
@@ -1562,13 +1519,30 @@ function handleValidate(options: { config?: string }): void {
 // Doctor handler
 // ---------------------------------------------------------------------------
 
-async function handleDoctor(options: { config?: string; platform?: string }): Promise<void> {
+function doctorExitCode(checks: readonly DiagnosticCheck[]): number {
+  if (checks.some((c) => c.status === 'fail')) return 1;
+  return checks.some((c) => c.status === 'warn') ? 2 : 0;
+}
+
+async function handleDoctor(options: {
+  config?: string;
+  platform?: string;
+  json?: boolean;
+}): Promise<void> {
   const { runDiagnostics } = await import('./diagnostics.js');
   const configPath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
 
   const storagePath = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? undefined;
-  print('Running diagnostics...');
+  if (!options.json) {
+    print('Running diagnostics...');
+  }
   const checks = await runDiagnostics({ configPath, storagePath, platform: options.platform });
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(checks)}\n`);
+    process.exitCode = doctorExitCode(checks);
+    return;
+  }
 
   const ICON: Record<string, string> = { ok: '✓', warn: '⚠', fail: '✗', skip: '-' };
   const COL = 22;
@@ -1595,7 +1569,7 @@ async function handleDoctor(options: { config?: string; platform?: string }): Pr
   if (warns > 0) parts.push(`${warns} warning${warns > 1 ? 's' : ''}`);
   print(`${parts.join(', ')} found. Run the fix commands above, then restart.`);
 
-  process.exitCode = fails > 0 ? 1 : 2;
+  process.exitCode = doctorExitCode(checks);
 }
 
 // ---------------------------------------------------------------------------
@@ -1708,6 +1682,7 @@ export function createInstallProgram(): Command {
       '--platform <name>',
       'Platform to check hooks for (e.g. kiro, cursor) — Claude Code checked by default',
     )
+    .option('--json', 'Output results as JSON array instead of human-readable text')
     .action(handleDoctor);
 
   program

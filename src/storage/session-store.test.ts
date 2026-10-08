@@ -2658,6 +2658,18 @@ describe('buildSessionSummary timeline', () => {
                 success: true,
                 agentType: 'general-purpose',
               },
+              {
+                id: 'tc3',
+                sessionId: 'skill-agent-session',
+                toolName: 'Bash',
+                toolUseId: 'tu3',
+                timestamp: 1700000020000,
+                durationMs: 900,
+                success: true,
+                command: 'gh pr create --fill',
+                createdPrNumber: '42',
+                runInBackground: true,
+              },
             ],
           },
         ],
@@ -2670,7 +2682,11 @@ describe('buildSessionSummary timeline', () => {
       developer: 'alice',
     });
 
-    expect(summary.timeline).toHaveLength(2);
+    expect(summary.timeline).toHaveLength(3);
+    expect(summary.timeline![2]!.createdPrNumber).toBe('42');
+    expect(summary.timeline![0]!.createdPrNumber).toBeUndefined();
+    expect(summary.timeline![2]!.runInBackground).toBe(true);
+    expect(summary.timeline![0]!.runInBackground).toBeUndefined();
     expect(summary.timeline![0]!.toolName).toBe('Skill');
     expect(summary.timeline![0]!.skillName).toBe('unslop');
     expect(summary.timeline![0]!.agentType).toBeUndefined();
@@ -2705,6 +2721,48 @@ describe('SessionStore deserialization', () => {
     expect(session!.toolBreakdown['Read']).toBe(3);
     // Object.prototype must have no unexpected own enumerable properties from pollution
     expect(Object.keys(Object.prototype)).toEqual([]);
+  });
+
+  it('keeps a numeric createdPrNumber on timeline entries and drops anything else', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const raw = JSON.stringify({
+      sessionId: 'pr-num',
+      startTime: 1000,
+      endTime: 2000,
+      durationMs: 1000,
+      toolCallCount: 2,
+      developer: 'alice',
+      timeline: [
+        { timestamp: 1100, toolName: 'Bash', createdPrNumber: '42' },
+        { timestamp: 1200, toolName: 'Bash', createdPrNumber: 'not-a-number' },
+      ],
+    });
+    writeFileSync(join(tmpDir, 'sessions', '2026-01-01_pr-num.json'), raw + '\n');
+
+    const session = store.loadSession('pr-num');
+    expect(session!.timeline![0]!.createdPrNumber).toBe('42');
+    expect(session!.timeline![1]!.createdPrNumber).toBeUndefined();
+  });
+
+  it('keeps runInBackground on timeline entries only when it is true', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const raw = JSON.stringify({
+      sessionId: 'bg-run',
+      startTime: 1000,
+      endTime: 2000,
+      durationMs: 1000,
+      toolCallCount: 2,
+      developer: 'alice',
+      timeline: [
+        { timestamp: 1100, toolName: 'Bash', runInBackground: true },
+        { timestamp: 1200, toolName: 'Bash', runInBackground: 'yes' },
+      ],
+    });
+    writeFileSync(join(tmpDir, 'sessions', '2026-01-01_bg-run.json'), raw + '\n');
+
+    const session = store.loadSession('bg-run');
+    expect(session!.timeline![0]!.runInBackground).toBe(true);
+    expect(session!.timeline![1]!.runInBackground).toBeUndefined();
   });
 
   it('returns null for a session file with non-object JSON', () => {

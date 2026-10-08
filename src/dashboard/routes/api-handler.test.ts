@@ -5,6 +5,7 @@ import {
   computeCrossProcessTodaySessionIds,
   buildContextReplayEvents,
 } from './api-handler.js';
+import { spawnSync } from 'node:child_process';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import * as fs from 'node:fs';
@@ -19,6 +20,7 @@ import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
 import { makeUsage } from '../../__test-utils__/token-usage.js';
 import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
+import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
 
 import type { ToolCallRecord } from '../../storage/types.js';
 import type { GitWorkspaceReport } from '../../metrics/git-workspace-report.js';
@@ -641,6 +643,34 @@ describe('api-handler GET /api/sessions/:id', () => {
     await handler(req, res);
     expect(status()).toBe(200);
     expect(JSON.parse(body())).toEqual(fakeSession);
+  });
+
+  it('strips the persisted zero raw counts instead of returning them under qualityProxy', async () => {
+    const fakeSession = {
+      sessionId: 'sess-quality-zero',
+      qualityProxy: {
+        totalSignals: 0,
+        diffApplyCleanCount: 0,
+        diffFailCount: 0,
+        testPassCount: 0,
+        testFailCount: 0,
+        backtrackCount: 0,
+        selfCorrectionCount: 0,
+      },
+    };
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: (id: string) => (id === 'sess-quality-zero' ? fakeSession : null),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-quality-zero' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { qualityProxy?: { diffApplyRate?: number | null } };
+    expect(parsed.qualityProxy).toBeUndefined();
   });
 
   it('attaches qualityProxy and session-filtered toolSelectionScore to the own-live-session branch', async () => {
@@ -2366,6 +2396,84 @@ describe('api-handler GET /api/cost-per-tool', () => {
     // (liveMetrics.attributionRate: 1): attributed = live 0.03 + other
     // session's tool bucket 0.05 = 0.08; total = costTracker's session total
     // 0.5 + other session's estimatedCostUsd 0.4 = 0.9.
+    expect(result.totalAttributedCost).toBeCloseTo(0.08, 10);
+    expect(result.attributionRate).toBeCloseTo(0.08 / 0.9, 10);
+  });
+
+  it('does not double-count a session this --local process already holds live (persisted copy of a drained session)', async () => {
+    const liveMetrics = {
+      turns: [],
+      costByToolType: { Read: { totalCost: 0.01, callCount: 1, avgCost: 0.01 } },
+      costBySkill: {
+        unslop: {
+          callCount: 1,
+          attributedCallCount: 1,
+          totalCost: 0.02,
+          avgCost: 0.02,
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 0,
+          totalDurationMs: 200,
+          tokens: 150,
+        },
+      },
+      totalAttributedCost: 0.03,
+      attributionRate: 1,
+    };
+    // Already reflected in liveMetrics above (this --local process drained
+    // sess-live) — its persisted copy must not be folded in again.
+    const liveSession = {
+      sessionId: 'sess-live',
+      attribution: {
+        buckets: { tool: { Read: { costUsd: 999, tokens: 0, count: 999, durationMs: 0 } } },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    };
+    const otherSession = {
+      sessionId: 'sess-other',
+      estimatedCostUsd: 0.4,
+      attribution: {
+        buckets: {
+          tool: { Read: { costUsd: 0.05, tokens: 0, count: 2, durationMs: 0 } },
+          skill: { unslop: { costUsd: 0.01, tokens: 40, count: 1, durationMs: 100 } },
+        },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    };
+    const handler = createApiHandler({
+      sessionTracker: {
+        getMetrics: () => ({ sessionId: 'local-1790000000000' }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getSessionName: () => null,
+        getTodaySessionIds: () => ['sess-live'],
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      turnCostAttributor: {
+        getMetrics: () => liveMetrics,
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+      sessionStore: {
+        loadTodaySessions: () => [liveSession, otherSession],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      costTracker: {
+        getMetrics: () => ({ sessionTotalCostUsd: 0.5 }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // sess-live's bucket (cost 999) must never be folded in — only
+    // other-session's, exactly as in the own-session-id test above, but here
+    // the excluded session's id differs from the server's synthetic own id.
+    expect(result.costByToolType.Read.callCount).toBe(3);
+    expect(result.costByToolType.Read.totalCost).toBeCloseTo(0.06, 10);
+    expect(result.costByToolType.Read.avgCost).toBeCloseTo(0.02, 10);
     expect(result.totalAttributedCost).toBeCloseTo(0.08, 10);
     expect(result.attributionRate).toBeCloseTo(0.08 / 0.9, 10);
   });
@@ -4097,6 +4205,281 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['pr-session-1']);
   });
 
+  it('clears ready_for_review once the PR number captured at create is merged', async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'pr-merged-1',
+            timeline: [
+              {
+                timestamp: startMs + 10_000,
+                durationMs: 500,
+                toolName: 'Bash',
+                success: true,
+                command: 'gh pr create --fill',
+                createdPrNumber: '42',
+              },
+              {
+                timestamp: startMs + 20_000,
+                durationMs: 500,
+                toolName: 'Bash',
+                success: true,
+                command: 'gh pr merge 42 --squash',
+              },
+            ],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const parsed = JSON.parse(body()) as SessionStatusPayload;
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    expect(parsed.sessionStatus.sessionIds.completed).toEqual(['pr-merged-1']);
+  });
+
+  const prSession = (
+    sessionId: string,
+    offsetMs: number,
+    command: string,
+    extra: {
+      repoName?: string;
+      cwd?: string;
+      createdPrNumber?: string;
+      success?: boolean;
+      runInBackground?: boolean;
+    },
+  ) => {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    return {
+      sessionId,
+      repoName: extra.repoName,
+      timeline: [
+        {
+          timestamp: startOfDay.getTime() + offsetMs,
+          durationMs: 500,
+          toolName: 'Bash',
+          success: extra.success ?? true,
+          command,
+          cwd: extra.cwd,
+          createdPrNumber: extra.createdPrNumber,
+          runInBackground: extra.runInBackground,
+        },
+      ],
+    };
+  };
+
+  const statusFor = async (sessions: unknown[]): Promise<SessionStatusPayload> => {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => sessions,
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    return JSON.parse(body()) as SessionStatusPayload;
+  };
+
+  it('clears ready_for_review when the same repo merges the PR from another session', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42 --squash', { repoName: 'acme/app' }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+  });
+
+  it('keeps ready_for_review when the same PR number is merged in a different repo', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42', { repoName: 'acme/other' }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it('keeps ready_for_review when a piped merge exits 0 but the merge itself may have failed', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42 --squash 2>&1 | tail -5', {
+        repoName: 'acme/app',
+      }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it('keeps ready_for_review when the merge ran in the background', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr checks 42 --watch && gh pr merge 42 --squash', {
+        repoName: 'acme/app',
+        runInBackground: true,
+      }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it('matches a merge run from the primary checkout to a PR created in a linked worktree', async () => {
+    const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+    const git = (cwd: string, ...args: string[]) =>
+      spawnSync('git', args, { cwd, env, stdio: 'ignore' });
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pr-773-')));
+    const primary = path.join(root, 'primary');
+    const linked = path.join(root, 'linked');
+    try {
+      fs.mkdirSync(primary);
+      git(primary, 'init', '-q');
+      git(
+        primary,
+        '-c',
+        'user.email=t@t',
+        '-c',
+        'user.name=t',
+        'commit',
+        '--allow-empty',
+        '-qm',
+        'i',
+      );
+      git(primary, 'worktree', 'add', '-q', linked);
+
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: linked, createdPrNumber: '42' }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: primary }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not match a merge to a create across sessions when neither has a repo', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', { createdPrNumber: '42' }),
+      prSession('merger', 20_000, 'gh pr merge 42', {}),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  // Claude Code reports a non-zero `gh pr merge` (pending checks, a conflict,
+  // branch protection) through PostToolUseFailure, persisted as success: false.
+  it('keeps ready_for_review when another session in the same repo fails to merge the PR', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42 --squash', {
+        repoName: 'acme/app',
+        success: false,
+      }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it.each(['gh pr merge 42 --auto --squash', 'gh pr merge 42 --disable-auto'])(
+    'keeps ready_for_review when `%s` only toggles auto-merge',
+    async (command) => {
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', {
+          repoName: 'acme/app',
+          createdPrNumber: '42',
+        }),
+        prSession('merger', 20_000, command, { repoName: 'acme/app' }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    },
+  );
+
+  it.each([
+    'gh pr merge 42 -R acme/other',
+    'gh pr merge 42 --repo=acme/other --squash',
+    'GH_REPO=acme/other gh pr merge 42',
+  ])('keeps ready_for_review when `%s` merges the same number in another repo', async (command) => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, command, { repoName: 'acme/app' }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it('resolves no worktree identity for buffer tool calls that record no git or PR activity', async () => {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const outsideRepo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pr-773-no-repo-')));
+    const bufferEvents = Array.from({ length: 5 }, (_, i) => {
+      const base = {
+        sessionId: 'reader',
+        toolUseId: `read-${i}`,
+        tool: 'Read',
+        cwd: outsideRepo,
+        timestamp: startOfDay.getTime() + 10_000 + i,
+      };
+      return [
+        { ...base, mode: 'pre', toolInput: { file_path: path.join(outsideRepo, `f${i}`) } },
+        { ...base, mode: 'post', success: true },
+      ];
+    }).flat();
+    const resolveSpy = jest.spyOn(WorktreeIdentityResolver.prototype, 'resolve');
+    try {
+      const handler = createApiHandler({
+        localStore: { peekAllBuffers: () => bufferEvents },
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+      const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+      const { res, status } = fakeRes();
+      await handler(req, res);
+      expect(status()).toBe(200);
+      expect(resolveSpy).not.toHaveBeenCalled();
+    } finally {
+      resolveSpy.mockRestore();
+      fs.rmSync(outsideRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps ready_for_review for a PR created in another repo with -R when the cwd repo merges that number', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill -R acme/other', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42', { repoName: 'acme/app' }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
   it('marks a live session with ordinary tool calls as working', async () => {
     const now = Date.now();
     const startOfDay = new Date(now);
@@ -4997,67 +5380,111 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     expect(result.dailyPeaks[2].date).toBe(localDateKey());
   });
 
-  it('keys dailyPeaks correctly across a DST transition, where a local day is 23h (not 86_400_000ms)', async () => {
-    const originalTz = process.env.TZ;
-    process.env.TZ = 'America/New_York';
-    jest.useFakeTimers();
-    try {
-      // 2026-03-08 is a "spring forward" DST transition day in
-      // America/New_York — local midnight to local midnight is only 23 real
-      // hours (82_800_000ms), not 86_400_000ms.
-      const mar8Start = new Date(2026, 2, 8, 0, 0, 0).getTime();
-      const mar9Start = mar8Start + 23 * 60 * 60_000;
-      // "Today" = March 9 mid-afternoon, so days=3 covers Mar 7, 8, 9.
-      jest.setSystemTime(new Date(mar9Start + 15 * 60 * 60_000));
+  // Jest gives each test file its own copy of `process.env`, so assigning
+  // `process.env.TZ` inside a test never reaches Node's time-zone hook: the
+  // zone cannot be pinned from here. Instead, find a DST transition in the
+  // host's own zone with the same local-date arithmetic the handler uses. In a
+  // zone without DST a local day is always 86_400_000ms, the fixed-ms bug this
+  // guards against cannot occur, and the test is skipped.
+  //
+  // The transition day and the day after must both begin at a real 00:00. In a
+  // zone that springs forward at local midnight (America/Havana, Africa/Cairo,
+  // Asia/Beirut, Atlantic/Azores), `new Date(y, m, d)` resolves the skipped
+  // midnight to 01:00, and the handler's own ranges for the transition day and
+  // the day after then overlap by that hour, a separate defect in
+  // `computeDailyPeakConcurrency` that no fixture here can pass around. The
+  // scan moves on to the same zone's fall-back transition, which still
+  // exercises the fixed-ms bug.
+  const dstTransitionDay = ((): { start: number; next: number } | null => {
+    const startsAtMidnight = (d: Date): boolean => d.getHours() === 0 && d.getMinutes() === 0;
+    for (let i = 0; i < 366; i++) {
+      const start = new Date(2026, 0, 1 + i);
+      const next = new Date(2026, 0, 2 + i);
+      if (next.getTime() - start.getTime() === 86_400_000) continue;
+      if (startsAtMidnight(start) && startsAtMidnight(next)) {
+        return { start: start.getTime(), next: next.getTime() };
+      }
+    }
+    return null;
+  })();
 
-      // Two overlapping sessions active 30 minutes into March 9 local time —
-      // after the *correct* boundary (mar9Start) but still before the
-      // *buggy* one (mar8Start + 86_400_000 = mar9Start + 1h).
-      const overlapTs = mar9Start + 30 * 60_000;
-      const sessions = [
-        { sessionId: 's1', timeline: [{ timestamp: overlapTs }] },
-        { sessionId: 's2', timeline: [{ timestamp: overlapTs }] },
-      ];
-
-      const handler = createApiHandler({
-        concurrencyTracker: makeConcurrencyTracker(),
-        liveSessionRegistry: makeLiveRegistry(),
-        sessionStore: {
-          loadTodaySessions: () => [],
-          loadAllSessions: () => sessions,
-          listSessions: () => [],
-          loadSession: () => null,
-        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-      });
-      const req = {
-        method: 'GET',
-        url: '/api/concurrency?view=history&days=3',
-      } as IncomingMessage;
-      const { res, status, body } = fakeRes();
-      await handler(req, res);
-      expect(status()).toBe(200);
-      const result = JSON.parse(body());
-      // 3-day window [Mar7, Mar8, Mar9] → indices [0, 1, 2].
-      expect(result.dailyPeaks[1].date).toBe('2026-03-08');
-      expect(result.dailyPeaks[2].date).toBe('2026-03-09');
-      // A naive `dayEndMs = mar8Start + 86_400_000` (March 9 01:00 local —
-      // an hour past the true DST-shortened boundary) would wrongly
-      // attribute this overlap to March 8 instead of 9.
-      expect(result.dailyPeaks[1].peak).toBe(0);
-      expect(result.dailyPeaks[2].peak).toBe(2);
-    } finally {
-      jest.useRealTimers();
-      // `process.env.TZ = undefined` coerces to the literal string
-      // "undefined" (env vars are always strings), which then makes
-      // `Intl.DateTimeFormat().resolvedOptions().timeZone` resolve to
-      // "undefined" and silently breaks local-time computation for every
-      // later test in this Jest worker (maxWorkers: 1) — including this
-      // file's own local-vs-UTC tests. Delete the key outright when TZ was
-      // never set, rather than assigning `undefined` to it.
-      if (originalTz === undefined) delete process.env.TZ;
-      else process.env.TZ = originalTz;
+  // The DST test below skips silently when the scan finds nothing, which is
+  // also what a misspelled `TZ` or a runner without that zone's data produces:
+  // Node falls back to UTC. So in CI, where every `TZ` is a canonical IANA
+  // name, the process zone must match what `TZ` names (an invalid name makes
+  // the explicit formatter throw a RangeError), and under the DST zones CI runs
+  // this file in, the scan must find a day. It doesn't run locally, because a
+  // valid POSIX-form `TZ` such as `:America/New_York` is honored by Node but
+  // rejected by the explicit formatter.
+  const CI_DST_ZONES = ['America/New_York', 'Pacific/Auckland', 'America/Havana'];
+  const requestedZone = process.env.TZ;
+  (requestedZone && process.env.CI ? it : it.skip)('runs under the time zone TZ requests', () => {
+    expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(
+      new Intl.DateTimeFormat('en', { timeZone: requestedZone }).resolvedOptions().timeZone,
+    );
+    if (requestedZone && CI_DST_ZONES.includes(requestedZone)) {
+      expect(dstTransitionDay).not.toBeNull();
     }
   });
+
+  (dstTransitionDay === null ? it.skip : it)(
+    'keys dailyPeaks correctly across a DST transition, where a local day is not 86_400_000ms',
+    async () => {
+      jest.useFakeTimers();
+      try {
+        const { start: transitionStart, next: nextStart } = dstTransitionDay as {
+          start: number;
+          next: number;
+        };
+        const isShortDay = nextStart - transitionStart < 86_400_000;
+        // "Today" = the day after the transition, mid-afternoon, so days=3
+        // covers [day before, transition day, day after].
+        jest.setSystemTime(new Date(nextStart + 15 * 60 * 60_000));
+
+        // Two overlapping sessions active halfway between the *correct*
+        // boundary (nextStart) and the *buggy* one (transitionStart +
+        // 86_400_000). On a short (spring-forward) day that instant belongs
+        // to the next day; on a long (fall-back) day, to the transition day.
+        const naiveEnd = transitionStart + 86_400_000;
+        const overlapTs = Math.round((nextStart + naiveEnd) / 2);
+        const sessions = [
+          { sessionId: 's1', timeline: [{ timestamp: overlapTs }] },
+          { sessionId: 's2', timeline: [{ timestamp: overlapTs }] },
+        ];
+
+        const handler = createApiHandler({
+          concurrencyTracker: makeConcurrencyTracker(),
+          liveSessionRegistry: makeLiveRegistry(),
+          sessionStore: {
+            loadTodaySessions: () => [],
+            loadAllSessions: () => sessions,
+            listSessions: () => [],
+            loadSession: () => null,
+          } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+        });
+        const req = {
+          method: 'GET',
+          url: '/api/concurrency?view=history&days=3',
+        } as IncomingMessage;
+        const { res, status, body } = fakeRes();
+        await handler(req, res);
+        expect(status()).toBe(200);
+        const result = JSON.parse(body());
+        // 3-day window [day before, transition, day after] → indices [0, 1, 2].
+        // The date checks only confirm that layout, since date keying has its
+        // own test ("view=history keys each day's dailyPeaks entry by local
+        // date"); the peak checks are the regression guard.
+        expect(result.dailyPeaks[1].date).toBe(localDateKey(transitionStart));
+        expect(result.dailyPeaks[2].date).toBe(localDateKey(nextStart));
+        // A naive `dayEndMs = transitionStart + 86_400_000` would attribute
+        // this overlap to the wrong one of the two days.
+        expect(result.dailyPeaks[1].peak).toBe(isShortDay ? 0 : 2);
+        expect(result.dailyPeaks[2].peak).toBe(isShortDay ? 2 : 0);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it('counts a session seen only via peekAllBuffers in the current field', async () => {
     const now = Date.now();
@@ -5993,6 +6420,77 @@ describe('api-handler GET /api/quality-proxy', () => {
     expect(parsed.diffApplyRate).toBeCloseTo(0.9);
   });
 
+  it('does not double-count a session this --local process already holds live (persisted copy of a drained session)', async () => {
+    const tracker = new QualityProxyTracker();
+    const record = (overrides: Partial<ToolCallRecord>): ToolCallRecord => ({
+      id: `id-${Math.random()}`,
+      sessionId: 'sess-live',
+      toolName: 'Edit',
+      toolUseId: `tu-${Math.random()}`,
+      timestamp: Date.now(),
+      durationMs: 1,
+      success: true,
+      ...overrides,
+    });
+    // Live, already reflected via the --local process's drain of sess-live:
+    // 1 applied / 1 failed = 50% apply rate.
+    tracker.recordToolCall(record({ toolName: 'Edit', filePath: '/a.ts', success: true }));
+    tracker.recordToolCall(record({ toolName: 'Edit', filePath: '/c.ts', success: false }));
+    const liveRawCounts = tracker.getRawCounts();
+    const persistedToday = [
+      {
+        // sess-live's activity is already in the live tracker above (this
+        // --local process drained it) — must NOT be added again, even
+        // though its sessionId differs from the server's synthetic own id.
+        sessionId: 'sess-live',
+        qualityProxy: liveRawCounts,
+      },
+      {
+        sessionId: 'sess-other',
+        qualityProxy: {
+          totalSignals: 8,
+          diffApplyCleanCount: 8,
+          diffFailCount: 0,
+          testPassCount: 0,
+          testFailCount: 0,
+          backtrackCount: 0,
+          selfCorrectionCount: 0,
+        },
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
+    >;
+    const handler = createApiHandler({
+      qualityProxyTracker: tracker,
+      sessionTracker: {
+        getMetrics: () =>
+          ({ sessionId: 'local-1790000000000' }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getSessionName: () => null,
+        getTodaySessionIds: () => ['sess-live'],
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      sessionStore: {
+        loadTodaySessions: () => persistedToday,
+        listSessions: () => [],
+        loadSession: () => null,
+      },
+    });
+    const req = { method: 'GET', url: '/api/quality-proxy' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    // sess-live's persisted counts (identical to the live counts above) must
+    // not be added again — only sess-other's 8 applies are: 1 (live applied)
+    // + 8 (other) = 9 applied, 1 failed => 10 total, diffApplyRate = 9/10 = 0.9.
+    expect(parsed.totalSignals).toBe(10);
+    expect(parsed.diffApplyRate).toBeCloseTo(0.9);
+  });
+
   it('ignores persisted-today sessions with no qualityProxy field (legacy files)', async () => {
     const tracker = new QualityProxyTracker();
     const record = (overrides: Partial<ToolCallRecord>): ToolCallRecord => ({
@@ -6450,6 +6948,97 @@ describe('api-handler GET /api/tool-selection-score', () => {
     // the deflated score a doubled penalty would produce.
     expect(parsed.score).toBe(expectedOwnSummary.score);
   });
+
+  it('does not double-count a session this --local process already holds live (persisted copy of a drained session)', async () => {
+    const now = Date.now();
+    // Cross-process peeked buffer path: sess-live is a session this --local
+    // process already drained into its own trackers, so its raw peeked
+    // events must not be reconstructed a second time here.
+    const peekedEvents = [
+      {
+        mode: 'pre',
+        tool: 'Read',
+        timestamp: now,
+        toolUseId: 'p1',
+        sessionId: 'sess-live',
+        toolInput: { file_path: '/g.ts' },
+      },
+      {
+        mode: 'post',
+        tool: 'Read',
+        timestamp: now,
+        toolUseId: 'p1',
+        sessionId: 'sess-live',
+        toolOutput: {},
+        outputSize: 100,
+        success: true,
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['localStore']>['peekAllBuffers']
+    >;
+
+    // Persisted path: a checkpoint for sess-live (already reflected live via
+    // the peeked buffer above) plus a genuinely different session,
+    // sess-other.
+    const persistedToday = [
+      {
+        sessionId: 'sess-live',
+        toolSelectionMetrics: {
+          score: 0.5,
+          totalCalls: 5,
+          penalizedCalls: 5,
+          redundantReadCount: 5,
+          repeatedFailureCount: 0,
+          unusedOutputCount: 0,
+        },
+      },
+      {
+        sessionId: 'sess-other',
+        toolSelectionMetrics: {
+          score: 0.5,
+          totalCalls: 5,
+          penalizedCalls: 3,
+          redundantReadCount: 0,
+          repeatedFailureCount: 3,
+          unusedOutputCount: 0,
+        },
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
+    >;
+
+    const handler = createApiHandler({
+      toolSelectionScorer: new ToolSelectionScorer(),
+      localStore: { peekAllBuffers: () => peekedEvents },
+      sessionTracker: {
+        getMetrics: () =>
+          ({ sessionId: 'local-1790000000000' }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getSessionName: () => null,
+        getTodaySessionIds: () => ['sess-live'],
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      sessionStore: {
+        loadTodaySessions: () => persistedToday,
+        listSessions: () => [],
+        loadSession: () => null,
+      },
+    });
+    const req = { method: 'GET', url: '/api/tool-selection-score' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    // sess-live contributes nothing here — neither its raw peeked-buffer
+    // event nor its persisted checkpoint may be folded in, since this
+    // --local process already holds its activity live. Only sess-other's
+    // persisted checkpoint combines with the empty live score.
+    expect(parsed.totalCalls).toBe(5);
+    expect(parsed.repeatedFailureCount).toBe(3);
+  });
 });
 
 describe('api-handler GET /api/model-usage', () => {
@@ -6542,6 +7131,78 @@ describe('api-handler GET /api/model-usage', () => {
     expect(parsed.byModel['model-a'].totalOutputTokens).toBe(1000);
     expect(parsed.byModel['model-a'].totalCostUsd).toBeCloseTo(2);
     expect(parsed.byModel['model-a'].costPerMillionTokens).toBeCloseTo(2000);
+    expect(parsed.byModel['model-a'].requestCount).toBe(10);
+  });
+
+  it('does not double-count a session this --local process already holds live (persisted copy of a drained session)', async () => {
+    const tracker = new ModelUsageTracker();
+    // Live, already reflected via the --local process's drain of sess-live:
+    // $1 / 100 output tokens.
+    tracker.recordUsage('model-a', makeUsage({ inputTokens: 0, outputTokens: 100 }), 1);
+    const persistedToday = [
+      {
+        // sess-live's activity is already in the live tracker above (this
+        // --local process drained it) — must NOT be added again, even
+        // though its sessionId differs from the server's synthetic own id.
+        sessionId: 'sess-live',
+        modelBreakdown: {
+          'model-a': {
+            requestCount: 1,
+            totalInputTokens: 0,
+            totalOutputTokens: 100,
+            totalCostUsd: 1,
+            totalCacheReadTokens: 0,
+            totalCacheCreationTokens: 0,
+            totalThinkingTokens: 0,
+          },
+        },
+      },
+      {
+        sessionId: 'sess-other',
+        modelBreakdown: {
+          'model-a': {
+            requestCount: 9,
+            totalInputTokens: 0,
+            totalOutputTokens: 900,
+            totalCostUsd: 1,
+            totalCacheReadTokens: 0,
+            totalCacheCreationTokens: 0,
+            totalThinkingTokens: 0,
+          },
+        },
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
+    >;
+    const handler = createApiHandler({
+      modelUsageTracker: tracker,
+      sessionTracker: {
+        getMetrics: () =>
+          ({ sessionId: 'local-1790000000000' }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getSessionName: () => null,
+        getTodaySessionIds: () => ['sess-live'],
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      sessionStore: {
+        loadTodaySessions: () => persistedToday,
+        listSessions: () => [],
+        loadSession: () => null,
+      },
+    });
+    const req = { method: 'GET', url: '/api/model-usage' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    // sess-live's persisted entry (also $1/100tok) must not be added on top
+    // of the identical live data — only sess-other's persisted entry is:
+    // 100 (live) + 900 (other) = 1000 output tokens, $1 + $1 = $2 total.
+    expect(parsed.byModel['model-a'].totalOutputTokens).toBe(1000);
+    expect(parsed.byModel['model-a'].totalCostUsd).toBeCloseTo(2);
     expect(parsed.byModel['model-a'].requestCount).toBe(10);
   });
 

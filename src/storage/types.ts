@@ -121,6 +121,8 @@ export interface SubagentTokenHookEvent extends HookEventBase {
   readonly stopReason?: string | null;
   readonly schemaFingerprint?: string;
   readonly toolUseIds?: readonly string[];
+  /** Subagent type from the transcript's `agent-<id>.meta.json` sidecar, when present. */
+  readonly agentType?: string;
 }
 
 /** Emitted by the WorkflowWatcher / SubagentWatcher with pipeline health counters. */
@@ -321,23 +323,43 @@ export interface ToolCallRecord {
   readonly outputSizeBytes?: number;
   readonly inputHash?: string;
   /**
-   * Which subagent made this tool call. The hook payload's own `agent_id`
-   * field (`PreHookEvent.agentId`/`PostHookEvent.agentId`) is documented by
-   * Claude Code as present on every hook event fired inside a subagent call,
-   * but in practice never populates — this field is backfilled
-   * instead via `backfillAgentId()` (agent-partition.ts), joining on
-   * `toolUseId` against tool_use blocks `SubagentWatcher` finds while
-   * tailing that subagent's own transcript. Absent for tool calls made by
-   * the parent/orchestrator session, or for a subagent call this join
-   * hasn't caught up with yet (best-effort, not persisted retroactively).
+   * Which subagent made this tool call. Taken from the hook payload's own
+   * `agent_id` (`PreHookEvent.agentId`/`PostHookEvent.agentId`), which
+   * Claude Code documents as present on every hook event fired inside a
+   * subagent call. Some installs have been observed never sending it,
+   * so when it is absent it is backfilled via `backfillAgentId()`
+   * (agent-partition.ts), joining on `toolUseId` against tool_use blocks
+   * `SubagentWatcher` finds while tailing that subagent's own transcript, which
+   * `SubagentAttributionIndex.attributeAtIntake()` reads on demand when the
+   * join has no entry yet. Absent for tool calls made by the parent/orchestrator
+   * session, and for a subagent call whose tool_use line Claude Code had not
+   * written to the transcript yet when the record arrived, or whose transcript
+   * the watcher had not discovered yet (best-effort, not persisted
+   * retroactively).
    */
   readonly agentId?: string;
-  /** Never populates in practice, same as agentId above — see its doc comment. */
+  /**
+   * Agent type from the hook envelope's `agent_type`, which recent Claude
+   * Code sends: the subagent's type (e.g. `Explore`) on a call made inside a
+   * subagent, or the session's own agent name (e.g. `claude`) on a parent
+   * call when the session runs with `--agent` or the `agent` setting. So its
+   * presence does not mean the call came from a subagent; `agentId` does.
+   * When the envelope leaves it out (some installs never send it) or
+   * sends a value `normalizeAgentType()` rejects, it is backfilled via
+   * `backfillAgentType()` (agent-partition.ts) once `agentId` is known, from
+   * the subagent transcript's `agent-<id>.meta.json` sidecar (written at
+   * spawn), an earlier envelope from the same subagent that carried both
+   * fields, or, failing those, the parent's own `Agent` tool call, with the
+   * same best-effort timing window as `agentId`. An envelope value that
+   * passes `normalizeAgentType()` is never overwritten.
+   */
   readonly agentType?: string;
   /** Skill invoked, from the hook's `tool_input.skill`; only on `toolName === 'Skill'` records. */
   readonly skillName?: string;
   /** Length of the free-text `tool_input.args`; the text itself is never recorded. */
   readonly skillArgsLength?: number;
+  /** Number of the PR a `gh pr create` or MCP create_pull_request call opened, parsed from the PR URL in its output. */
+  readonly createdPrNumber?: string;
   readonly [key: string]: unknown;
 }
 
@@ -365,6 +387,10 @@ export interface ReplayTimelineEntry {
   readonly skillName?: string;
   /** Only on `toolName === 'Agent'` entries, from the hook payload's `subagent_type`. */
   readonly agentType?: string;
+  /** Same as `ToolCallRecord.createdPrNumber`; absent in sessions persisted before it existed. */
+  readonly createdPrNumber?: string;
+  /** Only when true: a Bash call run in the background, whose `success` was reported when it started. */
+  readonly runInBackground?: boolean;
 }
 
 /**

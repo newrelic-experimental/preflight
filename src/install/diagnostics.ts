@@ -7,17 +7,22 @@ import { checkNodeVersion, MIN_SUPPORTED_NODE_MAJOR } from './node-version-check
 import { isNewerVersion, fetchLatestNpmVersion } from './npm-version-check.js';
 import { VERSION } from '../version.js';
 
-import { validateConfigFile, loadMcpConfig, DEFAULT_STORAGE_PATH } from '../config.js';
-import { getDashboardDaemonStatus, findExecutableNodeDir } from './schedule.js';
+import {
+  validateConfigFile,
+  loadMcpConfig,
+  DEFAULT_STORAGE_PATH,
+  resolveCompanionMode,
+} from '../config.js';
+import { getDashboardDaemonStatus, findExecutableNodeDir, getScheduleStatus } from './schedule.js';
+import { detectUpdateSupport, upgradeCommandFor } from './update-support.js';
+import { HOOK_EVENT_TYPES, type HookEventType } from '../hook-subcommands.js';
 import {
   detectSettingsPath,
   entryContainsNrObserve,
   entryHasAnyCommandHook,
-  HOOK_EVENT_TYPES,
   HOOK_SUBCOMMAND_PATTERN,
   NR_HOOK_RE,
 } from './install-helper.js';
-import type { HookEventType } from './install-helper.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { LocalStore } from '../storage/index.js';
 import { createDefaultRegistry } from '../platforms/index.js';
@@ -40,6 +45,8 @@ type DiagnosticsContext = {
   readonly nrSkipReason: string | null;
   // Raw file.mode, for checkTelemetryMode's source reporting — see validateConfigFile.
   readonly fileMode: string | undefined;
+  // Raw file.companionMode, for checkCompanionMode's source reporting — see validateConfigFile.
+  readonly fileCompanionMode: boolean | undefined;
 };
 
 function checkConfigValid(
@@ -105,7 +112,12 @@ function checkConfigValid(
 
   return {
     check,
-    context: { storagePath, nrSkipReason, fileMode: validation.mode },
+    context: {
+      storagePath,
+      nrSkipReason,
+      fileMode: validation.mode,
+      fileCompanionMode: validation.companionMode,
+    },
   };
 }
 
@@ -144,6 +156,15 @@ function checkTelemetryMode(configPath: string, fileMode: string | undefined): D
       fix: 'Apply the remedy named in the message, then re-run doctor.',
     };
   }
+}
+
+function checkCompanionMode(fileValue: boolean | undefined): DiagnosticCheck {
+  const resolved = resolveCompanionMode(process.env, fileValue);
+  return {
+    check: 'Companion mode',
+    status: 'ok',
+    detail: `Resolved to ${resolved.value} (source: ${resolved.source})`,
+  };
 }
 
 function checkDaemon(): DiagnosticCheck[] {
@@ -234,6 +255,27 @@ function checkDaemon(): DiagnosticCheck[] {
   }
 
   return [installedCheck, nodePathCheck];
+}
+
+function checkUpdateSchedule(): DiagnosticCheck {
+  const name = 'Update schedule';
+  if (platform() !== 'darwin') {
+    return { check: name, status: 'skip', detail: 'Update scheduling is macOS-only.' };
+  }
+  if (!getScheduleStatus().installed) {
+    return { check: name, status: 'ok', detail: 'No update schedule installed.' };
+  }
+  const support = detectUpdateSupport();
+  if (support.supported) {
+    return { check: name, status: 'ok', detail: 'com.preflight.update.plist found' };
+  }
+  return {
+    check: name,
+    status: 'warn',
+    detail:
+      'com.preflight.update.plist is installed, but `preflight update` cannot run on this install (not a source clone), so the daily job fails every run.',
+    fix: `preflight schedule --disable, then upgrade with: ${upgradeCommandFor(support.blocker)}`,
+  };
 }
 
 /** The settings.json hook keys this diagnostic checks — the installer's own set. */
@@ -626,6 +668,7 @@ export async function runDiagnostics(opts?: {
   const configPath = opts?.configPath ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
   const { check: configCheck, context } = checkConfigValid(configPath, opts?.storagePath);
   const modeCheck = checkTelemetryMode(configPath, context.fileMode);
+  const companionModeCheck = checkCompanionMode(context.fileCompanionMode);
 
   const settingsPaths: string[] = [detectSettingsPath('user')];
   if (isWsl()) {
@@ -636,8 +679,10 @@ export async function runDiagnostics(opts?: {
   return [
     configCheck,
     modeCheck,
+    companionModeCheck,
     checkNodeVersionDiagnostic(),
     ...checkDaemon(),
+    checkUpdateSchedule(),
     checkHooksWired(settingsPaths, opts?.platform),
     checkHookNodePath(settingsPaths, opts?.platform),
     checkStorageWritable(context.storagePath),

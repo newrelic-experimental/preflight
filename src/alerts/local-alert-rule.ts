@@ -48,13 +48,10 @@ const antiPatternTypeSchema = z.enum([
 
 const percentileSchema = z.union([z.literal(50), z.literal(95), z.literal(99)]);
 
-// Default to 'session'. today/week periods need the snapshot collector to
-// be constructed with a `budgetTracker` dep (see AlertSnapshotCollectorDeps
-// in alert-snapshot-collector.ts) — without it, today/week read 0 forever
-// and the rule silently never fires. loadAlertRulesFromDisk (src/index.ts)
-// still unconditionally warns on any non-'session' costPeriod even though
-// production now wires the budgetTracker dep — that warning predates the
-// fix and hasn't been reconciled with it.
+// Default to 'session'. today/week read BudgetTracker's daily/weekly totals,
+// which src/index.ts wires into the snapshot collector. Any other collector
+// must pass a `budgetTracker` dep too (see AlertSnapshotCollectorDeps in
+// alert-snapshot-collector.ts), or today/week always read 0.
 const costPeriodSchema = z.enum(['session', 'today', 'week']).default('session');
 
 // ---------------------------------------------------------------------------

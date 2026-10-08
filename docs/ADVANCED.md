@@ -119,7 +119,9 @@ Similarly, Preflight cannot detect the data-residency premium per-response the w
 
 Claude Code has its own built-in OTel export for cost, tokens, lines-of-code, and session-time metrics. Preflight's `session_id` equals that export's `session.id` for Claude Code sessions, so the two streams join cleanly — which also means an org that enables both, feeding them into one blended "org AI spend" dashboard, roughly doubles the true cost and token counts. `companionMode` exists to stop that without losing either signal.
 
-Add to `~/.newrelic-preflight/config.json`:
+Companion mode turns on by itself when Preflight sees Claude Code's OTel metrics export going to New Relic. It checks the environment Claude Code passes to the MCP server: `CLAUDE_CODE_ENABLE_TELEMETRY` is on, `OTEL_METRICS_EXPORTER` includes `otlp`, and the OTLP endpoint (`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT`) is an `nr-data.net` host. An export to any other backend, or through a collector on another host, is not detected. Set companion mode explicitly in those cases.
+
+An explicit setting always wins over detection. In `~/.newrelic-preflight/config.json`:
 
 ```json
 {
@@ -127,15 +129,17 @@ Add to `~/.newrelic-preflight/config.json`:
 }
 ```
 
-Or via an environment variable:
+Or in the environment:
 
 ```bash
-export NR_AI_COMPANION_MODE=true
+export NR_AI_COMPANION_MODE=false
 ```
 
-| Setting         | What it does                                                       | Default |
-| --------------- | ------------------------------------------------------------------ | ------- |
-| `companionMode` | Suppresses `ai.cost.*` gauges and tags cost-bearing events (below) | `false` |
+`preflight doctor` shows the resolved value and where it came from, using the environment of the shell it runs in. If Claude Code's OTel settings come from its own settings `env` rather than your shell, doctor can report `false (source: default)` while the MCP server detected the export and resolved `true`.
+
+| Setting         | What it does                                                       | Default                                                               |
+| --------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| `companionMode` | Suppresses `ai.cost.*` gauges and tags cost-bearing events (below) | `true` when Claude Code's OTel export goes to New Relic, else `false` |
 
 With `companionMode: true`:
 
@@ -157,7 +161,7 @@ Because cost-bearing fields are tagged rather than removed, reconciliation is st
 
 Claude Code v2.1.269 and later tags its metrics and events with `vcs.repository.url.full`, `vcs.owner.name`, `vcs.repository.name`, and `vcs.provider.name` when `OTEL_METRICS_INCLUDE_REPOSITORY=true` (default `false`). It derives them once per session from the `origin` remote, lowercases the values, and strips credentials.
 
-Preflight's `project_id` carries the same fact in a different shape. `inferProjectId()` in `src/config.ts` keeps the last two path segments of `git remote get-url origin` with case preserved, so a checkout of `https://github.com/NewRelic-Experimental/preflight` reports `project_id = 'NewRelic-Experimental/preflight'` to Preflight and `vcs.owner.name = 'newrelic-experimental'` plus `vcs.repository.name = 'preflight'` to Claude Code's export. The two fields do not string-match, and NRQL has no case-folding function to bridge them. Join on the session id instead and facet Preflight's events by the repository Claude Code reported:
+Preflight's `project_id` carries the same fact in a different shape. When no `projectId` is configured, `projectIdFromRemote()` in `src/lib/git-remote.ts` takes the last two path segments of `git remote get-url origin` with case preserved, or the lone segment of a one-segment path such as a Gerrit or gitolite remote, and never the host. So a checkout of `https://github.com/NewRelic-Experimental/preflight` reports `project_id = 'NewRelic-Experimental/preflight'` to Preflight and `vcs.owner.name = 'newrelic-experimental'` plus `vcs.repository.name = 'preflight'` to Claude Code's export. The two fields do not string-match, and NRQL has no case-folding function to bridge them. Join on the session id instead and facet Preflight's events by the repository Claude Code reported:
 
 ```sql
 FROM AiCodingTask

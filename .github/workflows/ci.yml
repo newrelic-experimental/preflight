@@ -1,8 +1,8 @@
 name: CI
 
-# Runs the checks a contributor is expected to run locally before opening a
-# PR (per CLAUDE.md: `npm run build && npm test`), plus lint and the two
-# drift-checker scripts that otherwise never run automatically:
+# Runs CONTRIBUTING.md's "Before opening a PR" checklist: everything in the
+# verify job, test:e2e in its own job. Plus the two drift-checker scripts that
+# otherwise never run automatically:
 # check-docs-inventory.ts (docs/code drift) and check-bundle-size.ts (SPA
 # bundle budget, mirrors verify:plugin-hook's already-enforced pattern in
 # release.yml).
@@ -18,14 +18,12 @@ permissions:
   contents: read
 
 env:
-  # The suite has an implicit, undocumented dependency on running under
-  # America/New_York (several date/bucket tests construct fixtures from
-  # local-midnight helpers without pinning TZ themselves) — it has only
-  # ever been run on developer machines defaulting to that zone. GitHub
-  # Actions runners default to UTC, which breaks those tests. Pin to the
-  # zone the suite actually assumes rather than debugging each test's
-  # local-time math; the individual tests remain non-portable and are a
-  # separate follow-up.
+  # The tests must pass in any zone. Both suites run under this one, which
+  # observes DST and is west of UTC, and again under UTC, the runner's default;
+  # Jest also runs under Pacific/Auckland, and the DST test under America/Havana.
+  # Jest can't pin a zone from inside a test (each file gets a copy of
+  # process.env), so a test that needs one has to derive its fixtures from the
+  # host's own zone.
   TZ: America/New_York
 
 jobs:
@@ -45,14 +43,132 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Paired with Lint, which is how the pre-commit hook runs it
+      # (`npm run lint && npm run format:check`), and cheap enough to fail
+      # ahead of Build rather than after it.
+      - name: Check formatting
+        run: npm run format:check
+
+      # The complete web project: tsconfig.web.json covers source and tests,
+      # while `build:web` gates the release on tsconfig.web.build.json, which
+      # excludes the tests. So this is the only check that reaches src/web's
+      # test files — Vitest strips their types without checking them. Ahead of
+      # Build so that the source errors the two configs share report under this
+      # name instead of as "Build failed".
+      #
+      # The program is wider than the step name: five files under src/web import
+      # ../../lib/date.js, so src/lib/date.ts is in it and an edit confined to
+      # that file can redden a step called "Typecheck (web)" on a src/lib path.
+      # Build catches the same error — src/web/lib/forecast.ts is source, so the
+      # build config pulls date.ts in as well — so what this affects is the
+      # label on such a failure, not whether it is caught.
+      - name: Typecheck (web)
+        run: npx tsc -p tsconfig.web.json
+
+      # scripts/, e2e/ and the root *.config.ts files — including the two drift
+      # checkers below, which tsx runs without typechecking.
+      - name: Typecheck (tools)
+        run: npx tsc -p tsconfig.tools.json
+
       - name: Build
         run: npm run build
 
       - name: Test
         run: npm test
 
+      - name: Test (web)
+        run: npm run test:web
+
+      - name: Test (UTC)
+        run: npm test
+        env:
+          TZ: UTC
+
+      - name: Test (web, UTC)
+        run: npm run test:web
+        env:
+          TZ: UTC
+
+      # UTC+12 or +13, where a UTC instant is often already the next local day.
+      # Its first 2026 DST transition makes a 25-hour day, so the dailyPeaks DST
+      # test in api-handler.test.ts runs its long-day branch here and its
+      # short-day branch under New York.
+      - name: Test (Pacific/Auckland)
+        run: npm test
+        env:
+          TZ: Pacific/Auckland
+
+      # Springs forward at local midnight, a transition the dailyPeaks DST test
+      # has to scan past.
+      - name: Test (DST, America/Havana)
+        run: npx jest src/dashboard/routes/api-handler.test.ts
+        env:
+          TZ: America/Havana
+
       - name: Check docs/code inventory drift
         run: npm run check:docs-inventory
 
       - name: Check SPA bundle size
         run: npm run check:bundle-size
+
+  # Separate from verify so the browser suite runs in parallel instead of adding its
+  # minutes to the end of it, on every PR: the dashboard is served from src/web and
+  # src/dashboard but reads from most of src/, so a path filter would have to list nearly
+  # everything to be safe.
+  e2e:
+    runs-on: ubuntu-latest
+    # The committed *-linux.png baselines were recorded in this image, so the fonts and
+    # rasterizer here are the ones they were drawn with. Its tag must match the
+    # @playwright/test version in package.json (checked below); bump both together, and
+    # re-record the Linux baselines in the new image (see "The three suites" in
+    # CONTRIBUTING.md).
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble
+    steps:
+      - uses: actions/checkout@v5
+
+      # The image ships its own Node; pin the one verify builds and tests with, so the built
+      # server is exercised on the same version in both jobs.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.x
+          cache: npm
+
+      # The image tag above is written out because `container:` is resolved before any step
+      # runs; this keeps its version from drifting from package.json. It reads the tag the
+      # same way e2e/record-linux-baselines.sh does, so the two always record and compare in
+      # one image. Fails on a range pin too, which has no image.
+      - name: Check image matches @playwright/test
+        run: |
+          images="$(sed -n 's/^ *image: *\(mcr\.microsoft\.com\/playwright:[^ ]*\)$/\1/p' .github/workflows/ci.yml)"
+          version="$(node -p "require('./package.json').devDependencies['@playwright/test']")"
+          if [ "$(printf '%s\n' "$images" | grep -c .)" -ne 1 ]; then
+            echo "::error file=.github/workflows/ci.yml::expected exactly one mcr.microsoft.com/playwright image, found: $images"
+            exit 1
+          fi
+          case "$images" in
+            # -noble included: the baselines depend on the distro's fonts as much as on the
+            # Playwright version. Moving distros means re-recording, then changing both.
+            "mcr.microsoft.com/playwright:v$version-noble") ;;
+            *)
+              echo "::error file=.github/workflows/ci.yml::e2e image $images does not match @playwright/test $version in package.json"
+              exit 1
+              ;;
+          esac
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The image ships the browser, so the install that pretest:e2e runs is a no-op here.
+      - name: Test (e2e)
+        run: npm run test:e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

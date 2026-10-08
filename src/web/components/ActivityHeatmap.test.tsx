@@ -13,10 +13,16 @@ describe('ActivityHeatmap grid variant — timezone handling', () => {
   });
 
   afterEach(() => {
-    process.env.TZ = originalTZ;
+    // Assigning `undefined` would store the string "undefined", an invalid
+    // zone, for the rest of the worker; delete the key instead.
+    if (originalTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTZ;
   });
 
   it('places a UTC day-key in its correct weekday row, not one day early', () => {
+    // Under an ambient UTC zone this test passes against the buggy code too, so
+    // confirm the pin reached the Date implementation (EDT is UTC-4).
+    expect(new Date(2026, 6, 8).getTimezoneOffset()).toBe(240);
     // '2026-07-08' is a UTC-anchored day key from the backend (see
     // api-handler.ts's /api/activity-heatmap history-view handler) — it
     // is a real Wednesday (getUTCDay() === 3). The buggy local .getDay()

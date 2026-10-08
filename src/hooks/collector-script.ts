@@ -29,6 +29,7 @@ import { createHash } from 'node:crypto';
 import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
+import { hookEventFromArg } from '../hook-subcommands.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -359,14 +360,13 @@ interface HookInput {
   error?: string;
   is_interrupt?: boolean;
   // Claude Code's docs (code.claude.com/docs/en/hooks.md) document agent_id
-  // as present on every hook event fired inside a subagent call (agent_type
-  // similarly), but empirically this never populates in production —
-  // confirmed via a live dogfooding check on Claude Code v2.1.236 with a real
-  // subagent spawn. Still parsed here (harmless if Claude Code ever starts
-  // sending it), but ToolCallRecord.agentId's real source is now the
-  // toolUseId join in agent-partition.ts's backfillAgentId — see its doc
-  // comment. Left in place rather than removed: a future Claude Code release
-  // fixing this on their end would need zero changes here to start working.
+  // as present on every hook event fired inside a subagent call, and
+  // agent_type there too plus on parent calls when the session runs with
+  // --agent. A live dogfooding check on Claude Code v2.1.236 with a real
+  // subagent spawn found neither; later installs do send agent_type.
+  // Whichever is absent is backfilled downstream (backfillAgentId /
+  // backfillAgentType in agent-partition.ts), which never overwrites a value
+  // parsed here.
   agent_id?: string;
   agent_type?: string;
   // PostToolUse/PostToolUseFailure (code.claude.com/docs/en/hooks.md): tool
@@ -452,9 +452,10 @@ interface HookInput {
   trajectory_id?: string;
   tool_info?: Record<string, unknown>;
   // Antigravity (https://antigravity.google/docs/hooks, identical on
-  // /docs/ide/hooks) sends no field naming which event fired at all —
-  // PreToolUse payloads carry `toolCall`/`stepIdx`; PostToolUse payloads
-  // carry only `stepIdx`/`error`. `conversationId` is Antigravity's closest
+  // /docs/ide/hooks) sends no field naming which event fired at all — per
+  // its Input/Output Contract both PreToolUse and PostToolUse payloads carry
+  // `toolCall`/`stepIdx`; PostToolUse adds only an optional `error`
+  // ("Empty if successful"). `conversationId` is Antigravity's closest
   // analog to session_id (never sends session_id, same situation as
   // Cursor's conversation_id and Windsurf's trajectory_id).
   toolCall?: { name?: string; args?: Record<string, unknown> };
@@ -616,22 +617,63 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
   return Object.keys(meta).length > 0 ? meta : undefined;
 }
 
+// `https://<host>/<owner>/<repo>/pull/<N>`: what `gh pr create` prints on
+// success and what an MCP create_pull_request result carries as html_url.
+const PR_URL_RE = /https?:\/\/[^\s"'/]+\/[^\s"'/]+\/[^\s"'/]+\/pull\/(\d{1,9})\b/g;
+const GH_PR_CREATE_RE = /(?:^|[\s;&|(])gh\s+pr\s+create\b/;
+
+/** The PR number named by the PR URLs in a tool's output text, or undefined
+ *  when they name none or several, since then the created one is unknown (a
+ *  second create, or a `gh pr comment` URL on another PR). Only the digits
+ *  leave this function; the output itself is never kept. */
+function findCreatedPrNumber(output: Record<string, unknown> | unknown[]): string | undefined {
+  const texts: string[] = [];
+  const blocks = Array.isArray(output) ? output : output.content;
+  if (!Array.isArray(output) && typeof output.stdout === 'string') texts.push(output.stdout);
+  if (Array.isArray(blocks)) {
+    for (const block of blocks) if (hasStringText(block)) texts.push(block.text);
+  }
+  const prNumbers = new Set<string>();
+  for (const text of texts) {
+    for (const match of text.matchAll(PR_URL_RE)) prNumbers.add(match[1]);
+  }
+  return prNumbers.size === 1 ? [...prNumbers][0] : undefined;
+}
+
 /**
  * Extract only the metadata fields from tool_response that the tool-specific
  * parsers need.
  */
-function extractOutputMeta(toolName: string, output: unknown): Record<string, unknown> | undefined {
+function extractOutputMeta(
+  toolName: string,
+  output: unknown,
+  input?: unknown,
+): Record<string, unknown> | undefined {
   if (output === null || output === undefined || typeof output !== 'object') return undefined;
   const obj = output as Record<string, unknown>;
 
+  if (toolName.endsWith('create_pull_request')) {
+    const createdPrNumber = findCreatedPrNumber(output as Record<string, unknown> | unknown[]);
+    return createdPrNumber === undefined ? undefined : { createdPrNumber };
+  }
+
   if (toolName === 'Bash') {
+    const meta: Record<string, unknown> = {};
     if (typeof obj.exitCode === 'number') {
-      return { exitCode: obj.exitCode };
-    }
-    if (typeof obj.exitCode === 'string') {
+      meta.exitCode = obj.exitCode;
+    } else if (typeof obj.exitCode === 'string') {
       const parsed = Number(obj.exitCode);
-      if (!Number.isNaN(parsed)) return { exitCode: parsed };
+      if (!Number.isNaN(parsed)) meta.exitCode = parsed;
     }
+    const command =
+      input !== null && typeof input === 'object'
+        ? (input as Record<string, unknown>).command
+        : undefined;
+    if (typeof command === 'string' && GH_PR_CREATE_RE.test(command)) {
+      const createdPrNumber = findCreatedPrNumber(obj);
+      if (createdPrNumber !== undefined) meta.createdPrNumber = createdPrNumber;
+    }
+    if (Object.keys(meta).length > 0) return meta;
   }
 
   if (toolName === 'Edit') {
@@ -691,7 +733,13 @@ function getWindsurfToolInfo(data: HookInput): Record<string, unknown> {
   return data.tool_info !== null && typeof data.tool_info === 'object' ? data.tool_info : {};
 }
 
-function processHook(raw: string): void {
+/**
+ * @param cliEvent The hook command's first argument (`process.argv[2]`), if
+ *   any. Only consulted for Antigravity, whose payloads never name their own
+ *   event — see isAntigravityPre below. Every other platform's payload names
+ *   its event, and this argument is ignored for them.
+ */
+function processHook(raw: string, cliEvent?: string): void {
   let data: HookInput;
   try {
     data = JSON.parse(raw) as HookInput;
@@ -749,17 +797,33 @@ function processHook(raw: string): void {
   const isGeminiCli =
     process.env.MCP_CLIENT === 'gemini-cli' || process.env.NEW_RELIC_AI_PLATFORM === 'gemini-cli';
 
-  // Antigravity (https://antigravity.google/docs/hooks) sends no field
-  // naming which event fired — payload shape is the only signal. Hoisted
-  // once so the dispatch branch below and the required-stdout-reply block
-  // further down can never diverge on which event they think this is, same
-  // precedent as isGeminiCli above.
-  const isAntigravityPre = data.toolCall !== undefined;
-  const isAntigravityPost =
-    !isAntigravityPre &&
-    typeof data.stepIdx === 'number' &&
+  // Antigravity (https://antigravity.google/docs/hooks#inputoutput-contract)
+  // sends no field naming which event fired, and both PreToolUse and
+  // PostToolUse carry `toolCall` and `stepIdx`, so payload shape cannot tell
+  // them apart (#793). hooks.json registers a separate `command` per event,
+  // so the documented setup (docs/ADAPTERS.md) passes the event name as the
+  // command's argument: `preflight-collector PreToolUse` / `PostToolUse`.
+  // Without that argument (a hooks.json written before #793), the only
+  // PostToolUse-specific key is the optional `error`, so its presence is the
+  // fallback. A successful PostToolUse that omits `error` is then misread as
+  // PreToolUse — the reason the argument is required in the setup docs.
+  // Hoisted once so the dispatch branch below and the required-stdout-reply
+  // block further down can never diverge on which event they think this is,
+  // same precedent as isGeminiCli above.
+  const isAntigravityShape =
     data.hook_event_name === undefined &&
-    data.agent_action_name === undefined;
+    data.agent_action_name === undefined &&
+    (data.toolCall !== undefined || typeof data.stepIdx === 'number');
+  const agyCliEvent = hookEventFromArg(cliEvent);
+  const isAntigravityPost =
+    isAntigravityShape &&
+    (agyCliEvent === 'PostToolUse' ||
+      (agyCliEvent !== 'PreToolUse' && (data.error !== undefined || data.toolCall === undefined)));
+  const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
+  // Both Antigravity branches spread this, so a pre and its post agree on
+  // whether they carry a toolUseId: HookEventProcessor pairs a post by its
+  // toolUseId whenever it has one, and a pre without one is keyed by a UUID.
+  const agyToolUseId = typeof data.stepIdx === 'number' ? { toolUseId: String(data.stepIdx) } : {};
 
   let event: Record<string, unknown>;
 
@@ -840,7 +904,7 @@ function processHook(raw: string): void {
     if (postInputMeta !== undefined) event.toolInput = postInputMeta;
 
     // Store only the metadata fields needed for tool-specific parsing
-    const outputMeta = extractOutputMeta(toolName, toolResponse);
+    const outputMeta = extractOutputMeta(toolName, toolResponse, data.tool_input);
     if (outputMeta !== undefined) event.toolOutput = outputMeta;
 
     if (recordContent && toolResponse !== undefined) {
@@ -928,7 +992,7 @@ function processHook(raw: string): void {
     const postInputMeta = extractInputMeta(toolName, data.tool_input);
     if (postInputMeta !== undefined) event.toolInput = postInputMeta;
 
-    const outputMeta = extractOutputMeta(toolName, data.tool_response);
+    const outputMeta = extractOutputMeta(toolName, data.tool_response, data.tool_input);
     if (outputMeta !== undefined) event.toolOutput = outputMeta;
 
     if (recordContent && data.tool_response !== undefined) {
@@ -1105,10 +1169,8 @@ function processHook(raw: string): void {
       success: true,
     };
   } else if (isAntigravityPre) {
-    // Antigravity PreToolUse — no self-describing event-name field exists
-    // (see HookInput's comment above); presence of `toolCall` is
-    // Antigravity's own signal that this is PreToolUse, since PostToolUse
-    // never carries that key.
+    // Antigravity PreToolUse — see isAntigravityPre above for how it is told
+    // apart from PostToolUse.
     const agyToolName = data.toolCall?.name ?? 'unknown';
     event = {
       mode: 'pre' as const,
@@ -1116,7 +1178,7 @@ function processHook(raw: string): void {
       timestamp,
       inputSize: sizeOf(data.toolCall?.args),
       inputHash: hashInput(data.toolCall?.args),
-      ...(typeof data.stepIdx === 'number' && { toolUseId: String(data.stepIdx) }),
+      ...agyToolUseId,
     };
 
     // Raw Antigravity argument names (CommandLine, TargetFile, etc.) don't
@@ -1130,19 +1192,18 @@ function processHook(raw: string): void {
       event.inputContent = redact(truncate(JSON.stringify(data.toolCall.args), maxContentLen));
     }
   } else if (isAntigravityPost) {
-    // Antigravity PostToolUse — carries no tool-name field at all, only
-    // stepIdx/error. toolUseId-based pairing in event-processor.ts recovers
-    // the real tool name from the matched pre-event (confirmed by reading
-    // HookEventProcessor.handlePostEvent(): the merged record's toolName
-    // always comes from the pre-event, never the post-event's own tool
-    // field) — 'unknown' here is a safe placeholder, not a broken mapping.
+    // Antigravity PostToolUse — carries the same `toolCall` as PreToolUse
+    // plus an optional `error`. A paired call takes its toolName from the
+    // pre-event (HookEventProcessor.handlePostEvent()), but this post's own
+    // tool name still matters: it is the FIFO pairing key when there is no
+    // stepIdx, and the record's toolName when the post is orphaned.
     const hasError = typeof data.error === 'string' && data.error !== '';
     event = {
       mode: 'post' as const,
-      tool: 'unknown',
+      tool: data.toolCall?.name ?? 'unknown',
       timestamp,
       success: !hasError,
-      toolUseId: String(data.stepIdx),
+      ...agyToolUseId,
       ...(typeof data.error === 'string' && data.error !== '' && { error: redact(data.error) }),
     };
   } else if (eventName === 'stopfailure') {
@@ -1315,9 +1376,11 @@ function processHook(raw: string): void {
   }
 
   // Antigravity requires a stdout reply on every PreToolUse/PostToolUse hook
-  // invocation (https://antigravity.google/docs/hooks) — a required
-  // `decision` field for PreToolUse, an empty object for PostToolUse.
-  // Preflight is observation-only, so this always allows.
+  // invocation (https://antigravity.google/docs/hooks#inputoutput-contract) —
+  // a required `decision` field for PreToolUse, an empty object for
+  // PostToolUse. PostToolUse's schema has no `decision` field, so sending one
+  // fails protojson unmarshaling and the host's tool call with it (#793).
+  // Preflight is observation-only, so PreToolUse always allows.
   if (isAntigravityPre) {
     try {
       process.stdout.write('{"decision":"allow"}\n');
@@ -1421,7 +1484,7 @@ if (_isDirectExecution) {
   try {
     const stdin = readStdinSync();
     if (stdin.trim()) {
-      processHook(stdin);
+      processHook(stdin, process.argv[2]);
     }
   } catch {
     // Silent failure — never block Claude Code

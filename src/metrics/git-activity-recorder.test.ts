@@ -1,5 +1,5 @@
-import { join } from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncOptions,
@@ -7,7 +7,12 @@ import {
 } from 'node:child_process';
 import { jest } from '@jest/globals';
 import { GitActivityRecorder } from './git-activity-recorder.js';
-import { processGhCommand, splitShellSegments } from './git-event-classifier.js';
+import {
+  processGhCommand,
+  segmentRunsNoCommand,
+  splitShellChain,
+  splitShellSegments,
+} from './git-event-classifier.js';
 import { ActivityStore } from './git-activity-store.js';
 import type { GitActivityRecord } from './git-activity-recorder.js';
 import { WorktreeIdentityResolver } from './git-workspace-identity.js';
@@ -293,6 +298,26 @@ describe('GitActivityRecorder', () => {
       expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('create');
     });
 
+    it('uses the PR number captured from the output as the create event prNumber', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'gh pr create --fill', cwd: repoDir, createdPrNumber: '42' }),
+      );
+      recorder.recordToolCall(
+        makeRecord({
+          id: 'mcp',
+          toolUseId: 'tool-2',
+          toolName: 'create_pull_request',
+          cwd: repoDir,
+          createdPrNumber: '57',
+        }),
+      );
+
+      const numbers = store
+        .query({ since: 0, until: Date.now() + 1000 })
+        .map((r) => (r.kind === 'pr' ? r.prEvent.prNumber : undefined));
+      expect(numbers.sort()).toEqual(['42', '57']);
+    });
+
     it('records gh pr merge command as PR activity', () => {
       const record = makeRecord({
         command: 'gh pr merge 123',
@@ -456,6 +481,36 @@ describe('GitActivityRecorder', () => {
       expect(pushRecord?.kind === 'git' && pushRecord.gitEvent.type).toBe('push');
     });
 
+    it('counts the commands after a comment line holding an apostrophe', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: "git add -A\n# Claude's fix for the login bug\ngit commit -m x && git push",
+          cwd: repoDir,
+          timestamp: 5000,
+        }),
+      );
+
+      const types = store
+        .query({ since: 0, until: 10000 })
+        .flatMap((r) => (r.kind === 'git' ? [r.gitEvent.type] : []));
+      expect(types).toEqual(['other_git', 'commit', 'push']);
+    });
+
+    it('still counts the git commands of a command whose quotes do not balance', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: "echo $'it\\'s done' && git commit -m x && git push",
+          cwd: repoDir,
+          timestamp: 5000,
+        }),
+      );
+
+      const types = store
+        .query({ since: 0, until: 10000 })
+        .flatMap((r) => (r.kind === 'git' ? [r.gitEvent.type] : []));
+      expect(types).toEqual(['commit', 'push']);
+    });
+
     it('ignores a segment that only mentions git inside quoted text', () => {
       recorder.recordToolCall(
         makeRecord({
@@ -514,13 +569,66 @@ describe('GitActivityRecorder', () => {
       expect(prRecords()).toHaveLength(0);
     });
 
-    it('still counts a failed gh pr merge — a non-create verb stays real even on failure', () => {
+    it('does not count a failed gh pr merge as a merge', () => {
       recorder.recordToolCall(
         makeRecord({ command: 'gh pr merge 5', cwd: repoDir, success: false }),
       );
+      expect(prRecords()).toHaveLength(0);
+    });
+
+    it('still counts a failed gh pr checks — a verb that changes nothing stays real on failure', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'gh pr checks 5', cwd: repoDir, success: false }),
+      );
+      const results = prRecords();
+      expect(results).toHaveLength(1);
+      expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('checks');
+      expect(results[0].kind === 'pr' && results[0].prEvent.prNumber).toBe('5');
+    });
+
+    it.each(['gh pr merge 5 --auto --squash', 'gh pr merge 5 --disable-auto'])(
+      'does not count `%s`, which only toggles auto-merge, as a merge',
+      (command) => {
+        recorder.recordToolCall(makeRecord({ command, cwd: repoDir }));
+        expect(prRecords()).toHaveLength(0);
+      },
+    );
+
+    it.each([
+      'gh pr merge 5 -R acme/other',
+      'gh pr merge 5 -Racme/other',
+      'gh pr merge 5 -dR acme/other',
+      'gh pr merge 5 --repo acme/other',
+      'gh pr merge 5 --repo=acme/other',
+      'GH_REPO=acme/other gh pr merge 5',
+    ])('keeps `%s` as a merge but drops a number aimed at another repo', (command) => {
+      recorder.recordToolCall(makeRecord({ command, cwd: repoDir }));
       const results = prRecords();
       expect(results).toHaveLength(1);
       expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('merge');
+      expect(results[0].kind === 'pr' && results[0].prEvent.prNumber).toBeNull();
+    });
+
+    it('does not attach the captured number to a gh pr create aimed at another repo', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: 'gh pr create --fill -R acme/other',
+          cwd: repoDir,
+          createdPrNumber: '42',
+        }),
+      );
+      const results = prRecords();
+      expect(results).toHaveLength(1);
+      expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('create');
+      expect(results[0].kind === 'pr' && results[0].prEvent.prNumber).toBeNull();
+    });
+
+    it('keeps the number of a merge with unrelated flags', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'gh pr merge 5 --rebase -d --admin', cwd: repoDir }),
+      );
+      const results = prRecords();
+      expect(results).toHaveLength(1);
       expect(results[0].kind === 'pr' && results[0].prEvent.prNumber).toBe('5');
     });
 
@@ -573,6 +681,212 @@ describe('GitActivityRecorder', () => {
     });
   });
 
+  describe('gh pr merge and create inside compound commands', () => {
+    const prEvents = () =>
+      store
+        .query({ since: 0, until: 10000 })
+        .flatMap((r) => (r.kind === 'pr' ? [r.prEvent] : []))
+        .map(({ action, prNumber }) => ({ action, prNumber }));
+    const merges = () => prEvents().filter((e) => e.action === 'merge');
+
+    it.each([
+      'gh pr merge 42 --squash 2>&1 | tail -5',
+      'gh pr merge 42 --squash || echo "merge failed"',
+      'gh pr merge 42 --squash; echo done',
+      'gh pr merge 42 --squash\necho done',
+      'gh pr merge 42 --squash && echo ok || echo failed',
+      'gh pr view 42 --json state | grep -q MERGED || gh pr merge 42',
+      'gh pr merge 42 --squash --auto ||\n  gh pr merge 42 --squash',
+      'gh pr merge 42 --squash --auto || \\\n  gh pr merge 42 --squash',
+      'gh pr view 42 --json state | grep -q MERGED ||\n\n  gh pr merge 42',
+      'gh pr view 42 --json state | grep -q MERGED || # not merged yet\n  gh pr merge 42',
+      "gh pr merge 42 --auto --body-file - <<'EOF' ||\nQueued.\nEOF\ngh pr merge 42 --squash",
+      'gh pr view 42 --json state | grep -q MERGED || (echo merging; gh pr merge 42)',
+      'gh pr view 42 --json state | grep -q MERGED || { echo merging; gh pr merge 42; }',
+      'gh pr merge 42 --squash &',
+      'gh pr checks 42 --watch && gh pr merge 42 --squash &',
+      'gh pr checks 42 # then && gh pr merge 42',
+      'gh pr checks 42 --watch\n# && gh pr merge 42',
+      'gh pr merge 42 --squash ||\n  # retry via <<web\n  echo failed',
+      'gh pr merge 42 --body "see <<X" ||\n  echo failed',
+      'gh pr merge 42 --body "see <<X" &&\ngit pull\necho done',
+      'gh pr merge 42 --squash && grep -q MERGED <<<"$(gh pr view 42 --json state)"\necho done',
+      'gh pr merge 42 --squash && echo "<<EOF"\necho done',
+      'gh pr merge 42 --squash && echo $((1<<N))\necho done',
+      'gh pr merge 42 --squash &&',
+      'gh pr merge 42 --squash && # then pull',
+      'gh pr merge 42 --body "see <<X" &&\n  git pull',
+      'gh pr merge 812 --squash --body "Fixes <<EOF handling"\ngh pr comment 812 --body-file - <<\'EOF\'\nMerged after green CI.\nEOF',
+      'gh pr comment 812 --body-file - <<-EOF\n    LGTM, merging.\n    EOF\ngh pr merge 812 --squash',
+      'gh pr comment 812 --body-file - <<EOF\nLGTM, merging.\nEOF \ngh pr merge 812 --squash',
+    ])('drops `%s`: the command can succeed while the merge failed or never ran', (command) => {
+      recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
+      expect(merges()).toEqual([]);
+    });
+
+    it.each([
+      'gh pr merge 42 --squash',
+      'gh pr merge 42 --squash;',
+      'git fetch && gh pr merge 42 --squash',
+      'gh pr view 42 | cat; gh pr merge 42 --squash',
+      'gh pr merge 42 --squash && git checkout main && git pull',
+      'gh pr merge 42 --squash && git pull 2>&1 | tail -3',
+      'gh pr merge 42 \\\n  --squash',
+      'gh pr merge 42 --squash &&\n  git pull',
+      "gh pr merge 42 --squash --body-file - <<'EOF' &&\nMerged.\nEOF\ngit pull",
+      '{ git fetch && gh pr merge 42 --squash; }',
+      'gh pr merge 42 --squash &>/dev/null',
+      'sleep 1 & gh pr merge 42 --squash',
+      "# Claude's merge, once checks pass\ngh pr checks 42 --watch && gh pr merge 42 --squash",
+      'echo issue#12 ${#arr} $# "#" && gh pr merge 42 --squash',
+      '(git fetch; gh pr merge 42)',
+      "gh pr merge 42 --squash --body-file - <<'EOF'\nMerged.\nEOF",
+      'gh pr merge 42 --squash --body "$(cat <<\'EOF\'\nMerged after review.\nEOF\n)" && git pull',
+      'gh pr merge 42 --squash --body-file - <<-EOF &&\n\tMerged.\n\tEOF\ngit pull',
+      'gh pr merge 42 --squash && grep -q MERGED <<<"$(gh pr view 42 --json state)"',
+      'gh pr merge 42 --squash --body "see <<X"',
+      'gh pr merge 42 --squash && echo $((1<<2))',
+    ])('counts `%s`, whose success means the merge succeeded', (command) => {
+      recorder.recordToolCall(makeRecord({ command, cwd: repoDir, success: true }));
+      expect(merges()).toEqual([{ action: 'merge', prNumber: '42' }]);
+    });
+
+    it('drops a merge the Bash tool ran in the background, whose success came before the merge', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: 'gh pr checks 42 --watch && gh pr merge 42 --squash',
+          cwd: repoDir,
+          runInBackground: true,
+        }),
+      );
+      expect(merges()).toEqual([]);
+    });
+
+    it.each([
+      'echo "then && gh pr merge 42"',
+      'gh pr comment 7 --body "LGTM.\ngh pr merge 42 once CI is green"',
+    ])('finds no merge in quoted text: `%s`', (command) => {
+      recorder.recordToolCall(makeRecord({ command, cwd: repoDir }));
+      expect(merges()).toEqual([]);
+    });
+
+    it('drops a merge from a command whose quotes the splitter cannot balance', () => {
+      // bash reads `$'it\'s green'` as one string, but the splitter sees a quote
+      // left open, so where the merge's segment ends is a guess.
+      recorder.recordToolCall(
+        makeRecord({ command: "echo $'it\\'s green' && gh pr merge 42 --squash", cwd: repoDir }),
+      );
+      expect(merges()).toEqual([]);
+    });
+
+    it('drops the captured create number when --repo is on a continued line', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: 'gh pr create --fill \\\n  --repo acme/other',
+          cwd: repoDir,
+          createdPrNumber: '42',
+        }),
+      );
+      expect(prEvents()).toEqual([{ action: 'create', prNumber: null }]);
+    });
+
+    it('gives no number to either create when one command opens two PRs', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command:
+            'gh pr create --base main --fill && git checkout part-2 && gh pr create --base part-1 --fill',
+          cwd: repoDir,
+          createdPrNumber: '42',
+        }),
+      );
+      expect(prEvents()).toEqual([
+        { action: 'create', prNumber: null },
+        { action: 'create', prNumber: null },
+      ]);
+    });
+
+    it('keeps the captured number when one create shares a command with other gh verbs', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: 'gh pr create --fill && gh pr view --web',
+          cwd: repoDir,
+          createdPrNumber: '42',
+        }),
+      );
+      expect(prEvents()).toContainEqual({ action: 'create', prNumber: '42' });
+    });
+
+    describe('a cd or GH_REPO earlier in the command', () => {
+      let otherRepo: string;
+
+      beforeEach(() => {
+        otherRepo = mkdtempSync(join('/tmp', 'git-activity-other-'));
+        spawnSync('git', ['init'], { cwd: otherRepo, stdio: 'ignore' });
+        mkdirSync(join(repoDir, 'sub'));
+      });
+
+      afterEach(() => {
+        rmSync(otherRepo, { recursive: true, force: true });
+      });
+
+      it.each([
+        ['an absolute cd into another repo', () => `cd ${otherRepo} && gh pr merge 12`],
+        ['a relative cd into another repo', () => `cd ../${basename(otherRepo)} && gh pr merge 12`],
+        ['a cd in a subshell', () => `(cd "${otherRepo}" && gh pr merge 12)`],
+        ['a cd that cannot be resolved', () => 'cd "$OTHER" && gh pr merge 12'],
+        ['a bare cd', () => 'cd; gh pr merge 12'],
+        ['an exported GH_REPO', () => 'export GH_REPO=acme/other; gh pr merge 12'],
+        ['a GH_REPO assignment', () => 'GH_REPO=acme/other\ngh pr merge 12'],
+        ['a pushd into another repo', () => `pushd ${otherRepo} && gh pr merge 12`],
+        ['a builtin cd into another repo', () => `builtin cd ${otherRepo} && gh pr merge 12`],
+        ['a cd in a brace group', () => `{ cd ${otherRepo} && gh pr merge 12; }`],
+      ])('keeps the merge after %s but drops its number', (_label, command) => {
+        recorder.recordToolCall(makeRecord({ command: command(), cwd: repoDir }));
+        expect(merges()).toEqual([{ action: 'merge', prNumber: null }]);
+      });
+
+      it('drops the captured create number after a cd into another repo', () => {
+        recorder.recordToolCall(
+          makeRecord({
+            command: `cd ${otherRepo} && gh pr create --fill`,
+            cwd: repoDir,
+            createdPrNumber: '42',
+          }),
+        );
+        expect(prEvents()).toEqual([{ action: 'create', prNumber: null }]);
+      });
+
+      it.each([
+        ['into the same repo', () => `cd ${repoDir} && gh pr merge 12`],
+        ['into a subdirectory of the same repo', () => 'cd sub && gh pr merge 12'],
+      ])('keeps the number after a cd %s', (_label, command) => {
+        recorder.recordToolCall(makeRecord({ command: command(), cwd: repoDir }));
+        expect(merges()).toEqual([{ action: 'merge', prNumber: '12' }]);
+      });
+
+      it('does not look up a cd target that does not exist', () => {
+        const resolve = jest.spyOn(identityResolver, 'resolve');
+        recorder.recordToolCall(
+          makeRecord({ command: 'cd "$OTHER" && gh pr merge 12', cwd: repoDir }),
+        );
+        expect(merges()).toEqual([{ action: 'merge', prNumber: null }]);
+        expect(resolve).not.toHaveBeenCalledWith(join(repoDir, '$OTHER'));
+      });
+
+      it('drops the number after a cd when the cwd is unknown', () => {
+        recorder.recordToolCall(makeRecord({ command: `cd ${repoDir} && gh pr merge 12` }));
+        expect(merges()).toEqual([{ action: 'merge', prNumber: null }]);
+      });
+
+      it('keeps the number when the cd comes after the gh segment', () => {
+        recorder.recordToolCall(
+          makeRecord({ command: `gh pr merge 12 && cd ${otherRepo}`, cwd: repoDir }),
+        );
+        expect(merges()).toEqual([{ action: 'merge', prNumber: '12' }]);
+      });
+    });
+  });
+
   describe('processGhCommand standalone function — verb table and anchoring', () => {
     it('returns null for a verb outside the PR-action table (comment)', () => {
       expect(processGhCommand('gh pr comment 5 --body "see gh pr create"', 1000)).toBeNull();
@@ -597,6 +911,17 @@ describe('GitActivityRecorder', () => {
         prNumber: '5',
       });
     });
+
+    it.each(['gh pr merge 123-fix-login', 'gh pr merge 123-fix-login --squash'])(
+      'takes no PR number from a branch name that starts with digits: `%s`',
+      (command) => {
+        expect(processGhCommand(command, 1000)).toMatchObject({ action: 'merge', prNumber: null });
+      },
+    );
+
+    it('takes the PR number before the `)` closing a subshell', () => {
+      expect(processGhCommand('gh pr merge 5)', 1000)).toMatchObject({ prNumber: '5' });
+    });
   });
 
   describe('splitShellSegments', () => {
@@ -609,6 +934,102 @@ describe('GitActivityRecorder', () => {
         'git commit -m x',
         'gh pr create',
       ]);
+    });
+
+    it('does not split on an operator inside quotes', () => {
+      expect(splitShellSegments(`git commit -m "a; b && c" && echo 'x | y'`)).toEqual([
+        'git commit -m "a; b && c" ',
+        " echo 'x | y'",
+      ]);
+    });
+
+    it('joins a backslash-newline and continues a line that ends in ||, && or |', () => {
+      expect(
+        splitShellSegments('git commit \\\n  -m x &&\n  git push ||\n\n  echo failed'),
+      ).toEqual(['git commit   -m x ', '  git push ', '  echo failed']);
+    });
+
+    it('splits on a background & but not on a redirection', () => {
+      expect(splitShellSegments('git fetch & git status 2>&1 >/dev/null &>/dev/null')).toEqual([
+        'git fetch ',
+        ' git status 2>&1 >/dev/null &>/dev/null',
+      ]);
+    });
+  });
+
+  describe('splitShellChain', () => {
+    it('skips a comment line without opening the quote in it', () => {
+      expect(splitShellChain("git add -A\n# Claude's fix\ngit commit -m x && git push")).toEqual({
+        segments: ['git add -A', '', 'git commit -m x ', ' git push'],
+        operators: ['\n', '\n', '&&'],
+        quotesBalanced: true,
+      });
+    });
+
+    it('does not split on an operator inside a trailing comment', () => {
+      expect(splitShellChain('gh pr checks 5 # then && gh pr merge 5')).toEqual({
+        segments: ['gh pr checks 5 '],
+        operators: [],
+        quotesBalanced: true,
+      });
+    });
+
+    it('starts a comment after an operator or `(`, and ends it at the newline past a backslash', () => {
+      expect(splitShellChain('a;# x && y\n(# z\nb) # w \\\nc')).toEqual({
+        segments: ['a', '', '(', 'b) ', 'c'],
+        operators: [';', '\n', '\n', '\n'],
+        quotesBalanced: true,
+      });
+    });
+
+    it('starts a continued segment at its command, past comment lines', () => {
+      expect(splitShellChain('a &&\n  # check first\n  git push')).toEqual({
+        segments: ['a ', '  git push'],
+        operators: ['&&'],
+        quotesBalanced: true,
+      });
+    });
+
+    it('does not start a comment at a # inside a word or quotes', () => {
+      expect(
+        splitShellChain(
+          `git commit -m "fix #12; it's done" && echo issue#12 \${#arr} $# a\\ #b 'c #d' && git push`,
+        ),
+      ).toEqual({
+        segments: [
+          `git commit -m "fix #12; it's done" `,
+          ` echo issue#12 \${#arr} $# a\\ #b 'c #d' `,
+          ' git push',
+        ],
+        operators: ['&&', '&&'],
+        quotesBalanced: true,
+      });
+    });
+
+    it('reports `|&` as `|`', () => {
+      expect(splitShellChain('git push 2>&1 |& tee log & wait')).toEqual({
+        segments: ['git push 2>&1 ', ' tee log ', ' wait'],
+        operators: ['|', '&'],
+        quotesBalanced: true,
+      });
+    });
+
+    it('splits on every operator, quoted or commented, when a quote never closes', () => {
+      expect(splitShellChain("echo $'it\\'s done' # note && git commit -m 'a; b'")).toEqual({
+        segments: ["echo $'it\\'s done' # note ", " git commit -m 'a", " b'"],
+        operators: ['&&', ';'],
+        quotesBalanced: false,
+      });
+    });
+  });
+
+  describe('segmentRunsNoCommand', () => {
+    it.each(['', '  ', ' )', ' ) }', '  # note'])('is true for %j', (segment) => {
+      expect(segmentRunsNoCommand(segment)).toBe(true);
+    });
+
+    it.each([' git push', ' x)', 'echo #', ') x'])('is false for %j', (segment) => {
+      expect(segmentRunsNoCommand(segment)).toBe(false);
     });
   });
 });

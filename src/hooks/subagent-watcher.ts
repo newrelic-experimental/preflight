@@ -15,8 +15,10 @@
  *
  * Cursor durability: byte cursors persisted to
  * `~/.newrelic-preflight/.subagent-pos-<parentSessionId>-<agentId>` survive restart.
- * On crash mid-emit the next poll re-reads from the previous cursor →
- * potential duplicates which downstream dedupes by (agent_id, message.id).
+ * A read takes effect only once its advanced cursor is written: a read whose
+ * cursor write fails emits nothing and is redone from the old cursor, the same
+ * as a failed read. A crash between the cursor write and the buffer appends
+ * loses those turns instead.
  *
  * Startup-discovery budget: only files with mtime in the last 24h are eligible
  * for cold scan (configurable via `NR_AI_WATCHER_DISCOVERY_HOURS`); older
@@ -46,7 +48,7 @@ import { dirname, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 import { createLogger } from '../shared/index.js';
-import { AGENT_ID_RE } from '../lib/agent-id.js';
+import { AGENT_ID_RE, normalizeAgentType } from '../lib/agent-id.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
 import type { LocalStore } from '../storage/local-store.js';
 
@@ -84,6 +86,19 @@ const MAX_BYTES_PER_POLL = 64 * 1024;
  * to MAX_PARTIAL_LINE_BYTES + one chunk and guarantees forward progress.
  */
 const MAX_PARTIAL_LINE_BYTES = 1024 * 1024; // 1 MiB
+/**
+ * Read ceiling for a subagent's `agent-<id>.meta.json` sidecar. Real sidecars
+ * are a few hundred bytes; the cap keeps an oversized one from costing a full
+ * read on every poll, since a failed read is not cached.
+ */
+export const MAX_META_SIDECAR_BYTES = 16 * 1024;
+/**
+ * Most transcripts one `readLiveTails()` call stats: those spawned since the
+ * last poll first, then tracked ones, most recently modified first.
+ */
+export const MAX_ON_DEMAND_FILES = 32;
+/** Most transcript bytes one `readLiveTails()` call reads in total; the poll reads the rest. */
+export const MAX_ON_DEMAND_BYTES = 1024 * 1024;
 const HEALTH_INTERVAL_MS = 60_000;
 const SCHEMA_FINGERPRINT_REEMIT_MS = 60 * 60 * 1000; // 1h
 const COST_SELF_CHECK_MS = 60 * 60 * 1000; // 1h
@@ -119,6 +134,11 @@ export interface SubagentTokenEvent {
   readonly stopReason: string | null;
   readonly schemaFingerprint: string;
   readonly toolUseIds: readonly string[];
+  /**
+   * Subagent type (e.g. `Explore`) from the transcript's `agent-<id>.meta.json`
+   * sidecar. Omitted when the sidecar is absent or has no usable `agentType`.
+   */
+  readonly agentType?: string;
 }
 
 /**
@@ -164,6 +184,15 @@ interface SubagentWatcherBaseOptions {
   readonly discoveryHours?: number;
   /** LocalStore (used to peek the parent buffer path naming convention). */
   readonly localStore?: LocalStore;
+  /**
+   * Called with every turn the watcher reads, by `poll()` or `readLiveTails()`,
+   * right after it is appended to the parent buffer. Claude Code writes a
+   * message one content block per line, each repeating the message id, and the
+   * buffer drain counts each message once, so the later lines, which usually
+   * hold the tool_use blocks, never reach the drain's consumers. This sees
+   * every line as soon as it is read. Errors are caught and recorded.
+   */
+  readonly onTurnRead?: (turn: SubagentTokenEvent) => void;
 }
 
 type CostSelfCheck = () => { trackedUsd: number; groundTruthUsd: number };
@@ -261,10 +290,12 @@ export class SubagentWatcher {
   private readonly parentSessionFilter: string | null;
   private readonly costSelfCheck: SubagentWatcherOptions['costSelfCheck'];
   private readonly localStore: LocalStore | undefined;
+  private readonly onTurnRead: ((turn: SubagentTokenEvent) => void) | undefined;
 
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private healthIntervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
+  private stopped = false;
 
   // Per-file in-memory partial-line retention. The persisted byte cursor
   // points to the start of the next un-read byte; this map carries any trailing
@@ -279,13 +310,37 @@ export class SubagentWatcher {
   // internally and transparently prepends it on the next write() call on the
   // same instance, so a split character reconstructs correctly across polls
   // without us tracking raw tail bytes ourselves. This state is in-memory
-  // only, not persisted to the byte cursor: a process restart landing
-  // exactly between the splitting poll and the completing poll still
-  // corrupts that one character, same as before this fix — narrower than
-  // the bug being fixed (a restart is rare; every poll boundary is not).
+  // only, not persisted to the byte cursor: a process restart (or a failed
+  // cursor write, which resets it) landing exactly between the splitting poll
+  // and the completing poll still corrupts that one character, same as before
+  // this fix — narrower than the bug being fixed (a restart is rare; every
+  // poll boundary is not).
   // Evicted alongside
   // partialByPath in evictStalePartials() — see that method's comment.
   private readonly decoderByPath = new Map<string, StringDecoder>();
+  // Transcript path -> agentType read from its `.meta.json` sidecar. Only
+  // successful reads are cached (a sidecar that is missing now may appear
+  // later); bounded by the live file set via evictStalePartials().
+  private readonly agentTypeByPath = new Map<string, string>();
+  // Transcript path -> bytes consumed so far, mirroring the persisted cursor so
+  // readLiveTails() can compare a stat against it without reading the cursor
+  // file. Absent until a read has committed, and dropped when a read fails, so
+  // an unreadable file is left to the poll instead of being retried on every
+  // hook record. Bounded by the live file set via evictStalePartials().
+  private readonly consumedBytesByPath = new Map<string, number>();
+  // The transcripts readLiveTails() stats: any it found since the last poll,
+  // then every one that poll discovered, most recently modified first. No
+  // mtime window applies, since a subagent's transcript stays unmodified for
+  // the whole of a long tool call; MAX_ON_DEMAND_FILES and the size check bound
+  // the cost.
+  private trackedFiles: DiscoveredFile[] = [];
+  // For finding transcripts spawned since the last poll: each session's ad-hoc
+  // `subagents/` directory the last poll listed (the newest-mtime one when a
+  // repo rename left two), and every transcript path in those directories the
+  // poll or readLiveTails() has seen, tracked or skipped as stale, so a stale
+  // one costs no stat. Rebuilt by every poll.
+  private readonly subagentsDirBySession = new Map<string, string>();
+  private readonly listedTranscripts = new Set<string>();
 
   // Health counters
   private filesWatched = 0;
@@ -323,6 +378,7 @@ export class SubagentWatcher {
       (Number.isFinite(envHours) && envHours > 0 ? envHours : DEFAULT_DISCOVERY_HOURS);
     this.costSelfCheck = options.costSelfCheck;
     this.localStore = options.localStore;
+    this.onTurnRead = options.onTurnRead;
     this.loadFingerprints();
   }
 
@@ -332,6 +388,7 @@ export class SubagentWatcher {
       return;
     }
     this.running = true;
+    this.stopped = false;
     if (!existsSync(this.storagePath)) {
       mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
     }
@@ -347,6 +404,10 @@ export class SubagentWatcher {
   }
 
   stop(): void {
+    this.stopped = true;
+    this.trackedFiles = [];
+    this.subagentsDirBySession.clear();
+    this.listedTranscripts.clear();
     if (!this.running) return;
     this.running = false;
     if (this.intervalId !== null) {
@@ -369,6 +430,7 @@ export class SubagentWatcher {
     try {
       const files = this.discoverFiles();
       this.filesWatched = files.length;
+      this.trackedFiles = [...files].sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
       for (const file of files) {
         this.processFile(file);
       }
@@ -377,6 +439,125 @@ export class SubagentWatcher {
     } catch (err) {
       this.recordError(err);
     }
+  }
+
+  /**
+   * Reads what subagent transcripts gained since they were last read, through
+   * the same path as `poll()` (cursor, parent buffer, `onTurnRead`), and
+   * returns how many turns it read. Hook intake calls this for every record the
+   * `toolUseId` join cannot attribute yet, parent calls included, so the
+   * subagent's tool_use line for that call is read before the record is audited
+   * instead of on the next poll.
+   *
+   * A session whose subagents directory the last poll did not list, and that
+   * has no tracked transcript, costs no syscall. Otherwise this lists the
+   * session's `subagents/` directory once for transcripts spawned since the
+   * poll, then stats the tracked transcripts of `sessionId` (of every session
+   * when undefined), at most MAX_ON_DEMAND_FILES stats in all, and reads only
+   * from one that has grown past what was already consumed, up to
+   * MAX_ON_DEMAND_BYTES in total. Not found before the next poll: a session's
+   * first subagent, whose transcript creates that directory, and a workflow's
+   * subagents, whose transcripts sit in per-run directories below it. Never
+   * throws.
+   */
+  readLiveTails(sessionId?: string): number {
+    if (this.stopped) return 0;
+    let turns = 0;
+    let byteBudget = MAX_ON_DEMAND_BYTES;
+    let statsLeft = MAX_ON_DEMAND_FILES;
+    try {
+      const spawned = this.findSpawnedSincePoll(
+        sessionId ?? this.parentSessionFilter ?? undefined,
+        statsLeft,
+      );
+      statsLeft -= spawned.stats;
+      if (spawned.files.length > 0) this.trackedFiles = [...spawned.files, ...this.trackedFiles];
+      for (const file of spawned.files) {
+        if (byteBudget <= 0) break;
+        const read = this.readToSize(file, byteBudget);
+        turns += read.turns;
+        byteBudget -= read.bytes;
+      }
+      for (let i = spawned.files.length; i < this.trackedFiles.length; i++) {
+        if (statsLeft <= 0 || byteBudget <= 0) break;
+        const tracked = this.trackedFiles[i];
+        if (tracked === undefined) break;
+        if (sessionId !== undefined && tracked.parentSessionId !== sessionId) continue;
+        const consumed = this.consumedBytesByPath.get(tracked.path);
+        if (consumed === undefined) continue;
+        statsLeft -= 1;
+        let stat: Stats;
+        try {
+          stat = statSync(tracked.path);
+        } catch {
+          continue; // removed since the poll, which will drop it
+        }
+        if (stat.size <= consumed) continue;
+        const file: DiscoveredFile = { ...tracked, stat };
+        this.trackedFiles[i] = file;
+        const read = this.readToSize(file, byteBudget);
+        turns += read.turns;
+        byteBudget -= read.bytes;
+      }
+    } catch (err) {
+      this.recordError(err);
+    }
+    return turns;
+  }
+
+  /**
+   * Transcripts in `sessionId`'s known `subagents/` directory that the last
+   * poll did not list: subagents spawned since. One readdir, and at most
+   * `maxStats` stats of names not seen before.
+   */
+  private findSpawnedSincePoll(
+    sessionId: string | undefined,
+    maxStats: number,
+  ): { readonly files: DiscoveredFile[]; readonly stats: number } {
+    const files: DiscoveredFile[] = [];
+    const subDir = sessionId === undefined ? undefined : this.subagentsDirBySession.get(sessionId);
+    if (sessionId === undefined || subDir === undefined) return { files, stats: 0 };
+    let names: string[];
+    try {
+      names = readdirSync(subDir);
+    } catch {
+      return { files, stats: 0 };
+    }
+    let stats = 0;
+    for (const name of names) {
+      if (stats >= maxStats) break;
+      if (!name.startsWith('agent-') || !name.endsWith('.jsonl')) continue;
+      const agentId = name.slice('agent-'.length, -'.jsonl'.length);
+      if (!AGENT_ID_RE.test(agentId)) continue; // the poll announces these
+      const path = join(subDir, name);
+      if (this.listedTranscripts.has(path)) continue;
+      this.listedTranscripts.add(path);
+      stats += 1;
+      try {
+        const stat = statSync(path);
+        files.push({ path, parentSessionId: sessionId, agentId, workflowRunId: null, stat });
+      } catch {
+        /* removed again; the poll decides */
+      }
+    }
+    return { files, stats };
+  }
+
+  /** Reads `file` from its cursor until it reaches `file.stat.size` or reads `byteBudget` bytes. */
+  private readToSize(
+    file: DiscoveredFile,
+    byteBudget: number,
+  ): { readonly bytes: number; readonly turns: number } {
+    let bytes = 0;
+    let turns = 0;
+    while (bytes < byteBudget) {
+      const read = this.processFile(file, Math.min(byteBudget - bytes, MAX_BYTES_PER_POLL));
+      bytes += read.bytes;
+      turns += read.turns;
+      const consumed = this.consumedBytesByPath.get(file.path);
+      if (read.bytes === 0 || consumed === undefined || consumed >= file.stat.size) break;
+    }
+    return { bytes, turns };
   }
 
   /** Reset counters; for tests. */
@@ -407,6 +588,9 @@ export class SubagentWatcher {
 
   private discoverFiles(): DiscoveredFile[] {
     const out: DiscoveredFile[] = [];
+    this.subagentsDirBySession.clear();
+    this.listedTranscripts.clear();
+    const subagentsDirMtime = new Map<string, number>();
     if (!existsSync(this.projectsDir)) return out;
     const cutoffMs = Date.now() - this.discoveryHours * 60 * 60 * 1000;
 
@@ -482,6 +666,10 @@ export class SubagentWatcher {
           }
           if (wfDirStat === null || wfDirStat.mtimeMs < cutoffMs) continue;
         }
+        if (subStat.mtimeMs > (subagentsDirMtime.get(sessionId) ?? -Infinity)) {
+          subagentsDirMtime.set(sessionId, subStat.mtimeMs);
+          this.subagentsDirBySession.set(sessionId, subDir);
+        }
 
         // Ad-hoc: subagents/agent-*.jsonl
         try {
@@ -493,6 +681,7 @@ export class SubagentWatcher {
               continue;
             }
             const path = join(subDir, name);
+            this.listedTranscripts.add(path);
             const stat = this.filterByMtime(path, cutoffMs);
             if (stat) {
               out.push({ path, parentSessionId: sessionId, agentId, workflowRunId: null, stat });
@@ -651,7 +840,15 @@ export class SubagentWatcher {
   // Per-file processing
   // -------------------------------------------------------------------------
 
-  private processFile(file: DiscoveredFile): void {
+  /**
+   * Reads up to `maxBytes` past the file's cursor, emits its complete turns and
+   * advances the cursor. Returns the bytes read and turns emitted.
+   */
+  private processFile(
+    file: DiscoveredFile,
+    maxBytes: number = MAX_BYTES_PER_POLL,
+  ): { readonly bytes: number; readonly turns: number } {
+    const nothingRead = { bytes: 0, turns: 0 };
     const st = file.stat;
     const cursorPath = this.cursorPath(file.parentSessionId, file.agentId);
     const persisted = this.readCursor(cursorPath);
@@ -666,10 +863,13 @@ export class SubagentWatcher {
       : persisted;
     if (switchedFile) this.partialByPath.delete(file.path);
 
-    if (startCursor.bytePos >= st.size) return;
+    if (startCursor.bytePos >= st.size) {
+      this.consumedBytesByPath.set(file.path, startCursor.bytePos);
+      return nothingRead;
+    }
 
     const remaining = st.size - startCursor.bytePos;
-    const toRead = Math.min(remaining, MAX_BYTES_PER_POLL);
+    const toRead = Math.min(remaining, maxBytes);
     let buf: Buffer;
     let actuallyRead = 0;
     let fd: number | null = null;
@@ -679,6 +879,7 @@ export class SubagentWatcher {
       actuallyRead = readSync(fd, buf, 0, toRead, startCursor.bytePos);
     } catch (err) {
       this.recordError(err);
+      this.consumedBytesByPath.delete(file.path);
       if (fd !== null) {
         try {
           closeSync(fd);
@@ -686,7 +887,7 @@ export class SubagentWatcher {
           /* ignore */
         }
       }
-      return;
+      return nothingRead;
     } finally {
       if (fd !== null) {
         try {
@@ -696,7 +897,10 @@ export class SubagentWatcher {
         }
       }
     }
-    if (actuallyRead === 0) return;
+    if (actuallyRead === 0) {
+      this.consumedBytesByPath.set(file.path, startCursor.bytePos);
+      return nothingRead;
+    }
 
     let decoder = this.decoderByPath.get(file.path);
     if (decoder === undefined) {
@@ -742,7 +946,9 @@ export class SubagentWatcher {
       this.parseErrors += 1;
     }
 
-    // Emit token events for each parsed assistant turn
+    // Token events for each parsed assistant turn, emitted once the cursor is written.
+    const agentType = lines.length > 0 ? this.readAgentType(file.path) : undefined;
+    const events: SubagentTokenEvent[] = [];
     for (const line of lines) {
       if (!line) continue;
       this.linesRead += 1;
@@ -773,15 +979,30 @@ export class SubagentWatcher {
         stopReason: parsed.stopReason,
         schemaFingerprint: parsed.usageKeysFingerprint,
         toolUseIds: parsed.toolUseIds,
+        ...(agentType !== undefined ? { agentType } : {}),
       };
-      this.appendToParentBuffer(file.parentSessionId, event);
+      events.push(event);
     }
 
     // Persist the advanced cursor plus the (bounded) trailing partial so a
-    // restart resumes exactly where we left off. Keep the in-memory mirror in
-    // sync; when the partial is empty, drop the key entirely so a fully-consumed
-    // file leaves no residual entry in the map.
-    this.writeCursor(cursorPath, nextBytePos, newPartial, file.path);
+    // restart resumes exactly where we left off. If that fails, the next read
+    // starts from this read's start again, so nothing this read found takes
+    // effect: emitting now would repeat these turns, and keeping its partial
+    // would prepend it to the same bytes. The decoder, which holds this read's
+    // trailing bytes, is reset as on a restart, and the mirror is dropped as on
+    // a failed read, leaving the file to the next poll.
+    if (!this.writeCursor(cursorPath, nextBytePos, newPartial, file.path)) {
+      this.decoderByPath.delete(file.path);
+      this.consumedBytesByPath.delete(file.path);
+      return nothingRead;
+    }
+    for (const event of events) {
+      this.appendToParentBuffer(file.parentSessionId, event);
+      this.notifyTurnRead(event);
+    }
+    // Keep the in-memory mirror in sync; when the partial is empty, drop the
+    // key entirely so a fully-consumed file leaves no residual entry in the map.
+    this.consumedBytesByPath.set(file.path, nextBytePos);
     if (newPartial.length > 0) {
       this.partialByPath.set(file.path, newPartial);
     } else {
@@ -803,6 +1024,16 @@ export class SubagentWatcher {
         event: 'oversized_line_dropped',
       });
     }
+    return { bytes: actuallyRead, turns: events.length };
+  }
+
+  private notifyTurnRead(event: SubagentTokenEvent): void {
+    if (this.onTurnRead === undefined) return;
+    try {
+      this.onTurnRead(event);
+    } catch (err) {
+      this.recordError(err);
+    }
   }
 
   /**
@@ -813,7 +1044,14 @@ export class SubagentWatcher {
    * file reappears, we resume from it.
    */
   private evictStalePartials(files: DiscoveredFile[]): void {
-    if (this.partialByPath.size === 0 && this.decoderByPath.size === 0) return;
+    if (
+      this.partialByPath.size === 0 &&
+      this.decoderByPath.size === 0 &&
+      this.agentTypeByPath.size === 0 &&
+      this.consumedBytesByPath.size === 0
+    ) {
+      return;
+    }
     const live = new Set<string>();
     for (const f of files) live.add(f.path);
     for (const path of this.partialByPath.keys()) {
@@ -822,6 +1060,52 @@ export class SubagentWatcher {
     for (const path of this.decoderByPath.keys()) {
       if (!live.has(path)) this.decoderByPath.delete(path);
     }
+    for (const path of this.agentTypeByPath.keys()) {
+      if (!live.has(path)) this.agentTypeByPath.delete(path);
+    }
+    for (const path of this.consumedBytesByPath.keys()) {
+      if (!live.has(path)) this.consumedBytesByPath.delete(path);
+    }
+  }
+
+  /**
+   * Reads `agentType` from the transcript's `agent-<id>.meta.json` sidecar.
+   * Claude Code writes that sidecar when it spawns the subagent (its birth
+   * time matches the transcript's first line in observed 2.1.284 data), so the
+   * type is available while the subagent runs, well before the parent's
+   * `Agent` PostToolUse. Only `agentType` is taken; the sidecar's other fields
+   * (`description`, `name`, ...) are never read into events.
+   */
+  private readAgentType(transcriptPath: string): string | undefined {
+    const cached = this.agentTypeByPath.get(transcriptPath);
+    if (cached !== undefined) return cached;
+    const metaPath = transcriptPath.replace(/\.jsonl$/, '.meta.json');
+    let agentType: string | undefined;
+    let fd: number | undefined;
+    try {
+      fd = openSync(metaPath, 'r');
+      // One byte past the ceiling tells an oversized file apart from one
+      // exactly at it, without trusting a stat that could race a writer.
+      const buf = Buffer.alloc(MAX_META_SIDECAR_BYTES + 1);
+      const bytesRead = readSync(fd, buf, 0, buf.length, 0);
+      if (bytesRead > MAX_META_SIDECAR_BYTES) return undefined;
+      const parsed: unknown = JSON.parse(buf.toString('utf-8', 0, bytesRead));
+      if (parsed !== null && typeof parsed === 'object') {
+        agentType = normalizeAgentType((parsed as { agentType?: unknown }).agentType);
+      }
+    } catch {
+      return undefined; // absent (older Claude Code or not yet written) or malformed
+    } finally {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch {
+          /* best-effort close */
+        }
+      }
+    }
+    if (agentType !== undefined) this.agentTypeByPath.set(transcriptPath, agentType);
+    return agentType;
   }
 
   /**
@@ -884,12 +1168,13 @@ export class SubagentWatcher {
     }
   }
 
+  /** Returns whether the cursor was written; a failure is recorded, not thrown. */
   private writeCursor(
     cursorPath: string,
     bytePos: number,
     partialLine: string,
     sourcePath: string,
-  ): void {
+  ): boolean {
     try {
       if (!existsSync(this.storagePath)) {
         mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
@@ -899,8 +1184,10 @@ export class SubagentWatcher {
       writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine, path: sourcePath }), {
         mode: 0o600,
       });
+      return true;
     } catch (err) {
       this.recordError(err);
+      return false;
     }
   }
 

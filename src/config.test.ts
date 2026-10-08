@@ -9,7 +9,9 @@ import {
   sanitizeDeveloper,
   normalizeDeveloperName,
   validateConfigFile,
+  resolveCompanionMode,
 } from './config.js';
+import type { CompanionModeSource } from './config.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let savedEnv: NodeJS.ProcessEnv;
@@ -18,8 +20,9 @@ let tmpDir: string;
 beforeEach(() => {
   stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
   savedEnv = { ...process.env };
-  tmpDir = resolve(tmpdir(), `nr-mcp-test-${Date.now()}`);
-  mkdirSync(tmpDir, { recursive: true });
+  // mkdtempSync, not a `Date.now()` name: two jest processes starting a test
+  // in the same millisecond would otherwise share (and delete) one directory.
+  tmpDir = mkdtempSync(resolve(tmpdir(), 'nr-mcp-test-'));
 
   // Clear all relevant env vars to isolate tests
   delete process.env.NEW_RELIC_LICENSE_KEY;
@@ -1411,7 +1414,7 @@ describe('developer sanitization via loadMcpConfig()', () => {
     expect(config.repoUrl).not.toBeNull();
     expect(config.repoUrl).not.toContain('ghp_faketoken1234567890abcd');
     expect(config.repoUrl).not.toContain('someuser:');
-    expect(config.repoUrl).toContain('[REDACTED]');
+    expect(config.repoUrl).toBe('https://github.com/org/repo.git');
   });
 
   it('strips embedded credentials from an explicit NEW_RELIC_AI_REPO_URL env var', () => {
@@ -1424,7 +1427,36 @@ describe('developer sanitization via loadMcpConfig()', () => {
     expect(config.repoUrl).not.toBeNull();
     expect(config.repoUrl).not.toContain('ghp_faketoken1234567890abcd');
     expect(config.repoUrl).not.toContain('someuser:');
-    expect(config.repoUrl).toContain('[REDACTED]');
+    expect(config.repoUrl).toBe('https://github.com/org/repo.git');
+  });
+
+  it('strips a username-only token that no redaction pattern recognizes', () => {
+    // A GitLab/Bitbucket token used as the https username has no `user:pass`
+    // shape and no known prefix, so redactSensitive alone let it through.
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_REPO_URL = 'https://opaquetoken123@gitlab.example.com/org/repo.git';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.repoUrl).toBe('https://gitlab.example.com/org/repo.git');
+  });
+
+  it('strips a token from a git+https remote', () => {
+    // The `repository.url` shape in package.json. Only ssh-family schemes keep
+    // a userinfo login name; every other scheme loses the whole userinfo.
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_REPO_URL =
+      'git+https://opaquetoken123@gitlab.example.com/org/repo.git';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.repoUrl).toBe('git+https://gitlab.example.com/org/repo.git');
+  });
+
+  it('strips a password containing an unencoded slash', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_REPO_URL = 'https://user:pa/ss@github.com/acme/widgets.git';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.repoUrl).toBe('https://github.com/acme/widgets.git');
   });
 
   it('repoUrl strips embedded credentials from an inferred git remote', () => {
@@ -1454,12 +1486,37 @@ describe('developer sanitization via loadMcpConfig()', () => {
       expect(config.repoUrl).not.toBeNull();
       expect(config.repoUrl).not.toContain('ghp_faketoken1234567890abcd');
       expect(config.repoUrl).not.toContain('someuser:');
-      expect(config.repoUrl).toContain('[REDACTED]');
+      expect(config.repoUrl).toBe('https://github.com/org/repo.git');
+      expect(config.projectId).toBe('org/repo');
     } finally {
       process.chdir(origDir);
       rmSync(gitDir, { recursive: true, force: true });
     }
   });
+
+  it.each(['git@git.corp.internal:widgets.git', 'ssh://git@git.corp.internal:29418/widgets'])(
+    'keeps the git host of the one-segment remote %s out of projectId when repoUrl is off',
+    (remote) => {
+      const origDir = process.cwd();
+      const gitDir = mkdtempSync(resolve(tmpdir(), 'nr-mcp-test-repo-'));
+      // See the previous test for why GIT_DIR/GIT_WORK_TREE are cleared.
+      const gitEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+      try {
+        execSync('git init', { cwd: gitDir, env: gitEnv });
+        execSync(`git remote add origin ${remote}`, { cwd: gitDir, env: gitEnv });
+        process.chdir(gitDir);
+        process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+        process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+        const config = loadMcpConfig({ config: writeConfigFile({ repoUrlEnabled: false }) });
+        expect(config.repoUrl).toBeNull();
+        expect(config.projectId).toBe('widgets');
+        expect(JSON.stringify(config)).not.toContain('corp.internal');
+      } finally {
+        process.chdir(origDir);
+        rmSync(gitDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('orgId loaded from NEW_RELIC_AI_ORG_ID env var', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
@@ -2531,5 +2588,129 @@ describe('loadMcpConfig() — tiers', () => {
     const written = warnSpy.mock.calls.map((call) => String(call[0])).join('\n');
     warnSpy.mockRestore();
     expect(written).not.toContain('Unknown keys in config file');
+  });
+});
+
+describe('resolveCompanionMode()', () => {
+  const NR_EXPORT = {
+    CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+    OTEL_METRICS_EXPORTER: 'otlp',
+    OTEL_EXPORTER_OTLP_ENDPOINT: 'https://otlp.nr-data.net:4317',
+  };
+
+  it.each<[string, NodeJS.ProcessEnv, boolean | undefined, boolean, CompanionModeSource]>([
+    ['env true', { NR_AI_COMPANION_MODE: 'true' }, undefined, true, 'env NR_AI_COMPANION_MODE'],
+    ['env "yes"', { NR_AI_COMPANION_MODE: 'yes' }, undefined, true, 'env NR_AI_COMPANION_MODE'],
+    ['env "0"', { NR_AI_COMPANION_MODE: '0' }, undefined, false, 'env NR_AI_COMPANION_MODE'],
+    [
+      'env false beats file true',
+      { NR_AI_COMPANION_MODE: 'false' },
+      true,
+      false,
+      'env NR_AI_COMPANION_MODE',
+    ],
+    [
+      'env true beats file false',
+      { NR_AI_COMPANION_MODE: 'true' },
+      false,
+      true,
+      'env NR_AI_COMPANION_MODE',
+    ],
+    [
+      'env false beats detection',
+      { ...NR_EXPORT, NR_AI_COMPANION_MODE: 'false' },
+      undefined,
+      false,
+      'env NR_AI_COMPANION_MODE',
+    ],
+    ['unparseable env falls through', { NR_AI_COMPANION_MODE: 'maybe' }, true, true, 'config file'],
+    ['file true', {}, true, true, 'config file'],
+    ['file false beats detection', NR_EXPORT, false, false, 'config file'],
+    ['export to New Relic', NR_EXPORT, undefined, true, 'detected Claude Code OTel export'],
+    [
+      'telemetry "true"',
+      { ...NR_EXPORT, CLAUDE_CODE_ENABLE_TELEMETRY: 'true' },
+      undefined,
+      true,
+      'detected Claude Code OTel export',
+    ],
+    [
+      'exporter list',
+      { ...NR_EXPORT, OTEL_METRICS_EXPORTER: 'console,otlp' },
+      undefined,
+      true,
+      'detected Claude Code OTel export',
+    ],
+    [
+      'EU endpoint without scheme',
+      { ...NR_EXPORT, OTEL_EXPORTER_OTLP_ENDPOINT: 'otlp.eu01.nr-data.net:4317' },
+      undefined,
+      true,
+      'detected Claude Code OTel export',
+    ],
+    [
+      'metrics-specific endpoint',
+      {
+        ...NR_EXPORT,
+        OTEL_EXPORTER_OTLP_ENDPOINT: undefined,
+        OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'https://gov-otlp.nr-data.net/v1/metrics',
+      },
+      undefined,
+      true,
+      'detected Claude Code OTel export',
+    ],
+    [
+      'export to another backend',
+      { ...NR_EXPORT, OTEL_EXPORTER_OTLP_ENDPOINT: 'https://api.honeycomb.io' },
+      undefined,
+      false,
+      'default',
+    ],
+    [
+      'look-alike host',
+      { ...NR_EXPORT, OTEL_EXPORTER_OTLP_ENDPOINT: 'https://evil-nr-data.net' },
+      undefined,
+      false,
+      'default',
+    ],
+    [
+      'no endpoint',
+      { ...NR_EXPORT, OTEL_EXPORTER_OTLP_ENDPOINT: undefined },
+      undefined,
+      false,
+      'default',
+    ],
+    ['exporter none', { ...NR_EXPORT, OTEL_METRICS_EXPORTER: 'none' }, undefined, false, 'default'],
+    [
+      'prometheus exporter',
+      { ...NR_EXPORT, OTEL_METRICS_EXPORTER: 'prometheus' },
+      undefined,
+      false,
+      'default',
+    ],
+    [
+      'exporter unset',
+      { ...NR_EXPORT, OTEL_METRICS_EXPORTER: undefined },
+      undefined,
+      false,
+      'default',
+    ],
+    [
+      'telemetry off',
+      { ...NR_EXPORT, CLAUDE_CODE_ENABLE_TELEMETRY: '0' },
+      undefined,
+      false,
+      'default',
+    ],
+    [
+      'telemetry unset',
+      { ...NR_EXPORT, CLAUDE_CODE_ENABLE_TELEMETRY: undefined },
+      undefined,
+      false,
+      'default',
+    ],
+    ['nothing set', {}, undefined, false, 'default'],
+  ])('%s', (_name, env, fileValue, value, source) => {
+    expect(resolveCompanionMode(env, fileValue)).toEqual({ value, source });
   });
 });

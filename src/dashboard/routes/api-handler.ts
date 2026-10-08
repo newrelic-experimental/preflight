@@ -33,7 +33,10 @@ import { ActivityStore } from '../../metrics/git-activity-store.js';
 import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
 import { resolveScopeParam, resolveWindowParam } from '../../metrics/git-window-params.js';
 import type { WorktreeIdentity } from '../../metrics/git-workspace-identity.js';
-import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
+import {
+  UNATTRIBUTED_WORKSPACE_KEY,
+  WorktreeIdentityResolver,
+} from '../../metrics/git-workspace-identity.js';
 import type { ScopeRef } from '../../metrics/git-workspace-report.js';
 import { ReplaySessionCache } from '../../metrics/git-workspace-reporter.js';
 import type { GitWorkspaceReportWithWindow } from '../../metrics/git-workspace-reporter.js';
@@ -1257,6 +1260,18 @@ export function computeCrossProcessTodaySessionIds(deps: ApiHandlerDeps): string
   return Array.from(ids);
 }
 
+// Sessions whose activity this process's in-memory trackers already hold: its
+// own id plus every session it drained today. --local drains every session, so
+// a persisted copy of any of them must not be merged on top of the live totals.
+function sessionIdsHeldByLiveTrackers(deps: ApiHandlerDeps): ReadonlySet<string> {
+  const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+  const held = new Set<string>(
+    deps.liveSessionRegistry?.getTodaySessionIds?.({ includeSynthetic: true }) ?? [],
+  );
+  if (ownSessionId !== undefined) held.add(ownSessionId);
+  return held;
+}
+
 // Narrows this MCP's own peekAllBuffers() rows (raw buffer-file lines from
 // EVERY --stdio process, read-only) into the two event kinds
 // computeContextMetricsFromEvents() understands, scoped to one session.
@@ -1301,24 +1316,38 @@ function isPrRecord(
   return record.kind === 'pr';
 }
 
-// A 'create' with a null prNumber can never be matched by a later 'merge'
-// (gh/MCP always resolve a real number once one exists), so it always counts
-// as open. `records` must be sorted ascending by timestamp.
-function countOpenPrs(records: readonly Extract<GitActivityRecord, { kind: 'pr' }>[]): number {
+type PrRecord = Extract<GitActivityRecord, { kind: 'pr' }>;
+
+// Identifies the PR a numbered record refers to: the repo (the git common dir,
+// shared by every worktree of one clone) plus the number. A merge run from
+// another session or worktree of the same repo matches; the same number in
+// another repo does not. A record with no resolvable repo matches only within
+// its own session.
+function prMatchKey(record: PrRecord, repoKeyByWorkspace: ReadonlyMap<string, string>): string {
+  const repo =
+    record.workspaceKey === UNATTRIBUTED_WORKSPACE_KEY
+      ? `${UNATTRIBUTED_WORKSPACE_KEY}:${record.sessionId}`
+      : (repoKeyByWorkspace.get(record.workspaceKey) ?? record.workspaceKey);
+  return `${repo}#${record.prEvent.prNumber ?? ''}`;
+}
+
+// A 'create' whose number was never captured (no PR URL in its output, or a
+// session persisted before createdPrNumber existed) can't be matched, so it
+// always counts as open. `mergeTimesByKey` spans every session in the window.
+function countOpenPrs(
+  records: readonly PrRecord[],
+  mergeTimesByKey: ReadonlyMap<string, readonly number[]>,
+  repoKeyByWorkspace: ReadonlyMap<string, string>,
+): number {
   let open = 0;
-  for (let i = 0; i < records.length; i++) {
-    const event = records[i].prEvent;
-    if (event.action !== 'create') continue;
-    if (event.prNumber === null) {
+  for (const record of records) {
+    if (record.prEvent.action !== 'create') continue;
+    if (record.prEvent.prNumber === null) {
       open++;
       continue;
     }
-    const merged = records
-      .slice(i + 1)
-      .some(
-        (later) => later.prEvent.action === 'merge' && later.prEvent.prNumber === event.prNumber,
-      );
-    if (!merged) open++;
+    const merges = mergeTimesByKey.get(prMatchKey(record, repoKeyByWorkspace)) ?? [];
+    if (!merges.some((ts) => ts >= record.timestamp)) open++;
   }
   return open;
 }
@@ -1373,16 +1402,29 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
     peeked as unknown as readonly HookEvent[],
   ).filter((record) => record.timestamp >= startMs);
   for (const record of bufferToolCalls) activityRecorder.recordToolCall(record);
+  // Only replayed sessions contribute repo keys. Buffer records carry no cwd
+  // (pairToolCallsFromBufferEvents doesn't copy it), so their PR activity is
+  // 'unattributed' and matches within its own session until the periodic
+  // session checkpoint persists it with a cwd.
+  const repoKeyByWorkspace = new Map<string, string>();
   for (const session of todaySessions) {
     const replayed = input.replayCache.replay(session, identityResolver);
     for (const record of replayed.records) activityStore.ingest(record);
+    for (const [key, identity] of replayed.identities)
+      repoKeyByWorkspace.set(key, identity.repoKey);
   }
-  const prRecordsBySession = new Map<string, Array<Extract<GitActivityRecord, { kind: 'pr' }>>>();
+  const prRecordsBySession = new Map<string, PrRecord[]>();
+  const mergeTimesByKey = new Map<string, number[]>();
   for (const record of activityStore.query({ since: startMs, until: now })) {
     if (!isPrRecord(record)) continue;
     const list = prRecordsBySession.get(record.sessionId);
     if (list) list.push(record);
     else prRecordsBySession.set(record.sessionId, [record]);
+    if (record.prEvent.action !== 'merge' || record.prEvent.prNumber === null) continue;
+    const key = prMatchKey(record, repoKeyByWorkspace);
+    const times = mergeTimesByKey.get(key);
+    if (times) times.push(record.timestamp);
+    else mergeTimesByKey.set(key, [record.timestamp]);
   }
 
   const counts = Object.fromEntries(SESSION_STATUSES.map((s) => [s, 0])) as Record<
@@ -1396,7 +1438,11 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
     const status = deriveSessionStatus({
       live: liveSet.has(sessionId),
       lastToolName: lastToolBySession.get(sessionId)?.toolName ?? null,
-      openPrCount: countOpenPrs(prRecordsBySession.get(sessionId) ?? []),
+      openPrCount: countOpenPrs(
+        prRecordsBySession.get(sessionId) ?? [],
+        mergeTimesByKey,
+        repoKeyByWorkspace,
+      ),
     });
     counts[status]++;
     idsByStatus[status].push(sessionId);
@@ -2294,15 +2340,13 @@ export function createApiHandler(
 
   routes.set('GET /api/model-usage', (_req, res) => {
     if (!deps.modelUsageTracker) return unavailable(res, 'modelUsageTracker');
-    // Same own-live + persisted-today, excluding-own-already-persisted-session
+    // Same own-live + persisted-today, excluding-sessions-already-held-live
     // pattern as GET /api/tool-selection-score below: this process's live
-    // breakdown is always included, and every OTHER today session's persisted
-    // breakdown is added on top — never this process's own persisted entry,
-    // which would double-count activity already reflected in the live
-    // tracker.
-    const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    // breakdown is always included, and every today session NOT already held
+    // by this process's live trackers is added on top.
+    const held = sessionIdsHeldByLiveTrackers(deps);
     const persistedBreakdowns = (deps.sessionStore?.loadTodaySessions() ?? [])
-      .filter((s) => s.sessionId !== ownSessionId)
+      .filter((s) => !held.has(s.sessionId))
       .map((s) => s.modelBreakdown ?? {});
     const combined = deps.modelUsageTracker.combineBreakdowns([
       deps.modelUsageTracker.getRawBreakdown(),
@@ -2395,13 +2439,13 @@ export function createApiHandler(
       return;
     }
 
-    // Same own-live + persisted-today, excluding-own-already-persisted-
-    // session pattern as GET /api/model-usage above: this process's live
-    // breakdown is always included, and every OTHER today session's
-    // persisted tool/skill buckets are summed on top — different sessions,
-    // so sum, not the max-merge session-store.ts uses to reconcile two
-    // writers of the SAME session.
-    const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    // Same own-live + persisted-today, excluding-sessions-already-held-live
+    // pattern as GET /api/model-usage above: this process's live breakdown is
+    // always included, and every today session's persisted tool/skill
+    // buckets NOT already held by this process's live trackers are summed on
+    // top — different sessions, so sum, not the max-merge session-store.ts
+    // uses to reconcile two writers of the SAME session.
+    const held = sessionIdsHeldByLiveTrackers(deps);
     const live = deps.turnCostAttributor.getMetrics();
     const costByToolType: Record<string, ToolTypeCostEntry> = { ...live.costByToolType };
     const costBySkill: Record<string, SkillCostEntry> = { ...live.costBySkill };
@@ -2415,7 +2459,7 @@ export function createApiHandler(
     let mergedAttributedCost = 0;
     let mergedEstimatedCost = 0;
     for (const session of deps.sessionStore?.loadTodaySessions() ?? []) {
-      if (session.sessionId === ownSessionId || !session.attribution) continue;
+      if (held.has(session.sessionId) || !session.attribution) continue;
       mergedEstimatedCost += session.estimatedCostUsd ?? 0;
       mergedAttributedCost += foldSessionAttributionBuckets(costByToolType, costBySkill, session);
     }
@@ -2593,16 +2637,16 @@ export function createApiHandler(
 
   routes.set('GET /api/quality-proxy', (_req, res) => {
     if (!deps.qualityProxyTracker) return unavailable(res, 'qualityProxyTracker');
-    // Same own-live + persisted-today, excluding-own-already-persisted-session
+    // Same own-live + persisted-today, excluding-sessions-already-held-live
     // pattern as GET /api/model-usage: this process's live raw counts are
-    // always included, and every OTHER today session's persisted raw counts
-    // are summed on top — rates are derived exactly once from the summed
-    // totals, never averaged per-session. qualityByTurnBucket/
-    // degradationDetected/events are inherently within-session signals with
-    // no persisted cross-session equivalent, so they're sourced from the
-    // live tracker only.
+    // always included, and every today session's persisted raw counts NOT
+    // already held by this process's live trackers are summed on top — rates
+    // are derived exactly once from the summed totals, never averaged
+    // per-session. qualityByTurnBucket/degradationDetected/events are
+    // inherently within-session signals with no persisted cross-session
+    // equivalent, so they're sourced from the live tracker only.
     const live = deps.qualityProxyTracker.getMetrics();
-    const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    const held = sessionIdsHeldByLiveTrackers(deps);
     // Day-filter this process's own live contribution the same way GET
     // /api/tool-selection-score does just below — QualityProxyTracker has no
     // concept of "day" internally (events accumulate for the tracker's whole
@@ -2615,7 +2659,7 @@ export function createApiHandler(
       live.events.filter((e) => e.timestamp >= startMs),
     );
     const persistedCounts = (deps.sessionStore?.loadTodaySessions() ?? [])
-      .filter((s) => s.sessionId !== ownSessionId)
+      .filter((s) => !held.has(s.sessionId))
       .map((s) => s.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS);
     const combined = combineQualityProxyRawCounts([liveRawCounts, ...persistedCounts]);
     jsonOk(res, {
@@ -2637,15 +2681,16 @@ export function createApiHandler(
     );
 
     // (2) every OTHER process's still-undrained buffer, paired into full
-    // ToolCallRecords (see tool-selection-aggregate.ts). This process's own
-    // buffer file is typically already drained into (1) by the time it's
-    // peeked, but exclude its sessionId defensively so a change in drain
-    // timing can never double-count.
-    const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    // ToolCallRecords (see tool-selection-aggregate.ts). Sessions this
+    // process's own live trackers already hold (its own id, plus — in
+    // --local mode — every session it drained today) are typically already
+    // in (1) by the time they're peeked, but exclude them defensively so a
+    // change in drain timing can never double-count.
+    const held = sessionIdsHeldByLiveTrackers(deps);
     const peeked = deps.localStore?.peekAllBuffers() ?? [];
     const crossProcessRecords = pairToolCallsFromBufferEvents(
       peeked as unknown as readonly HookEvent[],
-    ).filter((r) => r.timestamp >= startMs && r.sessionId !== ownSessionId);
+    ).filter((r) => r.timestamp >= startMs && (r.sessionId === null || !held.has(r.sessionId)));
 
     // Score all of today's live, not-yet-persisted activity together so
     // redundant-read/repeated-failure detection sees real cross-call
@@ -2660,7 +2705,7 @@ export function createApiHandler(
     // buildSessionSummary in session-store.ts), before outputSizeBytes was
     // gone for good.
     const persistedSummaries = (deps.sessionStore?.loadTodaySessions() ?? [])
-      .filter((s) => s.sessionId !== ownSessionId)
+      .filter((s) => !held.has(s.sessionId))
       .map((s) => s.toolSelectionMetrics)
       .filter((m): m is ToolSelectionSummary => m != null);
 
@@ -3379,7 +3424,11 @@ export function createApiHandler(
           // that must not reach the HTTP surface; the detail view augments the
           // remaining fields below.
           const responseBody: Record<string, unknown> = toDashboardSummary(session);
+          // toDashboardSummary already copied the persisted raw counts under this
+          // same key, and those carry no diffApplyRate/testPassRate — leaving them
+          // in place renders both as NaN% client-side.
           if (quality.totalSignals > 0) responseBody.qualityProxy = quality;
+          else delete responseBody.qualityProxy;
           // The persisted shape's key is `toolSelectionMetrics`, but
           // Sessions.tsx's SessionTimeline reads `toolSelectionScore` —
           // remap here so this branch's response uses the same field name
