@@ -817,6 +817,49 @@ describe('classifyGitSegments when the error holds two failures', () => {
     ]);
   });
 
+  // git 2.54 during an unresolved merge: only `git status` printed the
+  // unmerged paths, so the merge never ran and commit a is the refuser.
+  it('fails the first refusing commit when only a status block named the conflict', () => {
+    const STATUS = 'Unmerged paths:\n\tboth modified:   a.ts';
+    const UNMERGED = 'error: Committing is not possible because you have unmerged files.';
+    expect(
+      outcomes(
+        'git status; git commit -m a && git merge other; git commit -m b',
+        `${STATUS}\n${UNMERGED}\n${UNMERGED}`,
+      ),
+    ).toEqual([
+      ['status', false],
+      ['commit', false],
+      ['commit', false],
+    ]);
+  });
+
+  // `&&` skips the commit after the pull, so it can't be the one that refused.
+  it('ignores a later commit that && kept from running', () => {
+    const STATUS = 'Unmerged paths:\n\tboth modified:   a.ts';
+    const UNMERGED = 'error: Committing is not possible because you have unmerged files.';
+    expect(
+      outcomes(
+        'git status; git commit -m x && git pull && git commit -m y',
+        `${STATUS}\n${UNMERGED}`,
+      ),
+    ).toEqual([
+      ['status', false],
+      ['commit', false],
+    ]);
+  });
+
+  it('does not take a revert conflict that echoes a commit subject for a failed commit', () => {
+    const REVERT =
+      'error: could not revert abc1234... Fix pre-commit hook failed on Windows\n' +
+      'CONFLICT (content): Merge conflict in a.ts';
+    expect(outcomes('git stash pop; git commit -m x && git revert abc1234', REVERT)).toEqual([
+      ['stash', false],
+      ['commit', true],
+      ['merge_conflict', false],
+    ]);
+  });
+
   it('types the push that ran rejected, not one && then kept from running', () => {
     // The first push's rejection is why `||` ran the pull; its conflict then
     // stopped the second push.
