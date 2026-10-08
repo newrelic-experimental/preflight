@@ -188,9 +188,13 @@ const AGREEMENT_RE = new RegExp(
   'i',
 );
 
-/** A sentence that opens on a contrast ("Good call on the logging. But the migration won't work") turns away from agreement in the sentence before it. */
-const CONTRAST_RE = new RegExp(
-  `^${OPTIONAL_LEADING_FILLER}(?:but|however|still|yet|that said)\\b`,
+/**
+ * A contrast that opens the text or a clause in it ("But the migration ...", "Good call on the
+ * logging, but the migration ..."). Read on the text between an agreement and "won't work", it turns
+ * away from the agreement.
+ */
+const CLAUSE_CONTRAST_RE = new RegExp(
+  `(?:^|[,;:\u2013\u2014])\\s*${OPTIONAL_LEADING_FILLER}(?:but|however|still|yet|that said)\\b`,
   'i',
 );
 
@@ -209,22 +213,44 @@ function someWontWorkSentence(
   );
 }
 
+/** Whether the sentence, or one either side of it, points back at something built (`BUILT_REFERENCE_RE`). */
+function nearBuiltReference(...nearby: readonly string[]): boolean {
+  return nearby.some((s) => BUILT_REFERENCE_RE.test(s));
+}
+
 /**
- * After a turn that changed something, "won't work" rejects what it changed, unless the sentence
- * frames an option as hypothetical, agrees with the assistant or follows a sentence that does
- * without opening on a contrast, or names an idea the assistant proposed rather than built.
+ * Whether a "won't work" sentence agrees with the assistant: it opens on agreement, or follows a
+ * sentence that does, and no clause between the agreement and "won't work" opens on a contrast.
+ * "You're right that a cache won't work here" agrees, and "You're right, but the migration won't
+ * work" and "Good call on the logging, but ..." don't.
  */
-function rejectsActionOutput(sentence: string, before: string): boolean {
+function agreesWithAssistant(sentence: string, before: string, lead: string): boolean {
+  const agreement = AGREEMENT_RE.exec(sentence);
+  if (agreement !== null) return !CLAUSE_CONTRAST_RE.test(lead.slice(agreement[0].length));
+  return AGREEMENT_RE.test(before) && !CLAUSE_CONTRAST_RE.test(lead);
+}
+
+/**
+ * After a turn that changed something, "won't work" rejects what it changed. It counts whenever it
+ * would after a turn that talked (`nearBuiltReference`), so a turn that acted never needs more
+ * evidence. Otherwise it counts unless the sentence frames an option as hypothetical, agrees with
+ * the assistant (`agreesWithAssistant`), or names an idea the assistant proposed rather than built.
+ */
+function rejectsActionOutput(sentence: string, before: string, after: string): boolean {
+  if (nearBuiltReference(sentence, before, after)) return true;
   const lead = sentence.slice(0, sentence.search(WONT_WORK_RE));
-  const agrees =
-    AGREEMENT_RE.test(sentence) || (AGREEMENT_RE.test(before) && !CONTRAST_RE.test(sentence));
-  return !HYPOTHETICAL_OPTION_RE.test(lead) && !agrees && !IDEA_REFERENCE_RE.test(sentence);
+  return (
+    !HYPOTHETICAL_OPTION_RE.test(lead) &&
+    !agreesWithAssistant(sentence, before, lead) &&
+    !IDEA_REFERENCE_RE.test(sentence)
+  );
 }
 
 /**
  * Whether "won't work" in `text` rejects something the assistant built or did, given its previous turn.
  *
- * - `acted`: it rejects what the turn changed, with the exceptions in `rejectsActionOutput`.
+ * - `acted`: it rejects what the turn changed (`rejectsActionOutput`). It counts wherever `talked`
+ *   does, and in most other sentences too.
  * - `talked`: the turn only answered or proposed, so "won't work" rejects an option or states a
  *   constraint unless the sentence, or one either side, points back at something built earlier
  *   ("the migration you wrote still won't work"). A present progressive doesn't count here: after a
@@ -237,13 +263,9 @@ function hasWontWorkCorrection(text: string, state: AssistantTurnState): boolean
   if (!WONT_WORK_RE.test(text)) return false;
   switch (state) {
     case 'acted':
-      return someWontWorkSentence(text, (sentence, before) =>
-        rejectsActionOutput(sentence, before),
-      );
+      return someWontWorkSentence(text, rejectsActionOutput);
     case 'talked':
-      return someWontWorkSentence(text, (...nearby) =>
-        nearby.some((s) => BUILT_REFERENCE_RE.test(s)),
-      );
+      return someWontWorkSentence(text, nearBuiltReference);
     case 'unknown':
       return (
         DEICTIC_WONT_WORK_RE.test(text) ||

@@ -911,9 +911,14 @@ describe('TranscriptMessageTracker', () => {
       "That terraform plan won't work, you're creating the bucket and its policy in one apply.",
       "A singleton won't work here, every request needs its own client.",
       "Your approach won't work for us, let's go back.",
-      // A contrast turns away from agreeing in the sentence before.
+      // A contrast turns away from agreeing in the sentence before, or earlier in the same sentence.
       "Good call on the logging. But the migration won't work on prod.",
       "Fair point. However, the migration won't work on prod.",
+      "Good call on the logging, but the migration won't work on prod.",
+      "You're right, but the migration won't work on prod.",
+      // A reference to something built counts whatever else the sentence does, as after a turn that talked.
+      "You're right, but it still won't work.",
+      "The fix you suggested still won't work.",
       // A hypothetical whose verb takes "it" says when the output fails.
       "If you run it on Windows, it won't work.",
       "If we deploy it like this it won't work.",
@@ -956,6 +961,8 @@ describe('TranscriptMessageTracker', () => {
       "The regex you added yesterday won't work for unicode.",
       "That approach won't work. Your migration drops the index, let's add it back.",
       "At this point you've broken the build, so the deploy won't work.",
+      "You're right, but it still won't work.",
+      "The fix you suggested still won't work.",
     ];
 
     /** After a turn that only answered or proposed, a "won't work" that doesn't point back rejects the proposal. */
@@ -1233,6 +1240,36 @@ describe('TranscriptMessageTracker', () => {
       );
     });
 
+    // A turn that acted needs less evidence than one that talked, so the same text can't count
+    // less after it. The acted rule counts whatever the talked rule does before its exceptions.
+    it('never counts a message less after a turn that acted than after one that talked', () => {
+      const corpus = new Set([
+        ...WONT_WORK_CORRECTIONS,
+        ...WONT_WORK_CORRECTIONS_WITH_PROPOSAL,
+        ...WONT_WORK_DESIGN_DISCUSSION,
+        ...WONT_WORK_DESIGN_DISCUSSION_SINGLE,
+        ...KNOWN_FALSE_POSITIVES,
+        ...KNOWN_MISSES,
+        ...WONT_WORK_YOU_REFERENCES,
+        ...WONT_WORK_YOU_NOT_ABOUT_OUTPUT,
+        ...ACTED_CORRECTIONS,
+        ...ACTED_DESIGN,
+        ...ACTED_KNOWN_FALSE_POSITIVES,
+        ...TALKED_CORRECTIONS,
+        ...TALKED_DESIGN,
+        ...TALKED_KNOWN_FALSE_POSITIVES,
+        ...TALKED_KNOWN_MISSES,
+        ...Object.values(CONTEXT_SETS).flatMap((set) => set.rows.map((row) => row.text)),
+        ...TOOL_SETS.D.rows.map((row) => row.text),
+      ]);
+      expect(
+        [...corpus].filter(
+          (text) =>
+            countCorrectionsAfterTurn(text, ACTED) < countCorrectionsAfterTurn(text, TALKED),
+        ),
+      ).toEqual([]);
+    });
+
     // Fake timers freeze Date.now(), so they can't time a regex. Each input is
     // sized so a backtracking pattern takes seconds while the linear one takes
     // about a millisecond, which keeps the budget far from the line. Each runs
@@ -1261,6 +1298,20 @@ describe('TranscriptMessageTracker', () => {
       ['long letter run before the phrase', `${'a'.repeat(400_000)} won't work`],
       ['repeated leading filler', `${'hmm, '.repeat(80_000)}won't work`],
       ['repeated agreement', `${'agreed, '.repeat(50_000)}that won't work`],
+      ['long comma run after agreement', `Agreed${','.repeat(400_000)}x won't work`],
+      [
+        'repeated clause filler after agreement',
+        `You're right${', hmm'.repeat(80_000)} won't work`,
+      ],
+      ['long whitespace after a clause break', `Good call,${' '.repeat(400_000)}x won't work`],
+      [
+        'long punctuation run after a clause filler',
+        `Agreed, hmm${','.repeat(400_000)}x won't work`,
+      ],
+      [
+        'long clause before the phrase after agreement',
+        `Good point. ${', still'.repeat(60_000)}x won't work`,
+      ],
       ['long letter run in a filler', `h${'m'.repeat(400_000)}x won't work`],
       ['long punctuation run after a filler', `Hmm${','.repeat(400_000)}x won't work`],
       ['long question-mark run after a word', `Huh${'?'.repeat(400_000)}x won't work`],
