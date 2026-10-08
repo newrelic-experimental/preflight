@@ -5,11 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.62.1] - 2026-10-08
+## [1.63.2] - 2026-10-08
 
 ### Fixed
 
-- **A session's persisted cost could be inflated well above its real cost when a `--local` dashboard daemon ran alongside the `--stdio` MCP engine that actually owned that session.** The daemon's byte-size cost-estimate fallback — meant only to cover the handful of tool calls before a session's first real token report — kept firing for a session's entire duration whenever the daemon had no transcript connection to that session, even though the session's real owner was already reporting accurate cost the whole time. The fallback now checks whether another live process already owns the session before estimating.
+- **A new `--stdio` MCP engine could add cost for other sessions' tool calls to its own session's persisted cost.** Before the engine learned its real session id, it drained hook activity left behind by sessions that had ended without a live owner, and estimated a cost from each call's payload size. Those estimates stayed in its cost total after the real id resolved, so they were saved as part of its session. The payload-size estimate now applies only to tool calls recorded for the engine's own session.
+
+## [1.63.1] - 2026-10-08
+
+### Fixed
+
+- When the config asks for cloud export (`mode: "cloud"` or `"both"`) but the `preflight --local` dashboard process can't see your credentials, the sessions it collects for you no longer fail to reach New Relic silently. This usually happens because the credentials are set only as shell environment variables, which the macOS dashboard LaunchAgent does not inherit. The dashboard now logs a warning once for each session it keeps only locally, and `GET /api/health` reports them under `unforwardedSessions`, with a count and the most recent session ids. To fix it, add `licenseKey` and `accountId` to the config file and restart the dashboard.
+- On macOS, an MCP server launched through `npx` that took its session id from the directory it started in can now correct that id once the host's own hooks report the real one. Before, a GitHub Copilot session started in a directory where Claude Code was already running could stay filed under the Claude Code session for its whole life.
+
+## [1.63.0] - 2026-10-08
+
+### Added
+
+- `ai.efficiency.*` gauges now carry a `model` attribute, matching `ai.cost.*`. `ai.cost.*`, `ai.efficiency.*`, and `ai.api.*` gauges also carry a `provider` attribute (`anthropic`, `google`, `openai`, `mistral`, `cohere`, or `bedrock` for the Bedrock model IDs in the pricing table) derived from the model ID, so dashboards can facet directly on either without joining against the corresponding event.
 
 ## [1.62.0] - 2026-10-08
 

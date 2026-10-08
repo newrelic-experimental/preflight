@@ -88,6 +88,26 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * True when `<storagePath>/active-<sessionId>.pid` names a live process, i.e.
+ * some `--stdio` engine has adopted `sessionId` and is still running. An
+ * absent, unreadable or malformed heartbeat, or one naming a dead PID, is not
+ * a live owner.
+ */
+export function hasLiveOwningEngine(storagePath: string, sessionId: string): boolean {
+  if (!SESSION_ID_RE.test(sessionId)) return false;
+  const heartbeatPath = resolve(storagePath, `active-${sessionId}.pid`);
+  if (!existsSync(heartbeatPath)) return false;
+  try {
+    const pid = Number.parseInt(readFileSync(heartbeatPath, 'utf-8').trim(), 10);
+    return isPidAlive(pid);
+  } catch {
+    // Unreadable heartbeat — treat as not-live; gcOrphanBuffers() cleans up
+    // a genuinely dead/corrupt heartbeat file separately.
+    return false;
+  }
+}
+
 export class LocalStore {
   private readonly storagePath: string;
   private readonly bufferPath: string;
@@ -234,17 +254,7 @@ export class LocalStore {
    */
   private hasLiveOwner(bufferFileName: string): boolean {
     const sessionId = bufferFileName.slice('buffer-'.length, -'.jsonl'.length);
-    if (!SESSION_ID_RE.test(sessionId)) return false;
-    const heartbeatPath = resolve(this.storagePath, `active-${sessionId}.pid`);
-    if (!existsSync(heartbeatPath)) return false;
-    try {
-      const pid = Number.parseInt(readFileSync(heartbeatPath, 'utf-8').trim(), 10);
-      return isPidAlive(pid);
-    } catch {
-      // Unreadable heartbeat — treat as not-live; gcOrphanBuffers() cleans up
-      // a genuinely dead/corrupt heartbeat file separately.
-      return false;
-    }
+    return hasLiveOwningEngine(this.storagePath, sessionId);
   }
 
   /**
