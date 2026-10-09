@@ -60,6 +60,39 @@ describe('extractAnthropicTokens', () => {
 });
 
 describe('extractGeminiTokens', () => {
+  it('extracts audio counts from promptTokensDetails and cacheTokensDetails', () => {
+    const result = extractGeminiTokens({
+      usageMetadata: {
+        promptTokenCount: 1000,
+        candidatesTokenCount: 10,
+        cachedContentTokenCount: 400,
+        promptTokensDetails: [
+          { modality: 'TEXT', tokenCount: 700 },
+          { modality: 'AUDIO', tokenCount: 200 },
+          { modality: 'AUDIO', tokenCount: 100 },
+        ],
+        cacheTokensDetails: [
+          { modality: 'TEXT', tokenCount: 300 },
+          { modality: 'AUDIO', tokenCount: 100 },
+        ],
+      },
+    });
+    // 300 audio prompt tokens include the 100 cached ones.
+    expect(result.audioInputTokens).toBe(200);
+    expect(result.audioCacheReadTokens).toBe(100);
+  });
+
+  it('omits audio fields when there is no audio', () => {
+    const result = extractGeminiTokens({
+      usageMetadata: {
+        promptTokenCount: 10,
+        promptTokensDetails: [{ modality: 'TEXT', tokenCount: 10 }],
+      },
+    });
+    expect(result).not.toHaveProperty('audioInputTokens');
+    expect(result).not.toHaveProperty('audioCacheReadTokens');
+  });
+
   it('maps all fields from a full usageMetadata object', () => {
     const result = extractGeminiTokens({
       usageMetadata: {
@@ -71,12 +104,33 @@ describe('extractGeminiTokens', () => {
       },
     });
 
-    expect(result.inputTokens).toBe(200);
+    expect(result.inputTokens).toBe(170); // promptTokenCount minus the 30 cached
     expect(result.outputTokens).toBe(100);
     expect(result.thinkingTokens).toBe(50);
     expect(result.cacheReadTokens).toBe(30);
     expect(result.cacheCreationTokens).toBe(0);
     expect(result.totalTokens).toBe(350); // uses API-provided value
+  });
+
+  it('computes totalTokens from disjoint components when totalTokenCount is absent', () => {
+    const result = extractGeminiTokens({
+      usageMetadata: {
+        promptTokenCount: 200,
+        candidatesTokenCount: 100,
+        cachedContentTokenCount: 30,
+      },
+    });
+
+    expect(result.totalTokens).toBe(300); // 170 + 30 + 100
+  });
+
+  it('clamps inputTokens at zero when cached tokens exceed the prompt count', () => {
+    const result = extractGeminiTokens({
+      usageMetadata: { promptTokenCount: 10, cachedContentTokenCount: 30 },
+    });
+
+    expect(result.inputTokens).toBe(0);
+    expect(result.cacheReadTokens).toBe(30);
   });
 
   it('computes totalTokens when totalTokenCount is absent', () => {
@@ -447,12 +501,27 @@ describe('extractOpenAITokens', () => {
       },
     });
 
-    expect(result.inputTokens).toBe(100);
+    expect(result.inputTokens).toBe(80); // prompt_tokens minus the 20 cached
     expect(result.outputTokens).toBe(50);
     expect(result.thinkingTokens).toBe(10);
     expect(result.cacheReadTokens).toBe(20);
     expect(result.cacheCreationTokens).toBe(0); // OpenAI does not expose this
     expect(result.totalTokens).toBe(150); // uses API-provided value
+  });
+
+  it('reads Moonshot cache_write_tokens as cacheCreationTokens, disjoint from input', () => {
+    const result = extractOpenAITokens({
+      usage: {
+        prompt_tokens: 1000,
+        completion_tokens: 50,
+        prompt_tokens_details: { cached_tokens: 300, cache_write_tokens: 200 },
+      },
+    });
+
+    expect(result.inputTokens).toBe(500);
+    expect(result.cacheReadTokens).toBe(300);
+    expect(result.cacheCreationTokens).toBe(200);
+    expect(result.totalTokens).toBe(1050); // prompt + completion
   });
 
   it('computes totalTokens when total_tokens is absent', () => {
@@ -655,7 +724,7 @@ describe('TokenAccumulator', () => {
 
       const result = acc.finalize();
 
-      expect(result.inputTokens).toBe(100);
+      expect(result.inputTokens).toBe(80); // 100 prompt tokens minus 20 cached
       expect(result.outputTokens).toBe(60);
       expect(result.thinkingTokens).toBe(15);
       expect(result.cacheReadTokens).toBe(20);
@@ -700,7 +769,7 @@ describe('TokenAccumulator', () => {
       });
 
       const result = acc.finalize();
-      expect(result.inputTokens).toBe(80);
+      expect(result.inputTokens).toBe(68); // 80 prompt tokens minus 12 cached
       expect(result.outputTokens).toBe(30);
       expect(result.cacheReadTokens).toBe(12);
       expect(result.thinkingTokens).toBe(5);
@@ -731,7 +800,7 @@ describe('TokenAccumulator', () => {
       });
 
       const result = acc.finalize();
-      expect(result.inputTokens).toBe(80);
+      expect(result.inputTokens).toBe(68); // 80 prompt tokens minus 12 cached
       expect(result.outputTokens).toBe(30);
       expect(result.cacheReadTokens).toBe(12);
       expect(result.thinkingTokens).toBe(5);
@@ -1096,5 +1165,35 @@ describe('TokenAccumulator', () => {
       const output = getLogOutput(stderrSpy);
       expect(output).not.toContain('safeInt truncated fractional value');
     });
+  });
+});
+
+describe('TokenAccumulator Gemini audio', () => {
+  it('tracks the latest chunk audio counts and clears them when absent', () => {
+    const acc = new TokenAccumulator('google');
+    acc.addChunk({
+      usageMetadata: {
+        promptTokenCount: 100,
+        promptTokensDetails: [{ modality: 'AUDIO', tokenCount: 40 }],
+      },
+    });
+    acc.addChunk({
+      usageMetadata: {
+        promptTokenCount: 100,
+        candidatesTokenCount: 5,
+        promptTokensDetails: [{ modality: 'AUDIO', tokenCount: 60 }],
+      },
+    });
+    expect(acc.finalize().audioInputTokens).toBe(60);
+
+    const acc2 = new TokenAccumulator('google');
+    acc2.addChunk({
+      usageMetadata: {
+        promptTokenCount: 100,
+        promptTokensDetails: [{ modality: 'AUDIO', tokenCount: 40 }],
+      },
+    });
+    acc2.addChunk({ usageMetadata: { promptTokenCount: 100 } });
+    expect(acc2.finalize()).not.toHaveProperty('audioInputTokens');
   });
 });

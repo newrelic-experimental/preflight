@@ -171,23 +171,19 @@ export function createAiResponse(params: CreateAiResponseParams): AiResponse {
   const thinkingTokens = safeInt(params.thinkingTokens);
   const cacheReadTokens = safeInt(params.cacheReadTokens);
   const cacheCreationTokens = safeInt(params.cacheCreationTokens);
-  // For Google and OpenAI, inputTokens already includes cached content (cache
-  // tokens are a subset, not additive). Adding them again double-counts.
-  // Same provider-aware logic as serialize.ts gen_ai.usage.input_tokens.
-  //
   // For OpenAI, thinkingTokens (reasoning_tokens from
   // completion_tokens_details) is already a SUBSET of outputTokens
   // (completion_tokens) — not a separate additive field. Adding it again
-  // double-counts for o1/o3/o4-mini, so totalTokens = inputTokens + outputTokens.
+  // double-counts for o1/o3/o4-mini, so thinkingTokens is left out of its total.
   // For Google, thinkingTokens (thoughtsTokenCount) IS disjoint from
   // outputTokens (candidatesTokenCount) per the Gemini API spec, so it is
   // still added for that provider.
   const totalTokens =
-    params.provider === 'openai'
-      ? inputTokens + outputTokens
-      : params.provider === 'google'
-        ? inputTokens + outputTokens + thinkingTokens
-        : inputTokens + outputTokens + thinkingTokens + cacheReadTokens + cacheCreationTokens;
+    inputTokens +
+    outputTokens +
+    (params.provider === 'openai' ? 0 : thinkingTokens) +
+    cacheReadTokens +
+    cacheCreationTokens;
 
   // durationMs: coerce to a non-negative integer, matching createAiAgentTaskSummary.
   // safeInt(NaN|Infinity|negative) → 0. Fractional ms is caller error.
