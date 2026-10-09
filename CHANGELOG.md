@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.66.0] - 2026-10-09
+
+### Added
+
+- **A new model stayed at $0 until a Preflight release shipped its price.** Preflight now fetches LiteLLM's community price file (`model_prices_and_context_window.json` in `BerriAI/litellm`) in the background at server start, caches it at `<storagePath>/pricing-cache.json`, and refetches at a later start once the cache is a day old. The cached prices apply only to exact model IDs that the bundled table, the pricing overlay, and `customPricingFile` do not resolve, so they cannot change a price Preflight already knows. They take precedence over family estimates. The request goes to a fixed `https` URL with redirects refused, a 30 second timeout, and an 8 MB cap, and the response is schema-validated. Opt out with `NEW_RELIC_AI_PRICING_REFRESH=false` or `pricingRefresh: false`; `highSecurity=true` forces it off. With refresh off, nothing is fetched and no cache file is read or written.
+
+## [1.65.0] - 2026-10-09
+
+### Added
+
+- **A point release of a known Claude family, such as `claude-opus-5-5` or `claude-sonnet-5-5[1m]`, recorded $0 when the pricing table had no exact entry.** Preflight now prices it from the newest priced release of the same family and major version, or from the family's newest release when no sibling shares the major version. The price is marked as an estimate. An exact table entry always wins, IDs outside the `claude-<family>-<major>[-<minor>]` form are never estimated, and two differently priced candidates at the chosen version leave the model unpriced. Estimated calls are counted per model with the sibling they were priced from. The Today page lists them under the unpriced notice as "Spend is an estimate", `nr_observe_get_cost_breakdown` returns `estimated_by_model`, and `ai.cost.estimated_calls` is emitted tagged by `model` and `estimatedFrom`.
+
+## [1.64.0] - 2026-10-09
+
+### Added
+
+- **Calls on a model with no price were recorded as $0 with nothing on the dashboard to say so, so Spend Today read low without explanation.** Preflight now counts those calls per model ID. The Today page shows a notice above the spend figures naming the models, for example "2 calls unpriced (claude-opus-5-5). Spend is understated." The counts are persisted with each session, summed across today's sessions, returned as `unpriced_by_model` by `nr_observe_get_cost_breakdown`, and emitted as the `ai.cost.unpriced_calls` metric tagged by `model`.
+
+## [1.63.5] - 2026-10-09
+
+### Fixed
+
+- **An unpriced model logged "Unknown model, pricing not available" on every token event.** A session on a model missing from the pricing table repeated the warning for each call. Pricing lookups now resolve once per model ID per process, so the warning appears once per model.
+
 ## [1.63.4] - 2026-10-09
 
 ### Fixed

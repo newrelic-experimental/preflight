@@ -97,6 +97,8 @@ Every dollar figure Preflight reports — session cost, budget-threshold alerts,
 
 **`customPricingFile`** (env: `NEW_RELIC_AI_CUSTOM_PRICING_FILE`): path to a JSON file of `{ "model-id": { "inputPerMTok": ..., "outputPerMTok": ..., ... } }` entries (see `ModelPricing` in `src/shared/pricing.ts`) that fully replaces the vendored table for the models it lists. If your organization has contracted per-model rates, enter them here model-by-model and Preflight reports at your real rate, no multiplier needed. Mutually exclusive with the bundled gap-fill pricing overlay — see the doc comment on `applyPricingOverlay()` in `src/metrics/pricing-overlay.ts`.
 
+**`pricingRefresh`** (env: `NEW_RELIC_AI_PRICING_REFRESH`, default `true`): fetches LiteLLM's community price file in the background at server start, caches it at `<storagePath>/pricing-cache.json`, and refetches at a later start once the cache is a day old. It prices models the bundled table, the pricing overlay, and `customPricingFile` do not resolve, by exact model ID only, and takes precedence over family estimates. Set it to `false` to make no request and read or write no cache file. `highSecurity=true` forces it off.
+
 **`costRateMultiplier`** (env: `NEW_RELIC_AI_COST_RATE_MULTIPLIER`): a flat discount factor, `0 < x ≤ 1`, applied to every dollar figure `CostTracker` computes — a cheaper alternative to `customPricingFile` when you have a single blended discount off list price rather than distinct per-model contracted rates. Mirrors the semantics of Claude Code's own `modelPricing.multiplier` managed setting.
 
 ```json

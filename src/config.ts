@@ -84,6 +84,8 @@ export interface McpServerConfig {
   readonly enabled: boolean;
   readonly highSecurity: boolean;
   readonly recordContent: boolean;
+  /** Background fetch of LiteLLM prices for models the bundled table lacks. Forced false by highSecurity. */
+  readonly pricingRefresh: boolean;
   /**
    * Set when this org also enables Claude Code's built-in OTel export, so the
    * same session isn't ingested twice into a blended "org AI spend" dashboard
@@ -231,6 +233,7 @@ export const ConfigFileSchema = z
     enabled: z.boolean().optional(),
     highSecurity: z.boolean().optional(),
     recordContent: z.boolean().optional(),
+    pricingRefresh: z.boolean().optional(),
     companionMode: z.boolean().optional(),
     storagePath: z.string().optional(),
     hookBufferPath: z.string().optional(),
@@ -949,6 +952,13 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
         typeof file.recordContent === 'boolean' ? file.recordContent : false,
       ),
     ),
+
+    pricingRefresh: highSecurity
+      ? false
+      : envBool(
+          'NEW_RELIC_AI_PRICING_REFRESH',
+          typeof file.pricingRefresh === 'boolean' ? file.pricingRefresh : true,
+        ),
 
     companionMode: resolvedCompanionMode.value,
 

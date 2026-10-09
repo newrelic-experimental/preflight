@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
+import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncOptions,
@@ -177,6 +178,43 @@ describe('LocalSessionAggregator', () => {
     expect(summary?.tokensInput).toBe(1010);
     expect(summary?.tokensOutput).toBe(50);
     expect(summary?.model).toBe('claude-opus-4.8');
+  });
+
+  it('counts unpriced-model calls on the session that made them', () => {
+    const other = 'b0000000-0000-4000-8000-000000000000';
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
+    agg.recordToolCall({ sessionId: other, toolName: 'read_file', timestamp: 1 });
+    agg.recordTokenUsage(REAL_ID, { model: 'claude-foo-9-9', inputTokens: 100, outputTokens: 20 });
+    agg.recordTokenUsage(REAL_ID, { model: 'claude-foo-9-9', inputTokens: 30 });
+    agg.recordTokenUsage(other, { costUsd: 0.01, model: 'claude-sonnet-5', inputTokens: 100 });
+
+    const byId = new Map(summariesOf(agg).map((s) => [s.sessionId, s]));
+    expect(byId.get(REAL_ID)?.unpricedByModel).toEqual({
+      'claude-foo-9-9': { calls: 2, tokens: 150 },
+    });
+    expect(byId.get(other)?.unpricedByModel).toBeUndefined();
+  });
+
+  it('counts family-priced calls on the session that made them', () => {
+    const other = 'b0000000-0000-4000-8000-000000000000';
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
+    agg.recordToolCall({ sessionId: other, toolName: 'read_file', timestamp: 1 });
+    agg.recordTokenUsage(REAL_ID, { model: 'claude-opus-5-9', inputTokens: 100, outputTokens: 20 });
+    agg.recordTokenUsage(REAL_ID, { model: 'claude-opus-5-9', inputTokens: 30 });
+    agg.recordTokenUsage(other, { costUsd: 0.01, model: 'claude-sonnet-5', inputTokens: 100 });
+
+    const byId = new Map(summariesOf(agg).map((s) => [s.sessionId, s]));
+    expect(byId.get(REAL_ID)?.estimatedByModel).toEqual({
+      'claude-opus-5-9': {
+        calls: 2,
+        tokens: 150,
+        estimatedFrom: estimatedFromOf('claude-opus-5-9'),
+      },
+    });
+    expect(byId.get(REAL_ID)?.unpricedByModel).toBeUndefined();
+    expect(byId.get(other)?.estimatedByModel).toBeUndefined();
   });
 
   it('leaves model null when a session spans several models', () => {
