@@ -25,6 +25,11 @@
     "package.json",
     "package-lock.json",
     "server.json",
-    "smithery.yaml"
+    "smithery.yaml",
+    "tsconfig.json",
+    "tsconfig.web.json",
+    "tsconfig.web.build.json",
+    "vite.config.ts",
+    "postcss.config.js"
   ]
 }

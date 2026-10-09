@@ -27,8 +27,9 @@ permissions:
 
 jobs:
   release-pr:
-    # A fork's main has no release to prepare.
-    if: github.repository == 'newrelic-experimental/preflight'
+    # A fork's main has no release to prepare. A manual run from another branch would build the
+    # release PR on top of that branch's unmerged commits, so it does nothing.
+    if: github.repository == 'newrelic-experimental/preflight' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       HUSKY: 0 # disable git hooks in CI

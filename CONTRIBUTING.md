@@ -386,8 +386,10 @@ version.
 **Which PRs need one.** CI's `changeset` job fails when a PR changes a file that ships and adds
 no changeset. The files that ship are listed under `changedFilePatterns` in
 `.changeset/config.json`: everything in `src/` except tests, the plugin and Kiro power, the data
-directories, `package.json`, `package-lock.json`, `server.json`, and `smithery.yaml`. The
-lockfile counts because the dashboard bundle in `dist/web` is built from the versions it pins.
+directories, `package.json`, `package-lock.json`, `server.json`, and `smithery.yaml`, plus the
+build config that shapes `dist/` (`tsconfig.json`, the two `tsconfig.web*.json` files,
+`vite.config.ts`, and `postcss.config.js`). The lockfile counts because the dashboard bundle in
+`dist/web` is built from the versions it pins.
 A PR that touches only docs, tests, CI, or scripts needs no changeset. If a PR changes a shipped
 file in a way users won't notice, such as bumping a devDependency that only the tests or the
 build use, add an empty changeset with `npx changeset --empty`. That satisfies the check
