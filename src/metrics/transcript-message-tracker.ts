@@ -99,7 +99,8 @@ const TRIED_IT =
 /**
  * Things the assistant builds, singular or plural. "your proposal", "your solution", "your approach"
  * and "your idea" can name a plan, which is design discussion, so they are left out. After a turn
- * that acted they count anyway, since the rule there doesn't need a reference.
+ * that acted, "your solution" and "your approach" count anyway, since the rule there doesn't need a
+ * reference, but "your proposal" and "your idea" don't: `IDEA_REFERENCE_RE` excuses them.
  */
 const ASSISTANT_ARTIFACT =
   '(?:fix|patch)(?:es)?|quer(?:y|ies)|(?:change|edit|code|version|implementation|update|commit|refactor|migration|test|script|function)s?';

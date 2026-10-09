@@ -1043,6 +1043,15 @@ describe('TranscriptMessageTracker', () => {
     ];
 
     /** After a turn that only answered, "won't work" counts when it points back at something built earlier. */
+    /** After a turn that acted, the idea and hypothetical exceptions drop these corrections, which `main` counts. */
+    const ACTED_KNOWN_MISSES = [
+      // The idea exception reads the whole sentence and no contrast, so a comma after the thanks
+      // excuses it. With a period for the comma, it counts.
+      "Thanks for the suggestion, but the migration won't work.",
+      // Only "<verb> it" makes a hypothetical describe the output, not "<verb> this".
+      "If you run this on Windows it won't work.",
+    ];
+
     const TALKED_CORRECTIONS = [
       "The migration you wrote still won't work.",
       "Your fix from earlier won't work on Windows.",
@@ -1098,6 +1107,13 @@ describe('TranscriptMessageTracker', () => {
       'counts %j after a turn that acted (known false positive)',
       (text) => {
         expect(countCorrectionsAfterTurn(text, ACTED)).toBe(1);
+      },
+    );
+
+    it.each(ACTED_KNOWN_MISSES)(
+      'does not count %j after a turn that acted (known miss)',
+      (text) => {
+        expect(countCorrectionsAfterTurn(text, ACTED)).toBe(0);
       },
     );
 
@@ -1364,6 +1380,7 @@ describe('TranscriptMessageTracker', () => {
         ...ACTED_CORRECTIONS,
         ...ACTED_DESIGN,
         ...ACTED_KNOWN_FALSE_POSITIVES,
+        ...ACTED_KNOWN_MISSES,
         ...TALKED_CORRECTIONS,
         ...TALKED_DESIGN,
         ...TALKED_KNOWN_FALSE_POSITIVES,
