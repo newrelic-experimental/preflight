@@ -46,9 +46,15 @@ import {
 import { resolve, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { createLogger } from '../shared/index.js';
-import { getAncestorPids } from './process-ancestry.js';
+import {
+  getAncestorPids,
+  isNpmExecWrapper,
+  readParentAndCommand,
+  type AncestorPidsOptions,
+} from './process-ancestry.js';
 
 import { redactSensitive } from '../config.js';
+import { hasLiveOwningEngine } from '../storage/local-store.js';
 
 const logger = createLogger('session-resolver');
 
@@ -441,6 +447,28 @@ export async function resolveSessionId(
   });
 }
 
+export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorPids'> & {
+  signal?: AbortSignal;
+  /**
+   * Test seam for the parent-of-ppid level: the platform it is gated on, and
+   * the `ps` call that reads our ppid's parent and command line.
+   */
+  readonly ancestry?: Pick<AncestorPidsOptions, 'platform' | 'execFileSync'>;
+} & (
+    | { readonly includeParentOfPpid?: false }
+    | {
+        readonly includeParentOfPpid: true;
+        /** The cwd-guessed id the caller already adopted. */
+        readonly staleId: string;
+        /**
+         * Called once, synchronously, with a listener for the caller to invoke
+         * each time it drains hook activity filed under `staleId`. The
+         * listener never runs `ps`, and does nothing once the watch settles.
+         */
+        readonly subscribeToStaleIdActivity?: (onActivity: () => void) => void;
+      }
+  );
+
 /**
  * Keep watching the PPID breadcrumb only (never cwd, never CLAUDE_JOB_DIR) —
  * used as a corrective safety net after an initial resolution came from the
@@ -450,17 +478,130 @@ export async function resolveSessionId(
  * already adopted and is worth acting on — this function doesn't know or
  * care. No 60s WARN log: a cwd-sourced session working fine while the ppid
  * breadcrumb stays silent is expected, not alarming.
+ *
+ * With `includeParentOfPpid`, each tick also checks the breadcrumb of our
+ * ppid's own parent, but only when our ppid is npm's `npm exec` wrapper.
+ * That covers an `npx`-launched engine: the wrapper never gets a breadcrumb,
+ * so the direct watch alone can never correct a wrong cwd guess (#479: a
+ * Copilot engine started in a directory where Claude Code is active adopts
+ * the Claude session's id), and one level up is the host that ran `npx`,
+ * where its hooks write theirs. The wrapper is recognized by its command
+ * line, read with its parent in one `ps` call (readParentAndCommand()). An
+ * engine its host launched directly never looks above its ppid: that level
+ * is the host's own parent, which can carry another host's session when
+ * that host's hooks run as its children (Copilot in the VS Code extension
+ * host that also runs the Claude Code extension, say). Behind the wrapper:
+ *
+ * - A parent-level hit is only ever a correction. Once the slot names
+ *   `staleId` the guess was right, and the parent level is not read again:
+ *   a later change there is the host switching sessions (`/clear`,
+ *   `/resume`), and adopting that as a correction would carry the old
+ *   session's tool calls into the new one. So `staleId` coming back always
+ *   means our ppid's own breadcrumb confirmed the guess.
+ * - The slot is also read each time the caller reports draining activity
+ *   under `staleId` (subscribeToStaleIdActivity). The host's hook writes the
+ *   slot before it appends the event, so this catches a slot that named the
+ *   guess only between two ticks, provided a tool call drained in that gap.
+ *   Only paired tool calls are reported, so a prompt with a text-only reply
+ *   followed by `/clear` inside one tick gap still goes unseen. A wrong
+ *   guess drains the guessed session's events too, and those never latch:
+ *   our host's slot does not name that session. Activity reported before
+ *   any lookup has succeeded can't be checked against the slot. If a lookup
+ *   fails, before or after that activity, the activity stops the parent
+ *   level too. A failed lookup is retried only on ticks 2, 4, 8, 16, ...
+ *   (about 0.3s, 1.8s, 9.8s and 26s into the watch), so a wrong guess goes
+ *   uncorrected whenever the guessed session's activity arrives while the
+ *   lookup is failing. The retries keep spreading out, so that window lasts
+ *   as long as `ps` keeps failing, not only tens of seconds.
+ * - A parent-level session that already has a live owning engine is not
+ *   ours. Once skipped, an id stays skipped, so a neighbour whose engine
+ *   later exits is not adopted then.
+ * - Never on Linux. The collector writes a breadcrumb at each of its
+ *   ancestors there (collector-script.ts's writePpidBreadcrumb()), so the
+ *   host's parent is routinely a shared slot (an editor's main process, a
+ *   shell) carrying a concurrent session's id, which may have no engine of
+ *   its own or not have adopted its id yet. Elsewhere the collector writes
+ *   only its own ppid. Nor on Windows, which has no `ps`.
  */
 export async function watchPpidBreadcrumb(
-  options: SessionResolverOptions & { signal?: AbortSignal } = {},
+  options: PpidBreadcrumbWatchOptions = {},
 ): Promise<string> {
   const ppid = options.ppid ?? process.ppid;
   const storagePath = options.storagePath ?? DEFAULT_STORAGE_DIR;
+  const platform = options.ancestry?.platform ?? process.platform;
+  const staleId = options.includeParentOfPpid ? options.staleId : undefined;
+  const watchesParentLevel =
+    options.includeParentOfPpid === true && platform !== 'linux' && platform !== 'win32';
 
   let attempt = 0;
+  let tickCount = 0;
+  // Kept once our ppid's lookup succeeds: [ppid, parent] when ppid is an
+  // `npm exec` wrapper, else [ppid], past which resolveFromAncestorBreadcrumb
+  // never reads. The lookup runs on ticks 1, 2, 4, 8, ... until one succeeds,
+  // so a failed one (a `ps` timeout under load) is retried soon enough to
+  // recover from a blip, rarely enough that a `ps` that keeps timing out
+  // (each attempt blocks for up to 2s) costs little.
+  let parentLevelPids: readonly number[] | undefined;
+  // Set once the parent slot names staleId, or staleId activity can't be
+  // checked against it; see the doc comment.
+  let parentLevelDone = false;
+  let lookupFailed = false;
+  // staleId activity reported before any lookup ran. A successful lookup
+  // clears it: its tick reads the slot straight away.
+  let uncheckedActivity = false;
+  let settled = false;
+  const skippedParentIds = new Set<string>();
+
+  const stopReadingParentLevel = (reason: string): void => {
+    parentLevelDone = true;
+    logger.debug(`${reason}; no longer reading the ppid parent breadcrumb`, { ppid, staleId });
+  };
+
+  const readParentLevelPids = (): readonly number[] => {
+    if (parentLevelPids) return parentLevelPids;
+    if ((tickCount & (tickCount - 1)) !== 0) return [ppid]; // not a power of two
+    const lookup = readParentAndCommand(ppid, options.ancestry);
+    if (!lookup) {
+      logger.debug('Could not read the ppid command line; retrying on a later tick', {
+        ppid,
+        tick: tickCount,
+      });
+      lookupFailed = true;
+      if (uncheckedActivity) stopReadingParentLevel('Activity under the cwd guess went unchecked');
+      return [ppid];
+    }
+    uncheckedActivity = false;
+    if (lookup.parentPid !== null && isNpmExecWrapper(lookup.command)) {
+      parentLevelPids = [ppid, lookup.parentPid];
+    } else {
+      parentLevelPids = [ppid];
+      logger.debug('ppid is not an npm exec wrapper; not watching its parent breadcrumb', {
+        ppid,
+      });
+    }
+    return parentLevelPids;
+  };
+
+  // Reads the slot from the cached pids only: this runs on the caller's
+  // drain path, where a `ps` call could block for up to 2s.
+  const onStaleIdActivity = (): void => {
+    if (settled || !watchesParentLevel || parentLevelDone) return;
+    if (!parentLevelPids) {
+      if (lookupFailed) stopReadingParentLevel('Activity under the cwd guess went unchecked');
+      else uncheckedActivity = true;
+      return;
+    }
+    if (resolveFromAncestorBreadcrumb(storagePath, parentLevelPids)?.sessionId === staleId) {
+      stopReadingParentLevel(
+        'The ppid parent breadcrumb named the cwd guess as its activity drained',
+      );
+    }
+  };
+  if (options.includeParentOfPpid) options.subscribeToStaleIdActivity?.(onStaleIdActivity);
 
   return new Promise<string>((resolvePromise, rejectPromise) => {
     const onAbort = () => {
+      settled = true;
       rejectPromise(new Error('session resolution aborted'));
     };
     if (options.signal) {
@@ -476,6 +617,7 @@ export async function watchPpidBreadcrumb(
     }
 
     const tick = () => {
+      tickCount++;
       if (options.signal?.aborted) {
         options.signal.removeEventListener('abort', onAbort);
         return;
@@ -484,8 +626,38 @@ export async function watchPpidBreadcrumb(
       if (sid) {
         logger.debug('Resolved corrected session_id from ppid breadcrumb', { sessionId: sid });
         if (options.signal) options.signal.removeEventListener('abort', onAbort);
+        settled = true;
         resolvePromise(sid);
         return;
+      }
+      if (watchesParentLevel && !parentLevelDone) {
+        // resolveFromAncestorBreadcrumb skips index 0, our ppid.
+        const fromParent = resolveFromAncestorBreadcrumb(storagePath, readParentLevelPids());
+        if (fromParent && !skippedParentIds.has(fromParent.sessionId)) {
+          const { sessionId, pid } = fromParent;
+          if (sessionId === staleId) {
+            parentLevelDone = true;
+            logger.debug('The ppid parent breadcrumb matches the cwd guess; no longer reading it', {
+              sessionId,
+              pid,
+            });
+          } else if (hasLiveOwningEngine(storagePath, sessionId)) {
+            skippedParentIds.add(sessionId);
+            logger.debug('Ignoring the ppid parent breadcrumb: its session has a live owner', {
+              sessionId,
+              pid,
+            });
+          } else {
+            logger.debug('Resolved corrected session_id from the ppid parent breadcrumb', {
+              sessionId,
+              pid,
+            });
+            if (options.signal) options.signal.removeEventListener('abort', onAbort);
+            settled = true;
+            resolvePromise(sessionId);
+            return;
+          }
+        }
       }
       const delay = nextDelayMs(attempt++);
       const handle = setTimeout(tick, delay);
@@ -502,11 +674,10 @@ export async function watchPpidBreadcrumb(
  * Whether `<storagePath>/buffer-<sessionId>.jsonl` exists and is non-empty —
  * i.e. the hook collector has actually appended at least one event for this
  * session. Mirrors `LocalStore`'s buffer-naming convention
- * (`buffer-<sessionId>.jsonl`) without importing `LocalStore` itself (this
- * module has no storage-layer dependency today); the file is only ever
- * created by `LocalStore.appendEvent()`'s `appendFileSync`, so existence
- * already implies non-empty content in practice — the size check is a cheap
- * extra guard, not load-bearing.
+ * (`buffer-<sessionId>.jsonl`) without constructing a `LocalStore`; the file
+ * is only ever created by `LocalStore.appendEvent()`'s `appendFileSync`, so
+ * existence already implies non-empty content in practice — the size check
+ * is a cheap extra guard, not load-bearing.
  */
 function hasActiveBuffer(storagePath: string, sessionId: string): boolean {
   try {

@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Sessions on Claude Opus 5.5, Claude Sonnet 5.5, and OpenAI's GPT-6 models showed $0 cost and measured context against 200K.** Preflight's pricing table had no entries for `claude-opus-5-5`, `claude-sonnet-5-5`, `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna`. It now prices Opus 5.5 at $4 input and $20 output, Sonnet 5.5 at $2 and $10, each with $0.20 cache read and a 1M context window, and GPT-6 at OpenAI's standard rates per million tokens (Astra $10 and $50, Sol $2 and $10, Luna $0.10 and $0.50) with a 1.05M window. Requests whose prompt exceeds 272K tokens, counting cache reads and writes, are billed at the long-context rates, including the higher cached-input rate OpenAI charges there. Claude Haiku 5.5 requests over 100K prompt tokens, counting cache, are now billed at 5x the base rates, and Gemini cache reads, previously unpriced, are now priced. This update also adds separate pricing for Gemini audio input and refreshes the pricing table for other models, including Amazon Nova, Bedrock, xAI, Moonshot, and Mistral. The dashboard's subagent cost prices each turn on its own, and a Copilot app session first seen with a prompt volume already over its model's tier threshold starts counting from that point instead of billing the backlog at the long-context rate.
 
+## [1.63.1] - 2026-10-08
+
+### Fixed
+
+- When the config asks for cloud export (`mode: "cloud"` or `"both"`) but the `preflight --local` dashboard process can't see your credentials, the sessions it collects for you no longer fail to reach New Relic silently. This usually happens because the credentials are set only as shell environment variables, which the macOS dashboard LaunchAgent does not inherit. The dashboard now logs a warning once for each session it keeps only locally, and `GET /api/health` reports them under `unforwardedSessions`, with a count and the most recent session ids. To fix it, add `licenseKey` and `accountId` to the config file and restart the dashboard.
+- On macOS, an MCP server launched through `npx` that took its session id from the directory it started in can now correct that id once the host's own hooks report the real one. Before, a GitHub Copilot session started in a directory where Claude Code was already running could stay filed under the Claude Code session for its whole life.
+
 ## [1.63.0] - 2026-10-08
 
 ### Added

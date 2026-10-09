@@ -120,6 +120,11 @@ import { SessionSpan } from './tracing/session-span.js';
 import { TaskSpanTracker } from './tracing/task-span-tracker.js';
 import { emitToolCallSpan } from './tracing/tool-call-span.js';
 import { NrIngestManager } from './transport/nr-ingest.js';
+import {
+  UNFORWARDED_SESSIONS_HINT,
+  UnforwardedSessionMonitor,
+  detectCloudForwardingGap,
+} from './transport/unforwarded-session-monitor.js';
 import type { CliOptions } from './types.js';
 import { HomelabAccumulator, HomelabForwarder } from './homelab/index.js';
 import { VERSION } from './version.js';
@@ -179,7 +184,7 @@ function loadConfigOrDie(options: Partial<CliOptions>): Readonly<McpServerConfig
     return loadMcpConfig(options);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`${msg}\n\nRun 'preflight doctor' to diagnose.`);
+    throw new Error(`${msg}\n\nRun 'preflight doctor' to diagnose.`, { cause: err });
   }
 }
 
@@ -877,6 +882,9 @@ async function main(): Promise<void> {
   // only when the initial resolution came from the collision-prone cwd
   // fallback — see resolvedViaCwdOnly) when shutdown fires.
   let ppidCorrectionAbort: AbortController | undefined;
+  // That watch's listener for tool calls drained under the cwd guess, set
+  // while it runs (see subscribeToStaleIdActivity in session-resolver.ts).
+  let cwdGuessActivity: { readonly staleId: string; readonly onActivity: () => void } | null = null;
 
   // True whenever the live sessionTraceId came from the collision-prone cwd
   // fallback and hasn't yet been ppid-confirmed. While true, the periodic
@@ -1002,6 +1010,11 @@ async function main(): Promise<void> {
     // synchronous setup completes, to decide whether to arm a background
     // correction watch (see `startPpidCorrectionWatch` below).
     let resolvedViaCwdOnly = false;
+    // --local only: set when the config asked for cloud export but this
+    // process fell back to local mode for want of credentials, so every
+    // ownerless session it drains is kept locally and never sent to New
+    // Relic. Surfaced as a per-session warning and on GET /api/health (#479).
+    let unforwardedSessionMonitor: UnforwardedSessionMonitor | undefined;
     if (options.stdio) {
       // Connect stdio FIRST so the MCP handshake can complete immediately.
       // Tools are registered after initialization; tool calls before that
@@ -1079,12 +1092,15 @@ async function main(): Promise<void> {
       try {
         config = loadConfigOrDie(options);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!/Missing required configuration: (licenseKey|accountId)/.test(msg)) {
-          throw err;
-        }
+        const gap = detectCloudForwardingGap(err);
+        if (!gap) throw err;
         process.env.NR_AI_MODE = 'local';
         config = loadConfigOrDie(options);
+        unforwardedSessionMonitor = new UnforwardedSessionMonitor({ gap });
+        logger.warn(
+          `Cloud export is configured (mode='${gap.requestedMode}') but this --local process has no ${gap.missingField}; sessions it drains will not reach New Relic`,
+          { reason: gap.reason, requestedMode: gap.requestedMode, hint: UNFORWARDED_SESSIONS_HINT },
+        );
       }
 
       if (!config.enabled) {
@@ -1871,6 +1887,11 @@ async function main(): Promise<void> {
         },
         alertEngine,
         alertLog,
+        ...(unforwardedSessionMonitor
+          ? {
+              unforwardedSessions: () => unforwardedSessionMonitor!.getSnapshot(),
+            }
+          : {}),
       });
       let addr: { address: string; port: number } | undefined;
       try {
@@ -2056,6 +2077,9 @@ async function main(): Promise<void> {
           logger.warn('onRecord called before full initialization; skipping');
           return;
         }
+        if (cwdGuessActivity && rawRecord.sessionId === cwdGuessActivity.staleId) {
+          cwdGuessActivity.onActivity();
+        }
 
         // Capture active task ID before recordToolCall may close the current task
         const taskIdBeforeRecord =
@@ -2178,6 +2202,11 @@ async function main(): Promise<void> {
           );
         }
         capturedNrIngest?.ingestToolCall(record, auditRecord);
+        // Only set on --local, whose unscoped drain skips every per-session
+        // buffer with a live owning engine. Records from the legacy shared
+        // buffer.jsonl are drained regardless and usually carry no sessionId,
+        // so the monitor counts them as untracked.
+        unforwardedSessionMonitor?.recordToolCall(record.sessionId);
 
         // SSE consumers filter by sessionId for the per-session live tail.
         // Records without a sessionId are legacy buffer entries that surfaced
@@ -3075,19 +3104,28 @@ async function main(): Promise<void> {
       // can (see the win32 branch's own comment), but a shared flag makes
       // that a documented invariant rather than an accident of timing.
       let corrected = false;
+      let activityListener: typeof cwdGuessActivity = null;
       void watchPpidBreadcrumb({
         storagePath: config!.storagePath,
         signal: ppidCorrectionAbort.signal,
+        includeParentOfPpid: true,
+        staleId,
+        subscribeToStaleIdActivity: (onActivity) => {
+          activityListener = { staleId, onActivity };
+          cwdGuessActivity = activityListener;
+        },
       })
         .then(async (ppidId) => {
           if (ppidCorrectionAbort?.signal.aborted || corrected) return;
           if (ppidId === staleId) {
-            // The cwd guess turned out to be correct — no correction needed,
-            // so no reason to keep suppressing checkpoints for the rest of
-            // the cap window. It was NOT seeded eagerly (see the
-            // resolvedViaCwdOnly gate on rehydrateTrackersIfResumed's first
-            // call site) precisely because it wasn't confirmed yet — seed it
-            // now that it is.
+            // The cwd guess turned out to be correct, as confirmed by our own
+            // ppid's breadcrumb: the watch never resolves to staleId from an
+            // ancestor, whose breadcrumb may be a co-located session's. No
+            // correction needed, so no reason to keep suppressing checkpoints
+            // for the rest of the cap window. It was NOT seeded eagerly (see
+            // the resolvedViaCwdOnly gate on rehydrateTrackersIfResumed's
+            // first call site) precisely because it wasn't confirmed yet —
+            // seed it now that it is.
             rehydrateTrackersIfResumed(staleId);
             clearPendingConfirmation();
             return;
@@ -3105,6 +3143,9 @@ async function main(): Promise<void> {
             logger.warn('PPID correction watch failed', { error: String(err) });
           }
           clearPendingConfirmation();
+        })
+        .finally(() => {
+          if (cwdGuessActivity === activityListener) cwdGuessActivity = null;
         });
 
       // On native Windows the ppid breadcrumb above never matches (see #686

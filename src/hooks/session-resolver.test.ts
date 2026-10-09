@@ -21,7 +21,11 @@ import {
   shouldReplaceSessionName,
   sanitizeCwdForFilename,
 } from './session-resolver.js';
+import type { ExecFileSyncFn } from './process-ancestry.js';
 import { redactSensitive } from '../config.js';
+
+/** Above every platform's pid_max, so `kill(pid, 0)` always reports ESRCH. */
+const DEAD_PID = 2_147_483_646;
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -598,6 +602,437 @@ describe('session-resolver', () => {
         suppressWarn: true,
       });
       expect(sid).toBe('sess-ppid-wins');
+    });
+
+    describe('with includeParentOfPpid', () => {
+      const npmExec = 'npm exec @newrelic/preflight --stdio';
+      const breadcrumbDir = (): string => resolve(tmpDir, 'session-by-ppid');
+      const writeBreadcrumb = (pid: number, sessionId: string): void => {
+        mkdirSync(breadcrumbDir(), { recursive: true });
+        writeFileSync(resolve(breadcrumbDir(), `${pid}.txt`), sessionId);
+      };
+
+      /** Fakes `ps -o ppid=,args= -p <ppid>`, counting calls. */
+      function psRow(parentPid: number, command: string): { fn: ExecFileSyncFn; calls: number } {
+        const state = { calls: 0, fn: (() => '') as ExecFileSyncFn };
+        state.fn = () => {
+          state.calls++;
+          return `${parentPid} ${command}\n`;
+        };
+        return state;
+      }
+
+      async function watchUntil(
+        abortAfterMs: number,
+        options: {
+          readonly ppid: number;
+          readonly staleId: string;
+          readonly execFileSync: ExecFileSyncFn;
+          readonly platform?: NodeJS.Platform;
+          /** Times (ms after the watch starts) at which staleId activity is reported. */
+          readonly staleIdActivityAtMs?: readonly number[];
+        },
+      ): Promise<string | 'aborted'> {
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), abortAfterMs);
+        let onActivity: (() => void) | undefined;
+        const activityTimers = (options.staleIdActivityAtMs ?? []).map((ms) =>
+          setTimeout(() => onActivity?.(), ms),
+        );
+        try {
+          return await watchPpidBreadcrumb({
+            ppid: options.ppid,
+            storagePath: tmpDir,
+            includeParentOfPpid: true,
+            staleId: options.staleId,
+            subscribeToStaleIdActivity: (listener) => {
+              onActivity = listener;
+            },
+            ancestry: {
+              platform: options.platform ?? 'darwin',
+              execFileSync: options.execFileSync,
+            },
+            signal: ac.signal,
+          });
+        } catch (err) {
+          if (/aborted/.test(String(err))) return 'aborted';
+          throw err;
+        } finally {
+          clearTimeout(timer);
+          activityTimers.forEach(clearTimeout);
+        }
+      }
+
+      it('is off unless includeParentOfPpid is set', async () => {
+        const ppid = 88004;
+        const hostPid = 88005;
+        writeBreadcrumb(hostPid, 'sess-host');
+        const ps = psRow(hostPid, npmExec);
+        const ac = new AbortController();
+        setTimeout(() => ac.abort(), 400);
+        await expect(
+          watchPpidBreadcrumb({
+            ppid,
+            ancestry: { platform: 'darwin', execFileSync: ps.fn },
+            storagePath: tmpDir,
+            signal: ac.signal,
+          }),
+        ).rejects.toThrow(/aborted/);
+        expect(ps.calls).toBe(0);
+      });
+
+      it('resolves from the npx host breadcrumb one level up (#479)', async () => {
+        // npx: our ppid is the `npm exec` wrapper (no breadcrumb); the host that
+        // launched it (Copilot CLI here) is where its hooks write theirs.
+        const npmExecPid = 88006;
+        const hostPid = 88007;
+        setTimeout(() => writeBreadcrumb(hostPid, 'sess-copilot'), 150);
+        const ps = psRow(hostPid, npmExec);
+
+        const result = await watchUntil(2000, {
+          ppid: npmExecPid,
+          staleId: 'sess-claude',
+          execFileSync: ps.fn,
+        });
+        expect(result).toBe('sess-copilot');
+      });
+
+      it('ignores the parent breadcrumb of an engine its host launched directly', async () => {
+        // The Claude Code CLI launched this engine, so its parent is the VS Code
+        // extension host. Another host's hooks running as that process's
+        // children (Copilot's, say) leave their session's breadcrumb there.
+        // It is ownerless and differs from the cwd guess, so only the gate
+        // keeps it out.
+        const ppid = 88025;
+        const extensionHostPid = 88026;
+        writeBreadcrumb(extensionHostPid, 'sess-copilot');
+        const ps = psRow(extensionHostPid, 'claude');
+
+        const result = await watchUntil(800, {
+          ppid,
+          staleId: 'sess-claude-a',
+          execFileSync: ps.fn,
+        });
+        expect(result).toBe('aborted');
+        // Read once, on the first tick: the answer is kept for the watch's life.
+        expect(ps.calls).toBe(1);
+      });
+
+      it('still resolves from the direct ppid breadcrumb when ppid is not a wrapper', async () => {
+        const ppid = 88027;
+        const parentPid = 88028;
+        writeBreadcrumb(parentPid, 'sess-copilot');
+        setTimeout(() => writeBreadcrumb(ppid, 'sess-claude-b'), 150);
+
+        const result = await watchUntil(2000, {
+          ppid,
+          staleId: 'sess-claude-a',
+          execFileSync: psRow(parentPid, 'claude').fn,
+        });
+        expect(result).toBe('sess-claude-b');
+      });
+
+      it('never looks more than one level above ppid', async () => {
+        const ppid = 88008;
+        const hostPid = 88009;
+        const sharedShellPid = 88010;
+        // A shared ancestor (a shell or tmux server) carrying a neighbouring
+        // session's id must never be adopted as a correction.
+        writeBreadcrumb(sharedShellPid, 'sess-neighbour');
+
+        const result = await watchUntil(400, {
+          ppid,
+          staleId: 'sess-own',
+          execFileSync: psRow(hostPid, npmExec).fn,
+        });
+        expect(result).toBe('aborted');
+      });
+
+      it('still prefers the direct ppid breadcrumb', async () => {
+        const ppid = 88011;
+        const parentPid = 88012;
+        writeBreadcrumb(ppid, 'sess-direct');
+        writeBreadcrumb(parentPid, 'sess-parent');
+
+        const result = await watchUntil(2000, {
+          ppid,
+          staleId: 'sess-cwd-guess',
+          execFileSync: psRow(parentPid, npmExec).fn,
+        });
+        expect(result).toBe('sess-direct');
+      });
+
+      it('stops reading the parent level once it names the cwd guess', async () => {
+        // The default Claude Code plugin launch: an npx engine whose cwd guess
+        // A is right, so the host's slot names A too. A later /clear or
+        // /resume rewrites that slot to B. That is the host switching
+        // sessions, not a correction of a wrong guess, and adopting B as one
+        // would carry A's tool calls into B with only B's cost.
+        const npmExecPid = 88013;
+        const hostPid = 88014;
+        writeBreadcrumb(hostPid, 'sess-claude-a');
+        setTimeout(() => writeBreadcrumb(hostPid, 'sess-claude-b'), 350);
+
+        const result = await watchUntil(1500, {
+          ppid: npmExecPid,
+          staleId: 'sess-claude-a',
+          execFileSync: psRow(hostPid, npmExec).fn,
+        });
+        expect(result).toBe('aborted');
+      });
+
+      it('never resolves the cwd guess from the parent level, only from the direct ppid', async () => {
+        // A match at the parent level is not a confirmation, but the watch
+        // keeps checking our own ppid's breadcrumb after it.
+        const ppid = 88029;
+        const hostPid = 88030;
+        writeBreadcrumb(hostPid, 'sess-claude-a');
+        let ownWritten = false;
+        setTimeout(() => {
+          writeBreadcrumb(ppid, 'sess-claude-a');
+          ownWritten = true;
+        }, 350);
+
+        const result = await watchUntil(2000, {
+          ppid,
+          staleId: 'sess-claude-a',
+          execFileSync: psRow(hostPid, npmExec).fn,
+        });
+        expect(result).toBe('sess-claude-a');
+        expect(ownWritten).toBe(true);
+      });
+
+      it('skips a parent breadcrumb whose session has a live owning engine', async () => {
+        // The cwd guess is right, but the host's slot carries a co-located
+        // session's id. That session already has its own engine, so it can't
+        // be this one's.
+        const npmExecPid = 88015;
+        const hostPid = 88016;
+        writeBreadcrumb(hostPid, 'sess-claude-a');
+        writeFileSync(resolve(tmpDir, 'active-sess-claude-a.pid'), String(process.pid));
+
+        const result = await watchUntil(400, {
+          ppid: npmExecPid,
+          staleId: 'sess-copilot',
+          execFileSync: psRow(hostPid, npmExec).fn,
+        });
+        expect(result).toBe('aborted');
+      });
+
+      it('adopts a parent breadcrumb whose owner heartbeat names a dead process', async () => {
+        const npmExecPid = 88017;
+        const hostPid = 88018;
+        writeBreadcrumb(hostPid, 'sess-copilot');
+        writeFileSync(resolve(tmpDir, 'active-sess-copilot.pid'), String(DEAD_PID));
+
+        const result = await watchUntil(2000, {
+          ppid: npmExecPid,
+          staleId: 'sess-claude-a',
+          execFileSync: psRow(hostPid, npmExec).fn,
+        });
+        expect(result).toBe('sess-copilot');
+      });
+
+      it('keeps skipping a parent breadcrumb after its owning engine exits', async () => {
+        // The co-located session ending doesn't make its breadcrumb ours.
+        const npmExecPid = 88021;
+        const hostPid = 88022;
+        writeBreadcrumb(hostPid, 'sess-claude-a');
+        const heartbeat = resolve(tmpDir, 'active-sess-claude-a.pid');
+        writeFileSync(heartbeat, String(process.pid));
+        setTimeout(() => writeFileSync(heartbeat, String(DEAD_PID)), 200);
+
+        const result = await watchUntil(1000, {
+          ppid: npmExecPid,
+          staleId: 'sess-copilot',
+          execFileSync: psRow(hostPid, npmExec).fn,
+        });
+        expect(result).toBe('aborted');
+      });
+
+      it('never consults the parent level on Linux or Windows', async () => {
+        // Linux collectors write breadcrumbs at their ancestors too, so the
+        // parent slot is routinely shared; an ownerless neighbour there would
+        // otherwise pass every other check. Windows has no `ps`.
+        const npmExecPid = 88023;
+        const hostPid = 88024;
+        writeBreadcrumb(hostPid, 'sess-hooks-only-neighbour');
+        for (const platform of ['linux', 'win32'] as const) {
+          const ps = psRow(hostPid, npmExec);
+          const result = await watchUntil(400, {
+            ppid: npmExecPid,
+            staleId: 'sess-own',
+            execFileSync: ps.fn,
+            platform,
+          });
+          expect(result).toBe('aborted');
+          expect(ps.calls).toBe(0);
+        }
+      });
+
+      describe('with staleId activity reported', () => {
+        // Ticks land at ~100, 300, 800, 1800 and 3800ms.
+        const npmExecPid = 88031;
+        const hostPid = 88032;
+
+        /** `ps` fails on its first call only, like a one-off timeout under load. */
+        const psFailingOnce = (): { fn: ExecFileSyncFn; calls: number } => {
+          const state = { calls: 0, fn: (() => '') as ExecFileSyncFn };
+          state.fn = () => {
+            state.calls++;
+            if (state.calls === 1) throw new Error('spawnSync ps ETIMEDOUT');
+            return `${hostPid} ${npmExec}\n`;
+          };
+          return state;
+        };
+
+        it('stops reading the parent level once activity is drained while it names the guess', async () => {
+          // The host's hook writes its slot before appending the event the
+          // caller drains, so the slot named A when that activity arrived. No
+          // tick read it: all of A's activity and the /clear rewriting the
+          // slot to B fell between the 800ms and 1800ms ticks.
+          setTimeout(() => writeBreadcrumb(hostPid, 'sess-claude-a'), 1000);
+          setTimeout(() => writeBreadcrumb(hostPid, 'sess-claude-b'), 1200);
+
+          const result = await watchUntil(2600, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: psRow(hostPid, npmExec).fn,
+            staleIdActivityAtMs: [1100],
+          });
+          expect(result).toBe('aborted');
+        });
+
+        it('still corrects from the parent level while the guessed session stays active (#479)', async () => {
+          // The wrongly guessed Claude Code session stays active: its events
+          // drain under staleId before the first lookup, before our host's
+          // slot exists, and after the slot names the Copilot session.
+          setTimeout(() => writeBreadcrumb(hostPid, 'sess-copilot'), 1000);
+
+          const result = await watchUntil(2600, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude',
+            execFileSync: psRow(hostPid, npmExec).fn,
+            staleIdActivityAtMs: [50, 500, 900, 1100],
+          });
+          expect(result).toBe('sess-copilot');
+        });
+
+        it('stops reading the parent level after activity while the lookup is failing', async () => {
+          // With no parent pid cached the slot can't be read, so this activity
+          // could be ours under a slot that has since moved to B.
+          writeBreadcrumb(hostPid, 'sess-claude-b');
+
+          const result = await watchUntil(1000, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: psFailingOnce().fn,
+            staleIdActivityAtMs: [200],
+          });
+          expect(result).toBe('aborted');
+        });
+
+        it('stops reading the parent level when the lookup after unchecked activity fails', async () => {
+          writeBreadcrumb(hostPid, 'sess-claude-b');
+
+          const result = await watchUntil(1000, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: psFailingOnce().fn,
+            staleIdActivityAtMs: [50],
+          });
+          expect(result).toBe('aborted');
+        });
+
+        it('still confirms the guess from the direct ppid after activity latched the parent level', async () => {
+          setTimeout(() => writeBreadcrumb(hostPid, 'sess-claude-a'), 1000);
+          setTimeout(() => writeBreadcrumb(hostPid, 'sess-claude-b'), 1200);
+          setTimeout(() => writeBreadcrumb(npmExecPid, 'sess-claude-a'), 1300);
+
+          const result = await watchUntil(2600, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: psRow(hostPid, npmExec).fn,
+            staleIdActivityAtMs: [1100],
+          });
+          expect(result).toBe('sess-claude-a');
+        });
+
+        it('still confirms the guess from the direct ppid after unchecked activity', async () => {
+          writeBreadcrumb(hostPid, 'sess-claude-b');
+          setTimeout(() => writeBreadcrumb(npmExecPid, 'sess-claude-a'), 400);
+
+          const result = await watchUntil(1500, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: psFailingOnce().fn,
+            staleIdActivityAtMs: [200],
+          });
+          expect(result).toBe('sess-claude-a');
+        });
+      });
+
+      describe('reading the ppid command line', () => {
+        const npmExecPid = 88019;
+        const hostPid = 88020;
+
+        it('retries a lookup whose ps call failed instead of caching the failure', async () => {
+          // macOS, npx-launched Copilot engine on a saturated machine: the first
+          // `ps` times out. A later tick must still reach the host's breadcrumb.
+          writeBreadcrumb(hostPid, 'sess-copilot');
+          let calls = 0;
+          const result = await watchUntil(1500, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: () => {
+              calls++;
+              if (calls === 1) throw new Error('spawnSync ps ETIMEDOUT');
+              return `${hostPid} ${npmExec}\n`;
+            },
+          });
+          expect(result).toBe('sess-copilot');
+          expect(calls).toBe(2);
+        });
+
+        it('spaces out retries of a lookup that keeps failing', async () => {
+          // Ticks land at ~100, 300 and 800ms; lookups run on ticks 1 and 2 only.
+          let calls = 0;
+          const result = await watchUntil(1300, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: () => {
+              calls++;
+              throw new Error('spawnSync ps ETIMEDOUT');
+            },
+          });
+          expect(result).toBe('aborted');
+          expect(calls).toBe(2);
+        });
+
+        it('looks up once when the lookup succeeds', async () => {
+          const ps = psRow(hostPid, npmExec);
+          const result = await watchUntil(1300, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: ps.fn,
+          });
+          expect(result).toBe('aborted');
+          expect(ps.calls).toBe(1);
+        });
+
+        it('looks up once when the wrapper is a child of launchd', async () => {
+          // ppid's parent is PID 1, so there is no parent level to watch.
+          writeBreadcrumb(1, 'sess-launchd');
+          const ps = psRow(1, npmExec);
+          const result = await watchUntil(1300, {
+            ppid: npmExecPid,
+            staleId: 'sess-claude-a',
+            execFileSync: ps.fn,
+          });
+          expect(result).toBe('aborted');
+          expect(ps.calls).toBe(1);
+        });
+      });
     });
 
     it('aborts via signal', async () => {

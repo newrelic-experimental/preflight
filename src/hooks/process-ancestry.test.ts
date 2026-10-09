@@ -1,6 +1,12 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 
-import { getAncestorPids, _procFs, type ExecFileSyncFn } from './process-ancestry.js';
+import {
+  getAncestorPids,
+  isNpmExecWrapper,
+  readParentAndCommand,
+  _procFs,
+  type ExecFileSyncFn,
+} from './process-ancestry.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let originalReadFile: typeof _procFs.readFile;
@@ -232,6 +238,90 @@ describe('process-ancestry', () => {
       );
       expect(getAncestorPids(100, { platform: 'win32', execFileSync: exec.fn })).toEqual([100]);
       expect(exec.calls).toBe(0);
+    });
+  });
+
+  describe('readParentAndCommand()', () => {
+    it('reads one pid with a single ps call and trims the padded command line', () => {
+      // macOS pads a process title out to the original argv length.
+      let seen: { file: string; args: readonly string[] } | undefined;
+      const exec: ExecFileSyncFn = (file, args) => {
+        seen = { file, args };
+        return '  71759 npm exec @newrelic/preflight --stdio      \n';
+      };
+      expect(readParentAndCommand(71761, { platform: 'darwin', execFileSync: exec })).toEqual({
+        parentPid: 71759,
+        command: 'npm exec @newrelic/preflight --stdio',
+      });
+      expect(seen).toEqual({ file: 'ps', args: ['-o', 'ppid=,args=', '-p', '71761'] });
+    });
+
+    it('reports a parent at PID 1 or below as none, keeping the command', () => {
+      for (const parent of [1, 0]) {
+        const exec = makeExec(`${parent} npm exec\n`);
+        expect(readParentAndCommand(100, { platform: 'darwin', execFileSync: exec.fn })).toEqual({
+          parentPid: null,
+          command: 'npm exec',
+        });
+      }
+    });
+
+    it('reads an empty command line as an empty string', () => {
+      const exec = makeExec('  4242\n');
+      expect(readParentAndCommand(100, { platform: 'darwin', execFileSync: exec.fn })).toEqual({
+        parentPid: 4242,
+        command: '',
+      });
+    });
+
+    it('returns null when ps fails or prints nothing usable, so a caller can retry', () => {
+      const throwing: ExecFileSyncFn = () => {
+        throw new Error('spawnSync ps ETIMEDOUT');
+      };
+      expect(readParentAndCommand(100, { platform: 'darwin', execFileSync: throwing })).toBeNull();
+      for (const out of ['', 'garbage line', undefined as unknown as string]) {
+        const exec = makeExec(out);
+        expect(readParentAndCommand(100, { platform: 'darwin', execFileSync: exec.fn })).toBeNull();
+      }
+    });
+
+    it('never spawns anything on win32 or for an invalid pid', () => {
+      const exec = makeExec('99 npm exec\n');
+      expect(readParentAndCommand(100, { platform: 'win32', execFileSync: exec.fn })).toBeNull();
+      expect(readParentAndCommand(0, { platform: 'darwin', execFileSync: exec.fn })).toBeNull();
+      expect(
+        readParentAndCommand(Number.NaN, { platform: 'darwin', execFileSync: exec.fn }),
+      ).toBeNull();
+      expect(exec.calls).toBe(0);
+    });
+  });
+
+  describe('isNpmExecWrapper()', () => {
+    it("recognizes npm's npx wrapper by its process title", () => {
+      // `npx <pkg>` and `npm exec <pkg>` both title themselves `npm exec ...`;
+      // `npx -c '<cmd>'` has no positional args, so its title is bare.
+      for (const command of [
+        'npm exec @newrelic/preflight --stdio',
+        'npm exec',
+        'npm x @newrelic/preflight',
+      ]) {
+        expect(isNpmExecWrapper(command)).toBe(true);
+      }
+    });
+
+    it('rejects hosts, other npm commands and other launchers', () => {
+      for (const command of [
+        'claude',
+        '/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin) --type=utility',
+        'node /usr/local/lib/node_modules/@newrelic/preflight/dist/index.js --stdio',
+        'npm test',
+        'npm',
+        'npm execute',
+        'pnpm dlx @newrelic/preflight',
+        '',
+      ]) {
+        expect(isNpmExecWrapper(command)).toBe(false);
+      }
     });
   });
 });
