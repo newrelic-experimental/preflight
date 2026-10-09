@@ -16,26 +16,48 @@ export interface ModelPricing {
   readonly thinkingPerMTok?: number;
   readonly cacheReadPerMTok?: number;
   readonly cacheCreationPerMTok?: number;
+  /**
+   * Rate for audio input tokens (`TokenUsage.audioInputTokens`). Falls back to
+   * `inputPerMTok` when unset. Never tier-adjusted.
+   */
+  readonly audioInputPerMTok?: number;
+  /**
+   * Rate for cached audio tokens (`TokenUsage.audioCacheReadTokens`). Falls
+   * back to `cacheReadPerMTok` when unset. Never tier-adjusted.
+   */
+  readonly audioCacheReadPerMTok?: number;
   readonly contextWindow: number;
-  /** Input-token count above which tier rates apply. */
+  /**
+   * Prompt-token count above which tier rates apply. The prompt is
+   * `inputTokens + cacheReadTokens + cacheCreationTokens`, since `inputTokens`
+   * excludes cached tokens.
+   */
   readonly tierThreshold?: number;
   readonly tierInputPerMTok?: number;
   readonly tierOutputPerMTok?: number;
   readonly tierThinkingPerMTok?: number;
   /**
-   * How tier rates are applied once `inputTokens > tierThreshold`. Defaults to
+   * Cache-read rate once the prompt exceeds `tierThreshold`. Only applied in
+   * `'flat'` mode (like the other `tier*` output rates); ignored in
+   * `'marginal'` mode. Falls back to `cacheReadPerMTok` when unset, e.g.
+   * OpenAI GPT-6 and xAI Grok double the cached-input rate in their
+   * long-context tier.
+   */
+  readonly tierCacheReadPerMTok?: number;
+  /**
+   * How tier rates are applied once the prompt exceeds `tierThreshold`. Defaults to
    * `'flat'` (current behavior, matches Gemini 1.5/2.5 Pro semantics).
    *
-   * - `'flat'`: the **entire request** (input, output, thinking) is billed at
-   *   the tier rates. Matches Gemini 1.5/2.5 Pro semantics.
+   * - `'flat'`: the **entire request** (input, output, thinking, cache reads) is
+   *   billed at the tier rates. Matches Gemini 1.5/2.5 Pro semantics.
    * - `'marginal'`: only the **input tokens above the threshold** are billed
    *   at `tierInputPerMTok`; tokens up to the threshold use `inputPerMTok`.
-   *   Output and thinking always use their base rates in this mode — the
-   *   `tierOutputPerMTok` / `tierThinkingPerMTok` fields are ignored. This
-   *   models providers that charge a higher rate purely for excess context,
-   *   e.g. OpenAI's gpt-5.5/gpt-5.4 long-context pricing. Do not set
-   *   `tierOutputPerMTok`/`tierThinkingPerMTok` on a `'marginal'` entry —
-   *   they would be dead data.
+   *   Output, thinking and cache reads always use their base rates in this
+   *   mode — the `tierOutputPerMTok` / `tierThinkingPerMTok` /
+   *   `tierCacheReadPerMTok` fields are ignored. This models providers that
+   *   charge a higher rate purely for excess context. No built-in entry uses
+   *   it today. Do not set those fields on a `'marginal'` entry — they would
+   *   be dead data.
    */
   readonly tierMode?: 'flat' | 'marginal';
 }
@@ -149,9 +171,12 @@ function validatePricingEntry(model: string, entry: unknown): ModelPricing | nul
     'thinkingPerMTok',
     'cacheReadPerMTok',
     'cacheCreationPerMTok',
+    'audioInputPerMTok',
+    'audioCacheReadPerMTok',
     'tierInputPerMTok',
     'tierOutputPerMTok',
     'tierThinkingPerMTok',
+    'tierCacheReadPerMTok',
   ] as const;
   for (const field of optionalRateFields) {
     const value = e[field];
@@ -193,8 +218,8 @@ function validatePricingEntry(model: string, entry: unknown): ModelPricing | nul
     return null;
   }
   // Note: does not warn when tierMode is 'marginal' but tierOutputPerMTok /
-  // tierThinkingPerMTok are also set — accepted but ignored as dead data by
-  // computeCost().
+  // tierThinkingPerMTok / tierCacheReadPerMTok are also set — accepted but
+  // ignored as dead data by computeCost().
 
   // Relational sanity checks — accept the entry but warn on configurations
   // that almost always indicate a misconfiguration. These are warnings, not
@@ -238,11 +263,18 @@ function validatePricingEntry(model: string, entry: unknown): ModelPricing | nul
     ...(typeof e.cacheCreationPerMTok === 'number' && {
       cacheCreationPerMTok: e.cacheCreationPerMTok,
     }),
+    ...(typeof e.audioInputPerMTok === 'number' && { audioInputPerMTok: e.audioInputPerMTok }),
+    ...(typeof e.audioCacheReadPerMTok === 'number' && {
+      audioCacheReadPerMTok: e.audioCacheReadPerMTok,
+    }),
     ...(typeof e.tierThreshold === 'number' && { tierThreshold: e.tierThreshold }),
     ...(typeof e.tierInputPerMTok === 'number' && { tierInputPerMTok: e.tierInputPerMTok }),
     ...(typeof e.tierOutputPerMTok === 'number' && { tierOutputPerMTok: e.tierOutputPerMTok }),
     ...(typeof e.tierThinkingPerMTok === 'number' && {
       tierThinkingPerMTok: e.tierThinkingPerMTok,
+    }),
+    ...(typeof e.tierCacheReadPerMTok === 'number' && {
+      tierCacheReadPerMTok: e.tierCacheReadPerMTok,
     }),
     ...((e.tierMode === 'flat' || e.tierMode === 'marginal') && { tierMode: e.tierMode }),
   };
@@ -557,9 +589,10 @@ export function initPricing(customFilePath?: string | null): void {
  *    MODEL_ALIASES in pricing-data.ts. Aliases are the *primary* mechanism
  *    for routing family names to current-generation pricing.
  * 3. Forward prefix — table key starts with modelName followed by a
- *    digit-led suffix. No built-in model name exercises this today (every
- *    real family name already has an alias); reachable via a custom pricing
- *    entry whose key extends a shorter query name.
+ *    digit-led suffix. Built-in bare names that would otherwise land here
+ *    (`claude-haiku-5`, `gpt-4`, `mistral-large`) have explicit aliases so
+ *    they never depend on this guess; other unaliased bare prefixes (e.g.
+ *    `claude-haiku`) still resolve to the longest matching key.
  * 4. Reverse prefix — modelName starts with table key's base (date stripped)
  *    (e.g. `claude-opus-4-99` matches base `claude-opus-4` from a dated key)
  * 5. Return `null` and log a warning if nothing matches.
@@ -578,7 +611,10 @@ function tokensToUsd(tokens: number, ratePerMTok: number): number {
 
 function computeCost(pricing: ModelPricing, usage: TokenUsage): CostBreakdown {
   const tierMode = pricing.tierMode ?? 'flat';
-  const useTier = pricing.tierThreshold !== undefined && usage.inputTokens > pricing.tierThreshold;
+  // Tier thresholds apply to the whole prompt, and inputTokens excludes cached
+  // tokens, so count cache reads and writes toward the threshold.
+  const promptTokens = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
+  const useTier = pricing.tierThreshold !== undefined && promptTokens > pricing.tierThreshold;
 
   // Output / thinking rates: only flat mode uses the tier overrides; in
   // marginal mode they always use the base rates.
@@ -592,8 +628,21 @@ function computeCost(pricing: ModelPricing, usage: TokenUsage): CostBreakdown {
       ? pricing.tierThinkingPerMTok
       : (pricing.thinkingPerMTok ?? 0);
 
-  const cacheReadRate = pricing.cacheReadPerMTok ?? 0;
+  const cacheReadRate =
+    useTier && tierMode === 'flat' && pricing.tierCacheReadPerMTok !== undefined
+      ? pricing.tierCacheReadPerMTok
+      : (pricing.cacheReadPerMTok ?? 0);
   const cacheCreationRate = pricing.cacheCreationPerMTok ?? 0;
+
+  // Audio tokens are a subset of inputTokens / cacheReadTokens, billed at
+  // their own rates (never tiered). Clamp to the parent count so a malformed
+  // usage object cannot produce negative text tokens.
+  const audioInputTokens = Math.min(usage.audioInputTokens ?? 0, usage.inputTokens);
+  const audioCacheReadTokens = Math.min(usage.audioCacheReadTokens ?? 0, usage.cacheReadTokens);
+  const audioInputRate = pricing.audioInputPerMTok ?? pricing.inputPerMTok;
+  const audioCacheReadRate = pricing.audioCacheReadPerMTok ?? pricing.cacheReadPerMTok ?? 0;
+  const textInputTokens = usage.inputTokens - audioInputTokens;
+  const textCacheReadTokens = usage.cacheReadTokens - audioCacheReadTokens;
 
   // Resolve the "billing rate" for input. In flat mode this single rate
   // covers all input tokens; in marginal mode the rate that would have been
@@ -607,40 +656,38 @@ function computeCost(pricing: ModelPricing, usage: TokenUsage): CostBreakdown {
   let inputUsd: number;
   if (useTier && tierMode === 'marginal' && pricing.tierInputPerMTok !== undefined) {
     const threshold = pricing.tierThreshold!;
-    const baseTokens = Math.min(usage.inputTokens, threshold);
-    const excessTokens = usage.inputTokens - baseTokens;
+    const baseTokens = Math.min(textInputTokens, threshold);
+    const excessTokens = textInputTokens - baseTokens;
     inputUsd =
       tokensToUsd(baseTokens, pricing.inputPerMTok) +
       tokensToUsd(excessTokens, pricing.tierInputPerMTok);
   } else {
-    inputUsd = tokensToUsd(usage.inputTokens, inputRate);
+    inputUsd = tokensToUsd(textInputTokens, inputRate);
   }
+  inputUsd += tokensToUsd(audioInputTokens, audioInputRate);
 
   const outputUsd = tokensToUsd(usage.outputTokens, outputRate);
   const thinkingUsd = tokensToUsd(usage.thinkingTokens, thinkingRate);
-  const cacheReadUsd = tokensToUsd(usage.cacheReadTokens, cacheReadRate);
+  const cacheReadUsd =
+    tokensToUsd(textCacheReadTokens, cacheReadRate) +
+    tokensToUsd(audioCacheReadTokens, audioCacheReadRate);
   const cacheCreationUsd = tokensToUsd(usage.cacheCreationTokens, cacheCreationRate);
 
   const totalUsd = inputUsd + outputUsd + thinkingUsd + cacheReadUsd + cacheCreationUsd;
 
   // Savings: what the cache-read tokens would have cost at the full input rate.
-  // In marginal mode, the savings rate depends on whether the fresh input
-  // exceeded the tier threshold — above-threshold tokens save at the tier rate,
+  // In marginal mode, a prompt over the tier threshold saves at the tier rate,
   // not the base rate.
   const savingsInputRate =
-    useTier &&
-    tierMode === 'marginal' &&
-    pricing.tierInputPerMTok !== undefined &&
-    usage.inputTokens > (pricing.tierThreshold ?? Infinity)
+    useTier && tierMode === 'marginal' && pricing.tierInputPerMTok !== undefined
       ? pricing.tierInputPerMTok
       : inputRate;
   // Clamp to >= 0 — a misconfigured custom pricing entry where cacheReadRate
   // exceeds inputRate would otherwise produce a negative "savings" number that
   // gets reported as a positive cost benefit downstream.
-  const savingsFromCacheUsd = Math.max(
-    0,
-    tokensToUsd(usage.cacheReadTokens, savingsInputRate - cacheReadRate),
-  );
+  const savingsFromCacheUsd =
+    Math.max(0, tokensToUsd(textCacheReadTokens, savingsInputRate - cacheReadRate)) +
+    Math.max(0, tokensToUsd(audioCacheReadTokens, audioInputRate - audioCacheReadRate));
 
   return {
     inputUsd,
@@ -661,12 +708,13 @@ function computeCost(pricing: ModelPricing, usage: TokenUsage): CostBreakdown {
  *
  * Tiered pricing semantics (when `inputTokens > tierThreshold`):
  *
- * - `tierMode: 'flat'` (default) — the entire request (input, output, thinking)
- *   is billed at the configured tier rates. Matches Gemini 1.5/2.5 Pro.
+ * - `tierMode: 'flat'` (default) — the entire request (input, output, thinking,
+ *   cache reads) is billed at the configured tier rates. Matches Gemini 1.5/2.5 Pro.
  * - `tierMode: 'marginal'` — only the input tokens above the threshold are
  *   billed at `tierInputPerMTok`; tokens up to the threshold use `inputPerMTok`.
- *   Output and thinking always use their base rates (the `tierOutput*` /
- *   `tierThinking*` fields are ignored in this mode).
+ *   Output, thinking and cache reads always use their base rates (the
+ *   `tierOutput*` / `tierThinking*` / `tierCacheRead*` fields are ignored in
+ *   this mode).
  */
 export function calculateCost(model: string, usage: TokenUsage): CostBreakdown {
   return defaultTable.calculateCost(model, usage);

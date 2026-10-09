@@ -5,11 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.63.3] - 2026-10-09
+## [1.63.4] - 2026-10-09
 
 ### Fixed
 
 - **A new `--stdio` MCP engine could add cost for other sessions' tool calls to its own session's persisted cost.** Before the engine learned its real session id, it drained hook activity left behind by sessions that had ended without a live owner, and estimated a cost from each call's payload size. Those estimates stayed in its cost total after the real id resolved, so they were saved as part of its session. The payload-size estimate now applies only to tool calls recorded for the engine's own session. As a result, a standalone `preflight --local` process (whose session id is always synthetic) no longer estimates cost, and `--stdio` engines on platforms that never report a session id to the collector (Cursor, Windsurf, Antigravity) show no estimated cost; platforms with exact token reports are unaffected, and saved session files are unchanged.
+
+## [1.63.3] - 2026-10-09
+
+### Fixed
+
+- **Sessions on Claude Opus 5.5, Claude Sonnet 5.5, and OpenAI's GPT-6 models showed $0 cost and measured context against 200K.** Preflight's pricing table had no entries for `claude-opus-5-5`, `claude-sonnet-5-5`, `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna`. It now prices Opus 5.5 at $4 input and $20 output, Sonnet 5.5 at $2 and $10, each with $0.20 cache read and a 1M context window, and GPT-6 at OpenAI's standard rates per million tokens (Astra $10 and $50, Sol $2 and $10, Luna $0.10 and $0.50) with a 1.05M window. Requests whose prompt exceeds 272K tokens, counting cache reads and writes, are billed at the long-context rates, including the higher cached-input rate OpenAI charges there. Claude Haiku 5.5 requests over 100K prompt tokens, counting cache, are now billed at 5x the base rates, and Gemini cache reads, previously unpriced, are now priced. This update also adds separate pricing for Gemini audio input and refreshes the pricing table for other models, including Amazon Nova, Bedrock, xAI, Moonshot, and Mistral. The dashboard's subagent cost prices each turn on its own, and a Copilot app session first seen with a prompt volume already over its model's tier threshold starts counting from that point instead of billing the backlog at the long-context rate.
 
 ## [1.63.2] - 2026-10-08
 

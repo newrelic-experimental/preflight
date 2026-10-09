@@ -140,6 +140,40 @@ describe('CopilotAppUsageWatcher', () => {
     });
   });
 
+  it('baselines a first-seen session over the model tier threshold without emitting', () => {
+    // 1.2M prompt tokens across many requests: as one event it would trip
+    // gpt-5.5's 272K tier and bill the whole session at the long-context rate.
+    createDb(dbPath);
+    upsertRow(dbPath, {
+      id: SESSION_ID,
+      model: 'gpt-5.5',
+      total_input_tokens: 1_200_000,
+      total_output_tokens: 5_000,
+      total_cached_tokens: 900_000,
+      total_reasoning_tokens: 0,
+    });
+    const watcher = makeWatcher();
+    watcher.poll();
+    expect(readTokenEvents()).toHaveLength(0);
+
+    upsertRow(dbPath, {
+      id: SESSION_ID,
+      model: 'gpt-5.5',
+      total_input_tokens: 1_260_000,
+      total_output_tokens: 5_500,
+      total_cached_tokens: 950_000,
+      total_reasoning_tokens: 0,
+    });
+    watcher.poll();
+    const events = readTokenEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      inputTokens: 10_000,
+      cacheReadTokens: 50_000,
+      outputTokens: 500,
+    });
+  });
+
   it('emits nothing on a second poll with unchanged totals', () => {
     createDb(dbPath);
     upsertRow(dbPath, {

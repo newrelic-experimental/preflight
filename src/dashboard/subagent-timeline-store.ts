@@ -221,7 +221,8 @@ interface ParsedAgentFile {
   readonly endMs: number;
   readonly turnCount: number;
   readonly totalTokens: number;
-  readonly usage: TokenUsage;
+  /** Sum of per-turn USD; null when no turn priced. */
+  readonly usd: number | null;
   readonly model: string;
 }
 
@@ -325,7 +326,7 @@ export class SubagentTimelineStore {
         label = `agent ${file.agentId.slice(0, 8)}`;
       }
 
-      const usd = computeUsd(parsed.usage, parsed.model);
+      const usd = parsed.usd;
 
       agents.push({
         agentId: file.agentId,
@@ -404,7 +405,7 @@ export class SubagentTimelineStore {
       if (parsed === null) continue;
 
       totalTokens += parsed.totalTokens;
-      const usd = computeUsd(parsed.usage, parsed.model);
+      const usd = parsed.usd;
       if (usd !== null) {
         totalUsd += usd;
         anyPriced = true;
@@ -707,6 +708,10 @@ export class SubagentTimelineStore {
     let cacheReadTokens = 0;
     let cacheCreationTokens = 0;
     let lastModel = '';
+    // Tier thresholds are a per-request property, so each turn is priced on
+    // its own and the USD summed; pricing the summed usage would push a
+    // many-turn agent over a threshold no single request crossed.
+    let usd: number | null = null;
 
     // Dedup streaming-duplicate lines: Claude Code logs one JSONL line per
     // streaming snapshot of a single assistant turn, all sharing one
@@ -749,6 +754,19 @@ export class SubagentTimelineStore {
       cacheReadTokens += turn.cacheReadTokens;
       cacheCreationTokens += turn.cacheCreationTokens;
       if (turn.model.length > 0) lastModel = turn.model;
+      const turnUsd = computeUsd(
+        {
+          inputTokens: turn.inputTokens,
+          outputTokens: turn.outputTokens,
+          thinkingTokens: 0,
+          cacheReadTokens: turn.cacheReadTokens,
+          cacheCreationTokens: turn.cacheCreationTokens,
+          totalTokens:
+            turn.inputTokens + turn.outputTokens + turn.cacheReadTokens + turn.cacheCreationTokens,
+        },
+        lastModel,
+      );
+      if (turnUsd !== null) usd = (usd ?? 0) + turnUsd;
 
       if (nl === len) break;
     }
@@ -758,16 +776,8 @@ export class SubagentTimelineStore {
     }
 
     const totalTokens = inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens;
-    const usage: TokenUsage = {
-      inputTokens,
-      outputTokens,
-      thinkingTokens: 0,
-      cacheReadTokens,
-      cacheCreationTokens,
-      totalTokens,
-    };
 
-    return { startMs, endMs, turnCount, totalTokens, usage, model: lastModel };
+    return { startMs, endMs, turnCount, totalTokens, usd, model: lastModel };
   }
 
   // -------------------------------------------------------------------------

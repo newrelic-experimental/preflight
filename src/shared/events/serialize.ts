@@ -371,17 +371,10 @@ export function aiResponseToNrEvent(event: AiResponse, options?: SerializeOption
   data['gen_ai.response.model'] = event.model;
 
   // Per OTel GenAI SemConv, gen_ai.usage.input_tokens MUST include ALL input
-  // tokens (cached + fresh). Provider semantics differ:
-  //
-  // Anthropic: inputTokens = fresh only; cache tokens are disjoint → sum all.
-  // Gemini / OpenAI: inputTokens already includes cached content (the cache
-  //   tokens are a SUBSET of inputTokens, not separate) → using inputTokens
-  //   alone is correct; adding cacheReadTokens would double-count.
-  // Bedrock, Mistral, Cohere: no cache token overlap → same as Anthropic.
-  const otelInputTokens =
-    event.provider === 'google' || event.provider === 'openai'
-      ? event.inputTokens
-      : event.inputTokens + event.cacheReadTokens + event.cacheCreationTokens;
+  // tokens (cached + fresh). TokenUsage.inputTokens is the uncached remainder
+  // for every provider (the Gemini/OpenAI extractors subtract cached tokens),
+  // so the cache tokens are added back.
+  const otelInputTokens = event.inputTokens + event.cacheReadTokens + event.cacheCreationTokens;
 
   data['gen_ai.usage.input_tokens'] = otelInputTokens;
   // gen_ai.usage.output_tokens semantics differ by provider.

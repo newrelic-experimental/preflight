@@ -197,16 +197,14 @@ describe('createAiResponse', () => {
     expect(event.timestamp).toBeLessThanOrEqual(after);
   });
 
-  it('computes totalTokens WITHOUT cache tokens for Google (cache is subset)', () => {
-    // baseParams uses provider:'google' — inputTokens already includes cached tokens,
-    // so cacheReadTokens are NOT added again to avoid double-counting.
+  it('computes totalTokens WITH cache tokens for Google (inputTokens is the uncached remainder)', () => {
     const event = createAiResponse({
       ...baseParams,
       thinkingTokens: 200,
       cacheReadTokens: 30,
       cacheCreationTokens: 20,
     });
-    expect(event.totalTokens).toBe(350); // 100 + 50 + 200 (cache tokens NOT added for Google)
+    expect(event.totalTokens).toBe(400); // 100 + 50 + 200 + 30 + 20
   });
 
   it('computes totalTokens WITH cache tokens for Anthropic (cache is disjoint)', () => {
@@ -222,7 +220,7 @@ describe('createAiResponse', () => {
     expect(event.totalTokens).toBe(400); // 100 + 50 + 200 + 30 + 20
   });
 
-  it('computes totalTokens WITHOUT thinkingTokens for OpenAI (reasoning is subset)', () => {
+  it('computes totalTokens WITHOUT thinkingTokens for OpenAI (reasoning is subset, cache is disjoint)', () => {
     // For OpenAI o1/o3/o4-mini, reasoning_tokens (→ thinkingTokens) is already
     // included in completion_tokens (→ outputTokens). Adding thinkingTokens again
     // would inflate totalTokens.
@@ -233,9 +231,9 @@ describe('createAiResponse', () => {
       inputTokens: 100,
       outputTokens: 500,
       thinkingTokens: 300, // subset of outputTokens for OpenAI, NOT additive
-      cacheReadTokens: 20, // also a subset of inputTokens for OpenAI
+      cacheReadTokens: 20, // disjoint from inputTokens: the extractor subtracts it
     });
-    expect(event.totalTokens).toBe(600); // 100 + 500 only (thinking and cache not added)
+    expect(event.totalTokens).toBe(620); // 100 + 500 + 20 (thinking not added)
   });
 
   it('computes tokensPerSecond from outputTokens and durationMs', () => {
@@ -353,8 +351,7 @@ describe('createAiResponse', () => {
     expect(event.thinkingTokens).toBe(0);
     expect(event.cacheReadTokens).toBe(5);
     expect(event.cacheCreationTokens).toBe(0);
-    // baseParams uses provider:'google' — cache tokens are NOT added to totalTokens
-    expect(event.totalTokens).toBe(0);
+    expect(event.totalTokens).toBe(5); // only the floored cacheReadTokens survives
   });
 
   it('coerces NaN/Infinity cost fields to null', () => {
