@@ -18,7 +18,8 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { MetricAggregator, ModelPricing } from '../shared/index.js';
-import { createLogger, resolveModelPricing } from '../shared/index.js';
+import { createLogger } from '../shared/index.js';
+import { resolvePricing } from './model-pricing.js';
 import type { SessionStore } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import type { ToolCallRecord } from '../storage/types.js';
@@ -292,9 +293,8 @@ export class ClaudeMdTracker {
     if (latestChange) {
       try {
         const costMetrics = this.costTracker?.getMetrics();
-        const pricing = costMetrics?.model
-          ? (resolveModelPricing(costMetrics.model) ?? undefined)
-          : undefined;
+        const resolution = costMetrics?.model ? resolvePricing(costMetrics.model) : null;
+        const pricing = resolution?.kind === 'priced' ? resolution.pricing : undefined;
         const cost = ClaudeMdTracker.estimateContextCost(latestChange.filePath, {
           pricing,
           cacheHitRate: costMetrics?.cacheHitRate ?? undefined,
