@@ -86,7 +86,16 @@ jobs:
           git switch -C "$BRANCH"
           git add -A
           git commit -m "Chore: Release $VERSION"
-          git push --force origin "$BRANCH"
+          # A new head commit drops the CI results a close and reopen gave the PR. When the
+          # release commit makes the same change as the one already on the branch, as it does
+          # after a docs-only merge to main, leave the branch where it is.
+          if git fetch --quiet origin "$BRANCH" 2>/dev/null &&
+            [ "$(git show HEAD | git patch-id --stable | cut -d' ' -f1)" = \
+              "$(git show FETCH_HEAD | git patch-id --stable | cut -d' ' -f1)" ]; then
+            echo "$BRANCH already makes this release's changes, so it isn't pushed again"
+          else
+            git push --force origin "$BRANCH"
+          fi
 
           BODY="$RUNNER_TEMP/release-pr-body.md"
           {

@@ -81,7 +81,8 @@ export const VERSION_FILES: readonly VersionFile[] = [
 ];
 
 // `## 1.64.0 - 2026-10-09`. `changeset version` writes the heading without a date and `sync`
-// adds one. The suffix after `-` covers prerelease versions from `changeset pre`.
+// adds one. A prerelease suffix (`-beta.0`) still parses, but prereleases (`changeset pre`)
+// aren't set up: release.yml publishes every version under npm's `latest` tag.
 const RELEASE_HEADING = /^## (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?: - (\d{4}-\d{2}-\d{2}))?$/gm;
 
 // Before Changesets, headings put the version in brackets: `## [1.63.1] - 2026-10-08`.
@@ -338,9 +339,11 @@ function report(problems: readonly string[], fix: string): number {
 
 function main(argv: readonly string[]): number {
   const readWorkingTree: ReadFile = (path) => readFileSync(resolve(process.cwd(), path), 'utf8');
+  // Anything other than these exact forms is a usage error, so a typo such as
+  // `check --base=origin/main` can't quietly run a different check.
   const [command, ...args] = argv;
 
-  if (command === 'sync') {
+  if (command === 'sync' && args.length === 0) {
     const date = new Date().toISOString().slice(0, 10);
     for (const [path, contents] of syncedFiles(readWorkingTree, date)) {
       writeFileSync(resolve(process.cwd(), path), contents);
@@ -352,28 +355,29 @@ function main(argv: readonly string[]): number {
     );
   }
 
-  if (command === 'check') {
-    if (args[0] !== '--base') {
-      const changesets = readPendingChangesets(resolve(process.cwd(), '.changeset'));
-      return report(
-        findReleaseBlockers(readWorkingTree, changesets),
-        'Only the release PR should change the version files, and Release should run before ' +
-          `another PR with a changeset merges after it (${RELEASING_DOC}).`,
-      );
-    }
-    if (!args[1]) throw new Error('--base needs a git ref, e.g. origin/main');
-    const forkPoint = git(['merge-base', args[1], 'HEAD']).trim();
+  if (command === 'check' && args.length === 0) {
+    const changesets = readPendingChangesets(resolve(process.cwd(), '.changeset'));
+    return report(
+      findReleaseBlockers(readWorkingTree, changesets),
+      'Only the release PR should change the version files, and Release should run before ' +
+        `another PR with a changeset merges after it (${RELEASING_DOC}).`,
+    );
+  }
+
+  if (command === 'check' && args.length === 2 && args[0] === '--base') {
+    const base = args[1];
+    const forkPoint = git(['merge-base', base, 'HEAD']).trim();
     const readForkPoint: ReadFile = (path) => git(['show', `${forkPoint}:${path}`]);
     return report(
       [
         ...findReleaseEdits(readForkPoint, readWorkingTree),
         ...findVersionMismatches(readWorkingTree),
       ],
-      `Compared with ${args[1]} at ${forkPoint.slice(0, 7)}, where this branch started.`,
+      `Compared with ${base} at ${forkPoint.slice(0, 7)}, where this branch started.`,
     );
   }
 
-  if (command === 'notes') {
+  if (command === 'notes' && args.length === 0) {
     const { version } = readPackageJson(readWorkingTree);
     const entry = releaseEntry(readWorkingTree('CHANGELOG.md'), version);
     if (entry === undefined) {
