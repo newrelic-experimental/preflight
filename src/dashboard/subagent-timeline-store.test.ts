@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { calculateCost } from '../shared/index.js';
 import { SubagentTimelineStore } from './subagent-timeline-store.js';
 
 const STDERR_WRITE = process.stderr.write;
@@ -95,6 +96,34 @@ describe('SubagentTimelineStore', () => {
     // Window spans all agents.
     expect(result.window.startMs).toBe(agent.startMs);
     expect(result.window.endMs).toBe(agent.endMs);
+  });
+
+  it('prices each turn on its own so summed cache reads do not cross a tier threshold', () => {
+    // 5 turns x 30K cache read: no single request passes claude-haiku-5-5's
+    // 100K tier, but the 150K sum would.
+    const lines = [0, 1, 2, 3, 4].map((i) =>
+      assistantLine({
+        timestamp: `2026-06-16T12:00:0${i}.000Z`,
+        model: 'claude-haiku-5-5',
+        input: 1_000,
+        output: 1_000,
+        cacheRead: 30_000,
+      }),
+    );
+    writeFileSync(join(subDir, `agent-${AGENT_A}.jsonl`), lines.join('\n') + '\n');
+
+    const store = new SubagentTimelineStore({ projectsDir });
+    const agent = store.getSubagentsForSession(SESSION).agents[0]!;
+
+    const perTurn = calculateCost('claude-haiku-5-5', {
+      inputTokens: 1_000,
+      outputTokens: 1_000,
+      thinkingTokens: 0,
+      cacheReadTokens: 30_000,
+      cacheCreationTokens: 0,
+      totalTokens: 32_000,
+    }).totalUsd;
+    expect(agent.usd).toBeCloseTo(perTurn * 5, 10);
   });
 
   it('includes a named-subagent transcript (Agent tool `name` param spawn shape)', () => {
