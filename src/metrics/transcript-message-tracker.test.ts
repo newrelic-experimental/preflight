@@ -242,12 +242,22 @@ describe('TranscriptMessageTracker', () => {
       return tracker.getMetrics().userCorrections;
     }
 
-    it.each(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Task', 'Agent'])(
-      'reads a turn that called %s as acting',
-      (tool) => {
-        expect(corrections([...EARLIER_EXCHANGE, toolUseLine(tool), userLine(ACTED_ONLY)])).toBe(1);
-      },
-    );
+    it.each([
+      'Edit',
+      'Write',
+      'MultiEdit',
+      'NotebookEdit',
+      'Bash',
+      'Task',
+      'Agent',
+      'Workflow',
+      'Skill',
+      'SendMessage',
+      // A built-in tool the talking list doesn't name acts.
+      'SomeFutureTool',
+    ])('reads a turn that called %s as acting', (tool) => {
+      expect(corrections([...EARLIER_EXCHANGE, toolUseLine(tool), userLine(ACTED_ONLY)])).toBe(1);
+    });
 
     it.each([
       'git log --oneline -10',
@@ -333,6 +343,11 @@ describe('TranscriptMessageTracker', () => {
       'WebFetch',
       'WebSearch',
       'TodoWrite',
+      'TaskCreate',
+      'TaskUpdate',
+      'AskUserQuestion',
+      'ExitPlanMode',
+      'ListMcpResourcesTool',
       'mcp__github__get_issue',
       'mcp__filesystem__read_file',
       'mcp__github__get_commit',
@@ -1042,7 +1057,6 @@ describe('TranscriptMessageTracker', () => {
       "You're right, it's not the cache but the queue that won't work.",
     ];
 
-    /** After a turn that only answered, "won't work" counts when it points back at something built earlier. */
     /** After a turn that acted, the idea and hypothetical exceptions drop these corrections. */
     const ACTED_KNOWN_MISSES = [
       // The idea exception reads the whole sentence and no contrast, so a comma after the thanks
@@ -1052,6 +1066,7 @@ describe('TranscriptMessageTracker', () => {
       "If you run this on Windows it won't work.",
     ];
 
+    /** After a turn that only answered, "won't work" counts when it points back at something built earlier. */
     const TALKED_CORRECTIONS = [
       "The migration you wrote still won't work.",
       "Your fix from earlier won't work on Windows.",

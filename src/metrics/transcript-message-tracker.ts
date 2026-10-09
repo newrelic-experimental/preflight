@@ -308,34 +308,36 @@ function isCorrectionMessage(rawText: string, state: AssistantTurnState): boolea
 }
 
 /**
- * Tools whose call is something the assistant did that the user can reject.
- * - Edit, Write, MultiEdit and NotebookEdit change files.
- * - Task, and Agent as it is now named, hands work to a subagent, which often edits files. The
- *   subagent's own entries are sidechains, which this tracker skips, so the spawn is the only trace
- *   in the turn of what it did.
- * - Bash runs a command, which `isMutatingToolUse` reads as talking when every command in it only
- *   reads (`isReadOnlyCommand`). A command is output the user corrects too ("the command you ran
- *   won't work in CI"), so any other, such as `npm test` or `cd src && ls`, acts.
- * - PowerShell, Claude Code's shell on native Windows, runs a command as Bash does. It always acts:
- *   `isReadOnlyCommand` reads POSIX shell, not PowerShell syntax.
- * - An MCP tool acts when its name opens on a verb that changes something (`isWritingMcpTool`):
- *   `write_file`, `create_pull_request`, `close_issue`, `deploy_project`, `click`. Tool names usually
- *   lead with the verb, and a reading one can hold a write word later (`get_commit`), so only the
- *   first word counts. A verb that also opens reading tools counts as talking: `execute` and `run`
- *   (`execute_nrql_query`), `resolve` (`resolve-library-id`), and `navigate` and `hover`, which load
- *   or point at a page to read it. So does a name led by its service (`slack_send_message`,
- *   `browser_type`).
- * Every other tool counts as talking: Read, Grep, Glob, WebFetch and WebSearch look things up and
- * TodoWrite tracks the plan.
+ * Built-in tools that only look something up, track the plan or ask the user something. Any other
+ * built-in tool reads as the assistant doing something (`isMutatingToolUse`), so a tool missing here
+ * leaves a correction after it counted rather than dropped.
  */
-const MUTATING_TOOLS: ReadonlySet<string> = new Set([
-  'Edit',
-  'Write',
-  'MultiEdit',
-  'NotebookEdit',
-  'Task',
-  'Agent',
-  'PowerShell',
+const TALKING_TOOLS: ReadonlySet<string> = new Set([
+  // Look something up.
+  'Read',
+  'Grep',
+  'Glob',
+  'LS',
+  'NotebookRead',
+  'WebFetch',
+  'WebSearch',
+  'ToolSearch',
+  'ListMcpResourcesTool',
+  'ReadMcpResourceTool',
+  'BashOutput',
+  'TaskOutput',
+  'ListAgents',
+  // Track the plan.
+  'TodoWrite',
+  'TodoRead',
+  'TaskCreate',
+  'TaskUpdate',
+  'TaskList',
+  'TaskGet',
+  // Ask the user, or enter or leave plan mode.
+  'AskUserQuestion',
+  'EnterPlanMode',
+  'ExitPlanMode',
 ]);
 
 /** Commands that only read, apart from the arguments in `WRITING_ARGS`. */
@@ -516,7 +518,26 @@ interface ToolUse {
   readonly input: unknown;
 }
 
-/** Whether a tool call is something the assistant did that the user can reject (`MUTATING_TOOLS`). */
+/**
+ * Whether a tool call is something the assistant did that the user can reject.
+ * - Edit, Write, MultiEdit and NotebookEdit change files.
+ * - Task, Agent and Workflow hand work to subagents, which often edit files. Their own entries are
+ *   sidechains, which this tracker skips, so the call is the only trace in the turn of what they did.
+ * - Bash runs a command, which reads as talking when every command in it only reads
+ *   (`isReadOnlyCommand`). A command is output the user corrects too ("the command you ran
+ *   won't work in CI"), so any other, such as `npm test` or `cd src && ls`, acts.
+ * - PowerShell, Claude Code's shell on native Windows, runs a command as Bash does. It always acts:
+ *   `isReadOnlyCommand` reads POSIX shell, not PowerShell syntax.
+ * - An MCP tool acts when its name opens on a verb that changes something (`isWritingMcpTool`):
+ *   `write_file`, `create_pull_request`, `close_issue`, `deploy_project`, `click`. Tool names usually
+ *   lead with the verb, and a reading one can hold a write word later (`get_commit`), so only the
+ *   first word counts. A verb that also opens reading tools counts as talking: `execute` and `run`
+ *   (`execute_nrql_query`), `resolve` (`resolve-library-id`), and `navigate` and `hover`, which load
+ *   or point at a page to read it. So does a name led by its service (`slack_send_message`,
+ *   `browser_type`).
+ * - Any other built-in tool acts unless it is in `TALKING_TOOLS`, so a tool that list doesn't name,
+ *   such as Skill, SendMessage or one added later, acts.
+ */
 function isMutatingToolUse({ name, input }: ToolUse): boolean {
   if (name === 'Bash') {
     const command =
@@ -525,7 +546,8 @@ function isMutatingToolUse({ name, input }: ToolUse): boolean {
         : undefined;
     return !isReadOnlyCommand(command);
   }
-  return MUTATING_TOOLS.has(name) || isWritingMcpTool(name);
+  if (name.startsWith('mcp__')) return isWritingMcpTool(name);
+  return !TALKING_TOOLS.has(name);
 }
 
 /** The `tool_use` blocks in an assistant entry's `message.content`. */
