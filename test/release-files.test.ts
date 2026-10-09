@@ -406,7 +406,9 @@ describe('findReleaseBlockers', () => {
   it('reports a version file that disagrees along with a pending changeset', () => {
     const files = withPackageVersion(makeFiles('1.63.1'), '1.64.0');
     const changesets = new Map([['late.md', "---\n'@newrelic/preflight': patch\n---\n\nLate.\n"]]);
-    expect(findReleaseBlockers(makeReader(files), changesets).length).toBeGreaterThan(1);
+    const blockers = findReleaseBlockers(makeReader(files), changesets);
+    expect(blockers).toEqual(expect.arrayContaining(findVersionMismatches(makeReader(files))));
+    expect(blockers).toContainEqual(expect.stringMatching(/late\.md is waiting for a release/));
   });
 });
 
