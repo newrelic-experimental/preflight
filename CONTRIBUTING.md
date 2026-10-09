@@ -430,8 +430,9 @@ like any others, so run `npm run format` before committing.
    `GITHUB_TOKEN` start workflows, so CI doesn't run on it by itself. Close and reopen the PR
    to run CI.
 3. Right after the release PR merges, run the Release workflow
-   ([`release.yml`](./.github/workflows/release.yml)) on `main` from the Actions tab. It checks
-   that every version file agrees (`npm run check:release-files`), tags `vX.Y.Z`, creates the
+   ([`release.yml`](./.github/workflows/release.yml)) on `main` from the Actions tab. Run from
+   any other branch, it skips its job and publishes nothing. It checks that every version file
+   agrees (`npm run check:release-files`), tags `vX.Y.Z`, creates the
    GitHub release, and publishes to npm, the Homebrew tap, and the MCP Registry.
 
 Release tags and publishes `main` as it stands when it runs. A changeset that merges after the

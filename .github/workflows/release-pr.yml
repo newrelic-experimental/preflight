@@ -16,9 +16,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# A newer push to main supersedes a run still building the PR from an older one.
+# A newer push to main supersedes a run still building the PR from an older one. Keyed on the
+# ref so that a manual run from another branch, which the job's `if` skips, can't cancel one.
 concurrency:
-  group: release-pr
+  group: release-pr-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

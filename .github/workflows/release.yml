@@ -16,6 +16,9 @@ permissions:
 
 jobs:
   publish:
+    # Releases come from main only. Any other branch, including the release PR's own
+    # changeset-release/main before it merges, would publish unreviewed commits.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       HUSKY: 0 # disable git hooks in CI
