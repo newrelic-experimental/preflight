@@ -1,6 +1,11 @@
 import { createLogger } from '../shared/index.js';
 import { GIT_LOG_SESSION_ID, type GitActivityRecord } from './git-activity-recorder.js';
-import type { GitEvent } from './git-event-classifier.js';
+import {
+  isAmendCommit,
+  isCountedCommit,
+  isCountedPush,
+  type GitEvent,
+} from './git-event-classifier.js';
 import type {
   BestPractice,
   ConflictResolutionStrategy,
@@ -788,14 +793,6 @@ export const COMMIT_RECONCILE_WINDOW_MS = 60_000;
 
 type GitCommitRecord = Extract<GitActivityRecord, { kind: 'git' }>;
 
-const AMEND_RE = /\s--amend\b/;
-
-/** A commit that added history: it succeeded and was not an amend, which
- *  rewrites a commit instead of adding one. Hydrated commits always qualify. */
-export function isCountedCommit(event: GitEvent): boolean {
-  return event.type === 'commit' && event.success && !AMEND_RE.test(event.command ?? '');
-}
-
 function isHookCommit(r: GitCommitRecord): boolean {
   return isCountedCommit(r.gitEvent) && !r.gitEvent.hash;
 }
@@ -1070,9 +1067,11 @@ export function computeWorkspaceMetrics(
       }
 
       case 'commit': {
+        // A failed commit resolved nothing; see GitEfficiencyTracker.
+        if (!event.success) break;
         // git commit --amend fixes a prior commit, not a merge conflict —
         // drop the oldest pending conflict without recording a resolution.
-        if (command.includes('--amend')) {
+        if (isAmendCommit(command)) {
           pendingConflicts.shift();
         } else {
           const pending = pendingConflicts.shift();
@@ -1110,6 +1109,8 @@ export function computeWorkspaceMetrics(
         break;
 
       case 'push':
+        // A failed push changed nothing on the remote; see GitEfficiencyTracker.
+        if (!event.success) break;
         lastPushTimestamp = event.timestamp;
         buildBeforePush = computeBuildBeforePush(lastBuildOrTestTimestamp, commitTimestamps);
         break;
@@ -1141,12 +1142,15 @@ export function computeWorkspaceMetrics(
         ) {
           forceAfterReject++;
         }
+        // The checks above judge the command run; see GitEfficiencyTracker.
+        if (!event.success) break;
         lastPushTimestamp = event.timestamp;
         buildBeforePush = computeBuildBeforePush(lastBuildOrTestTimestamp, commitTimestamps);
         break;
 
       case 'force_push_lease':
         hasUsedForceWithLease = true;
+        if (!event.success) break;
         lastPushTimestamp = event.timestamp;
         buildBeforePush = computeBuildBeforePush(lastBuildOrTestTimestamp, commitTimestamps);
         break;
@@ -1175,9 +1179,7 @@ export function computeWorkspaceMetrics(
   const resetHards = events.filter((e) => e.type === 'reset_hard').length;
   const discardedChanges = events.filter((e) => e.type === 'discard_changes').length;
   const pullCount = events.filter((e) => e.type === 'pull').length;
-  const pushCount = events.filter(
-    (e) => e.type === 'push' || e.type === 'force_push' || e.type === 'force_push_lease',
-  ).length;
+  const pushCount = events.filter(isCountedPush).length;
   const commitCount = events.filter(isCountedCommit).length;
   const branchOperations = events.filter((e) => e.type === 'branch').length;
   const mergeEventCount = events.filter((e) => e.type === 'merge').length;
