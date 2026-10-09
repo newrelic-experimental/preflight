@@ -221,10 +221,10 @@ describe('TranscriptMessageTracker', () => {
     expect(tracker.getMetrics().userCorrections).toBe(0);
   });
 
-  // #677: "won't work" reads the assistant's turn before the message. These
-  // pin how the transcript sets that turn state; the corpus below pins what
-  // each state decides.
-  describe("turn state for won't work (#677)", () => {
+  // "won't work" reads the assistant's turn before the message. These pin how
+  // the transcript sets that turn state; the corpus below pins what each state
+  // decides.
+  describe("turn state for won't work", () => {
     /** Read before an unrelated exchange, so the transcript has shown it records tool calls. */
     const EARLIER_EXCHANGE = [toolUseLine('Read'), userLine('go ahead')];
     /** Counts in every turn state, so it shows the state matters only for "won't work". */
@@ -537,7 +537,7 @@ describe('TranscriptMessageTracker', () => {
       tracker.refresh();
       expect(tracker.getMetrics()).toMatchObject({
         userCorrections: 1,
-        // The command's entries still count as user messages, as they do on main.
+        // The command's entries still count as user messages.
         userMessages: 1 + entries.length + 1,
       });
     });
@@ -660,10 +660,10 @@ describe('TranscriptMessageTracker', () => {
     });
   });
 
-  // #677: labeled corpus for the "won't work" clause. Corrections reject
-  // something the assistant already produced; design discussion rules out an
-  // option before anything was built, with or without proposing the next one.
-  describe("won't work corpus (#677)", () => {
+  // Labeled corpus for the "won't work" clause. Corrections reject something
+  // the assistant already produced; design discussion rules out an option
+  // before anything was built, with or without proposing the next one.
+  describe("won't work corpus", () => {
     /** Classifies `text` with no assistant entry before it, so the text decides alone. */
     function countCorrections(text: string): number {
       writeLines([userLine(text)]);
@@ -1043,7 +1043,7 @@ describe('TranscriptMessageTracker', () => {
     ];
 
     /** After a turn that only answered, "won't work" counts when it points back at something built earlier. */
-    /** After a turn that acted, the idea and hypothetical exceptions drop these corrections, which `main` counts. */
+    /** After a turn that acted, the idea and hypothetical exceptions drop these corrections. */
     const ACTED_KNOWN_MISSES = [
       // The idea exception reads the whole sentence and no contrast, so a comma after the thanks
       // excuses it. With a period for the comma, it counts.
@@ -1286,17 +1286,16 @@ describe('TranscriptMessageTracker', () => {
       return tools;
     }
 
-    // Model-written sets. A, B and C were read while writing the turn-state rule, so they are
-    // development data. D was written and committed (0cf775d) before that rule, which was frozen at
-    // 3dd6853 and then scored on D once, so D is the estimate of how it generalises. The turn
-    // boundary, Bash, MCP and acted-exclusion changes after it leave every verdict on D as it was,
-    // so D doesn't measure them: its rows list tool names, with no Bash commands or MCP tools. C
-    // played that part for the text-alone rule, first scored at b241f1b. The results are pinned
-    // measurements, not targets: a rule change updates them, and only a fresh set can say whether
-    // the change generalises. Each set pins the row indices of the corrections it misses and the
-    // design rows it flags, so a change that swaps which rows pass at the same totals shows up too.
-    // Each also caps its misses at the recall the rule was accepted at, so a recall drop fails even
-    // when the indices are re-pinned. Raising a cap is a decision to lose recall.
+    // Model-written sets. Each fixture's `source` note says how its set was made. A, B and C were
+    // read while writing the turn-state rule, so they are development data. D was written before
+    // that rule and scored on it once, so D is the estimate of how it generalises. D's rows list a
+    // turn's tool names, not its commands or transcript entries, so D can't measure the Bash and
+    // MCP rules or where a turn ends. The results are pinned measurements, not targets: a rule
+    // change updates them, and only a fresh set can say whether the change generalises. Each set
+    // pins the row indices of the corrections it misses and the design rows it flags, so a change
+    // that swaps which rows pass at the same totals shows up too. Each also caps its misses at the
+    // recall the rule was accepted at, so a recall drop fails even when the indices are re-pinned.
+    // Raising a cap is a decision to lose recall.
     const CONTEXT_SETS: Readonly<Record<string, HeldOutSet<ContextRow>>> = {
       ...readSets<ContextRow>('wont-work-held-out.json'),
       ...readSets<ContextRow>('wont-work-held-out-c.json'),
