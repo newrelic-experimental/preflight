@@ -26,7 +26,9 @@ import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
 import { hasAttributableActivity, type FullSessionSummary } from '../storage/session-store.js';
+import type { UnpricedModelUsage } from './cost-tracker.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
+import { resolvePricing } from './model-pricing.js';
 import { QualityProxyTracker } from './quality-proxy-tracker.js';
 import { ToolSelectionScorer, toToolSelectionSummary } from './tool-selection-scorer.js';
 
@@ -118,6 +120,7 @@ export interface LocalSessionRollup {
   tokensCacheRead: number;
   tokensCacheCreation: number;
   models: Set<string>;
+  unpricedByModel: Map<string, UnpricedModelUsage>;
   successCount: number;
 }
 
@@ -353,6 +356,7 @@ export class LocalSessionAggregator {
         tokensCacheRead: 0,
         tokensCacheCreation: 0,
         models: new Set(),
+        unpricedByModel: new Map(),
         successCount: 0,
       };
       this.sessions.set(sessionId, rollup);
@@ -511,6 +515,20 @@ export class LocalSessionAggregator {
       entry.cacheCreation += usage.cacheCreationTokens ?? 0;
       entry.thinking += usage.thinkingTokens ?? 0;
       rollup.modelBreakdown.set(usage.model, entry);
+
+      const tokens =
+        (usage.inputTokens ?? 0) +
+        (usage.outputTokens ?? 0) +
+        (usage.thinkingTokens ?? 0) +
+        (usage.cacheReadTokens ?? 0) +
+        (usage.cacheCreationTokens ?? 0);
+      if (tokens > 0 && resolvePricing(usage.model).kind === 'unpriced') {
+        const prior = rollup.unpricedByModel.get(usage.model);
+        rollup.unpricedByModel.set(usage.model, {
+          calls: (prior?.calls ?? 0) + 1,
+          tokens: (prior?.tokens ?? 0) + tokens,
+        });
+      }
     }
   }
 
@@ -614,6 +632,9 @@ export class LocalSessionAggregator {
           : {}),
         ...(rollup.subagentCostByDayUsd.size > 0
           ? { subagentCostByDayUsd: Object.fromEntries(rollup.subagentCostByDayUsd) }
+          : {}),
+        ...(rollup.unpricedByModel.size > 0
+          ? { unpricedByModel: Object.fromEntries(rollup.unpricedByModel) }
           : {}),
         tokensInput: rollup.tokensInput,
         tokensOutput: rollup.tokensOutput,

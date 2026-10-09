@@ -18,6 +18,7 @@ import { SessionDetailDialog } from '../components/SessionDetailDialog';
 import type { AgentSpan } from '../components/AgentSwimlanes';
 import type { ConcurrencyData } from '../components/ConcurrencyIndicator';
 import { GeoBanner } from '../components/GeoBanner';
+import { UnpricedSpendNotice } from '../components/UnpricedSpendNotice';
 import { ContextBar } from '../components/ContextBar';
 import { Panel } from '../components/ui/Panel';
 import { HealthCard, type HealthCardRow, type HealthTone } from '../components/HealthCard';
@@ -417,6 +418,7 @@ export function Today(): JSX.Element {
         <h1 className="text-xl font-semibold gradient-text">Today</h1>
         <span className="text-xs text-ink-muted">{headerTimestamp}</span>
       </header>
+      <UnpricedSpendNotice unpricedByModel={aggregate?.unpricedByModel} />
 
       {noActivityToday ? (
         <>

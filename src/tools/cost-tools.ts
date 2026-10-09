@@ -191,6 +191,7 @@ export function handleGetCostBreakdown(costTracker: CostTracker, taskDetector?: 
     // dollar figure above reflects that correction, not Preflight's default
     // list-price computation, which is still only an estimate either way.
     rate_multiplier_applied: metrics.costRateMultiplierApplied,
+    unpriced_by_model: metrics.unpricedByModel,
   };
 
   return {

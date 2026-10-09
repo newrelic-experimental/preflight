@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.64.0] - 2026-10-09
+
+### Added
+
+- **Calls on a model with no price were recorded as $0 with nothing on the dashboard to say so, so Spend Today read low without explanation.** Preflight now counts those calls per model ID. The Today page shows a notice above the spend figures naming the models, for example "2 calls unpriced (claude-opus-5-5). Spend is understated." The counts are persisted with each session, summed across today's sessions, returned as `unpriced_by_model` by `nr_observe_get_cost_breakdown`, and emitted as the `ai.cost.unpriced_calls` metric tagged by `model`.
+
+## [1.63.5] - 2026-10-09
+
+### Fixed
+
+- **An unpriced model logged "Unknown model, pricing not available" on every token event.** A session on a model missing from the pricing table repeated the warning for each call. Pricing lookups now resolve once per model ID per process, so the warning appears once per model.
+
 ## [1.63.4] - 2026-10-09
 
 ### Fixed
