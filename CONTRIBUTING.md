@@ -428,10 +428,11 @@ like any others, so run `npm run format` before committing.
    rebuilt. If that's stale, rerun the Release PR workflow from the Actions tab before merging.
 2. Review and merge the release PR. GitHub doesn't let a PR opened by the built-in
    `GITHUB_TOKEN` start workflows, so CI doesn't run on it by itself. Close and reopen the PR
-   to run CI. A merge to `main` on the same UTC day that doesn't change the release (docs,
-   tests, or a change with an empty changeset) doesn't push a new commit to the PR, so its CI
-   results stay; the merged PR's own CI covered what it added. On a later day the entry's date
-   changes, so the PR gets a new commit and needs reopening again.
+   to run CI. A merge to `main` on the same UTC day that adds no changeset (docs, tests, CI, or
+   scripts) doesn't push a new commit to the PR, so its CI results stay; the merged PR's own
+   CI covered what it added. Any other merge gives the PR a new commit that needs reopening
+   again: one with a changeset, even an empty one, since the release PR deletes it, and any
+   merge on a later day, since the entry's date changes.
 3. Right after the release PR merges, run the Release workflow
    ([`release.yml`](./.github/workflows/release.yml)) on `main` from the Actions tab. Run from
    any other branch, it skips its job and publishes nothing. It checks that every version file
