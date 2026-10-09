@@ -419,14 +419,22 @@ like any others, so run `npm run format` before committing.
 2. Review and merge the release PR. GitHub doesn't let a PR opened by the built-in
    `GITHUB_TOKEN` start workflows, so CI doesn't run on it by itself. Close and reopen the PR
    to run CI.
-3. Run the Release workflow ([`release.yml`](./.github/workflows/release.yml)) on `main` from
-   the Actions tab. It checks that every version file agrees (`npm run check:release-files`),
-   tags `vX.Y.Z`, creates the GitHub release, and publishes to npm, the Homebrew tap, and the
-   MCP Registry.
+3. Right after the release PR merges, run the Release workflow
+   ([`release.yml`](./.github/workflows/release.yml)) on `main` from the Actions tab. It checks
+   that every version file agrees (`npm run check:release-files`), tags `vX.Y.Z`, creates the
+   GitHub release, and publishes to npm, the Homebrew tap, and the MCP Registry.
 
-Changesets that merge after the release PR are left for the next one. If the Release PR
-workflow can't run, `npm run version-packages` on a branch off `main` does the same thing:
-commit the result and open the PR yourself.
+Release tags and publishes `main` as it stands when it runs. A changeset that merges after the
+release PR goes into the next release's CHANGELOG entry, so if Release ran after it, x.y.z
+would ship that change without mentioning it. Release refuses to run while `main` has such a
+changeset. When that happens, merge the next release PR, which release-pr.yml opens as soon as
+the changeset lands, and run Release then. That release also ships everything in x.y.z, which
+keeps its CHANGELOG entry but never reaches npm under its own number. Rerunning a failed
+Release run is unaffected, since a rerun uses the commit the original run started from.
+
+If the Release PR workflow can't run, run `npm run version-packages` on a branch named
+`changeset-release/main` off `main`, commit the result, and open the PR yourself. CI's
+`changeset` job skips only that branch, since a release PR bumps the version.
 
 ---
 

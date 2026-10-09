@@ -3,7 +3,9 @@ import { resolve } from 'node:path';
 
 import {
   VERSION_FILES,
+  changesetReleases,
   dateNewEntries,
+  findPendingReleases,
   findReleaseEdits,
   findVersionMismatches,
   isMainModule,
@@ -269,6 +271,57 @@ describe('findVersionMismatches', () => {
     expect(findVersionMismatches(makeReader(files))).toEqual([
       "CHANGELOG.md's 1.64.0 heading has no date.",
     ]);
+  });
+});
+
+describe('changesetReleases', () => {
+  it('reads the bump a changeset asks for, quoted either way or not at all', () => {
+    expect(changesetReleases("---\n'@newrelic/preflight': minor\n---\n\nNew.\n", 'a.md')).toEqual(
+      new Map([['@newrelic/preflight', 'minor']]),
+    );
+    expect(changesetReleases('---\r\n"@newrelic/preflight": patch\r\n---\r\n', 'b.md')).toEqual(
+      new Map([['@newrelic/preflight', 'patch']]),
+    );
+    expect(changesetReleases('---\npreflight: major # breaking\n---\n', 'c.md')).toEqual(
+      new Map([['preflight', 'major']]),
+    );
+  });
+
+  it('reads an empty changeset as releasing nothing', () => {
+    expect(changesetReleases('---\n---\n\nTooling only.\n', 'empty.md').size).toBe(0);
+  });
+
+  it('throws on frontmatter it cannot read instead of guessing', () => {
+    expect(() => changesetReleases('No frontmatter.\n', 'bad.md')).toThrow(/bad.md/);
+    expect(() => changesetReleases('---\n- a list\n---\n', 'list.md')).toThrow(/list.md/);
+  });
+});
+
+describe('findPendingReleases', () => {
+  it('passes when nothing is pending, or only empty and none-bump changesets', () => {
+    expect(findPendingReleases(new Map(), '1.64.0')).toEqual([]);
+    expect(
+      findPendingReleases(
+        new Map([
+          ['empty.md', '---\n---\n\nTooling.\n'],
+          ['none.md', "---\n'@newrelic/preflight': none\n---\n\nNothing.\n"],
+        ]),
+        '1.64.0',
+      ),
+    ).toEqual([]);
+  });
+
+  it('names each changeset that would ship without a CHANGELOG entry', () => {
+    const problems = findPendingReleases(
+      new Map([
+        ['late-fix.md', "---\n'@newrelic/preflight': patch\n---\n\nA fix.\n"],
+        ['empty.md', '---\n---\n'],
+      ]),
+      '1.64.0',
+    );
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(/^\.changeset\/late-fix\.md is waiting for a release/);
+    expect(problems[0]).toContain('the 1.64.0 CHANGELOG entry leaves it out');
   });
 });
 

@@ -12,8 +12,9 @@
  *     `changeset version` just added.
  *   tsx scripts/release-files.ts check [--base <ref>]
  *     Fails if any of those files disagrees with package.json, or if the newest CHANGELOG
- *     entry isn't for package.json's version; release.yml runs this before tagging. With
- *     --base it also fails if this branch has changed the version or an already-released
+ *     entry isn't for package.json's version. Without --base, which is how release.yml runs it
+ *     before tagging, it also fails while .changeset/ holds a changeset that releases
+ *     something. With --base it fails if this branch has changed the version or an already-released
  *     CHANGELOG entry since it branched from <ref>; CI runs that on every PR except the
  *     release PR.
  *   tsx scripts/release-files.ts notes
@@ -21,7 +22,7 @@
  *     description.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
@@ -87,6 +88,7 @@ const RELEASE_HEADING = /^## (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?: - (\d{4}-\d{
 const LEGACY_RELEASE_HEADING = /^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})$/gm;
 
 const CHANGESETS_DOC = 'CONTRIBUTING.md#changesets';
+const RELEASING_DOC = 'CONTRIBUTING.md#releasing';
 
 export interface ReleaseHeading {
   readonly version: string;
@@ -203,6 +205,60 @@ export function findVersionMismatches(read: ReadFile): string[] {
   return problems;
 }
 
+// A frontmatter line naming a package and its bump, as `changeset add` writes it:
+// `'@newrelic/preflight': minor`. The quotes are optional, and a trailing comment is allowed.
+const CHANGESET_RELEASE = /^(['"]?)([^'"]+)\1\s*:\s*(major|minor|patch|none)\s*(?:#.*)?$/;
+
+/**
+ * The bump a changeset asks for, by package name: none for an empty changeset
+ * (`npx changeset --empty`). Reads the frontmatter shapes `changeset add` writes and throws on
+ * anything else instead of guessing, since Release refuses or proceeds on the answer.
+ */
+export function changesetReleases(text: string, label: string): Map<string, string> {
+  const lines = text.split(/\r?\n/);
+  const open = lines.findIndex((line) => line.trim() !== '');
+  const close = lines.findIndex((line, i) => i > open && line.trim() === '---');
+  if (open === -1 || lines[open].trim() !== '---' || close === -1) {
+    throw new Error(`${label} doesn't start with frontmatter between two --- lines.`);
+  }
+  const releases = new Map<string, string>();
+  for (const line of lines.slice(open + 1, close)) {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const m = CHANGESET_RELEASE.exec(trimmed);
+    if (!m) throw new Error(`${label} has a frontmatter line this script can't read: ${trimmed}`);
+    releases.set(m[2], m[3]);
+  }
+  return releases;
+}
+
+/**
+ * The pending changesets (file name to contents) that would release something, as one
+ * problem; empty when every one is empty or bumps nothing. Release tags the commit it runs on,
+ * so a changeset still pending there means that commit ships a change the CHANGELOG entry for
+ * package.json's version leaves out.
+ */
+export function findPendingReleases(
+  changesets: ReadonlyMap<string, string>,
+  version: string,
+): string[] {
+  const releasing = [...changesets]
+    .filter(([name, text]) =>
+      [...changesetReleases(text, `.changeset/${name}`).values()].some((bump) => bump !== 'none'),
+    )
+    .map(([name]) => `.changeset/${name}`)
+    .sort();
+  if (releasing.length === 0) return [];
+  return [
+    `${releasing.join(', ')} ${releasing.length === 1 ? 'is' : 'are'} waiting for a release, ` +
+      `but the ${version} CHANGELOG entry leaves ${releasing.length === 1 ? 'it' : 'them'} out, ` +
+      `so publishing from this commit would ship ${version} with changes its entry doesn't ` +
+      'mention. This happens when a PR with a changeset merges after the release PR and before ' +
+      'Release runs. Merge the release PR that release-pr.yml opens for it, then run Release ' +
+      `again. That release also ships everything in ${version}.`,
+  ];
+}
+
 /** Each release-PR-only change a branch made since `base`; empty when it made none. */
 export function findReleaseEdits(base: ReadFile, head: ReadFile): string[] {
   const problems: string[] = [];
@@ -242,6 +298,16 @@ function asArray(value: unknown, label: string): unknown[] {
   return value;
 }
 
+/** Every changeset waiting in .changeset/, file name to contents. */
+function readPendingChangesets(): Map<string, string> {
+  const dir = resolve(process.cwd(), '.changeset');
+  return new Map(
+    readdirSync(dir)
+      .filter((name) => name.endsWith('.md') && name !== 'README.md')
+      .map((name) => [name, readFileSync(join(dir, name), 'utf8')]),
+  );
+}
+
 function git(args: readonly string[]): string {
   return execFileSync('git', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
@@ -272,10 +338,11 @@ function main(argv: readonly string[]): number {
   if (command === 'check') {
     const mismatches = findVersionMismatches(readWorkingTree);
     if (args[0] !== '--base') {
+      const { version } = readPackageJson(readWorkingTree);
       return report(
-        mismatches,
-        'Only the release PR should change these. Merge it, or run `npm run version-packages` ' +
-          'on a release branch.',
+        [...mismatches, ...findPendingReleases(readPendingChangesets(), version)],
+        'Only the release PR should change the version files, and Release should run before ' +
+          `another PR with a changeset merges after it (${RELEASING_DOC}).`,
       );
     }
     if (!args[1]) throw new Error('--base needs a git ref, e.g. origin/main');

@@ -49,9 +49,12 @@ jobs:
 
       # Checks that package-lock.json, server.json, and both plugin manifests
       # carry package.json's version, and that the newest CHANGELOG entry is
-      # for it. main only takes changes through a reviewed PR, so this job
-      # can't push a fix-up commit. It can only fail loudly and point at the
-      # PR that needs to land first, which is normally the release PR.
+      # for it. Also fails while .changeset/ holds a changeset that releases
+      # something: the tag below goes on this checkout, so its change would
+      # ship under a version whose entry leaves it out. main only takes changes
+      # through a reviewed PR, so this job can't push a fix-up commit. It can
+      # only fail loudly and point at the PR that needs to land first, which
+      # is normally the release PR.
       - name: Verify version files are in sync
         run: npm run check:release-files
 

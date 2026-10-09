@@ -114,9 +114,13 @@ jobs:
   # A PR describes its change in a changeset and leaves the version and CHANGELOG.md to the
   # release PR (CONTRIBUTING.md#changesets). Both checks need a base branch, so they're
   # skipped on workflow_dispatch runs. They're also skipped on the release PR, which is the one
-  # PR that bumps the version and consumes changesets instead of adding one.
+  # PR that bumps the version and consumes changesets instead of adding one. The exemption needs
+  # the branch to be in this repo, so a fork's changeset-release/main still gets checked.
   changeset:
-    if: github.event_name == 'pull_request' && github.head_ref != 'changeset-release/main'
+    if: >-
+      github.event_name == 'pull_request' &&
+      !(github.head_ref == 'changeset-release/main' &&
+        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     env:
       BASE: origin/${{ github.base_ref }}
