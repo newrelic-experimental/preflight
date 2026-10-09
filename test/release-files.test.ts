@@ -1,14 +1,17 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 import {
   VERSION_FILES,
   changesetReleases,
   dateNewEntries,
   findPendingReleases,
+  findReleaseBlockers,
   findReleaseEdits,
   findVersionMismatches,
   isMainModule,
+  readPendingChangesets,
   releaseEntry,
   releaseHeadings,
   releasedEntries,
@@ -362,10 +365,62 @@ describe('findReleaseEdits', () => {
   });
 });
 
+describe('readPendingChangesets', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'release-files-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reads only the changesets, not the README, config, or prerelease folder', () => {
+    writeFileSync(join(dir, 'README.md'), '# Changesets\n');
+    writeFileSync(join(dir, 'config.json'), '{}\n');
+    writeFileSync(join(dir, 'changelog.mjs'), 'export default {};\n');
+    mkdirSync(join(dir, 'pre'));
+    writeFileSync(join(dir, 'pre', 'used.md'), "---\n'@newrelic/preflight': patch\n---\n");
+    writeFileSync(join(dir, 'fix.md'), "---\n'@newrelic/preflight': patch\n---\n\nA fix.\n");
+
+    expect([...readPendingChangesets(dir)]).toEqual([
+      ['fix.md', "---\n'@newrelic/preflight': patch\n---\n\nA fix.\n"],
+    ]);
+  });
+});
+
+describe('findReleaseBlockers', () => {
+  it('passes a release commit whose only pending changesets are empty', () => {
+    const changesets = new Map([['tooling.md', '---\n---\n\nTooling only.\n']]);
+    expect(findReleaseBlockers(makeReader(makeFiles('1.63.1')), changesets)).toEqual([]);
+  });
+
+  it('blocks a commit where a changeset merged after the release PR', () => {
+    const changesets = new Map([['late.md', "---\n'@newrelic/preflight': patch\n---\n\nLate.\n"]]);
+    const blockers = findReleaseBlockers(makeReader(makeFiles('1.63.1')), changesets);
+    expect(blockers).toHaveLength(1);
+    expect(blockers[0]).toMatch(/^\.changeset\/late\.md is waiting for a release/);
+  });
+
+  it('reports a version file that disagrees along with a pending changeset', () => {
+    const files = withPackageVersion(makeFiles('1.63.1'), '1.64.0');
+    const changesets = new Map([['late.md', "---\n'@newrelic/preflight': patch\n---\n\nLate.\n"]]);
+    expect(findReleaseBlockers(makeReader(files), changesets).length).toBeGreaterThan(1);
+  });
+});
+
 describe('the files in this repo', () => {
   it('all carry the version in package.json', () => {
     const readRepo: ReadFile = (path) => readFileSync(resolve(repoRoot, path), 'utf8');
     expect(findVersionMismatches(readRepo)).toEqual([]);
+  });
+
+  it('hold only changesets whose frontmatter Release can read', () => {
+    // Release throws on a changeset it can't read, so catch one in the PR that adds it.
+    for (const [name, text] of readPendingChangesets(resolve(repoRoot, '.changeset'))) {
+      expect(() => changesetReleases(text, name)).not.toThrow();
+    }
   });
 });
 

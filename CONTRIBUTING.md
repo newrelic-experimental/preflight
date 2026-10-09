@@ -386,10 +386,18 @@ version.
 **Which PRs need one.** CI's `changeset` job fails when a PR changes a file that ships and adds
 no changeset. The files that ship are listed under `changedFilePatterns` in
 `.changeset/config.json`: everything in `src/` except tests, the plugin and Kiro power, the data
-directories, `package.json`, `server.json`, and `smithery.yaml`. A PR that touches only docs,
-tests, CI, or scripts needs no changeset. If a PR changes a shipped file in a way users won't
-notice, such as a devDependency bump in `package.json`, add an empty changeset with
-`npx changeset --empty`. That satisfies the check without adding a CHANGELOG entry.
+directories, `package.json`, `package-lock.json`, `server.json`, and `smithery.yaml`. The
+lockfile counts because the dashboard bundle in `dist/web` is built from the versions it pins.
+A PR that touches only docs, tests, CI, or scripts needs no changeset. If a PR changes a shipped
+file in a way users won't notice, such as bumping a devDependency that only the tests or the
+build use, add an empty changeset with `npx changeset --empty`. That satisfies the check
+without adding a CHANGELOG entry. The dashboard's own libraries (React, TanStack Query, and the
+rest of what Vite bundles) are devDependencies too, but bumping one changes what users get, so
+give it a `patch` changeset.
+
+Release only refuses to run past a pending changeset that bumps the version (see
+[Releasing](#releasing)). An empty changeset that merges after the release PR ships in that
+release without being mentioned, which is why it's only for changes users won't notice.
 
 **Picking the bump.** The release takes the highest bump among its pending changesets.
 

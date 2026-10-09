@@ -268,7 +268,7 @@ Run `npm run lint` before committing to verify the lint target is still met.
 The CHANGELOG entry, written for someone who uses Preflight: what changed for them and why.
 ```
 
-Save it as `.changeset/<short-descriptive-name>.md`, or run `npx changeset --patch @newrelic/preflight -m "..."`. Use `patch` for fixes, `minor` for new things a user can use (config fields, CLI flags, MCP tools, event attributes), and `major` for breaking changes. A PR that touches only docs, tests, CI, or scripts needs no changeset. One that changes a shipped file without anything a user would notice gets an empty one (`npx changeset --empty`). CI's `changeset` job enforces all of this. See [Changesets](./CONTRIBUTING.md#changesets) for which files count as shipped and how to write the entry.
+Save it as `.changeset/<short-descriptive-name>.md`, or run `npx changeset --patch @newrelic/preflight -m "..."`. Use `patch` for fixes, `minor` for new things a user can use (config fields, CLI flags, MCP tools, event attributes), and `major` for breaking changes. A PR that touches only docs, tests, CI, or scripts needs no changeset. One that changes a shipped file without anything a user would notice gets an empty one (`npx changeset --empty`), but bumping a library the dashboard bundles (React, TanStack Query, and the rest of what Vite builds into `dist/web`) changes what users get, so it gets a `patch`. CI's `changeset` job enforces all of this. See [Changesets](./CONTRIBUTING.md#changesets) for which files count as shipped and how to write the entry.
 
 ## Git Commit Conventions
 

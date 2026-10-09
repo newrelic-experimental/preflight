@@ -23,6 +23,7 @@
     ".claude-plugin/**",
     "kiro-power/**",
     "package.json",
+    "package-lock.json",
     "server.json",
     "smithery.yaml"
   ]

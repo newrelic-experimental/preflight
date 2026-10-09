@@ -259,6 +259,20 @@ export function findPendingReleases(
   ];
 }
 
+/**
+ * Everything that stops Release from tagging this commit: a version file that disagrees with
+ * package.json, and a pending changeset whose change the CHANGELOG entry leaves out.
+ */
+export function findReleaseBlockers(
+  read: ReadFile,
+  changesets: ReadonlyMap<string, string>,
+): string[] {
+  return [
+    ...findVersionMismatches(read),
+    ...findPendingReleases(changesets, readPackageJson(read).version),
+  ];
+}
+
 /** Each release-PR-only change a branch made since `base`; empty when it made none. */
 export function findReleaseEdits(base: ReadFile, head: ReadFile): string[] {
   const problems: string[] = [];
@@ -298,9 +312,12 @@ function asArray(value: unknown, label: string): unknown[] {
   return value;
 }
 
-/** Every changeset waiting in .changeset/, file name to contents. */
-function readPendingChangesets(): Map<string, string> {
-  const dir = resolve(process.cwd(), '.changeset');
+/**
+ * Every changeset waiting in `dir` (the repo's .changeset/), file name to contents. In
+ * prerelease mode (`changeset pre`), `changeset version` moves the changesets it used into
+ * .changeset/pre/ rather than deleting them, so they aren't read here.
+ */
+export function readPendingChangesets(dir: string): Map<string, string> {
   return new Map(
     readdirSync(dir)
       .filter((name) => name.endsWith('.md') && name !== 'README.md')
@@ -336,11 +353,10 @@ function main(argv: readonly string[]): number {
   }
 
   if (command === 'check') {
-    const mismatches = findVersionMismatches(readWorkingTree);
     if (args[0] !== '--base') {
-      const { version } = readPackageJson(readWorkingTree);
+      const changesets = readPendingChangesets(resolve(process.cwd(), '.changeset'));
       return report(
-        [...mismatches, ...findPendingReleases(readPendingChangesets(), version)],
+        findReleaseBlockers(readWorkingTree, changesets),
         'Only the release PR should change the version files, and Release should run before ' +
           `another PR with a changeset merges after it (${RELEASING_DOC}).`,
       );
@@ -349,7 +365,10 @@ function main(argv: readonly string[]): number {
     const forkPoint = git(['merge-base', args[1], 'HEAD']).trim();
     const readForkPoint: ReadFile = (path) => git(['show', `${forkPoint}:${path}`]);
     return report(
-      [...findReleaseEdits(readForkPoint, readWorkingTree), ...mismatches],
+      [
+        ...findReleaseEdits(readForkPoint, readWorkingTree),
+        ...findVersionMismatches(readWorkingTree),
+      ],
       `Compared with ${args[1]} at ${forkPoint.slice(0, 7)}, where this branch started.`,
     );
   }
