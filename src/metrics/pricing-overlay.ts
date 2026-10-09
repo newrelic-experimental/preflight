@@ -19,6 +19,7 @@ import { createLogger } from '../shared/index.js';
 import { initPricing, loadCustomPricing, resolveModelPricing } from '../shared/pricing.js';
 import type { ModelPricing } from '../shared/pricing.js';
 import { resolveDataDir } from '../deploy/data-paths.js';
+import { clearPricingResolutions } from './model-pricing.js';
 
 const logger = createLogger('pricing-overlay');
 
@@ -69,6 +70,7 @@ export function applyGapFilledOverlay(overlayPath: string): void {
     const filteredPath = join(tmpDir, 'pricing.json');
     writeFileSync(filteredPath, JSON.stringify(gaps), { mode: 0o600 });
     initPricing(filteredPath);
+    clearPricingResolutions();
   } catch (err) {
     logger.warn('Failed to apply gap-filtered pricing overlay', {
       error: err instanceof Error ? err.message : String(err),
@@ -93,6 +95,7 @@ export function applyGapFilledOverlay(overlayPath: string): void {
 export function applyPricingOverlay(customPricingFile: string | null): void {
   if (customPricingFile) {
     initPricing(customPricingFile);
+    clearPricingResolutions();
     return;
   }
   const overlayPath = resolvePricingOverlayPath();

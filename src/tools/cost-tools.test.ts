@@ -9,6 +9,7 @@ import {
   registerCostTools,
 } from './cost-tools.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
+import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import { BudgetTracker } from '../metrics/budget-tracker.js';
 import { SessionResumeTracker } from '../metrics/session-resume-tracker.js';
 import { localDateKey } from '../lib/date.js';
@@ -280,6 +281,44 @@ describe('handleGetCostBreakdown()', () => {
 
     expect(body.by_agent_type).toEqual({});
   });
+
+  it('reports calls on a model with no price in unpriced_by_model', () => {
+    const tracker = new CostTracker();
+    handleReportTokens(tracker, {
+      input_tokens: 1_000,
+      output_tokens: 200,
+      model: 'claude-foo-9-9',
+    });
+    handleReportTokens(tracker, {
+      input_tokens: 1_000,
+      output_tokens: 200,
+      model: 'claude-sonnet-4',
+    });
+
+    const body = JSON.parse(handleGetCostBreakdown(tracker).content[0].text);
+
+    expect(body.unpriced_by_model).toEqual({ 'claude-foo-9-9': { calls: 1, tokens: 1_200 } });
+  });
+
+  it('reports family-priced calls in estimated_by_model', () => {
+    const tracker = new CostTracker();
+    handleReportTokens(tracker, {
+      input_tokens: 1_000,
+      output_tokens: 200,
+      model: 'claude-opus-5-9',
+    });
+
+    const body = JSON.parse(handleGetCostBreakdown(tracker).content[0].text);
+
+    expect(body.estimated_by_model).toEqual({
+      'claude-opus-5-9': {
+        calls: 1,
+        tokens: 1_200,
+        estimatedFrom: estimatedFromOf('claude-opus-5-9'),
+      },
+    });
+    expect(body.unpriced_by_model).toEqual({});
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -314,6 +353,8 @@ describe('handleGetPromptCacheHealth()', () => {
       costByWorkflowRunId: {},
       costByDayUsd: {},
       subagentCostByDayUsd: {},
+      unpricedByModel: {},
+      estimatedByModel: {},
       subagentByAgentType: {},
       highContextCostUsd: 0,
       apiDurationMs: null,
