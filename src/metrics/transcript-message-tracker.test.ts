@@ -242,7 +242,7 @@ describe('TranscriptMessageTracker', () => {
       return tracker.getMetrics().userCorrections;
     }
 
-    it.each(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'Task', 'Agent'])(
+    it.each(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Task', 'Agent'])(
       'reads a turn that called %s as acting',
       (tool) => {
         expect(corrections([...EARLIER_EXCHANGE, toolUseLine(tool), userLine(ACTED_ONLY)])).toBe(1);
@@ -288,6 +288,24 @@ describe('TranscriptMessageTracker', () => {
       '',
     ])('reads a turn whose Bash call (%j) may write as acting', (command) => {
       expect(corrections([...EARLIER_EXCHANGE, bashLine(command), userLine(ACTED_ONLY)])).toBe(1);
+    });
+
+    it('reads a PowerShell call as acting even when it only reads, since its syntax is not parsed', () => {
+      const powershell = assistantLine({
+        message: {
+          role: 'assistant',
+          model: 'claude-opus-4-6',
+          content: [
+            {
+              type: 'tool_use',
+              id: 't-ps',
+              name: 'PowerShell',
+              input: { command: 'ls', description: 'List files' },
+            },
+          ],
+        },
+      });
+      expect(corrections([...EARLIER_EXCHANGE, powershell, userLine(ACTED_ONLY)])).toBe(1);
     });
 
     it('reads design talk after a read-only Bash call and a question as talking', () => {

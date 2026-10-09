@@ -315,6 +315,8 @@ function isCorrectionMessage(rawText: string, state: AssistantTurnState): boolea
  * - Bash runs a command, which `isMutatingToolUse` reads as talking when every command in it only
  *   reads (`isReadOnlyCommand`). A command is output the user corrects too ("the command you ran
  *   won't work in CI"), so any other, such as `npm test` or `cd src && ls`, acts.
+ * - PowerShell, Claude Code's shell on native Windows, runs a command as Bash does. It always acts:
+ *   `isReadOnlyCommand` reads POSIX shell, not PowerShell syntax.
  * - An MCP tool acts when its name opens on a verb that changes something (`isWritingMcpTool`):
  *   `write_file`, `create_pull_request`, `close_issue`, `deploy_project`, `click`. Tool names usually
  *   lead with the verb, and a reading one can hold a write word later (`get_commit`), so only the
@@ -332,6 +334,7 @@ const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'NotebookEdit',
   'Task',
   'Agent',
+  'PowerShell',
 ]);
 
 /** Commands that only read, apart from the arguments in `WRITING_ARGS`. */
