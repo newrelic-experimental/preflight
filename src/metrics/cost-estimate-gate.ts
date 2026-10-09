@@ -15,7 +15,12 @@ export interface CostEstimateParams {
  * saved as that session's `estimatedCostUsd`, so an estimate for any other
  * session's call (drained by `--local`, or by a provisional `--stdio` engine
  * before its session id resolves) would be persisted under the wrong session.
- * See #723.
+ *
+ * Ownership is decided by identity against the live session id. A provisional
+ * engine's own calls drained before adopt carry the real id while the process
+ * id is still `pending-`, so they get no estimate and are never replayed; the
+ * undercount is bounded to calls before the first token report.
+ * See #877.
  */
 export function shouldApplyCostEstimate(params: CostEstimateParams): boolean {
   if (params.estimateBytes <= 0) return false;

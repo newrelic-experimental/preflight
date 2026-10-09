@@ -2237,7 +2237,7 @@ async function main(): Promise<void> {
         // Only fires when no exact token report has been received yet for this session,
         // to avoid double-counting with explicit nr_observe_report_tokens calls — and
         // only for this process's own session, since costTracker's total is persisted
-        // as that session's cost (see shouldApplyCostEstimate, #723).
+        // as that session's cost (see shouldApplyCostEstimate, #877).
         const estimateBytes = (record.inputSizeBytes ?? 0) + (record.outputSizeBytes ?? 0);
         if (
           shouldApplyCostEstimate({
