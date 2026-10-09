@@ -359,9 +359,14 @@ export function attributeSessionCosts(
   const distribution: OutcomeDistribution = {};
   let totalCost = 0;
 
+  let counted = 0;
   for (const s of sessions) {
-    const outcome = classifySessionOutcome(s);
     const cost = s.estimatedCostUsd ?? 0;
+    // classifySessionOutcome falls through to 'feature' for a session with no
+    // tool calls, so idle sessions would otherwise inflate the feature bucket.
+    if (s.toolCallCount === 0 && cost === 0) continue;
+    counted++;
+    const outcome = classifySessionOutcome(s);
     totalCost += cost;
     if (!distribution[outcome]) {
       distribution[outcome] = { count: 0, totalCost: 0, avgCost: 0 };
@@ -390,7 +395,7 @@ export function attributeSessionCosts(
     costPerFailedAttempt: avgCostFor('failed_attempt'),
     wasteRatio,
     totalCost: round(totalCost, 4),
-    totalTasks: sessions.length,
+    totalTasks: counted,
   };
 }
 
