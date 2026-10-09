@@ -11,6 +11,7 @@ import {
   findReleaseEdits,
   findVersionMismatches,
   isMainModule,
+  parseCommand,
   readPendingChangesets,
   releaseEntry,
   releaseHeadings,
@@ -422,6 +423,34 @@ describe('the files in this repo', () => {
     // Release throws on a changeset it can't read, so catch one in the PR that adds it.
     for (const [name, text] of readPendingChangesets(resolve(repoRoot, '.changeset'))) {
       expect(() => changesetReleases(text, name)).not.toThrow();
+    }
+  });
+});
+
+describe('parseCommand', () => {
+  it('accepts the forms package.json and the workflows use', () => {
+    expect(parseCommand(['sync'])).toEqual({ name: 'sync' });
+    expect(parseCommand(['check'])).toEqual({ name: 'check' });
+    expect(parseCommand(['check', '--base', 'origin/main'])).toEqual({
+      name: 'check-base',
+      base: 'origin/main',
+    });
+    expect(parseCommand(['notes'])).toEqual({ name: 'notes' });
+  });
+
+  it('rejects anything else instead of running a different check', () => {
+    for (const argv of [
+      [],
+      ['check', '--base=origin/main'],
+      ['check', '--base'],
+      ['check', '--base', ''],
+      ['check', 'origin/main'],
+      ['check', '--base', 'origin/main', 'extra'],
+      ['sync', 'extra'],
+      ['notes', '1.64.0'],
+      ['release'],
+    ]) {
+      expect(parseCommand(argv)).toBeUndefined();
     }
   });
 });

@@ -337,13 +337,32 @@ function report(problems: readonly string[], fix: string): number {
   return 1;
 }
 
+export type Command =
+  | { readonly name: 'sync' }
+  | { readonly name: 'check' }
+  | { readonly name: 'check-base'; readonly base: string }
+  | { readonly name: 'notes' };
+
+/**
+ * The command `argv` asks for, or undefined for anything but the exact forms in the usage line,
+ * so a typo such as `check --base=origin/main` can't quietly run a different check.
+ */
+export function parseCommand(argv: readonly string[]): Command | undefined {
+  const [command, ...args] = argv;
+  if (args.length === 0 && (command === 'sync' || command === 'check' || command === 'notes')) {
+    return { name: command };
+  }
+  if (command === 'check' && args.length === 2 && args[0] === '--base' && args[1] !== '') {
+    return { name: 'check-base', base: args[1] };
+  }
+  return undefined;
+}
+
 function main(argv: readonly string[]): number {
   const readWorkingTree: ReadFile = (path) => readFileSync(resolve(process.cwd(), path), 'utf8');
-  // Anything other than these exact forms is a usage error, so a typo such as
-  // `check --base=origin/main` can't quietly run a different check.
-  const [command, ...args] = argv;
+  const command = parseCommand(argv);
 
-  if (command === 'sync' && args.length === 0) {
+  if (command?.name === 'sync') {
     const date = new Date().toISOString().slice(0, 10);
     for (const [path, contents] of syncedFiles(readWorkingTree, date)) {
       writeFileSync(resolve(process.cwd(), path), contents);
@@ -355,7 +374,7 @@ function main(argv: readonly string[]): number {
     );
   }
 
-  if (command === 'check' && args.length === 0) {
+  if (command?.name === 'check') {
     const changesets = readPendingChangesets(resolve(process.cwd(), '.changeset'));
     return report(
       findReleaseBlockers(readWorkingTree, changesets),
@@ -364,8 +383,8 @@ function main(argv: readonly string[]): number {
     );
   }
 
-  if (command === 'check' && args.length === 2 && args[0] === '--base') {
-    const base = args[1];
+  if (command?.name === 'check-base') {
+    const { base } = command;
     const forkPoint = git(['merge-base', base, 'HEAD']).trim();
     const readForkPoint: ReadFile = (path) => git(['show', `${forkPoint}:${path}`]);
     return report(
@@ -377,7 +396,7 @@ function main(argv: readonly string[]): number {
     );
   }
 
-  if (command === 'notes' && args.length === 0) {
+  if (command?.name === 'notes') {
     const { version } = readPackageJson(readWorkingTree);
     const entry = releaseEntry(readWorkingTree('CHANGELOG.md'), version);
     if (entry === undefined) {
