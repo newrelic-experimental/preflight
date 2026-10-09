@@ -88,14 +88,20 @@ jobs:
           git commit -m "Chore: Release $VERSION"
           # A new head commit drops the CI results a close and reopen gave the PR. When the
           # release commit makes the same change as the one already on the branch, as it does
-          # after a docs-only merge to main on the same UTC day (the entry's date is part of the
-          # change), leave the branch where it is. --verbatim keeps whitespace in the patch-id,
-          # so an entry fixed only by re-indenting a list item still gets pushed.
+          # after any same-day merge to main that leaves the release alone, such as docs, tests,
+          # or a src/ change with an empty changeset (the entry's date is part of the change),
+          # leave the branch where it is. That merge's own PR already ran CI on what it added.
+          # --verbatim keeps whitespace in the patch-id, so an entry fixed only by re-indenting a
+          # list item still gets pushed.
           PUSH=1
           if git fetch --quiet origin "$BRANCH" 2>/dev/null; then
             NEW_ID="$(git show HEAD | git patch-id --verbatim | cut -d' ' -f1)"
             OLD_ID="$(git show FETCH_HEAD | git patch-id --verbatim | cut -d' ' -f1)"
-            if [ -n "$NEW_ID" ] && [ "$NEW_ID" = "$OLD_ID" ]; then PUSH=0; fi
+            if [ -z "$NEW_ID" ]; then
+              echo "::warning::git patch-id --verbatim printed nothing, so the release PR is pushed every run"
+            elif [ "$NEW_ID" = "$OLD_ID" ]; then
+              PUSH=0
+            fi
           fi
           if [ "$PUSH" = 1 ]; then
             git push --force origin "$BRANCH"
