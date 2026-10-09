@@ -6,7 +6,7 @@ import {
   COMMIT_RECONCILE_WINDOW_MS,
   type WorktreeLiveState,
 } from './git-workspace-report.js';
-import { classifyGitCommand } from './git-event-classifier.js';
+import { classifyGitCommand, classifyGitSegments } from './git-event-classifier.js';
 import { GIT_LOG_SESSION_ID, type GitActivityRecord } from './git-activity-recorder.js';
 import type { WorktreeIdentity } from './git-workspace-identity.js';
 import type { ToolCallRecord } from '../storage/types.js';
@@ -55,6 +55,27 @@ function gitActivity(
     workspaceKey,
     sessionId: record.sessionId ?? 'unknown',
   };
+}
+
+/** One 'git' GitActivityRecord per segment of a chained command, built the
+ *  way GitActivityRecorder builds them. */
+function chainActivities(
+  command: string,
+  workspaceKey: string,
+  overrides: Partial<ToolCallRecord> = {},
+): GitActivityRecord[] {
+  const record = makeToolCallRecord({ command, ...overrides });
+  return classifyGitSegments(command, record, () => null).map(({ event }) => {
+    recordCounter++;
+    return {
+      kind: 'git',
+      gitEvent: event,
+      timestamp: record.timestamp,
+      recordId: `r-${recordCounter}`,
+      workspaceKey,
+      sessionId: record.sessionId ?? 'unknown',
+    };
+  });
 }
 
 /** Builds a hydrated-from-`git log` commit record, the shape
@@ -947,5 +968,125 @@ describe('computeWorkspaceMetrics — git-log hydrated commits', () => {
 
     expect(metrics.commitCount).toBe(1);
     expect(metrics.sessionIds).toEqual(['real-session']);
+  });
+});
+
+// Same scenarios as GitEfficiencyTracker's, so the session and weekly views agree.
+describe('computeWorkspaceMetrics — chained and failed git commands', () => {
+  const identity = makeIdentity();
+  const CONFLICT = 'CONFLICT (content): Merge conflict in a.ts';
+  const REJECTED = ' ! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs';
+
+  it('does not let a failed commit resolve a pending conflict', () => {
+    const t = Date.now();
+    const records = [
+      gitActivity('git merge main', 'ws-a', { timestamp: t, success: false, error: CONFLICT }),
+      gitActivity('git commit -m "merge"', 'ws-a', {
+        timestamp: t + 1_000,
+        success: false,
+        error: 'error: Committing is not possible because you have unmerged files.',
+      }),
+    ];
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['pending']);
+  });
+
+  it('counts a commit whose chained push was rejected, and lets it resolve a conflict', () => {
+    const t = Date.now();
+    const records = [
+      gitActivity('git merge main', 'ws-a', { timestamp: t, success: false, error: CONFLICT }),
+      ...chainActivities('git commit -m merge && git push', 'ws-a', {
+        timestamp: t + 10_000,
+        success: false,
+        error: REJECTED,
+      }),
+    ];
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.commitCount).toBe(1);
+    expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['resolved']);
+  });
+
+  it('does not record a push that a conflicting pull kept from running', () => {
+    const records = chainActivities('git pull && git push', 'ws-a', {
+      success: false,
+      error: CONFLICT,
+    });
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.pushCount).toBe(0);
+    expect(metrics.mergeConflicts).toBe(1);
+  });
+
+  it.each(['git pull; git push', 'git pull\ngit push'])(
+    'counts no push and one rejection when `%s` conflicts and the push is rejected',
+    (command) => {
+      const records = chainActivities(command, 'ws-a', {
+        success: false,
+        error: `${CONFLICT}\n${REJECTED}`,
+      });
+      const metrics = computeWorkspaceMetrics(records, identity, null);
+      expect(metrics.pushCount).toBe(0);
+      expect(metrics.riskIndicators.pushRejections).toBe(1);
+      expect(metrics.mergeConflicts).toBe(1);
+    },
+  );
+
+  it('does not record a push or force push that failed', () => {
+    const records = [
+      ...chainActivities('git pull; git push', 'ws-a', { success: false, error: CONFLICT }),
+      ...['git push --force', 'git push --force-with-lease'].map((command) =>
+        gitActivity(command, 'ws-a', {
+          success: false,
+          error: "fatal: Authentication failed for 'https://github.com/acme/widgets.git/'",
+        }),
+      ),
+    ];
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.pushCount).toBe(0);
+    expect(metrics.lastPushTimestamp).toBeNull();
+    expect(metrics.velocityMetrics.buildBeforePush).toBeNull();
+  });
+
+  it('counts neither the commit nor the push when a non-git step ahead of them failed', () => {
+    const records = chainActivities(
+      'npm test && git add -A && git commit -m x && git push',
+      'ws-a',
+      {
+        success: false,
+        error: 'FAIL src/a.test.ts\nTests: 1 failed, 4 passed',
+      },
+    );
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.commitCount).toBe(0);
+    expect(metrics.pushCount).toBe(0);
+  });
+
+  it.each([
+    ['git commit -m x || git commit --no-verify -m x', 'husky - pre-commit script failed (code 1)'],
+    ['git diff --quiet || git commit -am wip && git push', 'fatal: Authentication failed'],
+    ['git pull && git commit -m merge && git checkout other', CONFLICT],
+    [
+      'git commit -m x && git log --oneline | head -1',
+      'error: gpg failed to sign the data\nfatal: failed to write commit object',
+    ],
+  ])('counts no commit for `%s`', (command, error) => {
+    const t = Date.now();
+    const records = [
+      gitActivity('git merge main', 'ws-a', { timestamp: t, success: false, error: CONFLICT }),
+      ...chainActivities(command, 'ws-a', { timestamp: t + 1_000, success: false, error }),
+    ];
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.commitCount).toBe(0);
+    expect(metrics.conflictHistory.map((c) => c.resolution)).not.toContain('resolved');
+  });
+
+  it('resolves a conflict with a commit whose message mentions --amendment', () => {
+    const t = Date.now();
+    const records = [
+      gitActivity('git merge main', 'ws-a', { timestamp: t, success: false, error: CONFLICT }),
+      gitActivity('git commit -m "document --amendment flag"', 'ws-a', { timestamp: t + 1_000 }),
+    ];
+    const metrics = computeWorkspaceMetrics(records, identity, null);
+    expect(metrics.commitCount).toBe(1);
+    expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['resolved']);
   });
 });
