@@ -271,6 +271,20 @@ export function hasAttributableActivity(s: AttributableActivity): boolean {
   );
 }
 
+/**
+ * Did this session record anything worth a file on disk? Wider than
+ * `hasAttributableActivity`: a chat-only session has no tool calls but real
+ * cost and tokens, and must still be kept. A session with none of these is an
+ * idle MCP process (a window that was opened and never used).
+ */
+function hasRecordedUsage(s: FullSessionSummary): boolean {
+  return (
+    hasAttributableActivity(s) ||
+    (s.estimatedCostUsd ?? 0) > 0 ||
+    (s.tokensInput ?? 0) + (s.tokensOutput ?? 0) + (s.tokensThinking ?? 0) > 0
+  );
+}
+
 export interface SessionFileInfo {
   readonly filename: string;
   readonly sessionId: string;
@@ -626,6 +640,17 @@ export class SessionStore {
     // while leaving the OLD file on disk untouched — the session then
     // appeared twice in history with overlapping, double-counted totals.
     const existingWithPath = this.loadSessionWithPath(summary.sessionId);
+
+    // Every MCP server process checkpoints every 30s, including windows that
+    // never saw a tool call or a token. Writing those first-time files filled
+    // history with model-less zero-activity rows that dragged down every
+    // per-session average. An existing file is handled by the guard below.
+    if (!existingWithPath && !hasRecordedUsage(summary)) {
+      logger.debug('Skipping first write of a session with no recorded usage', {
+        sessionId: summary.sessionId,
+      });
+      return;
+    }
 
     // A second process saving under the same sessionId (e.g. two MCP
     // servers both resumed/forked against one real session ID) would
