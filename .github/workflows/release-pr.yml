@@ -96,7 +96,7 @@ jobs:
           {
             echo "Merging this PR releases \`@newrelic/preflight\` $VERSION. It doesn't publish anything by itself: once it merges, run the [Release workflow]($RELEASE_WORKFLOW_URL) on \`main\` to tag v$VERSION, create the GitHub release, and publish to npm, the Homebrew tap, and the MCP Registry."
             echo
-            echo "This PR is rebuilt every time a change lands on \`main\`, so anything pushed to its branch is lost. To change an entry, edit its changeset on \`main\`. CI doesn't run here by itself: close and reopen the PR right before merging, which runs it on this PR merged into the current \`main\`. Each push to \`main\` replaces this PR's commit and drops its checks, so reopen again if they're gone. \`main\` doesn't require them, so nothing else will stop the merge."
+            echo "This PR is rebuilt every time a change lands on \`main\`, so anything pushed to its branch is lost. To change an entry, edit its changeset on \`main\`. CI doesn't run here by itself: close and reopen the PR right before merging, which runs it on this PR merged into the current \`main\`. Each push to \`main\` replaces this PR's commit and drops its checks and approval, so reopen again if they're gone, and approve only once CI passes."
             echo
             echo "## CHANGELOG entry"
             echo
