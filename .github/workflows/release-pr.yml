@@ -32,24 +32,29 @@ jobs:
     # release PR on top of that branch's unmerged commits, so it does nothing.
     if: github.repository == 'newrelic-experimental/preflight' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # The token can push and open PRs, so only the two steps that need it get it. The
+    # dependency code this job runs (npm ci, changeset version) sees no token: the checkout
+    # doesn't leave one in .git/config, and install scripts don't run at all.
     env:
       HUSKY: 0 # disable git hooks in CI
       BRANCH: changeset-release/main
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - uses: actions/checkout@v5
         with:
           # changeset version looks up the commit that added each changeset.
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@v5
         with:
           node-version: 24.x
           cache: npm
 
+      # Nothing here builds, and changeset, tsx, and Prettier all run without their install
+      # scripts.
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       # `changeset version` fails when there are no changesets, and changes nothing but the
       # .changeset/ directory when every pending one is empty (`npx changeset --empty`), so in
@@ -64,10 +69,14 @@ jobs:
           after="$(node -p "require('./package.json').version")"
           if [ "$after" != "$before" ]; then
             echo "version=$after" >> "$GITHUB_OUTPUT"
+            # Read by the next step, which holds the token, so tsx runs here instead.
+            npx tsx scripts/release-files.ts notes > "$RUNNER_TEMP/release-notes.md"
           fi
 
       - name: Close the release PR
         if: steps.version.outputs.version == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR="$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
           if [ -n "$PR" ]; then
@@ -78,10 +87,13 @@ jobs:
       - name: Open or update the release PR
         if: steps.version.outputs.version != ''
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
           RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/release.yml
           RELEASE_PR_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/release-pr.yml
         run: |
+          # The checkout saved no credentials; this lets git push with GH_TOKEN.
+          gh auth setup-git
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -C "$BRANCH"
@@ -101,7 +113,7 @@ jobs:
             echo
             echo "## CHANGELOG entry"
             echo
-            npx tsx scripts/release-files.ts notes
+            cat "$RUNNER_TEMP/release-notes.md"
           } > "$BODY"
 
           PR="$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')"

@@ -436,9 +436,9 @@ like any others, so run `npm run format` before committing.
    drops its checks and its approval. When that happens, reopen it again and approve only once
    CI passes: `main` requires the approval but not CI, so the approval is the only gate. Before
    merging, also check that no Release PR run is queued or in progress in the Actions tab,
-   since until it pushes, the PR still shows the old commit's green checks. If a push lands while the
-   PR is closed, the workflow opens a new release PR instead; leave the old one closed, and
-   close and reopen the new one before merging it.
+   since until it pushes, the PR still shows the old commit's green checks. If a push lands
+   while the PR is closed, the workflow opens a new release PR instead; leave the old one
+   closed, and close and reopen the new one before merging it.
 3. Right after the release PR merges, run the Release workflow
    ([`release.yml`](./.github/workflows/release.yml)) on `main` from the Actions tab. Run from
    any other branch, it skips its job and publishes nothing. It checks that every version file
