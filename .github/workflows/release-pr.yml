@@ -72,7 +72,6 @@ jobs:
           if [ "$after" != "$before" ]; then
             echo "version=$after" >> "$GITHUB_OUTPUT"
             mkdir -p "$RUNNER_TEMP/release"
-            npx tsx scripts/release-files.ts notes > "$RUNNER_TEMP/release/notes.md"
             git add -A
             git diff --cached --binary > "$RUNNER_TEMP/release/release.patch"
           fi
@@ -140,9 +139,11 @@ jobs:
             exit 1
           fi
 
-          # And each JSON file must be exactly its HEAD copy with the version fields that
+          # And each JSON file must equal, as JSON, its HEAD copy with the version fields that
           # scripts/release-files.ts owns set to the version the version job reported, so the
-          # version job can't, say, add an install script to package.json either.
+          # version job can't, say, add an install script to package.json either. These paths and
+          # filters mirror VERSION_FILES in that script (this job installs nothing, so it can't
+          # run it), and change with it.
           for spec in \
             'package.json|.version = $v' \
             'package-lock.json|.version = $v | .packages[""].version = $v' \
@@ -151,12 +152,27 @@ jobs:
             'kiro-power/plugin.json|.version = $v'; do
             file="${spec%%|*}"
             filter="${spec#*|}"
+            # Assigned on their own lines so that `bash -e` stops when jq can't parse a file.
             expected="$(git show "HEAD:$file" | jq -S --arg v "$VERSION" "$filter")"
-            if [ -z "$expected" ] || [ "$expected" != "$(git show ":$file" | jq -S .)" ]; then
+            actual="$(git show ":$file" | jq -S .)"
+            if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
               echo "::error::$file isn't its previous contents with only the version set to $VERSION"
               exit 1
             fi
           done
+
+          # The PR body shows the entry from the CHANGELOG.md this commits, so the two can't
+          # differ: the body of its `## <version> - <date>` section, without leading blank lines.
+          NOTES="$RUNNER_TEMP/notes.md"
+          git show :CHANGELOG.md | awk -v v="$VERSION" '
+            /^## / { if (found) exit; if ($2 == v) { found = 1; next } }
+            found && !started && /^$/ { next }
+            found { started = 1; print }
+          ' > "$NOTES"
+          if [ ! -s "$NOTES" ]; then
+            echo "::error::CHANGELOG.md has no entry for $VERSION"
+            exit 1
+          fi
 
           # The checkout saved no credentials; this lets git push with GH_TOKEN.
           gh auth setup-git
@@ -178,7 +194,7 @@ jobs:
             echo
             echo "## CHANGELOG entry"
             echo
-            cat "$RUNNER_TEMP/release/notes.md"
+            cat "$NOTES"
           } > "$BODY"
 
           PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --limit 200 --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"

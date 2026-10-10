@@ -13,7 +13,6 @@ import {
   isMainModule,
   parseCommand,
   readPendingChangesets,
-  releaseEntry,
   releaseHeadings,
   releasedEntries,
   setVersion,
@@ -127,24 +126,6 @@ describe('dateNewEntries', () => {
     expect(dated).toBe(
       makeChangelog(NEW_ENTRY.replace('## 1.64.0', '## 1.64.0 - 2026-10-09'), RELEASED_ENTRY),
     );
-  });
-});
-
-describe('releaseEntry', () => {
-  it("returns the version's entry without its heading", () => {
-    expect(releaseEntry(makeChangelog(NEW_ENTRY, RELEASED_ENTRY), '1.64.0')).toBe(
-      '### Minor Changes\n\n- A new feature.\n\n  Second paragraph.',
-    );
-  });
-
-  it('runs to the end of the file for the oldest entry', () => {
-    expect(releaseEntry(makeChangelog(NEW_ENTRY, RELEASED_ENTRY), '1.63.1')).toBe(
-      '### Fixed\n\n- An older fix.',
-    );
-  });
-
-  it('returns undefined for a version with no entry', () => {
-    expect(releaseEntry(makeChangelog(RELEASED_ENTRY), '9.9.9')).toBeUndefined();
   });
 });
 
@@ -435,7 +416,6 @@ describe('parseCommand', () => {
       name: 'check-base',
       base: 'origin/main',
     });
-    expect(parseCommand(['notes'])).toEqual({ name: 'notes' });
   });
 
   it('rejects anything else instead of running a different check', () => {
@@ -447,7 +427,7 @@ describe('parseCommand', () => {
       ['check', 'origin/main'],
       ['check', '--base', 'origin/main', 'extra'],
       ['sync', 'extra'],
-      ['notes', '1.64.0'],
+      ['notes'],
       ['release'],
     ]) {
       expect(parseCommand(argv)).toBeUndefined();

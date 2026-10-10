@@ -17,9 +17,6 @@
  *     something. With --base it fails if HEAD has changed the version or an already-released
  *     CHANGELOG entry since its merge base with <ref>; CI runs that on every PR except the
  *     release PR.
- *   tsx scripts/release-files.ts notes
- *     Prints the CHANGELOG entry for package.json's version, which becomes the release PR's
- *     description.
  */
 import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -106,15 +103,6 @@ export function dateNewEntries(changelog: string, date: string): string {
   return changelog.replace(RELEASE_HEADING, (heading, version: string, existing?: string) =>
     existing ? heading : `## ${version} - ${date}`,
   );
-}
-
-/** The body of `version`'s entry: everything between its heading and the next `## ` heading. */
-export function releaseEntry(changelog: string, version: string): string | undefined {
-  const heading = [...changelog.matchAll(RELEASE_HEADING)].find((m) => m[1] === version);
-  if (heading?.index === undefined) return undefined;
-  const start = heading.index + heading[0].length;
-  const next = changelog.slice(start).search(/^## /m);
-  return changelog.slice(start, next === -1 ? undefined : start + next).trim();
 }
 
 /**
@@ -340,8 +328,7 @@ function report(problems: readonly string[], fix: string): number {
 export type Command =
   | { readonly name: 'sync' }
   | { readonly name: 'check' }
-  | { readonly name: 'check-base'; readonly base: string }
-  | { readonly name: 'notes' };
+  | { readonly name: 'check-base'; readonly base: string };
 
 /**
  * The command `argv` asks for, or undefined for anything but the exact forms in the usage line,
@@ -349,7 +336,7 @@ export type Command =
  */
 export function parseCommand(argv: readonly string[]): Command | undefined {
   const [command, ...args] = argv;
-  if (args.length === 0 && (command === 'sync' || command === 'check' || command === 'notes')) {
+  if (args.length === 0 && (command === 'sync' || command === 'check')) {
     return { name: command };
   }
   if (command === 'check' && args.length === 2 && args[0] === '--base' && args[1] !== '') {
@@ -396,18 +383,7 @@ function main(argv: readonly string[]): number {
     );
   }
 
-  if (command?.name === 'notes') {
-    const { version } = readPackageJson(readWorkingTree);
-    const entry = releaseEntry(readWorkingTree('CHANGELOG.md'), version);
-    if (entry === undefined) {
-      console.error(`CHANGELOG.md has no entry for ${version}.`);
-      return 1;
-    }
-    console.log(entry);
-    return 0;
-  }
-
-  console.error('Usage: tsx scripts/release-files.ts <sync | check [--base <ref>] | notes>');
+  console.error('Usage: tsx scripts/release-files.ts <sync | check [--base <ref>]>');
   return 2;
 }
 
