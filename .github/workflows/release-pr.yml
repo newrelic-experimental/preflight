@@ -86,15 +86,15 @@ jobs:
           git switch -C "$BRANCH"
           git add -A
           git commit -m "Chore: Release $VERSION"
-          # A new head commit drops the CI results a close and reopen gave the PR. When the
-          # release commit makes the same change as the one already on the branch, leave the
-          # branch where it is; the merge that triggered this run already had its own PR's CI.
-          # That's usually a same-day docs, tests, or CI merge. Anything that touches what the
-          # release commit holds changes it: a new or edited changeset (each one, empty ones
-          # included, is deleted by the commit), a script that shapes the entry, an edit next to
-          # where the entry goes, or a new day, since the entry is dated. --verbatim keeps
-          # whitespace in the patch-id, so an entry fixed only by re-indenting a list item still
-          # gets pushed.
+          # A new head commit drops the CI results a close and reopen gave the PR, so when the
+          # release commit makes the same change as the one already on the branch (usually
+          # after a same-day docs, tests, or CI merge), leave the branch where it is. Anything
+          # that alters the release commit's output pushes: a new or edited changeset (the
+          # commit deletes each one, empty ones included), an edit next to where the entry goes,
+          # or a new day, since the entry is dated. --verbatim keeps whitespace in the patch-id,
+          # so an entry fixed only by re-indenting a list item still gets pushed. Either way,
+          # CONTRIBUTING.md has maintainers reopen right before merging, which runs CI on the PR
+          # merged into the current main.
           PUSH=1
           if git fetch --quiet origin "$BRANCH" 2>/dev/null; then
             NEW_ID="$(git show HEAD | git patch-id --verbatim | cut -d' ' -f1)"
@@ -115,7 +115,7 @@ jobs:
           {
             echo "Merging this PR releases \`@newrelic/preflight\` $VERSION. It doesn't publish anything by itself: once it merges, run the [Release workflow]($RELEASE_WORKFLOW_URL) on \`main\` to tag v$VERSION, create the GitHub release, and publish to npm, the Homebrew tap, and the MCP Registry."
             echo
-            echo "This PR is rebuilt every time a change lands on \`main\`, so anything pushed to its branch is lost. To change an entry, edit its changeset on \`main\`. CI doesn't run here by itself; close and reopen the PR to run it."
+            echo "This PR is rebuilt every time a change lands on \`main\`, so anything pushed to its branch is lost. To change an entry, edit its changeset on \`main\`. CI doesn't run here by itself: close and reopen the PR right before merging, which runs it on this PR merged into the current \`main\`."
             echo
             echo "## CHANGELOG entry"
             echo
