@@ -32,9 +32,12 @@ jobs:
     # release PR on top of that branch's unmerged commits, so it does nothing.
     if: github.repository == 'newrelic-experimental/preflight' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    # The token can push and open PRs, so only the two steps that need it get it. The
-    # dependency code this job runs (npm ci, changeset version) sees no token: the checkout
-    # doesn't leave one in .git/config, and install scripts don't run at all.
+    # The token can push and open PRs, so only the two steps that need it get it. While the
+    # dependency code this job runs (changeset version, tsx) is running, the token is in
+    # neither the environment nor .git/config, and install scripts never run. This isn't full
+    # isolation: steps share the runner, so code that ran earlier could plant something (a git
+    # hook, a PATH entry) for the token steps to run. Moving the push to a separate job that
+    # runs no node_modules code would close that.
     env:
       HUSKY: 0 # disable git hooks in CI
       BRANCH: changeset-release/main

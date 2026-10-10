@@ -135,8 +135,10 @@ jobs:
           node-version: 24.x
           cache: npm
 
+      # Installed the way release-pr.yml installs them, so a tool that starts needing its
+      # install script fails here, on the PR, instead of on the next push to main.
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       # Fails when the PR changes a file that ships (changedFilePatterns in
       # .changeset/config.json) and adds no changeset.
