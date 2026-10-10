@@ -86,30 +86,10 @@ jobs:
           git switch -C "$BRANCH"
           git add -A
           git commit -m "Chore: Release $VERSION"
-          # A new head commit drops the CI results a close and reopen gave the PR, so when the
-          # release commit makes the same change as the one already on the branch (usually
-          # after a same-day docs, tests, or CI merge), leave the branch where it is. Anything
-          # that alters the release commit's output pushes: a new or edited changeset (the
-          # commit deletes each one, empty ones included), an edit next to where the entry goes,
-          # or a new day, since the entry is dated. --verbatim keeps whitespace in the patch-id,
-          # so an entry fixed only by re-indenting a list item still gets pushed. Either way,
-          # CONTRIBUTING.md has maintainers reopen right before merging, which runs CI on the PR
-          # merged into the current main.
-          PUSH=1
-          if git fetch --quiet origin "$BRANCH" 2>/dev/null; then
-            NEW_ID="$(git show HEAD | git patch-id --verbatim | cut -d' ' -f1)"
-            OLD_ID="$(git show FETCH_HEAD | git patch-id --verbatim | cut -d' ' -f1)"
-            if [ -z "$NEW_ID" ]; then
-              echo "::warning::git patch-id --verbatim printed nothing, so the release PR is pushed every run"
-            elif [ "$NEW_ID" = "$OLD_ID" ]; then
-              PUSH=0
-            fi
-          fi
-          if [ "$PUSH" = 1 ]; then
-            git push --force origin "$BRANCH"
-          else
-            echo "$BRANCH already makes this release's changes, so it isn't pushed again"
-          fi
+          # Pushed on every run, so the PR's head always sits on the newest main and carries no
+          # CI results until a maintainer reopens it, which CONTRIBUTING.md has them do right
+          # before merging. Results from an earlier reopen would have run against an older main.
+          git push --force origin "$BRANCH"
 
           BODY="$RUNNER_TEMP/release-pr-body.md"
           {

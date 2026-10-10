@@ -430,7 +430,10 @@ like any others, so run `npm run format` before committing.
    GitHub doesn't let a PR opened by the built-in `GITHUB_TOKEN` start workflows, so CI
    doesn't run on it by itself. A reopen runs CI on the PR merged into the current `main`, so
    it also tests whatever landed after the PR was built, such as a new test that reads the
-   version files. Then merge it.
+   version files. Then merge it. Every push to `main` gives the PR a new head commit with no
+   checks, so if the checks are gone when you go to merge, reopen it again. If a push lands
+   while the PR is closed, the workflow opens a new release PR instead; use that one and leave
+   the old one closed.
 3. Right after the release PR merges, run the Release workflow
    ([`release.yml`](./.github/workflows/release.yml)) on `main` from the Actions tab. Run from
    any other branch, it skips its job and publishes nothing. It checks that every version file
