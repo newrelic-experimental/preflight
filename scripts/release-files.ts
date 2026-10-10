@@ -14,8 +14,8 @@
  *     Fails if any of those files disagrees with package.json, or if the newest CHANGELOG
  *     entry isn't for package.json's version. Without --base, which is how release.yml runs it
  *     before tagging, it also fails while .changeset/ holds a changeset that releases
- *     something. With --base it fails if this branch has changed the version or an already-released
- *     CHANGELOG entry since it branched from <ref>; CI runs that on every PR except the
+ *     something. With --base it fails if HEAD has changed the version or an already-released
+ *     CHANGELOG entry since its merge base with <ref>; CI runs that on every PR except the
  *     release PR.
  *   tsx scripts/release-files.ts notes
  *     Prints the CHANGELOG entry for package.json's version, which becomes the release PR's
@@ -392,7 +392,7 @@ function main(argv: readonly string[]): number {
         ...findReleaseEdits(readForkPoint, readWorkingTree),
         ...findVersionMismatches(readWorkingTree),
       ],
-      `Compared with ${base} at ${forkPoint.slice(0, 7)}, where this branch started.`,
+      `Compared with ${base} at ${forkPoint.slice(0, 7)}, its merge base with HEAD.`,
     );
   }
 

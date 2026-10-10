@@ -101,7 +101,7 @@ jobs:
       - name: Close the release PR
         if: needs.version.outputs.version == ''
         run: |
-          PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
+          PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"
           if [ -n "$PR" ]; then
             gh pr close "$PR" --repo "$GITHUB_REPOSITORY" --delete-branch \
               --comment "main has no changesets left that need a release, so this PR has nothing to release."
@@ -140,6 +140,26 @@ jobs:
             exit 1
           fi
 
+          # And the JSON files change only in their version fields, to the version the version
+          # job reported, so it can't add, say, an install script to package.json either.
+          if [ "$(git show :package.json | jq -r .version)" != "$VERSION" ]; then
+            echo "::error::package.json's new version isn't the version job's $VERSION"
+            exit 1
+          fi
+          for spec in \
+            'package.json|del(.version)' \
+            'package-lock.json|del(.version, .packages[""].version)' \
+            'server.json|del(.version, .packages[].version)' \
+            'plugin/.claude-plugin/plugin.json|del(.version)' \
+            'kiro-power/plugin.json|del(.version)'; do
+            file="${spec%%|*}"
+            filter="${spec#*|}"
+            if [ "$(git show "HEAD:$file" | jq -S "$filter")" != "$(git show ":$file" | jq -S "$filter")" ]; then
+              echo "::error::$file changed in more than its version"
+              exit 1
+            fi
+          done
+
           # The checkout saved no credentials; this lets git push with GH_TOKEN.
           gh auth setup-git
           git config user.name "github-actions[bot]"
@@ -163,7 +183,7 @@ jobs:
             cat "$RUNNER_TEMP/release/notes.md"
           } > "$BODY"
 
-          PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
+          PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"
           if [ -z "$PR" ]; then
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "Chore: Release $VERSION" --body-file "$BODY"
           else
