@@ -35,11 +35,12 @@ jobs:
     # The token can push and open PRs, so only the two steps that need it get it. While the
     # dependency code this job runs (changeset version, tsx) is running, the token is in
     # neither the environment nor .git/config, and install scripts never run. This isn't full
-    # isolation: steps share the runner, so code that ran earlier could plant something (a git
-    # hook, a PATH entry) for the token steps to run. Moving the push to a separate job that
-    # runs no node_modules code would close that.
+    # isolation: steps share the runner, so code that ran earlier could plant something for
+    # the token steps to run. The commit and push turn off git hooks, but a planted PATH entry
+    # would still be found. Moving the push to a separate job that runs no node_modules code
+    # would close that.
     env:
-      HUSKY: 0 # disable git hooks in CI
+      HUSKY: 0 # husky only; the commit and push below also turn off plain git hooks
       BRANCH: changeset-release/main
 
     steps:
@@ -101,12 +102,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -C "$BRANCH"
           git add -A
-          git commit -m "Chore: Release $VERSION"
+          git -c core.hooksPath=/dev/null commit -m "Chore: Release $VERSION"
           # Pushed on every run, so the PR's head sits on the main this run checked out and
           # carries no CI results until a maintainer reopens it, which CONTRIBUTING.md has them
           # do right before merging. Results from an earlier reopen would have run against an
           # older main.
-          git push --force origin "$BRANCH"
+          git -c core.hooksPath=/dev/null push --force origin "$BRANCH"
 
           BODY="$RUNNER_TEMP/release-pr-body.md"
           {
