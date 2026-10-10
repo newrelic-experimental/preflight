@@ -101,7 +101,7 @@ jobs:
       - name: Close the release PR
         if: needs.version.outputs.version == ''
         run: |
-          PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"
+          PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --limit 200 --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"
           if [ -n "$PR" ]; then
             gh pr close "$PR" --repo "$GITHUB_REPOSITORY" --delete-branch \
               --comment "main has no changesets left that need a release, so this PR has nothing to release."
@@ -140,22 +140,20 @@ jobs:
             exit 1
           fi
 
-          # And the JSON files change only in their version fields, to the version the version
-          # job reported, so it can't add, say, an install script to package.json either.
-          if [ "$(git show :package.json | jq -r .version)" != "$VERSION" ]; then
-            echo "::error::package.json's new version isn't the version job's $VERSION"
-            exit 1
-          fi
+          # And each JSON file must be exactly its HEAD copy with the version fields that
+          # scripts/release-files.ts owns set to the version the version job reported, so the
+          # version job can't, say, add an install script to package.json either.
           for spec in \
-            'package.json|del(.version)' \
-            'package-lock.json|del(.version, .packages[""].version)' \
-            'server.json|del(.version, .packages[].version)' \
-            'plugin/.claude-plugin/plugin.json|del(.version)' \
-            'kiro-power/plugin.json|del(.version)'; do
+            'package.json|.version = $v' \
+            'package-lock.json|.version = $v | .packages[""].version = $v' \
+            'server.json|.version = $v | (.packages[] | select(.registryType == "npm" and .identifier == "@newrelic/preflight") | .version) = $v' \
+            'plugin/.claude-plugin/plugin.json|.version = $v' \
+            'kiro-power/plugin.json|.version = $v'; do
             file="${spec%%|*}"
             filter="${spec#*|}"
-            if [ "$(git show "HEAD:$file" | jq -S "$filter")" != "$(git show ":$file" | jq -S "$filter")" ]; then
-              echo "::error::$file changed in more than its version"
+            expected="$(git show "HEAD:$file" | jq -S --arg v "$VERSION" "$filter")"
+            if [ -z "$expected" ] || [ "$expected" != "$(git show ":$file" | jq -S .)" ]; then
+              echo "::error::$file isn't its previous contents with only the version set to $VERSION"
               exit 1
             fi
           done
@@ -183,7 +181,7 @@ jobs:
             cat "$RUNNER_TEMP/release/notes.md"
           } > "$BODY"
 
-          PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"
+          PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --limit 200 --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"
           if [ -z "$PR" ]; then
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "Chore: Release $VERSION" --body-file "$BODY"
           else
