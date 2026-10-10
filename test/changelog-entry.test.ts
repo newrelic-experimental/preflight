@@ -50,6 +50,12 @@ describe('changelog-entry.awk', () => {
     expect(runAwk('entry', '1.64.0', AFTER.replace('2026-10-10', 'junk'))).toBe('');
   });
 
+  it('prints nothing when the heading is spaced differently from what sync writes', () => {
+    const spaced = AFTER.replace('## 1.64.0 - 2026-10-10', '##  1.64.0   -  2026-10-10 ');
+    expect(runAwk('entry', '1.64.0', spaced)).toBe('');
+    expect(runAwk('rest', '1.64.0', spaced)).toBe(spaced);
+  });
+
   it('gives back the CHANGELOG the release started from once the new entry is removed', () => {
     expect(runAwk('rest', '1.64.0', AFTER)).toBe(BEFORE);
   });

@@ -11,8 +11,10 @@
 #     The file without that section, which is the CHANGELOG.md the release started from.
 /^## / {
   headings++
-  inside = headings == 1 && NF == 4 && $2 == ENVIRON["VERSION"] && $3 == "-" &&
-    $4 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/
+  # The whole line, so extra or trailing spaces don't pass the way field splitting would let
+  # them. RELEASE_HEADING in release-files.ts reads headings the same way.
+  inside = headings == 1 && $4 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ &&
+    $0 == "## " ENVIRON["VERSION"] " - " $4
   if (inside) next
 }
 ENVIRON["PART"] == "rest" { if (!inside) print; next }
