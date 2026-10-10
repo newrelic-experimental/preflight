@@ -86,16 +86,17 @@ jobs:
           git switch -C "$BRANCH"
           git add -A
           git commit -m "Chore: Release $VERSION"
-          # Pushed on every run, so the PR's head always sits on the newest main and carries no
-          # CI results until a maintainer reopens it, which CONTRIBUTING.md has them do right
-          # before merging. Results from an earlier reopen would have run against an older main.
+          # Pushed on every run, so the PR's head sits on the main this run checked out and
+          # carries no CI results until a maintainer reopens it, which CONTRIBUTING.md has them
+          # do right before merging. Results from an earlier reopen would have run against an
+          # older main.
           git push --force origin "$BRANCH"
 
           BODY="$RUNNER_TEMP/release-pr-body.md"
           {
             echo "Merging this PR releases \`@newrelic/preflight\` $VERSION. It doesn't publish anything by itself: once it merges, run the [Release workflow]($RELEASE_WORKFLOW_URL) on \`main\` to tag v$VERSION, create the GitHub release, and publish to npm, the Homebrew tap, and the MCP Registry."
             echo
-            echo "This PR is rebuilt every time a change lands on \`main\`, so anything pushed to its branch is lost. To change an entry, edit its changeset on \`main\`. CI doesn't run here by itself: close and reopen the PR right before merging, which runs it on this PR merged into the current \`main\`."
+            echo "This PR is rebuilt every time a change lands on \`main\`, so anything pushed to its branch is lost. To change an entry, edit its changeset on \`main\`. CI doesn't run here by itself: close and reopen the PR right before merging, which runs it on this PR merged into the current \`main\`. Each push to \`main\` replaces this PR's commit and drops its checks, so reopen again if they're gone. \`main\` doesn't require them, so nothing else will stop the merge."
             echo
             echo "## CHANGELOG entry"
             echo

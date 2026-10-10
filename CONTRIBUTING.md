@@ -425,15 +425,18 @@ like any others, so run `npm run format` before committing.
    version into `package-lock.json`, `server.json`, and both plugin manifests, and dates the
    entry. Each push to `main` rebuilds the PR, so to change an entry, edit its changeset on
    `main` instead of pushing to the PR's branch. The entry's date is the day the PR was last
-   rebuilt. If that's stale, rerun the Release PR workflow from the Actions tab before merging.
+   rebuilt. If that's stale, start the Release PR workflow on `main` from the Actions tab (Run
+   workflow) before merging. Don't use Re-run on an older run: a re-run builds from that
+   run's commit, so the PR would lose any changeset that landed since.
 2. Review the release PR, then close and reopen it right before you merge, and wait for CI.
    GitHub doesn't let a PR opened by the built-in `GITHUB_TOKEN` start workflows, so CI
    doesn't run on it by itself. A reopen runs CI on the PR merged into the current `main`, so
    it also tests whatever landed after the PR was built, such as a new test that reads the
    version files. Then merge it. Every push to `main` gives the PR a new head commit with no
-   checks, so if the checks are gone when you go to merge, reopen it again. If a push lands
-   while the PR is closed, the workflow opens a new release PR instead; use that one and leave
-   the old one closed.
+   checks, so if the checks are gone when you go to merge, reopen it again. `main` doesn't
+   require CI to pass, so nothing else stops a merge without checks. If a push lands while the
+   PR is closed, the workflow opens a new release PR instead; leave the old one closed, and
+   close and reopen the new one before merging it.
 3. Right after the release PR merges, run the Release workflow
    ([`release.yml`](./.github/workflows/release.yml)) on `main` from the Actions tab. Run from
    any other branch, it skips its job and publishes nothing. It checks that every version file
