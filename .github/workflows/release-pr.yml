@@ -80,6 +80,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/release.yml
+          RELEASE_PR_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/release-pr.yml
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -96,7 +97,7 @@ jobs:
           {
             echo "Merging this PR releases \`@newrelic/preflight\` $VERSION. It doesn't publish anything by itself: once it merges, run the [Release workflow]($RELEASE_WORKFLOW_URL) on \`main\` to tag v$VERSION, create the GitHub release, and publish to npm, the Homebrew tap, and the MCP Registry."
             echo
-            echo "This PR is rebuilt every time a change lands on \`main\`, so anything pushed to its branch is lost. To change an entry, edit its changeset on \`main\`. CI doesn't run here by itself: close and reopen the PR right before merging, which runs it on this PR merged into the current \`main\`. Each push to \`main\` replaces this PR's commit and drops its checks and approval, so reopen again if they're gone, and approve only once CI passes."
+            echo "This PR is rebuilt every time a change lands on \`main\`, so anything pushed to its branch is lost. To change an entry, edit its changeset on \`main\`. CI doesn't run here by itself: close and reopen the PR right before merging, which runs it on this PR merged into the current \`main\`. Each push to \`main\` replaces this PR's commit and drops its checks and approval, so reopen again if they're gone, and approve only once CI passes. Before merging, check that no [Release PR run]($RELEASE_PR_WORKFLOW_URL) is queued or in progress, since until it pushes this PR still shows the previous commit's checks."
             echo
             echo "## CHANGELOG entry"
             echo
