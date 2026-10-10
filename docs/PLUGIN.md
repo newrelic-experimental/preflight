@@ -138,8 +138,9 @@ they've drifted — this runs in `.husky/pre-push` and in
 [`release.yml`](../.github/workflows/release.yml) so a stale bundle can't
 ship.
 
-> **Note:** the plugin manifest's `version` field is not auto-synced from
-> `package.json` — bump both together when cutting a release.
+> **Note:** the release PR writes the plugin manifest's `version` along with
+> `package.json`'s (`npm run version-packages`), so don't bump it by hand. See
+> [Changesets](../CONTRIBUTING.md#changesets).
 
 ## Pinning the server version for managed deployments
 

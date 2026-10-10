@@ -1,0 +1,208 @@
+name: Release PR
+
+# Keeps one "Chore: Release x.y.z" PR open whenever main has changesets waiting to be released.
+# `npm run version-packages` turns them into the release: it bumps the version in every file
+# that carries it, adds their CHANGELOG entry, and deletes the changesets it used. Every push to
+# main rebuilds the PR from scratch on changeset-release/main, so anything pushed to that branch
+# is lost; to change an entry, edit its changeset on main.
+#
+# Merging the PR publishes nothing. Run the Release workflow (release.yml) afterwards.
+#
+# The PR is opened with the built-in GITHUB_TOKEN, and GitHub doesn't let events from that token
+# start other workflows, so CI doesn't run on the release PR by itself. Close and reopen the PR
+# to run it.
+#
+# Two jobs, because `changeset version` runs code from node_modules (Changesets, Prettier, tsx)
+# and nothing that code does should reach a token that can push. The version job runs it with a
+# read-only token that isn't saved anywhere, and hands its result to the pull-request job as an
+# artifact. The pull-request job holds the write token on a fresh runner and installs nothing.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to main supersedes a run still building the PR from an older one. Keyed on the
+# ref so that a manual run from another branch, which the jobs' `if` skips, can't cancel one.
+concurrency:
+  group: release-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    # A fork's main has no release to prepare. A manual run from another branch would build the
+    # release PR on top of that branch's unmerged commits, so it does nothing.
+    if: github.repository == 'newrelic-experimental/preflight' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      HUSKY: 0 # disable husky in CI
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # changeset version looks up the commit that added each changeset.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.x
+          cache: npm
+
+      # Nothing here builds, and changeset, tsx, and Prettier all run without their install
+      # scripts.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # `changeset version` fails when there are no changesets, and changes nothing but the
+      # .changeset/ directory when every pending one is empty (`npx changeset --empty`), so in
+      # either case there's no version to release.
+      - name: Version packages
+        id: version
+        run: |
+          before="$(node -p "require('./package.json').version")"
+          if find .changeset -maxdepth 1 -name '*.md' ! -name README.md | grep -q .; then
+            npm run version-packages
+          fi
+          after="$(node -p "require('./package.json').version")"
+          if [ "$after" != "$before" ]; then
+            echo "version=$after" >> "$GITHUB_OUTPUT"
+            mkdir -p "$RUNNER_TEMP/release"
+            git add -A
+            git diff --cached --binary > "$RUNNER_TEMP/release/release.patch"
+          fi
+
+      - name: Upload the release
+        if: steps.version.outputs.version != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 1
+
+  pull-request:
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to push the changeset-release/main branch
+      pull-requests: write # to open, update, or close the release PR
+    env:
+      BRANCH: changeset-release/main
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.version.outputs.version }}
+
+    steps:
+      - name: Close the release PR
+        if: needs.version.outputs.version == ''
+        run: |
+          PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --limit 200 --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"
+          if [ -n "$PR" ]; then
+            gh pr close "$PR" --repo "$GITHUB_REPOSITORY" --delete-branch \
+              --comment "main has no changesets left that need a release, so this PR has nothing to release."
+          fi
+
+      # The same commit the version job checked out.
+      - if: needs.version.outputs.version != ''
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - if: needs.version.outputs.version != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+
+      - name: Open or update the release PR
+        if: needs.version.outputs.version != ''
+        env:
+          RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/release.yml
+          RELEASE_PR_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/release-pr.yml
+        run: |
+          git apply --index "$RUNNER_TEMP/release/release.patch"
+
+          # A release only edits the version files and the CHANGELOG, and deletes the changesets
+          # it used. Anything else came from somewhere it shouldn't have, so stop before pushing.
+          unexpected="$(git diff --cached --name-status | awk -F '\t' '
+            $1 == "M" && $2 ~ /^(package\.json|package-lock\.json|server\.json|plugin\/\.claude-plugin\/plugin\.json|kiro-power\/plugin\.json|CHANGELOG\.md)$/ { next }
+            $1 == "D" && $2 ~ /^\.changeset\/[^\/]+\.md$/ && $2 != ".changeset/README.md" { next }
+            { print }
+          ')"
+          if [ -n "$unexpected" ]; then
+            echo "::error::The version job changed files a release never touches:"
+            echo "$unexpected"
+            exit 1
+          fi
+
+          # And each JSON file must equal, as JSON, its HEAD copy with the version fields that
+          # scripts/release-files.ts owns set to the version the version job reported, so the
+          # version job can't, say, add an install script to package.json either. These paths and
+          # filters mirror VERSION_FILES in that script (this job installs nothing, so it can't
+          # run it), and change with it.
+          for spec in \
+            'package.json|.version = $v' \
+            'package-lock.json|.version = $v | .packages[""].version = $v' \
+            'server.json|.version = $v | (.packages[] | select(.registryType == "npm" and .identifier == "@newrelic/preflight") | .version) = $v' \
+            'plugin/.claude-plugin/plugin.json|.version = $v' \
+            'kiro-power/plugin.json|.version = $v'; do
+            file="${spec%%|*}"
+            filter="${spec#*|}"
+            # Assigned on their own lines so that `bash -e` stops when jq can't parse a file.
+            expected="$(git show "HEAD:$file" | jq -S --arg v "$VERSION" "$filter")"
+            actual="$(git show ":$file" | jq -S .)"
+            if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+              echo "::error::$file isn't its previous contents with only the version set to $VERSION"
+              exit 1
+            fi
+          done
+
+          # CHANGELOG.md may only gain the new entry, and the PR body shows that entry as
+          # committed, so the body and the diff can't tell different stories. The awk script is
+          # this checkout's own, which the allowlist above kept the patch from touching.
+          git show :CHANGELOG.md > "$RUNNER_TEMP/CHANGELOG.staged.md"
+          NOTES="$RUNNER_TEMP/notes.md"
+          PART=entry awk -f scripts/changelog-entry.awk "$RUNNER_TEMP/CHANGELOG.staged.md" > "$NOTES"
+          if [ ! -s "$NOTES" ]; then
+            echo "::error::CHANGELOG.md has no entry for $VERSION"
+            exit 1
+          fi
+          PART=rest awk -f scripts/changelog-entry.awk "$RUNNER_TEMP/CHANGELOG.staged.md" > "$RUNNER_TEMP/CHANGELOG.rest.md"
+          if ! git show HEAD:CHANGELOG.md | cmp -s - "$RUNNER_TEMP/CHANGELOG.rest.md"; then
+            echo "::error::CHANGELOG.md changed outside the new $VERSION entry"
+            exit 1
+          fi
+
+          # The checkout saved no credentials; this lets git push with GH_TOKEN.
+          gh auth setup-git
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          git commit -m "Chore: Release $VERSION"
+          # Pushed on every run, so the PR's head sits on the main this run checked out and
+          # carries no CI results until a maintainer reopens it, which CONTRIBUTING.md has them
+          # do right before merging. Results from an earlier reopen would have run against an
+          # older main.
+          git push --force origin "$BRANCH"
+
+          BODY="$RUNNER_TEMP/release-pr-body.md"
+          {
+            echo "Merging this PR releases \`@newrelic/preflight\` $VERSION. It doesn't publish anything by itself: once it merges, run the [Release workflow]($RELEASE_WORKFLOW_URL) on \`main\` to tag v$VERSION, create the GitHub release, and publish to npm, the Homebrew tap, and the MCP Registry."
+            echo
+            echo "This PR is rebuilt every time a change lands on \`main\`, so anything pushed to its branch is lost. To change an entry, edit its changeset on \`main\`. CI doesn't run here by itself: close and reopen the PR right before merging, which runs it on this PR merged into the current \`main\`. Each push to \`main\` replaces this PR's commit and drops its checks and approval, so reopen again if they're gone, and approve only once CI passes. Before merging, check that no [Release PR run]($RELEASE_PR_WORKFLOW_URL) is queued or in progress, since until it pushes this PR still shows the previous commit's checks."
+            echo
+            echo "## CHANGELOG entry"
+            echo
+            cat "$NOTES"
+          } > "$BODY"
+
+          PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --limit 200 --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"
+          if [ -z "$PR" ]; then
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "Chore: Release $VERSION" --body-file "$BODY"
+          else
+            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --title "Chore: Release $VERSION" --body-file "$BODY"
+          fi

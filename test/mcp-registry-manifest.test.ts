@@ -19,9 +19,9 @@ describe('MCP Registry manifest', () => {
   });
 
   it('version stays in sync with package.json', () => {
-    // release.yml overwrites this at publish time from package.json, but
-    // that rewrite never gets committed back — this test exists so the
-    // committed value doesn't silently drift between releases.
+    // `npm run version-packages` writes it in the release PR
+    // (scripts/release-files.ts), and release.yml publishes the committed file
+    // as is, so a drifted value would reach the MCP Registry.
     expect(serverJson.version).toBe(packageJson.version);
   });
 

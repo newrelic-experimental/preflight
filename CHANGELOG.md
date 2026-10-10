@@ -1,23 +1,28 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented in this file. The project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Don't edit this file by hand. Each pull request describes its change in a changeset under
+[`.changeset/`](.changeset/), and the release PR turns the pending changesets into the next
+entry here; see [Changesets](CONTRIBUTING.md#changesets) in CONTRIBUTING.md. Releases through
+1.63.4 group their entries by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) category
+(Added, Fixed, and so on). Later releases group them by semver bump: Major, Minor, or Patch
+Changes.
 
-## [1.63.4] - 2026-10-09
+## 1.63.4 - 2026-10-09
 
 ### Fixed
 
 - **A new `--stdio` MCP engine could add cost for other sessions' tool calls to its own session's persisted cost.** Before the engine learned its real session id, it drained hook activity left behind by sessions that had ended without a live owner, and estimated a cost from each call's payload size. Those estimates stayed in its cost total after the real id resolved, so they were saved as part of its session. The payload-size estimate now applies only to tool calls recorded for the engine's own session. As a result, a standalone `preflight --local` process (whose session id is always synthetic) no longer estimates cost, and `--stdio` engines on platforms that never report a session id to the collector (Cursor, Windsurf, Antigravity) show no estimated cost; platforms with exact token reports are unaffected, and saved session files are unchanged.
 
-## [1.63.3] - 2026-10-09
+## 1.63.3 - 2026-10-09
 
 ### Fixed
 
 - **Sessions on Claude Opus 5.5, Claude Sonnet 5.5, and OpenAI's GPT-6 models showed $0 cost and measured context against 200K.** Preflight's pricing table had no entries for `claude-opus-5-5`, `claude-sonnet-5-5`, `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna`. It now prices Opus 5.5 at $4 input and $20 output, Sonnet 5.5 at $2 and $10, each with $0.20 cache read and a 1M context window, and GPT-6 at OpenAI's standard rates per million tokens (Astra $10 and $50, Sol $2 and $10, Luna $0.10 and $0.50) with a 1.05M window. Requests whose prompt exceeds 272K tokens, counting cache reads and writes, are billed at the long-context rates, including the higher cached-input rate OpenAI charges there. Claude Haiku 5.5 requests over 100K prompt tokens, counting cache, are now billed at 5x the base rates, and Gemini cache reads, previously unpriced, are now priced. This update also adds separate pricing for Gemini audio input and refreshes the pricing table for other models, including Amazon Nova, Bedrock, xAI, Moonshot, and Mistral. The dashboard's subagent cost prices each turn on its own, and a Copilot app session first seen with a prompt volume already over its model's tier threshold starts counting from that point instead of billing the backlog at the long-context rate.
 
-## [1.63.2] - 2026-10-08
+## 1.63.2 - 2026-10-08
 
 ### Fixed
 
@@ -26,63 +31,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ai.git.push_count` and the weekly panel count a push, and the build-before-push practice judges one, only when it succeeded. A push that fails on auth no longer counts, nor does the push in `git pull; git push`, or the two on separate lines, after the pull conflicts: a `;` or newline list exits with its last command's status, so the command's failure is the push's. When that push's error also shows a rejection, it counts as a rejected push, and the rejection goes to the last push that ran, not one `&&` then skipped. A push followed by a failing non-git step in a `;` or newline list, such as `git push -u origin feat` and a failing `gh pr create --fill` on the next line, doesn't count either, because nothing shows which step failed. A failed force push still counts in `ai.git.force_push_count` and the `--force-with-lease` practice, which judge the command run. Expect the push count to step down, including in the weekly panel for history recorded before this release, where a push chained with a later failing step was stored as failed.
 - A step that `&` runs in the background no longer counts as a commit or push, since its exit status never reaches the command's, so the commit in `git commit -m x & git push` doesn't count. In a failed command whose quotes don't pair up, no step counts as succeeded, since bash runs no part of such a command.
 
-## [1.63.1] - 2026-10-08
+## 1.63.1 - 2026-10-08
 
 ### Fixed
 
 - When the config asks for cloud export (`mode: "cloud"` or `"both"`) but the `preflight --local` dashboard process can't see your credentials, the sessions it collects for you no longer fail to reach New Relic silently. This usually happens because the credentials are set only as shell environment variables, which the macOS dashboard LaunchAgent does not inherit. The dashboard now logs a warning once for each session it keeps only locally, and `GET /api/health` reports them under `unforwardedSessions`, with a count and the most recent session ids. To fix it, add `licenseKey` and `accountId` to the config file and restart the dashboard.
 - On macOS, an MCP server launched through `npx` that took its session id from the directory it started in can now correct that id once the host's own hooks report the real one. Before, a GitHub Copilot session started in a directory where Claude Code was already running could stay filed under the Claude Code session for its whole life.
 
-## [1.63.0] - 2026-10-08
+## 1.63.0 - 2026-10-08
 
 ### Added
 
 - `ai.efficiency.*` gauges now carry a `model` attribute, matching `ai.cost.*`. `ai.cost.*`, `ai.efficiency.*`, and `ai.api.*` gauges also carry a `provider` attribute (`anthropic`, `google`, `openai`, `mistral`, `cohere`, or `bedrock` for the Bedrock model IDs in the pricing table) derived from the model ID, so dashboards can facet directly on either without joining against the corresponding event.
 
-## [1.62.0] - 2026-10-08
+## 1.62.0 - 2026-10-08
 
 ### Added
 
 - **Adding Preflight to an org that already exports Claude Code's OTel metrics to New Relic doubled its reported cost and tokens until someone turned on companion mode.** Companion mode now turns on by itself when Claude Code's telemetry is on, `OTEL_METRICS_EXPORTER` includes `otlp`, and the OTLP endpoint is an `nr-data.net` host. `NR_AI_COMPANION_MODE` or `companionMode` in the config file still wins in either direction, so `NR_AI_COMPANION_MODE=false` turns it off. `preflight doctor` shows the resolved value and its source, and `nr_observe_get_config` shows the value.
 
-## [1.61.0] - 2026-10-07
+## 1.61.0 - 2026-10-07
 
 ### Added
 
 - Fleet admins can hold the Claude Code plugin's MCP server on a specific version. The plugin's `.mcp.json` now launches `@newrelic/preflight@${NEW_RELIC_AI_PREFLIGHT_VERSION:-latest}`, which Claude Code expands at session start, so setting `NEW_RELIC_AI_PREFLIGHT_VERSION` in the managed settings `env` pins every machine that receives it, stages a rollout per device group, and rolls back without a new release. Unset, the server follows `latest` as before. `docs/PLUGIN.md` has a managed settings example that also pins the plugin to its release tag so the bundled hook collector and the server stay in lockstep.
 
-## [1.60.0] - 2026-10-07
+## 1.60.0 - 2026-10-07
 
 ### Added
 
 - **Scripts and fleet tooling could read `preflight doctor` results only by parsing its human-readable output.** `preflight doctor --json` prints the diagnostic checks as a JSON array on stdout, with each check's `check`, `status`, `detail`, and `fix`. The exit code is the same in both modes: 0 when every check passes, 1 when any check fails, and 2 when the only problems are warnings.
 
-## [1.59.5] - 2026-10-07
+## 1.59.5 - 2026-10-07
 
 ### Fixed
 
 - **Google Antigravity: every tool call failed after Preflight's `PostToolUse` hook ran.** Antigravity sends the same payload shape for `PreToolUse` and `PostToolUse`, so Preflight read each `PostToolUse` as `PreToolUse` and replied with `{"decision":"allow"}`, which Antigravity rejects for that event. Preflight now takes the event name from the hook command and replies `{}` to `PostToolUse`, and records it as the end of the tool call. Update `hooks.json` to run `preflight-collector PreToolUse` and `preflight-collector PostToolUse` (see the Antigravity section of `docs/ADAPTERS.md`). Without the argument, Preflight falls back to treating a payload with an `error` field as `PostToolUse`, so a successful call whose `PostToolUse` omits that field gets the `PreToolUse` reply and is recorded as a failed call.
 
-## [1.59.4] - 2026-10-07
+## 1.59.4 - 2026-10-07
 
 ### Fixed
 
 - A session in the "Sessions today" tile no longer stays "Ready for review" after its pull request merges, including when the merge runs from a different session or worktree of the same repo. Preflight now records the number of the pull request that `gh pr create` opened, read from the PR URL in its output (only the number is kept). Sessions saved before this release have no recorded number, so their pull requests still read as open, and a command that opens more than one pull request, or whose output names more than one, records none. A `gh pr merge` counts only when it succeeded and didn't just turn auto-merge on or off. Success is the command's exit status, so in a compound command that status must be the merge's own: `gh pr merge 42 && git pull` counts, but `gh pr merge 42 | tail`, `gh pr merge 42 || echo failed`, `gh pr merge 42 &`, a merge in the `||` fallback of another command, a merge in a command whose quotes don't pair up, a merge in a command with a `<<` heredoc that no later line ends (which usually means text such as `$((1<<N))` was misread as one) or a `<<` in quoted text with lines after it, a merge whose `||`, `&&` or `|` is followed by nothing Preflight can read as a command, and a merge in a Bash call run in the background don't. Cursor and Windsurf hooks report no exit status, so a failed merge there still counts. A `gh pr create` or `gh pr merge` that may target another repo, through `-R`/`--repo`, `GH_REPO` or an earlier `cd` or `pushd` out of the repo, is never matched to this repo's pull requests.
 - Chained shell commands are split the way bash reads them, for the pull request status above and the Git Efficiency page's counts: text inside quotes or a `#` comment is not taken for a git or `gh pr` command, a backslash-newline joins two lines, a line ending in `&&`, `||` or `|` continues on the next, and `&` ends a command. A command whose quotes don't pair up is split on every operator. A `<<<` here-string is no longer taken for a heredoc, and neither is a `<<` inside quotes or a `#` comment that no later line ends, so the commands after it count. As in bash, a heredoc ends only on a line that is exactly its delimiter, and `<<-` strips leading tabs but not spaces.
 
-## [1.59.3] - 2026-10-07
+## 1.59.3 - 2026-10-07
 
 ### Fixed
 
 - **A daily auto-update scheduled on an npm, pnpm, or Homebrew install failed every run, silently.** `preflight update` runs `git pull` and a rebuild, so it only works on a source clone, but setup offered the macOS LaunchAgent on every install. Setup now skips the auto-update prompt on a package-manager or Homebrew install and prints the upgrade command instead. `preflight schedule --time` refuses on such an install with the same hint and a non-zero exit. `preflight schedule --disable` still works. `preflight doctor` has a new "Update schedule" check that warns when `com.preflight.update.plist` is installed on an install where `preflight update` cannot run, and names the fix. One shared check decides whether `update` can run, so `update`, setup, `schedule`, and `doctor` agree.
 
-## [1.59.2] - 2026-10-07
+## 1.59.2 - 2026-10-07
 
 ### Fixed
 
 - **Following the plugin's cloud-mode setup produced a server that would not start.** `docs/PLUGIN.md` now lists the three variables cloud mode needs, `NR_AI_MODE=cloud`, `NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_ACCOUNT_ID`, with a complete Claude Code `env` settings example. The account ID variable is `NEW_RELIC_ACCOUNT_ID`, the name config reads, on that page and in `smithery.yaml`.
 
-## [1.59.1] - 2026-10-07
+## 1.59.1 - 2026-10-07
 
 ### Fixed
 
@@ -90,129 +95,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Subagent turn events (`AiSubagentTurn`) and subagent cost by type get the subagent's type while it runs, from the same metadata file or from the type the hook payload sends with the subagent's tool calls, instead of only after the parent's `Agent` call returns.
 - The long-running `--local` daemon no longer keeps a record of every subagent tool call it has ever seen. Subagent attribution now keeps at most 10,000 tool calls and 1,000 subagents, and drops entries unused for 24 hours.
 
-## [1.59.0] - 2026-10-07
+## 1.59.0 - 2026-10-07
 
 ### Added
 
 - **The Claude Code plugin now captures permission, API failure, prompt, model switch, and session lifecycle events, not just tool calls.** `plugin/hooks/hooks.json` registers every hook event that `preflight install` writes, and a test keeps the two in sync.
 
-## [1.58.5] - 2026-10-07
+## 1.58.5 - 2026-10-07
 
 ### Fixed
 
 - **The local dashboard counted a session twice once it was saved to disk.** Today's "Where today's spend went" Models table showed double the requests and cost of the "Spend today" tile beside it, and the Tool Selection and Quality panels counted the same calls and signals twice. Each session now counts once, before and after it is saved.
 
-## [1.58.4] - 2026-10-06
+## 1.58.4 - 2026-10-06
 
 ### Fixed
 
 - **The "On pace for" projection on History and Today could read ~$0.00 for the week while the month beside it read over $1,000.** The week projection only extrapolated from spend since Monday, so after a quiet Monday, and before today's spend was counted, it projected nothing for the rest of the week. The month projection had the same gap on the 1st. Both now project the remaining days from your average daily spend over the last 28 days plus today, so the week and month figures use the same pace.
 
-## [1.58.3] - 2026-10-06
+## 1.58.3 - 2026-10-06
 
 ### Fixed
 
 - A session's "Session Quality" card no longer shows "Diff Apply NaN%" and "Test Pass NaN%" on sessions with no diff or test signals. The session detail response carried the session's raw signal counts under the key the dashboard reads the two rates from, and those counts have no rate fields. Such a session now hides the card, matching what the other session-detail paths already did.
 
-## [1.58.2] - 2026-10-06
+## 1.58.2 - 2026-10-06
 
 ### Fixed
 
 - A git remote with a token in it no longer leaks the token. With a remote such as `https://<token>@github.com/widgets.git` or `ssh://git@github.com/widgets.git`, the repository name recorded on session summaries and shown in the dashboard header came out as `<token>@github.com/widgets`; it is now `github.com/widgets`. `repo_url` also drops the credential part of the remote now, including a token used as the username, which the secret patterns did not always catch; before, the value kept the token or had the whole host replaced by `[REDACTED]`. Only `ssh://`-style and `git@host:path` remotes keep a login name, and only the name. Every other kind, including the `git+https://` form used in `package.json`, loses everything up to the `@`, even when a password contains an unencoded `/`. A remote that goes through a remote helper, such as `hg::https://...` or `gcrypt::https://...`, gives no repository name, `project_id`, commit link, or `repo_url` at all, because only the helper can parse what follows the `::`; before, a token in one could reach the repository name. Without a repository name, such a checkout is handled like one with no remote: its sessions and the same day's sessions in other repositories count toward each other's git totals, on the dashboard and in the `ai.git.*` metrics. Session summaries saved before the upgrade keep the repository name they were saved with, token included, and the dashboard can still show it. Edit or delete the `repoName` field in those files, under `~/.newrelic-preflight/sessions/` by default, to remove it.
 - Repository names and commit links now work for remotes with a trailing slash, an uppercase `.GIT` suffix, or a query string, and commit links from `ssh://` remotes with a port no longer put the port in the link's path. A remote whose path has no owner segment, such as `git@host:repo.git`, gets the repository name `host/repo` and the `project_id` `repo`. The host can name an internal git server, so it is sent only in `repo_url`, which can be turned off, and never in `project_id`, which goes on every event. Before, its `project_id` was `host/repo` for an `https://` remote and missing for most ssh ones. A repository name with characters other than letters, digits, `.`, `_`, and `-`, such as `~jdoe/widgets`, `acme/my+repo`, or a local `My Drive/widgets`, also gives a `project_id` now; before, it gave none. For a remote ending in `.GIT` or carrying a query string, the repository name changes (from `acme/widgets.GIT` to `acme/widgets`), so on the day of the upgrade, git activity from sessions saved earlier that day under the old name is left out of that day's git stats.
 
-## [1.58.1] - 2026-10-06
+## 1.58.1 - 2026-10-06
 
 ### Fixed
 
 - **`preflight update` on a Homebrew install no longer tells you to `npm install -g`.** Following that advice created a second, competing copy of preflight on `PATH`. It now says `brew upgrade preflight`. `preflight schedule --time` refuses on a Homebrew install with the same hint, since the daily job runs `preflight update` and would fail every run; `preflight schedule` and `preflight schedule --disable` still work, so an existing job can be removed.
 
-## [1.58.0] - 2026-10-06
+## 1.58.0 - 2026-10-06
 
 ### Added
 
 - **Preflight is now installable via Homebrew on macOS** (`brew tap newrelic-experimental/preflight && brew trust newrelic-experimental/preflight && brew install preflight`), alongside the existing npm install path. The formula tracks the npm package; the Release workflow regenerates it and opens a PR against the tap repo on every release, documented in `docs/maintaining-homebrew-tap.md`.
 
-## [1.57.3] - 2026-10-01
+## 1.57.3 - 2026-10-01
 
 ### Fixed
 
 - The Kiro Power manifest (`kiro-power/plugin.json`) now validates against the Agent Plugins 1.0.0 schema it declares. It carried a root `displayName` key, which the schema does not allow and which marketplaces validating against it rejected. Kiro's Powers documentation does not list `displayName` as a manifest field, so the key was removed rather than moved.
 
-## [1.57.2] - 2026-09-29
+## 1.57.2 - 2026-09-29
 
 ### Fixed
 
 - Crossing a budget threshold no longer clears other local alerts that are still true. A firing `cost.window` rule reported "cleared" and could not fire again for its `deduplicateSeconds`, and a firing `budget.session` rule cleared whenever a daily or weekly threshold crossed. A budget-threshold crossing now evaluates only budget rules, and every other rule is left to the periodic alert check. When the cost trackers cannot be read, cost rules skip that check instead of reading $0.
 
-## [1.57.1] - 2026-09-29
+## 1.57.1 - 2026-09-29
 
 ### Fixed
 
 - Loading an alert rules file no longer warns that `cost.window` rules with `costPeriod: "today"` or `"week"` are not yet implemented. Those periods have worked since the snapshot collector started reading daily and weekly spend from the budget tracker, so the warning was false and appeared on every load and reload of the rules file.
 
-## [1.57.0] - 2026-09-17
+## 1.57.0 - 2026-09-17
 
 ### Added
 
 - Today's "Sessions today" tile now says how many of the day's sessions need input, are ready for review, or are still working, each linking to those sessions. A session needs input when its last tool call asked you a question; it is ready for review when it opened a pull request that has not merged; it is working when it is live; otherwise it is completed.
 
-## [1.56.0] - 2026-09-17
+## 1.56.0 - 2026-09-17
 
 ### Added
 
 - Share tables in "What's contributing to your spend" now break each row's tokens down by category on hover: input, output, cache read, and cache write, on both the Tokens and Cost cells of the Skills, Subagents, and Plugins tables. Session records persist the same breakdown per skill, subagent type, and tool, and cache-write tokens now count toward every table's token total, so skills and subagents are measured the same way.
 
-## [1.55.3] - 2026-09-17
+## 1.55.3 - 2026-09-17
 
 ### Fixed
 
 - **The Plugins table in "What's contributing to your spend" had no Cost column while the Skills and Subagents tables beside it did, so a reader could not compare spend across the three.** Plugins now shows Cost in the same position as its siblings.
 
-## [1.55.2] - 2026-09-17
+## 1.55.2 - 2026-09-17
 
 ### Fixed
 
 - The Git Efficiency page could take a very long time to load, and switching to another page while it was loading appeared to hang — the dashboard server re-resolved every historical working directory's git identity from scratch on every request, blocking all other requests behind it. Historical (completed) sessions are now cached after their first resolution. Dashboard pages also now cancel their in-flight requests when you navigate away or change a query's window/scope, instead of letting them run to completion in the background.
 
-## [1.55.1] - 2026-09-16
+## 1.55.1 - 2026-09-16
 
 ### Fixed
 
 - Session timelines no longer lose entries across a Claude Code process resume: the two sides' timelines are unioned instead of keeping whichever one happened to be longer at checkpoint time.
 - A tool call blocked by another PreToolUse hook (e.g. a worktree-isolation guard) is now recorded as blocked rather than folded into the timeout bucket, which had been inflating failure-rate and retry metrics with calls that never actually ran.
 
-## [1.55.0] - 2026-09-16
+## 1.55.0 - 2026-09-16
 
 ### Added
 
 - Today's spend chart carries a cumulative line dashed to the end-of-day projection with an "on pace for" week caption, History's daily spend carries this-week and this-month projections, every ranking on both pages is a sortable table with a sort-direction arrow, History's Tools table shows cost and tokens with a coverage caveat (`/api/cost-per-tool?days=N`), and the Git view shows PR counts per repo and worktree. Fixed along the way: the end-of-week figure could fall below end of day, token totals excluded thinking tokens, Needs attention showed flags from days-old sessions, the session trace pane opened empty when history existed, block charts could render huge in wide panels, and the spend lines re-animated on every refetch.
 
-## [1.54.3] - 2026-09-16
+## 1.54.3 - 2026-09-16
 
 ### Changed
 
 - **Today answered its questions in the wrong order: configuration notices sat above the numbers, the live session tail sat at the bottom, and the anti-pattern panel rendered one pill per file.** The page now opens with the KPI strip and the spend chart, then a "Needs attention" list aggregated by anti-pattern type with a link to the sessions involved, then where the spend went, the live tail, a health-card grid, and activity on one hourly scale. The watcher notice became a tooltip and one muted line, and the single-session forecast rows are gone from a page that aggregates every session of the day.
 
-## [1.54.2] - 2026-09-16
+## 1.54.2 - 2026-09-16
 
 ### Changed
 
 - **History's window labels were phrased three ways and its rankings were drawn as three different chart types.** The page now reads one page-level window (7, 30, 90 days) that every window-aware panel shares, opens with a summary KPI strip and daily spend on the shared chart, then the contribution panel, a breakdown row, a clearly labelled "Last 12 weeks" row, coaching, one merged instruction-file panel, and profile. Empty panels collapse to one line. Model performance and cost per outcome are sortable tables.
 
-## [1.54.1] - 2026-09-16
+## 1.54.1 - 2026-09-16
 
 ### Fixed
 
 - **Several coaching and recommendation thresholds were stale, mislabeled, or otherwise miscalibrated against how the tool is actually used today.** Cost-per-session coaching had no throughput denominator and could recommend breaking sessions into smaller ones — actively counterproductive under prompt caching — so it now compares cost per completed task instead, and the recommendation focuses on redundant work rather than session length. The "expensive investigation task" flag compared against a fixed $2 figure with no value side to the comparison; it now compares against the developer's own average task cost and drops the blanket "use Grep/Glob instead" framing. The compute-waste status now scales with session size instead of a fixed 2,000-token floor that fired on nearly every real session. Cost-per-outcome ROI estimates raised the hours-saved assumption for investigation tasks and gave failed attempts a small non-zero value instead of zero, both still disclosed as rough approximations. The large-CLAUDE.md-context recommendation now sources the current model's real input and cache-read rates instead of a hardcoded Sonnet 4 price, and gates on the cache-adjusted marginal cost so a large but well-cached instruction file isn't flagged as a cost problem. The "efficiency score dropped X%" recommendation reported a point-scale delta as a percentage and could fire off a single scored session; it now reports points and requires a minimum weekly sample, matching how the same comparison is already worded and gated elsewhere.
 
-## [1.54.0] - 2026-09-15
+## 1.54.0 - 2026-09-15
 
 ### Added
 
 - `/api/usage-insights` accepts `window=today`, scoping the share-of-spend report to local midnight so Today's contribution panel can match History's. New shared dashboard components: a spend-over-time bar chart with a cumulative line and an optional dashed projection (`SpendBars`), an actionable attention list with per-row advice and session links (`AttentionList`), and an inline empty-state variant.
 
-## [1.53.2] - 2026-09-15
+## 1.53.2 - 2026-09-15
 
 ### Fixed
 
@@ -223,214 +228,214 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The collaboration profile's "Delegator" classification no longer fires for a chatty, low-detail-looking session with no actual subagent spawns — it now requires real delegation (average agent spawns per task) in addition to high autonomy.
 - CLAUDE.md A/B comparison no longer labels a small or statistically incomparable effect size as "significant" — effect-size labels (small/medium/large/negligible, per Cohen's own thresholds) are now reported separately from sample-size adequacy, and comparisons below a minimum sample count per group are labeled as having insufficient data rather than being scored at all.
 
-## [1.53.1] - 2026-09-15
+## 1.53.1 - 2026-09-15
 
 ### Changed
 
 - **Money, durations, percentages, and status labels were formatted differently from panel to panel on the dashboard.** One set of formatters and shared components (`Panel`, `HealthCard`, `RankedBars`, `ShareTable`, `UsageInsightsList`) now back every panel: costs under a dollar show two or three decimals instead of four, a sub-cent cost reads `<$0.001` instead of `$0.0000`, and health-card status is one vocabulary (Healthy, Watch, Needs attention, No data).
 
-## [1.53.0] - 2026-09-15
+## 1.53.0 - 2026-09-15
 
 ### Added
 
 - Sessions detail now shows per-model input, output, cache read, cache write, and cost, lines added and removed, API versus wall duration, and cache hit rate. History gains a "What's contributing to your spend" panel with share tables by skill, subagent type, plugin, and loop, each saying how many rows its top-10 cap dropped, and the existing tool and model tables carry share-of-spend labels.
 
-## [1.52.3] - 2026-09-15
+## 1.52.3 - 2026-09-15
 
 ### Fixed
 
 - `TurnCostAttributor` dropped almost every turn's cost on models with long thinking times: a token event closing a burst of tool calls had to arrive within a fixed 5-second window, but the model's own response can take anywhere from milliseconds to minutes. Replaced the fixed window with an unbounded, order-based match — a token event now closes the oldest still-open tool-call burst regardless of how long it takes — backed by a small queue (instead of a single slot) so a new burst starting before the previous one's token event arrives no longer silently discards it. `nr_observe_get_cost_per_tool` now also reports `droppedTokenEvents` so a low `attributionRate` is explainable from the tool output.
 
-## [1.52.2] - 2026-09-15
+## 1.52.2 - 2026-09-15
 
 ### Fixed
 
 - Native Windows: a cwd-breadcrumb race could permanently bind the MCP to a short-lived, unrelated session id with no recovery path, since the PPID correction watch relies on a breadcrumb that's never written for the MCP's own `process.ppid` on that platform. The correction watch now also re-polls the cwd breadcrumb on Windows, adopting a differing session id only once its own buffer file shows real activity.
 
-## [1.52.1] - 2026-09-15
+## 1.52.1 - 2026-09-15
 
 ### Fixed
 
 - **A fourth, independent copy of the same subagent-turn/synthetic-turn rejection rule used by the shared transcript parser had drifted apart from it.** The message tracker that counts user/assistant turns and the parent-session transcript watcher now both call one shared predicate for deciding whether an assistant turn is a real, in-session turn.
 
-## [1.52.0] - 2026-09-15
+## 1.52.0 - 2026-09-15
 
 ### Added
 
 - Session records now persist spend attribution by tool, skill, and subagent type, plus high-context spend and estimated API wait time, and a new `/api/usage-insights` endpoint surfaces share-of-spend insights (high-context sessions, subagent-heavy sessions, long-running sessions, loops, and plugins) across a configurable day window.
 
-## [1.51.4] - 2026-09-14
+## 1.51.4 - 2026-09-14
 
 ### Fixed
 
 - `ToolCallRecord.agentId`/`agentType` from the hook payload never populate in practice, despite Claude Code's docs saying they should — this silently defeated per-agent anti-pattern grouping and the subagent cost-by-type breakdown. Replaced with a `toolUseId` join against subagent transcripts and a correlation on the parent's own Agent-tool-call record.
 
-## [1.51.3] - 2026-09-14
+## 1.51.3 - 2026-09-14
 
 ### Fixed
 
 - **A third copy of the transcript-line parsing logic already unified across two other files had drifted out of that shared module.** The parent-session transcript watcher now calls the same shared parser, which has been extended to also carry the sidechain flag it needs to skip subagent turns inlined into the main transcript.
 
-## [1.51.2] - 2026-09-14
+## 1.51.2 - 2026-09-14
 
 ### Fixed
 
 - **Correction detection could still false-positive on a few phrasings the original regex redesign didn't cover:** a standing instruction referencing a noun with "that" nearby (e.g. "don't push directly to that branch") no longer counts as undoing the assistant's last action, and a polite decline ("no, thanks" / "no, that's fine") no longer counts as a rejection.
 
-## [1.51.1] - 2026-09-13
+## 1.51.1 - 2026-09-13
 
 ### Fixed
 
 - **The Replay UI's anti-pattern overlay could flag parallel subagents as a single agent stuck in a loop.** Its stuck-loop, blind-editing, and re-reading detectors ran over the flat tool-call timeline with no notion of which subagent made each call, so three subagents each running the same command once (or reading the same file once) rendered as one false anti-pattern segment. These detectors now partition by agent before running, the same fix already applied to the session-wide anti-pattern tracker.
 
-## [1.51.0] - 2026-09-13
+## 1.51.0 - 2026-09-13
 
 ### Added
 
 - **A skill run as a slash command (`/simplify`, `/code-review`, …) never showed up in per-skill cost tracking — only skills invoked through the `Skill` tool were counted, and most skill usage in Claude Code is typed as a slash command.** Slash-command invocations are now attributed the same way, and session records persist how many times each skill ran so it can be queried across sessions.
 
-## [1.50.11] - 2026-09-12
+## 1.50.11 - 2026-09-12
 
 ### Fixed
 
 - **A subagent's tool call that timed out or was denied was attributed to the main agent.** The timeout and denied record shapes never carried the subagent id, and the timeout shape also dropped the transcript path and permission mode. Every record shape now copies the same attribution fields from the hook events through one helper, so a field added to the pre event reaches all of them at once.
 
-## [1.50.10] - 2026-09-12
+## 1.50.10 - 2026-09-12
 
 ### Fixed
 
 - **The Git tab's 7-day "commits" and "PRs created" counters could not be trusted: a chained `git commit -m … && git push` was recorded as a push only, so the commit vanished, while every shell segment that merely contained the text `gh pr create` counted as a new PR, including failed retries, a `gh pr comment` body, and test fixtures that quoted the phrase.** A week that GitHub and `git log` put at 24 PRs and 43 commits showed 35 PRs and 23 commits. Git commands are now classified per shell segment, so every verb in a chain is recorded; a `gh pr <verb>` counts only when the segment starts with it, and a create counts only when it succeeded. Commits from `git log` (30 days, every branch, primary checkouts first) now feed the weekly report too, paired one-to-one with the hook-observed commit that made them so worktree and session attribution survive. Where git log covers a repo it is authoritative, so failed commits, amends, and commits later rewritten away no longer inflate the count.
 
-## [1.50.9] - 2026-09-12
+## 1.50.9 - 2026-09-12
 
 ### Fixed
 
 - **Standalone and daemon `--local` dashboards now track subagent cost with no configuration.** The subagent transcript watcher previously only ran under `--stdio`, so a `--local` deployment with no `--stdio` sibling — a container, systemd unit, launchd daemon, or any platform with no MCP client to auto-launch `--stdio` — never observed any subagent spend. `NR_AI_WATCHER_MODE` is removed entirely; a `--local` watcher now runs unfiltered by default, skipping any session a live `--stdio` process already owns, and an orphan session's subagent spend persists to its own `sessions/*.json` file and survives a daemon restart.
 
-## [1.50.8] - 2026-09-12
+## 1.50.8 - 2026-09-12
 
 ### Fixed
 
 - **The Git Efficiency tree listed the same repo twice when any of its sessions had been recorded without a working directory.** The "worktree unknown" row those sessions produce carried a synthetic repo key, so the tree filed it as a second, look-alike repo next to the real one. It is now filed under the real repo whenever a resolved worktree of the same repo is known, counts toward that repo's rollup, and is left out of the parallel-isolation check, which only makes sense for rows with a real working directory.
 - **Tool calls that timed out waiting for their post-hook, or whose post-hook arrived with no matching pre-hook, lost their working directory.** Those records could never be attributed to a git worktree and surfaced as "worktree unknown" or "unattributed" even on current versions. Both record shapes now carry the directory the hook reported.
 
-## [1.50.7] - 2026-09-12
+## 1.50.7 - 2026-09-12
 
 ### Fixed
 
 - **The Today view no longer shows the "this dashboard process isn't running its own subagent watcher" banner on `--local` dashboards.** Every default install runs the dashboard as a `--local` daemon that by design never runs that watcher, so the banner appeared on every visit, and the `NR_AI_WATCHER_MODE=local` instruction it gave cannot reach a launchd daemon (the plist carries only `PATH`). Watcher state remains visible on the Settings page.
 - **The remaining `NR_AI_ENABLE_SUBAGENT_WATCHER=0` banner now hides when today's aggregate shows any subagent spend, instead of when it shows any subagent turns.** The turn count only counts Workflow-tool script runs, so it read 0 on any day whose subagents were ordinary Task/Agent-tool spawns, and the banner could claim subagents were excluded directly above a KPI showing their spend.
 
-## [1.50.6] - 2026-09-11
+## 1.50.6 - 2026-09-11
 
 ### Changed
 
 - **The subagent-transcript token-usage watcher and the dashboard's subagent timeline no longer each re-implement their own JSONL line parser.** Both now share one parsing module for extracting an assistant turn's model, token usage, and schema-drift fingerprints from a transcript line. Each pipeline keeps its own existing acceptance policy (which fields are required) and output shape unchanged. No behavior change.
 
-## [1.50.5] - 2026-09-11
+## 1.50.5 - 2026-09-11
 
 ### Fixed
 
 - **Cost and model-usage tracking for subagents spawned with an explicit name (the `Agent` tool's `name` parameter) was silently dropped — their tokens never counted toward session spend or appeared in the model breakdown.** Subagent transcript discovery, the dashboard's subagent timeline, and stale-cursor cleanup now recognize both the anonymous and named transcript filename shapes.
 
-## [1.50.4] - 2026-09-10
+## 1.50.4 - 2026-09-10
 
 ### Fixed
 
 - **On Windows, `alerts.rulesPath` validation rejected every path — including the default one — because the containment check hardcoded `/` as the path separator, and `path.resolve()` returns backslash-separated paths on Windows.** This logged a spurious warning on every server start (`preflight doctor` included) and silently discarded any custom `alerts.rulesPath` set via config file or `NR_AI_ALERTS_RULES_PATH`, reverting it to the default. The check now uses `path.relative()` + `path.isAbsolute()`, which is separator-agnostic — the same fix already applied to `static-handler.ts` for the identical bug class.
 
-## [1.50.3] - 2026-09-10
+## 1.50.3 - 2026-09-10
 
 ### Fixed
 
 - **The README's "Works With" list and the npm package description only named the original eight supported platforms** — Codex, Droid, Gemini CLI, Cline, opencode, Kilo Code, Pi, Antigravity, and the additional Copilot variants were shipped but invisible to anyone reading the docs or the npm listing. Both now reflect the full, current set of supported platforms, and a test now guards against the list drifting out of sync again.
 
-## [1.50.2] - 2026-09-10
+## 1.50.2 - 2026-09-10
 
 ### Fixed
 
 - **The tool selection score's penalty for redundant reads/failures/unused outputs is now actually normalized by session size**, matching what its own code comment already claimed: a session with more than 15 tool calls is no longer punished as harshly as a shorter one for the same absolute number of violations. Previously the penalty was purely absolute, so a busy day (or a session with lots of parallel/forked subagent activity) could score noticeably worse than a quiet one with an identical defect rate. Sessions of 15 calls or fewer score exactly as they did before this change.
 
-## [1.50.1] - 2026-09-10
+## 1.50.1 - 2026-09-10
 
 ### Fixed
 
 - **Kiro Power's setup docs told users the MCP server needed a global install; it's launched via `npx` and only the hook binary needs one.** The hook command also now carries an explicit platform stamp, since it runs as a separate subprocess that doesn't inherit the MCP server's environment — without it, tool-call metrics for Kiro silently reported zero.
 
-## [1.50.0] - 2026-09-09
+## 1.50.0 - 2026-09-09
 
 ### Added
 
 - **The Git Efficiency tab now tracks multiple repos and concurrent git worktrees separately**, each with its own metrics, coaching checks, and live branch-divergence state, instead of assuming a single repo and branch. An explicit time-window picker (today, yesterday, last 7/30 days, etc.) replaces the previous fixed "today" view, and each row deep-links to the exact sessions behind its numbers.
 
-## [1.49.0] - 2026-09-09
+## 1.49.0 - 2026-09-09
 
 ### Added
 
 - **`AiCodingTask` events now carry `outcome_type` and `model`**, joining the existing per-task outcome classification (`bug_fix`, `feature`, `refactor`, `investigation`, `configuration`, `documentation`, `failed_attempt`) with the model that was active when the task completed. This makes "which model works best for which kind of task" answerable in NRQL: `FROM AiCodingTask SELECT average(estimated_cost_usd) FACET model, outcome_type`. `model` is omitted when no token usage was ever reported for the session.
 
-## [1.48.5] - 2026-09-09
+## 1.48.5 - 2026-09-09
 
 ### Fixed
 
 - Correction detection now uses a small set of targeted phrase patterns instead of a single blunt first-word regex, and the unmeasured "15-25% session duration" impact estimate on the high correction rate recommendation has been removed. Previously, ordinary task instructions and refinements — "Revert the last commit", "Stop the dev server and restart it", "Actually, let's also add tests", "no rush" — were miscounted as corrections, while genuine corrections that didn't start with a trigger word — "That approach won't work because...", "You missed the null case", "This is the third time" — were missed entirely.
 
-## [1.48.4] - 2026-09-09
+## 1.48.4 - 2026-09-09
 
 ### Fixed
 
 - The tool selection score's "unused output" penalty no longer fires on `Grep`, `Glob`, `WebFetch`, `WebSearch`, or any MCP tool result, and the byte threshold for everything else rose from 4,000 to 20,000. Previously, any investigation-only tool call above 4,000 bytes — a single `Read` of a ~150-line file, one `Grep` result, one MCP query — was flagged as wasted output unless it was immediately followed by an edit, so a thorough investigation session scored close to the metric's floor while a shallow one that never looked anything up scored perfectly.
 
-## [1.48.3] - 2026-09-09
+## 1.48.3 - 2026-09-09
 
 ### Fixed
 
 - The efficiency score's speed component no longer scores zero-linesChanged tasks (investigations, reviews, delegated work) as a hard 0 — it's now excluded from the composite entirely for those tasks, renormalizing the remaining components. The speed component's own weight in the composite also dropped from 0.25 to 0.10, since a raw lines-changed-per-second ratio rewarded bulk regeneration as much as a careful, well-reasoned fix.
 
-## [1.48.2] - 2026-09-09
+## 1.48.2 - 2026-09-09
 
 ### Fixed
 
 - The over-delegation anti-pattern now fires only when sub-agent spawns fail or are interrupted, rather than on raw spawn count. Previously, any session with three or more successful parallel sub-agent spawns — an idiomatic pattern — was flagged and could trigger coaching recommendations and alerts discouraging it.
 
-## [1.48.1] - 2026-09-09
+## 1.48.1 - 2026-09-09
 
 ### Fixed
 
 - Anti-pattern and tool-selection detectors (re-reading, stuck-loop, blind-editing, redundant-reads, repeated-failures) now analyze each subagent's tool calls separately from the parent session and from other subagents, instead of treating the whole session as one flat, timestamp-ordered sequence. Previously, parallel subagents each independently doing something once — e.g. three subagents each running the same test command, or each reading the same file — could be misread as a single agent stuck in a loop or re-reading unnecessarily.
 
-## [1.48.0] - 2026-09-08
+## 1.48.0 - 2026-09-08
 
 ### Changed
 
 - A scheduled repo maintenance job now watches Claude Code's own changelog for new hook, cost, and OpenTelemetry entries and files or updates a tracking issue when something looks worth reacting to. No user-visible behavior change.
 
-## [1.47.0] - 2026-09-08
+## 1.47.0 - 2026-09-08
 
 ### Added
 
 - **Multi-tier telemetry routing.** A new optional `tiers` array in the config file lets one Preflight instance fan events out to multiple destinations by event type — several New Relic accounts, local directories on disk, or a mix of both — instead of a single account. Each tier lists a destination and the event types it should receive (or `["*"]` for all of them); config loading warns when a tier other than the primary one is routed personal-only-grade data (raw file paths, commands, or audit-trail detail), and separately warns when the primary tier itself — the one that always carries the aggregated Metric API stream, NR Logs API audit entries, OTLP export, and event-send-health counters, regardless of its own event types — isn't the operator's own default account. Existing single-account configs are unaffected; omitting `tiers` keeps the previous single-destination behavior.
 
-## [1.46.0] - 2026-09-08
+## 1.46.0 - 2026-09-08
 
 ### Added
 
 - **Homelab server mode now serves a dashboard, protected by HTTP Basic Auth.** Previously `preflight server` only accepted forwarded events over `/ingest`; visiting the server's address in a browser 404'd, and the only way to view accumulated data was inspecting session files directly. The dashboard (and its `/api/*` and `/sse` routes) now render using the shared homelab token as an HTTP Basic Auth password — any username, the token as the password — so a browser's native login prompt authenticates automatically on first visit and on every subsequent request, including static assets and the live event stream. `GET /api/health` remains open, matching local mode. `POST /ingest` keeps its existing independent Bearer-token check.
 
-## [1.45.0] - 2026-09-08
+## 1.45.0 - 2026-09-08
 
 ### Added
 
 - **Subagent cost can now be broken down by agent type, on a best-effort basis.** `nr_observe_get_cost_breakdown` gains a `by_agent_type` field, and the `AiSubagentTurn` event gains an `agent_type` attribute, alongside the existing per-agent-id data. Coverage depends on the subagent having made at least one tool call the harness reports a type for — a subagent that never does so is still counted in the overall subagent total but not broken out by type.
 
-## [1.44.7] - 2026-09-08
+## 1.44.7 - 2026-09-08
 
 ### Fixed
 
 - **An open-but-idle Claude Code window no longer disappears from the Today tab, and its buffered activity is no longer at risk of being garbage-collected before it's persisted.** The dashboard treated "hasn't made a tool call in the last 3 minutes" the same as "this session no longer exists" — an idle-but-still-open window vanished from the session list and today's session count, and its buffer file could be deleted by the background GC pass as an orphan. Sessions seen at any point today are now tracked separately from the 3-minute "actively coding" window, so an idle window stays visible and its data stays safe until it's actually persisted.
 - **The hourly-spend chart on the Forecast card no longer double-highlights a "peak" hour.** Two different hours could round to the same number of blocks once cost was quantized for display, and both got the peak color even though only one was the real highest-spending hour. The chart now flags peak from the actual dollar amount instead of the rounded block count.
 
-## [1.44.6] - 2026-09-08
+## 1.44.6 - 2026-09-08
 
 ### Changed
 
@@ -440,13 +445,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A regression test locks in Claude Code platform detection from its real ambient env signals (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SESSION_ID`).** Existing coverage only exercised the legacy `CLAUDE_CODE_VERSION` signal at the registry level.
 
-## [1.44.5] - 2026-09-08
+## 1.44.5 - 2026-09-08
 
 ### Security
 
 - Pinned transitive dependency overrides for 5 open Dependabot alerts: `fast-uri` (host-confusion/SSRF), `qs` and `browserslist` (DoS) in the root package, and `nanoid` and `js-yaml` (infinite loop / quadratic-time parsing) in `site/`. No user-visible behavior change.
 
-## [1.44.0] - 2026-09-04
+## 1.44.0 - 2026-09-04
 
 ### Fixed
 
@@ -456,13 +461,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`mostEfficientModel` and `costPerOutputToken` from `nr_observe_get_model_usage`.** Both were built on total cost (cache and thinking included) over output tokens alone, the ratio that ranked the priciest model as the most efficient. Clients that read either field must drop it.
 
-## [1.43.1] - 2026-09-04
+## 1.43.1 - 2026-09-04
 
 ### Fixed
 
 - **Chart tooltips no longer get clipped inside cards that hide overflow.** The Concurrent Sessions tooltip is now portaled to the page and positioned from the cursor's on-screen location, so it always renders in full instead of being cut off at the card's edge. The Forecast card's hourly-spend chart also now shares the same square-block style and tooltip as Concurrent Sessions.
 
-## [1.43.0] - 2026-09-04
+## 1.43.0 - 2026-09-04
 
 ### Added
 
@@ -474,21 +479,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `detectSecurityAlert` evaluates an ordered rule table and returns the highest-severity match instead of the first match in an if-chain. Verdicts for the three existing alert types are unchanged.
 
-## [1.42.0] - 2026-09-04
+## 1.42.0 - 2026-09-04
 
 ### Added
 
 - **`nr_observe_get_model_recommendation` ranks the models in your session history by how they actually performed.** Every model seen in persisted sessions is ranked by average efficiency score, cost, and task success rate, overall and per task outcome type (`bug_fix`, `feature`, `refactor`, and the rest). Confidence is gated on sample size, so a handful of sessions never produces a recommendation.
 - **`nr_observe_get_recommendations` now compares your current model against the historical winner.** The `model_selection` recommendation fires only when the session's dominant model differs from the historically better-performing one and a comparable runner-up exists with a meaningful gap. It previously compared an arbitrary pair of models once three or more had been used.
 
-## [1.41.0] - 2026-09-04
+## 1.41.0 - 2026-09-04
 
 ### Added
 
 - **A new Adoption & Cost dashboard for engineering managers.** `dashboards/ai-coding-assistant-adoption-cost.json` has five pages (Adoption, Cost, Tools & MCP, Team Leaderboard, Team Pulse) built entirely from Preflight's own events and metrics, including per-developer outcomes, MCP usage from both the hook and proxy paths, and the git-outcome gauges (PRs, commits, edit accept rate, cost per PR). Deploy it with `npm run deploy:dashboard:all`.
 - **A demo data generator for testing and demos.** `scripts/generate-demo-data.ts` seeds an account with realistic telemetry from ten developer personas covering every event type and the cumulative metric snapshots the dashboard relies on. Supports `--dry-run`, `--hours`, `--seed`, `--eu`, and `--staging`.
 
-## [1.40.0] - 2026-09-04
+## 1.40.0 - 2026-09-04
 
 ### Added
 
@@ -498,33 +503,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **GitHub Copilot tool-call capture (CLI and VS Code Copilot Chat) now actually reaches New Relic.** The hooks file Preflight generated used the wrong JSON shape, so Copilot's hooks-runner silently never executed any hook — tool-call count, tool selection, latency, audit, and session tracking were all missing for Copilot sessions, while cost tracking kept working through a separate path and masked the problem. Also fixes a related bug where a Copilot session drained by an unrelated running Preflight process could be mislabeled with that process's own platform instead of its own.
 
-## [1.39.0] - 2026-09-04
+## 1.39.0 - 2026-09-04
 
 ### Added
 
 - **Cost per tool call and per skill now reaches New Relic as a new `AiTurnCost` event.** When a turn's token usage arrives, Preflight emits one row per tool call in that turn with its share of the cost and tokens, plus `tool`, `skillName`, `tool_use_id`, and `turn_id`, so `FROM AiTurnCost SELECT sum(cost_usd) WHERE tool = 'Skill' FACET skillName` works over any window. A Cost by Skill widget is added to the team-view dashboard. Under `companionMode`, rows from Claude Code turns are tagged `cost_authority: 'external'` like `AiCodingTask`.
 - **`nr_observe_get_cost_per_tool` now applies `costRateMultiplier` and `dataResidencyPremium`.** The turn-cost attributor priced at list rate while every other cost figure was scaled, so `costByToolType` and `costBySkill` did not reconcile with `AiCodingTask` for orgs with a configured multiplier. They do now.
 
-## [1.38.0] - 2026-09-03
+## 1.38.0 - 2026-09-03
 
 ### Added
 
 - **The local dashboard shows a Cost by Skill table, and the team-view New Relic dashboard gains two skill widgets.** The table lists calls, cost, tokens, and time per skill under the Cost by Tool card, and appears only once a skill has been invoked. The New Relic widgets chart skill calls and hours in skills over seven days, faceted by `skillName`.
 
-## [1.37.0] - 2026-09-03
+## 1.37.0 - 2026-09-03
 
 ### Added
 
 - **Skill invocations are now tracked per skill instead of collapsing into one `Skill` bucket.** Each `Skill` tool call now carries the invoked skill's name on its record and on the `AiToolCall` event, so `code-review` and `security-review` are distinguishable in every breakdown. The argument text itself is never recorded, only its length.
 - **`nr_observe_get_cost_per_tool` returns a new `costBySkill` field.** One row per skill with call count, attributed call count, estimated cost, estimated input/output/cache-read tokens, and total duration. The existing `costByToolType` field is unchanged, and its `Skill` entry equals the sum of the skill rows.
 
-## [1.36.0] - 2026-09-03
+## 1.36.0 - 2026-09-03
 
 ### Added
 
 - **The docs site has a new landing page** with an install command for humans and a copy-to-clipboard setup prompt for coding agents, plus a What's New page summarizing recent releases in plain language.
 
-## [1.35.0] - 2026-09-03
+## 1.35.0 - 2026-09-03
 
 ### Added
 
@@ -536,7 +541,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Kiro sessions were misdetected as a generic MCP client, and Kiro's tool names weren't recognized** — both silently zeroed out file, edit, and shell metrics.
 - **MCP clients that connect before the full tool set is registered now get notified once it is**, instead of seeing only a partial tool list for the rest of the session.
 
-## [1.34.0] - 2026-09-03
+## 1.34.0 - 2026-09-03
 
 ### Added
 
@@ -547,13 +552,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`project_id` (and now `repo_url`) could silently resolve from the wrong repository when running under a git hook or CI subprocess.** Both are inferred via `git remote get-url origin`, but that read didn't clear `GIT_DIR`/`GIT_WORK_TREE` — environment variables git sets for hook subprocesses (including this repo's own pre-push hook) that redirect git commands to a different repository's `.git` directory.
 
-## [1.33.2] - 2026-09-03
+## 1.33.2 - 2026-09-03
 
 ### Fixed
 
 - **The MCP Registry publish step in the Release workflow was failing on every run.** `server.json`'s `description` field was 106 characters, exceeding the registry's 100-character limit; shortened it so releases reach `registry.modelcontextprotocol.io` again.
 
-## [1.33.1] - 2026-09-03
+## 1.33.1 - 2026-09-03
 
 ### Added
 
@@ -565,7 +570,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Grok 4.5's cached-input rate and context window were stale.** Cached input now prices at $0.3 per million tokens (was $0.5) and the context window is now 500K (was overstated as 1M), matching xAI's own published pricing.
 - **`ministral-3b-latest`, `ministral-8b-latest`, and `ministral-14b-latest` now resolve to real pricing instead of $0.** Mistral introduced "-latest" aliases for its Ministral 3 family; without them, sessions reporting those exact model strings had no matching entry.
 
-## [1.33.0] - 2026-09-03
+## 1.33.0 - 2026-09-03
 
 ### Added
 
@@ -575,115 +580,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Claude Code sessions were sometimes mislabeled as a generic MCP client instead of Claude Code.** Platform detection checked environment variables Claude Code doesn't actually set, so affected sessions' cost and tool-call data filed under the wrong platform label instead of being correctly attributed.
 
-## [1.32.1] - 2026-09-03
+## 1.32.1 - 2026-09-03
 
 ### Fixed
 
 - **Tooltip value text is no longer unreadable black-on-dark on the Cost Per Outcome, Top Tools, and Cost by Tool charts.** These charts color each bar per-entry rather than on the `Bar` element itself, so Recharts fell back to a hardcoded black for the tooltip's value line while the label stayed themed — it now uses the same ink token as the rest of the tooltip.
 
-## [1.32.0] - 2026-09-02
+## 1.32.0 - 2026-09-02
 
 ### Added
 
 - **Preflight now supports correcting cost figures toward an organization's actual contracted rate.** Preflight previously computed every dollar figure from its own vendored public list-price table, with no way to reflect a negotiated discount or the data-residency inference premium — so for an org billed differently than list price, every cost figure was systematically off by a known amount. Two new config options close that gap: a flat discount multiplier, and a flag for the same 1.1× premium applied to data-residency workspaces.
 
-## [1.31.0] - 2026-09-02
+## 1.31.0 - 2026-09-02
 
 ### Added
 
 - **Turn and task boundaries are now anchored to Claude Code's own prompt-submit and stop signals, not just idle gaps.** Turn and task tracking previously inferred boundaries from a short gap in tool-call activity, which could merge two quick back-to-back turns or understate a turn's true duration by missing the time spent generating a final response. Preflight now uses Claude Code's `UserPromptSubmit` and `Stop` hooks as a precise, corroborating signal for both, falling back to the existing gap-based detection when a conversation ends without a `Stop` (e.g. a user interrupt).
 
-## [1.30.0] - 2026-09-02
+## 1.30.0 - 2026-09-02
 
 ### Added
 
 - **Preflight now understands when a resumed session's cost spike was expected.** Claude Code's `SessionStart` hook reports how long a session had been idle and its own estimate of what re-warming the prompt cache will cost when resuming a stale conversation. Preflight now surfaces that context alongside its cost forecast, so a resume-driven spike has an explanation attached instead of appearing as an unexplained cache-hit dip.
 
-## [1.29.0] - 2026-09-02
+## 1.29.0 - 2026-09-02
 
 ### Added
 
 - **Preflight now sees model switches as they happen, not just as a change in token-usage reports.** Claude Code's `PostModelSwitch` hook fires whenever the session's model changes — a deliberate `/model` switch, a persistent automatic fallback, or the model restored on resume. Preflight now records each of these as a discrete event, including how many were automatic, instead of only inferring a change happened from a different model string showing up in usage data.
 
-## [1.28.0] - 2026-09-02
+## 1.28.0 - 2026-09-02
 
 ### Added
 
 - **Instruction-file drift tracking now sees session-start loads, not just edits.** Claude Code's `InstructionsLoaded` hook fires the moment a CLAUDE.md or `.claude/rules/*.md` file enters context — including at session start, when no `Read` tool call happens at all. Preflight now uses that as the authoritative signal instead of relying solely on Edit/Write tool calls to infer when instructions changed.
 
-## [1.27.0] - 2026-09-02
+## 1.27.0 - 2026-09-02
 
 ### Added
 
 - **Tool-call records now capture which subagent, if any, made the call.** When Claude Code reports its native `agent_id`/`agent_type` hook fields, Preflight attributes the tool call to that subagent — laying groundwork for future per-subagent cost and workflow breakdowns.
 
-## [1.26.1] - 2026-09-02
+## 1.26.1 - 2026-09-02
 
 ### Fixed
 
 - **Tool-call latency no longer includes the time you spent approving a permission prompt.** Duration was measured as the wall-clock gap between when Preflight received a tool call and when it completed, which included any permission-prompt wait and PreToolUse hook overhead. Preflight now reads Claude Code's own reported tool-execution time when available, so latency percentiles and per-tool cost/latency breakdowns reflect actual tool speed.
 
-## [1.26.0] - 2026-09-02
+## 1.26.0 - 2026-09-02
 
 ### Added
 
 - **Preflight now publishes to the official MCP Registry** (registry.modelcontextprotocol.io) after each release, making it discoverable through the registry and the surfaces that federate from it.
 
-## [1.25.0] - 2026-09-01
+## 1.25.0 - 2026-09-01
 
 ### Added
 
 - **Preflight can now be installed directly as a Claude Code plugin** — `/plugin marketplace add newrelic-experimental/preflight` sets up hooks and the MCP server without a separate npm install or build step.
 
-## [1.24.0] - 2026-09-01
+## 1.24.0 - 2026-09-01
 
 ### Added
 
 - **A new `companionMode` setting prevents double-counting cost and token metrics when an org also enables Claude Code's built-in OTel export.** With it on, Preflight's own cost gauges are suppressed and cost-bearing events are tagged for reconciliation instead of dropped, so a blended "org AI spend" dashboard reflects the true total rather than counting each session twice.
 
-## [1.23.0] - 2026-09-01
+## 1.23.0 - 2026-09-01
 
 ### Added
 
 - **The inbound OTLP receiver now enriches protobuf-encoded payloads, not just JSON** — `application/x-protobuf` bodies (the default for most OTel SDKs, including Claude Code's own) are decoded, tagged with session/repo context, and re-encoded, matching what the JSON path already did. A payload using OTLP schema fields newer than the receiver's vendored descriptor loses those unrecognized fields on re-encode; a payload that fails to decode is forwarded unmodified rather than dropped.
 
-## [1.22.0] - 2026-09-01
+## 1.22.0 - 2026-09-01
 
 ### Added
 
 - **Tool-call telemetry now distinguishes user rejections, auto-mode policy denials, and mid-run interrupts from a generic timeout** — `error_type` gains `rejected`, `denied`, and `interrupted` values (previously all three exported as `timeout`), enabling acceptance-rate analysis for Edit/Write tools. Wires Claude Code's `PermissionRequest`/`PermissionDenied` hooks alongside the existing ones; after upgrading, `preflight doctor`'s hooks-wired check will report a failure until `preflight install` is re-run to register the two new hooks.
 
-## [1.21.0] - 2026-09-01
+## 1.21.0 - 2026-09-01
 
 ### Added
 
 - **Git activity — commits, pushes, force-pushes, and PR create/merge outcomes — is now exported to New Relic as `ai.git.*` metrics**, tagged with the same developer/team/project attribution as cost and efficiency metrics.
 
-## [1.20.0] - 2026-09-01
+## 1.20.0 - 2026-09-01
 
 ### Added
 
 - **Every NR event Preflight sends now carries an `event_version` field**, giving NRQL dashboards and alerts a stable way to detect and branch on schema changes going forward.
 
-## [1.19.0] - 2026-08-31
+## 1.19.0 - 2026-08-31
 
 ### Fixed
 
 - **Configs with New Relic credentials but no explicit `mode` now fail to start with a clear error instead of silently sending telemetry.** The config loader previously defaulted to `cloud` whenever a license key was present without an explicit `mode`, contradicting the project's local-first, offline-by-default default; it now requires an explicit `mode` in that case, and defaults to `local` when no credentials are configured. `preflight doctor` also reports the resolved telemetry mode and where it came from.
 
-## [1.18.6] - 2026-09-01
+## 1.18.6 - 2026-09-01
 
 ### Fixed
 
 - **Using the safe force-push variants `git push --force-with-lease` and `git push --force-if-includes` no longer triggers a critical destructive-command security alert.** The audit trail's pattern matched on the `--force` prefix alone, so these safe forms were flagged the same as a plain `--force`, contradicting documented behavior; the underlying `git push --force` and `git push -f` cases are still flagged.
 
-## [1.18.5] - 2026-09-01
+## 1.18.5 - 2026-09-01
 
 ### Fixed
 
 - **Copilot (and other hook-based platforms') sessions drained through `--local` now reach New Relic when cloud credentials are configured**, and are tagged with their real originating platform instead of always being recorded as Claude Code — previously `--local` unconditionally skipped cloud sending and every hook-sourced event lost its true platform and session attribution.
 
-## [1.18.4] - 2026-08-31
+## 1.18.4 - 2026-08-31
 
 ### Added
 
@@ -694,52 +699,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Retry-thrashing compute waste is now attributed to the session that caused it.** The Compute Waste card's underlying `RetryDetector` drains every session's buffer in `--local` mode, so a large wasted-token number previously had no way to tell which session was responsible — two unrelated sessions retrying the same tool could also blend into one false alert. `/api/compute-waste` and `/api/retry-alerts` now include a per-session breakdown, and the Compute Waste card shows the top contributing session.
 - **`RetryDetector`'s internal buffers are now bounded** for a long-running `--local` process — the alert list, per-session breakdown, and dedupe tracking all previously grew without limit.
 
-## [1.18.3] - 2026-08-30
+## 1.18.3 - 2026-08-30
 
 ### Added
 
 - **A `preflight server` subcommand runs Preflight in homelab mode** — a lightweight standalone server that accepts tool-call events forwarded from remote Preflight instances (bearer-token authenticated over `/ingest`) and accumulates them into standard session-store files on disk. Remote instances forward events via a new `homelabServerUrl`/`homelabToken` config pair (or `NEW_RELIC_AI_HOMELAB_URL`/`NEW_RELIC_AI_HOMELAB_TOKEN`), buffering in the background so a forwarding failure never blocks local observability. A Docker Compose setup and operator docs cover running the server continuously. Viewing the aggregated data through a shared dashboard is not yet implemented — see [homelab.md](../docs/homelab.md) for current scope.
 - **`HomelabForwarder` validates its configured server URL before connecting** — it allows private LAN destinations (that's the whole point of homelab server mode), but refuses to connect to cloud metadata endpoints or a resolved address that turns out to be one, and only accepts `http:`/`https:`. A bad or malicious `homelabServerUrl` just disables forwarding with a logged warning instead of crashing MCP startup.
 
-## [1.18.2] - 2026-08-28
+## 1.18.2 - 2026-08-28
 
 ### Added
 
 - **A new "API Failures" dashboard panel and `nr_observe_get_api_failures` MCP tool report model-API failures observed via Claude Code's `StopFailure` hook** — turns that failed outright after Claude Code's own retries were exhausted, broken down by error type (rate limit, server error, authentication, context length exceeded) with throttle-rate alerts when a model repeatedly rate-limits in a short window. Token loss, recovery time, and retry-count fields remain unavailable, since the `StopFailure` hook does not carry that data.
 
-## [1.18.1] - 2026-08-28
+## 1.18.1 - 2026-08-28
 
 ### Fixed
 
 - **The session detail view's Model card now shows every model used during a session, not just the last one.** A session that switched models partway through (for example, via `/model`) previously showed only whichever model happened to be active when the view loaded.
 
-## [1.18.0] - 2026-08-28
+## 1.18.0 - 2026-08-28
 
 ### Added
 
 - **Sessions are now named from Claude Code's own per-session titles** — a human-given name or Claude's auto-generated title — instead of just the project directory, so sessions in the same repo no longer all show up under one identical, uninformative name. Falls back to the directory name when no title is available yet, and a name only ever gets replaced by an equally or more trustworthy one.
 - **When content recording is enabled, each session's originating prompt is now available** as `session_intent` through the MCP tools, redacted the same way as all other captured content. Off by default, and never exposed on the local dashboard.
 
-## [1.17.1] - 2026-08-28
+## 1.17.1 - 2026-08-28
 
 ### Changed
 
 - **The bundled Copilot pricing gap-fill overlay is now a general-purpose pricing overlay** (`pricing-overlay/`, previously `copilot-pricing/`). Its previous entries (`grok-4.5`, `raptor-mini`, and other Copilot-visible models) are now part of the built-in pricing table directly, so the overlay itself sits unused until a future model needs a gap-fill — no change to the cost calculated for any model.
 - Bumped several dependencies (testing, linting, and build tooling) to their latest compatible versions, plus two transitive `overrides` pins (`js-yaml`, `nanoid`). No user-visible behavior change.
 
-## [1.17.0] - 2026-08-26
+## 1.17.0 - 2026-08-26
 
 ### Changed
 
 - **Structural cleanup to CLI configuration and shared transport code.** Minor adjustments to the setup wizard's environment-selection flow and several install/deploy code paths.
 
-## [1.16.4] - 2026-08-24
+## 1.16.4 - 2026-08-24
 
 ### Fixed
 
 - **`nr_observe_get_retry_alerts` no longer flags genuinely distinct, successful calls to a third-party MCP tool (or any tool with no built-in input parser) as thrashing.** The similarity check previously Levenshtein-compared each call's full input hash directly; two unrelated hashes still share enough characters by chance to land above the detection threshold once a handful of calls accumulate. The hash is now compared by exact-match equality instead, which still catches genuine identical-input retries without the false-positive floor.
 
-## [1.16.3] - 2026-08-21
+## 1.16.3 - 2026-08-21
 
 ### Added
 
@@ -750,7 +755,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`nr_observe_get_git_efficiency`'s PR metrics no longer undercount pull requests created or edited through the GitHub MCP server's tools** (`create_pull_request`, `update_pull_request`) rather than the `gh` CLI. These tool calls were already captured by Preflight but were previously ignored by the PR metric entirely.
 - **`nr_observe_get_retry_alerts` no longer flags genuinely distinct, successful tool calls as thrashing when they share the same working directory, transcript, and permission mode.** Session-constant metadata fields were previously compared for similarity alongside the actual command content, pulling unrelated calls into a false-positive band just above the detection threshold.
 
-## [1.16.2] - 2026-08-20
+## 1.16.2 - 2026-08-20
 
 ### Fixed
 
@@ -759,14 +764,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Platform detection no longer misattributes a session to the wrong AI coding assistant when more than one is installed.** An explicit platform configuration (e.g. registering the MCP server for GitHub Copilot) is now always honored over an inherited ambient signal from an unrelated installed tool, regardless of adapter registration order.
 - **Very long-lived or heavily-resumed sessions can no longer have older token-usage turns double-counted after certain project-rename recovery scenarios.** The in-memory dedup mechanism that guards against redelivered lines was previously shared globally across every active session; it's now scoped per session so one session's activity can no longer evict another's dedup history.
 
-## [1.16.1] - 2026-08-20
+## 1.16.1 - 2026-08-20
 
 ### Fixed
 
 - **"Spend Today" no longer inflates to wildly untrustworthy totals for a resumed multi-day session.** A session's cost is now summed from its actual per-day spend instead of pro-rating its full lifetime cost by a tool-call timeline — which previously attributed a resumed session's entire multi-week cumulative cost to a single day whenever it had no timeline to pro-rate against.
 - **Token and cost totals are no longer double-counted for a session that continues after its underlying project folder is renamed or moved.** The transcript watchers now read only the newest copy of a session's transcript when more than one exists on disk, instead of applying one copy's read position to the other's unrelated content.
 
-## [1.16.0] - 2026-08-12
+## 1.16.0 - 2026-08-12
 
 ### Added
 
@@ -775,21 +780,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **New platform: GitHub Copilot CLI/SDK (`copilot-sdk`)**, distinct from the VS Code Copilot Chat adapter above — full-hooks tool-call capture via the same hook envelope, plus optional token-exact cost through a small bundled Copilot SDK extension that subscribes to the runtime's `assistant.usage` event. See the "GitHub Copilot SDK" section of `docs/ADAPTERS.md` for setup.
 - **Bundled pricing overlay for Copilot-visible models missing from the vendored pricing table** (e.g. `grok-4.5`, `raptor-mini`, several `kimi`/`mai-code` variants), which previously resolved to `$0` cost. Applied automatically at startup unless a custom pricing file is configured — see `copilot-pricing/README.md` for the gap-fill contract and known limitations.
 
-## [1.15.6] - 2026-08-18
+## 1.15.6 - 2026-08-18
 
 ### Fixed
 
 - **`nr_observe_get_context_composition` no longer reports dominance percentages in the millions of percent with `fillPercent` near zero.** Under prompt caching, the turn's total context size was computed from the uncached input delta alone instead of including cache-read and cache-creation tokens, producing a denominator many orders of magnitude too small. The tool also now resolves the model's real context window instead of staying hard-coded at a 200k default.
 - **`nr_observe_get_retry_alerts` no longer flags ordinary, non-repeated tool calls as thrashing for tools without dedicated metadata extraction** (e.g. the native Windows PowerShell tool). Every call to such a tool previously serialized identically for similarity comparison regardless of how different the underlying input actually was. The dedupe key and wasted-token estimate were also corrected so the same offending calls aren't re-counted repeatedly and only genuinely redundant repeats are charged as waste.
 
-## [1.15.5] - 2026-08-17
+## 1.15.5 - 2026-08-17
 
 ### Fixed
 
 - **A resumed session's file/line/test/build/agent-spawn counts, quality-proxy signal counts, and efficiency-score average no longer reset to zero when the MCP server process restarts mid-session** — closing and reopening a terminal, a laptop sleep/wake, `claude --resume`, or a crash all restart the process. These are the same restart-recovery gap fixed for cost/token totals and per-model/per-workflow-run breakdowns in 1.15.4, now closed for the remaining stateful trackers found in that same audit.
 - **Session-budget threshold alerts (50%/80%/100%) no longer re-fire after a process restart.** Once the fix above correctly restores a session's pre-restart spend immediately on restart, the budget tracker now also recognizes any threshold that total already implies as already-fired, instead of alerting again for spend that isn't new.
 
-## [1.15.4] - 2026-08-14
+## 1.15.4 - 2026-08-14
 
 ### Fixed
 
@@ -797,7 +802,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A resumed session's per-model and per-workflow-run cost breakdowns no longer lag behind its now-correct overall total** — both are restored from the same pre-restart checkpoint as the fix above, so the Model Performance panel and per-workflow-run spend stay consistent with the session total instead of only reflecting post-restart activity.
 - **A session's restored cost/token total can no longer be attributed to the wrong session.** The restart-recovery fix above only re-attaches a session's own prior totals once its identity is confirmed — previously, an unconfirmed, ambiguous session-id guess could import a different session's cost/token total before that guess was verified.
 
-## [1.15.3] - 2026-08-14
+## 1.15.3 - 2026-08-14
 
 ### Added
 
@@ -819,14 +824,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Resolved 2 high-severity `npm audit` findings (`brace-expansion`, `js-yaml`) by updating to their patched versions.
 
-## [1.15.2] - 2026-08-13
+## 1.15.2 - 2026-08-13
 
 ### Added
 
 - **`preflight doctor` now includes three additional checks**: whether the running Node.js version meets the minimum supported version, whether a newer version of Preflight is available on npm, and whether the Node.js binary colocated with the installed Claude Code hook matches the Node currently running `doctor` (catches an nvm default that changed after install).
 - **`preflight local` now also lists live `--stdio` MCP processes** (one per Claude Code window), not just `--local` dashboard processes, and `--clean` auto-flags `--stdio` processes whose recorded binary no longer exists on disk for cleanup.
 
-## [1.15.1] - 2026-08-13
+## 1.15.1 - 2026-08-13
 
 ### Fixed
 
@@ -839,20 +844,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A dashboard-only dead code path (`fetchLatency`) was removed** — no user-visible change; latency data continues to be served via the Today dashboard's aggregate endpoint.
 - **Region host configuration (events-ingest host, NerdGraph URL, license-key auto-detect, deploy CLI flags) is now consolidated into one internal registry**, instead of being hand-maintained separately in four places — no change in behavior, this only reduces the risk of the four copies drifting out of sync when a region is added or changed in the future.
 
-## [1.15.0] - 2026-08-12
+## 1.15.0 - 2026-08-12
 
 ### Added
 
 - **The Today dashboard now shows a "Cost by Tool" panel** breaking down spend by tool type (Read, Edit, Bash, Agent, etc.), with call counts, so you can see which tools are driving cost without leaving the Today view.
 - **The cost forecast card now shows end-of-session and end-of-week cost estimates** alongside the existing end-of-day forecast, giving a longer-range view of where spend is headed.
 
-## [1.14.41] - 2026-08-11
+## 1.14.41 - 2026-08-11
 
 ### Fixed
 
 - **The "Activity Today" heatmap now uses the viewing browser's timezone instead of the dashboard server's**, so its day boundary agrees with the rest of the page even when the server and browser run in different timezones (a cloud-hosted or containerized dashboard, or a dev box viewed from a different region). Applies to both the "today" and "history" views of the heatmap.
 
-## [1.14.40] - 2026-08-11
+## 1.14.40 - 2026-08-11
 
 ### Fixed
 
@@ -870,7 +875,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Cache Health panel's week-over-week trend is now computed against the same today-scoped rate as the headline number it's shown beside**, instead of a separate process's lifetime cache rate.
 - **The Today dashboard's spend figures now also refresh from the `/api/cost` endpoint**, closing a gap where they could otherwise go stale across a day boundary.
 
-## [1.14.39] - 2026-08-10
+## 1.14.39 - 2026-08-10
 
 ### Fixed
 
@@ -886,7 +891,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Sessions page's KPI strip now discloses when it's describing sessions outside the currently visible list**, and the disclosed count now matches what's actually shown rather than a fixed page size.
 - **A live session tracked by a different process on the Sessions detail page now scores tool selection using correctly time-ordered records.**
 
-## [1.14.38] - 2026-08-10
+## 1.14.38 - 2026-08-10
 
 ### Fixed
 
@@ -898,7 +903,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Git Efficiency page's worktree best-practice check no longer conflates "not enough data" with "fully evaluated, not applicable."** These are now tracked as distinct outcomes, and both are excluded from the best-practices pass ratio the same way.
 - **Workflow-run duration is no longer reported as zero when it's actually unknown.** A run that's still in progress (or was killed before finishing) now reports its duration as unknown rather than a confirmed instant zero, so it no longer skews duration averages downward.
 
-## [1.14.37] - 2026-08-09
+## 1.14.37 - 2026-08-09
 
 ### Fixed
 
@@ -908,7 +913,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Best Practices and Suggestions panels no longer duplicate the same finding with disagreeing detail, and both now sort by severity** so a critical item never renders below a lower-severity one.
 - **Conflict-resolution counts now correspond to real conflicts.** Accept-ours/accept-theirs/cherry-pick counts are attributed per pending conflict instead of per matching command, concurrent pending conflicts are tracked independently instead of overwriting each other, and a pull that conflicts directly is now counted as a stale-branch pull.
 
-## [1.14.36] - 2026-08-09
+## 1.14.36 - 2026-08-09
 
 ### Fixed
 
@@ -918,19 +923,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Session-, repo-, and process-scoped data is now attributed to the right owner** — a live in-progress session's real model is no longer bucketed as "unknown," a different repo's git activity earlier in the day no longer counts against the currently active repo, and per-session decision-tree/turn-cost data no longer blends across concurrently-live sessions.
 - **`GET /api/audit` and the underlying audit-log reader now cap how much history is read from disk per request**, bounding both the response size and the amount of work a single request can trigger.
 
-## [1.14.35] - 2026-08-06
+## 1.14.35 - 2026-08-06
 
 ### Added
 
 - **Compute waste is now a unified metric** — `AntiPatternDetector` annotates every detected anti-pattern (thrashing, re-reading, stuck loops, blind editing, over-delegation) with an estimated `tokensWasted`, combined with `RetryDetector`'s existing waste tracking into one total. Surfaced via a new "Compute Waste" panel in the Today dashboard view (headline token count, status pill, per-source breakdown, top offender, and a recommendation), a new `GET /api/compute-waste` dashboard route, and a new `nr_observe_get_compute_waste` MCP tool.
 
-## [1.14.34] - 2026-08-06
+## 1.14.34 - 2026-08-06
 
 ### Added
 
 - **History dashboard now shows a Collaboration Profile panel and an Instruction File Impact panel** — a developer-collaboration-style classification (specificity, autonomy, correction rate, task complexity vs. team baseline) and a before/after comparison for the most recent instruction-file change (CLAUDE.md, or your platform's equivalent), both previously available only through MCP tools.
 
-## [1.14.33] - 2026-08-05
+## 1.14.33 - 2026-08-05
 
 ### Added
 
@@ -945,7 +950,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **README now explains what happens after enabling cloud mode** — cloud mode ships telemetry immediately, but no dashboard exists until `deploy-dashboards` is run separately with a different credential (a user API key, not the license key). The README now calls this out explicitly and shows how to query the raw data via NRQL in the meantime.
 
-## [1.14.32] - 2026-08-05
+## 1.14.32 - 2026-08-05
 
 ### Added
 
@@ -955,25 +960,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`preflight install --mode`'s "default: local" help text is now accurate** — omitting `--mode` previously left the mode unresolved until the server's own fallback resolved it to `cloud`. Installs without a saved mode now get `local` written explicitly.
 
-## [1.14.31] - 2026-08-05
+## 1.14.31 - 2026-08-05
 
 ### Added
 
 - **The History dashboard now surfaces personalized optimization recommendations** — a new panel synthesizes cost, prompt-engineering, and model-selection signals into a prioritized list, with high-priority items expanded and the rest shown as a compact list.
 
-## [1.14.30] - 2026-08-04
+## 1.14.30 - 2026-08-04
 
 ### Added
 
 - **The History dashboard's Personal Coach panel now shows the numbers behind its recommendations** — a compact table of this week's efficiency, cost per session, anti-pattern rate, and session count sits above the existing highlights and top recommendation, each metric paired with a delta badge against your rolling baseline.
 
-## [1.14.29] - 2026-08-04
+## 1.14.29 - 2026-08-04
 
 ### Added
 
 - **The context bar and session detail drawer now show what's driving context usage** — expanding a session's context bar (Sessions page) or opening the "session detail" drawer (Today's live pane) surfaces the dominant content category for the current turn and the files being re-read most often, alongside the existing token breakdown.
 
-## [1.14.28] - 2026-08-04
+## 1.14.28 - 2026-08-04
 
 ### Fixed
 
@@ -983,135 +988,135 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Transport region resolution now recognizes the Japan (`jp`) data center** — license keys and collector hosts for New Relic's Japan region resolve to the correct events/metric/log ingest hostnames. The setup wizard, license/API-key validator, and `deploy-dashboards`/`deploy-alerts` CLI commands recognize the region too: a `jp`-prefixed license key is auto-detected during setup, and `--jp` targets NR's Japan NerdGraph endpoint (`https://api.jp.newrelic.com/graphql`) for dashboard/alert deployment.
 
-## [1.14.27] - 2026-08-04
+## 1.14.27 - 2026-08-04
 
 ### Added
 
 - **The Today dashboard's live session pane now shows a context-window fill timeline** — the "session detail" drawer gains a stacked-area chart of context fill per turn, so you can see how the context window filled up over the course of a session, not just its current snapshot. On the full Sessions page, the same chart still expands inline from the context bar's own chevron, unchanged.
 
-## [1.14.26] - 2026-08-03
+## 1.14.26 - 2026-08-03
 
 ### Added
 
 - **The Today dashboard's live session pane now shows decision-tree and per-turn cost detail** — a "session detail" link opens a drawer with the current session's longest failure streak, success rate, and recovery reasoning, alongside a full breakdown of recent turns by cost, tokens, and model.
 
-## [1.14.25] - 2026-08-02
+## 1.14.25 - 2026-08-02
 
 ### Added
 
 - **The History dashboard now shows how your last instruction file change affected your sessions** — a new "Instruction Drift" panel compares session outcomes before and after your most recent edit to CLAUDE.md (or the active platform's equivalent, e.g. Cursor's `.cursorrules`), showing an improved/degraded/neutral verdict alongside the success-rate, token-usage, and thrashing deltas behind it.
 
-## [1.14.24] - 2026-08-02
+## 1.14.24 - 2026-08-02
 
 ### Added
 
 - **The Today dashboard's thrashing anti-pattern banner now shows an estimated wasted-token count when one is available** — when the retry detector has flagged the same repeated tool call behind the banner's alert, the banner appends a rough token-waste estimate next to the existing pattern type and file/command target, rather than requiring a separate lookup.
 
-## [1.14.23] - 2026-08-02
+## 1.14.23 - 2026-08-02
 
 ### Added
 
 - **Each panel on the Today dashboard now has an info icon next to its header explaining what it measures** — hover or keyboard-focus the icon for a short explanation of what's shown and how it's computed (covers Quality, Tool Selection, Latency, Model Usage, Cache Health, Session Live Tail, Recent Alerts, Activity Today, and the End-of-Day forecast). The tooltip always renders in full, even next to a panel with its own scrollable area.
 
-## [1.14.22] - 2026-08-01
+## 1.14.22 - 2026-08-01
 
 ### Fixed
 
 - **A `--stdio` MCP process that briefly adopted a stale, cwd-fallback-resolved session identity before self-correcting (see 1.14.21) could still leave lasting damage from that brief window** — if the periodic 30-second checkpoint fired before the real PPID-derived identity was confirmed, it wrote a real, non-synthetic, zero-activity session file to disk under the stale identity, orphaning it; separately, any cost/token data backfilled from an unrelated old session under that stale identity rode along uncorrected into the real session's own totals once corrected, since the correction only relabeled the tracker in place. Checkpointing is now suppressed for as long as a session's identity is unconfirmed (capped at two minutes so a session that never gets a PPID breadcrumb doesn't lose checkpointing indefinitely), and a real correction now resets the affected cost/token trackers before continuing so nothing from the wrong identity carries forward.
 
-## [1.14.21] - 2026-08-01
+## 1.14.21 - 2026-08-01
 
 ### Fixed
 
 - **A `--stdio` MCP process could permanently adopt the wrong session identity when startup resolution fell back to the cwd-keyed breadcrumb before the precise PPID-keyed one was available** — the cwd breadcrumb is shared by every session that has ever run in that directory, so a stale value left over from an unrelated prior session could win the race and be adopted for the life of the process, with no way to self-correct once the real PPID breadcrumb appeared moments later. Every metric, checkpoint, and tool call for that session would then be misattributed to the wrong session ID. The MCP now watches for a PPID-breadcrumb resolution in the background whenever it had to fall back to the cwd breadcrumb, and re-adopts the correct session identity the moment one appears, preserving all metrics already recorded under the earlier one.
 
-## [1.14.20] - 2026-08-01
+## 1.14.20 - 2026-08-01
 
 ### Fixed
 
 - **`ParentTranscriptWatcher` (added in 1.14.19) attributed every parent-session token event to "today," regardless of the turn's real timestamp** — the day-bucketed cost total is keyed by arrival time unless an explicit timestamp is passed in, and the parent-token wiring never passed one (unlike the sibling subagent-token path, which already did). This was latent and harmless while nothing replayed history, but became a real bug the moment the watcher started backfilling up to 24h of transcript history in `--local` mode: every replayed historical turn got counted as today's spend, inflating and destabilizing the "Spend Today" figure while the backlog was being processed. Parent token events are now stamped with their actual transcript timestamp before being recorded, so historical turns land in their real day's bucket instead of today's.
 
-## [1.14.19] - 2026-08-01
+## 1.14.19 - 2026-08-01
 
 ### Fixed
 
 - **Parent-session cost tracking only ever captured the single most recent assistant turn each time a tool-call hook fired, silently dropping every other turn that happened in between** — since a turn with no tool call never triggers a hook at all, any conversational reply sandwiched between tool calls (or a stretch of replies at the end of a session) was permanently lost from cost tracking, undercounting real spend by roughly half in a mostly-conversational session. Token capture is now handled by a `ParentTranscriptWatcher` that tails each session's own transcript independently of tool-call timing, via the same durable byte-cursor approach already used for subagent cost tracking, so every real turn is captured regardless of whether it called a tool.
 
-## [1.14.18] - 2026-08-01
+## 1.14.18 - 2026-08-01
 
 ### Fixed
 
 - **The `--stdio` MCP's synchronous session-ID resolution at startup only tried the job-dir and PPID-keyed breadcrumb, skipping the cwd-keyed breadcrumb that the async resolver already falls back to** — on setups where the PPID breadcrumb never matches (e.g. native Windows, where the hook collector's PPID is a transient shell process rather than the real parent), this meant every session started in the provisional window and paid an avoidable delay before cloud ingest wired up. Synchronous resolution now tries the cwd breadcrumb too, matching the async resolver's fallback order. Also added a one-time warning log when a tool record arrives while cloud mode is configured but ingest hasn't initialized yet, so a stuck provisional window is now visible in the logs instead of silently dropping events.
 
-## [1.14.17] - 2026-07-31
+## 1.14.17 - 2026-07-31
 
 ### Fixed
 
 - **The Today dashboard's Quality panel only reflected diff-apply/test-pass/backtrack/self-correction signals from whichever process happened to be serving the dashboard, and only when that process had recorded zero signals of its own** — as soon as this process recorded even one signal, every other today session's activity was ignored outright. It's now computed from every today session's activity, the same way the other cross-process Today dashboard fixes already are. A persisted session's own detail view was also simplified to read its quality signals directly instead of re-deriving them from its recorded timeline.
 
-## [1.14.16] - 2026-07-31
+## 1.14.16 - 2026-07-31
 
 ### Fixed
 
 - **The Today dashboard's Model Usage panel only reflected model/token/cost activity from whichever process happened to be serving the dashboard** — its per-model request counts and cost-per-token figures came from that one process's own in-memory tracker, silently excluding activity from every other concurrently running session and resetting whenever that process restarted. It's now computed from every today session's activity, the same way the other cross-process Today dashboard fixes already are.
 
-## [1.14.15] - 2026-07-31
+## 1.14.15 - 2026-07-31
 
 ### Fixed
 
 - **The Today dashboard's "Forecast · End of Day" card only projected spend from whichever process happened to be serving the dashboard** — its burn-rate calculation came from that one process's own in-memory cost tracker, which is empty on a dashboard-only process with no coding activity of its own, so the forecast silently failed to account for spend happening in other concurrently running sessions. It's now computed from every today session's activity, the same way the other cross-process Today dashboard fixes already are.
 
-## [1.14.14] - 2026-07-31
+## 1.14.14 - 2026-07-31
 
 ### Fixed
 
 - **The Today dashboard's Tool Selection panel only reflected tool calls handled by whichever process happened to be serving the dashboard** — its score and redundant-read/repeated-failure/unused-output counts came from that one process's own in-memory buffer, silently excluding activity from every other concurrently running session and resetting whenever that process restarted. It's now computed from every today session's activity, the same way the other cross-process Today dashboard fixes already are.
 
-## [1.14.13] - 2026-07-30
+## 1.14.13 - 2026-07-30
 
 ### Fixed
 
 - **The Today dashboard's Cache Health panel only reflected token usage seen by whichever process happened to be serving the dashboard** — its hit-rate percentage and dollar savings came from that one process's own in-memory tracker, silently excluding cache activity from every other concurrently running session. It's now computed from every today session's token usage, the same way the other cross-process Today dashboard fixes already are.
 
-## [1.14.12] - 2026-07-31
+## 1.14.12 - 2026-07-31
 
 ### Fixed
 
 - **The Today dashboard's Latency panel only reflected tool calls handled by whichever process happened to be serving the dashboard** — its p50/p95/p99 figures came from that one process's own in-memory tracker, silently excluding latency data from every other concurrently running session. It's now computed from every today session's activity, the same way the other cross-process Today dashboard fixes already are.
 
-## [1.14.11] - 2026-07-30
+## 1.14.11 - 2026-07-30
 
 ### Fixed
 
 - **The context-window bar could go blank for a session that was live only in a different process than the one serving the dashboard** — it read only that one process's own in-memory tracker, so any session running elsewhere had no context-window data to show even while active. It now recomputes the same metrics on demand from that session's pending activity, the same way the other cross-process Today dashboard fixes already do.
 
-## [1.14.10] - 2026-07-30
+## 1.14.10 - 2026-07-30
 
 ### Fixed
 
 - **The live-sessions list and the "current concurrency" count only saw sessions that the dashboard-serving process itself had handled** — with multiple Claude Code sessions running against different concurrent processes, a session live in another process never appeared in the Today selector or counted toward current concurrency, even though its activity was visible on disk. Both now also check every process's pending activity buffer, so a session shows up as live regardless of which process is serving the dashboard.
 
-## [1.14.9] - 2026-07-30
+## 1.14.9 - 2026-07-30
 
 ### Fixed
 
 - **The Today dashboard's efficiency KPI only reflected whichever process happened to be serving the dashboard** — with multiple Claude Code sessions running concurrently, only one process's own in-memory efficiency tracker ever backed the "efficiency" figure, silently excluding coding productivity data from every other session. It's now aggregated across today's sessions, the same way the other Today KPIs (activity, concurrency, spend) already were.
 - **The anti-pattern detail banner could show a blank pattern name and file even when the flags count above it was non-zero** — the banner only checked the dashboard-serving process's own live anti-pattern detections, so when a pattern was detected in a different session that persisted its own state to disk, the banner had no way to retrieve it and remained blank. It now falls back to already-persisted anti-pattern data from each session, the same way the efficiency KPI now does.
 
-## [1.14.8] - 2026-07-30
+## 1.14.8 - 2026-07-30
 
 ### Fixed
 
 - **The Today dashboard's activity heatmap and concurrency chart could show a gap for a session that started before local midnight and was still running** — both read only sessions whose _start_ date matched today's, so a session crossing midnight was invisible to them even though its today-portion should have counted (the "spend today" figure already handled this case correctly via a separate helper). Both now include cross-midnight sessions, counting only their activity that actually falls within today.
 
-## [1.14.7] - 2026-07-30
+## 1.14.7 - 2026-07-30
 
 ### Fixed
 
 - **A `--local` dashboard process running alongside active `--stdio` sessions could silently steal a portion of a session's tool-call and token events.** Both processes poll for new events on the same per-session buffer file; `--local`'s cross-session drain had no way to tell that a `--stdio` process already owned and was draining that exact file itself. Whichever side won a given poll cycle kept the events, and the other side saw nothing, with no error on either side — silently undercounting that session's own stats and cost tracking, and, for a session configured for cloud telemetry, dropping those events from New Relic entirely. `--local` now skips any per-session buffer that has a live `--stdio` owner.
 - **Opting a `--local` process into its own subagent watcher (`NR_AI_WATCHER_MODE=local`) while a `--stdio` sibling was also running caused both processes to redundantly tail the same subagent transcripts and race over the same cursor files.** The unfiltered watcher now skips any session that already has a live `--stdio` owner, the same way the buffer-drain fix above does.
 
-## [1.14.6] - 2026-07-30
+## 1.14.6 - 2026-07-30
 
 ### Fixed
 
@@ -1119,7 +1124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The "subagent cost tracking is disabled" banner named the wrong cause for background dashboard processes** — a dashboard running in standalone/background mode doesn't run its own subagent watcher by default (by design), which the banner incorrectly attributed to the `NR_AI_ENABLE_SUBAGENT_WATCHER` environment variable even when that variable was never set. The banner now distinguishes the two cases and gives accurate guidance for each.
 - **Closed a related double-counting risk**: opting a background dashboard process into its own subagent tracking (`NR_AI_WATCHER_MODE=local`) could have caused subagent spend it discovered to be counted twice — once via the originating session's own persisted total, and again via the background process's own unscoped watcher. That process's own live total is no longer added on top of already-persisted sessions' totals.
 
-## [1.14.5] - 2026-07-29
+## 1.14.5 - 2026-07-29
 
 ### Security
 
@@ -1131,7 +1136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unified the `highSecurity` → `recordContent` gate behind a single helper function; no behavior change.
 - Updated `BatchLogRecordProcessor` construction for the current OpenTelemetry Logs SDK API, and bumped the OpenTelemetry logs/exporter family (`sdk-logs`, `exporter-logs-otlp-http`, `exporter-metrics-otlp-http`, `exporter-trace-otlp-http`) from 0.219.0 to 0.221.0 to match.
 
-## [1.14.4] - 2026-07-29
+## 1.14.4 - 2026-07-29
 
 ### Security
 
@@ -1141,104 +1146,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Updated `@modelcontextprotocol/sdk`, OpenTelemetry's `resources`, `sdk-metrics`, and `sdk-trace-node` packages, `jsdom`, `@testing-library/jest-dom`, and the build/lint/test toolchain to their latest compatible versions. No user-visible behavior change.
 
-## [1.14.3] - 2026-07-24
+## 1.14.3 - 2026-07-24
 
 ### Fixed
 
 - **Subagent and transcript cursor files were never garbage-collected** — `.subagent-pos-<sessionId>-<agentId>` (written once per spawned subagent, including workflow-spawned agents) and `.transcript-pos-<sessionId>` files in the storage root accumulated indefinitely; heavy subagent or workflow usage could leave thousands of small files behind with no cleanup path. The periodic maintenance sweep now removes a subagent cursor once its parent session is no longer active and the cursor is older than the watcher's cold-scan window, and removes a transcript cursor once its session is no longer active and no companion buffer file remains for it.
 
-## [1.14.2] - 2026-07-24
+## 1.14.2 - 2026-07-24
 
 ### Fixed
 
 - **Generic-MCP self-report tools were never reachable** — `nr_observe_report_tool_call`, `nr_observe_report_session_start`, and `nr_observe_report_session_end` were fully implemented on `GenericMcpAdapter` but never registered on the running MCP server, so any client following the generic-MCP setup instructions in `docs/ADAPTERS.md` found no such tools on `tools/list`. They're now registered whenever the server starts in `--stdio` mode, with `nr_observe_report_tool_call` feeding into the same `SessionTracker`/ingest pipeline hook-driven platforms use.
 
-## [1.14.1] - 2026-07-24
+## 1.14.1 - 2026-07-24
 
 ### Fixed
 
 - **Native Windows session resolution** — the `--stdio` MCP server now resolves its Claude Code `session_id` on native Windows, where Claude Code interposes Git Bash between itself and the hook collector but launches the MCP server directly. The hook collector writes an additional breadcrumb keyed by the project's working directory (alongside the existing PID-keyed breadcrumb); the MCP server falls back to it, on any platform, whenever the PID-based lookup misses. Previously, affected sessions never resolved a real session ID, so dashboard History, weekly summaries, and model-performance metrics never populated for them.
 
-## [1.14.0] - 2026-07-23
+## 1.14.0 - 2026-07-23
 
 ### Added
 
 - **Google Antigravity platform adapter** — Preflight now detects and normalizes tool calls from Google Antigravity (2.0 / IDE / CLI) as a full `full-hooks` platform. Antigravity ships a real, first-party, documented `hooks.json` mechanism (`PreToolUse`/`PostToolUse`) covering every built-in tool call (`run_command`, `view_file`, `write_to_file`, `grep_search`, and more — see `docs/ADAPTERS.md` for the full map). Antigravity's hook payloads carry no field naming which event fired at all, so Preflight dispatches on payload shape instead (presence of a `toolCall` key means `PreToolUse`); because `PostToolUse` carries no tool name either, pairing is done by a `stepIdx`-derived ID rather than by tool name. Detection is explicit opt-in (`MCP_CLIENT=antigravity`) — no ambient environment variable is exposed for this purpose. Setup instructions (both MCP registration and the `hooks.json` entries) are in `docs/ADAPTERS.md`.
 
-## [1.13.0] - 2026-07-23
+## 1.13.0 - 2026-07-23
 
 ### Added
 
 - **Pi platform adapter** — Preflight now detects and normalizes tool calls from [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`). Pi sessions are detected via `PI_CODING_AGENT=true`, a real ambient environment variable Pi itself sets for exactly this purpose. Pi has zero MCP client support by deliberate design, so unlike every other `full-hooks` platform this adapter does not register an MCP server — setup instead uses `--local` mode (optionally backed by the existing background dashboard daemon on macOS) since nothing else keeps a Preflight process running for Pi sessions. Preflight ships a documented extension snippet (see `docs/ADAPTERS.md`) that translates Pi's own `tool_call`/`tool_result` extension events into the same shape Claude Code already sends, so built-in tool calls (`bash`, `read`, `write`, `edit`, `grep`, `find`) are captured and mapped to Preflight's standard vocabulary automatically once the extension is installed. Unlike opencode/Kilo Code, Pi's hook payload does carry a real success/failure signal (`event.isError`), so captured tool calls report their actual outcome rather than always reporting success. `ls` and any tool disabled by default have no structured coverage yet. Setup instructions are included in `docs/ADAPTERS.md`.
 
-## [1.12.0] - 2026-07-23
+## 1.12.0 - 2026-07-23
 
 ### Added
 
 - **Kilo Code platform adapter** — Preflight now detects and normalizes tool calls from [Kilo Code](https://kilocode.ai) (`@kilocode/cli`). Kilo Code sessions are detected via `MCP_CLIENT=kilocode` or `NEW_RELIC_AI_PLATFORM=kilocode` (Kilo's documentation lists no ambient environment variable for the MCP server process itself, unlike several other platforms). Kilo CLI is a confirmed fork of opencode and shares its exact plugin-based interception mechanism — no external hooks.json, only an in-process plugin. Preflight ships a documented plugin snippet (see `docs/ADAPTERS.md`) that translates Kilo's own `tool.execute.before`/`tool.execute.after` plugin events into the same shape Claude Code already sends, so built-in tool calls (`read`, `glob`, `grep`, `edit`, `write`, `apply_patch`, `bash`, `webfetch`, `websearch`, `question`, `todowrite`, `todoread`, `plan`, `task`, `skill`) are captured and mapped to Preflight's standard vocabulary automatically once the plugin is installed. Kilo's hook payload carries no success/failure signal, so every captured tool call is currently reported as successful, and only `bash`/`read`/`edit`/`write` receive structured input metadata. Setup instructions are included in `docs/ADAPTERS.md`.
 
-## [1.11.0] - 2026-07-23
+## 1.11.0 - 2026-07-23
 
 ### Added
 
 - **opencode platform adapter** — Preflight now detects and normalizes tool calls from [opencode](https://opencode.ai). opencode sessions are detected via `MCP_CLIENT=opencode` or `NEW_RELIC_AI_PLATFORM=opencode` (opencode's documentation lists no ambient environment variable for the MCP server process itself, unlike several other platforms). Unlike Claude Code, Kiro, Amazon Q, Droid, and Codex, which all send `PreToolUse`/`PostToolUse` hooks from an external hooks configuration, opencode has no external hooks file — its only interception point is an in-process plugin. Preflight ships a documented plugin snippet (see `docs/ADAPTERS.md`) that translates opencode's own `tool.execute.before`/`tool.execute.after` plugin events into the same shape Claude Code already sends, so built-in tool calls (`bash`, `read`, `write`, `edit`, `apply_patch`, `grep`, `glob`, `webfetch`, `websearch`, `skill`, `todowrite`, `question`) are captured and mapped to Preflight's standard vocabulary automatically once the plugin is installed. opencode's hook payload carries no success/failure signal, so every captured tool call is currently reported as successful, and only `bash`/`read`/`edit`/`write` receive structured input metadata. Setup instructions are included in `docs/ADAPTERS.md`.
 
-## [1.10.0] - 2026-07-22
+## 1.10.0 - 2026-07-22
 
 ### Added
 
 - **OpenAI Codex platform adapter** — Preflight now detects and normalizes tool calls from [OpenAI Codex](https://developers.openai.com/codex) (CLI, IDE extension, and desktop app). Codex sessions are detected via `MCP_CLIENT=codex` or `NEW_RELIC_AI_PLATFORM=codex` (Codex's documentation lists no ambient environment variable for the MCP server process itself, unlike several other platforms). Codex's native `PreToolUse`/`PostToolUse` hooks use the same event vocabulary and field shapes Claude Code already sends, so built-in tool calls (shell commands, unified exec, `apply_patch` file edits, MCP tool calls, and subagent spawns) are captured and mapped to Preflight's standard vocabulary automatically once hooks are configured. Hosted tools such as `WebSearch` are not observable — Codex's own documentation confirms these never reach the local function-tool hook path. Setup instructions are included in `docs/ADAPTERS.md`.
 
-## [1.9.0] - 2026-07-22
+## 1.9.0 - 2026-07-22
 
 ### Added
 
 - **Cline platform adapter** — Preflight now detects [Cline](https://cline.bot) (VS Code and JetBrains extension, formerly "Claude Dev"). Cline sessions are detected via `MCP_CLIENT=cline` or `NEW_RELIC_AI_PLATFORM=cline` (Cline doesn't forward ambient environment variables into an MCP server's own subprocess, unlike several other platforms, so there's no ambient variable to detect automatically). Cline's VS Code/JetBrains extension has no hook or callback mechanism for its built-in tool calls — confirmed against Cline's own documentation — so Preflight observes only calls Cline routes to Preflight's own MCP tools, the same visibility level as the existing Zed and Continue.dev adapters. Setup instructions are included in `docs/ADAPTERS.md`.
 
-## [1.8.0] - 2026-07-22
+## 1.8.0 - 2026-07-22
 
 ### Added
 
 - **Google Gemini CLI platform adapter** — Preflight now detects and normalizes tool calls from [Gemini CLI](https://github.com/google-gemini/gemini-cli), Google's agentic command-line coding assistant. Gemini CLI sessions are detected via `MCP_CLIENT=gemini-cli` or `NEW_RELIC_AI_PLATFORM=gemini-cli` (Gemini CLI's documentation doesn't expose an ambient environment variable for the MCP server process itself, unlike several other platforms). Gemini CLI's hooks use their own event names (`BeforeTool`/`AfterTool` rather than `PreToolUse`/`PostToolUse`) but the same field shapes Claude Code already sends, so its built-in tool calls (`read_file`, `write_file`, `replace`, `run_shell_command`, `glob`, `grep_search`, `google_web_search`, `web_fetch`) are captured and mapped to Preflight's standard vocabulary automatically once hooks are configured. Gemini CLI also requires hook output to be valid JSON, so the collector now writes an empty JSON object to stdout for Gemini CLI invocations specifically, leaving every other platform's behavior unchanged. Setup instructions are included in `docs/ADAPTERS.md`.
 
-## [1.7.0] - 2026-07-22
+## 1.7.0 - 2026-07-22
 
 ### Added
 
 - **Factory Droid platform adapter** — Preflight now detects and normalizes tool calls from [Factory Droid](https://factory.ai), Factory.ai's agentic CLI and IDE integrations. Droid sessions are detected via `MCP_CLIENT=droid` or `NEW_RELIC_AI_PLATFORM=droid` (Factory's documentation doesn't expose an ambient environment variable for automatic detection, unlike several other platforms). Droid's `PreToolUse`/`PostToolUse` hook events use the same shape Claude Code, Kiro, and Amazon Q already send, so its built-in tool calls (`Task`, `Execute`, `Glob`, `Grep`, `Read`, `Edit`, `Create`, `FetchUrl`, `WebSearch`) are captured and mapped to Preflight's standard vocabulary automatically once hooks are configured. Setup instructions are included in `docs/ADAPTERS.md`.
 
-## [1.6.20] - 2026-07-21
+## 1.6.20 - 2026-07-21
 
 ### Fixed
 
 - The client-side `AlertEvent` type in `src/web/api/client.ts` declared an optional `sessionId` field mirroring the server-side `AlertEvent` shape, but `AlertLog`'s runtime schema (`src/alerts/alert-log.ts`) never included `sessionId`, so `/api/alerts/recent` never actually returned it. Removed the dead field; `src/web/store/liveStore.ts` already had its own `AlertEvent` correctly omitting it, with a comment explaining why.
 
-## [1.6.19] - 2026-07-21
+## 1.6.19 - 2026-07-21
 
 ### Fixed
 
 - `src/web/lib/format.test.ts` and `format.test.tsx` covered disjoint sets of `format.ts` exports with zero overlap, and the `.test.ts` file silently ran under both Jest and Vitest — violating the documented Jest/Vitest routing split (`docs/TEST_PATTERNS.md`), which requires web tests to use `.test.tsx` only. Merged into a single `format.test.tsx`, and added coverage for `scoreColor`, `fmtDateTime`, `fmtTimeOfDay`, `fmtElapsed`, and `formatNumber`, which previously had no tests anywhere.
 
-## [1.6.18] - 2026-07-21
+## 1.6.18 - 2026-07-21
 
 ### Fixed
 
 - License-key/API-key validation (`install/key-validator.ts`) and the team-summary NerdGraph query (`tools/cross-session-tools.ts`) now run their outbound URL through the same SSRF validation (`validateSsrfUrl`) already applied to the proxy's outbound HTTP dispatch. Both build their URL from a fixed map of real NR hostnames, so this closes a consistency gap rather than a currently exploitable path.
 
-## [1.6.17] - 2026-07-21
+## 1.6.17 - 2026-07-21
 
 ### Fixed
 
 - OTel session spans were unconditionally tagged `'ai.platform': 'claude-code'` regardless of which platform was actually detected, so every non-Claude-Code session's trace data in New Relic was mislabeled. Spans are now tagged with the actual detected platform.
 - `nr_observe_get_prompt_cache_health`'s recommendation text referenced "CLAUDE.md rules" specifically; it now says "instruction file rules" to match every platform's own instruction-file convention.
 
-## [1.6.16] - 2026-07-21
+## 1.6.16 - 2026-07-21
 
 ### Added
 
 - New MCP tool `nr_observe_mark_task_boundary` lets any AI coding assistant explicitly signal the end of a task. Claude Code already gets this boundary for free from its own `AskUserQuestion`/`TaskUpdate` tool calls, but platforms without an equivalent tool had no way to mark task boundaries, which reduced the accuracy of anti-pattern, efficiency-score, and cost-per-outcome metrics that segment activity by task.
 
-## [1.6.15] - 2026-07-21
+## 1.6.15 - 2026-07-21
 
 ### Added
 
@@ -1249,7 +1254,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `nr_observe_get_claudemd_impact` and `nr_observe_get_instruction_drift` only ever detected changes to a file literally named `CLAUDE.md`, so a Cursor or Windsurf project's real instruction file was invisible to both tools even though both platforms have the same tool-call visibility Claude Code does. Both tools now also watch each detected platform's actual instruction-file convention.
 - `nr_observe_get_instruction_drift` previously matched any file path merely containing the substring `CLAUDE.md` (e.g. `NOT_CLAUDE.md`, `CLAUDE.md.bak`), not just the real instruction file. It now matches only the actual file.
 
-## [1.6.14] - 2026-07-21
+## 1.6.14 - 2026-07-21
 
 ### Fixed
 
@@ -1259,7 +1264,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Test coverage for `dashboard-health.ts` (`waitForHealthyDashboard()` and `getDashboardAddress()`), which had none despite gating the pass/fail signal shown by `preflight update` and the setup wizard's daemon-install flow.
 
-## [1.6.13] - 2026-07-20
+## 1.6.13 - 2026-07-20
 
 ### Added
 
@@ -1271,7 +1276,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Numeric config values sourced from a config file or CLI flag (harvest intervals, the local OTLP receiver port, the MCP server port, alert evaluation interval/log retention) bypassed the same min/max bounds that were already enforced on the equivalent environment variable — a config-file typo or a stray CLI flag could reach the harvest scheduler or HTTP server completely unclamped.
 - `sessionBudgetUsd`, `dailyBudgetUsd`, `weeklyBudgetUsd`, and `retainSessionsDays` validated positivity only when sourced from an environment variable; a negative or zero value in config.json passed through untouched with no warning, silently disabling the cost guardrail or corrupting the retention window. These fields are now validated and a rejected value logs a warning before falling back to a safe default.
 
-## [1.6.12] - 2026-07-20
+## 1.6.12 - 2026-07-20
 
 ### Added
 
@@ -1283,7 +1288,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Orphan-buffer/breadcrumb/dead-instance GC only ran when the `--local` dashboard won its port bind, but the default `mode` is `cloud` (the documented stdio-MCP setup) — a crashed session in the default configuration leaked `buffer-<id>.jsonl` and heartbeat files forever. GC now runs unconditionally in every mode, independent of dashboard-bind status.
 
-## [1.6.11] - 2026-07-20
+## 1.6.11 - 2026-07-20
 
 ### Added
 
@@ -1294,7 +1299,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `nr_observe_get_platform_comparison` and the weekly Slack digest blended metrics across platforms with different instrumentation coverage with no indication that differences might reflect what each platform lets Preflight observe rather than actual developer behavior. Both now tag results by visibility level and add a caveat when the platforms being compared span more than one level.
 
-## [1.6.10] - 2026-07-20
+## 1.6.10 - 2026-07-20
 
 ### Fixed
 
@@ -1303,14 +1308,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The on-disk security audit log was never populated in proxy mode because no local store was wired up for it; proxied tool calls are now persisted to the audit log like stdio/local traffic.
 - Documented that the proxy's stdio upstream transport shares one child-process connection across all concurrent clients — safe for stateless MCP servers, not for stateful ones.
 
-## [1.6.9] - 2026-07-20
+## 1.6.9 - 2026-07-20
 
 ### Changed
 
 - The MCP server's tool registration was centralized in one 1476-line file: a single function built the `tools/list` array from a ~30-condition if-chain and dispatched `tools/call` through a ~760-line switch, referencing tool definitions and handlers scattered across five sibling files that had no registration logic of their own. Each sibling file now exports its own `registerXTools()` — a small declarative list of its tools, their availability conditions, and their handlers — and the main registry composes all of them into the server's single `tools/list`/`tools/call` handler pair. No user-visible behavior change.
 - The ~40 near-identical "tracker not available" error blocks in that dispatch switch are now built from two shared helpers (`requireTracker`/`requireAvailable`) instead of being copy-pasted per tool.
 
-## [1.6.8] - 2026-07-20
+## 1.6.8 - 2026-07-20
 
 ### Fixed
 
@@ -1318,7 +1323,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TaskDetector`'s per-task cost/token delta silently clamped to zero when `CostTracker`'s cumulative totals decreased between a task's start and close (e.g. from an out-of-order `reset()`), with no diagnostic trail. That case now logs a warning with the raw delta before clamping.
 - `TaskCompletionTracker.recordToolCall()` was a literal no-op with no visibility into why; it now logs at debug level.
 
-## [1.6.7] - 2026-07-20
+## 1.6.7 - 2026-07-20
 
 ### Security
 
@@ -1329,13 +1334,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The "Evicting non-orphan pre-event due to capacity overflow" warning was masking the actual pending-event identifier behind `***`, for the same reason as the 1.6.6 fix — the log field's own name was treated as sensitive by the secret-redaction logic. The warning now shows the real identifier.
 - The `recordContent` gate (which `highSecurity` forces off) was implemented independently in two places with duplicated logic. Both now call one shared function so the behavior can't diverge between them.
 
-## [1.6.6] - 2026-07-19
+## 1.6.6 - 2026-07-19
 
 ### Fixed
 
 - The "Unknown keys in config file (ignored)" warning (and its `alerts`/`dashboard` variants) was masking the actual unrecognized key names behind `***`, since the secret-redaction logic treated the log field's own name as sensitive. The warning now shows the real key names, so a typo'd or stale config field is actually visible in the logs.
 
-## [1.6.5] - 2026-07-19
+## 1.6.5 - 2026-07-19
 
 ### Removed
 
@@ -1344,49 +1349,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LocalAlertRuleType` and `AlertChannel` — unused alert-rule type aliases.
 - `useRecentWorkflows` — a dashboard store selector with zero real consumers.
 
-## [1.6.4] - 2026-07-19
+## 1.6.4 - 2026-07-19
 
 ### Fixed
 
 - Resolved a batch of TypeScript type errors in the web dashboard's source code that weren't being caught by the project's normal build and lint checks. No user-visible behavior change.
 
-## [1.6.3] - 2026-07-18
+## 1.6.3 - 2026-07-18
 
 ### Changed
 
 - Cleaned up outdated, duplicated, and unclear comments across the entire codebase — the metrics engine, MCP server tools and installer, platform adapters, storage, proxy, alerting, transport, security, tracing, digest delivery, and the web dashboard — for accuracy. No user-visible behavior change.
 
-## [1.6.2] - 2026-07-18
+## 1.6.2 - 2026-07-18
 
 ### Fixed
 
 - Internal bookkeeping session IDs from `--local` and proxy mode could occasionally still show up in the session list, live sessions view, or concurrency chart, since each dashboard endpoint filtered them independently and inconsistently. That filtering is now applied once, centrally, wherever session data is loaded, so it can no longer be missed for any given view.
 
-## [1.6.1] - 2026-07-18
+## 1.6.1 - 2026-07-18
 
 ### Fixed
 
 - Developer collaboration profiles previously showed the same values for every developer because real conversation activity wasn't being counted. Message and correction counts are now derived from the actual session transcript, so specificity, autonomy, and correction-rate scores reflect real usage. This also corrects the correction-rate figure surfaced in CLAUDE.md impact analysis and in prompt-engineering recommendations.
 
-## [1.6.0] - 2026-07-17
+## 1.6.0 - 2026-07-17
 
 ### Added
 
 - A normalized cost-rate metric, cost per million tokens, so spend can be compared across sessions and models independent of raw token volume. A session-blended rate (across input, output, thinking, cache-read, and cache-creation tokens) is available from `nr_observe_get_cost_breakdown`, and a per-model rate (input+output tokens) is available from `nr_observe_get_model_usage` and shown in the dashboard's Today and History views.
 
-## [1.5.6] - 2026-07-17
+## 1.5.6 - 2026-07-17
 
 ### Fixed
 
 - The Today page's "Concurrent Sessions" chart could show a taller peak bar than the headline peak number above it. Both are now computed from the same activity-window model, so an idle-but-not-yet-ended session no longer inflates the chart above what the headline reports.
 
-## [1.5.5] - 2026-07-17
+## 1.5.5 - 2026-07-17
 
 ### Fixed
 
 - Opening a workflow run's detail view while the run was still in progress showed "Failed to load run details" instead of live progress. The detail view now shows in-progress agent activity and automatically upgrades to the final summary once the run completes.
 
-## [1.5.4] - 2026-07-17
+## 1.5.4 - 2026-07-17
 
 ### Added
 
@@ -1396,7 +1401,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Corrected an ambiguous assertion in the Today view's test suite that could match either of two KPI tiles rendering the same value, instead of the one it was meant to check.
 
-## [1.5.3] - 2026-07-16
+## 1.5.3 - 2026-07-16
 
 ### Fixed
 
@@ -1404,13 +1409,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced an unsafe type cast used to attach turn attribution to tool-call records with a properly-typed record construction; no change to the attribution data itself.
 - The hook event buffer's internal type now reflects that each buffered line has a different shape depending on its mode, removing an unchecked type cast from the event-processing pipeline.
 
-## [1.5.2] - 2026-07-16
+## 1.5.2 - 2026-07-16
 
 ### Changed
 
 - Tightened internal typing across the MCP server, platform adapters, config loading, transcript parsing, and storage layers — replacing loosely-typed values with concrete types wherever the underlying data was already validated or structurally known. No user-visible behavior change.
 
-## [1.5.1] - 2026-07-16
+## 1.5.1 - 2026-07-16
 
 ### Fixed
 
@@ -1424,7 +1429,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added test coverage for the Sessions view's workflow-consolidation logic: KPI aggregation across workflow runs, run-source and status filtering, the session/run/agent expansion tree, and the in-place workflow-run detail view.
 
-## [1.5.0] - 2026-07-15
+## 1.5.0 - 2026-07-15
 
 ### Added
 
@@ -1433,51 +1438,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workflow-run visibility: a dedicated list and detail view showing per-run status, duration, agent count, and per-agent breakdown, including declared vs. observed phase and parallelism topology for script-based workflows.
 - Observability health status: watcher active/disabled state, files watched, and parse-error counts are now surfaced in Settings, replacing an environment-variable-based check that never worked in the browser.
 
-## [1.4.47] - 2026-07-15
+## 1.4.47 - 2026-07-15
 
 ### Fixed
 
 - The live dashboard's pre-connection anti-pattern hydration now maps the server's anti-pattern fields (file/command, iteration/read/repeat/edit/agent counts) onto the display shape correctly, instead of leaving the target file and count blank until the first live event arrives.
 
-## [1.4.46] - 2026-07-15
+## 1.4.46 - 2026-07-15
 
 ### Fixed
 
 - The OTLP receiver now closes its outbound connection pool when stopped, and no longer hangs if closing that pool fails, instead of leaving the pool open for the life of the process.
 - Corrected a test assertion in the alert banner suite that no longer matched the component's real number formatting.
 
-## [1.4.45] - 2026-07-15
+## 1.4.45 - 2026-07-15
 
 ### Fixed
 
 - Fixed `nr_observe_get_decision_tree`'s `reasoning` field always being one of 3 hardcoded template strings instead of the model's actual reasoning. When content recording is enabled and the underlying model exposes plaintext thinking or visible text for that turn, the field now reflects the model's real reasoning (passed through the existing redaction filter), falling back to the prior rule-based label when the model exposes no plaintext reasoning.
 
-## [1.4.44] - 2026-07-15
+## 1.4.44 - 2026-07-15
 
 ### Fixed
 
 - Fixed instruction/prompt drift tracking correlating on the arguments of a `Read` tool call (file path, offset, limit) instead of the target file's actual content, which produced false drift signals when re-reading an unchanged file at a different offset or limit, and missed real content changes read at an identical offset/limit.
 
-## [1.4.43] - 2026-07-14
+## 1.4.43 - 2026-07-14
 
 ### Fixed
 
 - Fixed the WSL-hosted collector failing to read Windows-style transcript paths sent by desktop Claude Code, which silently dropped all token/model/cost collection for `wsl-windows-cc` installs.
 - Fixed `resolveBinaryPath()` splitting `PATH` on `:` instead of the platform delimiter and never probing npm's `.cmd`/`.ps1` shim extensions, which always returned null on native Windows — causing a false "not on PATH" warning, loss of absolute hook-path resolution, and a stalled hook upgrade when switching from WSL to native Windows installs.
 
-## [1.4.42] - 2026-07-14
+## 1.4.42 - 2026-07-14
 
 ### Added
 
 - Added test coverage for the proxy-request and context-snapshot NR event ingestion paths, the security-alert event wiring inside tool-call ingestion, additional sensitive-file/destructive-command/network-request detection patterns, and SSE heartbeat/cleanup edge cases in the live dashboard event stream.
 
-## [1.4.41] - 2026-07-14
+## 1.4.41 - 2026-07-14
 
 ### Added
 
 - Added automated test coverage for previously untested (but correct) routes and branches in `src/dashboard/routes/api-handler.ts`: cache health, quality proxy, tool selection score, git efficiency (+ repos), context, model usage, activity heatmap, settings (read + write), digest send, and the concurrency endpoint's peak/all-time-peak fields and history-view live-peak override. No behavior changes — this is a test-only hardening release.
 
-## [1.4.40] - 2026-07-14
+## 1.4.40 - 2026-07-14
 
 ### Fixed
 
@@ -1490,7 +1495,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed `Kpi`'s redundant `tone="accent"`, which rendered identically to `tone="good"`.
 - Corrected a stale comment in `liveStore.ts` overstating cross-path dedup guarantees for live tool-call events.
 
-## [1.4.39] - 2026-07-14
+## 1.4.39 - 2026-07-14
 
 ### Fixed
 
@@ -1498,31 +1503,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Proxy stdio upstream: a dispatch timeout now aborts the underlying MCP client call instead of only racing past it, so a wedged child process no longer accumulates abandoned in-flight requests.
 - Proxy OTLP receiver: resource-attribute enrichment no longer duplicates a key the instrumented application already set on the payload.
 
-## [1.4.38] - 2026-07-14
+## 1.4.38 - 2026-07-14
 
 ### Fixed
 
 - `undici` is now a direct runtime dependency. `src/proxy/otlp-receiver.ts` imports it directly, but it was declared only as a version `overrides` pin (added for security hardening), never as an actual dependency — so a clean `npm install`/`npm install -g` (no devDependencies) never installed it, and the proxy crashed with `ERR_MODULE_NOT_FOUND: undici` on startup. It previously worked in this repo's own dev/CI environment only because `jsdom` (a devDependency) pulls in `undici` transitively.
 
-## [1.4.37] - 2026-07-13
+## 1.4.37 - 2026-07-13
 
 - Added automated test coverage for previously untested (but correct) branches across `src/install/`: `migrate.ts`'s legacy-storage-path merge/rollback logic, the `validate` CLI command, graceful process-kill escalation, several setup-wizard prompt/fallback paths, config-diagnostics edge cases, and `json-utils.ts`'s JSON parsing helpers (which previously had no dedicated test file at all). No behavior changes — this is a test-only hardening release.
 
-## [1.4.36] - 2026-07-13
+## 1.4.36 - 2026-07-13
 
 - Typed the last 7 `client.ts` response contracts, consumed by the Settings, Alerts, ContextBar, and Audit views (`fetchAuditLog`, `fetchContext`, `fetchSettings`, `fetchDiagnostics`, `patchSettings`, `postDigestSend`), removing the `as Promise<T>` casts these views previously needed. Also removed the unused `fetchSessionToday` export, which had zero consumers. This closes the effort to type the rest of the dashboard's API layer (#141) — every exported function in `client.ts` now has a real response interface instead of `Promise<unknown>`.
 
-## [1.4.35] - 2026-07-13
+## 1.4.35 - 2026-07-13
 
 - Typed 7 more `client.ts` response contracts consumed by the History, Sessions, and Git Efficiency views (`fetchWeekly`, `fetchCostPerOutcome`, `fetchPersonalCoach`, `fetchConcurrencyHistory`, `fetchSessionDetail`, `fetchGitEfficiency`, `fetchGitEfficiencyRepos`), removing the `as Promise<T>` casts these views previously needed. Part of an ongoing effort to type the rest of the dashboard's API layer (#141).
 
-## [1.4.34] - 2026-07-13
+## 1.4.34 - 2026-07-13
 
 ### Fixed
 
 - The Today view's dashboard API client now returns fully typed response interfaces for 15 API functions (`fetchCost`, `fetchSessionCurrent`, `fetchSessionsList`, `fetchTodayAggregate`, `fetchAntiPatterns`, `fetchConcurrency`, `fetchActivityHeatmap`, `fetchLiveSessions`, `fetchQualityProxy`, `fetchToolSelectionScore`, `fetchLatency`, `fetchModelUsage`, `fetchCacheHealth`, `fetchSessionReplay`, and `fetchRecentAlerts`) instead of the previous `Promise<unknown>`, eliminating the matching type-cast assertions at their call sites. This enables compile-time type checking to catch backend/frontend field mismatches before deployment. Part of an ongoing effort to type the rest of the dashboard's API layer (#141).
 
-## [1.4.33] - 2026-07-13
+## 1.4.33 - 2026-07-13
 
 ### Fixed
 
@@ -1530,7 +1535,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sessions view never rendered the `filesRead` or `antiPatterns` data the backend already computes for each session. Now shows a "Files Read" list and "Anti-Patterns" pills (reusing the same taxonomy labels used elsewhere in the session replay view) when present.
 - Dashboard's System Health diagnostics panel always ran the Claude-Code-specific hooks-wired check, regardless of which coding platform was actually detected — non-Claude-Code users (Cursor, Windsurf, etc.) saw a false "Hooks wired: fail" result. Now forwards the detected platform, which the existing check already knew how to handle correctly.
 
-## [1.4.32] - 2026-07-13
+## 1.4.32 - 2026-07-13
 
 ### Fixed
 
@@ -1541,7 +1546,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StatusIndicator` and `Sparkline` — two fully-built, fully-tested dashboard components with zero real consumers anywhere in the app. Removed along with their test suites.
 - An unreachable dead-code branch in `HourlyCostBlocks`' internal `describeChart()` helper, guaranteed unreachable by its only caller's own guards.
 
-## [1.4.31] - 2026-07-13
+## 1.4.31 - 2026-07-13
 
 ### Fixed
 
@@ -1549,7 +1554,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Four labels in the History view had drifted from the real fetch parameters they describe: "Weekly Efficiency · Last 8" (the real default is 12 weeks), the activity heatmap's screen-reader label claiming "last 4 weeks" (it's 12), "Peak Concurrent Sessions · All-Time" (the underlying fetch is always 30-day-bounded, never all-time), and "Daily Spend"/"Top Tools" panels that could silently understate their scope for very high-volume users due to an underlying 200-session fetch cap — both now carry a clarifying label.
 - The Git Efficiency view's "Today's activity across all sessions" silently excluded a session that started before local midnight and crossed into today — hydration now uses the overlap-aware session lookup already used elsewhere in the codebase for the same cross-midnight gap. Separately, the "Verified before push" indicator couldn't see a build/test that ran in an earlier session today when replaying that session's history, always showing "no build/test detected" in that case even when verification genuinely happened; the replay path now carries that signal through correctly.
 
-## [1.4.30] - 2026-07-12
+## 1.4.30 - 2026-07-12
 
 ### Fixed
 
@@ -1559,21 +1564,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The session detail page's "Session Quality" and "Tool Selection" cards were fully built but never rendered: the backing tracker data was never attached to any of the three `/api/sessions/:id` response branches. Now attached to the branches where the data is actually available (the live session and, for quality, persisted sessions via their own stored timeline).
 - The Today view's anti-pattern banner rendered a literal `?` instead of a real count for `stuck_loop`, `blind_editing`, and `over_delegation` patterns when reached via its non-SSE API-fallback path — the fallback chain only checked 3 of the 6 possible count fields. Extended to check all of them.
 
-## [1.4.29] - 2026-07-12
+## 1.4.29 - 2026-07-12
 
 ### Fixed
 
 - `SECURITY.md`'s audit-trail network-request pattern list said `curl`, `wget`, `fetch`; the real pattern list is `curl`, `wget`, `nc`, `ssh`. Docs corrected.
 - `REDACT_FIELD_KEYS` (the allowlist controlling which extra `AiToolCall` string fields get redacted before reaching New Relic) was missing five fields that `src/hooks/tool-parsers.ts` produces: `commandDescription`, `taskSubject`, `grepPath`, `globPath`, and `agentTeamName`. These now pass through `redactSensitive()` like every other tool-specific string field.
 
-## [1.4.28] - 2026-07-12
+## 1.4.28 - 2026-07-12
 
 ### Fixed
 
 - CLAUDE.md attributed hook-event buffer appends to `LocalStore`; the real writer is `collector-script.ts`'s own raw file-append logic. `LocalStore` genuinely owns the drain side (rename-then-read) — only the append-side attribution was wrong. Docs corrected.
 - Multiple places claimed weekly Slack digest delivery happens automatically on a configured schedule: `docs/COMMANDS_TABLE.md`'s example response, the product documentation's feature description, and the `nr_observe_subscribe_digest` tool's own runtime response message. No scheduler exists — delivery is manual-only via `nr_observe_send_digest`. All three now say so; `digestSchedule` is documented as stored for future use only.
 
-## [1.4.27] - 2026-07-12
+## 1.4.27 - 2026-07-12
 
 ### Fixed
 
@@ -1581,14 +1586,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `buildSessionSummary()` redacted `timeline[].filePath` via `redactSensitive()` but persisted `filesRead`/`filesModified`/`sessionName`/`repoName` unredacted, even though they're sourced from the same underlying task data. All four now go through the same redaction call for consistency.
 - `SessionStore.saveSession()` now logs a warning when it's about to overwrite an existing session file for the same `sessionId`+date — the scenario a resumed/forked session running two MCP processes against one real session ID would produce. The overwrite behavior (last-write-wins) is unchanged; this only makes a previously-silent collision visible.
 
-## [1.4.26] - 2026-07-12
+## 1.4.26 - 2026-07-12
 
 ### Fixed
 
 - `json-utils.ts` exported a lenient JSON reader, `readJsonFile()`, with zero production callers — the only historical caller was replaced after it caused a real credential-wipe bug (a permission error was silently swallowed into `{}`, which was then written back over `config.json`, erasing `licenseKey`/`accountId`). The dead function has been removed; `readJsonFileStrict()` remains the only JSON reader in `src/install/`.
 - `src/install/index.ts`, a barrel module re-exporting install-CLI symbols, had zero reachable consumers — every real call site already imports directly from `./cli.js` or `./install-helper.js`, and `package.json`'s `exports` field never exposed the compiled barrel to external consumers either. Removed.
 
-## [1.4.25] - 2026-07-12
+## 1.4.25 - 2026-07-12
 
 ### Fixed
 
@@ -1597,14 +1602,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The OTLP receiver's per-IP rate limiter pruned expired request timestamps down to an empty array but never removed that array from its internal map, so every distinct source IP that ever made one request left a small permanent entry for the life of the process. Empty entries are now deleted instead of retained.
 - Documented the previously-unlisted `otlpReceiverBindAddress` config field (env `NR_AI_OTLP_RECEIVER_BIND_ADDRESS`) in `docs/ADVANCED.md` and `CLAUDE.md`, including a note that widening it beyond the `127.0.0.1` default increases exposure to the two fixes above.
 
-## [1.4.24] - 2026-07-12
+## 1.4.24 - 2026-07-12
 
 ### Fixed
 
 - Standalone proxy mode's SSRF protection validated the literal hostname string of a configured upstream/forward URL, but re-checked the exact same unchanged string a second time immediately before every network call — providing no real protection against DNS rebinding (a hostname resolving to a safe address when first validated, then to `127.0.0.1` or a cloud metadata address before the connection is actually made). Both `HttpUpstream` (proxy forwarding) and `OtlpReceiver` (OTLP forward endpoint) now resolve the hostname exactly once at connection time via a custom DNS lookup, validate every resolved address against the same blocklist rules, and pin the actual connection to that validated address.
 - Two proxy upstream transports returned raw error detail to HTTP clients on failure: `HttpUpstream` included the literal connection-error text (which can contain the upstream's host:port) in its JSON error body, and `StdioUpstream` forwarded a failed child process's raw error message (which can include file paths or tool-echoed arguments) straight through as the JSON-RPC error message. Both now return only a generic error code/message to the client; the full detail is still logged server-side.
 
-## [1.4.23] - 2026-07-12
+## 1.4.23 - 2026-07-12
 
 ### Fixed
 
@@ -1612,21 +1617,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `static-handler.ts`'s explicit path-traversal pre-check only split incoming paths on `/`, so a request built entirely from backslash-delimited `..` segments (no forward slashes at all) passed this specific check unchecked. The check now also splits on `\`, closing the gap in the primary sanitizer.
 - Removed `DashboardServer.registerRoute()`, a public method with no callers and no test coverage. Corrected a stale comment on `LiveEventBus`'s `setMaxListeners(200)` call that understated both the per-connection listener count (5, not 4) and the resulting connection headroom (200 concurrent connections, not 40 or 50 — `setMaxListeners` caps per event name, not in aggregate).
 
-## [1.4.22] - 2026-07-11
+## 1.4.22 - 2026-07-11
 
 ### Fixed
 
 - `setup-wizard.ts`'s background-dashboard-daemon install step reported success right after `launchctl load` returned without throwing, which only confirms the plist loaded, not that the daemon process actually came up healthy — a plist can load successfully while the spawned process immediately crashes. It now polls the dashboard's `/api/health` endpoint via the same `getDashboardAddress()`/`waitForHealthyDashboard()` helpers `cli.ts`'s `update` command already uses, and downgrades the success message to a warning (with `launchctl list` / log-file pointers) when the health check fails.
 - `checkStorageWritable()` used `accessSync(W_OK)` alone, which succeeds identically for a writable file and a writable directory — a corrupted install with a plain file sitting at the storage path would falsely report "ok" while `LocalStore`'s downstream `mkdirSync()` calls would fail with `ENOTDIR`. It now also calls `statSync().isDirectory()` and reports a distinct "exists but is not a directory" failure (with a `rm && mkdir` fix suggestion) when the path exists but isn't a directory.
 
-## [1.4.21] - 2026-07-11
+## 1.4.21 - 2026-07-11
 
 ### Fixed
 
 - Standalone HTTP-proxy mode sent zero telemetry to New Relic — `ProxyManager`'s `onToolCall`/`onRequest` callbacks were wired to `logger.debug()` only, and `NrIngestManager` was never constructed on that code path, so `AiMcpToolCall`/`AiProxyRequest` events, the `ai.mcp.*` proxy gauges, and audit-trail security recording for proxied tool calls never fired. Proxy mode now constructs and starts an `NrIngestManager` (gated on `mode !== 'local'`, matching the existing `--stdio`/`--local` behavior) and feeds it from the proxy callbacks.
 - If the local OTLP/HTTP receiver failed to start (e.g. port already in use), proxy mode continued reporting itself healthy with the receiver silently absent, with no signal beyond a log line. `ProxyManager` now tracks OTLP receiver status (`disabled` / `running` / `failed`) and surfaces it in the `GET /health` response whenever the receiver is enabled, and the failure is now logged at `error` level.
 
-## [1.4.20] - 2026-07-11
+## 1.4.20 - 2026-07-11
 
 ### Fixed
 
@@ -1635,68 +1640,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `getLatest()` returned `null` outright if the single lexicographically-latest weekly summary file was corrupt, blinding every caller (including `nr_observe_get_weekly_summary`'s no-arg/`"latest"` path) to all older, still-valid summaries. It now falls back to the next-most-recent valid file.
 - Requesting a nonexistent ISO week (e.g. `"2025-W53"` — 2025 only has 52 weeks) silently returned a real-looking but wrong date range that actually overlapped the following year's week 1. `getWeekDateRange()` now rejects such inputs, and `nr_observe_get_weekly_summary` returns a clean error instead of a misleading result.
 
-## [1.4.19] - 2026-07-10
+## 1.4.19 - 2026-07-10
 
 ### Fixed
 
 - `nr_observe_get_context_composition`'s per-turn token breakdown claims 4 categories (system prompt, conversation history, tool results, injected files), but two of them — `system_prompt` and `injected_file_content` — are always 0: the model API's usage response only reports aggregate input/cache-read/cache-creation token counts, with no breakdown by content category, so Preflight has no way to separate those two categories from the rest. `fillPercent` and the dominance alerts are unaffected and reflect real totals. The tool's response now carries an explanatory `note` field on every call, and the registered description now discloses the limitation.
 - `nr_observe_get_decision_tree`'s `reasoning` field reads like extracted reasoning but is always one of 3 fixed rule-based labels (e.g. "recovery after X failure") — `DecisionTracker.recordToolCall()` has no parameter carrying actual model reasoning text. Branches are also only recorded on 3 narrow triggers, not on every turn, so `totalBranches` undercounts ordinary turns relative to a literal "per turn" reading. The tool's response (including the `post_mortem: true` path) now carries an explanatory `note` field, and the registered description no longer claims "reasoning...extraction."
 
-## [1.4.18] - 2026-07-10
+## 1.4.18 - 2026-07-10
 
 ### Fixed
 
 - `nr_observe_get_latency_decomposition`'s code comment and documentation both falsely claimed the tool "only" needs proxy-mode instrumentation to work. Verified false: Preflight's proxy mode forwards requests to MCP servers, not to the model API, so its visible latency is MCP-server latency, not model-API latency — the same architectural gap found in the `nr_observe_get_api_failures` fix above. Unlike that tool, this one's runtime behavior was already safe (it's never listed in `tools/list`, and a direct call already returns an explicit error rather than misleading data), so this fix corrects the false claims in the code comment, the direct-call error message, and the docs table — no runtime behavior, registration, or data shape change beyond adding an explanatory `note` field to the existing error response.
 
-## [1.4.17] - 2026-07-10
+## 1.4.17 - 2026-07-10
 
 ### Fixed
 
 - `nr_observe_get_api_failures` always silently reported zero API failures — `ApiFailureTracker.recordRequest()`/`.recordFailure()` had zero call sites in production. Investigating this one further than the others: model-API-level failure data (rate limits, timeouts, auth errors from the LLM provider itself) is not observable anywhere in Preflight's current architecture, in either mode. Claude Code hook events only see Claude Code's own tool calls, not the underlying model-API traffic, and Preflight's proxy mode forwards requests to MCP servers, not to the model API itself — there is no LLM-facing proxy in this codebase today. Rather than fabricate a substitute signal, the tool's response now carries an explicit `dataAvailable: false` field and an explanatory `note` on every call, so a caller can no longer mistake the permanent all-zero output for "no failures occurred." Building a real LLM-facing proxy to make this data genuinely observable remains a separate, much larger effort.
 
-## [1.4.16] - 2026-07-10
+## 1.4.16 - 2026-07-10
 
 ### Fixed
 
 - `nr_observe_get_instruction_drift` always reported an empty dataset — `InstructionDriftTracker.recordSessionOutcome()` and `.loadRecords()` had zero call sites in production. Fixing this required cross-session persistence, not just in-process wiring: each MCP server process is scoped to one Claude Code session, so recording an outcome right before shutdown alone would be lost immediately and never enable the cross-session correlation the tool exists to provide. The session's prompt hash is now persisted on the saved session summary, the last 7 days of prior sessions are reloaded into the tracker at startup, and the current session's own outcome is recorded at shutdown. Note: correlation is currently keyed on the hash of the `Read` tool's arguments (file path/offset/limit), not the file's content, so this detects read/path drift rather than CLAUDE.md content changes — hashing actual content remains a separate, larger fix.
 
-## [1.4.15] - 2026-07-10
+## 1.4.15 - 2026-07-10
 
 ### Fixed
 
 - `nr_observe_report_feedback` recorded user quality feedback but never emitted it — `FeedbackCollector.emitMetrics()` was never called from the harvest flush, so `ai.feedback.count` never reached New Relic. Fixed by wiring `emitMetrics()` into the harvest flush alongside the existing `costTracker`/`efficiencyScorer` metrics. Also fixed a latent double-counting bug found while wiring this in: `emitMetrics()` had no cursor, so calling it on every harvest flush (as this fix now does) would have re-emitted every historical feedback record on every subsequent flush; it now tracks a `lastEmittedIndex` cursor, mirroring `EfficiencyScorer`'s existing pattern. Does not implement an actual correlation between feedback and efficiency scores — that remains a separate, larger fix.
 
-## [1.4.14] - 2026-07-10
+## 1.4.14 - 2026-07-10
 
 ### Fixed
 
 - **v1.4.13's path-containment fix did not actually clear the CodeQL `js/path-injection` findings it targeted** — that release replaced a runtime-derived separator check with two hardcoded literal checks combined with `||`, but that combination is never recognized by CodeQL as a sanitizer, regardless of whether the literals are hardcoded or the check is inlined. Confirmed by pushing several candidate shapes directly to a disposable test repository and inspecting the actual scan result rather than relying on pull-request-level checks (which don't reliably reflect whether a pre-existing finding was resolved). `isWithinRoot()`'s containment check is now `path.relative()`-based, inlined directly at the point of use, which is the shape confirmed to satisfy CodeQL's sanitizer recognition. Windows correctness is now handled by Node's own platform-aware `path.relative()`/`path.isAbsolute()` rather than hand-rolled separator matching.
 
-## [1.4.13] - 2026-07-10
+## 1.4.13 - 2026-07-10
 
 ### Fixed
 
 - **Static-asset path-containment check flagged by GitHub CodeQL as a potential path-injection sanitizer gap** — `isWithinRoot()` in the dashboard's static file handler checked one hardcoded `'/'` plus a runtime `path.sep`-derived fallback (needed so Windows' backslash-joined paths still pass the containment check). CodeQL cannot statically verify that a runtime value equals `'/'`, so it stopped recognizing the fallback branch as a valid sanitizer and flagged the file reads that follow. Both branches are now hardcoded literal checks (`'/'` and `'\\'`), which CodeQL recognizes as the standard path-containment pattern, with no change in behavior on either platform.
 
-## [1.4.12] - 2026-07-10
+## 1.4.12 - 2026-07-10
 
 ### Fixed
 
 - `nr_observe_get_platform_comparison` could never differentiate platforms — `buildSessionSummary()` never set the `platform` field on persisted session summaries, so every session fell into the `'claude-code'` fallback bucket regardless of which of the 9 real platform adapters generated it. The active platform (already detected once per process by `PlatformRegistry`) is now threaded through `HookEventProcessor.activePlatform` into every persisted session summary. Does not address the related `nr_observe_get_collaboration_profile` bug (missing `userMessages`/`assistantMessages`/`userCorrections` data) — that's a separate, larger fix.
 
-## [1.4.11] - 2026-07-10
+## 1.4.11 - 2026-07-10
 
 ### Fixed
 
 - **`EACCES` reading stdin when Claude Code runs on a Windows host and spawns Preflight inside WSL via `wsl.exe`** — the hook collector read stdin by opening `/dev/stdin`, a symlink to `/proc/self/fd/0`. On Linux that path is a fresh `open()` subject to a permission check, and the stdin pipe crossing the Windows/WSL boundary is created by WSL's root-owned init/relay (`root:root`, mode `0600`), so the re-open failed for a non-root user even though the already-inherited file descriptor was readable. Hook events were silently dropped for every Windows-host/WSL-guest Claude Code setup. The collector now falls back to reading the inherited stdin file descriptor directly when `/dev/stdin` specifically fails with `EACCES`, leaving the existing POSIX and Windows read paths unchanged otherwise. (#99)
 
-## [1.4.10] - 2026-07-10
+## 1.4.10 - 2026-07-10
 
 ### Fixed
 
 - `CLAUDE.md`'s MCP Tools list and `docs/COMMANDS_TABLE.md` were missing 5 fully-implemented, registered MCP tools: `nr_observe_get_config`, `nr_observe_get_cost_per_tool`, `nr_observe_get_turn_analysis`, and `nr_observe_get_git_efficiency` (all present in `COMMANDS_TABLE.md` but absent from `CLAUDE.md`'s summary list), and `nr_observe_get_context_tracking` (missing from both docs, and even from `analytics-tools.ts`'s own header comment). All 5 are now documented in both files.
 
-## [1.4.9] - 2026-07-10
+## 1.4.9 - 2026-07-10
 
 ### Added
 
@@ -1712,7 +1717,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/ARCHITECTURE.md` — added `PlatformRegistry` to the Component Reference table; it was missing despite normalizing every hook-sourced tool name since v1.4.3.
 - `README.md` — added `docs/ADAPTERS.md` to the Documentation list and noted under "Works With" that platform coverage isn't uniform (some platforms only observe calls made to Preflight's own MCP tools, not their built-in tools).
 
-## [1.4.8] - 2026-07-09
+## 1.4.8 - 2026-07-09
 
 ### Fixed
 
@@ -1720,35 +1725,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `collector-script.ts`: `postToolUse` events no longer hardcode `success: true` — they now read `tool_response.success` when present, fixing a cross-platform bug where failed Kiro and Amazon Q tool calls were silently recorded as successful.
 - Amazon Q Developer CLI adapter: `getHookInstallInstructions()` now documents the platform's real, genuine hook mechanism (`preToolUse`/`postToolUse` via the agent config `hooks` field) instead of only covering MCP server registration.
 
-## [1.4.7] - 2026-07-09
+## 1.4.7 - 2026-07-09
 
 ### Fixed
 
 - Continue adapter: replaced the entirely invented `CONTINUE_TOOL_MAP` (camelCase names that never matched Continue's real tool vocabulary) with Continue's actual snake_case built-in tool names, confirmed directly from Continue's own source (`core/tools/builtIn.ts`). Removed the incorrect `deleteFile: 'Delete'` mapping — Continue has no delete/remove built-in tool at all.
 - Continue adapter: corrected `getHookInstallInstructions()` to honestly state that Continue's native agent has no PreToolUse/PostToolUse-style hook mechanism, describe the real (non-deprecated) `.continue/mcpServers/*.yaml` MCP config format, and note that the upstream `continuedev/continue` repository is no longer actively maintained.
 
-## [1.4.6] - 2026-07-10
+## 1.4.6 - 2026-07-10
 
 ### Fixed
 
 - **`ZedAdapter`'s tool-name map used invented tool names that don't match Zed's real built-in agent vocabulary** — `open_file`, `create_file`, `execute_command`, `search_files`, `find_in_files`, `search_in_file`, `run_command`, and `list_files` are not real Zed tool names (confirmed via https://zed.dev/docs/ai/tools.html). `ZED_TOOL_MAP` now covers Zed's confirmed real built-in tools (`read_file`, `find_path`, `grep`, `list_directory`, `fetch`, `search_web`, `edit_file`, `write_file`, `delete_path`, `terminal`, `spawn_agent`, `skill`).
 - **`ZedAdapter`'s setup instructions and `initialize()` comment described a nonexistent capture mechanism** — both claimed built-in tool calls "arrive via stdio" automatically; no such mechanism exists. Unlike the Kiro/Cursor/Windsurf fixes, Zed's native agent genuinely has no hook/callback system to document instead (confirmed: no "Hooks" page exists anywhere in Zed's documentation). Instructions now accurately state that Preflight can only observe calls made to its own MCP tools in Zed, and that full tool-call observability requires running an already-supported platform (e.g. Claude Code) as a Zed External Agent instead.
 
-## [1.4.5] - 2026-07-09
+## 1.4.5 - 2026-07-09
 
 ### Fixed
 
 - **Windsurf hook events were silently dropped** — `preflight-collector` only recognized `hook_event_name` (Claude Code/Kiro/Cursor's event-name field). Windsurf's real Cascade Hooks system (`.windsurf/hooks.json`, confirmed via https://docs.windsurf.com/windsurf/cascade/hooks) sends the event name as `agent_action_name` instead, with all event data nested under a `tool_info` object rather than flat fields — so every Windsurf hook event fell through to a silent no-op. The collector now recognizes and correctly parses `pre_read_code`/`post_read_code`, `pre_write_code`/`post_write_code`, `pre_run_command`/`post_run_command`, and `pre_mcp_tool_use`/`post_mcp_tool_use`.
 - **`WindsurfAdapter`'s setup instructions and `initialize()` comment described a nonexistent integration** — both claimed built-in tool calls (file edits, terminal) were captured via "extension API or file watcher events"; no such mechanism exists anywhere in this codebase. Instructions now document the real `.windsurf/hooks.json` Cascade Hooks setup.
 
-## [1.4.4] - 2026-07-09
+## 1.4.4 - 2026-07-09
 
 ### Fixed
 
 - **Cursor hook events were silently dropped** — `preflight-collector` only recognized Claude Code's/Kiro's generic `PreToolUse`/`PostToolUse` hook names. Cursor's real hooks system (`.cursor/hooks.json`) sends a completely different, per-action-type event vocabulary (`beforeShellExecution`/`afterShellExecution`, `beforeMCPExecution`/`afterMCPExecution`, `beforeReadFile`, `afterFileEdit`), so every Cursor hook event fell through to a silent no-op. The collector now recognizes and correctly parses all six events.
 - **`CursorAdapter`'s setup instructions and tool-name map described a nonexistent integration** — `getHookInstallInstructions()` and `initialize()`'s comment claimed built-in tool calls (file edits, terminal) were captured via "a file watcher or Cursor extension"; no such mechanism exists anywhere in this codebase. Instructions now document the real `.cursor/hooks.json` setup, and `CURSOR_TOOL_MAP` now covers Cursor's confirmed generic `preToolUse`/`postToolUse` tool-name vocabulary (`Shell`, `Task`, `Read`, `Write`) alongside its existing built-in-action-name entries.
 
-## [1.4.3] - 2026-07-09
+## 1.4.3 - 2026-07-09
 
 ### Fixed
 
@@ -1759,25 +1764,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`preflight doctor --platform <name>`** — the "Hooks wired" check previously only validated Claude Code's `settings.json` and stayed green regardless of whether a non-Claude-Code platform's hooks actually worked. Passing `--platform kiro` (or any other registered platform name) now skips the Claude-Code-specific check in favor of an explicit reminder to verify that platform's own hook/MCP config and to confirm events land in `~/.newrelic-preflight/buffer-*.jsonl`.
 
-## [1.4.2] - 2026-07-09
+## 1.4.2 - 2026-07-09
 
 ### Added
 
 - **`preflight local` command** — lists every `--local` dashboard process preflight has launched (not just whichever one currently owns the dashboard port), and `preflight local --clean` offers to kill the ones that lost the port race and have been running headless ever since. Every `--local` process now registers itself in a small per-PID registry at startup regardless of port outcome; dead entries (from a process that didn't shut down cleanly) are garbage-collected automatically every 5 minutes by whichever process owns the dashboard. `preflight doctor` gained a matching "Local instances" check that reports idle processes and points at `preflight local --clean`.
 
-## [1.4.1] - 2026-07-08
+## 1.4.1 - 2026-07-08
 
 ### Fixed
 
 - **`preflight update` could report a restart succeeded when it hadn't** — both restart paths (the macOS launchd daemon and an ad-hoc `--local` process) declared success as soon as the restart _action_ didn't throw (`launchctl load` returning success, or the respawned process not throwing synchronously), without checking that the dashboard actually came back up. A daemon that crashed immediately after a "successful" `launchctl load` — for example due to a macOS Full Disk Access restriction — would print a false "restarted" message while a stale process kept serving the old version. `update` now polls the dashboard's health endpoint for a healthy response reporting the freshly-built version before declaring success, and falls back to checking for an ad-hoc process if the daemon restart can't be verified.
 
-## [1.4.0] - 2026-07-08
+## 1.4.0 - 2026-07-08
 
 ### Added
 
 - **`preflight update` offers to restart stale dashboard/daemon processes** — after a successful `git pull` + rebuild, `--local` now writes a small PID file (`local-dashboard.pid`: pid/argv/cwd) the moment it wins the dashboard port bind, giving `update` a reliable way to find its own dashboard process instead of a running instance silently continuing to serve the old cached version. If the macOS launchd dashboard daemon is installed, it's restarted automatically (no prompt). Otherwise, if a live ad-hoc `--local` process is found, `update` prompts (default yes) to restart it — killing it gracefully and respawning it detached with its original arguments. `--stdio` (Claude Code) sessions are never touched; they keep the existing "restart Claude Code" guidance.
 
-## [1.3.1] - 2026-07-08
+## 1.3.1 - 2026-07-08
 
 ### Fixed
 
@@ -1786,7 +1791,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.3.0] - 2026-07-08
+## 1.3.0 - 2026-07-08
 
 ### Added
 
@@ -1795,7 +1800,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`CacheHealthPanel` on the Today dashboard view** — shows the current session's cache hit rate with a status pill, total savings, a week-over-week delta chip (↑/↓ _N_ pts vs. last week), and the same concrete recommendation text as the MCP tool. Backed by a new `GET /api/cache-health` route.
 - `tokensCacheRead`, `tokensCacheCreation`, and `cacheSavingsUsd` are now persisted in `FullSessionSummary` (old session files without these fields default to `0`).
 
-## [1.2.0] - 2026-07-08
+## 1.2.0 - 2026-07-08
 
 ### Added
 
@@ -1805,7 +1810,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.1.1] - 2026-07-07
+## 1.1.1 - 2026-07-07
 
 ### Fixed
 
@@ -1813,7 +1818,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.1.0] - 2026-07-03
+## 1.1.0 - 2026-07-03
 
 ### Added
 
@@ -1821,7 +1826,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.10] - 2026-07-03
+## 1.0.10 - 2026-07-03
 
 ### Fixed
 
@@ -1831,7 +1836,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.9] - 2026-07-02
+## 1.0.9 - 2026-07-02
 
 ### Changed
 
@@ -1843,7 +1848,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.8] - 2026-07-02
+## 1.0.8 - 2026-07-02
 
 ### Fixed
 
@@ -1856,7 +1861,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.7] - 2026-07-01
+## 1.0.7 - 2026-07-01
 
 ### Added
 
@@ -1902,7 +1907,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.6] - 2026-06-30
+## 1.0.6 - 2026-06-30
 
 ### Added
 
@@ -1916,7 +1921,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.5] - 2026-06-29
+## 1.0.5 - 2026-06-29
 
 ### Added
 
@@ -1935,7 +1940,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.4] - 2026-06-24
+## 1.0.4 - 2026-06-24
 
 ### Fixed
 
@@ -1947,7 +1952,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.3] - 2026-06-23
+## 1.0.3 - 2026-06-23
 
 ### Added
 
@@ -1960,7 +1965,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.2] - 2026-06-23
+## 1.0.2 - 2026-06-23
 
 ### Added
 
@@ -1975,7 +1980,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OTel session spans no longer emit a zero-call ghost span with a placeholder session ID to OTLP backends when session ID resolution takes the async path
 - `isSyntheticSessionId` now covers the provisional `pending-` prefix, preventing provisional session IDs from appearing in audit records, dashboard live-session lists, or the session history
 
-## [1.0.1] - 2026-06-23
+## 1.0.1 - 2026-06-23
 
 ### Security
 
@@ -1988,7 +1993,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added explicit null-byte and path-traversal component guard in the static file handler (CodeQL `js/path-injection`)
 - Added MIME extension allow-list gate in the static file handler to limit `readFile()` to known web-asset types (CodeQL `js/path-injection`)
 
-## [1.0.0] - 2026-06-23
+## 1.0.0 - 2026-06-23
 
 ### Added
 

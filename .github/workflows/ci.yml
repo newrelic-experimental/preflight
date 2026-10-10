@@ -1,8 +1,8 @@
 name: CI
 
 # Runs CONTRIBUTING.md's "Before opening a PR" checklist: everything in the
-# verify job, test:e2e in its own job. Plus the two drift-checker scripts that
-# otherwise never run automatically:
+# verify job, test:e2e in its own job, and the changeset job's two checks. Plus
+# the two drift-checker scripts that otherwise never run automatically:
 # check-docs-inventory.ts (docs/code drift) and check-bundle-size.ts (SPA
 # bundle budget, mirrors verify:plugin-hook's already-enforced pattern in
 # release.yml).
@@ -110,6 +110,43 @@ jobs:
 
       - name: Check SPA bundle size
         run: npm run check:bundle-size
+
+  # A PR describes its change in a changeset and leaves the version and CHANGELOG.md to the
+  # release PR (CONTRIBUTING.md#changesets). Both checks need a base branch, so they're
+  # skipped on workflow_dispatch runs. They're also skipped on the release PR, which is the one
+  # PR that bumps the version and consumes changesets instead of adding one. The exemption needs
+  # the branch to be in this repo, so a fork's changeset-release/main still gets checked.
+  changeset:
+    if: >-
+      github.event_name == 'pull_request' &&
+      !(github.head_ref == 'changeset-release/main' &&
+        github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    env:
+      BASE: origin/${{ github.base_ref }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Both checks compare the PR with the commit it branched from.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.x
+          cache: npm
+
+      # Installed the way release-pr.yml installs them, so the changeset CLI and tsx start
+      # here the way they start there. This doesn't run `changeset version` or its formatter.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # Fails when the PR changes a file that ships (changedFilePatterns in
+      # .changeset/config.json) and adds no changeset.
+      - name: Check for a changeset
+        run: npx changeset status --since="$BASE"
+
+      - name: Check the version and released CHANGELOG entries are untouched
+        run: npm run check:release-files -- --base "$BASE"
 
   # Separate from verify so the browser suite runs in parallel instead of adding its
   # minutes to the end of it, on every PR: the dashboard is served from src/web and

@@ -1,6 +1,9 @@
 name: Release
 
-# Triggered manually from the GitHub Actions UI.
+# Triggered manually from the GitHub Actions UI, after the "Chore: Release x.y.z"
+# PR that release-pr.yml opens has merged. That PR bumps the version in every
+# file that carries it and adds the CHANGELOG entry; this releases what it
+# merged.
 # Creates a git tag, a GitHub release, and publishes to npm via
 # npm Trusted Publishing (OIDC — no NPM_TOKEN secret required).
 # Requires the Node.js Agent team to configure the OIDC connection
@@ -13,6 +16,9 @@ permissions:
 
 jobs:
   publish:
+    # Releases come from main only. Any other branch, including the release PR's own
+    # changeset-release/main before it merges, would publish unreviewed commits.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       HUSKY: 0 # disable git hooks in CI
@@ -44,26 +50,16 @@ jobs:
       - name: Verify plugin hook bundle is up to date
         run: npm run verify:plugin-hook
 
-      # main is protected by rulesets with zero bypass actors, so this job
-      # can't push a fix-up commit — it can only fail loudly and point at
-      # the PR that needs to land first.
-      - name: Verify manifest versions are in sync
-        run: |
-          node -e "
-            const version = require('./package.json').version;
-            const mismatches = [];
-            for (const path of ['plugin/.claude-plugin/plugin.json', 'kiro-power/plugin.json']) {
-              const p = require('./' + path);
-              if (p.version !== version) {
-                mismatches.push(path + ' is at ' + p.version + ', expected ' + version);
-              }
-            }
-            if (mismatches.length) {
-              console.error(mismatches.join('\n'));
-              console.error('Fix these in a merged PR before releasing — this workflow cannot push directly to main.');
-              process.exit(1);
-            }
-          "
+      # Checks that package-lock.json, server.json, and both plugin manifests
+      # carry package.json's version, and that the newest CHANGELOG entry is
+      # for it. Also fails while .changeset/ holds a changeset that releases
+      # something: the tag below goes on this checkout, so its change would
+      # ship under a version whose entry leaves it out. main only takes changes
+      # through a reviewed PR, so this job can't push a fix-up commit. It can
+      # only fail loudly and point at the PR that needs to land first, which
+      # is normally the release PR.
+      - name: Verify version files are in sync
+        run: npm run check:release-files
 
       - name: Create tag
         env:
@@ -127,14 +123,13 @@ jobs:
 
       # homebrew/Formula/preflight.rb points at the npm tarball, so this must
       # run after the npm availability wait above — update-homebrew.sh curls
-      # the tarball to hash it. This mutates the local checkout only (same
-      # reasoning as the server.json sync below: main's ruleset means this
-      # job can't push the bump back). The tap repo lives outside this job's
-      # default GITHUB_TOKEN scope, so it needs the separately-scoped
-      # HOMEBREW_TAP_TOKEN — and that repo's own org-wide ruleset requires a
-      # PR with one approving review on its default branch, so this opens a
-      # PR and arms auto-merge rather than pushing to main directly; a
-      # maintainer still needs to approve it once before it merges.
+      # the tarball to hash it. This mutates the local checkout only, since
+      # this job can't push to main (see the version check above). The tap
+      # repo lives outside this job's default GITHUB_TOKEN scope, so it needs
+      # the separately-scoped HOMEBREW_TAP_TOKEN — and that repo's own org-wide
+      # ruleset requires a PR with one approving review on its default branch,
+      # so this opens a PR and arms auto-merge rather than pushing to main
+      # directly; a maintainer still needs to approve it once before it merges.
       # continue-on-error keeps a tap failure from blocking the MCP Registry
       # publish below; the failure still shows as an annotation on the run.
       - name: Update Homebrew tap
@@ -192,22 +187,8 @@ jobs:
       # npm package carries a matching `mcpName`, so this must run after the
       # npm publish above. GitHub OIDC auth covers the
       # io.github.newrelic-experimental/* namespace with no extra secret.
-      # This mutates the job's local checkout only — main's ruleset (see
-      # above) means it can't be pushed back, so it exists purely to make
-      # this run's registry submission correct even if the checked-in
-      # server.json (which has no hard gate like the plugin manifests do)
-      # drifted.
-      - name: Sync server.json version
-        run: |
-          node -e "
-            const fs = require('node:fs');
-            const version = require('./package.json').version;
-            const s = JSON.parse(fs.readFileSync('server.json', 'utf8'));
-            s.version = version;
-            s.packages[0].version = version;
-            fs.writeFileSync('server.json', JSON.stringify(s, null, 2) + '\n');
-          "
-
+      # It submits the committed server.json, whose version the release PR
+      # wrote and the version check above verified.
       - name: Publish to MCP Registry
         run: |
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
