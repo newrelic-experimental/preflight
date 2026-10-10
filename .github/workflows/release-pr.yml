@@ -161,16 +161,19 @@ jobs:
             fi
           done
 
-          # The PR body shows the entry from the CHANGELOG.md this commits, so the two can't
-          # differ: the body of its `## <version> - <date>` section, without leading blank lines.
+          # CHANGELOG.md may only gain the new entry, and the PR body shows that entry as
+          # committed, so the body and the diff can't tell different stories. The awk script is
+          # this checkout's own, which the allowlist above kept the patch from touching.
+          git show :CHANGELOG.md > "$RUNNER_TEMP/CHANGELOG.staged.md"
           NOTES="$RUNNER_TEMP/notes.md"
-          git show :CHANGELOG.md | awk -v v="$VERSION" '
-            /^## / { if (found) exit; if ($2 == v) { found = 1; next } }
-            found && !started && /^$/ { next }
-            found { started = 1; print }
-          ' > "$NOTES"
+          PART=entry awk -f scripts/changelog-entry.awk "$RUNNER_TEMP/CHANGELOG.staged.md" > "$NOTES"
           if [ ! -s "$NOTES" ]; then
             echo "::error::CHANGELOG.md has no entry for $VERSION"
+            exit 1
+          fi
+          PART=rest awk -f scripts/changelog-entry.awk "$RUNNER_TEMP/CHANGELOG.staged.md" > "$RUNNER_TEMP/CHANGELOG.rest.md"
+          if ! git show HEAD:CHANGELOG.md | cmp -s - "$RUNNER_TEMP/CHANGELOG.rest.md"; then
+            echo "::error::CHANGELOG.md changed outside the new $VERSION entry"
             exit 1
           fi
 
