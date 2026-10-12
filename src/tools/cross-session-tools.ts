@@ -146,13 +146,14 @@ export const CLAUDEMD_IMPACT_TOOL = {
 export const COST_PER_OUTCOME_TOOL = {
   name: 'nr_observe_get_cost_per_outcome',
   description:
-    'Get cost breakdown by outcome type (bug fix, feature, refactor, etc.) with waste ratio and ROI estimate.',
+    'Get cost breakdown by outcome type (bug fix, feature, refactor, etc.) with waste ratio and ROI estimate. When session history is available, each saved session counts as one task, and the current session is included as of its last 30s checkpoint.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       since: {
         type: 'string',
-        description: 'ISO date string to filter from (e.g., "2026-04-01")',
+        description:
+          'ISO date string to filter from (e.g., "2026-04-01"). Saved sessions are filtered by start date, not time of day.',
       },
     },
   },

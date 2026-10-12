@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.67.1] - 2026-10-12
+
+### Fixed
+
+- Idle MCP windows that never saw a tool call or token are no longer saved as empty sessions, which had skewed per-session averages and inflated the `feature` bucket in cost-per-outcome. Chat-only sessions with cost are still kept.
+- `nr_observe_get_collaboration_profile` and `nr_observe_get_recommendations` now default to your configured developer instead of the literal `unknown`, and the profile reports `Insufficient data` when a developer has no sessions.
+- `nr_observe_get_cost_per_outcome` now reads your saved session history instead of only the tasks seen by the current MCP server process.
+
 ## [1.67.0] - 2026-10-12
 
 ### Added
