@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
-import { calculateCost } from '../shared/index.js';
 import type { TokenUsage } from '../shared/index.js';
+import { calculateModelCost } from './pricing-overlay.js';
 import type { ToolCallRecord, TokenEvent } from '../storage/types.js';
 
 // ---------------------------------------------------------------------------
@@ -417,7 +417,7 @@ export class TurnCostAttributor {
       totalTokens: event.inputTokens + event.outputTokens,
     };
 
-    const breakdown = calculateCost(event.model, usage);
+    const breakdown = calculateModelCost(event.model, usage);
     const costUsd = breakdown.totalUsd * this.rateMultiplier;
     const toolCount = pendingTurn.toolCalls.length;
     const costPerTool = toolCount > 0 ? costUsd / toolCount : 0;

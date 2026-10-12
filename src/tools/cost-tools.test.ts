@@ -228,6 +228,20 @@ describe('handleGetCostBreakdown()', () => {
     expect(body.cost_per_million_tokens).toBeNull();
   });
 
+  it('lists models Preflight cannot price in unpriced_models', () => {
+    const tracker = new CostTracker();
+    handleReportTokens(tracker, {
+      input_tokens: 1000,
+      output_tokens: 1000,
+      model: 'claude-sonnet-4',
+    });
+    handleReportTokens(tracker, { input_tokens: 1000, output_tokens: 1000, model: 'gw-mystery' });
+
+    const body = JSON.parse(handleGetCostBreakdown(tracker).content[0].text);
+
+    expect(body.unpriced_models).toEqual(['gw-mystery']);
+  });
+
   it('includes rate_multiplier_applied, defaulting to 1', () => {
     const tracker = new CostTracker();
     const result = handleGetCostBreakdown(tracker);
