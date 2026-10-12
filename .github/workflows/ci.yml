@@ -127,7 +127,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # Both checks compare the PR with the commit it branched from.
+          # Both checks compare the checked-out merge commit with its merge base on the PR's
+          # base branch, which needs the history.
           fetch-depth: 0
 
       - uses: actions/setup-node@v5

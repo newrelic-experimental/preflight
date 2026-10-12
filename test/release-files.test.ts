@@ -437,9 +437,11 @@ describe('release-pr.yml', () => {
     const version = '9.9.9';
     try {
       execFileSync('jq', ['--version'], { stdio: 'ignore' });
-    } catch {
+    } catch (err: unknown) {
       throw new Error(
-        'This test runs jq, which is not on PATH. See Prerequisites in CONTRIBUTING.md.',
+        "This test runs jq, which wouldn't start. Is it installed and on PATH? See " +
+          'Prerequisites in CONTRIBUTING.md.',
+        { cause: err },
       );
     }
     for (const [path, filter] of workflowSpecs()) {
