@@ -644,6 +644,30 @@ describe('Today view', () => {
     expect(screen.queryByText(/subagent activity from other sessions/i)).toBeNull();
   });
 
+  it('shows the unpriced-spend notice when the aggregate reports unpriced calls', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            totalCostUsd: 1,
+            unpricedByModel: { 'claude-opus-5-5': { calls: 14, tokens: 900 } },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    expect(
+      await screen.findByText(/14 calls unpriced \(claude-opus-5-5\)\. Spend is understated\./),
+    ).toBeInTheDocument();
+  });
+
   it('folds the /api/cost REST fallback into todayTotal so the KPI does not flash $0.00 before the first SSE frame arrives', async () => {
     // No SSE cost frame has arrived yet, and the aggregate endpoint has
     // legitimately resolved to 0 (no disk-backed data yet from this

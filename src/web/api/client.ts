@@ -136,6 +136,9 @@ export type SessionStatus = 'needs_input' | 'ready_for_review' | 'working' | 'co
 export interface TodayAggregateResponse {
   readonly toolCallCount: number;
   readonly totalCostUsd: number;
+  readonly unpricedByModel?: Readonly<
+    Record<string, { readonly calls: number; readonly tokens: number }>
+  >;
   readonly antiPatternCount: number;
   readonly avgDurationMs: number;
   readonly sessionCount: number;
