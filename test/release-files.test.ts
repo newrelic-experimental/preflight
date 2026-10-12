@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -410,17 +411,42 @@ describe('release-pr.yml', () => {
     expect(paths.sort()).toEqual([...versionPaths, 'CHANGELOG.md'].sort());
   });
 
-  it('checks the contents of every version file', () => {
+  // The `for spec in` loop's `'<path>|<jq filter>'` entries.
+  function workflowSpecs(): Array<[path: string, filter: string]> {
     const loop = /for spec in \\\n([\s\S]*?); do\n/.exec(workflow);
     expect(loop).not.toBeNull();
-    const specs = [...(loop?.[1] ?? '').matchAll(/^\s+'([^'|]+)\|/gm)].map((m) => m[1]);
-    expect(specs.sort()).toEqual(versionPaths);
+    return [...(loop?.[1] ?? '').matchAll(/^\s+'([^'|]+)\|(.*)'(?: \\)?$/gm)].map((m) => [
+      m[1],
+      m[2],
+    ]);
+  }
+
+  it('checks the contents of every version file', () => {
+    expect(
+      workflowSpecs()
+        .map(([path]) => path)
+        .sort(),
+    ).toEqual(versionPaths);
   });
 
-  it("pins server.json's npm entry by this package's name", () => {
-    // VERSION_FILES finds the entry by package.json's name, so a rename has to reach here too.
-    const { name } = readPackageJson((path) => readFileSync(resolve(repoRoot, path), 'utf8'));
-    expect(workflow).toContain(`.identifier == "${name}"`);
+  it("sets each file's version fields the way sync does", () => {
+    // Runs each jq filter on the real file and compares it with what sync would write, so a
+    // field that only one side bumps, or a package rename the filter misses, fails here.
+    const readRepo: ReadFile = (path) => readFileSync(resolve(repoRoot, path), 'utf8');
+    const { name } = readPackageJson(readRepo);
+    const version = '9.9.9';
+    for (const [path, filter] of workflowSpecs()) {
+      const text = readRepo(path);
+      const viaJq: unknown = JSON.parse(
+        execFileSync('jq', ['--arg', 'v', version, filter], { input: text, encoding: 'utf8' }),
+      );
+      // changeset version bumps package.json; sync copies its version everywhere else.
+      const viaSync: unknown =
+        path === 'package.json'
+          ? { ...JSON.parse(text), version }
+          : JSON.parse(setVersion(versionFile(path), text, version, name));
+      expect([path, viaJq]).toEqual([path, viaSync]);
+    }
   });
 });
 
