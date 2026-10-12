@@ -6,9 +6,15 @@ All notable changes to this project are documented in this file. The project adh
 Don't edit this file by hand. Each pull request describes its change in a changeset under
 [`.changeset/`](.changeset/), and the release PR turns the pending changesets into the next
 entry here; see [Changesets](CONTRIBUTING.md#changesets) in CONTRIBUTING.md. Releases through
-1.64.1 group their entries by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) category
+1.65.0 group their entries by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) category
 (Added, Fixed, and so on). Later releases group them by semver bump: Major, Minor, or Patch
 Changes.
+
+## 1.65.0 - 2026-10-12
+
+### Added
+
+- **Calls on a model with no price were recorded as $0 with nothing on the dashboard to say so, so Spend Today read low without explanation.** Preflight now counts those calls per model ID. The Today page shows a notice above the spend figures naming the models, for example "2 calls unpriced (claude-opus-5-5). Spend is understated." The counts are persisted with each session, summed across today's sessions, returned as `unpriced_by_model` by `nr_observe_get_cost_breakdown`, and emitted as the `ai.cost.unpriced_calls` metric tagged by `model`.
 
 ## 1.64.1 - 2026-10-12
 
