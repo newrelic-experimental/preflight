@@ -143,7 +143,7 @@ jobs:
           # scripts/release-files.ts owns set to the version the version job reported, so the
           # version job can't, say, add an install script to package.json either. These paths and
           # filters mirror VERSION_FILES in that script (this job installs nothing, so it can't
-          # run it), and change with it.
+          # run it), and change with it; test/release-files.test.ts fails if the paths drift.
           for spec in \
             'package.json|.version = $v' \
             'package-lock.json|.version = $v | .packages[""].version = $v' \

@@ -394,6 +394,27 @@ describe('findReleaseBlockers', () => {
   });
 });
 
+describe('release-pr.yml', () => {
+  // The pull-request job installs nothing, so it lists the version files itself instead of
+  // reading VERSION_FILES. A file added to only one side would fail every release PR.
+  const workflow = readFileSync(resolve(repoRoot, '.github/workflows/release-pr.yml'), 'utf8');
+  // package.json is where the version comes from, so it isn't in VERSION_FILES, but the release
+  // patch bumps it too.
+  const versionPaths = ['package.json', ...VERSION_FILES.map((f) => f.path)].sort();
+
+  it('lets the release patch modify exactly the version files and CHANGELOG.md', () => {
+    const allowlist = /\$1 == "M" && \$2 ~ \/\^\((.+)\)\$\//.exec(workflow);
+    expect(allowlist).not.toBeNull();
+    const paths = (allowlist?.[1] ?? '').split('|').map((p) => p.replace(/\\(.)/g, '$1'));
+    expect(paths.sort()).toEqual([...versionPaths, 'CHANGELOG.md'].sort());
+  });
+
+  it('checks the contents of every version file', () => {
+    const specs = [...workflow.matchAll(/^\s+'([^'|]+)\|/gm)].map((m) => m[1]);
+    expect(specs.sort()).toEqual(versionPaths);
+  });
+});
+
 describe('the files in this repo', () => {
   it('all carry the version in package.json', () => {
     const readRepo: ReadFile = (path) => readFileSync(resolve(repoRoot, path), 'utf8');
