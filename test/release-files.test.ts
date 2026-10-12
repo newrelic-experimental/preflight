@@ -7,6 +7,7 @@ import {
   VERSION_FILES,
   changesetReleases,
   dateNewEntries,
+  findDeletedChangesets,
   findPendingReleases,
   findReleaseBlockers,
   findReleaseEdits,
@@ -258,6 +259,19 @@ describe('findVersionMismatches', () => {
     expect(findVersionMismatches(makeReader(files))).toEqual([
       "CHANGELOG.md's 1.64.0 heading has no date.",
     ]);
+  });
+});
+
+describe('findDeletedChangesets', () => {
+  it('passes a PR that adds changesets or leaves them alone', () => {
+    expect(findDeletedChangesets([], ['new-fix.md'])).toEqual([]);
+    expect(findDeletedChangesets(['a.md'], ['a.md', 'b.md'])).toEqual([]);
+  });
+
+  it('names each changeset the PR deleted', () => {
+    const problems = findDeletedChangesets(['a.md', 'b.md', 'c.md'], ['b.md']);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(/^\.changeset\/a\.md, \.changeset\/c\.md were deleted\./);
   });
 });
 

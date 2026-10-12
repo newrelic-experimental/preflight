@@ -285,6 +285,24 @@ export function findReleaseEdits(base: ReadFile, head: ReadFile): string[] {
   return problems;
 }
 
+/**
+ * The pending changesets (file names in .changeset/) that `base` had and `head` doesn't, as one
+ * problem. Only the release PR consumes changesets, and a deleted one drops its change from the
+ * next CHANGELOG entry without anything else noticing.
+ */
+export function findDeletedChangesets(base: readonly string[], head: readonly string[]): string[] {
+  const kept = new Set(head);
+  const deleted = base.filter((name) => !kept.has(name)).sort();
+  if (deleted.length === 0) return [];
+  return [
+    `${deleted.map((name) => `.changeset/${name}`).join(', ')} ${deleted.length === 1 ? 'was' : 'were'} ` +
+      'deleted. Only the release PR consumes changesets, so restore ' +
+      `${deleted.length === 1 ? 'it' : 'them'}; to change an entry, edit its changeset in place ` +
+      `(${CHANGESETS_DOC}). If this PR reverts the change a changeset describes, a maintainer ` +
+      'can merge over this check.',
+  ];
+}
+
 function parseObject(text: string, label: string): JsonObject {
   return asObject(JSON.parse(text), label);
 }
@@ -374,9 +392,16 @@ function main(argv: readonly string[]): number {
     const { base } = command;
     const forkPoint = git(['merge-base', base, 'HEAD']).trim();
     const readForkPoint: ReadFile = (path) => git(['show', `${forkPoint}:${path}`]);
+    // The path form lists nothing, instead of failing, when the merge base has no .changeset/.
+    const forkPointChangesets = git(['ls-tree', '--name-only', forkPoint, '--', '.changeset/'])
+      .split('\n')
+      .filter((path) => /^\.changeset\/[^/]+\.md$/.test(path) && path !== '.changeset/README.md')
+      .map((path) => path.slice('.changeset/'.length));
+    const headChangesets = [...readPendingChangesets(resolve(process.cwd(), '.changeset')).keys()];
     return report(
       [
         ...findReleaseEdits(readForkPoint, readWorkingTree),
+        ...findDeletedChangesets(forkPointChangesets, headChangesets),
         ...findVersionMismatches(readWorkingTree),
       ],
       `Compared with ${base} at ${forkPoint.slice(0, 7)}, its merge base with HEAD.`,
