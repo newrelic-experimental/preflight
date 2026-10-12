@@ -3,6 +3,9 @@ import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
 import { stripHeredocBodies } from './local-session-aggregator.js';
 import {
   classifyGitSegments,
+  isAmendCommit,
+  isCountedCommit,
+  isCountedPush,
   processGhCommand,
   splitShellSegments,
   type GitEvent,
@@ -436,9 +439,20 @@ export class GitEfficiencyTracker {
       // timestamp proximity: a prior session's hook-observed `commit` event,
       // replayed via replayTimeline() before this method ever runs, has no
       // hash in its command text at all, so a hash match would never catch
-      // it and every restart would double-count that commit.
+      // it and every restart would double-count that commit. Only a counted
+      // commit can stand for this one. A commit the `;` rule marked failed
+      // may still have landed, and git log is what shows it did, as
+      // `reconcileHydratedCommits` reads it for the weekly panel. An amend
+      // can't either: nothing here shows which commit it rewrote, and when
+      // that one was never counted (yesterday's, or one made outside the
+      // hooks) git log is the only place it shows up. The cost is that an
+      // amend with `--reset-author`, which moves the author time git log
+      // reports to the amend's, counts its commit again on the next git log
+      // refresh (every 5 minutes, or a restart). A plain `--amend` keeps the
+      // original's author time, so it still matches on the refreshes that read
+      // `%at`; the day-boundary one reads committer time, which an amend moves.
       const isDuplicate = this.events.some((e) => {
-        if (e.type !== 'commit') return false;
+        if (!isCountedCommit(e)) return false;
         const existingHash = e.command ? HYDRATED_COMMIT_HASH_RE.exec(e.command)?.[1] : undefined;
         if (existingHash !== undefined) {
           return existingHash === commit.hash;
@@ -514,10 +528,8 @@ export class GitEfficiencyTracker {
     const resetHards = this.events.filter((e) => e.type === 'reset_hard').length;
     const discardedChanges = this.events.filter((e) => e.type === 'discard_changes').length;
     const pullCount = this.events.filter((e) => e.type === 'pull').length;
-    const pushCount = this.events.filter(
-      (e) => e.type === 'push' || e.type === 'force_push' || e.type === 'force_push_lease',
-    ).length;
-    const commitCount = this.events.filter((e) => e.type === 'commit').length;
+    const pushCount = this.events.filter(isCountedPush).length;
+    const commitCount = this.events.filter(isCountedCommit).length;
     const branchOperations = this.events.filter((e) => e.type === 'branch').length;
 
     // A conflict that's currently open (mid-merge, not yet aborted or
@@ -752,11 +764,16 @@ export class GitEfficiencyTracker {
       }
 
       case 'commit': {
+        this.statusChecksSinceLastAction = 0;
+        // A failed commit (e.g. a pre-commit hook rejection, or unmerged
+        // files) added no history and resolved nothing, so it leaves pending
+        // conflicts queued and stays out of the commit cadence below.
+        if (!event.success) break;
         // git commit --amend fixes a prior commit, not a merge conflict.
         // Drop the oldest pending conflict on amend (without recording a
         // resolution) so a later, unrelated commit doesn't retroactively
         // "resolve" it.
-        if (command.includes('--amend')) {
+        if (isAmendCommit(command)) {
           this.pendingConflicts.shift();
         } else {
           const pending = this.pendingConflicts.shift();
@@ -778,9 +795,12 @@ export class GitEfficiencyTracker {
             }
           }
         }
-        this.commitTimestamps.push(event.timestamp);
-        this.commitsSinceLastSync++;
-        this.statusChecksSinceLastAction = 0;
+        // Same rule as the commit count: an amend rewrites a commit rather
+        // than adding one, so it isn't another commit in the cadence.
+        if (isCountedCommit(event)) {
+          this.commitTimestamps.push(event.timestamp);
+          this.commitsSinceLastSync++;
+        }
         break;
       }
 
@@ -800,6 +820,10 @@ export class GitEfficiencyTracker {
         break;
 
       case 'push': {
+        this.statusChecksSinceLastAction = 0;
+        // A failed push changed nothing on the remote, so it leaves the
+        // last-push state below as it was. The commit arm gates the same way.
+        if (!event.success) break;
         // buildBeforePush is only meaningful if the build/test happened AFTER the
         // most recent commit — a stale test from session start with many commits
         // in between doesn't protect the pushed code.
@@ -812,7 +836,6 @@ export class GitEfficiencyTracker {
           this.lastBuildOrTestTimestamp !== null &&
           (lastCommitTs === null || this.lastBuildOrTestTimestamp > lastCommitTs);
         this.consecutiveFailedPushes = 0;
-        this.statusChecksSinceLastAction = 0;
         break;
       }
 
@@ -839,6 +862,10 @@ export class GitEfficiencyTracker {
         ) {
           this.forceAfterReject++;
         }
+        this.statusChecksSinceLastAction = 0;
+        // The force-push checks above judge the command run, so a failed one
+        // still counts there; only a push that succeeded moves the state below.
+        if (!event.success) break;
         this.lastPushTimestamp = event.timestamp;
         {
           const lastCt =
@@ -850,11 +877,12 @@ export class GitEfficiencyTracker {
             (lastCt === null || this.lastBuildOrTestTimestamp > lastCt);
         }
         this.consecutiveFailedPushes = 0;
-        this.statusChecksSinceLastAction = 0;
         break;
 
       case 'force_push_lease':
         this.hasUsedForceWithLease = true;
+        this.statusChecksSinceLastAction = 0;
+        if (!event.success) break;
         this.lastPushTimestamp = event.timestamp;
         {
           const lastCt =
@@ -866,7 +894,6 @@ export class GitEfficiencyTracker {
             (lastCt === null || this.lastBuildOrTestTimestamp > lastCt);
         }
         this.consecutiveFailedPushes = 0;
-        this.statusChecksSinceLastAction = 0;
         break;
 
       case 'worktree':

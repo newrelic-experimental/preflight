@@ -46,6 +46,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { createLogger } from '../shared/index.js';
+import { resolvePricing } from '../metrics/pricing-overlay.js';
 import { getCopilotAppDir } from '../platforms/copilot-app-adapter.js';
 import type { LocalStore } from '../storage/local-store.js';
 
@@ -277,6 +278,27 @@ export class CopilotAppUsageWatcher {
     const dCached = totals.cachedTokens - cursor.cachedTokens;
     const dReasoning = totals.reasoningTokens - cursor.reasoningTokens;
     if (dInput === 0 && dOutput === 0 && dCached === 0 && dReasoning === 0) {
+      return;
+    }
+
+    // The app DB has only cumulative totals, so a first-seen session arrives as
+    // one event covering every request so far. A tiered model prices an event
+    // by its prompt volume (input + cache), so a backlog of small requests
+    // would bill the whole session at the long-context rate. Skip the backlog
+    // rather than overbill it; later polls emit their own deltas.
+    const tierThreshold = resolvePricing(row.model ?? '')?.tierThreshold;
+    if (
+      !existsSync(this.cursorPath(sessionId)) &&
+      tierThreshold !== undefined &&
+      dInput > tierThreshold
+    ) {
+      logger.warn('CopilotAppUsageWatcher: skipping first-seen backlog over tier threshold', {
+        sessionId,
+        model: row.model,
+        promptTokens: dInput,
+        tierThreshold,
+      });
+      this.writeCursor(sessionId, totals);
       return;
     }
 

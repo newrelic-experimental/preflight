@@ -12,6 +12,10 @@ export interface TokenUsage {
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
   readonly totalTokens: number;
+  /** Subset of `inputTokens` that is audio (Gemini). Omitted when zero. */
+  readonly audioInputTokens?: number;
+  /** Subset of `cacheReadTokens` that is audio (Gemini). Omitted when zero. */
+  readonly audioCacheReadTokens?: number;
 }
 
 // Internal mutable snapshot — TokenAccumulator mutates fields in-place across
@@ -111,22 +115,60 @@ interface GeminiUsageMetadata {
   thoughtsTokenCount?: number;
   cachedContentTokenCount?: number;
   totalTokenCount?: number;
+  promptTokensDetails?: GeminiModalityTokenCount[];
+  cacheTokensDetails?: GeminiModalityTokenCount[];
+}
+
+interface GeminiModalityTokenCount {
+  modality?: string;
+  tokenCount?: number;
+}
+
+function sumAudioTokens(details: GeminiModalityTokenCount[] | undefined): number {
+  if (!Array.isArray(details)) return 0;
+  let sum = 0;
+  for (const d of details) {
+    if (d?.modality === 'AUDIO') sum += safeInt(d.tokenCount);
+  }
+  return sum;
+}
+
+function geminiAudioUsage(
+  meta: GeminiUsageMetadata,
+): Pick<TokenUsage, 'audioInputTokens' | 'audioCacheReadTokens'> {
+  const audioCacheReadTokens = sumAudioTokens(meta.cacheTokensDetails);
+  // promptTokensDetails covers the whole prompt, cached audio included.
+  const audioInputTokens = Math.max(
+    0,
+    sumAudioTokens(meta.promptTokensDetails) - audioCacheReadTokens,
+  );
+  return {
+    ...(audioInputTokens > 0 && { audioInputTokens }),
+    ...(audioCacheReadTokens > 0 && { audioCacheReadTokens }),
+  };
 }
 
 export interface GeminiResponse {
   usageMetadata?: GeminiUsageMetadata;
 }
 
-export function extractGeminiTokens(response: GeminiResponse): TokenUsage {
-  if (!response.usageMetadata) return { ...EMPTY_USAGE };
-
-  const meta = response.usageMetadata;
-  const inputTokens = safeInt(meta.promptTokenCount);
+/**
+ * Map Gemini `usageMetadata` to `TokenUsage`.
+ *
+ * `promptTokenCount` INCLUDES `cachedContentTokenCount`, so `inputTokens` is
+ * the uncached remainder. That keeps `inputTokens` and `cacheReadTokens`
+ * disjoint, which is what `computeCost` bills (matches Anthropic). Audio
+ * counts get the same treatment: `audioInputTokens` is the uncached audio.
+ */
+function geminiUsageFromMetadata(meta: GeminiUsageMetadata): TokenUsage {
+  const promptTokens = safeInt(meta.promptTokenCount);
+  const cacheReadTokens = safeInt(meta.cachedContentTokenCount);
+  const inputTokens = Math.max(0, promptTokens - cacheReadTokens);
   const outputTokens = safeInt(meta.candidatesTokenCount);
   const thinkingTokens = safeInt(meta.thoughtsTokenCount);
-  const cacheReadTokens = safeInt(meta.cachedContentTokenCount);
 
-  let totalTokens: number;
+  const componentSum = inputTokens + outputTokens + thinkingTokens + cacheReadTokens;
+  let totalTokens = componentSum;
   if (meta.totalTokenCount !== undefined) {
     const apiTotal = safeInt(meta.totalTokenCount);
     // Gemini's totalTokenCount is authoritative per
@@ -134,7 +176,6 @@ export function extractGeminiTokens(response: GeminiResponse): TokenUsage {
     // (e.g. billable-vs-counted distinctions, deduplication). Use the API
     // value, but emit a debug log on divergence so operators can spot drift
     // if the API ever stops reporting totals consistently.
-    const componentSum = inputTokens + outputTokens + thinkingTokens + cacheReadTokens;
     if (apiTotal !== componentSum) {
       tokenLogger.debug('Gemini totalTokenCount differs from component sum', {
         apiTotal,
@@ -146,8 +187,6 @@ export function extractGeminiTokens(response: GeminiResponse): TokenUsage {
       });
     }
     totalTokens = apiTotal;
-  } else {
-    totalTokens = inputTokens + outputTokens + thinkingTokens + cacheReadTokens;
   }
 
   return {
@@ -157,7 +196,13 @@ export function extractGeminiTokens(response: GeminiResponse): TokenUsage {
     cacheReadTokens,
     cacheCreationTokens: 0, // Gemini does not expose cache creation tokens
     totalTokens,
+    ...geminiAudioUsage(meta),
   };
+}
+
+export function extractGeminiTokens(response: GeminiResponse): TokenUsage {
+  if (!response.usageMetadata) return { ...EMPTY_USAGE };
+  return geminiUsageFromMetadata(response.usageMetadata);
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +211,8 @@ export function extractGeminiTokens(response: GeminiResponse): TokenUsage {
 
 interface OpenAIPromptTokensDetails {
   cached_tokens?: number;
+  // Not reported by OpenAI itself. Moonshot's OpenAI-compatible API sets it.
+  cache_write_tokens?: number;
 }
 
 interface OpenAICompletionTokensDetails {
@@ -185,48 +232,52 @@ export interface OpenAIResponse {
 }
 
 /**
- * Extract `TokenUsage` from an OpenAI Chat Completions response (or the final
- * stream chunk when `stream_options: { include_usage: true }` is set — the
- * shape is identical).
+ * Map an OpenAI-shaped `usage` object to `TokenUsage`.
  *
- * Mapping:
- *   - `prompt_tokens` → `inputTokens`
- *   - `completion_tokens` → `outputTokens`
- *   - `prompt_tokens_details.cached_tokens` → `cacheReadTokens`
- *   - `completion_tokens_details.reasoning_tokens` → `thinkingTokens`
- *
- * `total_tokens` (if present) is authoritative and used as `totalTokens`,
- * matching the Gemini extractor's behavior. OpenAI does not expose
- * cache-creation tokens — they're set to 0.
+ * `prompt_tokens` INCLUDES the cached (and, for Moonshot, cache-write)
+ * tokens, so `inputTokens` is the remainder after subtracting them. That
+ * keeps `inputTokens`, `cacheReadTokens` and `cacheCreationTokens` disjoint,
+ * which is what `computeCost` bills (matches Anthropic).
  */
-export function extractOpenAITokens(response: OpenAIResponse): TokenUsage {
-  if (!response.usage) return { ...EMPTY_USAGE };
-
-  const usage = response.usage;
-  const inputTokens = safeInt(usage.prompt_tokens);
+function openAIUsageFromUsage(usage: OpenAIUsage): TokenUsage {
+  const promptTokens = safeInt(usage.prompt_tokens);
   const outputTokens = safeInt(usage.completion_tokens);
   const cacheReadTokens = safeInt(usage.prompt_tokens_details?.cached_tokens);
+  const cacheCreationTokens = safeInt(usage.prompt_tokens_details?.cache_write_tokens);
   const thinkingTokens = safeInt(usage.completion_tokens_details?.reasoning_tokens);
-
-  let totalTokens: number;
-  if (usage.total_tokens !== undefined) {
-    totalTokens = safeInt(usage.total_tokens);
-  } else {
-    // For OpenAI, cacheReadTokens (prompt_tokens_details.cached_tokens)
-    // is a SUBSET of inputTokens (prompt_tokens), not an additive field.
-    // thinkingTokens (reasoning_tokens) is a SUBSET of outputTokens (completion_tokens).
-    // Including either again would double-count when total_tokens is absent.
-    totalTokens = inputTokens + outputTokens;
-  }
+  const inputTokens = Math.max(0, promptTokens - cacheReadTokens - cacheCreationTokens);
 
   return {
     inputTokens,
     outputTokens,
     thinkingTokens,
     cacheReadTokens,
-    cacheCreationTokens: 0,
-    totalTokens,
+    cacheCreationTokens,
+    // total_tokens (if present) is authoritative, matching the Gemini
+    // extractor. Otherwise prompt + completion: cached/written tokens are a
+    // SUBSET of prompt_tokens and reasoning is a SUBSET of completion_tokens,
+    // so adding either again would double-count.
+    totalTokens:
+      usage.total_tokens !== undefined ? safeInt(usage.total_tokens) : promptTokens + outputTokens,
   };
+}
+
+/**
+ * Extract `TokenUsage` from an OpenAI Chat Completions response (or the final
+ * stream chunk when `stream_options: { include_usage: true }` is set — the
+ * shape is identical).
+ *
+ * Mapping:
+ *   - `prompt_tokens` minus cached/written tokens → `inputTokens`
+ *   - `completion_tokens` → `outputTokens`
+ *   - `prompt_tokens_details.cached_tokens` → `cacheReadTokens`
+ *   - `prompt_tokens_details.cache_write_tokens` → `cacheCreationTokens`
+ *     (Moonshot only; OpenAI has no cache-write count, so it stays 0)
+ *   - `completion_tokens_details.reasoning_tokens` → `thinkingTokens`
+ */
+export function extractOpenAITokens(response: OpenAIResponse): TokenUsage {
+  if (!response.usage) return { ...EMPTY_USAGE };
+  return openAIUsageFromUsage(response.usage);
 }
 
 // ---------------------------------------------------------------------------
@@ -645,19 +696,7 @@ export class TokenAccumulator {
   private addGeminiChunk(chunk: GeminiStreamChunk): void {
     // Each Gemini chunk may carry usageMetadata; the last one is authoritative
     if (chunk.usageMetadata) {
-      const meta = chunk.usageMetadata;
-      this.latestUsage.inputTokens = safeInt(meta.promptTokenCount);
-      this.latestUsage.outputTokens = safeInt(meta.candidatesTokenCount);
-      this.latestUsage.thinkingTokens = safeInt(meta.thoughtsTokenCount);
-      this.latestUsage.cacheReadTokens = safeInt(meta.cachedContentTokenCount);
-      this.latestUsage.totalTokens =
-        meta.totalTokenCount !== undefined
-          ? safeInt(meta.totalTokenCount)
-          : this.latestUsage.inputTokens +
-            this.latestUsage.outputTokens +
-            this.latestUsage.thinkingTokens +
-            this.latestUsage.cacheReadTokens +
-            this.latestUsage.cacheCreationTokens;
+      this.latestUsage = geminiUsageFromMetadata(chunk.usageMetadata);
     }
   }
 
@@ -666,17 +705,7 @@ export class TokenAccumulator {
     // `usage`. Earlier chunks are no-ops here. The values are absolute, not
     // deltas, so overwrite rather than accumulate.
     if (chunk.usage) {
-      const u = chunk.usage;
-      this.latestUsage.inputTokens = safeInt(u.prompt_tokens);
-      this.latestUsage.outputTokens = safeInt(u.completion_tokens);
-      this.latestUsage.cacheReadTokens = safeInt(u.prompt_tokens_details?.cached_tokens);
-      this.latestUsage.thinkingTokens = safeInt(u.completion_tokens_details?.reasoning_tokens);
-      this.latestUsage.totalTokens =
-        u.total_tokens !== undefined
-          ? safeInt(u.total_tokens)
-          : // Same subset semantics as extractOpenAITokens — neither
-            // cacheReadTokens nor thinkingTokens is additive for OpenAI.
-            this.latestUsage.inputTokens + this.latestUsage.outputTokens;
+      this.latestUsage = openAIUsageFromUsage(chunk.usage);
     }
   }
 

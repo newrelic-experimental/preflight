@@ -16,6 +16,7 @@ This document captures the security practices and invariants baked into this cod
 - [ ] Subprocess commands validated as absolute paths; dangerous env keys stripped
 - [ ] `MetricAggregator.record()` only called with values known to be finite
 - [ ] High security mode respected: never bypass `recordContent=false` when `highSecurity=true`
+- [ ] Outbound requests other than New Relic ingest are opt-out, forced off by `highSecurity`, fixed-host, size-capped, and schema-validated
 - [ ] Event listeners on long-lived streams use `once` + `removeAllListeners()` after terminal events
 - [ ] Error responses to HTTP clients contain only a generic code — detail goes to the logger
 - [ ] `randomUUID()` from `node:crypto` used for all IDs (not `Math.random()`)
@@ -150,6 +151,16 @@ if (BLOCKED_HOST_RE.test(this.url.hostname)) throw new Error('…private address
 Checking the literal hostname string is not sufficient on its own — DNS can be repointed between the time a URL is validated and the time it's actually connected to (DNS rebinding). `createSsrfSafeLookup()` closes that gap: it resolves the hostname exactly once, validates every resolved address against the same rules above, and hands that validated address to the actual HTTP client as a custom `lookup` function, so the socket that gets opened is guaranteed to be an address that was just checked. `HttpUpstream.forward()` passes it as `http.request`'s/`https.request`'s `lookup` option; `OtlpReceiver` passes it via an `undici.Agent`'s `connect.lookup` option. A one-time `validateSsrfUrl()` call at construction is still worth keeping as a cheap fail-fast for an obviously-blocked literal host, but it is not itself the thing preventing rebinding — do not rely on a second same-string check immediately before a network call; it re-checks nothing new.
 
 This is used by both `HttpUpstream` (MCP proxy forwarding) and `OtlpReceiver` (`otlpForwardEndpoint` config). Any new network client that takes a URL from config or user input should call `validateSsrfUrl()` at construction time, and — if it makes its own outbound connections rather than delegating to `HttpUpstream`/`OtlpReceiver` — should also use `createSsrfSafeLookup()` as its connection-time resolver.
+
+### LiteLLM price refresh — `src/metrics/pricing-refresh.ts`
+
+An outbound request made by default, unlike the opt-in webhook and forwarding clients. It fetches LiteLLM's community price file to price models the bundled table does not know.
+
+- The host and path are fixed (`raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`). The request uses `redirect: 'error'`, a 30 s timeout that also covers the body read, and an 8 MB cap enforced while streaming.
+- The response is mapped by `parseLiteLlmPrices` and the cache is re-validated by the vendored custom-pricing loader, which applies its own size cap and rate ceiling.
+- Refreshed entries are exact-id gap fill. They live in their own table and cannot change a price the bundled table, overlay, or user custom file resolves. They do take precedence over family estimates. Context windows above 10M tokens and rates above 10,000 USD/MTok are dropped. A tampered entry can still misprice a model only the refresh knows, within those bounds, and each such model is logged once as "Pricing from the LiteLLM refresh".
+- The cache is `<storagePath>/pricing-cache.json`, written atomically through a per-process temp file with mode `0o600`. It is refetched at server start when older than a day; a long-running server does not refetch on its own.
+- Opt out with `NEW_RELIC_AI_PRICING_REFRESH=false` or `pricingRefresh: false`. `highSecurity=true` forces it off. When off, nothing is fetched and no cache file is read or written.
 
 ### Proxy body limits — `proxy-manager.ts`
 

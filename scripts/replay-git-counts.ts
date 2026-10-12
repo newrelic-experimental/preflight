@@ -29,7 +29,8 @@ import {
   WorktreeIdentityResolver,
   type WorktreeIdentity,
 } from '../src/metrics/git-workspace-identity.js';
-import { isCountedCommit, reconcileHydratedCommits } from '../src/metrics/git-workspace-report.js';
+import { isCountedCommit } from '../src/metrics/git-event-classifier.js';
+import { reconcileHydratedCommits } from '../src/metrics/git-workspace-report.js';
 import { GitWorkspaceReporter } from '../src/metrics/git-workspace-reporter.js';
 import {
   collectCommitsAcrossRepos,

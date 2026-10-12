@@ -148,6 +148,36 @@ describe('GitEfficiencyTracker', () => {
     expect(metrics.conflictHistory[0].resolutionTimeMs).toBe(5000);
   });
 
+  it('aborts the pending conflict before a chained pull that conflicts again', () => {
+    const t = Date.now();
+    tracker.recordToolCall(
+      makeRecord({
+        command: 'git merge main',
+        timestamp: t,
+        success: false,
+        error: 'CONFLICT (content): Merge conflict in src/file.ts',
+      }),
+    );
+    tracker.recordToolCall(
+      makeRecord({
+        command: 'git merge --abort && git pull',
+        timestamp: t + 5000,
+        success: false,
+        error:
+          'CONFLICT (content): Merge conflict in src/other.ts\n' +
+          'Automatic merge failed; fix conflicts and then commit the result.',
+      }),
+    );
+    tracker.recordToolCall(makeRecord({ command: 'git commit -m "resolve"', timestamp: t + 9000 }));
+    const metrics = tracker.getMetrics();
+    expect(metrics.abortedOperations).toBe(1);
+    expect(metrics.staleBranchPulls).toBe(1);
+    expect(metrics.conflictHistory.map((c) => [c.resolution, c.files])).toEqual([
+      ['aborted', ['src/file.ts']],
+      ['resolved', ['src/other.ts']],
+    ]);
+  });
+
   it('tracks conflict resolved by commit', () => {
     const t = Date.now();
     tracker.recordToolCall(
@@ -1398,6 +1428,104 @@ describe('GitEfficiencyTracker', () => {
       expect(tracker.getMetrics().commitCount).toBe(1);
     });
 
+    // The `;` rule gives the commit the push's failure, so it doesn't count
+    // as a hook commit, and `git log` is what shows it landed.
+    it('counts a commit from git log beside a replayed hook commit marked failed', () => {
+      const commitTimestamp = Date.now() - 60_000;
+      tracker.replayTimeline([
+        {
+          timestamp: commitTimestamp,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: false,
+          command: 'git commit -m x; git push',
+        },
+      ]);
+      expect(tracker.getMetrics().commitCount).toBe(0);
+
+      tracker.hydrateGitLog([{ timestamp: commitTimestamp + 1_000, hash: 'abc123' }]);
+
+      expect(tracker.getMetrics().commitCount).toBe(1);
+    });
+
+    // `--reset-author` moves the author time git log reports to the amend's,
+    // so only the replayed amend sits next to the hydrated copy, and an amend
+    // doesn't stand for a git log commit: nothing shows which one it rewrote.
+    // Pinned as the known cost of that rule.
+    it('counts the commit a reset-author amend rewrote again on the next git log refresh', () => {
+      const commitTimestamp = Date.now() - 120_000;
+      const amendTimestamp = commitTimestamp + 30_000;
+      tracker.replayTimeline([
+        {
+          timestamp: commitTimestamp,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git commit -m x',
+        },
+        {
+          timestamp: amendTimestamp,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git commit --amend --reset-author --no-edit',
+        },
+      ]);
+      expect(tracker.getMetrics().commitCount).toBe(1);
+
+      tracker.hydrateGitLog([{ timestamp: amendTimestamp + 1_000, hash: 'def456' }]);
+
+      expect(tracker.getMetrics().commitCount).toBe(2);
+    });
+
+    // With no counted commit before it, the amend rewrote one made yesterday
+    // or outside the hooks, which only git log shows.
+    it('counts a git log commit beside a replayed amend with no counted commit before it', () => {
+      const amendTimestamp = Date.now() - 60_000;
+      tracker.replayTimeline([
+        {
+          timestamp: amendTimestamp,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git commit --amend --reset-author --no-edit',
+        },
+      ]);
+      expect(tracker.getMetrics().commitCount).toBe(0);
+
+      tracker.hydrateGitLog([{ timestamp: amendTimestamp + 1_000, hash: 'fed789' }]);
+
+      expect(tracker.getMetrics().commitCount).toBe(1);
+    });
+
+    // An earlier counted commit, here on another branch, says nothing about
+    // which commit the amend rewrote.
+    it('counts a git log commit beside a replayed amend that follows an unrelated counted commit', () => {
+      const commitTimestamp = Date.now() - 5 * 60 * 60_000;
+      const amendTimestamp = Date.now() - 60_000;
+      tracker.replayTimeline([
+        {
+          timestamp: commitTimestamp,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git commit -m "feat: A"',
+        },
+        {
+          timestamp: amendTimestamp,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git commit --amend --reset-author --no-edit',
+        },
+      ]);
+      expect(tracker.getMetrics().commitCount).toBe(1);
+
+      tracker.hydrateGitLog([{ timestamp: amendTimestamp + 1_000, hash: 'abc999' }]);
+
+      expect(tracker.getMetrics().commitCount).toBe(2);
+    });
+
     it('hydrateBranchDivergence sets ahead/behind counts on risk indicators', () => {
       tracker.hydrateBranchDivergence(3, 7);
 
@@ -1563,6 +1691,344 @@ describe('GitEfficiencyTracker', () => {
 
       const metrics = tracker.getMetrics();
       expect(metrics.conflictResolutionStrategy.cherryPickCount).toBe(0);
+    });
+  });
+
+  // Same rule as the weekly/30-day panel's isCountedCommit
+  // (git-event-classifier.ts), so both views agree on the same activity.
+  describe('counted commits', () => {
+    it('does not count a failed commit, e.g. a pre-commit hook rejection', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"' }));
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "b"', success: false, error: 'hook failed' }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(1);
+      expect(metrics.riskIndicators.commitsSinceLastSync).toBe(1);
+      // Still visible in the timeline, just not counted as history added.
+      expect(metrics.gitCommandTimeline.filter((e) => e.type === 'commit')).toHaveLength(2);
+    });
+
+    it('does not count an amend, which rewrites a commit instead of adding one', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"' }));
+      tracker.recordToolCall(makeRecord({ command: 'git commit --amend --no-edit' }));
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(1);
+      expect(metrics.riskIndicators.commitsSinceLastSync).toBe(1);
+    });
+
+    it('leaves failed and amended commits out of velocity gaps and bursts', () => {
+      const t = Date.now();
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"', timestamp: t }));
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "b"', timestamp: t + 5_000, success: false }),
+      );
+      tracker.recordToolCall(makeRecord({ command: 'git commit --amend', timestamp: t + 6_000 }));
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "c"', timestamp: t + 20_000 }));
+      const { velocityMetrics } = tracker.getMetrics();
+      expect(velocityMetrics.avgTimeBetweenCommitsMs).toBe(20_000);
+      expect(velocityMetrics.commitBurstCount).toBe(0);
+    });
+
+    it('does not let a failed commit resolve a pending conflict', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git merge main',
+          success: false,
+          error: 'CONFLICT (content): Merge conflict in a.ts',
+          timestamp: t,
+        }),
+      );
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git commit -m "merge"',
+          success: false,
+          error: 'error: Committing is not possible because you have unmerged files.',
+          timestamp: t + 1_000,
+        }),
+      );
+      expect(tracker.getMetrics().conflictHistory.map((c) => c.resolution)).toEqual(['pending']);
+
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "merge"', timestamp: t + 60_000 }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['resolved']);
+      expect(metrics.conflictHistory[0]!.resolutionTimeMs).toBe(60_000);
+    });
+
+    it('counts a commit whose message mentions --amend', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "fix: --amend handling"' }));
+      expect(tracker.getMetrics().commitCount).toBe(1);
+    });
+
+    it('resolves a conflict with a commit whose message mentions --amendment', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git merge main',
+          success: false,
+          error: 'CONFLICT (content): Merge conflict in a.ts',
+          timestamp: t,
+        }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "document --amendment flag"', timestamp: t + 1_000 }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(1);
+      expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['resolved']);
+    });
+  });
+
+  // The hook reports one success/error pair for a whole shell chain.
+  describe('chained commands', () => {
+    const REJECTED =
+      ' ! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs';
+    const CONFLICT = 'CONFLICT (content): Merge conflict in a.ts\nAutomatic merge failed';
+
+    it('counts a commit whose chained push was rejected', () => {
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m x && git push', success: false, error: REJECTED }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(1);
+      expect(metrics.riskIndicators.commitsSinceLastSync).toBe(1);
+      expect(metrics.riskIndicators.pushRejections).toBe(1);
+    });
+
+    it('counts a heredoc-message commit whose chained push was rejected', () => {
+      const command = 'git commit -m "$(cat <<\'EOF\'\nfix: thing\nEOF\n)" && git push';
+      tracker.recordToolCall(makeRecord({ command, success: false, error: REJECTED }));
+      expect(tracker.getMetrics().commitCount).toBe(1);
+    });
+
+    it('counts a commit whose chained gh pr create failed', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git commit -m x && gh pr create --fill',
+          success: false,
+          error: 'pull request create failed: GraphQL: No commits between main and feature',
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(1);
+      expect(metrics.prMetrics.created).toBe(0);
+    });
+
+    it('does not count a final commit that its own hook rejected', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git add -A && git commit -m x',
+          success: false,
+          error: 'husky - pre-commit script failed',
+        }),
+      );
+      expect(tracker.getMetrics().commitCount).toBe(0);
+    });
+
+    it('counts neither the commit nor the push when the commit had nothing to commit', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git add -A && git commit -m x && git push',
+          success: false,
+          error: 'nothing to commit, working tree clean',
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(0);
+      expect(metrics.pushCount).toBe(0);
+    });
+
+    it('resolves a conflict with a commit whose chained push was rejected', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({ command: 'git merge main', success: false, error: CONFLICT, timestamp: t }),
+      );
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git commit -m merge && git push',
+          success: false,
+          error: REJECTED,
+          timestamp: t + 10_000,
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['resolved']);
+      expect(metrics.conflictResolutionRate).toBe(1);
+    });
+
+    it('judges a later push against a commit whose chained push was rejected', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({ command: 'npm test', isTestCommand: true, timestamp: t }),
+      );
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git commit -m x && git push',
+          success: false,
+          error: REJECTED,
+          timestamp: t + 1_000,
+        }),
+      );
+      tracker.recordToolCall(makeRecord({ command: 'git push', timestamp: t + 2_000 }));
+      const metrics = tracker.getMetrics();
+      // The test ran before the commit, so it did not verify what was pushed.
+      expect(metrics.velocityMetrics.buildBeforePush).toBe(false);
+      expect(metrics.bestPractices.find((p) => p.id === 'verify_before_push')?.status).not.toBe(
+        'pass',
+      );
+    });
+
+    it('does not record a push that a conflicting pull kept from running', () => {
+      tracker.recordToolCall(
+        makeRecord({ command: 'git pull && git push', success: false, error: CONFLICT }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.pushCount).toBe(0);
+      expect(metrics.mergeConflicts).toBe(1);
+      expect(metrics.velocityMetrics.buildBeforePush).toBeNull();
+      expect(metrics.bestPractices.find((p) => p.id === 'verify_before_push')?.detail).toBe(
+        'No pushes yet.',
+      );
+    });
+
+    // The pull's conflict leaves the branch behind the remote, so the push
+    // the `;` or newline then runs is rejected.
+    it.each(['git pull; git push', 'git pull\ngit push'])(
+      'counts no push and one rejection when `%s` conflicts and the push is rejected',
+      (command) => {
+        tracker.recordToolCall(
+          makeRecord({ command, success: false, error: `${CONFLICT}\n${REJECTED}` }),
+        );
+        const metrics = tracker.getMetrics();
+        expect(metrics.pushCount).toBe(0);
+        expect(metrics.riskIndicators.pushRejections).toBe(1);
+        expect(metrics.mergeConflicts).toBe(1);
+      },
+    );
+
+    it('does not record a push that failed after a conflict in a ; list', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({ command: 'npm test', isTestCommand: true, timestamp: t }),
+      );
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git pull; git push',
+          success: false,
+          error: CONFLICT,
+          timestamp: t + 1_000,
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.pushCount).toBe(0);
+      expect(metrics.velocityMetrics.buildBeforePush).toBeNull();
+      expect(metrics.bestPractices.find((p) => p.id === 'verify_before_push')?.detail).toBe(
+        'No pushes yet.',
+      );
+    });
+
+    it('does not count a push or force push that failed without rejection text', () => {
+      for (const command of ['git push', 'git push --force', 'git push --force-with-lease']) {
+        tracker.recordToolCall(
+          makeRecord({
+            command,
+            success: false,
+            error: "fatal: Authentication failed for 'https://github.com/acme/widgets.git/'",
+          }),
+        );
+      }
+      const metrics = tracker.getMetrics();
+      expect(metrics.pushCount).toBe(0);
+      expect(metrics.velocityMetrics.buildBeforePush).toBeNull();
+      // The force-push checks judge the command run, so the attempts count there.
+      expect(metrics.forcePushes).toBe(2);
+    });
+
+    it('does not count a heredoc-message commit that failed with unrecognized text', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({ command: 'git merge main', success: false, error: CONFLICT, timestamp: t }),
+      );
+      const command = 'git commit -m "$(cat <<\'EOF\'\nmerge main\n\nCo-Authored-By: x\nEOF\n)"';
+      tracker.recordToolCall(
+        makeRecord({
+          command,
+          success: false,
+          error: 'error: gpg failed to sign the data\nfatal: failed to write commit object',
+          timestamp: t + 1_000,
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(0);
+      expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['pending']);
+    });
+
+    it('counts neither the commit nor the push when a non-git step ahead of them failed', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'npm test && git add -A && git commit -m x && git push',
+          success: false,
+          error: 'FAIL src/a.test.ts\nTests: 1 failed, 4 passed',
+          isTestCommand: true,
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(0);
+      expect(metrics.pushCount).toBe(0);
+      expect(metrics.velocityMetrics.buildBeforePush).toBeNull();
+      expect(metrics.bestPractices.find((p) => p.id === 'verify_before_push')?.detail).toBe(
+        'No pushes yet.',
+      );
+    });
+
+    // Bash groups `&&` and `||` left to right and reads a pipeline as one
+    // step, so in none of these did the commit run and succeed.
+    it.each([
+      [
+        'git commit -m x || git commit --no-verify -m x',
+        'husky - pre-commit script failed (code 1)',
+      ],
+      ['git diff --quiet || git commit -am wip && git push', 'fatal: Authentication failed'],
+      ['git pull && git commit -m merge && git checkout other', CONFLICT],
+      [
+        'git commit -m x && git log --oneline | head -1',
+        'error: gpg failed to sign the data\nfatal: failed to write commit object',
+      ],
+    ])('counts no commit for `%s`', (command, error) => {
+      tracker.recordToolCall(makeRecord({ command, success: false, error }));
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(0);
+      expect(metrics.riskIndicators.commitsSinceLastSync).toBe(0);
+    });
+
+    it('records the conflict on the pull, not on a checkout that never ran', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git pull && git commit -m merge && git checkout other',
+          success: false,
+          error: CONFLICT,
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.conflictHistory.map((c) => [c.resolution, c.command.trim()])).toEqual([
+        ['pending', 'git pull'],
+      ]);
+    });
+
+    it('counts neither the commit nor the push when only untracked files were present', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git commit -m x && git push',
+          success: false,
+          error: 'nothing added to commit but untracked files present (use "git add" to track)',
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(0);
+      expect(metrics.pushCount).toBe(0);
     });
   });
 

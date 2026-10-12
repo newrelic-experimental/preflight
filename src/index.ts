@@ -49,10 +49,12 @@ import { SessionResumeTracker } from './metrics/session-resume-tracker.js';
 import { BudgetTracker } from './metrics/budget-tracker.js';
 import { ClaudeMdTracker } from './metrics/claudemd-tracker.js';
 import { CollaborationProfiler } from './metrics/collaboration-profile.js';
+import { shouldApplyCostEstimate } from './metrics/cost-estimate-gate.js';
 import { ContextCompositionTracker } from './metrics/context-composition-tracker.js';
 import { ContextTrackerRegistry } from './metrics/context-tracker.js';
 import { ContextWindowTracker } from './metrics/context-window-tracker.js';
 import { applyPricingOverlay } from './metrics/pricing-overlay.js';
+import { startPricingRefresh } from './metrics/pricing-refresh.js';
 import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
 import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
@@ -776,6 +778,14 @@ export function parseArgs(argv: string[]): CliOptions {
   };
 }
 
+function initModelPricing(config: McpServerConfig): void {
+  applyPricingOverlay(config.customPricingFile);
+  void startPricingRefresh({
+    enabled: config.pricingRefresh,
+    cachePath: resolve(config.storagePath, 'pricing-cache.json'),
+  });
+}
+
 async function main(): Promise<void> {
   const nodeVersionError = checkNodeVersion();
   if (nodeVersionError) {
@@ -1042,7 +1052,7 @@ async function main(): Promise<void> {
         process.exit(0);
       }
 
-      applyPricingOverlay(config.customPricingFile);
+      initModelPricing(config);
 
       const fromJobDir = resolveFromJobDir(process.env.CLAUDE_JOB_DIR ?? null);
       const fromPpid = fromJobDir ? null : resolveFromBreadcrumb(config.storagePath, process.ppid);
@@ -1108,7 +1118,7 @@ async function main(): Promise<void> {
         process.exit(0);
       }
 
-      applyPricingOverlay(config.customPricingFile);
+      initModelPricing(config);
 
       // --local has no owning Claude Code session — derive a deterministic
       // identifier so the rest of the codebase can rely on a non-empty
@@ -2234,9 +2244,18 @@ async function main(): Promise<void> {
 
         // Fallback cost estimation from tool payload byte sizes.
         // Only fires when no exact token report has been received yet for this session,
-        // to avoid double-counting with explicit nr_observe_report_tokens calls.
+        // to avoid double-counting with explicit nr_observe_report_tokens calls — and
+        // only for this process's own session, since costTracker's total is persisted
+        // as that session's cost (see shouldApplyCostEstimate, #877).
         const estimateBytes = (record.inputSizeBytes ?? 0) + (record.outputSizeBytes ?? 0);
-        if (estimateBytes > 0 && costTracker.getMetrics().reportCount === 0) {
+        if (
+          shouldApplyCostEstimate({
+            estimateBytes,
+            reportCount: costTracker.getMetrics().reportCount,
+            recordSessionId: record.sessionId,
+            ownSessionId: sessionTraceId,
+          })
+        ) {
           // Prefer a model already learned from real token events over the config
           // default (which is just a guess). Falls back to config.model on cold start.
           const estimateModel = costTracker.getMetrics().model ?? config.model;
