@@ -24,6 +24,7 @@ The MCP server uses a common transport layer (`src/shared/`) for event buffering
 ### Prerequisites
 
 - Node.js v22 or later (v24 recommended; use `nvm install` to get the version from `.nvmrc`)
+- [`jq`](https://jqlang.org/), which `npm test` runs to check the release workflow's version filters (recent macOS and GitHub's Ubuntu runners include it; otherwise `brew install jq` or `apt install jq`)
 - A New Relic account with a license key and account ID (for cloud-path testing)
 
 ### First-time setup

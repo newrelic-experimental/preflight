@@ -435,10 +435,22 @@ describe('release-pr.yml', () => {
     const readRepo: ReadFile = (path) => readFileSync(resolve(repoRoot, path), 'utf8');
     const { name } = readPackageJson(readRepo);
     const version = '9.9.9';
+    try {
+      execFileSync('jq', ['--version'], { stdio: 'ignore' });
+    } catch {
+      throw new Error(
+        'This test runs jq, which is not on PATH. See Prerequisites in CONTRIBUTING.md.',
+      );
+    }
     for (const [path, filter] of workflowSpecs()) {
       const text = readRepo(path);
       const viaJq: unknown = JSON.parse(
-        execFileSync('jq', ['--arg', 'v', version, filter], { input: text, encoding: 'utf8' }),
+        // The lockfile alone is about 0.5 MB, so leave room past Node's 1 MiB default.
+        execFileSync('jq', ['--arg', 'v', version, filter], {
+          input: text,
+          encoding: 'utf8',
+          maxBuffer: 64 * 1024 * 1024,
+        }),
       );
       // changeset version bumps package.json; sync copies its version everywhere else.
       const viaSync: unknown =
