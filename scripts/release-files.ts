@@ -14,9 +14,9 @@
  *     Fails if any of those files disagrees with package.json, or if the newest CHANGELOG
  *     entry isn't for package.json's version. Without --base, which is how release.yml runs it
  *     before tagging, it also fails while .changeset/ holds a changeset that releases
- *     something. With --base it fails if HEAD has changed the version or an already-released
- *     CHANGELOG entry since its merge base with <ref>; CI runs that on every PR except the
- *     release PR.
+ *     something. With --base it fails if, since its merge base with <ref>, HEAD has changed the
+ *     version or an already-released CHANGELOG entry, or deleted, emptied, or lowered a pending
+ *     changeset's bump; CI runs that on every PR except the release PR.
  */
 import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -285,21 +285,61 @@ export function findReleaseEdits(base: ReadFile, head: ReadFile): string[] {
   return problems;
 }
 
+/** One side of a `check --base` comparison: its files and its pending changesets. */
+export interface Snapshot {
+  readonly read: ReadFile;
+  readonly changesets: ReadonlyMap<string, string>;
+}
+
 /**
- * The pending changesets (file names in .changeset/) that `base` had and `head` doesn't, as one
- * problem. Only the release PR consumes changesets, and a deleted one drops its change from the
- * next CHANGELOG entry without anything else noticing.
+ * Everything a PR other than the release PR must not do, comparing its merge base with its
+ * head: bump the version, edit a released CHANGELOG entry, or drop a pending release. Plus any
+ * version file that disagrees with package.json.
  */
-export function findDeletedChangesets(base: readonly string[], head: readonly string[]): string[] {
-  const kept = new Set(head);
-  const deleted = base.filter((name) => !kept.has(name)).sort();
-  if (deleted.length === 0) return [];
+export function findBranchProblems(base: Snapshot, head: Snapshot): string[] {
   return [
-    `${deleted.map((name) => `.changeset/${name}`).join(', ')} ${deleted.length === 1 ? 'was' : 'were'} ` +
-      'deleted. Only the release PR consumes changesets, so restore ' +
-      `${deleted.length === 1 ? 'it' : 'them'}; to change an entry, edit its changeset in place ` +
-      `(${CHANGESETS_DOC}). If this PR reverts the change a changeset describes, a maintainer ` +
-      'can merge over this check.',
+    ...findReleaseEdits(base.read, head.read),
+    ...findDroppedReleases(base.changesets, head.changesets),
+    ...findVersionMismatches(head.read),
+  ];
+}
+
+const BUMP_RANK: Readonly<Record<string, number>> = { none: 0, patch: 1, minor: 2, major: 3 };
+
+/**
+ * Each pending release that `base` had and `head` dropped, as one problem: a changeset that
+ * bumped something and was deleted, emptied, or lowered to a smaller bump. Both maps are file
+ * name to contents. Only the release PR consumes changesets, and any of these drops a change
+ * from the next CHANGELOG entry, or shrinks its bump, without anything else noticing. Deleting
+ * an empty changeset drops nothing, so it passes.
+ */
+export function findDroppedReleases(
+  base: ReadonlyMap<string, string>,
+  head: ReadonlyMap<string, string>,
+): string[] {
+  const dropped: string[] = [];
+  for (const [name, text] of [...base].sort(([a], [b]) => a.localeCompare(b))) {
+    const label = `.changeset/${name}`;
+    const before = changesetReleases(text, label);
+    const headText = head.get(name);
+    const after = headText === undefined ? undefined : changesetReleases(headText, label);
+    for (const [pkg, bump] of before) {
+      if (bump === 'none') continue;
+      if (after === undefined) {
+        dropped.push(`${label} was deleted, dropping its ${bump} release of ${pkg}`);
+        break;
+      }
+      const now = after.get(pkg) ?? 'none';
+      if (BUMP_RANK[now] < BUMP_RANK[bump]) {
+        dropped.push(`${label} lowered ${pkg} from ${bump} to ${now}`);
+      }
+    }
+  }
+  if (dropped.length === 0) return [];
+  return [
+    `${dropped.join('; ')}. Only the release PR consumes changesets, so restore what was ` +
+      `dropped; to change an entry's text, edit its changeset in place (${CHANGESETS_DOC}). If ` +
+      'this PR reverts the change a changeset describes, a maintainer can merge over this check.',
   ];
 }
 
@@ -327,13 +367,33 @@ function asArray(value: unknown, label: string): unknown[] {
 export function readPendingChangesets(dir: string): Map<string, string> {
   return new Map(
     readdirSync(dir)
-      .filter((name) => name.endsWith('.md') && name !== 'README.md')
+      .filter(isChangesetName)
       .map((name) => [name, readFileSync(join(dir, name), 'utf8')]),
   );
 }
 
-function git(args: readonly string[]): string {
-  return execFileSync('git', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+/**
+ * The changesets committed at `commit`, the same way readPendingChangesets reads the working
+ * tree. A commit from before .changeset/ existed has none.
+ */
+export function readChangesetsAtCommit(commit: string, cwd = process.cwd()): Map<string, string> {
+  // -z keeps names verbatim; the path form lists nothing, instead of failing, when the
+  // directory is missing.
+  const names = git(['ls-tree', '-z', '--name-only', commit, '--', '.changeset/'], cwd)
+    .split('\0')
+    .filter((path) => path.startsWith('.changeset/'))
+    .map((path) => path.slice('.changeset/'.length))
+    .filter(isChangesetName);
+  return new Map(names.map((name) => [name, git(['show', `${commit}:.changeset/${name}`], cwd)]));
+}
+
+/** A changeset is a Markdown file directly in .changeset/, other than its README. */
+function isChangesetName(name: string): boolean {
+  return name.endsWith('.md') && name !== 'README.md' && !name.includes('/');
+}
+
+function git(args: readonly string[], cwd = process.cwd()): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
 
 function report(problems: readonly string[], fix: string): number {
@@ -392,18 +452,14 @@ function main(argv: readonly string[]): number {
     const { base } = command;
     const forkPoint = git(['merge-base', base, 'HEAD']).trim();
     const readForkPoint: ReadFile = (path) => git(['show', `${forkPoint}:${path}`]);
-    // The path form lists nothing, instead of failing, when the merge base has no .changeset/.
-    const forkPointChangesets = git(['ls-tree', '--name-only', forkPoint, '--', '.changeset/'])
-      .split('\n')
-      .filter((path) => /^\.changeset\/[^/]+\.md$/.test(path) && path !== '.changeset/README.md')
-      .map((path) => path.slice('.changeset/'.length));
-    const headChangesets = [...readPendingChangesets(resolve(process.cwd(), '.changeset')).keys()];
     return report(
-      [
-        ...findReleaseEdits(readForkPoint, readWorkingTree),
-        ...findDeletedChangesets(forkPointChangesets, headChangesets),
-        ...findVersionMismatches(readWorkingTree),
-      ],
+      findBranchProblems(
+        { read: readForkPoint, changesets: readChangesetsAtCommit(forkPoint) },
+        {
+          read: readWorkingTree,
+          changesets: readPendingChangesets(resolve(process.cwd(), '.changeset')),
+        },
+      ),
       `Compared with ${base} at ${forkPoint.slice(0, 7)}, its merge base with HEAD.`,
     );
   }

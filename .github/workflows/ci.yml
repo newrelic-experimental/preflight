@@ -146,7 +146,7 @@ jobs:
       - name: Check for a changeset
         run: npx changeset status --since="$BASE"
 
-      - name: Check the version and released CHANGELOG entries are untouched
+      - name: Check the version, released CHANGELOG entries, and pending changesets are untouched
         run: npm run check:release-files -- --base "$BASE"
 
   # Separate from verify so the browser suite runs in parallel instead of adding its

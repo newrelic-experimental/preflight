@@ -323,7 +323,7 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 - [ ] `npx tsc -p tsconfig.tools.json` passes (if you touched `scripts/`, `e2e/` or a root `*.config.ts`)
 - [ ] `npm run lint` passes
 - [ ] `npm run format:check` passes (the `pre-commit` hook runs this too)
-- [ ] You added a changeset if the PR changes anything that ships, and left the version and `CHANGELOG.md` alone (see [Changesets](#changesets); CI's `changeset` job checks both)
+- [ ] You added a changeset if the PR changes anything that ships, and left the version, `CHANGELOG.md`, and other PRs' pending changesets alone (see [Changesets](#changesets); CI's `changeset` job checks all three)
 - [ ] You've reviewed your own diff
 
 ---
@@ -416,6 +416,11 @@ uses Preflight, about what changed for them and why, not how the code changed. A
 was wrong and what happens now. When an entry runs long, lead with one bolded sentence. The
 summary goes into the CHANGELOG exactly as written, and Prettier checks `.changeset/` files
 like any others, so run `npm run format` before committing.
+
+**Changing a changeset that's already on `main`.** Edit its text in place, or raise its bump.
+CI fails a PR that deletes a pending changeset, empties it, or lowers its bump, since any of
+those quietly drops a change from the next release. The one exception is a PR that reverts the
+change a changeset describes, where a maintainer can merge over the check.
 
 ### Releasing
 

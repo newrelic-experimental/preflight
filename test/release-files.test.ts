@@ -7,7 +7,8 @@ import {
   VERSION_FILES,
   changesetReleases,
   dateNewEntries,
-  findDeletedChangesets,
+  findBranchProblems,
+  findDroppedReleases,
   findPendingReleases,
   findReleaseBlockers,
   findReleaseEdits,
@@ -15,6 +16,7 @@ import {
   isMainModule,
   parseCommand,
   readPackageJson,
+  readChangesetsAtCommit,
   readPendingChangesets,
   releaseHeadings,
   releasedEntries,
@@ -262,16 +264,115 @@ describe('findVersionMismatches', () => {
   });
 });
 
-describe('findDeletedChangesets', () => {
-  it('passes a PR that adds changesets or leaves them alone', () => {
-    expect(findDeletedChangesets([], ['new-fix.md'])).toEqual([]);
-    expect(findDeletedChangesets(['a.md'], ['a.md', 'b.md'])).toEqual([]);
+function makeChangeset(bump: string | undefined, summary = 'A change.'): string {
+  return `---\n${bump ? `'@newrelic/preflight': ${bump}\n` : ''}---\n\n${summary}\n`;
+}
+
+describe('findDroppedReleases', () => {
+  const base = new Map([
+    ['fix.md', makeChangeset('patch')],
+    ['feature.md', makeChangeset('minor')],
+    ['tooling.md', makeChangeset(undefined)],
+  ]);
+
+  it('passes a PR that adds changesets, raises a bump, or only edits the text', () => {
+    const head = new Map([
+      ['fix.md', makeChangeset('minor')],
+      ['feature.md', makeChangeset('minor', 'Reworded.')],
+      ['tooling.md', makeChangeset(undefined)],
+      ['new.md', makeChangeset('patch')],
+    ]);
+    expect(findDroppedReleases(base, head)).toEqual([]);
   });
 
-  it('names each changeset the PR deleted', () => {
-    const problems = findDeletedChangesets(['a.md', 'b.md', 'c.md'], ['b.md']);
+  it('passes a PR that deletes an empty changeset, which drops nothing', () => {
+    const head = new Map(base);
+    head.delete('tooling.md');
+    expect(findDroppedReleases(base, head)).toEqual([]);
+  });
+
+  it('flags a deleted, emptied, or lowered release', () => {
+    const head = new Map([
+      ['fix.md', makeChangeset(undefined)],
+      ['tooling.md', makeChangeset(undefined)],
+    ]);
+    const problems = findDroppedReleases(base, head);
     expect(problems).toHaveLength(1);
-    expect(problems[0]).toMatch(/^\.changeset\/a\.md, \.changeset\/c\.md were deleted\./);
+    expect(problems[0]).toMatch(
+      /^\.changeset\/feature\.md was deleted, dropping its minor release of @newrelic\/preflight; \.changeset\/fix\.md lowered @newrelic\/preflight from patch to none\./,
+    );
+
+    const lowered = findDroppedReleases(
+      base,
+      new Map([...base, ['feature.md', makeChangeset('patch')]]),
+    );
+    expect(lowered[0]).toMatch(
+      /^\.changeset\/feature\.md lowered @newrelic\/preflight from minor to patch\./,
+    );
+  });
+});
+
+describe('findBranchProblems', () => {
+  it('compares the merge base with the head, not the other way round', () => {
+    const files = makeReader(makeFiles('1.63.1'));
+    const problems = findBranchProblems(
+      { read: files, changesets: new Map([['fix.md', makeChangeset('patch')]]) },
+      { read: files, changesets: new Map() },
+    );
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(/^\.changeset\/fix\.md was deleted/);
+  });
+
+  it('reports a hand bump, a dropped release, and a missing CHANGELOG entry together', () => {
+    const problems = findBranchProblems(
+      {
+        read: makeReader(makeFiles('1.63.1')),
+        changesets: new Map([['fix.md', makeChangeset('patch')]]),
+      },
+      { read: makeReader(makeFiles('1.63.2')), changesets: new Map() },
+    );
+    expect(problems).toEqual([
+      expect.stringMatching(/^package\.json's version changed from 1\.63\.1 to 1\.63\.2/),
+      expect.stringMatching(/^\.changeset\/fix\.md was deleted/),
+      "CHANGELOG.md's newest entry is for 1.63.1, but package.json is at 1.63.2.",
+    ]);
+  });
+});
+
+describe('readChangesetsAtCommit', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'release-files-git-'));
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'test');
+    writeFileSync(join(dir, 'README.md'), '# Repo\n');
+    git('add', '-A');
+    git('commit', '-qm', 'before changesets');
+    mkdirSync(join(dir, '.changeset', 'pre'), { recursive: true });
+    writeFileSync(join(dir, '.changeset', 'README.md'), '# Changesets\n');
+    writeFileSync(join(dir, '.changeset', 'config.json'), '{}\n');
+    writeFileSync(join(dir, '.changeset', 'pre', 'used.md'), makeChangeset('patch'));
+    writeFileSync(join(dir, '.changeset', 'fix.md'), makeChangeset('patch'));
+    writeFileSync(join(dir, '.changeset', 'ünïcode.md'), makeChangeset('minor'));
+    git('add', '-A');
+    git('commit', '-qm', 'changesets');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reads the changesets committed at a commit, the way the working tree is read', () => {
+    const atCommit = readChangesetsAtCommit('HEAD', dir);
+    expect([...atCommit.keys()].sort()).toEqual(['fix.md', 'ünïcode.md']);
+    expect(atCommit).toEqual(readPendingChangesets(join(dir, '.changeset')));
+  });
+
+  it('finds none at a commit from before .changeset/ existed', () => {
+    expect(readChangesetsAtCommit('HEAD~1', dir).size).toBe(0);
   });
 });
 
