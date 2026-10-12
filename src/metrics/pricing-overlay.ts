@@ -22,7 +22,7 @@ import {
   loadCustomPricing,
   resolveModelPricing,
 } from '../shared/pricing.js';
-import type { CostBreakdown, ModelPricing } from '../shared/pricing.js';
+import type { CostBreakdown, ModelPricing, PricingTable } from '../shared/pricing.js';
 import type { TokenUsage } from '../shared/index.js';
 import { resolveDataDir } from '../deploy/data-paths.js';
 import { estimateFromFamily, type PricingResolution } from './model-pricing.js';
@@ -82,6 +82,18 @@ const pricingMemo = new Map<string, PricingResolution>();
 // them stand in as family siblings next to the bundled table.
 let extraPricingIds: readonly string[] = [];
 
+// Refreshed prices stay out of the vendored singleton: its prefix matching would
+// let a refreshed key retarget ids the bundled table already resolves. They are
+// consulted only on an exact id match, after the bundled table has missed.
+let refreshedTable: PricingTable | null = null;
+let refreshedIds: ReadonlySet<string> = new Set();
+
+export function setRefreshedPricing(table: PricingTable | null, ids: ReadonlySet<string>): void {
+  refreshedTable = table;
+  refreshedIds = ids;
+  pricingMemo.clear();
+}
+
 /** Drops memoized lookups; call after anything changes the pricing table or aliases. */
 export function clearPricingMemo(): void {
   pricingMemo.clear();
@@ -91,6 +103,15 @@ function computeResolution(model: string): PricingResolution {
   const id = canonicalModelId(model);
   const pricing = resolveModelPricing(id);
   if (pricing) return { kind: 'priced', source: 'table', pricing };
+
+  if (refreshedTable !== null) {
+    const bare = id.replace(VARIANT_TAG_RE, '');
+    const refreshed = refreshedIds.has(bare) ? refreshedTable.resolve(bare) : null;
+    if (refreshed) {
+      logger.info('Pricing from the LiteLLM refresh', { model });
+      return { kind: 'priced', source: 'refreshed', pricing: refreshed };
+    }
+  }
 
   const estimatedFrom = estimateFromFamily(id, [
     ...Object.keys(DEFAULT_PRICING_TABLE),
@@ -134,6 +155,15 @@ export interface PricedUsage {
 export function priceModelUsage(model: string, usage: TokenUsage): PricedUsage {
   const resolution = resolvePricingDetail(model);
   if (resolution.kind === 'unpriced') return { resolution, breakdown: { ...ZERO_COST } };
+  if (resolution.source === 'refreshed' && refreshedTable !== null) {
+    return {
+      resolution,
+      breakdown: refreshedTable.calculateCost(
+        canonicalModelId(model).replace(VARIANT_TAG_RE, ''),
+        usage,
+      ),
+    };
+  }
   const priceId =
     resolution.source === 'estimated' ? resolution.estimatedFrom : canonicalModelId(model);
   return { resolution, breakdown: calculateCost(priceId, usage) };
