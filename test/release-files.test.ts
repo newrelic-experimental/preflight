@@ -12,6 +12,7 @@ import {
   findVersionMismatches,
   isMainModule,
   parseCommand,
+  readPackageJson,
   readPendingChangesets,
   releaseHeadings,
   releasedEntries,
@@ -410,8 +411,16 @@ describe('release-pr.yml', () => {
   });
 
   it('checks the contents of every version file', () => {
-    const specs = [...workflow.matchAll(/^\s+'([^'|]+)\|/gm)].map((m) => m[1]);
+    const loop = /for spec in \\\n([\s\S]*?); do\n/.exec(workflow);
+    expect(loop).not.toBeNull();
+    const specs = [...(loop?.[1] ?? '').matchAll(/^\s+'([^'|]+)\|/gm)].map((m) => m[1]);
     expect(specs.sort()).toEqual(versionPaths);
+  });
+
+  it("pins server.json's npm entry by this package's name", () => {
+    // VERSION_FILES finds the entry by package.json's name, so a rename has to reach here too.
+    const { name } = readPackageJson((path) => readFileSync(resolve(repoRoot, path), 'utf8'));
+    expect(workflow).toContain(`.identifier == "${name}"`);
   });
 });
 
