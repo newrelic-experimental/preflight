@@ -139,6 +139,12 @@ export interface TodayAggregateResponse {
   readonly unpricedByModel?: Readonly<
     Record<string, { readonly calls: number; readonly tokens: number }>
   >;
+  readonly estimatedByModel?: Readonly<
+    Record<
+      string,
+      { readonly calls: number; readonly tokens: number; readonly estimatedFrom: string }
+    >
+  >;
   readonly antiPatternCount: number;
   readonly avgDurationMs: number;
   readonly sessionCount: number;

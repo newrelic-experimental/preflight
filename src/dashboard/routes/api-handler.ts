@@ -22,7 +22,8 @@ import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/co
 import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.js';
 import type { ContextWindowMetrics } from '../../metrics/context-window-tracker.js';
 import type { CostForecast } from '../../metrics/cost-forecast.js';
-import type { UnpricedModelUsage } from '../../metrics/cost-tracker.js';
+import type { EstimatedModelUsage, UnpricedModelUsage } from '../../metrics/cost-tracker.js';
+import { sumCallUsageInto } from '../../metrics/call-usage.js';
 import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { attributeSessionCosts } from '../../metrics/cost-per-outcome.js';
 import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
@@ -419,6 +420,7 @@ export interface ApiHandlerDeps {
       totalCacheSavingsUsd?: number;
       totalInputTokens?: number;
       unpricedByModel?: Record<string, UnpricedModelUsage>;
+      estimatedByModel?: Record<string, EstimatedModelUsage>;
     };
     // Optional: per-day cost attribution. Fixes the cross-midnight bug where
     // a session that started yesterday counted its full cost as today's. When
@@ -867,6 +869,7 @@ interface TodayAggregatePayload {
   readonly toolCallCount: number;
   readonly totalCostUsd: number;
   readonly unpricedByModel: Record<string, UnpricedModelUsage>;
+  readonly estimatedByModel: Record<string, EstimatedModelUsage>;
   readonly antiPatternCount: number;
   readonly avgDurationMs: number;
   readonly sessionCount: number;
@@ -1695,15 +1698,7 @@ export function createApiHandler(
     let durationSamples = 0;
     let totalCostUsd = 0;
     const unpricedByModel: Record<string, UnpricedModelUsage> = {};
-    const addUnpriced = (src: Readonly<Record<string, UnpricedModelUsage>> | undefined): void => {
-      for (const [model, v] of Object.entries(src ?? {})) {
-        const prior = unpricedByModel[model];
-        unpricedByModel[model] = {
-          calls: (prior?.calls ?? 0) + v.calls,
-          tokens: (prior?.tokens ?? 0) + v.tokens,
-        };
-      }
-    };
+    const estimatedByModel: Record<string, EstimatedModelUsage> = {};
     // Summed across every today session's PERSISTED subagentCostUsd (see (2b)
     // below), not read from this one process's live CostTracker. A session
     // watched by a different concurrent `--stdio` process never touches this
@@ -1867,6 +1862,7 @@ export function createApiHandler(
         costByDayUsd?: Record<string, number>;
         subagentCostByDayUsd?: Record<string, number>;
         unpricedByModel?: Record<string, UnpricedModelUsage>;
+        estimatedByModel?: Record<string, EstimatedModelUsage>;
         toolCallCount?: number;
         tokensInput?: number;
         tokensCacheRead?: number;
@@ -1906,7 +1902,8 @@ export function createApiHandler(
       // (the observed $248/$863 phantoms). Bias toward trust and contribute 0;
       // the real per-day figure is recovered once the session re-persists WITH
       // day buckets.
-      addUnpriced(s.unpricedByModel);
+      sumCallUsageInto(unpricedByModel, s.unpricedByModel);
+      sumCallUsageInto(estimatedByModel, s.estimatedByModel);
       const hasNoAttributableActivity = !hasAttributableActivity(s);
       const ratio = todayPortionRatio(s, now);
       totalCostUsd +=
@@ -1985,7 +1982,9 @@ export function createApiHandler(
     const liveIsUnscopedAggregator = isUnscopedAggregatorSessionId(liveSid);
 
     if (!liveAlreadyPersisted && !liveIsUnscopedAggregator) {
-      addUnpriced(deps.costTracker?.getMetrics().unpricedByModel);
+      const liveMetrics = deps.costTracker?.getMetrics();
+      sumCallUsageInto(unpricedByModel, liveMetrics?.unpricedByModel);
+      sumCallUsageInto(estimatedByModel, liveMetrics?.estimatedByModel);
       // Reuses `todayKey` from the enclosing scope (declared above the
       // persisted-session loop) so the persisted-loop and this live top-up can
       // never split onto two independently-derived day keys.
@@ -2116,6 +2115,7 @@ export function createApiHandler(
       toolCallCount,
       totalCostUsd: Math.round(totalCostUsd * 1000) / 1000,
       unpricedByModel,
+      estimatedByModel,
       antiPatternCount,
       avgDurationMs: Math.round(avgDurationMs),
       sessionCount: sessionsSeen.size,

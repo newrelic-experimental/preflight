@@ -15,7 +15,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { extname, join, resolve } from 'node:path';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger, DEFAULT_PRICING_TABLE } from '../shared/index.js';
 import {
   calculateCost,
   initPricing,
@@ -25,6 +25,7 @@ import {
 import type { CostBreakdown, ModelPricing } from '../shared/pricing.js';
 import type { TokenUsage } from '../shared/index.js';
 import { resolveDataDir } from '../deploy/data-paths.js';
+import { estimateFromFamily, type PricingResolution } from './model-pricing.js';
 
 const logger = createLogger('pricing-overlay');
 
@@ -74,33 +75,72 @@ function canonicalModelId(raw: string): string {
 // Model ids arrive from transcripts and MCP tool input, so the memo is capped
 // rather than trusting the set of ids to stay small.
 const MAX_MEMOIZED_MODELS = 512;
-const pricingMemo = new Map<string, ModelPricing | null>();
+const pricingMemo = new Map<string, PricingResolution>();
+
+// Ids added by the gap-fill overlay or a custom pricing file. The vendored
+// singleton keeps its merged table private, so they are tracked here to let
+// them stand in as family siblings next to the bundled table.
+let extraPricingIds: readonly string[] = [];
 
 /** Drops memoized lookups; call after anything changes the pricing table or aliases. */
 export function clearPricingMemo(): void {
   pricingMemo.clear();
 }
 
+function computeResolution(model: string): PricingResolution {
+  const id = canonicalModelId(model);
+  const pricing = resolveModelPricing(id);
+  if (pricing) return { kind: 'priced', source: 'table', pricing };
+
+  const estimatedFrom = estimateFromFamily(id, [
+    ...Object.keys(DEFAULT_PRICING_TABLE),
+    ...extraPricingIds,
+  ]);
+  const estimatedPricing = estimatedFrom === null ? null : resolveModelPricing(estimatedFrom);
+  if (estimatedFrom === null || estimatedPricing === null) return { kind: 'unpriced' };
+  logger.info('Pricing estimated from model family', { model, estimatedFrom });
+  return { kind: 'priced', source: 'estimated', pricing: estimatedPricing, estimatedFrom };
+}
+
 /**
  * Every Preflight-side pricing lookup goes through here, never `resolveModelPricing` directly.
- * Memoized per model id (`null` = unpriced) so the vendored resolver's "Unknown model"
- * warning fires once per process rather than once per token event.
+ * Memoized per model id so the vendored resolver's "Unknown model" warning fires once per
+ * process rather than once per token event. A model the table misses is priced from the newest
+ * release of its family when one is unambiguous, and flagged `estimated`.
  */
-export function resolvePricing(model: string): ModelPricing | null {
+export function resolvePricingDetail(model: string): PricingResolution {
   const cached = pricingMemo.get(model);
   if (cached !== undefined) return cached;
-  const pricing = resolveModelPricing(canonicalModelId(model));
+  const resolution = computeResolution(model);
   if (pricingMemo.size >= MAX_MEMOIZED_MODELS) {
     const oldest = pricingMemo.keys().next();
     if (!oldest.done) pricingMemo.delete(oldest.value);
   }
-  pricingMemo.set(model, pricing);
-  return pricing;
+  pricingMemo.set(model, resolution);
+  return resolution;
+}
+
+/** The rates for `model`, estimated ones included; `null` = unpriced. */
+export function resolvePricing(model: string): ModelPricing | null {
+  const resolution = resolvePricingDetail(model);
+  return resolution.kind === 'priced' ? resolution.pricing : null;
+}
+
+export interface PricedUsage {
+  readonly breakdown: CostBreakdown;
+  readonly resolution: PricingResolution;
+}
+
+export function priceModelUsage(model: string, usage: TokenUsage): PricedUsage {
+  const resolution = resolvePricingDetail(model);
+  if (resolution.kind === 'unpriced') return { resolution, breakdown: { ...ZERO_COST } };
+  const priceId =
+    resolution.source === 'estimated' ? resolution.estimatedFrom : canonicalModelId(model);
+  return { resolution, breakdown: calculateCost(priceId, usage) };
 }
 
 export function calculateModelCost(model: string, usage: TokenUsage): CostBreakdown {
-  if (!resolvePricing(model)) return { ...ZERO_COST };
-  return calculateCost(canonicalModelId(model), usage);
+  return priceModelUsage(model, usage).breakdown;
 }
 
 export function resolvePricingOverlayPath(): string | null {
@@ -155,6 +195,7 @@ function initPricingFromEntries(entries: Record<string, unknown>): void {
     const filteredPath = join(tmpDir, 'pricing.json');
     writeFileSync(filteredPath, JSON.stringify(entries), { mode: 0o600 });
     initPricing(filteredPath);
+    extraPricingIds = Object.keys(entries);
   } catch (err) {
     logger.warn('Failed to apply pricing entries', {
       error: err instanceof Error ? err.message : String(err),
@@ -245,6 +286,7 @@ export function applyPricingOverlay(customPricingFile: string | null): void {
 
 function applyPricingOverlayUncached(customPricingFile: string | null): void {
   pricingAliases = new Map();
+  extraPricingIds = [];
   if (customPricingFile) {
     applyCustomPricingFile(customPricingFile);
     return;

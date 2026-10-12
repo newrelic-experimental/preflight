@@ -194,6 +194,7 @@ export function handleGetCostBreakdown(costTracker: CostTracker, taskDetector?: 
     rate_multiplier_applied: metrics.costRateMultiplierApplied,
     unpriced_by_model: metrics.unpricedByModel,
     unpriced_models: Object.keys(metrics.costByModel).filter((model) => !resolvePricing(model)),
+    estimated_by_model: metrics.estimatedByModel,
   };
 
   return {

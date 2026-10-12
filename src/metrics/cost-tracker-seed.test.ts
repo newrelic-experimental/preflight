@@ -110,4 +110,15 @@ describe('buildCostTrackerSeed', () => {
     const seed = buildCostTrackerSeed(makeSummary({ modelBreakdown: {} }));
     expect(seed.costByModel).toEqual({});
   });
+
+  it('carries unpriced and estimated model usage into the seed', () => {
+    const unpricedByModel = { 'claude-foo-9-9': { calls: 1, tokens: 2 } };
+    const estimatedByModel = {
+      'claude-opus-5-9': { calls: 3, tokens: 4, estimatedFrom: 'claude-opus-5' },
+    };
+    const seed = buildCostTrackerSeed(makeSummary({ unpricedByModel, estimatedByModel }));
+    expect(seed.unpricedByModel).toEqual(unpricedByModel);
+    expect(seed.estimatedByModel).toEqual(estimatedByModel);
+    expect(buildCostTrackerSeed(makeSummary()).estimatedByModel).toBeUndefined();
+  });
 });

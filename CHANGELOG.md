@@ -6,9 +6,15 @@ All notable changes to this project are documented in this file. The project adh
 Don't edit this file by hand. Each pull request describes its change in a changeset under
 [`.changeset/`](.changeset/), and the release PR turns the pending changesets into the next
 entry here; see [Changesets](CONTRIBUTING.md#changesets) in CONTRIBUTING.md. Releases through
-1.65.0 group their entries by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) category
+1.66.0 group their entries by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) category
 (Added, Fixed, and so on). Later releases group them by semver bump: Major, Minor, or Patch
 Changes.
+
+## 1.66.0 - 2026-10-12
+
+### Added
+
+- **A point release of a known Claude family, such as `claude-opus-6-1`, recorded $0 when the pricing table had no exact entry.** Preflight now prices it from the newest priced release of the same family and major version, or from the family's newest release when no sibling shares the major version, and marks the price as an estimate. Bedrock and gateway spellings of the model ID are estimated the same way. An exact table entry always wins, IDs outside the `claude-<family>-<major>[-<minor>]` form are never estimated, and two differently priced candidates leave the model unpriced. Estimated calls are counted per model with the sibling they were priced from. The Today page lists them under the unpriced notice as "Spend is an estimate", `nr_observe_get_cost_breakdown` returns `estimated_by_model`, and `ai.cost.estimated_calls` is emitted tagged by `model` and `estimatedFrom`.
 
 ## 1.65.0 - 2026-10-12
 

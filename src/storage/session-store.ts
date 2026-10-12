@@ -34,7 +34,13 @@ import type {
   TokenBreakdown,
 } from './types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
-import type { CostTracker, CostMetrics, UnpricedModelUsage } from '../metrics/cost-tracker.js';
+import type {
+  CostTracker,
+  CostMetrics,
+  EstimatedModelUsage,
+  UnpricedModelUsage,
+} from '../metrics/cost-tracker.js';
+import { mergeCallUsageMax, parseCallUsageRecord } from '../metrics/call-usage.js';
 import type {
   TurnCostAttributor,
   CostAttributionMetrics,
@@ -149,6 +155,8 @@ export interface FullSessionSummary extends SessionSummary {
    * when every call was priced and on summaries written before this field.
    */
   readonly unpricedByModel?: Record<string, UnpricedModelUsage>;
+  /** Calls priced from a sibling model; their cost is in the totals as an estimate. */
+  readonly estimatedByModel?: Record<string, EstimatedModelUsage>;
   readonly tokensInput: number;
   readonly tokensOutput: number;
   readonly tokensThinking: number;
@@ -462,22 +470,8 @@ export function mergeSummaries(
     incoming.subagentCostByDayUsd,
   );
 
-  const mergeUnpriced = (
-    a: Record<string, UnpricedModelUsage> | undefined,
-    b: Record<string, UnpricedModelUsage> | undefined,
-  ): Record<string, UnpricedModelUsage> | undefined => {
-    if (a === undefined && b === undefined) return undefined;
-    const out: Record<string, UnpricedModelUsage> = { ...a };
-    for (const [model, v] of Object.entries(b ?? {})) {
-      const prior = out[model];
-      out[model] = {
-        calls: Math.max(prior?.calls ?? 0, v.calls),
-        tokens: Math.max(prior?.tokens ?? 0, v.tokens),
-      };
-    }
-    return out;
-  };
-  const unpricedByModel = mergeUnpriced(existing.unpricedByModel, incoming.unpricedByModel);
+  const unpricedByModel = mergeCallUsageMax(existing.unpricedByModel, incoming.unpricedByModel);
+  const estimatedByModel = mergeCallUsageMax(existing.estimatedByModel, incoming.estimatedByModel);
 
   const mergeCostByWorkflowRunId = (
     a: Record<string, Record<string, number>> = {},
@@ -581,6 +575,7 @@ export function mergeSummaries(
     ...(costByDayUsd !== undefined ? { costByDayUsd } : {}),
     ...(subagentCostByDayUsd !== undefined ? { subagentCostByDayUsd } : {}),
     ...(unpricedByModel !== undefined ? { unpricedByModel } : {}),
+    ...(estimatedByModel !== undefined ? { estimatedByModel } : {}),
     tokensInput: maxNum(existing.tokensInput, incoming.tokensInput),
     tokensOutput: maxNum(existing.tokensOutput, incoming.tokensOutput),
     tokensThinking: maxNum(existing.tokensThinking, incoming.tokensThinking),
@@ -1119,6 +1114,9 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     ...(costMetrics && Object.keys(costMetrics.unpricedByModel).length > 0
       ? { unpricedByModel: costMetrics.unpricedByModel }
       : {}),
+    ...(costMetrics && Object.keys(costMetrics.estimatedByModel).length > 0
+      ? { estimatedByModel: costMetrics.estimatedByModel }
+      : {}),
     tokensInput: costMetrics?.totalInputTokens ?? 0,
     tokensOutput: costMetrics?.totalOutputTokens ?? 0,
     tokensThinking: costMetrics?.totalThinkingTokens ?? 0,
@@ -1220,6 +1218,7 @@ interface SerializedFullSessionSummary {
   readonly costByDayUsd?: unknown;
   readonly subagentCostByDayUsd?: unknown;
   readonly unpricedByModel?: unknown;
+  readonly estimatedByModel?: unknown;
   readonly tokensInput?: unknown;
   readonly tokensOutput?: unknown;
   readonly tokensThinking?: unknown;
@@ -1356,24 +1355,20 @@ function parseNumberRecord(value: unknown): Record<string, number> | undefined {
   return out;
 }
 
+const MAX_MODEL_ID_LENGTH = 256;
+
 function parseUnpricedByModel(value: unknown): Record<string, UnpricedModelUsage> | undefined {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
-  const out: Record<string, UnpricedModelUsage> = {};
-  for (const [model, v] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof v !== 'object' || v === null || Array.isArray(v)) continue;
-    const { calls, tokens } = v as { calls?: unknown; tokens?: unknown };
-    if (
-      typeof calls === 'number' &&
-      Number.isFinite(calls) &&
-      calls >= 0 &&
-      typeof tokens === 'number' &&
-      Number.isFinite(tokens) &&
-      tokens >= 0
-    ) {
-      out[model] = { calls, tokens };
-    }
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
+  return parseCallUsageRecord<UnpricedModelUsage>(value, () => ({}));
+}
+
+function parseEstimatedByModel(value: unknown): Record<string, EstimatedModelUsage> | undefined {
+  return parseCallUsageRecord<EstimatedModelUsage>(value, ({ estimatedFrom }) =>
+    typeof estimatedFrom === 'string' &&
+    estimatedFrom.length > 0 &&
+    estimatedFrom.length <= MAX_MODEL_ID_LENGTH
+      ? { estimatedFrom }
+      : null,
+  );
 }
 
 /**
@@ -1587,6 +1582,7 @@ export function deserializeFullSessionSummary(
     costByDayUsd: parseNumberRecord(obj.costByDayUsd),
     subagentCostByDayUsd: parseNumberRecord(obj.subagentCostByDayUsd),
     unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
+    estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
     tokensInput: typeof obj.tokensInput === 'number' ? obj.tokensInput : 0,
     tokensOutput: typeof obj.tokensOutput === 'number' ? obj.tokensOutput : 0,
     tokensThinking: typeof obj.tokensThinking === 'number' ? obj.tokensThinking : 0,

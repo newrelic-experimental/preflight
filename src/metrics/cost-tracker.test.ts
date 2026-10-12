@@ -1,6 +1,7 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { CostTracker } from './cost-tracker.js';
 import { makeUsage } from '../__test-utils__/token-usage.js';
+import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import type { TokenRecordContext, CostTrackerSeed } from './cost-tracker.js';
 import { localDateKey } from '../lib/date.js';
 import { SessionTracker } from './session-tracker.js';
@@ -651,6 +652,61 @@ describe('CostTracker', () => {
       expect(unpriced).toHaveLength(1);
       expect(unpriced[0]?.attributes?.model).toBe('claude-foo-9-9');
       expect(JSON.stringify(unpriced[0])).toContain('2');
+    });
+  });
+
+  describe('estimatedByModel', () => {
+    it('counts a family-priced model, still adds its cost, and keeps it out of unpriced', () => {
+      const tracker = new CostTracker();
+      const usage = makeUsage({ inputTokens: 100, outputTokens: 50, totalTokens: 150 });
+      tracker.recordTokenUsage(usage, 'claude-opus-5-9');
+      tracker.recordTokenUsage(usage, 'claude-opus-5-9');
+      const metrics = tracker.getMetrics();
+      expect(metrics.estimatedByModel['claude-opus-5-9']).toEqual({
+        calls: 2,
+        tokens: 300,
+        estimatedFrom: estimatedFromOf('claude-opus-5-9'),
+      });
+      expect(metrics.unpricedByModel).toEqual({});
+      expect(metrics.sessionTotalCostUsd).toBeGreaterThan(0);
+    });
+
+    it('is empty for a table-priced model', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(makeUsage({ inputTokens: 1, totalTokens: 1 }), 'claude-sonnet-5');
+      expect(tracker.getMetrics().estimatedByModel).toEqual({});
+    });
+
+    it('seeds additively and reset() clears it', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(makeUsage({ inputTokens: 10, totalTokens: 10 }), 'claude-opus-5-9');
+      tracker.seedFromPersisted(
+        makeSeed({
+          totalInputTokens: 500,
+          estimatedByModel: {
+            'claude-opus-5-9': { calls: 3, tokens: 400, estimatedFrom: 'claude-opus-5' },
+          },
+        }),
+      );
+      expect(tracker.getMetrics().estimatedByModel).toEqual({
+        'claude-opus-5-9': { calls: 4, tokens: 410, estimatedFrom: 'claude-opus-5' },
+      });
+      tracker.reset('s');
+      expect(tracker.getMetrics().estimatedByModel).toEqual({});
+    });
+
+    it('emits ai.cost.estimated_calls with model and estimatedFrom attributes', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(makeUsage({ inputTokens: 1, totalTokens: 1 }), 'claude-opus-5-9');
+      tracker.recordTokenUsage(makeUsage({ inputTokens: 1, totalTokens: 1 }), 'claude-sonnet-5');
+      const aggregator = new MetricAggregator();
+      tracker.emitMetrics(aggregator);
+      const estimated = aggregator
+        .harvest(60_000)
+        .filter((m) => m.name === 'ai.cost.estimated_calls');
+      expect(estimated).toHaveLength(1);
+      expect(estimated[0]?.attributes?.model).toBe('claude-opus-5-9');
+      expect(estimated[0]?.attributes?.estimatedFrom).toBe(estimatedFromOf('claude-opus-5-9'));
     });
   });
 
