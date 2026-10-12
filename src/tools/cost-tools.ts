@@ -18,6 +18,7 @@ import type { ModelUsageTracker } from '../metrics/model-usage-tracker.js';
 import type { SessionResumeTracker } from '../metrics/session-resume-tracker.js';
 import { buildCostForecastFromInputs } from '../metrics/cost-forecast.js';
 import { localDateKey } from '../lib/date.js';
+import { resolvePricing } from '../metrics/pricing-overlay.js';
 import type { TokenUsage } from '../shared/index.js';
 import {
   errorResult,
@@ -191,6 +192,7 @@ export function handleGetCostBreakdown(costTracker: CostTracker, taskDetector?: 
     // dollar figure above reflects that correction, not Preflight's default
     // list-price computation, which is still only an estimate either way.
     rate_multiplier_applied: metrics.costRateMultiplierApplied,
+    unpriced_models: Object.keys(metrics.costByModel).filter((model) => !resolvePricing(model)),
   };
 
   return {
