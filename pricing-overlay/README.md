@@ -56,3 +56,7 @@ the full table from `DEFAULT_PRICING_TABLE`; it never merges a user's file
 with this overlay. A user relying on both a custom pricing entry and one of
 the gap-fill models here should add the model they need from `pricing.json`
 into their own custom pricing file instead.
+
+## Interaction with LiteLLM-refreshed prices
+
+Prices refreshed from LiteLLM's community file (see `pricingRefresh` in `docs/ADVANCED.md`) apply only to exact model ids that nothing in the bundled table or this overlay resolves. This file still wins.

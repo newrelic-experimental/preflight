@@ -5,6 +5,7 @@ const logger = createLogger('model-pricing');
 
 export type PricingResolution =
   | { readonly kind: 'priced'; readonly source: 'table'; readonly pricing: ModelPricing }
+  | { readonly kind: 'priced'; readonly source: 'refreshed'; readonly pricing: ModelPricing }
   | {
       readonly kind: 'priced';
       readonly source: 'estimated';

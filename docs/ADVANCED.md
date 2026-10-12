@@ -110,6 +110,8 @@ Every dollar figure Preflight reports — session cost, budget-threshold alerts,
 
 An alias reuses the target model's rates, so there is no rate table to keep current. The target must be a model Preflight can price, either built in or defined by a rate entry in the same file. An alias to an unknown model is logged once at startup and ignored. A file may hold only `aliases`, only rate entries, or both. A file with only `aliases` keeps the bundled gap-fill overlay, so an alias can target a model the overlay prices; a file with any rate entries replaces the overlay as before. Models that still cannot be priced are listed in `unpriced_models` in the `nr_observe_get_cost_breakdown` response.
 
+**`pricingRefresh`** (env: `NEW_RELIC_AI_PRICING_REFRESH`, default `true`): fetches LiteLLM's community price file in the background at server start, caches it at `<storagePath>/pricing-cache.json`, and refetches at a later start once the cache is a day old. It prices models the bundled table, the pricing overlay, and `customPricingFile` do not resolve, by exact model ID only, and takes precedence over family estimates. Set it to `false` to make no request and read or write no cache file. `highSecurity=true` forces it off.
+
 **`costRateMultiplier`** (env: `NEW_RELIC_AI_COST_RATE_MULTIPLIER`): a flat discount factor, `0 < x ≤ 1`, applied to every dollar figure `CostTracker` computes — a cheaper alternative to `customPricingFile` when you have a single blended discount off list price rather than distinct per-model contracted rates. Mirrors the semantics of Claude Code's own `modelPricing.multiplier` managed setting.
 
 ```json

@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { calculateCost, initPricing, resolveModelPricing } from '../shared/pricing.js';
+import {
+  calculateCost,
+  initPricing,
+  PricingTable,
+  resolveModelPricing,
+} from '../shared/pricing.js';
 import { makeUsage } from '../__test-utils__/token-usage.js';
 import {
   applyGapFilledOverlay,
@@ -14,6 +19,7 @@ import {
   resolvePricing,
   resolvePricingDetail,
   resolvePricingOverlayPath,
+  setRefreshedPricing,
 } from './pricing-overlay.js';
 
 describe('resolvePricingOverlayPath', () => {
@@ -385,5 +391,48 @@ describe('family fallback', () => {
     );
     applyPricingOverlay(overlayPath);
     expect(resolvePricingDetail('claude-zzz-3-5')).toMatchObject({ source: 'table' });
+  });
+});
+
+describe('refreshed pricing', () => {
+  const entry = { inputPerMTok: 7, outputPerMTok: 9, contextWindow: 1000 };
+  let dir: string | null = null;
+
+  function register(ids: Record<string, typeof entry>): void {
+    dir = mkdtempSync(join(tmpdir(), 'preflight-refreshed-'));
+    const p = join(dir, 'pricing-cache.json');
+    writeFileSync(p, JSON.stringify(ids));
+    setRefreshedPricing(new PricingTable(p), new Set(Object.keys(ids)));
+  }
+
+  afterEach(() => {
+    setRefreshedPricing(null, new Set());
+    clearPricingMemo();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = null;
+  });
+
+  it('prices an exact refreshed id and strips the context tag', () => {
+    register({ 'zz-model-1': entry });
+    expect(resolvePricingDetail('zz-model-1[1m]')).toMatchObject({
+      kind: 'priced',
+      source: 'refreshed',
+    });
+    const usage = makeUsage({ inputTokens: 1_000_000, totalTokens: 1_000_000 });
+    expect(priceModelUsage('zz-model-1[1m]', usage).breakdown.inputUsd).toBe(7);
+  });
+
+  it('falls through to the family estimate, then unpriced, on a refreshed miss', () => {
+    register({ 'zz-model-1': entry });
+    expect(resolvePricingDetail('claude-sonnet-9-9')).toMatchObject({ source: 'estimated' });
+    expect(resolvePricingDetail('zz-model-2')).toEqual({ kind: 'unpriced' });
+  });
+
+  it('clears the memo when refreshed pricing is set', () => {
+    expect(resolvePricingDetail('zz-model-1')).toEqual({ kind: 'unpriced' });
+    register({ 'zz-model-1': entry });
+    expect(resolvePricingDetail('zz-model-1')).toMatchObject({ source: 'refreshed' });
+    setRefreshedPricing(null, new Set());
+    expect(resolvePricingDetail('zz-model-1')).toEqual({ kind: 'unpriced' });
   });
 });
