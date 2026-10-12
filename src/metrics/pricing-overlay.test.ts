@@ -10,7 +10,9 @@ import {
   calculateModelCost,
   clearPricingMemo,
   normalizeModelId,
+  priceModelUsage,
   resolvePricing,
+  resolvePricingDetail,
   resolvePricingOverlayPath,
 } from './pricing-overlay.js';
 
@@ -294,5 +296,94 @@ describe('pricing memo', () => {
     consoleError.mockClear();
     resolvePricing('claude-unknown-5');
     expect(unknownWarnings()).toBe(0);
+  });
+});
+
+describe('family fallback', () => {
+  const USAGE = makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 });
+  let consoleError: jest.SpiedFunction<typeof console.error>;
+  let dir: string | null = null;
+
+  beforeEach(() => {
+    consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    consoleError.mockRestore();
+    applyPricingOverlay(null);
+    clearPricingMemo();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = null;
+  });
+
+  // Which sibling is newest changes with every vendored table sync, so these
+  // assert the contract and leave sibling selection to estimateFromFamily.
+  it.each(['claude-opus-5-9', 'claude-sonnet-5-9[1m]'])(
+    'prices %s at the exact rate of a priced same-family, same-major release',
+    (model) => {
+      const r = resolvePricingDetail(model);
+      if (r.kind !== 'priced' || r.source !== 'estimated')
+        throw new Error(`not estimated: ${model}`);
+      const family = model.replace(/\[.*$/, '').replace(/-\d+$/, '');
+      expect(r.estimatedFrom.startsWith(family)).toBe(true);
+      expect(r.pricing).toEqual(resolveModelPricing(r.estimatedFrom));
+      expect(resolvePricing(model)).toEqual(r.pricing);
+    },
+  );
+
+  it('prices an estimated model at its sibling rate', () => {
+    const priced = priceModelUsage('claude-opus-5-9', USAGE);
+    const r = priced.resolution;
+    if (r.kind !== 'priced' || r.source !== 'estimated') throw new Error('not estimated');
+    expect(priced.breakdown).toEqual(calculateCost(r.estimatedFrom, USAGE));
+    expect(priced.breakdown.totalUsd).toBeGreaterThan(0);
+  });
+
+  it.each([
+    'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5-9-v1:0',
+    'anthropic.claude-opus-5-9',
+    'bedrock/claude-opus-5-9',
+  ])('estimates the gateway or Bedrock spelling %s', (id) => {
+    expect(resolvePricingDetail(id)).toMatchObject({ kind: 'priced', source: 'estimated' });
+  });
+
+  it('leaves unknown families and other vendors unpriced', () => {
+    expect(resolvePricingDetail('claude-foo-9-9')).toEqual({ kind: 'unpriced' });
+    expect(resolvePricingDetail('gpt-9-9')).toEqual({ kind: 'unpriced' });
+    expect(priceModelUsage('claude-foo-9-9', USAGE).breakdown.totalUsd).toBe(0);
+  });
+
+  it('keeps an exact table hit as a table price', () => {
+    expect(resolvePricingDetail('claude-opus-5')).toMatchObject({
+      kind: 'priced',
+      source: 'table',
+    });
+  });
+
+  it('lets an overlay entry stand in as a sibling and yield to an exact entry', () => {
+    dir = mkdtempSync(join(tmpdir(), 'preflight-pricing-family-'));
+    const overlayPath = join(dir, 'pricing.json');
+    writeFileSync(
+      overlayPath,
+      JSON.stringify({
+        'claude-zzz-3-2': { inputPerMTok: 7, outputPerMTok: 9, contextWindow: 100_000 },
+      }),
+      { mode: 0o600 },
+    );
+    applyPricingOverlay(overlayPath);
+    expect(resolvePricingDetail('claude-zzz-3-5')).toMatchObject({
+      source: 'estimated',
+      estimatedFrom: 'claude-zzz-3-2',
+    });
+    writeFileSync(
+      overlayPath,
+      JSON.stringify({
+        'claude-zzz-3-2': { inputPerMTok: 7, outputPerMTok: 9, contextWindow: 100_000 },
+        'claude-zzz-3-5': { inputPerMTok: 1, outputPerMTok: 2, contextWindow: 100_000 },
+      }),
+      { mode: 0o600 },
+    );
+    applyPricingOverlay(overlayPath);
+    expect(resolvePricingDetail('claude-zzz-3-5')).toMatchObject({ source: 'table' });
   });
 });

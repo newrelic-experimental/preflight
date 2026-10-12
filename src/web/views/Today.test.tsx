@@ -668,6 +668,32 @@ describe('Today view', () => {
     ).toBeInTheDocument();
   });
 
+  it('shows the estimate line when the aggregate reports estimated calls', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            totalCostUsd: 1,
+            estimatedByModel: {
+              'claude-opus-5-9': { calls: 2, tokens: 90, estimatedFrom: 'claude-opus-5' },
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    expect(
+      await screen.findByText(/2 calls priced from a sibling model .*Spend is an estimate\./),
+    ).toBeInTheDocument();
+  });
+
   it('folds the /api/cost REST fallback into todayTotal so the KPI does not flash $0.00 before the first SSE frame arrives', async () => {
     // No SSE cost frame has arrived yet, and the aggregate endpoint has
     // legitimately resolved to 0 (no disk-backed data yet from this

@@ -10,7 +10,8 @@
 
 import type { TokenUsage, CostBreakdown, MetricAggregator } from '../shared/index.js';
 import { createLogger } from '../shared/index.js';
-import { calculateModelCost, resolvePricing } from './pricing-overlay.js';
+import { addCallUsage } from './call-usage.js';
+import { priceModelUsage } from './pricing-overlay.js';
 import { localDateKey } from '../lib/date.js';
 import type { SessionTracker } from './session-tracker.js';
 import type { Resettable } from './tracker-contracts.js';
@@ -96,6 +97,11 @@ export interface UnpricedModelUsage {
   readonly tokens: number;
 }
 
+export interface EstimatedModelUsage extends UnpricedModelUsage {
+  /** Table id whose price stood in for this model's missing one. */
+  readonly estimatedFrom: string;
+}
+
 export interface CostMetrics {
   readonly sessionTotalCostUsd: number | null;
   readonly costByTask: null; // stub — task boundary detection is not yet implemented
@@ -147,6 +153,11 @@ export interface CostMetrics {
    * reported. Spend is understated by exactly these calls.
    */
   readonly unpricedByModel: Record<string, UnpricedModelUsage>;
+  /**
+   * Calls priced from a sibling model of the same family. Their cost is in the
+   * totals but is an estimate.
+   */
+  readonly estimatedByModel: Record<string, EstimatedModelUsage>;
   /**
    * Subagent-attributed spend bucketed by `ctx.agentType` (best-effort — see
    * `TokenRecordContext.agentType`). Only token events whose `agentId` had a
@@ -208,6 +219,7 @@ export interface CostTrackerSeed {
    */
   readonly costByWorkflowRunId: Readonly<Record<string, Readonly<Record<string, number>>>>;
   readonly unpricedByModel?: Readonly<Record<string, UnpricedModelUsage>>;
+  readonly estimatedByModel?: Readonly<Record<string, EstimatedModelUsage>>;
 }
 
 export interface SubagentMetrics {
@@ -242,6 +254,7 @@ export class CostTracker implements Resettable {
   private latestCostBreakdown: CostBreakdown | null = null;
   private costByModel = new Map<string, number>();
   private unpricedByModel = new Map<string, UnpricedModelUsage>();
+  private estimatedByModel = new Map<string, EstimatedModelUsage>();
   // Per-day cost attribution. Each token event is bucketed into the local-day
   // it was recorded in, so consumers asking "how much did this session spend
   // today" can get a real answer when a session crosses midnight. Without
@@ -373,28 +386,28 @@ export class CostTracker implements Resettable {
     }
   }
 
-  private addUnpriced(model: string, calls: number, tokens: number): void {
-    const prior = this.unpricedByModel.get(model);
-    this.unpricedByModel.set(model, {
-      calls: (prior?.calls ?? 0) + calls,
-      tokens: (prior?.tokens ?? 0) + tokens,
-    });
-  }
-
   private accumulateTokens(
     usage: TokenUsage,
     model: string,
     ctx?: TokenRecordContext,
   ): CostBreakdown {
-    const rawBreakdown = calculateModelCost(model, usage);
-    if (!resolvePricing(model)) {
-      const tokens =
-        usage.inputTokens +
-        usage.outputTokens +
-        usage.thinkingTokens +
-        usage.cacheReadTokens +
-        usage.cacheCreationTokens;
-      if (tokens > 0) this.addUnpriced(model, 1, tokens);
+    const { breakdown: rawBreakdown, resolution } = priceModelUsage(model, usage);
+    const tokens =
+      usage.inputTokens +
+      usage.outputTokens +
+      usage.thinkingTokens +
+      usage.cacheReadTokens +
+      usage.cacheCreationTokens;
+    if (tokens > 0) {
+      if (resolution.kind === 'unpriced') {
+        addCallUsage(this.unpricedByModel, model, { calls: 1, tokens });
+      } else if (resolution.source === 'estimated') {
+        addCallUsage(this.estimatedByModel, model, {
+          calls: 1,
+          tokens,
+          estimatedFrom: resolution.estimatedFrom,
+        });
+      }
     }
     const breakdown =
       this.rateMultiplier === 1
@@ -530,7 +543,10 @@ export class CostTracker implements Resettable {
     }
 
     for (const [model, entry] of Object.entries(seed.unpricedByModel ?? {})) {
-      this.addUnpriced(model, entry.calls, entry.tokens);
+      addCallUsage(this.unpricedByModel, model, entry);
+    }
+    for (const [model, entry] of Object.entries(seed.estimatedByModel ?? {})) {
+      addCallUsage(this.estimatedByModel, model, entry);
     }
 
     if (seed.dayCostUsd !== 0) {
@@ -716,6 +732,7 @@ export class CostTracker implements Resettable {
       costByWorkflowRunId,
       costByDayUsd: Object.fromEntries(this.costByDayUsd),
       unpricedByModel: Object.fromEntries(this.unpricedByModel),
+      estimatedByModel: Object.fromEntries(this.estimatedByModel),
       subagentCostByDayUsd: Object.fromEntries(this.subagentCostByDayUsd),
       subagentByAgentType: Object.fromEntries(this.subagentByAgentType),
       highContextCostUsd: this.highContextCostUsd,
@@ -772,6 +789,12 @@ export class CostTracker implements Resettable {
     for (const [model, entry] of this.unpricedByModel) {
       aggregator.record('ai.cost.unpriced_calls', entry.calls, { model });
     }
+    for (const [model, entry] of this.estimatedByModel) {
+      aggregator.record('ai.cost.estimated_calls', entry.calls, {
+        model,
+        estimatedFrom: entry.estimatedFrom,
+      });
+    }
   }
 
   reset(_sessionId: string): void {
@@ -788,6 +811,7 @@ export class CostTracker implements Resettable {
     this.latestCostBreakdown = null;
     this.costByModel = new Map();
     this.unpricedByModel = new Map();
+    this.estimatedByModel = new Map();
     this.costByDayUsd = new Map();
     this.subagentCostByDayUsd = new Map();
     this.subagentByAgentType = new Map();

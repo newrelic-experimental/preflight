@@ -945,6 +945,9 @@ describe('buildSessionSummary', () => {
         estimationCount: 0,
         latestCostBreakdown: null,
         unpricedByModel: { 'claude-foo-9-9': { calls: 2, tokens: 30 } },
+        estimatedByModel: {
+          'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+        },
       }),
     };
 
@@ -1030,6 +1033,9 @@ describe('buildSessionSummary', () => {
     expect(summary.developer).toBe('alice');
     expect(summary.model).toBe('claude-opus-4-20250514');
     expect(summary.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 2, tokens: 30 } });
+    expect(summary.estimatedByModel).toEqual({
+      'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+    });
     expect(summary.toolCallCount).toBe(15);
     expect(summary.toolBreakdown).toEqual({ Read: 5, Edit: 7, Bash: 3 });
     expect(summary.filesRead).toEqual(['/src/a.ts', '/src/b.ts', '/src/c.ts']);
@@ -1570,6 +1576,52 @@ describe('buildSessionSummary', () => {
     ).toEqual(only);
   });
 
+  it('mergeSummaries takes the per-model max of estimated calls and keeps the incoming estimatedFrom', () => {
+    const existing = makeSummary({
+      estimatedByModel: { a: { calls: 3, tokens: 100, estimatedFrom: 'old' } },
+    });
+    const incoming = makeSummary({
+      estimatedByModel: {
+        a: { calls: 2, tokens: 400, estimatedFrom: 'new' },
+        c: { calls: 7, tokens: 70, estimatedFrom: 'x' },
+      },
+    });
+    expect(mergeSummaries(existing, incoming).estimatedByModel).toEqual({
+      a: { calls: 3, tokens: 400, estimatedFrom: 'new' },
+      c: { calls: 7, tokens: 70, estimatedFrom: 'x' },
+    });
+    expect(mergeSummaries(makeSummary(), makeSummary()).estimatedByModel).toBeUndefined();
+  });
+
+  it('deserializeFullSessionSummary validates estimatedByModel entries', () => {
+    const raw = {
+      sessionId: 'sess-estimated',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+      estimatedByModel: {
+        good: { calls: 2, tokens: 300, estimatedFrom: 'claude-opus-5' },
+        missingFrom: { calls: 1, tokens: 1 },
+        emptyFrom: { calls: 1, tokens: 1, estimatedFrom: '' },
+        longFrom: { calls: 1, tokens: 1, estimatedFrom: 'x'.repeat(257) },
+        numericFrom: { calls: 1, tokens: 1, estimatedFrom: 5 },
+        negative: { calls: -1, tokens: 1, estimatedFrom: 'a' },
+        notAnObject: 'nope',
+      },
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.estimatedByModel).toEqual({
+      good: { calls: 2, tokens: 300, estimatedFrom: 'claude-opus-5' },
+    });
+    const none = deserializeFullSessionSummary({
+      ...raw,
+      estimatedByModel: [1],
+    } as unknown as Record<string, unknown>);
+    expect(none.estimatedByModel).toBeUndefined();
+  });
+
   it('mergeSummaries unions timeline entries from both sides instead of keeping only the longer array', () => {
     // Simulates a Claude Code --stdio resume: the old process's on-disk
     // timeline is longer than what the new process has accumulated so far,
@@ -1726,6 +1778,7 @@ describe('buildSessionSummary', () => {
       costByDayUsd: {},
       subagentCostByDayUsd: {},
       unpricedByModel: {},
+      estimatedByModel: {},
       subagentByAgentType: {},
       highContextCostUsd: 0,
       apiDurationMs: null,
@@ -1769,6 +1822,7 @@ describe('buildSessionSummary', () => {
       costByDayUsd: { '2026-08-14': 0.05 },
       subagentCostByDayUsd: {},
       unpricedByModel: {},
+      estimatedByModel: {},
       subagentByAgentType: {},
       highContextCostUsd: 0,
       apiDurationMs: null,
@@ -3502,6 +3556,7 @@ describe('attribution field', () => {
         highContextCostUsd: 0.75,
         apiDurationMs: 12_000,
         unpricedByModel: {},
+        estimatedByModel: {},
       }),
     } as unknown as CostTracker;
 

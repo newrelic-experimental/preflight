@@ -54,4 +54,50 @@ describe('UnpricedSpendNotice', () => {
       '15 calls unpriced (b, e, c +2 more). Spend is understated.',
     );
   });
+
+  const estimated = {
+    'claude-opus-5-9': { calls: 3, tokens: 90, estimatedFrom: 'claude-opus-5' },
+  };
+
+  it('renders a muted estimate line, with no amber line, when only estimated calls exist', () => {
+    render(<UnpricedSpendNotice unpricedByModel={{}} estimatedByModel={estimated} />);
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent(
+      '3 calls priced from a sibling model (claude-opus-5-9 as claude-opus-5). Spend is an estimate.',
+    );
+    expect(status).not.toHaveTextContent('unpriced');
+    expect(status.querySelector('.text-ink-muted')).not.toBeNull();
+    expect(status.querySelector('[class*="accent-amber"]')).toBeNull();
+  });
+
+  it('renders the unpriced line first, then the estimate line', () => {
+    render(
+      <UnpricedSpendNotice
+        unpricedByModel={{ 'claude-foo-9-9': { calls: 1, tokens: 1 } }}
+        estimatedByModel={estimated}
+      />,
+    );
+    const text = screen.getByRole('status').textContent ?? '';
+    const unpricedAt = text.indexOf('unpriced');
+    const estimateAt = text.indexOf('priced from a sibling model');
+    expect(unpricedAt).toBeGreaterThanOrEqual(0);
+    expect(estimateAt).toBeGreaterThan(unpricedAt);
+  });
+
+  it('lists at most three estimated models and counts the rest', () => {
+    render(
+      <UnpricedSpendNotice
+        unpricedByModel={undefined}
+        estimatedByModel={{
+          a: { calls: 1, tokens: 1, estimatedFrom: 'x' },
+          b: { calls: 5, tokens: 1, estimatedFrom: 'x' },
+          c: { calls: 3, tokens: 1, estimatedFrom: 'x' },
+          d: { calls: 2, tokens: 1, estimatedFrom: 'x' },
+        }}
+      />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '11 calls priced from a sibling model (b as x, c as x, d as x +1 more). Spend is an estimate.',
+    );
+  });
 });

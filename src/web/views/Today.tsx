@@ -418,7 +418,10 @@ export function Today(): JSX.Element {
         <h1 className="text-xl font-semibold gradient-text">Today</h1>
         <span className="text-xs text-ink-muted">{headerTimestamp}</span>
       </header>
-      <UnpricedSpendNotice unpricedByModel={aggregate?.unpricedByModel} />
+      <UnpricedSpendNotice
+        unpricedByModel={aggregate?.unpricedByModel}
+        estimatedByModel={aggregate?.estimatedByModel}
+      />
 
       {noActivityToday ? (
         <>
