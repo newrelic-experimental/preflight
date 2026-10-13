@@ -46,8 +46,8 @@ export interface ToolTypeCostEntry {
 /**
  * Per-skill row covering every tool call made inside that skill's runs (see
  * SkillActivationTracker), each carrying its even split of its turn's cost.
- * `callCount` counts invocations (one per `Skill` tool call, one per slash
- * invocation) and `avgCost` is cost per invocation. `totalDurationMs` and
+ * `callCount` counts invocations (distinct run ids, whether opened by a
+ * `Skill` call or a slash prompt) and `avgCost` is cost per invocation. `totalDurationMs` and
  * `attributedCallCount` cover the tool calls inside the runs; cost and tokens
  * cover the `attributedCallCount` of them whose turn got a token report.
  */
@@ -139,8 +139,7 @@ const MAX_TURNS = 200;
 interface BucketIdentity {
   readonly toolName: string;
   /**
-   * The invoked skill on `Skill` and `SlashCommand` buckets; on any other
-   * tool, the skill whose run the call happened inside.
+   * The skill whose run the call happened inside (`ToolCallRecord.activeSkill`).
    */
   readonly skillName: string | null;
 }
@@ -208,6 +207,8 @@ interface SessionState {
   totalToolCalls: number;
   attributedToolCalls: number;
   droppedTokenEvents: number;
+  /** Run ids seen per skill name; its size is the skill's invocation count. */
+  skillRuns: Map<string, Set<string>>;
 }
 
 function createSessionState(): SessionState {
@@ -219,6 +220,7 @@ function createSessionState(): SessionState {
     totalToolCalls: 0,
     attributedToolCalls: 0,
     droppedTokenEvents: 0,
+    skillRuns: new Map(),
   };
 }
 
@@ -226,13 +228,17 @@ function createSessionState(): SessionState {
 // Bucket helpers
 // ---------------------------------------------------------------------------
 
+function addSkillRun(skillRuns: Map<string, Set<string>>, skill: string, runId: string): void {
+  let runIds = skillRuns.get(skill);
+  if (runIds === undefined) {
+    runIds = new Set();
+    skillRuns.set(skill, runIds);
+  }
+  runIds.add(runId);
+}
+
 function bucketIdentityOf(record: ToolCallRecord): BucketIdentity {
-  // A Skill call's bucket is the skill it invokes, so the bucket's callCount
-  // is that skill's invocation count; a nameless Skill call inside another
-  // skill's run must not count as an invocation of the outer one.
-  const skillName =
-    record.toolName === 'Skill' ? record.skillName || null : (record.activeSkill?.name ?? null);
-  return { toolName: record.toolName, skillName };
+  return { toolName: record.toolName, skillName: record.activeSkill?.name ?? null };
 }
 
 /** Lookup key only. It is never parsed; the bucket carries its own identity. */
@@ -323,6 +329,8 @@ export class TurnCostAttributor {
     const bucket = getOrCreateBucket(state.buckets, key, id);
     bucket.callCount++;
     bucket.totalDurationMs += record.durationMs ?? 0;
+    if (record.activeSkill)
+      addSkillRun(state.skillRuns, record.activeSkill.name, record.activeSkill.runId);
 
     const last = state.pendingTurns[state.pendingTurns.length - 1];
     if (last && record.timestamp - last.endTime <= TURN_GAP_MS) {
@@ -357,16 +365,6 @@ export class TurnCostAttributor {
     if (state.pendingTurns.length > MAX_PENDING_TURNS) {
       state.pendingTurns.shift();
       state.droppedTokenEvents++;
-    }
-  }
-
-  recordSlashCommand(sessionId: string | null | undefined, skillName: string | null): void {
-    const state = this.getOrCreateSession(sessionId);
-    if (skillName) {
-      const id: BucketIdentity = { toolName: 'SlashCommand', skillName };
-      const key = bucketKeyOf(id);
-      const bucket = getOrCreateBucket(state.buckets, key, id);
-      bucket.callCount++;
     }
   }
 
@@ -528,6 +526,9 @@ export class TurnCostAttributor {
         const merged = getOrCreateBucket(aggregate.buckets, key, bucket);
         for (const counter of BUCKET_COUNTERS) merged[counter] += bucket[counter];
       }
+      for (const [skill, runIds] of state.skillRuns) {
+        for (const runId of runIds) addSkillRun(aggregate.skillRuns, skill, runId);
+      }
     }
     // Same cap as each per-session bucket already enforces on insert — keep
     // only the most recent MAX_TURNS across the merged set, by start time.
@@ -550,17 +551,12 @@ export class TurnCostAttributor {
         cacheCreationTokens: number;
       }
     >();
-    const skillInvocations = new Map<string, number>();
     const skillAccum = new Map<string, Pick<AttributionBucket, (typeof BUCKET_COUNTERS)[number]>>();
 
     for (const bucket of state.buckets.values()) {
       // costByToolType predates the buckets table and only ever listed tools
-      // that received a token event, so the fold keeps that contract. The
-      // SlashCommand channel isn't a real tool call — it carries invocation
-      // counts only (see recordSlashCommand()), and folding it in here would
-      // double-count against whichever real tool(s) that same turn already
-      // split its cost across.
-      if (bucket.toolName !== 'SlashCommand' && bucket.attributedCallCount > 0) {
+      // that received a token event, so the fold keeps that contract.
+      if (bucket.attributedCallCount > 0) {
         let entry = toolTypeAccum.get(bucket.toolName);
         if (entry === undefined) {
           entry = {
@@ -589,19 +585,12 @@ export class TurnCostAttributor {
           skillAccum.set(bucket.skillName, entry);
         }
         for (const counter of BUCKET_COUNTERS) entry[counter] += bucket[counter];
-
-        if (bucket.toolName === 'Skill' || bucket.toolName === 'SlashCommand') {
-          skillInvocations.set(
-            bucket.skillName,
-            (skillInvocations.get(bucket.skillName) ?? 0) + bucket.callCount,
-          );
-        }
       }
     }
 
     const costBySkill: Record<string, SkillCostEntry> = {};
     for (const [skillName, entry] of skillAccum) {
-      const invocations = skillInvocations.get(skillName) ?? 0;
+      const invocations = state.skillRuns.get(skillName)?.size ?? 0;
       costBySkill[skillName] = {
         callCount: invocations,
         attributedCallCount: entry.attributedCallCount,
