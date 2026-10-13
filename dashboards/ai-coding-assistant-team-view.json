@@ -322,7 +322,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall WHERE tool = 'Skill' AND developer = {{developer}} AND session_id = {{session_id}} FACET skillName SINCE 7 DAYS AGO LIMIT 20"
+                "query": "SELECT count(*) FROM AiToolCall WHERE tool = 'Skill' AND developer = {{developer}} AND session_id = {{session_id}} FACET skill_name SINCE 7 DAYS AGO LIMIT 20"
               }
             ]
           }
@@ -342,7 +342,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT sum(duration_ms) / 3600000 AS 'Hours' FROM AiToolCall WHERE tool = 'Skill' AND developer = {{developer}} AND session_id = {{session_id}} FACET skillName SINCE 7 DAYS AGO LIMIT 20"
+                "query": "SELECT sum(duration_ms) / 3600000 AS 'Hours' FROM AiToolCall WHERE skill_name IS NOT NULL AND developer = {{developer}} AND session_id = {{session_id}} FACET skill_name SINCE 7 DAYS AGO LIMIT 20"
               }
             ]
           }
@@ -362,7 +362,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT sum(cost_usd) AS 'USD' FROM AiTurnCost WHERE tool = 'Skill' AND developer = {{developer}} AND session_id = {{session_id}} FACET skillName SINCE 7 DAYS AGO LIMIT 20"
+                "query": "SELECT sum(cost_usd) AS 'USD' FROM AiTurnCost WHERE skill_name IS NOT NULL AND developer = {{developer}} AND session_id = {{session_id}} FACET skill_name SINCE 7 DAYS AGO LIMIT 20"
               }
             ]
           }
