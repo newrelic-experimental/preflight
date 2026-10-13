@@ -15,7 +15,25 @@ export type PricingResolution =
   | { readonly kind: 'unpriced' };
 
 const CLAUDE_ID_RE = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/;
-const CONTEXT_TAG_RE = /(\[[^\]]*\])+$/;
+
+/**
+ * Removes one trailing `[...]` tag (e.g. `[1m]`). Linear scan instead of a
+ * `/\[[^\]]*\]$/` regex, which backtracks quadratically on inputs with many `[`.
+ */
+export function stripTrailingTag(id: string): string {
+  if (!id.endsWith(']')) return id;
+  const prevClose = id.lastIndexOf(']', id.length - 2);
+  const open = id.indexOf('[', prevClose + 1);
+  return open === -1 ? id : id.slice(0, open);
+}
+
+export function stripTrailingTags(id: string): string {
+  let current = id;
+  for (let next = stripTrailingTag(current); next !== current; next = stripTrailingTag(current)) {
+    current = next;
+  }
+  return current;
+}
 // Bedrock spells the same ids `[<region>.]anthropic.claude-...[-v1:0]`.
 const BEDROCK_PREFIX_RE = /^(?:[a-z-]+\.)?anthropic\./;
 const BEDROCK_VERSION_RE = /-v\d+(?::\d+)?$/;
@@ -27,7 +45,7 @@ interface ParsedClaudeId {
 }
 
 function parseClaudeId(id: string): ParsedClaudeId | null {
-  const match = CLAUDE_ID_RE.exec(id.replace(CONTEXT_TAG_RE, ''));
+  const match = CLAUDE_ID_RE.exec(stripTrailingTags(id));
   if (!match) return null;
   return { family: match[1], major: Number(match[2]), minor: Number(match[3] ?? 0) };
 }

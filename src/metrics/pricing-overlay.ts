@@ -25,7 +25,7 @@ import {
 import type { CostBreakdown, ModelPricing, PricingTable } from '../shared/pricing.js';
 import type { TokenUsage } from '../shared/index.js';
 import { resolveDataDir } from '../deploy/data-paths.js';
-import { estimateFromFamily, type PricingResolution } from './model-pricing.js';
+import { estimateFromFamily, stripTrailingTag, type PricingResolution } from './model-pricing.js';
 
 const logger = createLogger('pricing-overlay');
 
@@ -37,7 +37,6 @@ const MAX_PRICING_FILE_BYTES = 1_000_000;
 // Deliberately strips any one leading `<segment>/`, not a fixed provider list, so
 // gateway prefixes we have never seen (`bedrock/`, `anthropic/`, `vertex/`) resolve too.
 const PROVIDER_PREFIX_RE = /^[a-z0-9_-]+\//;
-const VARIANT_TAG_RE = /\[[^\]]*\]$/;
 
 /**
  * Reduces the model strings gateways and Bedrock emit to the bare id the
@@ -64,7 +63,7 @@ const ZERO_COST: CostBreakdown = {
 let pricingAliases: ReadonlyMap<string, string> = new Map();
 
 function lookupAlias(id: string): string | undefined {
-  return pricingAliases.get(id) ?? pricingAliases.get(id.replace(VARIANT_TAG_RE, ''));
+  return pricingAliases.get(id) ?? pricingAliases.get(stripTrailingTag(id));
 }
 
 function canonicalModelId(raw: string): string {
@@ -105,7 +104,7 @@ function computeResolution(model: string): PricingResolution {
   if (pricing) return { kind: 'priced', source: 'table', pricing };
 
   if (refreshedTable !== null) {
-    const bare = id.replace(VARIANT_TAG_RE, '');
+    const bare = stripTrailingTag(id);
     const refreshed = refreshedIds.has(bare) ? refreshedTable.resolve(bare) : null;
     if (refreshed) {
       logger.info('Pricing from the LiteLLM refresh', { model });
@@ -158,10 +157,7 @@ export function priceModelUsage(model: string, usage: TokenUsage): PricedUsage {
   if (resolution.source === 'refreshed' && refreshedTable !== null) {
     return {
       resolution,
-      breakdown: refreshedTable.calculateCost(
-        canonicalModelId(model).replace(VARIANT_TAG_RE, ''),
-        usage,
-      ),
+      breakdown: refreshedTable.calculateCost(stripTrailingTag(canonicalModelId(model)), usage),
     };
   }
   const priceId =

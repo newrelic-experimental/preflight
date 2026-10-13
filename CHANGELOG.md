@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.67.2] - 2026-10-13
+
+### Security
+
+- Upgraded vulnerable transitive and direct dependencies in the server (`@modelcontextprotocol/sdk`, `undici`, `hono`, `proxy-addr`, `ip-address`, `fast-uri`, `handlebars`, `brace-expansion`, `source-map-js`) and the docs site (`astro`, `devalue`, `sharp`, `smol-toml`, `svgo`, `http-cache-semantics`, `postcss-selector-parser`), clearing every open Dependabot alert.
+- Model-ID tag stripping (`[1m]`-style suffixes) in pricing resolution no longer uses a backtracking regular expression, removing a polynomial-time path on crafted model names.
+- `scripts/generate-demo-data.ts` no longer includes the request URL, which embeds the account ID, in its error output.
+
 ## [1.67.1] - 2026-10-12
 
 ### Fixed

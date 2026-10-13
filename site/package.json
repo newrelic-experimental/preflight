@@ -20,6 +20,9 @@
   },
   "overrides": {
     "js-yaml": "^4.3.1",
-    "nanoid": "^3.3.18"
+    "nanoid": "^3.3.18",
+    "postcss-nested": {
+      "postcss-selector-parser": "^7.1.6"
+    }
   }
 }

@@ -558,27 +558,30 @@ async function send(
     return;
   }
 
-  const post = async (url: string, body: unknown): Promise<void> => {
+  const post = async (label: string, url: string, body: unknown): Promise<void> => {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Api-Key': opts.licenseKey as string },
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      throw new Error(`${url} -> HTTP ${res.status}: ${await res.text()}`);
+      throw new Error(`${label} -> HTTP ${res.status}: ${await res.text()}`);
     }
   };
 
   const BATCH = 1000;
   for (let i = 0; i < events.length; i += BATCH) {
     await post(
+      'events',
       `${opts.region.eventsHost}/v1/accounts/${opts.accountId}/events`,
       events.slice(i, i + BATCH),
     );
   }
   console.error(`Sent ${events.length} events.`);
   for (let i = 0; i < metrics.length; i += BATCH) {
-    await post(`${opts.region.metricsHost}/metric/v1`, [{ metrics: metrics.slice(i, i + BATCH) }]);
+    await post('metrics', `${opts.region.metricsHost}/metric/v1`, [
+      { metrics: metrics.slice(i, i + BATCH) },
+    ]);
   }
   console.error(`Sent ${metrics.length} metric data points.`);
   console.error('\nData is queryable within a minute or two. Widgets with 7d/30d windows fill');

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 
-import { estimateFromFamily } from './model-pricing.js';
+import { estimateFromFamily, stripTrailingTag, stripTrailingTags } from './model-pricing.js';
 
 let consoleError: jest.SpiedFunction<typeof console.error>;
 
@@ -51,5 +51,33 @@ describe('estimateFromFamily', () => {
   it('never crosses families or vendors', () => {
     expect(estimateFromFamily('claude-y-1-9', ['claude-x-1-1'], same)).toBeNull();
     expect(estimateFromFamily('gpt-5', ['claude-x-1-1'], same)).toBeNull();
+  });
+});
+
+describe('stripTrailingTag / stripTrailingTags', () => {
+  it.each([
+    ['claude-opus-4-7[1m]', 'claude-opus-4-7'],
+    ['claude-opus-4-7', 'claude-opus-4-7'],
+    ['claude-opus-4-7[1m]x', 'claude-opus-4-7[1m]x'],
+    ['claude-opus-4-7]', 'claude-opus-4-7]'],
+    ['a[x[y]', 'a'],
+    ['[]', ''],
+    [']', ']'],
+    ['', ''],
+  ])('stripTrailingTag(%j) -> %j', (input, expected) => {
+    expect(stripTrailingTag(input)).toBe(expected);
+  });
+
+  it('stripTrailingTags removes every trailing group', () => {
+    expect(stripTrailingTags('claude-opus-4-7[1m][beta]')).toBe('claude-opus-4-7');
+    expect(stripTrailingTags('claude-opus-4-7[1m]')).toBe('claude-opus-4-7');
+  });
+
+  it('stays linear on adversarial input with many opening brackets', () => {
+    const hostile = '['.repeat(200_000);
+    const start = Date.now();
+    expect(stripTrailingTag(hostile)).toBe(hostile);
+    expect(stripTrailingTags(`${hostile}]`)).toBe('');
+    expect(Date.now() - start).toBeLessThan(500);
   });
 });
