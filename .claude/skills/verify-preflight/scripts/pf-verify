@@ -107,7 +107,8 @@ cmd_hook() {
     shift
   done
   ensure_run_dirs
-  export PF_SEQ="$(date +%s)$RANDOM"
+  PF_SEQ="$(date +%s)$RANDOM"
+  export PF_SEQ
   for ev in PreToolUse "$post"; do
     hook_json "$ev" "$sid" "$tool" "$input" "$cwd" | run_env node "$REPO/dist/hooks/collector-script.js"
   done

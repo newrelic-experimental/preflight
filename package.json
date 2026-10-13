@@ -11,6 +11,13 @@
   "engines": {
     "node": ">=22.0.0"
   },
+  "devEngines": {
+    "packageManager": {
+      "name": "npm",
+      "version": ">=11.11.0",
+      "onFail": "warn"
+    }
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/newrelic-experimental/preflight"
@@ -55,6 +62,7 @@
     "test:e2e:update": "playwright test --update-snapshots",
     "test:e2e:update:linux": "bash e2e/record-linux-baselines.sh",
     "lint": "eslint src/ scripts/ e2e/ *.config.ts",
+    "lint:shell": "tsx scripts/lint-shell.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "deploy:alerts": "node dist/index.js deploy-alerts",
@@ -68,6 +76,7 @@
     "regenerate:otlp-descriptor": "tsx scripts/regenerate-otlp-descriptor.ts",
     "check:bundle-size": "tsx scripts/check-bundle-size.ts",
     "check:docs-inventory": "tsx scripts/check-docs-inventory.ts",
+    "check:test-ownership": "tsx scripts/check-test-ownership.ts",
     "replay:git-counts": "tsx scripts/replay-git-counts.ts",
     "check:claude-code-changelog": "tsx scripts/check-claude-code-changelog.ts",
     "whats-new:draft": "tsx scripts/draft-whats-new.ts",

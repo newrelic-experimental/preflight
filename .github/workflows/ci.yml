@@ -1,11 +1,11 @@
 name: CI
 
 # Runs CONTRIBUTING.md's "Before opening a PR" checklist: everything in the
-# verify job, test:e2e in its own job. Plus the two drift-checker scripts that
+# verify job, test:e2e in its own job. Plus the drift-checker scripts that
 # otherwise never run automatically:
-# check-docs-inventory.ts (docs/code drift) and check-bundle-size.ts (SPA
+# check-docs-inventory.ts (docs/code drift), check-bundle-size.ts (SPA
 # bundle budget, mirrors verify:plugin-hook's already-enforced pattern in
-# release.yml).
+# release.yml) and check-test-ownership.ts (every test file has a runner).
 on:
   pull_request:
   workflow_dispatch:
@@ -110,6 +110,25 @@ jobs:
 
       - name: Check SPA bundle size
         run: npm run check:bundle-size
+
+      # Every *.test.ts(x) under src/ and test/ must be claimed by exactly one of
+      # Jest and Vitest, and `npm run test:integration` must still select its file.
+      # A test outside both globs passes CI by never running.
+      - name: Check test-runner ownership
+        run: npm run check:test-ownership
+
+      # package.json's devEngines pins the npm that keeps the lockfile's `libc`
+      # fields; an older npm strips them. Fails when a plain install would rewrite
+      # the committed lockfile.
+      - name: Check lockfile is stable
+        run: |
+          npm install --package-lock-only --ignore-scripts
+          git diff --exit-code package-lock.json
+
+      # shellcheck for the tracked scripts under .claude/skills/, which neither
+      # ESLint nor Prettier reaches. ubuntu-latest ships shellcheck.
+      - name: Lint shell scripts
+        run: npm run lint:shell
 
   # Separate from verify so the browser suite runs in parallel instead of adding its
   # minutes to the end of it, on every PR: the dashboard is served from src/web and

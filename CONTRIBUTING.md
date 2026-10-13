@@ -24,6 +24,8 @@ The MCP server uses a common transport layer (`src/shared/`) for event buffering
 ### Prerequisites
 
 - Node.js v22 or later (v24 recommended; use `nvm install` to get the version from `.nvmrc`)
+- npm 11.11 or later (Node 24 ships it; on Node 22, `npm install -g npm@latest`). Older npm strips the `libc` fields from `package-lock.json`, so `npm install` rewrites 90 unrelated lines. `npm` warns at install time when yours is too old.
+- [`shellcheck`](https://www.shellcheck.net/) (`brew install shellcheck`), for the pre-commit hook's lint of tracked scripts under `.claude/skills/`
 - A New Relic account with a license key and account ID (for cloud-path testing)
 
 ### First-time setup
@@ -266,7 +268,9 @@ your real `~/.newrelic-preflight`, or your Claude Code and Copilot transcripts. 
 Preflight from your checkout and drives it through the collector, the dashboard, and the stdio MCP
 tools (`.claude/skills/verify-preflight/SKILL.md`). Any other skill in `.claude/skills/`, including
 symlinks to skills kept elsewhere, stays ignored. To track a new project skill, add a
-`!.claude/skills/<name>/` line to `.gitignore`.
+`!.claude/skills/<name>/` line to `.gitignore`. Keep personal skills untracked through
+`.git/info/exclude`. Tracked skill Markdown is covered by `npm run format:check`, and tracked shell
+scripts by `npm run lint:shell` (shellcheck).
 
 Screenshot assertions compare against per-platform baselines in `e2e/*-snapshots/`. Two are
 committed for each screenshot: `-darwin`, recorded on a Mac, and `-linux`, recorded in the
@@ -322,6 +326,9 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 - [ ] `npx tsc -p tsconfig.tools.json` passes (if you touched `scripts/`, `e2e/` or a root `*.config.ts`)
 - [ ] `npm run lint` passes
 - [ ] `npm run format:check` passes (the `pre-commit` hook runs this too)
+- [ ] `npm run lint:shell` passes (if you touched a script under `.claude/skills/`; the `pre-commit` hook runs this too)
+- [ ] `npm run check:test-ownership` passes (if you added, moved or renamed a test file, or touched `jest.config.ts`, `vitest.config.ts` or a `test:*` script)
+- [ ] `package-lock.json` is unchanged by `npm install --package-lock-only` unless you changed dependencies
 - [ ] You've reviewed your own diff
 
 ---
