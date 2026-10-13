@@ -300,6 +300,17 @@ describe('findDroppedReleases', () => {
     expect(findDroppedReleases(base, head)).toEqual([]);
   });
 
+  it('counts identical changesets, so folding two into one file drops one', () => {
+    const twins = new Map([
+      ['a.md', makeChangeset('patch', 'Same.')],
+      ['c.md', makeChangeset('patch', 'Same.')],
+    ]);
+    const folded = new Map([['b.md', makeChangeset('patch', 'Same.')]]);
+    expect(findDroppedReleases(twins, folded)).toEqual([
+      expect.stringMatching(/^\.changeset\/c\.md was deleted, dropping its patch release/),
+    ]);
+  });
+
   it('passes a PR that deletes an empty changeset, which drops nothing', () => {
     const head = new Map(base);
     head.delete('tooling.md');
@@ -480,6 +491,13 @@ describe('changesetReleases', () => {
   it('throws on frontmatter it cannot read instead of guessing', () => {
     expect(() => changesetReleases('No frontmatter.\n', 'bad.md')).toThrow(/bad.md/);
     expect(() => changesetReleases('---\n- a list\n---\n', 'list.md')).toThrow(/list.md/);
+  });
+
+  it('throws when it names a package twice instead of picking one bump', () => {
+    const twice = "---\n'@newrelic/preflight': major\n'@newrelic/preflight': patch\n---\n";
+    expect(() => changesetReleases(twice, 'twice.md')).toThrow(
+      /twice\.md names @newrelic\/preflight more than once/,
+    );
   });
 });
 

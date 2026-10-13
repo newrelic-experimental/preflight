@@ -218,6 +218,9 @@ export function changesetReleases(text: string, label: string): Map<string, stri
     if (trimmed === '' || trimmed.startsWith('#')) continue;
     const m = CHANGESET_RELEASE.exec(trimmed);
     if (!m) throw new Error(`${label} has a frontmatter line this script can't read: ${trimmed}`);
+    if (releases.has(m[2])) {
+      throw new Error(`${label} names ${m[2]} more than once, so its bump is ambiguous.`);
+    }
     releases.set(m[2], m[4]);
   }
   return releases;
@@ -352,22 +355,32 @@ const BUMP_RANK: Readonly<Record<string, number>> = { none: 0, patch: 1, minor: 
  * an empty changeset drops nothing, and moving one's text to another file without changing it
  * (a rename, or rewriting another changeset to it) keeps its release, so both pass. A
  * changeset this script can't read is skipped here; findUnreadableChangesets reports it.
+ *
+ * It guards bumps, not entry text. Rewriting a changeset's summary passes, including rewriting
+ * it into another changeset's text, so a lost CHANGELOG bullet is for review to catch.
  */
 export function findDroppedReleases(
   base: ReadonlyMap<string, string>,
   head: ReadonlyMap<string, string>,
 ): string[] {
-  // Texts that are new in the head under their name: in a new file, or written over another.
-  const movedTexts = new Set(
-    [...head].filter(([name, text]) => base.get(name) !== text).map(([, text]) => text),
-  );
+  // How many times each text is new in the head under its name: in a new file, or written over
+  // another. Each deleted changeset whose text moved uses up one, so two identical changesets
+  // folded into one file still count as one dropped.
+  const movedTexts = new Map<string, number>();
+  for (const [name, text] of head) {
+    if (base.get(name) !== text) movedTexts.set(text, (movedTexts.get(text) ?? 0) + 1);
+  }
   const dropped: string[] = [];
   for (const [name, text] of [...base].sort(([a], [b]) => a.localeCompare(b))) {
     const label = `.changeset/${name}`;
     const before = readReleasesOrUndefined(text, label);
     if (before === undefined) continue;
     const headText = head.get(name);
-    if (headText === undefined && movedTexts.has(text)) continue;
+    const moves = movedTexts.get(text) ?? 0;
+    if (headText === undefined && moves > 0) {
+      movedTexts.set(text, moves - 1);
+      continue;
+    }
     const after = headText === undefined ? undefined : readReleasesOrUndefined(headText, label);
     if (headText !== undefined && after === undefined) continue;
     for (const [pkg, bump] of before) {
