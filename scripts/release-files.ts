@@ -372,19 +372,30 @@ export function readPendingChangesets(dir: string): Map<string, string> {
   );
 }
 
+/** Where git runs: the repo's directory and the environment (GIT_DIR and the like) it sees. */
+export interface GitOptions {
+  readonly cwd?: string;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
 /**
  * The changesets committed at `commit`, the same way readPendingChangesets reads the working
  * tree. A commit from before .changeset/ existed has none.
  */
-export function readChangesetsAtCommit(commit: string, cwd = process.cwd()): Map<string, string> {
+export function readChangesetsAtCommit(
+  commit: string,
+  options: GitOptions = {},
+): Map<string, string> {
   // -z keeps names verbatim; the path form lists nothing, instead of failing, when the
   // directory is missing.
-  const names = git(['ls-tree', '-z', '--name-only', commit, '--', '.changeset/'], cwd)
+  const names = git(['ls-tree', '-z', '--name-only', commit, '--', '.changeset/'], options)
     .split('\0')
     .filter((path) => path.startsWith('.changeset/'))
     .map((path) => path.slice('.changeset/'.length))
     .filter(isChangesetName);
-  return new Map(names.map((name) => [name, git(['show', `${commit}:.changeset/${name}`], cwd)]));
+  return new Map(
+    names.map((name) => [name, git(['show', `${commit}:.changeset/${name}`], options)]),
+  );
 }
 
 /** A changeset is a Markdown file directly in .changeset/, other than its README. */
@@ -392,8 +403,13 @@ function isChangesetName(name: string): boolean {
   return name.endsWith('.md') && name !== 'README.md' && !name.includes('/');
 }
 
-function git(args: readonly string[], cwd = process.cwd()): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+function git(args: readonly string[], { cwd, env }: GitOptions = {}): string {
+  return execFileSync('git', args, {
+    cwd: cwd ?? process.cwd(),
+    env: env ?? process.env,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
 }
 
 function report(problems: readonly string[], fix: string): number {

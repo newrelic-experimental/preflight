@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -341,13 +341,29 @@ describe('findBranchProblems', () => {
 
 describe('readChangesetsAtCommit', () => {
   let dir: string;
+  let env: NodeJS.ProcessEnv;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'release-files-git-'));
-    const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+    dir = realpathSync(mkdtempSync(join(tmpdir(), 'release-files-git-')));
+    // Git sets GIT_DIR, GIT_INDEX_FILE and the like for hooks, and `npm test` runs from the
+    // pre-push hook. Inherited, they would point every git command here, including `init` and
+    // `config`, at the repository being pushed instead of this temporary one. So every git
+    // command here gets an environment with no GIT_* variables, and HOME set to the temporary
+    // directory so the user's global config (commit signing, say) doesn't apply either.
+    env = {
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+      HOME: dir,
+      GIT_CONFIG_NOSYSTEM: '1',
+    };
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: dir, env, stdio: 'pipe', encoding: 'utf8' });
     git('init', '-q');
-    git('config', 'user.email', 'test@example.com');
-    git('config', 'user.name', 'test');
+    if (git('rev-parse', '--absolute-git-dir').trim() !== join(dir, '.git')) {
+      throw new Error(`git init in ${dir} didn't create a repository there; refusing to go on`);
+    }
+    // A temporary repo's own identity, set with --local so it can never land anywhere else.
+    git('config', '--local', 'user.email', 'test@example.com');
+    git('config', '--local', 'user.name', 'test');
     writeFileSync(join(dir, 'README.md'), '# Repo\n');
     git('add', '-A');
     git('commit', '-qm', 'before changesets');
@@ -366,13 +382,13 @@ describe('readChangesetsAtCommit', () => {
   });
 
   it('reads the changesets committed at a commit, the way the working tree is read', () => {
-    const atCommit = readChangesetsAtCommit('HEAD', dir);
+    const atCommit = readChangesetsAtCommit('HEAD', { cwd: dir, env });
     expect([...atCommit.keys()].sort()).toEqual(['fix.md', 'ünïcode.md']);
     expect(atCommit).toEqual(readPendingChangesets(join(dir, '.changeset')));
   });
 
   it('finds none at a commit from before .changeset/ existed', () => {
-    expect(readChangesetsAtCommit('HEAD~1', dir).size).toBe(0);
+    expect(readChangesetsAtCommit('HEAD~1', { cwd: dir, env }).size).toBe(0);
   });
 });
 
