@@ -61,13 +61,22 @@ jobs:
       - name: Verify version files are in sync
         run: npm run check:release-files
 
+      # A tag that already exists must point at this commit. Otherwise this is a fresh run on a
+      # main that has moved past a release whose publish failed, and the steps below would
+      # publish the newer commit under the older tag's version. Re-run the original run's
+      # failed jobs instead, which checks out the tagged commit.
       - name: Create tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v$(node -p "require('./package.json').version")"
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists on origin, skipping"
+            git fetch --quiet --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
+            if [ "$(git rev-parse "$TAG^{commit}")" != "$(git rev-parse HEAD)" ]; then
+              echo "::error::$TAG already exists and points at $(git rev-parse --short "$TAG^{commit}"), not this commit ($(git rev-parse --short HEAD)). Re-run the failed jobs of the run that created it instead of starting a new one."
+              exit 1
+            fi
+            echo "Tag $TAG already exists on origin at this commit, skipping"
           else
             git tag "$TAG"
             git push origin "$TAG"
@@ -81,7 +90,15 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists, skipping"
           else
-            gh release create "$TAG" --generate-notes
+            # The release notes are the version's CHANGELOG entry, the text the release PR
+            # was reviewed with, rather than a list of merged PR titles.
+            NOTES="$RUNNER_TEMP/release-notes.md"
+            VERSION="${TAG#v}" PART=entry awk -f scripts/changelog-entry.awk CHANGELOG.md > "$NOTES"
+            if [ ! -s "$NOTES" ]; then
+              echo "::error::CHANGELOG.md has no entry for ${TAG#v}"
+              exit 1
+            fi
+            gh release create "$TAG" --notes-file "$NOTES"
           fi
 
       - name: Publish to npm

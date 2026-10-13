@@ -218,10 +218,12 @@ export function changesetReleases(text: string, label: string): Map<string, stri
     if (trimmed === '' || trimmed.startsWith('#')) continue;
     const m = CHANGESET_RELEASE.exec(trimmed);
     if (!m) throw new Error(`${label} has a frontmatter line this script can't read: ${trimmed}`);
-    if (releases.has(m[2])) {
-      throw new Error(`${label} names ${m[2]} more than once, so its bump is ambiguous.`);
+    // An unquoted key keeps any space before the colon; YAML doesn't count it as part of the key.
+    const pkg = m[2].trim();
+    if (releases.has(pkg)) {
+      throw new Error(`${label} names ${pkg} more than once, so its bump is ambiguous.`);
     }
-    releases.set(m[2], m[4]);
+    releases.set(pkg, m[4]);
   }
   return releases;
 }

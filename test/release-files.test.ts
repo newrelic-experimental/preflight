@@ -498,6 +498,9 @@ describe('changesetReleases', () => {
     expect(() => changesetReleases(twice, 'twice.md')).toThrow(
       /twice\.md names @newrelic\/preflight more than once/,
     );
+    // The same key written with a space before the colon is still the same key.
+    const spaced = '---\npreflight : major\npreflight: patch\n---\n';
+    expect(() => changesetReleases(spaced, 'spaced.md')).toThrow(/names preflight more than once/);
   });
 });
 

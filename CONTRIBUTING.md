@@ -460,8 +460,13 @@ release PR goes into the next release's CHANGELOG entry, so if Release ran after
 would ship that change without mentioning it. Release refuses to run while `main` has such a
 changeset. When that happens, merge the next release PR, which release-pr.yml opens as soon as
 the changeset lands, and run Release then. That release also ships everything in x.y.z, which
-keeps its CHANGELOG entry but never reaches npm under its own number. Rerunning a failed
-Release run is unaffected, since a rerun uses the commit the original run started from.
+keeps its CHANGELOG entry but never reaches npm under its own number.
+
+If Release fails after tagging, for example at the npm publish, use **Re-run failed jobs** on
+that run, which uses the commit it started from. Don't start a new run: by then `main` may
+have moved past the tagged commit, and Release refuses to run when the existing tag points at
+a different commit than the one it checked out, so it can't publish that commit under the tag's
+version. The GitHub release's notes are the version's CHANGELOG entry.
 
 If the Release PR workflow can't run, run `npm run version-packages` on a branch named
 `changeset-release/main` off `main`, commit the result, and open the PR yourself. CI's
