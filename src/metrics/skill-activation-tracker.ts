@@ -7,19 +7,26 @@ const NULL_SESSION_KEY = '__no_session__';
 const MAIN_AGENT_KEY = '';
 const DEFAULT_MAX_SESSIONS = 50;
 
+export interface SkillActivationMetrics {
+  /** Every open run, main agent and subagents, across the sessions in view. */
+  readonly openRuns: readonly SkillStamp[];
+}
+
 /**
  * Tracks the open skill run per session and per agent, so every tool call can
- * be stamped with the skill whose work it is. A run opens on a named `Skill`
- * tool call or a `/<skill>` prompt and lasts until the next prompt or the
- * next skill (last wins: there is no signal for a nested skill returning, so
- * the new run records the one it replaced as its parent instead). A subagent
- * with no run of its own inherits the main agent's, since the parent skill is
- * what spawned it.
+ * be stamped with the skill whose work it is. A run opens on a successful,
+ * named `Skill` tool call or a `/<skill>` prompt and lasts until the next
+ * prompt or the next skill (last wins: there is no signal for a nested skill
+ * returning, so the new run records the one it replaced as its parent
+ * instead). A subagent keeps whatever run the main agent had open when the
+ * subagent first appeared, since that skill is what spawned it; later prompts
+ * and skills on the main agent don't move it.
  */
 export class SkillActivationTracker implements Resettable {
-  private readonly sessions = new Map<string, Map<string, SkillStamp>>();
+  /** Per session, per agent; `null` pins a subagent that appeared outside any run. */
+  private readonly sessions = new Map<string, Map<string, SkillStamp | null>>();
 
-  private runsFor(sessionId: string | null | undefined): Map<string, SkillStamp> {
+  private runsFor(sessionId: string | null | undefined): Map<string, SkillStamp | null> {
     const key = sessionId ?? NULL_SESSION_KEY;
     let runs = this.sessions.get(key);
     if (runs) {
@@ -38,8 +45,13 @@ export class SkillActivationTracker implements Resettable {
   recordToolCall(record: ToolCallRecord): SkillStamp | null {
     const runs = this.runsFor(record.sessionId);
     const agentKey = record.agentId ?? MAIN_AGENT_KEY;
-    const open = runs.get(agentKey) ?? runs.get(MAIN_AGENT_KEY);
-    if (record.toolName === 'Skill' && record.skillName) {
+    if (agentKey !== MAIN_AGENT_KEY && !runs.has(agentKey)) {
+      runs.set(agentKey, runs.get(MAIN_AGENT_KEY) ?? null);
+    }
+    const open = runs.get(agentKey) ?? null;
+    // An interrupted or failed Skill call never loaded the skill, and the
+    // orphan sweep can emit it after later prompts; neither should open a run.
+    if (record.toolName === 'Skill' && record.skillName && record.success) {
       const stamp: SkillStamp = {
         name: record.skillName,
         source: 'tool',
@@ -49,15 +61,30 @@ export class SkillActivationTracker implements Resettable {
       runs.set(agentKey, stamp);
       return stamp;
     }
-    return open ?? null;
+    return open;
   }
 
-  recordPrompt(sessionId: string | null | undefined, slashCommand: string | null): void {
-    const runs = this.runsFor(sessionId);
-    runs.clear();
-    if (slashCommand) {
-      runs.set(MAIN_AGENT_KEY, { name: slashCommand, source: 'slash', runId: randomUUID() });
+  /** Closes the main agent's run and returns the slash run it opens, if any. */
+  recordPrompt(
+    sessionId: string | null | undefined,
+    slashCommand: string | null,
+  ): SkillStamp | null {
+    const stamp: SkillStamp | null = slashCommand
+      ? { name: slashCommand, source: 'slash', runId: randomUUID() }
+      : null;
+    this.runsFor(sessionId).set(MAIN_AGENT_KEY, stamp);
+    return stamp;
+  }
+
+  getMetrics(sessionId?: string): SkillActivationMetrics {
+    const sessions =
+      sessionId === undefined ? [...this.sessions.values()] : [this.sessions.get(sessionId)];
+    // A subagent pinned to the main run holds the same stamp, so key by run id.
+    const openRuns = new Map<string, SkillStamp>();
+    for (const runs of sessions) {
+      for (const stamp of runs?.values() ?? []) if (stamp) openRuns.set(stamp.runId, stamp);
     }
+    return { openRuns: [...openRuns.values()] };
   }
 
   reset(_sessionId?: string): void {

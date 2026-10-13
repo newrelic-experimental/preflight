@@ -2598,7 +2598,11 @@ async function main(): Promise<void> {
         });
       },
       onUserPromptSubmit: (frame) => {
-        skillActivationTracker.recordPrompt(frame.sessionId, frame.slashCommand ?? null);
+        const slashRun = skillActivationTracker.recordPrompt(
+          frame.sessionId,
+          frame.slashCommand ?? null,
+        );
+        if (slashRun) turnCostAttributor.recordSkillRun(frame.sessionId, slashRun);
         taskDetector!.startTaskIfNone(frame.timestamp);
       },
       onStop: (frame) => {
@@ -2943,7 +2947,6 @@ async function main(): Promise<void> {
         modelUsageTracker.reset(realId);
         contextCompositionTracker.reset(realId);
         turnCostAttributor.reset(realId);
-        skillActivationTracker.reset(realId);
       }
       sessionTraceId = realId;
       sessionTracker!.adoptSessionId(realId);

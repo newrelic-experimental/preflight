@@ -634,7 +634,7 @@ describe('TurnCostAttributor', () => {
       expect(toolEntry.tokens).toBe(900 + 100 + 50 + 200);
     });
 
-    it('costByToolType.Skill equals the sum of costBySkill rows', () => {
+    it('with only Skill calls in runs, costByToolType.Skill equals the sum of costBySkill rows', () => {
       const attributor = new TurnCostAttributor();
       const skill1 = { name: 'code-review', source: 'tool' as const, runId: 'run-1' };
       const skill2 = { name: 'design', source: 'tool' as const, runId: 'run-2' };
@@ -902,6 +902,20 @@ describe('TurnCostAttributor', () => {
 
       expect(attributor.getMetrics().costBySkill['code-review'].callCount).toBe(2);
       expect(attributor.getMetrics('sess-001').costBySkill['code-review'].callCount).toBe(1);
+    });
+
+    it('a run recorded at open with no tool calls still gets a costBySkill row', () => {
+      const attributor = new TurnCostAttributor();
+      const run = { name: 'loop', source: 'slash' as const, runId: 'run-1' };
+
+      attributor.recordSkillRun('sess-001', run);
+      attributor.recordToolCall(makeRecord({ activeSkill: run, timestamp: 1000 }));
+
+      const entry = attributor.getMetrics().costBySkill.loop;
+      expect(entry.callCount).toBe(1);
+      attributor.recordSkillRun('sess-001', { ...run, runId: 'run-2' });
+      expect(attributor.getMetrics().costBySkill.loop.callCount).toBe(2);
+      expect(attributor.getMetrics().costBySkill.loop.attributedCallCount).toBe(0);
     });
 
     it('a call outside any run belongs to no skill', () => {
