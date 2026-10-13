@@ -300,15 +300,20 @@ export interface Snapshot {
 export function findBranchProblems(base: Snapshot, head: Snapshot): string[] {
   return [
     ...findReleaseEdits(base.read, head.read),
-    ...findUnreadableChangesets(head.changesets),
+    // Only the changesets this PR adds or edits, so one that reached main unreadable fails the
+    // PR that fixes it (if that PR leaves it unreadable) and no other.
+    ...findUnreadableChangesets(
+      new Map([...head.changesets].filter(([name, text]) => base.changesets.get(name) !== text)),
+    ),
     ...findDroppedReleases(base.changesets, head.changesets),
     ...findVersionMismatches(head.read),
   ];
 }
 
 /**
- * Each changeset this script can't read, as a problem. Run on the PR's own changesets, so the
- * PR that adds an unreadable one is the one that fails, not every PR after it merges.
+ * Each changeset this script can't read, as a problem. findBranchProblems runs it on the
+ * changesets a PR adds or edits, so the PR that adds an unreadable one is the one that fails,
+ * not every PR after it merges.
  */
 export function findUnreadableChangesets(changesets: ReadonlyMap<string, string>): string[] {
   const problems: string[] = [];

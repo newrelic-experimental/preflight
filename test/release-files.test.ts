@@ -332,15 +332,30 @@ describe('findBranchProblems', () => {
     );
   });
 
-  it("doesn't fail a later PR over an unreadable changeset it didn't add or touch", () => {
-    // If one reached main anyway, the PR that fixes it must pass, and others only see it once.
+  describe('when an unreadable changeset is already on main', () => {
     const files = makeReader(makeFiles('1.63.1'));
     const odd = "---\n'@newrelic/preflight': soon\n---\n";
-    const fixing = findBranchProblems(
-      { read: files, changesets: new Map([['odd.md', odd]]) },
-      { read: files, changesets: new Map([['odd.md', makeChangeset('patch')]]) },
-    );
-    expect(fixing).toEqual([]);
+    const onMain = { read: files, changesets: new Map([['odd.md', odd]]) };
+
+    it("passes a PR that doesn't touch it", () => {
+      const unrelated = new Map([
+        ['odd.md', odd],
+        ['other.md', makeChangeset('patch')],
+      ]);
+      expect(findBranchProblems(onMain, { read: files, changesets: unrelated })).toEqual([]);
+    });
+
+    it('passes the PR that fixes it', () => {
+      const fixed = new Map([['odd.md', makeChangeset('patch')]]);
+      expect(findBranchProblems(onMain, { read: files, changesets: fixed })).toEqual([]);
+    });
+
+    it('fails a PR that edits it and leaves it unreadable', () => {
+      const stillOdd = new Map([['odd.md', `${odd}\nReworded.\n`]]);
+      expect(findBranchProblems(onMain, { read: files, changesets: stillOdd })).toEqual([
+        expect.stringMatching(/^\.changeset\/odd\.md has a frontmatter line/),
+      ]);
+    });
   });
 
   it('compares the merge base with the head, not the other way round', () => {
