@@ -218,8 +218,9 @@ export function changesetReleases(text: string, label: string): Map<string, stri
     if (trimmed === '' || trimmed.startsWith('#')) continue;
     const m = CHANGESET_RELEASE.exec(trimmed);
     if (!m) throw new Error(`${label} has a frontmatter line this script can't read: ${trimmed}`);
-    // An unquoted key keeps any space before the colon; YAML doesn't count it as part of the key.
-    const pkg = m[2].trim();
+    // An unquoted key keeps any space before the colon, which YAML doesn't count as part of the
+    // key. A quoted key is taken as written, spaces included, as YAML does.
+    const pkg = m[1] === '' ? m[2].trim() : m[2];
     if (releases.has(pkg)) {
       throw new Error(`${label} names ${pkg} more than once, so its bump is ambiguous.`);
     }

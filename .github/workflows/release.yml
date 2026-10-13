@@ -61,6 +61,19 @@ jobs:
       - name: Verify version files are in sync
         run: npm run check:release-files
 
+      # The release notes are the version's CHANGELOG entry, the text the release PR was
+      # reviewed with, rather than a list of merged PR titles. Extracted before the tag is
+      # pushed, so a CHANGELOG this can't read stops the run while there's nothing to undo.
+      - name: Extract release notes
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          PART=entry VERSION="$VERSION" awk -f scripts/changelog-entry.awk CHANGELOG.md \
+            > "$RUNNER_TEMP/release-notes.md"
+          if [ ! -s "$RUNNER_TEMP/release-notes.md" ]; then
+            echo "::error::CHANGELOG.md's first section isn't a dated entry for $VERSION"
+            exit 1
+          fi
+
       # A tag that already exists must point at this commit. Otherwise this is a fresh run on a
       # main that has moved past a release whose publish failed, and the steps below would
       # publish the newer commit under the older tag's version. Re-run the original run's
@@ -69,11 +82,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v$(node -p "require('./package.json').version")"
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v$VERSION"
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
             git fetch --quiet --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
             if [ "$(git rev-parse "$TAG^{commit}")" != "$(git rev-parse HEAD)" ]; then
-              echo "::error::$TAG already exists and points at $(git rev-parse --short "$TAG^{commit}"), not this commit ($(git rev-parse --short HEAD)). Re-run the failed jobs of the run that created it instead of starting a new one."
+              where="$TAG already exists and points at $(git rev-parse --short "$TAG^{commit}"), not this commit ($(git rev-parse --short HEAD))"
+              if npm view "@newrelic/preflight@$VERSION" version >/dev/null 2>&1; then
+                echo "::error::$where. $VERSION is already released, so this commit has nothing to release until the next release PR merges."
+              else
+                echo "::error::$where. Re-run the failed jobs of the run that created it instead of starting a new one."
+              fi
               exit 1
             fi
             echo "Tag $TAG already exists on origin at this commit, skipping"
@@ -90,15 +109,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists, skipping"
           else
-            # The release notes are the version's CHANGELOG entry, the text the release PR
-            # was reviewed with, rather than a list of merged PR titles.
-            NOTES="$RUNNER_TEMP/release-notes.md"
-            VERSION="${TAG#v}" PART=entry awk -f scripts/changelog-entry.awk CHANGELOG.md > "$NOTES"
-            if [ ! -s "$NOTES" ]; then
-              echo "::error::CHANGELOG.md has no entry for ${TAG#v}"
-              exit 1
-            fi
-            gh release create "$TAG" --notes-file "$NOTES"
+            gh release create "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
           fi
 
       - name: Publish to npm

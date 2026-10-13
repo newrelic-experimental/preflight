@@ -501,6 +501,14 @@ describe('changesetReleases', () => {
     // The same key written with a space before the colon is still the same key.
     const spaced = '---\npreflight : major\npreflight: patch\n---\n';
     expect(() => changesetReleases(spaced, 'spaced.md')).toThrow(/names preflight more than once/);
+    // But a quoted key with a space inside is a different key, as it is to YAML.
+    const quoted = "---\n'preflight ': major\npreflight: patch\n---\n";
+    expect(changesetReleases(quoted, 'quoted.md')).toEqual(
+      new Map([
+        ['preflight ', 'major'],
+        ['preflight', 'patch'],
+      ]),
+    );
   });
 });
 
