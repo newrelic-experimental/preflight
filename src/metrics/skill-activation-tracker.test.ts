@@ -241,6 +241,39 @@ describe('SkillActivationTracker', () => {
     expect(stamp2).toBeNull();
   });
 
+  it('a skill opened inside another run records that run as its parent', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', 'poteto-mode');
+    const outer = t.recordToolCall(makeRecord({ toolName: 'Read', toolUseId: 'u1' }));
+    const inner = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'unslop', toolUseId: 'u2' }),
+    );
+    const after = t.recordToolCall(makeRecord({ toolName: 'Edit', toolUseId: 'u3' }));
+
+    expect(inner!.parentRunId).toBe(outer!.runId);
+    expect(after).toEqual(inner);
+  });
+
+  it('a subagent skill records the inherited main run as its parent', () => {
+    const t = new SkillActivationTracker();
+    const main = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'main-skill' }));
+    const sub = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'sub-skill', agentId: 'agent-1' }),
+    );
+
+    expect(sub!.parentRunId).toBe(main!.runId);
+  });
+
+  it('runs opened with nothing open have no parent', () => {
+    const t = new SkillActivationTracker();
+    const toolRun = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'a' }));
+    t.recordPrompt('s1', 'b');
+    const slashRun = t.recordToolCall(makeRecord({ toolName: 'Read' }));
+
+    expect(toolRun!.parentRunId).toBeUndefined();
+    expect(slashRun!.parentRunId).toBeUndefined();
+  });
+
   it('reset clears everything', () => {
     const t = new SkillActivationTracker();
     t.recordToolCall(
