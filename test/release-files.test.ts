@@ -292,6 +292,14 @@ describe('findDroppedReleases', () => {
     expect(findDroppedReleases(base, head)).toEqual([]);
   });
 
+  it("passes a PR that deletes one and rewrites another to the deleted one's text", () => {
+    // fix.md now carries feature.md's minor release, and its own patch is raised, not lost.
+    const head = new Map(base);
+    head.delete('feature.md');
+    head.set('fix.md', makeChangeset('minor'));
+    expect(findDroppedReleases(base, head)).toEqual([]);
+  });
+
   it('passes a PR that deletes an empty changeset, which drops nothing', () => {
     const head = new Map(base);
     head.delete('tooling.md');

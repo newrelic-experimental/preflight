@@ -349,22 +349,25 @@ const BUMP_RANK: Readonly<Record<string, number>> = { none: 0, patch: 1, minor: 
  * bumped something and was deleted, emptied, or lowered to a smaller bump. Both maps are file
  * name to contents. Only the release PR consumes changesets, and any of these drops a change
  * from the next CHANGELOG entry, or shrinks its bump, without anything else noticing. Deleting
- * an empty changeset drops nothing, and renaming one without changing it keeps its release, so
- * both pass. A changeset this script can't read is skipped here; findUnreadableChangesets
- * reports it when it's the PR's own.
+ * an empty changeset drops nothing, and moving one's text to another file without changing it
+ * (a rename, or rewriting another changeset to it) keeps its release, so both pass. A
+ * changeset this script can't read is skipped here; findUnreadableChangesets reports it.
  */
 export function findDroppedReleases(
   base: ReadonlyMap<string, string>,
   head: ReadonlyMap<string, string>,
 ): string[] {
-  const addedTexts = new Set([...head].filter(([name]) => !base.has(name)).map(([, t]) => t));
+  // Texts that are new in the head under their name: in a new file, or written over another.
+  const movedTexts = new Set(
+    [...head].filter(([name, text]) => base.get(name) !== text).map(([, text]) => text),
+  );
   const dropped: string[] = [];
   for (const [name, text] of [...base].sort(([a], [b]) => a.localeCompare(b))) {
     const label = `.changeset/${name}`;
     const before = readReleasesOrUndefined(text, label);
     if (before === undefined) continue;
     const headText = head.get(name);
-    if (headText === undefined && addedTexts.has(text)) continue;
+    if (headText === undefined && movedTexts.has(text)) continue;
     const after = headText === undefined ? undefined : readReleasesOrUndefined(headText, label);
     if (headText !== undefined && after === undefined) continue;
     for (const [pkg, bump] of before) {
