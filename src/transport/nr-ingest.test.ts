@@ -159,7 +159,7 @@ function makeClosedTurn(overrides?: Partial<ClosedTurn>): ClosedTurn {
   return {
     id: 'closed-turn-uuid-001',
     attribution,
-    calls: [{ toolUseId: 'toolu_001', toolName: 'Read', skillName: null }],
+    calls: [{ toolUseId: 'toolu_001', toolName: 'Read', skill: null }],
     platform: 'claude-code',
     ...overrides,
   };
@@ -475,16 +475,50 @@ describe('toolCallToNrEvent()', () => {
       expect(event.agentTeamName as string).not.toContain(SECRET_TOKEN);
     });
 
-    it('redacts secrets in skillName', () => {
+    it('redacts secrets in skill_name', () => {
       const record = makeRecord({
         toolName: 'Skill',
-        skillName: `api-key-${SECRET_TOKEN}`,
-      } as unknown as Partial<ToolCallRecord>);
+        activeSkill: {
+          name: `api-key-${SECRET_TOKEN}`,
+          source: 'tool',
+          runId: 'run-1',
+        },
+      });
 
       const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
 
-      expect(event.skillName as string).not.toContain(SECRET_TOKEN);
-      expect(event.skillName as string).toContain('[REDACTED]');
+      expect(event.skill_name as string).not.toContain(SECRET_TOKEN);
+      expect(event.skill_name as string).toContain('[REDACTED]');
+    });
+
+    it('emits the skill run as snake_case attributes and drops camelCase skillName', () => {
+      const record = makeRecord({
+        toolName: 'Skill',
+        skillName: 'code-review',
+        activeSkill: { name: 'code-review', source: 'slash', runId: 'run-7' },
+      });
+
+      const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event).toMatchObject({
+        skill_name: 'code-review',
+        skill_source: 'slash',
+        skill_run_id: 'run-7',
+      });
+      expect(event).not.toHaveProperty('skillName');
+      expect(event).not.toHaveProperty('activeSkill');
+      expect(event).not.toHaveProperty('skill_parent_run_id');
+    });
+
+    it('emits skill_parent_run_id for a nested skill run', () => {
+      const record = makeRecord({
+        toolName: 'Read',
+        activeSkill: { name: 'unslop', source: 'tool', runId: 'run-2', parentRunId: 'run-1' },
+      });
+
+      const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event.skill_parent_run_id).toBe('run-1');
     });
 
     it('does not redact non-sensitive string fields', () => {
@@ -2005,8 +2039,12 @@ describe('NrIngestManager.ingestTurnCost()', () => {
 
     const turn = makeClosedTurn({
       calls: [
-        { toolUseId: 'toolu_001', toolName: 'Read', skillName: null },
-        { toolUseId: 'toolu_002', toolName: 'Skill', skillName: 'code-review' },
+        { toolUseId: 'toolu_001', toolName: 'Read', skill: null },
+        {
+          toolUseId: 'toolu_002',
+          toolName: 'Skill',
+          skill: { name: 'code-review', source: 'tool', runId: 'run-1' } as const,
+        },
       ],
       attribution: {
         turnId: 'turn-001',
@@ -2041,7 +2079,7 @@ describe('NrIngestManager.ingestTurnCost()', () => {
 
     const turn = makeClosedTurn({
       id: 'turn-id-123',
-      calls: [{ toolUseId: 'toolu_001', toolName: 'Read', skillName: null }],
+      calls: [{ toolUseId: 'toolu_001', toolName: 'Read', skill: null }],
       attribution: {
         turnId: 'turn-001',
         startTime: 1_700_000_000_000,
@@ -2082,15 +2120,19 @@ describe('NrIngestManager.ingestTurnCost()', () => {
     expect(event!.platform).toBe('claude-code');
   });
 
-  it('skillName appears only on Skill rows and is redacted when secret-shaped', async () => {
+  it('skill_name appears only on Skill rows and is redacted when secret-shaped', async () => {
     const manager = new NrIngestManager(makeIngestOptions());
 
     const secretSkillName = 'sk_test_' + 'a'.repeat(30);
 
     const turn = makeClosedTurn({
       calls: [
-        { toolUseId: 'toolu_001', toolName: 'Read', skillName: null },
-        { toolUseId: 'toolu_002', toolName: 'Skill', skillName: secretSkillName },
+        { toolUseId: 'toolu_001', toolName: 'Read', skill: null },
+        {
+          toolUseId: 'toolu_002',
+          toolName: 'Skill',
+          skill: { name: secretSkillName, source: 'tool', runId: 'run-1' } as const,
+        },
       ],
       attribution: {
         turnId: 'turn-001',
@@ -2119,9 +2161,9 @@ describe('NrIngestManager.ingestTurnCost()', () => {
     const readEvent = sentEvents.find((e) => e.eventType === 'AiTurnCost' && e.tool === 'Read');
     const skillEvent = sentEvents.find((e) => e.eventType === 'AiTurnCost' && e.tool === 'Skill');
 
-    expect(readEvent).not.toHaveProperty('skillName');
-    expect(skillEvent!.skillName).not.toBe(secretSkillName);
-    expect(skillEvent!.skillName).toBeDefined();
+    expect(readEvent).not.toHaveProperty('skill_name');
+    expect(skillEvent!.skill_name).not.toBe(secretSkillName);
+    expect(skillEvent!.skill_name).toBeDefined();
   });
 
   it('sum(cost_usd) equals turn_cost_usd and token fields sum correctly', async () => {
@@ -2129,8 +2171,12 @@ describe('NrIngestManager.ingestTurnCost()', () => {
 
     const turn = makeClosedTurn({
       calls: [
-        { toolUseId: 'toolu_001', toolName: 'Read', skillName: null },
-        { toolUseId: 'toolu_002', toolName: 'Skill', skillName: 'code-review' },
+        { toolUseId: 'toolu_001', toolName: 'Read', skill: null },
+        {
+          toolUseId: 'toolu_002',
+          toolName: 'Skill',
+          skill: { name: 'code-review', source: 'tool', runId: 'run-1' } as const,
+        },
       ],
       attribution: {
         turnId: 'turn-001',

@@ -116,7 +116,7 @@ Logger writes to stderr as JSON. Never write to stdout (reserved for MCP stdio t
 Trackers in `src/metrics/` do not share one input shape — they fall into four families depending on how data reaches them:
 
 - **Streaming push (void)** — `recordToolCall(record: ToolCallRecord): void`. The majority shape: `SessionTracker`, `TaskDetector`, `WorkflowRunTracker`, `ContextTracker`, `GitEfficiencyTracker`, and most others.
-- **Streaming push (signaling)** — `recordToolCall(record: ToolCallRecord): T`, returning a value the caller acts on immediately instead of only accumulating: `TurnTracker` (returns the turn id), `RetryDetector` (returns `ThrashingAlert | null`). `TurnCostAttributor` fits this same shape but on its other input method — `recordTokenEvent(event: TokenEvent): ClosedTurn | null` — since a turn's cost closes on the token event, not the tool call.
+- **Streaming push (signaling)** — `recordToolCall(record: ToolCallRecord): T`, returning a value the caller acts on immediately instead of only accumulating: `TurnTracker` (returns the turn id), `RetryDetector` (returns `ThrashingAlert | null`), `SkillActivationTracker` (returns the open skill run's `SkillStamp | null`, stamped onto the record before any other tracker sees it). `TurnCostAttributor` fits this same shape but on its other input method — `recordTokenEvent(event: TokenEvent): ClosedTurn | null` — since a turn's cost closes on the token event, not the tool call.
 - **Primitive accumulator** — a domain-named method taking specific values instead of a full `ToolCallRecord`, because the input is self-reported (tokens, cost) rather than a raw tool call: `ModelUsageTracker.recordUsage(model, inputTokens, outputTokens, costUsd)`, `CostTracker.recordTokenUsage(usage, model, ctx?)` / `recordEstimatedTokens(...)`, `BudgetTracker.updateCost(...)`.
 - **Batch/pull analyzer** — invoked periodically over accumulated history rather than per-call: `AntiPatternDetector.analyze(toolCalls: ToolCallRecord[])`, `EfficiencyScorer.computeScore(task, antiPatterns?)` / `updateScore(...)`.
 
@@ -128,7 +128,7 @@ Whichever family a tracker belongs to, it still:
 
 ### `reset()` and the `Resettable` interface
 
-`reset(sessionId: string): void` (the `Resettable` interface, `src/metrics/tracker-contracts.ts`) has no production caller today — no dispatch loop currently calls it. It exists so a future session-boundary dispatcher can clear tracker state without type-checking against each tracker individually, and so tests can reset a tracker between cases. Trackers that implement it: `SessionTracker`, `CostTracker`, `TaskDetector`, `ModelUsageTracker`, `WorkflowRunTracker`, `AntiPatternDetector`, `TaskCompletionTracker`, `TurnTracker`, `RetryDetector`, `EfficiencyScorer`.
+`reset(sessionId: string): void` (the `Resettable` interface, `src/metrics/tracker-contracts.ts`) has no production caller today — no dispatch loop currently calls it. It exists so a future session-boundary dispatcher can clear tracker state without type-checking against each tracker individually, and so tests can reset a tracker between cases. Trackers that implement it: `SessionTracker`, `CostTracker`, `TaskDetector`, `ModelUsageTracker`, `WorkflowRunTracker`, `AntiPatternDetector`, `TaskCompletionTracker`, `TurnTracker`, `RetryDetector`, `EfficiencyScorer`, `SkillActivationTracker`.
 
 ### Cross-tracker reads require dispatch order
 
