@@ -1,5 +1,12 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  appendFileSync,
+} from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TranscriptMessageTracker } from './transcript-message-tracker.js';
@@ -46,6 +53,38 @@ function assistantLine(overrides: Record<string, unknown> = {}): string {
     uuid: `a-${Math.random().toString(36).slice(2)}`,
     timestamp: '2026-01-01T00:00:01.000Z',
     ...overrides,
+  });
+}
+
+/** An assistant entry whose only content block calls the tool `name`. */
+function toolUseLine(name: string, overrides: Record<string, unknown> = {}): string {
+  return assistantLine({
+    message: {
+      role: 'assistant',
+      model: 'claude-opus-4-6',
+      content: [
+        { type: 'tool_use', id: `t-${Math.random().toString(36).slice(2)}`, name, input: {} },
+      ],
+    },
+    ...overrides,
+  });
+}
+
+/** An assistant entry that runs `command` through Bash. */
+function bashLine(command: string): string {
+  return assistantLine({
+    message: {
+      role: 'assistant',
+      model: 'claude-opus-4-6',
+      content: [
+        {
+          type: 'tool_use',
+          id: `t-${Math.random().toString(36).slice(2)}`,
+          name: 'Bash',
+          input: { command, description: 'Run a command' },
+        },
+      ],
+    },
   });
 }
 
@@ -152,7 +191,7 @@ describe('TranscriptMessageTracker', () => {
     ["Don't do that again."],
     ['Undo it now.'],
     ['Revert that already.'],
-    ["That approach won't work because there's a race condition."],
+    ["That won't work, there's a race condition."],
     ['You missed the null case.'],
     ['This is the third time — read the file first.'],
   ])('detects a correction for %j', (text) => {
@@ -180,6 +219,1306 @@ describe('TranscriptMessageTracker', () => {
     tracker.observeTranscriptPath(transcriptPath);
     tracker.refresh();
     expect(tracker.getMetrics().userCorrections).toBe(0);
+  });
+
+  // "won't work" reads the assistant's turn before the message. These pin how
+  // the transcript sets that turn state; the corpus below pins what each state
+  // decides.
+  describe("turn state for won't work", () => {
+    /** Read before an unrelated exchange, so the transcript has shown it records tool calls. */
+    const EARLIER_EXCHANGE = [toolUseLine('Read'), userLine('go ahead')];
+    /** Counts in every turn state, so it shows the state matters only for "won't work". */
+    const ANY_STATE = "That's wrong, please redo it.";
+    /** Counts after a turn that acted, and not after one that talked. */
+    const ACTED_ONLY = "That approach won't work because there's a race condition.";
+    /** Counts on its text alone, and not after a turn that talked. */
+    const TEXT_ONLY = "That won't work.";
+
+    function corrections(lines: string[]): number {
+      writeLines(lines);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      return tracker.getMetrics().userCorrections;
+    }
+
+    it.each([
+      'Edit',
+      'Write',
+      'MultiEdit',
+      'NotebookEdit',
+      'Bash',
+      'Task',
+      'Agent',
+      'Workflow',
+      'Skill',
+      'SendMessage',
+      // A built-in tool the talking list doesn't name acts.
+      'SomeFutureTool',
+    ])('reads a turn that called %s as acting', (tool) => {
+      expect(corrections([...EARLIER_EXCHANGE, toolUseLine(tool), userLine(ACTED_ONLY)])).toBe(1);
+    });
+
+    it.each([
+      'git log --oneline -10',
+      'git status && git diff --stat',
+      'git -C /repo log -p | head -50',
+      'git --no-pager show HEAD',
+      'git branch -a',
+      'ls -la src',
+      'cat package.json | head -20',
+      'grep -rn "won\'t work" src | wc -l',
+      "rg -n 'a|b' src",
+      "find . -name '*.ts' -newer package.json",
+      'pwd; ls\ntail -n 5 notes.txt',
+    ])('reads a turn whose Bash call only reads (%j) as talking', (command) => {
+      expect(corrections([...EARLIER_EXCHANGE, bashLine(command), userLine(TEXT_ONLY)])).toBe(0);
+    });
+
+    it.each([
+      'npm test',
+      'cd src && ls',
+      'echo done',
+      'git commit -m "wip"',
+      'git branch feature/x',
+      'git branch -D feature/x',
+      'git diff --output=patch.diff',
+      'git log > log.txt',
+      'ls 2>/dev/null',
+      'cat a | tee b',
+      'grep -l foo src | xargs rm',
+      "sed -i 's/a/b/' f",
+      "find . -name '*.tmp' -delete",
+      'find . -type f -exec rm {} +',
+      'rg --pre ./decode foo',
+      'cat $(git ls-files)',
+      'cat <<EOF\nhi\nEOF',
+      'ls "unclosed',
+      'FOO=1 ls',
+      '',
+    ])('reads a turn whose Bash call (%j) may write as acting', (command) => {
+      expect(corrections([...EARLIER_EXCHANGE, bashLine(command), userLine(ACTED_ONLY)])).toBe(1);
+    });
+
+    it('reads a PowerShell call as acting even when it only reads, since its syntax is not parsed', () => {
+      const powershell = assistantLine({
+        message: {
+          role: 'assistant',
+          model: 'claude-opus-4-6',
+          content: [
+            {
+              type: 'tool_use',
+              id: 't-ps',
+              name: 'PowerShell',
+              input: { command: 'ls', description: 'List files' },
+            },
+          ],
+        },
+      });
+      expect(corrections([...EARLIER_EXCHANGE, powershell, userLine(ACTED_ONLY)])).toBe(1);
+    });
+
+    it('reads design talk after a read-only Bash call and a question as talking', () => {
+      const question = assistantLine({
+        message: {
+          role: 'assistant',
+          model: 'claude-opus-4-6',
+          content: [{ type: 'text', text: 'Redis or Postgres?' }],
+        },
+      });
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          bashLine('git log --oneline -20'),
+          question,
+          userLine("Postgres won't work here since we're serverless."),
+        ]),
+      ).toBe(0);
+    });
+
+    it.each([
+      'Read',
+      'Grep',
+      'Glob',
+      'WebFetch',
+      'WebSearch',
+      'TodoWrite',
+      'TaskCreate',
+      'TaskUpdate',
+      'AskUserQuestion',
+      'ExitPlanMode',
+      'ListMcpResourcesTool',
+      'mcp__github__get_issue',
+      'mcp__filesystem__read_file',
+      'mcp__github__get_commit',
+      'mcp__newrelic__execute_nrql_query',
+      // These verbs also open tools that only look something up.
+      'mcp__context7__resolve-library-id',
+      'mcp__chrome-devtools__navigate_page',
+      'mcp__chrome-devtools__hover',
+      // A name led by its service doesn't open on the verb.
+      'mcp__slack__slack_send_message',
+      'mcp__playwright__browser_type',
+    ])('reads a turn that only called %s as talking', (tool) => {
+      expect(corrections([...EARLIER_EXCHANGE, toolUseLine(tool), userLine(TEXT_ONLY)])).toBe(0);
+    });
+
+    it.each([
+      'mcp__filesystem__write_file',
+      'mcp__filesystem__edit_file',
+      'mcp__github__create_pull_request',
+      'mcp__atlassian__editJiraIssue',
+      'mcp__github__close_issue',
+      'mcp__atlassian__transitionJiraIssue',
+      'mcp__forms__submit_form',
+      'mcp__vercel__deploy_project',
+      'mcp__github__approve_pull_request',
+      'mcp__linear__comment_on_issue',
+      'mcp__ccd_session_mgmt__archive_session',
+      'mcp__terminal__stop_terminal_tab',
+      'mcp__chrome-devtools__click',
+      'mcp__chrome-devtools__fill_form',
+      'mcp__chrome-devtools__type_text',
+      'mcp__chrome-devtools__press_key',
+    ])('reads a turn that called %s as acting', (tool) => {
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          toolUseLine(tool),
+          userLine("That won't work, the header is missing."),
+        ]),
+      ).toBe(1);
+    });
+
+    it('reads a text-only turn as talking once the transcript has shown a tool call', () => {
+      expect(corrections([...EARLIER_EXCHANGE, assistantLine(), userLine(TEXT_ONLY)])).toBe(0);
+      expect(corrections([...EARLIER_EXCHANGE, assistantLine(), userLine(ANY_STATE)])).toBe(1);
+    });
+
+    it('decides on the text alone before the transcript has shown a tool call', () => {
+      expect(corrections([assistantLine(), userLine(TEXT_ONLY)])).toBe(1);
+      expect(corrections([assistantLine(), userLine(ACTED_ONLY)])).toBe(0);
+    });
+
+    it('decides on the text alone when no assistant entry came since the last user message', () => {
+      expect(corrections([toolUseLine('Edit'), userLine('ok'), userLine(ACTED_ONLY)])).toBe(0);
+      expect(corrections([toolUseLine('Read'), userLine('ok'), userLine(TEXT_ONLY)])).toBe(1);
+    });
+
+    it('keeps a turn acting through the text and tool results that follow the action', () => {
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          toolUseLine('Edit'),
+          userLine([{ type: 'tool_result', content: 'ok' }], { toolUseResult: { ok: true } }),
+          toolUseLine('Read'),
+          assistantLine(),
+          userLine(ACTED_ONLY),
+        ]),
+      ).toBe(1);
+    });
+
+    /** Counts after a turn that acted, and not after one that talked or with no turn to go on. */
+    const NAMED_SUBJECT = "The migration won't work on prod.";
+
+    it.each(['[Request interrupted by user]', '[Request interrupted by user for tool use]'])(
+      'keeps a turn acting through the %j marker',
+      (marker) => {
+        // Rejecting a tool call writes its tool result before the marker.
+        const rejection = marker.endsWith('for tool use]')
+          ? [
+              userLine([{ type: 'tool_result', content: 'The user rejected this tool use.' }], {
+                toolUseResult: 'User rejected tool use',
+              }),
+            ]
+          : [];
+        expect(
+          corrections([
+            ...EARLIER_EXCHANGE,
+            toolUseLine('Edit'),
+            ...rejection,
+            userLine([{ type: 'text', text: marker }]),
+            userLine(NAMED_SUBJECT),
+          ]),
+        ).toBe(1);
+      },
+    );
+
+    it('starts the turn over at a user message that opens on an image', () => {
+      const screenshot = userLine(
+        [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0K' } },
+          { type: 'text', text: 'the layout is off' },
+        ],
+        { origin: { kind: 'human' } },
+      );
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          toolUseLine('Edit'),
+          screenshot,
+          assistantLine(),
+          userLine("Redis won't work for us, let's use SQLite."),
+        ]),
+      ).toBe(0);
+    });
+
+    it.each([
+      [
+        'a compaction summary',
+        userLine('This session is being continued from a previous conversation.', {
+          isCompactSummary: true,
+        }),
+        false,
+      ],
+      [
+        'a /model command',
+        userLine('<command-name>/model</command-name>\n<command-args>opus</command-args>'),
+        false,
+      ],
+      [
+        'a local command output',
+        userLine('<local-command-stdout>Set model to Opus</local-command-stdout>'),
+        false,
+      ],
+      [
+        'a task notification',
+        userLine('<task-notification>\n<task-id>a1</task-id>\n</task-notification>', {
+          origin: { kind: 'task-notification' },
+        }),
+        true,
+      ],
+      [
+        'a harness reminder',
+        userLine('<system-reminder>\nCI failed on the PR.\n</system-reminder>'),
+        true,
+      ],
+      ["another session's message", userLine('Another Claude session sent a message:\nhi'), true],
+    ])('keeps a turn acting through %s', (_label, entry, answered) => {
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          toolUseLine('Edit'),
+          entry,
+          ...(answered ? [assistantLine()] : []),
+          userLine(NAMED_SUBJECT),
+        ]),
+      ).toBe(1);
+    });
+
+    /** `!npm test` as the CLI writes it: the command, then its output, neither with an `origin`. Since 2.1.280 the output carries `turnOrigin`. */
+    const BASH_MODE_CLI = [
+      userLine('<bash-input>npm test</bash-input>', { promptId: 'p-bash', entrypoint: 'cli' }),
+      userLine('<bash-stdout>FAIL src/migrate.test.ts</bash-stdout><bash-stderr></bash-stderr>', {
+        promptId: 'p-bash',
+        entrypoint: 'cli',
+        turnOrigin: 'human',
+      }),
+    ];
+
+    /** The same command as the desktop app writes it: one entry, marked as typed. */
+    const BASH_MODE_DESKTOP = [
+      userLine(
+        '<bash-input>npm test</bash-input><bash-stdout>FAIL src/migrate.test.ts</bash-stdout><bash-stderr></bash-stderr>',
+        {
+          origin: { kind: 'human' },
+          turnOrigin: 'human',
+          promptSource: 'sdk',
+          entrypoint: 'claude-desktop-3p',
+        },
+      ),
+    ];
+
+    it.each([
+      ['as the CLI writes it', BASH_MODE_CLI, false],
+      // Current versions prompt the assistant to answer the command's output.
+      ['as the CLI writes it, with the assistant answering it', BASH_MODE_CLI, true],
+      ['as the desktop app writes it, with the assistant answering it', BASH_MODE_DESKTOP, true],
+      [
+        'whose output opens on stderr',
+        [BASH_MODE_CLI[0], userLine('<bash-stderr>sh: jest: not found</bash-stderr>')],
+        false,
+      ],
+    ])('keeps a turn acting through a ! command %s', (_label, entries, answered) => {
+      writeLines([
+        ...EARLIER_EXCHANGE,
+        toolUseLine('Edit'),
+        ...entries,
+        ...(answered ? [assistantLine()] : []),
+        userLine(NAMED_SUBJECT),
+      ]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      expect(tracker.getMetrics()).toMatchObject({
+        userCorrections: 1,
+        // The command's entries still count as user messages.
+        userMessages: 1 + entries.length + 1,
+      });
+    });
+
+    it.each([
+      [
+        'as the CLI writes it',
+        [
+          BASH_MODE_CLI[0],
+          userLine("<bash-stdout>Error: config won't work with node 18</bash-stdout>"),
+        ],
+      ],
+      [
+        'as the desktop app writes it',
+        [
+          userLine(
+            "<bash-input>npm start</bash-input><bash-stdout>Error: config won't work with node 18</bash-stdout><bash-stderr></bash-stderr>",
+            { origin: { kind: 'human' } },
+          ),
+        ],
+      ],
+      [
+        'on stderr, with a phrase that counts after any turn',
+        [
+          BASH_MODE_CLI[0],
+          userLine("<bash-stderr>error: that's wrong, expected a number</bash-stderr>"),
+        ],
+      ],
+    ])('does not read a ! command and its output %s for a correction', (_label, entries) => {
+      writeLines([...EARLIER_EXCHANGE, toolUseLine('Edit'), ...entries]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      expect(tracker.getMetrics()).toMatchObject({
+        userCorrections: 0,
+        // The entries still count as user messages.
+        userMessages: 1 + entries.length,
+      });
+    });
+
+    it.each([
+      [
+        'a typed message with a system reminder in front of it',
+        userLine(
+          [
+            { type: 'text', text: '<system-reminder>\nYou are in a worktree.\n</system-reminder>' },
+            { type: 'text', text: 'now explain the retry logic' },
+          ],
+          { origin: { kind: 'human' } },
+        ),
+      ],
+      [
+        'a prompt-style slash command',
+        userLine(
+          '<command-message>review</command-message>\n<command-name>/review</command-name>',
+          {
+            origin: { kind: 'human' },
+          },
+        ),
+      ],
+      [
+        'a message that opens on an image, with no origin',
+        userLine([
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0K' } },
+          { type: 'text', text: 'the layout is off' },
+        ]),
+      ],
+    ])('starts the turn over at %s', (_label, entry) => {
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          toolUseLine('Edit'),
+          entry,
+          assistantLine(),
+          userLine(NAMED_SUBJECT),
+        ]),
+      ).toBe(0);
+    });
+
+    it('starts each turn over at a real user message', () => {
+      expect(
+        corrections([
+          toolUseLine('Edit'),
+          userLine('thanks, now explain the retry logic'),
+          assistantLine(),
+          userLine(ACTED_ONLY),
+        ]),
+      ).toBe(0);
+    });
+
+    it('ignores sidechain and synthetic assistant entries', () => {
+      const syntheticEdit = assistantLine({
+        message: {
+          role: 'assistant',
+          model: '<synthetic>',
+          content: [{ type: 'tool_use', id: 't-synthetic', name: 'Edit', input: {} }],
+        },
+      });
+      expect(
+        corrections([
+          ...EARLIER_EXCHANGE,
+          assistantLine(),
+          toolUseLine('Edit', { isSidechain: true }),
+          syntheticEdit,
+          userLine(ACTED_ONLY),
+        ]),
+      ).toBe(0);
+    });
+
+    it('reset() forgets the turn state', () => {
+      writeLines([toolUseLine('Edit')]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      tracker.reset();
+      writeLines([userLine(ACTED_ONLY)]);
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      expect(tracker.getMetrics().userCorrections).toBe(0);
+    });
+  });
+
+  // Labeled corpus for the "won't work" clause. Corrections reject something
+  // the assistant already produced; design discussion rules out an option
+  // before anything was built, with or without proposing the next one.
+  describe("won't work corpus", () => {
+    /** Classifies `text` with no assistant entry before it, so the text decides alone. */
+    function countCorrections(text: string): number {
+      writeLines([userLine(text)]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      return tracker.getMetrics().userCorrections;
+    }
+
+    /**
+     * Classifies `text` after an assistant turn that called `tools`, in order. An empty list is a
+     * text-only reply. An unrelated exchange comes first, in which the assistant reads a file, so the
+     * transcript has shown it records tool calls.
+     */
+    function countCorrectionsAfterTurn(text: string, tools: readonly string[]): number {
+      writeLines([
+        toolUseLine('Read'),
+        userLine('go ahead'),
+        ...(tools.length === 0 ? [assistantLine()] : tools.map((name) => toolUseLine(name))),
+        userLine(text),
+      ]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      return tracker.getMetrics().userCorrections;
+    }
+
+    const ACTED: readonly string[] = ['Edit'];
+    const TALKED: readonly string[] = [];
+
+    const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+    const uncapitalize = (s: string): string =>
+      /^I\b/.test(s) ? s : s.charAt(0).toLowerCase() + s.slice(1);
+    const withoutLeadingSo = (s: string): string => s.replace(/^so\s+/i, '');
+
+    type Joiner = (clause: string, followUp: string) => string;
+    type Pair = readonly [string, string];
+
+    /** Every [clause, follow-up] pair runs under each joiner, so a verdict can't hinge on punctuation. */
+    const JOINERS: readonly Joiner[] = [
+      (c, f) => `${c}, ${f}.`,
+      (c, f) => `${c}. ${capitalize(f)}.`,
+      (c, f) => `${c}; ${f}.`,
+      (c, f) => `${c} — ${f}.`,
+      (c, f) => `${c}\n${capitalize(f)}`,
+    ];
+
+    /** The same joiners with the follow-up first ("Let's use Y. X won't work."), so a verdict can't hinge on clause order either. */
+    const REVERSED_JOINERS: readonly Joiner[] = [
+      (c, f) => `${capitalize(withoutLeadingSo(f))}, ${uncapitalize(c)}.`,
+      (c, f) => `${capitalize(withoutLeadingSo(f))}. ${capitalize(c)}.`,
+      (c, f) => `${capitalize(withoutLeadingSo(f))}; ${uncapitalize(c)}.`,
+      (c, f) => `${capitalize(withoutLeadingSo(f))} — ${uncapitalize(c)}.`,
+      (c, f) => `${capitalize(withoutLeadingSo(f))}\n${capitalize(c)}`,
+    ];
+
+    const variants = (pairs: readonly Pair[], joiners: readonly Joiner[]): string[] =>
+      pairs.flatMap(([clause, followUp]) => joiners.map((join) => join(clause, followUp)));
+    const punctuationVariants = (pairs: readonly Pair[]): string[] => variants(pairs, JOINERS);
+    const orderAndPunctuationVariants = (pairs: readonly Pair[]): string[] =>
+      variants(pairs, [...JOINERS, ...REVERSED_JOINERS]);
+
+    const WONT_WORK_CORRECTIONS = [
+      "That won't work.",
+      "This still won't work.",
+      "Your fix won't work because the cache is never invalidated.",
+      "It won't work, the test still fails.",
+      "That wont work, you're reading the wrong file.",
+      'This still wont work — same error as before.',
+      "The change you made won't work since the handler is never registered.",
+      "It still won't work after your last edit.",
+      "That won't work, let's try again.",
+      "That won't work for empty arrays — the loop skips index 0.",
+      "Your version won't work for us, let's go back to the old one.",
+      "That definitely won't work, let's use a map instead.",
+      "Hmm, that won't work, let's try again.",
+      // Up to two leading interjections or conjunctions, with or without punctuation after them.
+      "Yeah that won't work.",
+      "Yeah, that won't work.",
+      "Hmm that won't work",
+      "But that won't work.",
+      "Hmm, no, that won't work.",
+      // No subject at all after the interjection.
+      "Nah, won't work — the value can be undefined too.",
+      // A first-person report that running the assistant's output fails now.
+      "I tried it and it won't work.",
+      "I just tried it and it won't work.",
+      "I tried it. It won't work.",
+      "I tried it, it won't work.",
+      "Tried it, won't work.",
+      "Tried it and it won't work.",
+      // A leading word may end in a question mark or a colon, and "now" and "wait" lead like fillers.
+      "Huh? That won't work.",
+      "Argh: that won't work.",
+      "Wait? That won't work.",
+      "Wait that won't work.",
+      "Now it won't work.",
+      // A pronoun and something built is a pronoun too.
+      "That fix won't work.",
+      "This change won't work.",
+      "These changes won't work.",
+      // A curly apostrophe reads like a straight one.
+      'That won’t work.',
+    ];
+
+    /**
+     * Corrections next to a proposal, which doesn't change the verdict: each counts through a
+     * bare-pronoun opener or a reference to the assistant's output. The bare-pronoun pairs only run
+     * reject-first: put the proposal first and the pronoun points at it ("Let's use a map instead.
+     * That won't work."), which is design discussion.
+     */
+    const WONT_WORK_CORRECTIONS_WITH_PROPOSAL = [
+      ...punctuationVariants([
+        ["That won't work", "let's use a map instead"],
+        ["It won't work", 'we should await the promise'],
+        ["That won't work", 'we need to handle the null case'],
+      ]),
+      ...orderAndPunctuationVariants([
+        [
+          "Your fix won't work because the cache is never invalidated",
+          'we should clear it on write',
+        ],
+        ["The change you made won't work on Windows", "let's revert it"],
+        ["The migration still won't work", "let's try a different approach"],
+        ["What you just wrote won't work for empty input", 'we need to guard the loop'],
+      ]),
+    ];
+
+    /** Includes "still", "your", "fails" and "anymore" used about the option rather than the assistant's output. */
+    const WONT_WORK_DESIGN_DISCUSSION = orderAndPunctuationVariants([
+      ["That approach won't work for X", "let's use Y instead"],
+      ["A cache won't work here since we need fresh reads", "let's query the DB directly"],
+      ["Polling won't work on Windows", 'so we should use fs.watch'],
+      ["Redis won't work for us", 'we could use SQLite instead'],
+      ["I think a regex won't work for nested brackets", "so let's write a small parser"],
+      ["A global lock won't work at scale", 'instead we should shard by key'],
+      ["Symlinks won't work on Windows", 'so we should copy the files'],
+      ["Webhooks won't work behind the firewall", "we'll need to poll instead"],
+      ["A cron job won't work because we need sub-minute latency", 'so we should use a queue'],
+      ["If we do it that way it won't work offline", "so let's cache the manifest"],
+      ["We still need fresh reads, so a cache won't work", "let's query the DB"],
+      ["Your proposal won't work here", 'instead we should shard by key'],
+      ["The retry won't work if the lookup fails", "so let's add a fallback"],
+      ["Redis won't work for us anymore", "let's use SQLite"],
+    ]);
+
+    /** Constraints with no proposal, or with the proposal out of reach, read as design discussion too. */
+    const WONT_WORK_DESIGN_DISCUSSION_SINGLE = [
+      "Let's query the DB. A cache won't work here.",
+      "Let's query the DB, a cache won't work here.",
+      "A global lock won't work at scale. The point you made about contention holds, so let's shard by key.",
+      "Your solution won't work here, instead we should shard by key.",
+      "That approach won't work for production.",
+      "A cache won't work here. We need fresh reads. Let's query the DB.",
+      "Polling won't work on Windows, use fs.watch.",
+      // A leading conjunction doesn't stand in for a named subject.
+      "But a cache won't work here since we need fresh reads.",
+      "So polling won't work on Windows, let's use fs.watch.",
+    ];
+
+    // Known residuals, pinned to the current verdict so a rule change that
+    // fixes or reopens one shows up here.
+    const KNOWN_FALSE_POSITIVES = [
+      // A bare-pronoun opener may point at a proposal rather than code; the text can't tell which.
+      "It won't work on Windows, so we should use fs.watch.",
+      // "still won't work" marks a repeat failure of the assistant's attempt; a concessive "even with X" reads the same.
+      "Even with the polyfill, polling still won't work on Windows, so let's use fs.watch.",
+      // Any word followed by punctuation can lead the opener, so agreeing with the assistant's caveat reads the same.
+      "Agreed, that won't work, let's go with option B.",
+      // "you have" plus an adjective in -ed reads as a perfect ("you have limited the retries").
+      "Since you have limited memory, an in-memory cache won't work.",
+      // "your version" is the assistant's code as often as the user's environment.
+      "Top-level await won't work in your version of Node.",
+      // The window reaches the sentence before, which here closes an earlier topic.
+      "Thanks, you fixed the login bug. Next, a cache won't work here since we need fresh reads.",
+      // A "when you" or "once you" with a past form is a reference as often as a condition.
+      "When you set a TTL, the cache won't work for live data.",
+      "Once you set a TTL, the cache won't work for live data.",
+      // A named subject followed by punctuation leads the opener like an interjection does.
+      "Websockets, no, won't work behind the firewall, we'll poll.",
+      // A leading filler before a bare-pronoun opener, same as "It won't work on Windows, ...".
+      "So this won't work on Windows, let's use fs.watch.",
+      // A noun ending in "-ly" fills the adverb slot of the opener.
+      "This assembly won't work on ARM.",
+      // A progressive "you're <verb>ing" after a temporal "when" or a causal "since" reads as a reference.
+      "Polling won't work when you're running on Windows, let's use fs.watch.",
+      "Since you're using Windows, symlinks won't work.",
+      // "your" plus "test" reads as the assistant's test, here in the sentence before.
+      "Your test environment has a single node. A cache won't work at our write volume.",
+      // A question mark after a named subject closes a leading word like it does after "Huh".
+      "Redis? That won't work for us.",
+    ];
+
+    const KNOWN_MISSES = [
+      // Each names the option or the code and gives a reason without pointing back at the assistant,
+      // which reads the same as a constraint on an option.
+      "That approach won't work because there's a race condition.",
+      "That approach won't work because we can't lock the table.",
+      "The migration won't work, it drops the index instead of renaming it.",
+      "The migration won't work, it drops the index rather than renaming it.",
+      "The null check won't work, we need to handle undefined too.",
+      // A dash after the filler, or a leading adverb outside the list, isn't a leading word.
+      "Yeah — that won't work.",
+      "Honestly that won't work.",
+      "Hold on, that won't work.",
+      // A negated past verb ("didn't") isn't one of the past forms a "you" reference takes.
+      "The cache won't work. You didn't invalidate it.",
+      // A past form with an auxiliary ("had created", "been caching") isn't one a "you" reference takes.
+      "The index you had created won't work.",
+      "You've been caching the response, so the cache won't work.",
+      // A contraction can't be a leading word.
+      "You're wrong, it won't work.",
+      // The opener is read only at the start of the message, not after pasted output.
+      "Ran npm test:\nFAIL src/auth.test.ts\nThat won't work.",
+      // "your approach" can name a plan, like "your proposal" and "your solution", so it isn't a built artifact.
+      "Your approach won't work for us, let's go back.",
+    ];
+
+    /** Second person that points back at the assistant's output, in the "won't work" sentence or next to it. */
+    const WONT_WORK_YOU_REFERENCES = [
+      "A cache won't work here, you're reading from the replica.",
+      "Polling won't work on Windows. You've hardcoded the path separator.",
+      "You already removed the watcher. Polling won't work now.",
+      "The regex won't work for unicode, you only allowed ASCII.",
+      "The command you ran won't work in CI.",
+      // A causal "since you" or a past "when you" is about the assistant's output, unlike a conditional "if you".
+      "Since you removed the null check, the parser won't work.",
+      "When you renamed the env var, the deploy script won't work anymore.",
+      "When you added the retry, the tests won't work.",
+      "It broke when you changed the config. Now the parser won't work.",
+      // Plural artifacts.
+      "Your fixes won't work.",
+      "Your patches won't work on Windows.",
+      "Your queries won't work against the replica.",
+      'Your fix won’t work.',
+      // "raised" and "pointed" are edits here, not ways of making a point.
+      "The timeout you raised won't work, the gateway still cuts at 30s.",
+      "You pointed the client at the replica, so the migration won't work.",
+      // "At this point" is an idiom, not a remark the assistant made.
+      "At this point you've broken the build, so the deploy won't work.",
+    ];
+
+    /** Second person that is about an idea, a hypothetical or anyone, not the assistant's output. */
+    const WONT_WORK_YOU_NOT_ABOUT_OUTPUT = [
+      "The cache you suggested won't work, we need fresh reads.",
+      "A cache won't work the way you're describing.",
+      "That idea won't work, you're going to need a queue.",
+      "Polling won't work, you can't hold connections on serverless.",
+      "A lock won't work, you need a queue.",
+      "If you added a cache it won't work across pods.",
+      "You're right that a cache won't work here.",
+      "The plan you made won't work for us.",
+      "As you explained, a cache won't work here.",
+      "The approach you floated won't work at scale, let's shard by key.",
+      "Suppose you added a cache, it won't work across pods.",
+      "Assuming you added a cache, it won't work across pods.",
+      // An inverted "have you" asks or suggests rather than reporting what the assistant did.
+      "Have you tried Redis? Polling won't work on Windows.",
+    ];
+
+    it.each([
+      ...WONT_WORK_CORRECTIONS,
+      ...WONT_WORK_CORRECTIONS_WITH_PROPOSAL,
+      ...WONT_WORK_YOU_REFERENCES,
+    ])('detects a correction for %j', (text) => {
+      expect(countCorrections(text)).toBe(1);
+    });
+
+    it.each([
+      ...WONT_WORK_DESIGN_DISCUSSION,
+      ...WONT_WORK_DESIGN_DISCUSSION_SINGLE,
+      ...WONT_WORK_YOU_NOT_ABOUT_OUTPUT,
+    ])('does not count %j as a correction', (text) => {
+      expect(countCorrections(text)).toBe(0);
+    });
+
+    it.each(KNOWN_FALSE_POSITIVES)('counts %j (known false positive)', (text) => {
+      expect(countCorrections(text)).toBe(1);
+    });
+
+    it.each(KNOWN_MISSES)('does not count %j (known miss)', (text) => {
+      expect(countCorrections(text)).toBe(0);
+    });
+
+    it('counts a bare "That won\'t work." opener when the next sentence adds a task', () => {
+      expect(countCorrections("That won't work. Let's also add a test for the empty case.")).toBe(
+        1,
+      );
+    });
+
+    it("counts a reference to the assistant's output in the next sentence", () => {
+      expect(
+        countCorrections(
+          "That approach won't work. Your migration drops the index, let's add it back.",
+        ),
+      ).toBe(1);
+    });
+
+    it('still counts a later correcting sentence when an earlier one is design discussion', () => {
+      expect(
+        countCorrections(
+          "Redis won't work for us, let's use SQLite. Also your migration still won't work.",
+        ),
+      ).toBe(1);
+    });
+
+    // The lists above classify the text alone, as when no assistant entry came before it. The
+    // lists below classify it after a turn that acted (called a tool in MUTATING_TOOLS) or talked
+    // (called none).
+
+    /** After a turn that changed something, "won't work" rejects what it changed, whatever its subject. */
+    const ACTED_CORRECTIONS = [
+      "That won't work if the list is empty.",
+      // "going to" is future tense here, not a report of an idea.
+      "That won't work, you're going to need a lock around it.",
+      "That terraform plan won't work, you're creating the bucket and its policy in one apply.",
+      "A singleton won't work here, every request needs its own client.",
+      "Your approach won't work for us, let's go back.",
+      // A contrast between the agreement and "won't work" turns away from agreeing, wherever it
+      // falls and whatever punctuation is around it.
+      "Good call on the logging. But the migration won't work on prod.",
+      "Fair point. However, the migration won't work on prod.",
+      "Good call on the logging, but the migration won't work on prod.",
+      "You're right, but the migration won't work on prod.",
+      "Good call on the logging but the migration won't work on prod.",
+      "Good call on the logging, but the migration is the problem. It won't work on prod.",
+      "Good point, but I disagree. The migration won't work on prod.",
+      "Good point, although the migration won't work on prod.",
+      "Good point, though the migration won't work on prod.",
+      // A present progressive describes what the turn changed, as it does with no turn to read.
+      "You're right, you're mutating state there, so it won't work.",
+      // A reference to something built counts whatever else the sentence does, as after a turn that talked.
+      "You're right, but it still won't work.",
+      "The fix you suggested still won't work.",
+      // A hypothetical whose verb takes "it" says when the output fails, with or without an adverb.
+      "If you run it on Windows, it won't work.",
+      "If we deploy it like this it won't work.",
+      "If you just run it on Windows, it won't work.",
+    ];
+
+    /** A hypothetical option, agreement with the assistant, or an idea it proposed is design discussion after a turn that acted too. */
+    const ACTED_DESIGN = [
+      "If you added a cache it won't work across pods.",
+      "If we do it that way it won't work offline, so let's cache the manifest.",
+      "If we just do it that way it won't work offline.",
+      "Suppose you added a cache, it won't work across pods.",
+      "You're right that a cache won't work here.",
+      "Agreed, that won't work, let's go with option B.",
+      "You're right. That won't work on Windows, let's add a fallback.",
+      // A "though" that ends a clause concedes, and "still" or "yet" inside a clause keeps agreeing.
+      "You're right though, that won't work.",
+      "You're right, we still need fresh reads, so a cache won't work.",
+      "Good point. We haven't shipped yet, so that won't work.",
+      "The cache you suggested won't work, we need fresh reads.",
+      "As you explained, a cache won't work here.",
+      "The approach you floated won't work at scale, let's shard by key.",
+      "That idea won't work, you're going to need a queue.",
+      "Your proposal won't work here, instead we should shard by key.",
+      "Your plan won't work for us.",
+      "A cache won't work the way you're describing.",
+    ];
+
+    /** After a turn that acted, design talk about an option the turn didn't touch reads as rejecting the change. */
+    const ACTED_KNOWN_FALSE_POSITIVES = [
+      "Redis won't work for us, let's use SQLite.",
+      "Have you tried Redis? Polling won't work on Windows.",
+      "Polling won't work, you can't hold connections on serverless.",
+      // An idea named in the sentence before doesn't count, only one in the "won't work" sentence.
+      "A global lock won't work at scale. The point you made about contention holds, so let's shard by key.",
+      // "plan" names an idea only after "your", since "the plan" is also a Terraform plan.
+      "The plan you made won't work for us.",
+      // A hypothetical whose verb takes "it" reads as when the output fails, as "if you run it" does,
+      // though "cache it" proposes a change. Telling the verbs apart would need a list of them.
+      "If we cache it, it won't work across pods.",
+      // "but" anywhere after the agreement turns away from it, including the "but" of "not X but Y".
+      "You're right, it's not the cache but the queue that won't work.",
+    ];
+
+    /** After a turn that acted, the idea and hypothetical exceptions drop these corrections. */
+    const ACTED_KNOWN_MISSES = [
+      // The idea exception reads the whole sentence and no contrast, so a comma after the thanks
+      // excuses it. With a period for the comma, it counts.
+      "Thanks for the suggestion, but the migration won't work.",
+      // Only "<verb> it" makes a hypothetical describe the output, not "<verb> this".
+      "If you run this on Windows it won't work.",
+    ];
+
+    /** After a turn that only answered, "won't work" counts when it points back at something built earlier. */
+    const TALKED_CORRECTIONS = [
+      "The migration you wrote still won't work.",
+      "Your fix from earlier won't work on Windows.",
+      "It still won't work.",
+      "When you renamed the env var, the deploy script won't work anymore.",
+      "The regex you added yesterday won't work for unicode.",
+      "That approach won't work. Your migration drops the index, let's add it back.",
+      "At this point you've broken the build, so the deploy won't work.",
+      "You're right, but it still won't work.",
+      "The fix you suggested still won't work.",
+    ];
+
+    /** After a turn that only answered or proposed, a "won't work" that doesn't point back rejects the proposal. */
+    const TALKED_DESIGN = [
+      "That won't work.",
+      "That won't work, let's use a map instead.",
+      "Nah, won't work — the value can be undefined too.",
+      "That approach won't work because there's a race condition.",
+      // The user ran an option the assistant only proposed.
+      "I tried it and it won't work.",
+      // After a proposal, a present progressive describes the proposal as often as the code.
+      "A cache won't work here, you're reading from the replica.",
+    ];
+
+    const TALKED_KNOWN_FALSE_POSITIVES = [
+      // "still won't work" marks a repeat failure; a concessive "even with X" reads the same.
+      "Even with the polyfill, polling still won't work on Windows, so let's use fs.watch.",
+      // "your" plus "test" reads as the assistant's test.
+      "Your test environment has a single node. A cache won't work at our write volume.",
+    ];
+
+    const TALKED_KNOWN_MISSES = [
+      // Names output built earlier without pointing back at it, which reads like rejecting a proposal.
+      "The migration won't work, it drops the index instead of renaming it.",
+    ];
+
+    it.each([
+      ...ACTED_CORRECTIONS,
+      // Every text-alone correction, and every text-alone miss.
+      ...WONT_WORK_CORRECTIONS,
+      ...WONT_WORK_CORRECTIONS_WITH_PROPOSAL,
+      ...WONT_WORK_YOU_REFERENCES,
+      ...KNOWN_MISSES,
+    ])('counts %j after a turn that acted', (text) => {
+      expect(countCorrectionsAfterTurn(text, ACTED)).toBe(1);
+    });
+
+    it.each(ACTED_DESIGN)('does not count %j after a turn that acted', (text) => {
+      expect(countCorrectionsAfterTurn(text, ACTED)).toBe(0);
+    });
+
+    it.each(ACTED_KNOWN_FALSE_POSITIVES)(
+      'counts %j after a turn that acted (known false positive)',
+      (text) => {
+        expect(countCorrectionsAfterTurn(text, ACTED)).toBe(1);
+      },
+    );
+
+    it.each(ACTED_KNOWN_MISSES)(
+      'does not count %j after a turn that acted (known miss)',
+      (text) => {
+        expect(countCorrectionsAfterTurn(text, ACTED)).toBe(0);
+      },
+    );
+
+    /** Joins clause `a` to clause `b`, capitalising `b` after a period. */
+    const PUNCTUATION_JOINS: readonly Joiner[] = [', ', ' ', ': ', '. ', '; ', ' — '].map(
+      (mark) => (a, b) => `${a}${mark}${mark === '. ' ? capitalize(b) : b}`,
+    );
+
+    it('reads agreement and a contrast after it the same whatever punctuation joins them', () => {
+      // Every join between the agreement and the contrast, and between the contrast and "won't work".
+      const turnedAway = PUNCTUATION_JOINS.flatMap((first) =>
+        PUNCTUATION_JOINS.map(
+          (second) =>
+            `${second(first('Good call on the logging', 'but the migration is the problem'), "it won't work on prod")}.`,
+        ),
+      );
+      const agreeing = PUNCTUATION_JOINS.map((join) =>
+        join("You're right", "that won't work on Windows."),
+      );
+      expect(turnedAway.filter((text) => countCorrectionsAfterTurn(text, ACTED) !== 1)).toEqual([]);
+      expect(agreeing.filter((text) => countCorrectionsAfterTurn(text, ACTED) !== 0)).toEqual([]);
+    });
+
+    it.each(TALKED_CORRECTIONS)('counts %j after a turn that talked', (text) => {
+      expect(countCorrectionsAfterTurn(text, TALKED)).toBe(1);
+    });
+
+    it.each([
+      ...TALKED_DESIGN,
+      // Every text-alone design row, since a turn that talked counts a subset of what the text alone does.
+      ...WONT_WORK_DESIGN_DISCUSSION,
+      ...WONT_WORK_DESIGN_DISCUSSION_SINGLE,
+      ...WONT_WORK_YOU_NOT_ABOUT_OUTPUT,
+    ])('does not count %j after a turn that talked', (text) => {
+      expect(countCorrectionsAfterTurn(text, TALKED)).toBe(0);
+    });
+
+    it.each(TALKED_KNOWN_FALSE_POSITIVES)(
+      'counts %j after a turn that talked (known false positive)',
+      (text) => {
+        expect(countCorrectionsAfterTurn(text, TALKED)).toBe(1);
+      },
+    );
+
+    it.each(TALKED_KNOWN_MISSES)(
+      'does not count %j after a turn that talked (known miss)',
+      (text) => {
+        expect(countCorrectionsAfterTurn(text, TALKED)).toBe(0);
+      },
+    );
+
+    it.each([
+      ['That approach won’t work because there’s a race condition.', 0, 1, 0],
+      ['You’re right that a cache won’t work here.', 0, 0, 0],
+      ['The migration you wrote still won’t work.', 1, 1, 1],
+      // The apostrophe matters outside "won't work" too.
+      ['Don’t do that.', 1, 1, 1],
+      ['No, that’s fine, it’s only a draft.', 0, 0, 0],
+    ])(
+      'reads curly apostrophes like straight ones in %j',
+      (text, textAlone, afterActing, afterTalking) => {
+        const straight = text.replace(/\u2019/g, "'");
+        expect([
+          countCorrections(text),
+          countCorrectionsAfterTurn(text, ACTED),
+          countCorrectionsAfterTurn(text, TALKED),
+        ]).toEqual([textAlone, afterActing, afterTalking]);
+        expect([
+          countCorrections(straight),
+          countCorrectionsAfterTurn(straight, ACTED),
+          countCorrectionsAfterTurn(straight, TALKED),
+        ]).toEqual([textAlone, afterActing, afterTalking]);
+      },
+    );
+
+    interface HeldOutRow {
+      readonly text: string;
+      readonly label: 'correction' | 'design';
+    }
+
+    interface HeldOutSet<Row extends HeldOutRow> {
+      readonly source: string;
+      readonly rows: readonly Row[];
+    }
+
+    /** Sets A, B and C describe the assistant's previous turn in prose. */
+    type ContextRow = HeldOutRow & { readonly context: string };
+
+    /** Set D lists the tools the assistant called in its previous turn, and summarises its reply. */
+    type ToolRow = HeldOutRow & {
+      readonly assistantTools: readonly string[];
+      readonly assistantText: string;
+    };
+
+    const readSets = <Row extends HeldOutRow>(
+      file: string,
+    ): Readonly<Record<string, HeldOutSet<Row>>> =>
+      (
+        JSON.parse(readFileSync(resolve(__dirname, `../../test/fixtures/${file}`), 'utf-8')) as {
+          sets: Record<string, HeldOutSet<Row>>;
+        }
+      ).sets;
+
+    interface Score {
+      readonly corrections: number;
+      readonly design: number;
+      readonly missed: readonly number[];
+      readonly flagged: readonly number[];
+    }
+
+    function score<Row extends HeldOutRow>(
+      rows: readonly Row[],
+      count: (row: Row) => number,
+    ): Score {
+      const indexed = rows.map((row, index) => ({ row, index }));
+      const corrections = indexed.filter(({ row }) => row.label === 'correction');
+      const design = indexed.filter(({ row }) => row.label === 'design');
+      return {
+        corrections: corrections.length,
+        design: design.length,
+        missed: corrections.filter(({ row }) => count(row) === 0).map(({ index }) => index),
+        flagged: design.filter(({ row }) => count(row) === 1).map(({ index }) => index),
+      };
+    }
+
+    /** The ceiling is checked first, so a recall drop fails even after the pinned indices are updated. */
+    function expectScore(actual: Score, expected: Score, maxMissed: number): void {
+      expect(actual.missed.length).toBeLessThanOrEqual(maxMissed);
+      expect(actual).toEqual(expected);
+    }
+
+    /**
+     * The first verb of a set A, B or C `context` says whether the assistant built or did something
+     * in its previous turn, or only answered. A verb missing here fails the test rather than
+     * defaulting to either state.
+     */
+    const CONTEXT_VERB_TURN = new Map<string, readonly string[]>([
+      // Built or did something: an Edit stands in for the turn.
+      ...[
+        'added',
+        'applied',
+        'called',
+        'changed',
+        'configured',
+        'edited',
+        'generated',
+        'implemented',
+        'mocked',
+        'optimized',
+        'produced',
+        'ran',
+        'refactored',
+        'renamed',
+        'rewrote',
+        'set',
+        'simplified',
+        'used',
+        'wrote',
+      ].map((verb): [string, readonly string[]] => [verb, ACTED]),
+      // Only answered: asked, proposed or weighed an option ("was weighing", "was discussing").
+      ...['asked', 'proposed', 'recommended', 'suggested', 'was'].map(
+        (verb): [string, readonly string[]] => [verb, TALKED],
+      ),
+    ]);
+
+    function contextTurn(context: string): readonly string[] {
+      const verb = /^(?:the )?assistant (\w+)/i.exec(context)?.[1] ?? '';
+      const tools = CONTEXT_VERB_TURN.get(verb);
+      if (tools === undefined) throw new Error(`No turn for context verb ${JSON.stringify(verb)}`);
+      return tools;
+    }
+
+    // Model-written sets. Each fixture's `source` note says how its set was made. A, B and C were
+    // read while writing the turn-state rule, so they are development data. D was written before
+    // that rule and scored on it once, so D is the estimate of how it generalises. D's rows list a
+    // turn's tool names, not its commands or transcript entries, so D can't measure the Bash and
+    // MCP rules or where a turn ends. The results are pinned measurements, not targets: a rule
+    // change updates them, and only a fresh set can say whether the change generalises. Each set
+    // pins the row indices of the corrections it misses and the design rows it flags, so a change
+    // that swaps which rows pass at the same totals shows up too. Each also caps its misses at the
+    // recall the rule was accepted at, so a recall drop fails even when the indices are re-pinned.
+    // Raising a cap is a decision to lose recall.
+    const CONTEXT_SETS: Readonly<Record<string, HeldOutSet<ContextRow>>> = {
+      ...readSets<ContextRow>('wont-work-held-out.json'),
+      ...readSets<ContextRow>('wont-work-held-out-c.json'),
+    };
+
+    it.each([
+      ['A', 1, { corrections: 25, design: 25, missed: [48], flagged: [26, 43] }],
+      [
+        'B',
+        17,
+        {
+          corrections: 25,
+          design: 25,
+          missed: [0, 1, 5, 7, 9, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 24],
+          flagged: [],
+        },
+      ],
+      ['C', 4, { corrections: 40, design: 40, missed: [21, 37, 45, 70], flagged: [22, 62, 79] }],
+    ] as const)('scores held-out set %s on its text alone', (name, maxMissed, expected) => {
+      expectScore(
+        score(CONTEXT_SETS[name].rows, (row) => countCorrections(row.text)),
+        expected,
+        maxMissed,
+      );
+    });
+
+    it.each([
+      ['A', 0, { corrections: 25, design: 25, missed: [], flagged: [] }],
+      // The four rows B's source note counts as rejecting a suggestion, which its context says was only proposed.
+      ['B', 4, { corrections: 25, design: 25, missed: [7, 16, 18, 24], flagged: [] }],
+      ['C', 0, { corrections: 40, design: 40, missed: [], flagged: [] }],
+    ] as const)(
+      'scores held-out set %s with the turn its context describes',
+      (name, maxMissed, expected) => {
+        expectScore(
+          score(CONTEXT_SETS[name].rows, (row) =>
+            countCorrectionsAfterTurn(row.text, contextTurn(row.context)),
+          ),
+          expected,
+          maxMissed,
+        );
+      },
+    );
+
+    const TOOL_SETS = readSets<ToolRow>('wont-work-held-out-d.json');
+
+    it('scores held-out set D on its text alone', () => {
+      expectScore(
+        score(TOOL_SETS.D.rows, (row) => countCorrections(row.text)),
+        {
+          corrections: 40,
+          design: 40,
+          missed: [0, 29, 38, 39, 57, 59, 65],
+          flagged: [
+            1, 6, 13, 16, 23, 26, 27, 30, 31, 34, 37, 40, 51, 67, 71, 73, 74, 75, 76, 77, 79,
+          ],
+        },
+        7,
+      );
+    });
+
+    it('scores held-out set D with the tools its assistant called', () => {
+      expectScore(
+        score(TOOL_SETS.D.rows, (row) => countCorrectionsAfterTurn(row.text, row.assistantTools)),
+        { corrections: 40, design: 40, missed: [], flagged: [15, 41, 43, 44, 64, 78, 79] },
+        0,
+      );
+    });
+
+    /** Every message above and in the held-out sets, for the orderings between turn states. */
+    const ORDERING_CORPUS: readonly string[] = [
+      ...new Set([
+        ...WONT_WORK_CORRECTIONS,
+        ...WONT_WORK_CORRECTIONS_WITH_PROPOSAL,
+        ...WONT_WORK_DESIGN_DISCUSSION,
+        ...WONT_WORK_DESIGN_DISCUSSION_SINGLE,
+        ...KNOWN_FALSE_POSITIVES,
+        ...KNOWN_MISSES,
+        ...WONT_WORK_YOU_REFERENCES,
+        ...WONT_WORK_YOU_NOT_ABOUT_OUTPUT,
+        ...ACTED_CORRECTIONS,
+        ...ACTED_DESIGN,
+        ...ACTED_KNOWN_FALSE_POSITIVES,
+        ...ACTED_KNOWN_MISSES,
+        ...TALKED_CORRECTIONS,
+        ...TALKED_DESIGN,
+        ...TALKED_KNOWN_FALSE_POSITIVES,
+        ...TALKED_KNOWN_MISSES,
+        ...Object.values(CONTEXT_SETS).flatMap((set) => set.rows.map((row) => row.text)),
+        ...TOOL_SETS.D.rows.map((row) => row.text),
+      ]),
+    ];
+
+    // A turn that acted needs less evidence than one that talked, so the same text can't count
+    // less after it. The acted rule counts whatever the talked rule does before its exceptions.
+    it('never counts a message less after a turn that acted than after one that talked', () => {
+      expect(
+        ORDERING_CORPUS.filter(
+          (text) =>
+            countCorrectionsAfterTurn(text, ACTED) < countCorrectionsAfterTurn(text, TALKED),
+        ),
+      ).toEqual([]);
+    });
+
+    // The acted rule counts every reference to the assistant's output that the text alone counts.
+    // Only the bare-pronoun opener can count with no turn and not after one that acted, since the
+    // acted rule's exceptions apply to it: here, agreement.
+    it('never counts a message less after a turn that acted than on its text alone, but for the opener', () => {
+      expect(
+        ORDERING_CORPUS.filter(
+          (text) => countCorrectionsAfterTurn(text, ACTED) < countCorrections(text),
+        ),
+      ).toEqual(["Agreed, that won't work, let's go with option B."]);
+    });
+
+    // Fake timers freeze Date.now(), so they can't time a regex. Each input is
+    // sized so a backtracking pattern takes seconds while the linear one takes
+    // about a millisecond, which keeps the budget far from the line. Each runs
+    // in every turn state, since each state reads the message with other patterns.
+    const ADVERSARIAL_MESSAGES: ReadonlyArray<readonly [string, string]> = [
+      [
+        'repeated phrase with no punctuation',
+        `${"won't work ".repeat(5_000)}${'x '.repeat(50_000)}let's`,
+      ],
+      ['long run of sentence punctuation', `A cache won't work ${'.'.repeat(50_000)}x let's`],
+      ['long run of mixed punctuation', `A cache won't work ${'.!?'.repeat(20_000)}x let's`],
+      ['long whitespace inside the sentence', `A cache won't work, we can${' '.repeat(100_000)}x`],
+      ['long word after "you"', `A cache won't work, you ${'e'.repeat(400_000)}x`],
+      ['long word after "you\'re"', `A cache won't work, you're ${'i'.repeat(400_000)}x`],
+      ['repeated "you" with an adverb', `A cache won't work ${'you just '.repeat(44_000)}`],
+      ['repeated hypothetical "you"', `A cache won't work ${'if you unless you '.repeat(22_000)}`],
+      ['repeated hypothetical before the phrase', `${'if you '.repeat(60_000)}won't work`],
+      [
+        'repeated hypothetical about "it" before the phrase',
+        `${'if you run it '.repeat(30_000)}won't work`,
+      ],
+      ['long word after a hypothetical', `if you ${'r'.repeat(400_000)} it won't work`],
+      [
+        'long word after a hypothetical and an adverb',
+        `if you just ${'r'.repeat(400_000)} it won't work`,
+      ],
+      [
+        'repeated hypothetical with an adverb about "it" before the phrase',
+        `${'if you just run it '.repeat(20_000)}won't work`,
+      ],
+      ['repeated contrast after agreement', `Agreed. ${'but '.repeat(100_000)}it won't work`],
+      ['repeated idea source', `A cache won't work ${'you just suggested '.repeat(20_000)}`],
+      ['repeated "at this point you"', `A cache won't work ${'at this point you '.repeat(22_000)}`],
+      ['long letter run before the phrase', `${'a'.repeat(400_000)} won't work`],
+      ['repeated leading filler', `${'hmm, '.repeat(80_000)}won't work`],
+      ['repeated agreement', `${'agreed, '.repeat(50_000)}that won't work`],
+      ['long comma run after agreement', `Agreed${','.repeat(400_000)}x won't work`],
+      [
+        'repeated clause filler after agreement',
+        `You're right${', hmm'.repeat(80_000)} won't work`,
+      ],
+      ['long whitespace after a clause break', `Good call,${' '.repeat(400_000)}x won't work`],
+      [
+        'long punctuation run after a clause filler',
+        `Agreed, hmm${','.repeat(400_000)}x won't work`,
+      ],
+      [
+        'long clause before the phrase after agreement',
+        `Good point. ${', still'.repeat(60_000)}x won't work`,
+      ],
+      [
+        'long clause after agreement in the sentence before',
+        `Good point${', hmm'.repeat(80_000)}. It won't work`,
+      ],
+      ['long whitespace after "though"', `Agreed though${' '.repeat(400_000)}, it won't work`],
+      ['long letter run in a filler', `h${'m'.repeat(400_000)}x won't work`],
+      ['long punctuation run after a filler', `Hmm${','.repeat(400_000)}x won't work`],
+      ['long question-mark run after a word', `Huh${'?'.repeat(400_000)}x won't work`],
+      ['long whitespace after a filler', `Hmm${' '.repeat(400_000)}x won't work`],
+      ['long whitespace after "I tried it"', `I tried it,${' '.repeat(400_000)}x won't work`],
+      ['long whitespace after "Tried it."', `Tried it.${' '.repeat(400_000)}x won't work`],
+      [
+        'repeated "when you" in the reference scan',
+        `A cache won't work ${'when you '.repeat(44_000)}`,
+      ],
+    ];
+
+    /** The entries before the message, and how many real user messages they hold. */
+    const TURNS: ReadonlyArray<readonly [string, readonly string[], number]> = [
+      ['no turn', [], 0],
+      ['a turn that acted', [toolUseLine('Read'), userLine('go ahead'), toolUseLine('Edit')], 1],
+      ['a turn that talked', [toolUseLine('Read'), userLine('go ahead'), assistantLine()], 1],
+    ];
+
+    it.each(
+      ADVERSARIAL_MESSAGES.flatMap(([label, text]) =>
+        TURNS.map(
+          ([turn, lines, earlierMessages]) => [label, turn, text, lines, earlierMessages] as const,
+        ),
+      ),
+    )(
+      'stays fast on a long adversarial message: %s, after %s',
+      (_label, _turn, text, lines, earlierMessages) => {
+        writeLines([...lines, userLine(text)]);
+        const tracker = new TranscriptMessageTracker();
+        tracker.observeTranscriptPath(transcriptPath);
+        const start = Date.now();
+        tracker.refresh();
+        expect(Date.now() - start).toBeLessThan(1_000);
+        // A line over the read cap is skipped unread, which would pass the timing for free.
+        expect(tracker.getMetrics().userMessages).toBe(earlierMessages + 1);
+      },
+    );
   });
 
   it('only processes new lines across multiple refresh() calls (no double-counting)', () => {
@@ -223,6 +1562,34 @@ describe('TranscriptMessageTracker', () => {
     writeLines([userLine('fresh after rotation')]);
     tracker.refresh();
     expect(tracker.getMetrics().userMessages).toBe(3);
+  });
+
+  /** Padded so the rotated file is shorter, which is how the tracker detects rotation. */
+  const PADDED_REPLY = userLine(`go ahead ${'.'.repeat(1_000)}`);
+
+  it.each([
+    // With the old file's Edit carried over, this would count as rejecting it.
+    [
+      'the last turn',
+      [toolUseLine('Read'), PADDED_REPLY, toolUseLine('Edit')],
+      [userLine("The migration won't work on prod.")],
+      0,
+    ],
+    // With the old file's Read carried over, a text-only turn would read as talking.
+    [
+      'that tool calls were seen',
+      [toolUseLine('Read'), PADDED_REPLY],
+      [assistantLine(), userLine("That won't work.")],
+      1,
+    ],
+  ])('forgets %s when the file shrinks (rotation)', (_label, before, rotated, expected) => {
+    writeLines(before);
+    const tracker = new TranscriptMessageTracker();
+    tracker.observeTranscriptPath(transcriptPath);
+    tracker.refresh();
+    writeLines(rotated);
+    tracker.refresh();
+    expect(tracker.getMetrics().userCorrections).toBe(expected);
   });
 
   it('is a no-op when no transcript path has been observed', () => {

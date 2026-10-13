@@ -1,0 +1,514 @@
+{
+  "sets": {
+    "A": {
+      "source": "claude-sonnet-4-6 through an LLM gateway, prompted with the correction/design definitions and no classifier code. Generated after the rule was frozen at 606f776.",
+      "rows": [
+        {
+          "text": "that won't work, the token expires after 5 minutes and you're caching it for an hour",
+          "label": "correction",
+          "context": "Assistant wrote auth middleware that caches JWT tokens with a 1-hour TTL."
+        },
+        {
+          "text": "websockets wont work here because the load balancer doesn't support sticky sessions, we'll need SSE or polling",
+          "label": "design",
+          "context": "Assistant asked how the developer wants to implement real-time updates."
+        },
+        {
+          "text": "this won't work on windows, path.join uses backslashes and the regex you wrote assumes forward slashes",
+          "label": "correction",
+          "context": "Assistant wrote a file-path parsing utility using a forward-slash regex."
+        },
+        {
+          "text": "a global singleton wont work for this because we run tests in parallel and they'll stomp on each other",
+          "label": "design",
+          "context": "Assistant suggested using a singleton pattern for the database connection pool."
+        },
+        {
+          "text": "won't work — you're calling setState inside a loop without batching, this will cause infinite re-renders",
+          "label": "correction",
+          "context": "Assistant refactored a React component's useEffect to update state per item."
+        },
+        {
+          "text": "that approach wont work for us, we're on postgres 11 and MERGE wasn't added until 15",
+          "label": "design",
+          "context": "Assistant proposed using a MERGE statement for upsert logic."
+        },
+        {
+          "text": "hmm this won't work, you removed the null check but the API absolutely can return null for that field",
+          "label": "correction",
+          "context": "Assistant simplified a data-mapping function by removing a null guard."
+        },
+        {
+          "text": "env vars wont work for this config because the values change per request, not per process",
+          "label": "design",
+          "context": "Assistant asked about the best way to pass per-request configuration."
+        },
+        {
+          "text": "the migration you generated won't work, it drops the column before backfilling the new one",
+          "label": "correction",
+          "context": "Assistant generated a database migration script to rename a column."
+        },
+        {
+          "text": "i don't think memoization wont work here since the input object is recreated on every render anyway",
+          "label": "design",
+          "context": "Assistant suggested wrapping an expensive calculation in useMemo."
+        },
+        {
+          "text": "won't work in strict mode, you're mutating the state object directly on line 42",
+          "label": "correction",
+          "context": "Assistant wrote a Redux reducer that directly modifies the state parameter."
+        },
+        {
+          "text": "regex wont work for parsing this, the nesting can be arbitrarily deep so we need a proper parser",
+          "label": "design",
+          "context": "Assistant asked how to extract nested template expressions from a string."
+        },
+        {
+          "text": "the dockerfile you wrote won't work, COPY runs before the npm install layer so the cache is always busted",
+          "label": "correction",
+          "context": "Assistant wrote a Dockerfile for a Node.js application."
+        },
+        {
+          "text": "optimistic locking wont work for this workflow because multiple services update the same row concurrently",
+          "label": "design",
+          "context": "Assistant proposed optimistic locking to handle concurrent record updates."
+        },
+        {
+          "text": "that query won't work, you're filtering on a computed column and there's no index on it, it'll full-scan every time",
+          "label": "correction",
+          "context": "Assistant rewrote a slow SQL query using a WHERE clause on a computed column."
+        },
+        {
+          "text": "lazy loading wont work for the admin bundle, users expect instant navigation and the chunk is only 40kb anyway",
+          "label": "design",
+          "context": "Assistant suggested code-splitting the admin section with lazy loading."
+        },
+        {
+          "text": "this won't work, you're awaiting inside a forEach which doesn't respect async, switch it to for...of",
+          "label": "correction",
+          "context": "Assistant added async file-processing logic using forEach with await."
+        },
+        {
+          "text": "storing sessions in memory wont work once we scale to more than one instance",
+          "label": "design",
+          "context": "Assistant asked where to store user session data for the new auth flow."
+        },
+        {
+          "text": "the fix won't work because you patched the subclass but the base class constructor still overwrites that property",
+          "label": "correction",
+          "context": "Assistant applied a fix to a subclass to override a property value."
+        },
+        {
+          "text": "a cron job wont work for this, the retry needs to happen within seconds not minutes",
+          "label": "design",
+          "context": "Assistant suggested a cron job to retry failed payment webhooks."
+        },
+        {
+          "text": "won't work, you aliased the import as 'utils' but the rest of the file still references it as 'helpers'",
+          "label": "correction",
+          "context": "Assistant renamed a utility module import at the top of a file."
+        },
+        {
+          "text": "css grid wont work for this layout because IE11 support is still a hard requirement from the client",
+          "label": "design",
+          "context": "Assistant proposed redesigning a dashboard layout using CSS Grid."
+        },
+        {
+          "text": "that type assertion won't work, you cast it as string but JSON.parse can return any, the compiler will still complain",
+          "label": "correction",
+          "context": "Assistant added a type assertion to silence a TypeScript error on parsed JSON."
+        },
+        {
+          "text": "third-party oauth wont work in the embedded webview, it blocks the redirect URI scheme",
+          "label": "design",
+          "context": "Assistant asked how to handle login in the mobile app's embedded webview."
+        },
+        {
+          "text": "the test you wrote won't work, it mocks fetch globally but the module imports it at load time before the mock is set up",
+          "label": "correction",
+          "context": "Assistant wrote a Jest test that mocks the global fetch function."
+        },
+        {
+          "text": "event sourcing wont work for this team, they're already struggling with eventual consistency in the current system",
+          "label": "design",
+          "context": "Assistant proposed event sourcing as an architecture for the new billing module."
+        },
+        {
+          "text": "won't work — the lambda has a 15 minute max timeout and this job regularly runs for 20+",
+          "label": "design",
+          "context": "Assistant suggested moving a batch processing job to an AWS Lambda function."
+        },
+        {
+          "text": "the command you ran won't work in ci, it's interactive and expects a tty",
+          "label": "correction",
+          "context": "Assistant ran an interactive CLI command to scaffold a new module."
+        },
+        {
+          "text": "that won't work for mobile, hover states don't exist on touch screens and you're hiding the action behind a hover",
+          "label": "correction",
+          "context": "Assistant added a hover-triggered dropdown for item actions in a list component."
+        },
+        {
+          "text": "polling wont work at this scale, 10k clients hitting the endpoint every 2 seconds will kill the db",
+          "label": "design",
+          "context": "Assistant suggested polling as a simpler alternative to WebSockets."
+        },
+        {
+          "text": "this won't work, the spread operator does a shallow copy so nested objects are still shared by reference",
+          "label": "correction",
+          "context": "Assistant used object spread to clone state in an immutability fix."
+        },
+        {
+          "text": "a feature flag wont work here because the schema change is breaking — old code literally can't read the new format",
+          "label": "design",
+          "context": "Assistant suggested wrapping the breaking change behind a feature flag."
+        },
+        {
+          "text": "the error boundary you added won't work, it's a sibling not a parent so it won't catch errors from that component",
+          "label": "correction",
+          "context": "Assistant added a React error boundary next to a problematic component."
+        },
+        {
+          "text": "dependency injection wont work cleanly here, the framework instantiates these classes before the container is ready",
+          "label": "design",
+          "context": "Assistant proposed refactoring service classes to use dependency injection."
+        },
+        {
+          "text": "that index wont work, the column order matters and you put the low-cardinality field first",
+          "label": "correction",
+          "context": "Assistant added a composite index to speed up a slow query."
+        },
+        {
+          "text": "server-side rendering wont work for this page, it pulls from localStorage on mount and there's no server equivalent",
+          "label": "design",
+          "context": "Assistant suggested enabling SSR for a slow-loading dashboard page."
+        },
+        {
+          "text": "won't work, you're using optional chaining but the tsconfig target is ES5 and the polyfill isn't included",
+          "label": "correction",
+          "context": "Assistant refactored deeply nested property access using optional chaining."
+        },
+        {
+          "text": "a read replica wont work for the checkout flow, we need read-your-writes consistency right after the insert",
+          "label": "design",
+          "context": "Assistant suggested routing read queries to a read replica to reduce load."
+        },
+        {
+          "text": "the debounce you added won't work, you're creating a new debounced function on every render so it never accumulates",
+          "label": "correction",
+          "context": "Assistant added debounce to a search input's onChange handler inside the component."
+        },
+        {
+          "text": "graphql subscriptions wont work with our current infra, we're on serverless and can't hold open connections",
+          "label": "design",
+          "context": "Assistant proposed GraphQL subscriptions for live data updates."
+        },
+        {
+          "text": "that won't work, you're comparing dates with == and javascript date objects are never reference-equal",
+          "label": "correction",
+          "context": "Assistant wrote a date deduplication function using strict equality."
+        },
+        {
+          "text": "a monorepo wont work for this client, their ci pipeline is built around single-repo assumptions and they won't change it",
+          "label": "design",
+          "context": "Assistant suggested migrating to a monorepo to share code between services."
+        },
+        {
+          "text": "the retry logic won't work, you're catching the error and retrying but you forgot to re-throw after max attempts",
+          "label": "correction",
+          "context": "Assistant implemented exponential backoff retry logic for an API call."
+        },
+        {
+          "text": "wont work — we sign the payload on the client and the private key would be exposed in the bundle",
+          "label": "design",
+          "context": "Assistant proposed client-side payload signing to prevent tampering."
+        },
+        {
+          "text": "the schema you generated won't work, you made userId nullable but the foreign key constraint requires it",
+          "label": "correction",
+          "context": "Assistant generated a Prisma schema for a new notifications table."
+        },
+        {
+          "text": "tree shaking wont work if we keep using default exports everywhere, the bundler can't statically analyze them",
+          "label": "design",
+          "context": "Assistant asked about reducing the production bundle size."
+        },
+        {
+          "text": "that won't work for our use case, you assumed the list is sorted but we explicitly don't sort it to preserve insertion order",
+          "label": "correction",
+          "context": "Assistant optimized a search function using binary search on the list."
+        },
+        {
+          "text": "service workers wont work for the auth pages, we need them to always hit the network and never serve stale credentials",
+          "label": "design",
+          "context": "Assistant proposed adding a service worker for offline support."
+        },
+        {
+          "text": "the rollback script won't work, it assumes the old table still exists but the migration dropped it",
+          "label": "correction",
+          "context": "Assistant wrote a rollback script for a recent database migration."
+        },
+        {
+          "text": "inheritance wont work here, we need to mix behaviors from multiple sources and you can't do that cleanly with a class hierarchy",
+          "label": "design",
+          "context": "Assistant suggested using class inheritance to share logic between handlers."
+        }
+      ]
+    },
+    "B": {
+      "source": "A Claude Code subagent (Sonnet) told not to read the classifier or its tests. It stopped early, so its compliance is unconfirmed. Its labels count rejecting a suggestion as a correction in 4 rows.",
+      "rows": [
+        {
+          "text": "that catch block won't work — it swallows the error and we lose the stack trace",
+          "label": "correction",
+          "context": "Assistant added a try/catch around a fetch call that silently swallows network errors."
+        },
+        {
+          "text": "Tested foo+bar@test.com against it and it failed. wont work for plus-addressing",
+          "label": "correction",
+          "context": "Assistant wrote a regex to validate email addresses."
+        },
+        {
+          "text": "Nah, won't work — this is a monorepo, you need `npm install -w <pkg>` from root",
+          "label": "correction",
+          "context": "Assistant ran npm install at the repo root to fix a missing dependency error."
+        },
+        {
+          "text": "wont work, the value can be undefined too not just null",
+          "label": "correction",
+          "context": "Assistant changed a `==` null check to `===`."
+        },
+        {
+          "text": "hmm, that won't work — busts the layer cache on literally every file change",
+          "label": "correction",
+          "context": "Assistant edited the Dockerfile to COPY . . before npm install."
+        },
+        {
+          "text": "not gonna cut it, the DOM hasn't painted yet at that point so it won't work reliably",
+          "label": "correction",
+          "context": "Assistant added setTimeout(fn, 0) to defer a state update."
+        },
+        {
+          "text": "This migration WON'T WORK against prod, there are millions of existing null rows",
+          "label": "correction",
+          "context": "Assistant wrote a migration adding a NOT NULL column with no default."
+        },
+        {
+          "text": "localStorage won't work for us, service workers can't touch it directly",
+          "label": "correction",
+          "context": "Assistant suggested storing the auth token in localStorage so a service worker could read it."
+        },
+        {
+          "text": "won't work once we deploy under a subpath — can you make that relative instead",
+          "label": "correction",
+          "context": "Assistant set output.publicPath to '/' in the webpack config."
+        },
+        {
+          "text": "Offset pagination won't work here, rows shift between requests and people see dupes. Could we use a cursor instead?",
+          "label": "correction",
+          "context": "Assistant implemented offset/limit pagination in the API client."
+        },
+        {
+          "text": "won't work on mac, BSD grep has no -P. perl -ne would be the move",
+          "label": "correction",
+          "context": "Assistant wrote a bash script using grep -P with a lookahead."
+        },
+        {
+          "text": "That cache key wont work, we've got multiple lockfiles across the workspaces",
+          "label": "correction",
+          "context": "Assistant added a CI cache step keyed on the package.json hash."
+        },
+        {
+          "text": "a singleton won't work here — we need a fresh client per request because of per-tenant auth headers",
+          "label": "correction",
+          "context": "Assistant refactored the client code to use a singleton pattern."
+        },
+        {
+          "text": "sticky's not gonna work inside that overflow:hidden parent, won't work unless we drop the overflow or change the ancestor",
+          "label": "correction",
+          "context": "Assistant used position: sticky for the page header."
+        },
+        {
+          "text": "won't work, it's already tracked — gitignore does nothing till we git rm --cached it",
+          "label": "correction",
+          "context": "Assistant added a .gitignore entry and told the user to just delete the file locally."
+        },
+        {
+          "text": "honestly a fixed delay won't work under real load, we need exponential backoff with jitter",
+          "label": "correction",
+          "context": "Assistant wrote a retry loop with a fixed 1-second sleep between attempts."
+        },
+        {
+          "text": "context won't work, the flag needs to survive a full page reload",
+          "label": "correction",
+          "context": "Assistant proposed storing feature flag state in a React context provider."
+        },
+        {
+          "text": "that mock won't work — jest resets it between files but we share the module within this suite",
+          "label": "correction",
+          "context": "Assistant mocked Date.now() globally in a test."
+        },
+        {
+          "text": "stringify comparison wont work when key order differs, and it does here",
+          "label": "correction",
+          "context": "Assistant suggested comparing objects via JSON.stringify(a) === JSON.stringify(b)."
+        },
+        {
+          "text": "os.system won't work on windows CI, switch to subprocess.run with shell=False",
+          "label": "correction",
+          "context": "Assistant wrote a Python script using os.system() to call another script."
+        },
+        {
+          "text": "a lone index on status won't work well, almost every row has the same value — needs to be composite",
+          "label": "correction",
+          "context": "Assistant added a single-column index on the status column."
+        },
+        {
+          "text": "defining the debounce inline in render won't work, it gets recreated every render so nothing ever actually debounces",
+          "label": "correction",
+          "context": "Assistant called lodash's debounce directly inline inside the render function."
+        },
+        {
+          "text": "re-throwing a plain Error here won't work, upstream reads error.code to decide retries and we just erased that",
+          "label": "correction",
+          "context": "Assistant changed error handling to catch, log, and re-throw a generic Error."
+        },
+        {
+          "text": "wont work behind the LB, headers get lowercased and sometimes dropped — use the normalized helper",
+          "label": "correction",
+          "context": "Assistant wrote auth middleware checking req.headers.authorization directly."
+        },
+        {
+          "text": "a hardcoded sleep won't work reliably, it's still a race. we should wait on the actual condition",
+          "label": "correction",
+          "context": "Assistant proposed fixing a flaky test by adding await sleep(500) before the assertion."
+        },
+        {
+          "text": "localStorage won't work, we specifically don't want it syncing across tabs — sessionStorage seems right",
+          "label": "design",
+          "context": "Assistant asked how to persist session state across browser tabs."
+        },
+        {
+          "text": "polling every few seconds won't work for our latency bar, I'd just go with websockets",
+          "label": "design",
+          "context": "Assistant asked whether to use polling or websockets for live updates."
+        },
+        {
+          "text": "an in-memory cache won't work since we run multiple instances, so it'd have to be something shared like redis",
+          "label": "design",
+          "context": "Assistant asked how to dedupe requests coming from multiple components."
+        },
+        {
+          "text": "local disk storage won't work in k8s, pods are ephemeral — straight to s3",
+          "label": "design",
+          "context": "Assistant asked about the storage approach for a new file-upload feature, before writing code."
+        },
+        {
+          "text": "a plain LIKE query won't work once we hit millions of rows honestly, might be worth just standing up elasticsearch now",
+          "label": "design",
+          "context": "Assistant asked which approach to take for a new search feature."
+        },
+        {
+          "text": "running migrations at startup WONT WORK for us, 20 replicas would race to apply it",
+          "label": "design",
+          "context": "Assistant asked whether migrations could run as part of app startup."
+        },
+        {
+          "text": "a token bucket in process memory won't work across multiple nodes, needs to be backed by something like redis",
+          "label": "design",
+          "context": "Assistant was weighing rate-limiter implementation options before writing any code."
+        },
+        {
+          "text": "hardcoding urls per environment wont work long term, better to read them from env vars at boot",
+          "label": "design",
+          "context": "Assistant asked how to manage config across different environments."
+        },
+        {
+          "text": "cookies won't work for the mobile clients, they don't have a jar the same way — bearer tokens instead",
+          "label": "design",
+          "context": "Assistant proposed using cookies for the auth approach before implementation."
+        },
+        {
+          "text": "How about a scheduled lambda instead? a cron on a single box won't work since that box gets recycled nightly",
+          "label": "design",
+          "context": "Assistant asked whether a cron job could handle nightly cleanup."
+        },
+        {
+          "text": "maybe we memoize by id — deep equality on every render won't work at our scale, it'll tank perf",
+          "label": "design",
+          "context": "Assistant was discussing which diffing/comparison approach to use before writing code."
+        },
+        {
+          "text": "triggers won't work here, the logic needs to call an external service so it has to live in app code",
+          "label": "design",
+          "context": "Assistant asked whether DB triggers could hold the business logic."
+        },
+        {
+          "text": "shared tables with a tenant_id column wont work given the compliance requirements, we need schema-per-tenant",
+          "label": "design",
+          "context": "Assistant asked how to architect multi-tenant data isolation."
+        },
+        {
+          "text": "a single global lock won't work, it'd serialize everything and kill throughput — go per-resource instead",
+          "label": "design",
+          "context": "Assistant asked whether a single global lock could prevent double-processing of jobs."
+        },
+        {
+          "text": "the native notification api wont work the way we need on ios safari, we'll probably need a fallback banner",
+          "label": "design",
+          "context": "Assistant proposed using the browser's native notification API before any implementation."
+        },
+        {
+          "text": "storing blobs straight in postgres won't work, bloats the db and slows backups — keep that in object storage",
+          "label": "design",
+          "context": "Assistant asked whether large blobs should be stored directly in postgres."
+        },
+        {
+          "text": "just bumping the timeout won't work as a real fix, it's masking the problem not solving it",
+          "label": "design",
+          "context": "Assistant asked whether increasing the timeout would be an acceptable fix, before touching code."
+        },
+        {
+          "text": "optimistic updates without a rollback path wont work here, partial failures are common in this flow",
+          "label": "design",
+          "context": "Assistant asked for direction on handling optimistic UI updates."
+        },
+        {
+          "text": "client side validation alone won't work, anyone can hit the api directly with curl — needs to be server side too",
+          "label": "design",
+          "context": "Assistant asked whether client-side validation alone would be sufficient."
+        },
+        {
+          "text": "firing a request on every keystroke wont work even with a short debounce, backend will get hammered — maybe batch it or use a real search index",
+          "label": "design",
+          "context": "Assistant proposed search-as-you-type firing a request on every keystroke with a debounce."
+        },
+        {
+          "text": "direct merges to main won't work with our release cadence, we really need a staging branch in between",
+          "label": "design",
+          "context": "Assistant proposed using feature branches merged straight to main for the release process, before setting anything up."
+        },
+        {
+          "text": "eventual consistency won't work for this flow, users expect the balance to update immediately after a transfer",
+          "label": "design",
+          "context": "Assistant asked how to coordinate state between two microservices for this feature."
+        },
+        {
+          "text": "vendoring the whole thing in wont work, it's got native bindings that need per-platform compilation",
+          "label": "design",
+          "context": "Assistant was weighing whether to vendor a third-party library's source directly into the repo."
+        },
+        {
+          "text": "in memory sessions won't work past one instance, we'd lose sessions on every other request — redis-backed makes more sense",
+          "label": "design",
+          "context": "Assistant asked whether in-memory session storage would suffice for the auth service."
+        },
+        {
+          "text": "a big bang schema change this friday won't work, too risky right before the weekend — let's do expand/contract over two deploys",
+          "label": "design",
+          "context": "Assistant was discussing how to roll out a schema change safely, before writing the migration."
+        }
+      ]
+    }
+  }
+}
