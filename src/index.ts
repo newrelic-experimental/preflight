@@ -92,6 +92,7 @@ import { QualityProxyTracker } from './metrics/quality-proxy-tracker.js';
 import { RecommendationEngine } from './metrics/recommendation-engine.js';
 import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
+import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
 import { buildTaskDetectorSeed } from './metrics/task-detector-seed.js';
 import { TaskDetector } from './metrics/task-detector.js';
@@ -1293,6 +1294,7 @@ async function main(): Promise<void> {
     // window is named later via adoptRealSessionId once its real id resolves.
     if (options.stdio) applyAuthoritativeSessionName(sessionTraceId);
     const turnCostAttributor = new TurnCostAttributor({ rateMultiplier });
+    const skillActivationTracker = new SkillActivationTracker();
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
     const gitWorkspaceReporter = new GitWorkspaceReporter();
@@ -2083,10 +2085,12 @@ async function main(): Promise<void> {
         // record, so audit/security events carry agentId and agentType.
         // The watcher's on-demand read is synchronous, which is what keeps it
         // ahead of auditTrail.
-        const rawRecord = subagentAttribution.attributeAtIntake(
+        const attributed = subagentAttribution.attributeAtIntake(
           incomingRecord,
           activeSubagentWatcher,
         );
+        const activeSkill = skillActivationTracker.recordToolCall(attributed);
+        const rawRecord = activeSkill ? { ...attributed, activeSkill } : attributed;
         if (!config || !sessionTracker || !taskDetector) {
           logger.warn('onRecord called before full initialization; skipping');
           return;
@@ -2614,6 +2618,7 @@ async function main(): Promise<void> {
         });
       },
       onUserPromptSubmit: (frame) => {
+        skillActivationTracker.recordPrompt(frame.sessionId, frame.slashCommand ?? null);
         turnCostAttributor.recordSlashCommand(frame.sessionId, frame.slashCommand ?? null);
         taskDetector!.startTaskIfNone(frame.timestamp);
       },
@@ -2959,6 +2964,7 @@ async function main(): Promise<void> {
         modelUsageTracker.reset(realId);
         contextCompositionTracker.reset(realId);
         turnCostAttributor.reset(realId);
+        skillActivationTracker.reset(realId);
       }
       sessionTraceId = realId;
       sessionTracker!.adoptSessionId(realId);

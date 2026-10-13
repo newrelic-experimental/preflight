@@ -487,11 +487,14 @@ describe('TurnCostAttributor', () => {
   describe('costBySkill', () => {
     it('two skills in one turn split cost and tokens evenly and each get their duration', () => {
       const attributor = new TurnCostAttributor();
+      const skill1 = { name: 'code-review', source: 'tool' as const, runId: 'run-1' };
+      const skill2 = { name: 'pstack:how', source: 'tool' as const, runId: 'run-2' };
 
       attributor.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          skillName: 'code-review',
+          activeSkill: skill1,
+          skillName: skill1.name,
           durationMs: 1000,
           timestamp: 1000,
           toolUseId: 'skill-1',
@@ -500,7 +503,8 @@ describe('TurnCostAttributor', () => {
       attributor.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          skillName: 'pstack:how',
+          activeSkill: skill2,
+          skillName: skill2.name,
           durationMs: 2000,
           timestamp: 1500,
           toolUseId: 'skill-2',
@@ -537,11 +541,13 @@ describe('TurnCostAttributor', () => {
 
     it('a skill in a turn with no token event has attributedCallCount 0, avgCost 0, but real callCount and totalDurationMs', () => {
       const attributor = new TurnCostAttributor();
+      const skill = { name: 'design', source: 'tool' as const, runId: 'run-1' };
 
       attributor.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          skillName: 'design',
+          activeSkill: skill,
+          skillName: skill.name,
           durationMs: 500,
           timestamp: 1000,
           toolUseId: 'skill-1',
@@ -567,11 +573,13 @@ describe('TurnCostAttributor', () => {
 
     it('tokens equals inputTokens + outputTokens + cacheReadTokens for a live entry', () => {
       const attributor = new TurnCostAttributor();
+      const skill = { name: 'design', source: 'tool' as const, runId: 'run-1' };
 
       attributor.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          skillName: 'design',
+          activeSkill: skill,
+          skillName: skill.name,
           timestamp: 1000,
           toolUseId: 'skill-1',
         }),
@@ -592,11 +600,13 @@ describe('TurnCostAttributor', () => {
 
     it('cacheCreationTokens are distributed and included in tokens for skills and tool types', () => {
       const attributor = new TurnCostAttributor();
+      const skill = { name: 'design', source: 'tool' as const, runId: 'run-1' };
 
       attributor.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          skillName: 'design',
+          activeSkill: skill,
+          skillName: skill.name,
           timestamp: 1000,
           toolUseId: 'skill-1',
         }),
@@ -626,11 +636,14 @@ describe('TurnCostAttributor', () => {
 
     it('costByToolType.Skill equals the sum of costBySkill rows', () => {
       const attributor = new TurnCostAttributor();
+      const skill1 = { name: 'code-review', source: 'tool' as const, runId: 'run-1' };
+      const skill2 = { name: 'design', source: 'tool' as const, runId: 'run-2' };
 
       attributor.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          skillName: 'code-review',
+          activeSkill: skill1,
+          skillName: skill1.name,
           timestamp: 1000,
           toolUseId: 'skill-1',
         }),
@@ -638,7 +651,8 @@ describe('TurnCostAttributor', () => {
       attributor.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          skillName: 'design',
+          activeSkill: skill2,
+          skillName: skill2.name,
           timestamp: 1500,
           toolUseId: 'skill-2',
         }),
@@ -654,8 +668,9 @@ describe('TurnCostAttributor', () => {
       expect(metrics.costByToolType['Skill'].totalCost).toBeCloseTo(skillCostSum, 10);
     });
 
-    it('Skill with no skillName is absent from costBySkill and present in costByToolType.Skill', () => {
+    it('Skill with no activeSkill is absent from costBySkill and present in costByToolType.Skill', () => {
       const attributor = new TurnCostAttributor();
+      const skill = { name: 'code-review', source: 'tool' as const, runId: 'run-1' };
 
       attributor.recordToolCall(
         makeRecord({
@@ -668,7 +683,8 @@ describe('TurnCostAttributor', () => {
       attributor.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          skillName: 'code-review',
+          activeSkill: skill,
+          skillName: skill.name,
           timestamp: 1200,
           toolUseId: 'skill-named',
         }),
@@ -686,12 +702,16 @@ describe('TurnCostAttributor', () => {
 
     it('no-arg getMetrics() merges costBySkill across sessions', () => {
       const attributor = new TurnCostAttributor();
+      const skill1 = { name: 'code-review', source: 'tool' as const, runId: 'run-1' };
+      const skill2 = { name: 'code-review', source: 'tool' as const, runId: 'run-2' };
+      const skill3 = { name: 'design', source: 'tool' as const, runId: 'run-3' };
 
       attributor.recordToolCall(
         makeRecord({
           sessionId: 'session-a',
           toolName: 'Skill',
-          skillName: 'code-review',
+          activeSkill: skill1,
+          skillName: skill1.name,
           timestamp: 1000,
           toolUseId: 'a-skill-1',
         }),
@@ -709,7 +729,8 @@ describe('TurnCostAttributor', () => {
         makeRecord({
           sessionId: 'session-b',
           toolName: 'Skill',
-          skillName: 'code-review',
+          activeSkill: skill2,
+          skillName: skill2.name,
           timestamp: 5000,
           toolUseId: 'b-skill-1',
         }),
@@ -718,7 +739,8 @@ describe('TurnCostAttributor', () => {
         makeRecord({
           sessionId: 'session-b',
           toolName: 'Skill',
-          skillName: 'design',
+          activeSkill: skill3,
+          skillName: skill3.name,
           timestamp: 5500,
           toolUseId: 'b-skill-2',
         }),
@@ -752,13 +774,84 @@ describe('TurnCostAttributor', () => {
       expect(metrics.costBySkill).toEqual({});
     });
 
-    it('reset() clears costBySkill state', () => {
+    it('a Read inside a skill run counts toward that skill and toward costByToolType.Read', () => {
       const attributor = new TurnCostAttributor();
+      const skill = { name: 'code-review', source: 'tool' as const, runId: 'run-1' };
 
       attributor.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          skillName: 'design',
+          skillName: 'code-review',
+          activeSkill: skill,
+          durationMs: 100,
+          timestamp: 1000,
+          toolUseId: 'skill-1',
+        }),
+      );
+      attributor.recordToolCall(
+        makeRecord({
+          toolName: 'Read',
+          activeSkill: skill,
+          durationMs: 300,
+          timestamp: 1200,
+          toolUseId: 'read-1',
+        }),
+      );
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1600 }));
+
+      const metrics = attributor.getMetrics();
+      const turnCost = metrics.turns[0].estimatedCostUsd;
+      const entry = metrics.costBySkill['code-review'];
+      expect(entry.callCount).toBe(1);
+      expect(entry.attributedCallCount).toBe(2);
+      expect(entry.totalCost).toBeCloseTo(turnCost, 10);
+      expect(entry.avgCost).toBeCloseTo(turnCost, 10);
+      expect(entry.totalDurationMs).toBe(400);
+      expect(metrics.costByToolType['Read'].totalCost).toBeCloseTo(turnCost / 2, 10);
+    });
+
+    it('a nameless Skill call inside a run is not an invocation of the outer skill', () => {
+      const attributor = new TurnCostAttributor();
+      const skill = { name: 'code-review', source: 'slash' as const, runId: 'run-1' };
+
+      attributor.recordSlashCommand('sess-001', 'code-review');
+      attributor.recordToolCall(
+        makeRecord({ toolName: 'Skill', activeSkill: skill, timestamp: 1000 }),
+      );
+
+      expect(attributor.getMetrics().costBySkill['code-review'].callCount).toBe(1);
+    });
+
+    it('slash run cost comes from its stamped tool calls', () => {
+      const attributor = new TurnCostAttributor();
+      const skill = { name: 'simplify', source: 'slash' as const, runId: 'run-1' };
+
+      attributor.recordSlashCommand('sess-001', 'simplify');
+      attributor.recordToolCall(
+        makeRecord({ toolUseId: 'toolu_001', activeSkill: skill, timestamp: 1000 }),
+      );
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+      attributor.recordToolCall(
+        makeRecord({ toolUseId: 'toolu_002', activeSkill: skill, timestamp: 5000 }),
+      );
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 5100 }));
+
+      const metrics = attributor.getMetrics();
+      const entry = metrics.costBySkill.simplify;
+      expect(entry.callCount).toBe(1);
+      expect(entry.attributedCallCount).toBe(2);
+      expect(entry.totalCost).toBeCloseTo(metrics.totalAttributedCost, 10);
+    });
+
+    it('reset() clears costBySkill state', () => {
+      const attributor = new TurnCostAttributor();
+      const skill = { name: 'design', source: 'tool' as const, runId: 'run-1' };
+
+      attributor.recordToolCall(
+        makeRecord({
+          toolName: 'Skill',
+          activeSkill: skill,
+          skillName: skill.name,
           timestamp: 1000,
           toolUseId: 'skill-1',
         }),
@@ -774,7 +867,7 @@ describe('TurnCostAttributor', () => {
   });
 
   describe('recordSlashCommand()', () => {
-    it('records a slash command and charges its cost to costBySkill', () => {
+    it('records slash command invocations counted as callCount', () => {
       const attributor = new TurnCostAttributor();
 
       attributor.recordSlashCommand('sess-001', 'pstack:poteto-mode');
@@ -785,27 +878,6 @@ describe('TurnCostAttributor', () => {
       const entry = metrics.costBySkill['pstack:poteto-mode'];
       expect(entry).toBeDefined();
       expect(entry!.callCount).toBe(1);
-      expect(entry!.attributedCallCount).toBe(1);
-      expect(entry!.totalCost).toBe(metrics.turns[0].estimatedCostUsd);
-      expect(entry!.inputTokens).toBe(makeTokenEvent().inputTokens);
-      expect(entry!.outputTokens).toBe(makeTokenEvent().outputTokens);
-    });
-
-    it('charges two consecutive tokens to the same slash command', () => {
-      const attributor = new TurnCostAttributor();
-
-      attributor.recordSlashCommand('sess-001', 'simplify');
-      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
-      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
-      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_002', timestamp: 5000 }));
-      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 5100 }));
-
-      const metrics = attributor.getMetrics();
-      const entry = metrics.costBySkill.simplify;
-      expect(entry).toBeDefined();
-      expect(entry!.attributedCallCount).toBe(2);
-      const costPerEvent = metrics.turns[0].estimatedCostUsd;
-      expect(entry!.totalCost).toBeCloseTo(costPerEvent * 2, 10);
     });
 
     it('slash command is not charged after calling recordSlashCommand with null', () => {
@@ -824,13 +896,15 @@ describe('TurnCostAttributor', () => {
       expect(entry!.totalCost).toBe(0);
     });
 
-    it('folds Skill and SlashCommand buckets for the same skill into one costBySkill row', () => {
+    it('folds Skill and SlashCommand invocation counts for the same skill into one costBySkill row', () => {
       const attributor = new TurnCostAttributor();
+      const skill = { name: 'design', source: 'tool' as const, runId: 'run-1' };
 
       attributor.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          skillName: 'design',
+          activeSkill: skill,
+          skillName: skill.name,
           timestamp: 1000,
           toolUseId: 'skill-1',
         }),
@@ -845,10 +919,9 @@ describe('TurnCostAttributor', () => {
       const entry = metrics.costBySkill.design;
       expect(entry).toBeDefined();
       expect(entry!.callCount).toBe(2);
-      expect(entry!.attributedCallCount).toBe(2);
     });
 
-    it('aggregates slash command across sessions in no-arg getMetrics()', () => {
+    it('aggregates slash command invocations across sessions in no-arg getMetrics()', () => {
       const attributor = new TurnCostAttributor();
 
       attributor.recordSlashCommand('sess-001', 'code-review');
@@ -866,7 +939,7 @@ describe('TurnCostAttributor', () => {
       const metrics = attributor.getMetrics();
       const entry = metrics.costBySkill['code-review'];
       expect(entry).toBeDefined();
-      expect(entry!.attributedCallCount).toBe(2);
+      expect(entry!.callCount).toBe(2);
     });
 
     it('does not double-count an active slash command into costByToolType', () => {
@@ -926,13 +999,15 @@ describe('TurnCostAttributor', () => {
       expect(result1!.id).not.toBe(result2!.id);
     });
 
-    it('returned calls carry skillName for Skill records and null otherwise', () => {
+    it('returned calls carry skill for records inside a skill run', () => {
       const attributor = new TurnCostAttributor();
+      const skillStamp = { name: 'code-review', source: 'tool' as const, runId: 'run-001' };
 
       attributor.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          skillName: 'code-review',
+          activeSkill: skillStamp,
+          skillName: skillStamp.name,
           toolUseId: 'skill-1',
           timestamp: 1000,
         }),
@@ -940,6 +1015,7 @@ describe('TurnCostAttributor', () => {
       attributor.recordToolCall(
         makeRecord({
           toolName: 'Read',
+          activeSkill: skillStamp,
           toolUseId: 'read-1',
           timestamp: 1500,
         }),
@@ -951,11 +1027,13 @@ describe('TurnCostAttributor', () => {
 
       const skillCall = result!.calls.find((c) => c.toolName === 'Skill');
       expect(skillCall).toBeDefined();
-      expect(skillCall!.skillName).toBe('code-review');
+      expect(skillCall!.skill).not.toBeNull();
+      expect(skillCall!.skill!.name).toBe('code-review');
 
       const readCall = result!.calls.find((c) => c.toolName === 'Read');
       expect(readCall).toBeDefined();
-      expect(readCall!.skillName).toBeNull();
+      expect(readCall!.skill).not.toBeNull();
+      expect(readCall!.skill!.name).toBe('code-review');
     });
 
     it("platform is the first record's platform when stamped", () => {
@@ -1041,11 +1119,13 @@ describe('TurnCostAttributor', () => {
     });
 
     it('rateMultiplier scales costBySkill in returned attribution', () => {
+      const skill = { name: 'test', source: 'tool' as const, runId: 'run-1' };
       const attributor1x = new TurnCostAttributor({ rateMultiplier: 1 });
       attributor1x.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          skillName: 'test',
+          activeSkill: skill,
+          skillName: skill.name,
           toolUseId: 'skill-1',
           timestamp: 1000,
         }),
@@ -1056,7 +1136,8 @@ describe('TurnCostAttributor', () => {
       attributor15x.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          skillName: 'test',
+          activeSkill: skill,
+          skillName: skill.name,
           toolUseId: 'skill-1',
           timestamp: 1000,
         }),

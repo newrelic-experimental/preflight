@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { TokenUsage } from '../shared/index.js';
 import { calculateModelCost } from './pricing-overlay.js';
-import type { ToolCallRecord, TokenEvent } from '../storage/types.js';
+import type { SkillStamp, ToolCallRecord, TokenEvent } from '../storage/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,13 +44,12 @@ export interface ToolTypeCostEntry {
 }
 
 /**
- * Per-skill row aggregating both `Skill` tool invocations and slash-command
- * invocations. A `Skill` tool call (channel `Skill`) receives an even split
- * of its turn's cost; a slash invocation (channel `SlashCommand`) receives the
- * full cost from that prompt to the next. `callCount` counts both channels
- * (one per `Skill` tool call, one per slash invocation); `totalDurationMs`
- * measures only `Skill` calls (slash commands have none). Cost and tokens
- * cover `attributedCallCount` of them.
+ * Per-skill row covering every tool call made inside that skill's runs (see
+ * SkillActivationTracker), each carrying its even split of its turn's cost.
+ * `callCount` counts invocations (one per `Skill` tool call, one per slash
+ * invocation) and `avgCost` is cost per invocation. `totalDurationMs` and
+ * `attributedCallCount` cover the tool calls inside the runs; cost and tokens
+ * cover the `attributedCallCount` of them whose turn got a token report.
  */
 export interface SkillCostEntry {
   readonly callCount: number;
@@ -77,8 +76,8 @@ export interface SkillCostEntry {
 export interface TurnToolCall {
   readonly toolUseId: string;
   readonly toolName: string;
-  /** Set only for Skill calls that carried a skill name; mirrors the bucket identity. */
-  readonly skillName: string | null;
+  /** Set only for tool calls inside a skill run. */
+  readonly skill: SkillStamp | null;
 }
 
 /** What recordTokenEvent() hands back once a turn's cost is known. */
@@ -140,8 +139,8 @@ const MAX_TURNS = 200;
 interface BucketIdentity {
   readonly toolName: string;
   /**
-   * Set only for `Skill` tool records that carried a skill name, or for
-   * `SlashCommand` records from slash-invoked skills.
+   * The invoked skill on `Skill` and `SlashCommand` buckets; on any other
+   * tool, the skill whose run the call happened inside.
    */
   readonly skillName: string | null;
 }
@@ -181,7 +180,7 @@ interface PendingTurn {
   toolCalls: Array<{
     toolUseId: string;
     toolName: string;
-    skillName: string | null;
+    skill: SkillStamp | null;
     bucketKey: string;
   }>;
   platform: string | undefined;
@@ -208,7 +207,6 @@ interface SessionState {
   totalAttributedCost: number;
   totalToolCalls: number;
   attributedToolCalls: number;
-  activeSlashSkill: string | null;
   droppedTokenEvents: number;
 }
 
@@ -220,7 +218,6 @@ function createSessionState(): SessionState {
     totalAttributedCost: 0,
     totalToolCalls: 0,
     attributedToolCalls: 0,
-    activeSlashSkill: null,
     droppedTokenEvents: 0,
   };
 }
@@ -230,10 +227,11 @@ function createSessionState(): SessionState {
 // ---------------------------------------------------------------------------
 
 function bucketIdentityOf(record: ToolCallRecord): BucketIdentity {
+  // A Skill call's bucket is the skill it invokes, so the bucket's callCount
+  // is that skill's invocation count; a nameless Skill call inside another
+  // skill's run must not count as an invocation of the outer one.
   const skillName =
-    record.toolName === 'Skill' && record.skillName !== undefined && record.skillName !== ''
-      ? record.skillName
-      : null;
+    record.toolName === 'Skill' ? record.skillName || null : (record.activeSkill?.name ?? null);
   return { toolName: record.toolName, skillName };
 }
 
@@ -332,7 +330,7 @@ export class TurnCostAttributor {
       last.toolCalls.push({
         toolUseId: record.toolUseId,
         toolName: record.toolName,
-        skillName: id.skillName,
+        skill: record.activeSkill ?? null,
         bucketKey: key,
       });
       return;
@@ -346,7 +344,7 @@ export class TurnCostAttributor {
         {
           toolUseId: record.toolUseId,
           toolName: record.toolName,
-          skillName: id.skillName,
+          skill: record.activeSkill ?? null,
           bucketKey: key,
         },
       ],
@@ -365,13 +363,10 @@ export class TurnCostAttributor {
   recordSlashCommand(sessionId: string | null | undefined, skillName: string | null): void {
     const state = this.getOrCreateSession(sessionId);
     if (skillName) {
-      state.activeSlashSkill = skillName;
       const id: BucketIdentity = { toolName: 'SlashCommand', skillName };
       const key = bucketKeyOf(id);
       const bucket = getOrCreateBucket(state.buckets, key, id);
       bucket.callCount++;
-    } else {
-      state.activeSlashSkill = null;
     }
   }
 
@@ -457,18 +452,6 @@ export class TurnCostAttributor {
       bucket.cacheCreationTokens += event.cacheCreationTokens / toolCount;
     }
 
-    if (state.activeSlashSkill !== null) {
-      const id: BucketIdentity = { toolName: 'SlashCommand', skillName: state.activeSlashSkill };
-      const key = bucketKeyOf(id);
-      const slashBucket = getOrCreateBucket(state.buckets, key, id);
-      slashBucket.attributedCallCount++;
-      slashBucket.totalCost += costUsd;
-      slashBucket.inputTokens += event.inputTokens;
-      slashBucket.outputTokens += event.outputTokens;
-      slashBucket.cacheReadTokens += event.cacheReadTokens;
-      slashBucket.cacheCreationTokens += event.cacheCreationTokens;
-    }
-
     // Minted here rather than reusing `attribution.turnId`: the caller's turn
     // id comes from the process-global TurnTracker and can repeat across two
     // attributor turns, so it cannot group AiTurnCost rows.
@@ -478,7 +461,7 @@ export class TurnCostAttributor {
       calls: pendingTurn.toolCalls.map((tc) => ({
         toolUseId: tc.toolUseId,
         toolName: tc.toolName,
-        skillName: tc.skillName,
+        skill: tc.skill,
       })),
       platform: pendingTurn.platform,
     };
@@ -567,15 +550,16 @@ export class TurnCostAttributor {
         cacheCreationTokens: number;
       }
     >();
+    const skillInvocations = new Map<string, number>();
     const skillAccum = new Map<string, Pick<AttributionBucket, (typeof BUCKET_COUNTERS)[number]>>();
 
     for (const bucket of state.buckets.values()) {
       // costByToolType predates the buckets table and only ever listed tools
       // that received a token event, so the fold keeps that contract. The
-      // SlashCommand channel isn't a real tool call — it charges a turn's
-      // full, unsplit cost to track skill usage (see recordSlashCommand()),
-      // and folding it in here would double-count against whichever real
-      // tool(s) that same turn already split its cost across.
+      // SlashCommand channel isn't a real tool call — it carries invocation
+      // counts only (see recordSlashCommand()), and folding it in here would
+      // double-count against whichever real tool(s) that same turn already
+      // split its cost across.
       if (bucket.toolName !== 'SlashCommand' && bucket.attributedCallCount > 0) {
         let entry = toolTypeAccum.get(bucket.toolName);
         if (entry === undefined) {
@@ -605,16 +589,24 @@ export class TurnCostAttributor {
           skillAccum.set(bucket.skillName, entry);
         }
         for (const counter of BUCKET_COUNTERS) entry[counter] += bucket[counter];
+
+        if (bucket.toolName === 'Skill' || bucket.toolName === 'SlashCommand') {
+          skillInvocations.set(
+            bucket.skillName,
+            (skillInvocations.get(bucket.skillName) ?? 0) + bucket.callCount,
+          );
+        }
       }
     }
 
     const costBySkill: Record<string, SkillCostEntry> = {};
     for (const [skillName, entry] of skillAccum) {
+      const invocations = skillInvocations.get(skillName) ?? 0;
       costBySkill[skillName] = {
-        callCount: entry.callCount,
+        callCount: invocations,
         attributedCallCount: entry.attributedCallCount,
         totalCost: entry.totalCost,
-        avgCost: entry.attributedCallCount > 0 ? entry.totalCost / entry.attributedCallCount : 0,
+        avgCost: invocations > 0 ? entry.totalCost / invocations : 0,
         inputTokens: Math.round(entry.inputTokens),
         outputTokens: Math.round(entry.outputTokens),
         cacheReadTokens: Math.round(entry.cacheReadTokens),
