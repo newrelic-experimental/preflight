@@ -507,6 +507,18 @@ describe('toolCallToNrEvent()', () => {
       });
       expect(event).not.toHaveProperty('skillName');
       expect(event).not.toHaveProperty('activeSkill');
+      expect(event).not.toHaveProperty('skill_parent_run_id');
+    });
+
+    it('emits skill_parent_run_id for a nested skill run', () => {
+      const record = makeRecord({
+        toolName: 'Read',
+        activeSkill: { name: 'unslop', source: 'tool', runId: 'run-2', parentRunId: 'run-1' },
+      });
+
+      const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event.skill_parent_run_id).toBe('run-1');
     });
 
     it('does not redact non-sensitive string fields', () => {

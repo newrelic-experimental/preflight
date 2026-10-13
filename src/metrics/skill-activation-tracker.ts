@@ -11,9 +11,10 @@ const DEFAULT_MAX_SESSIONS = 50;
  * Tracks the open skill run per session and per agent, so every tool call can
  * be stamped with the skill whose work it is. A run opens on a named `Skill`
  * tool call or a `/<skill>` prompt and lasts until the next prompt or the
- * next skill (last wins: there is no signal for a nested skill returning). A
- * subagent with no run of its own inherits the main agent's, since the parent
- * skill is what spawned it.
+ * next skill (last wins: there is no signal for a nested skill returning, so
+ * the new run records the one it replaced as its parent instead). A subagent
+ * with no run of its own inherits the main agent's, since the parent skill is
+ * what spawned it.
  */
 export class SkillActivationTracker implements Resettable {
   private readonly sessions = new Map<string, Map<string, SkillStamp>>();
@@ -37,10 +38,18 @@ export class SkillActivationTracker implements Resettable {
   recordToolCall(record: ToolCallRecord): SkillStamp | null {
     const runs = this.runsFor(record.sessionId);
     const agentKey = record.agentId ?? MAIN_AGENT_KEY;
+    const open = runs.get(agentKey) ?? runs.get(MAIN_AGENT_KEY);
     if (record.toolName === 'Skill' && record.skillName) {
-      runs.set(agentKey, { name: record.skillName, source: 'tool', runId: randomUUID() });
+      const stamp: SkillStamp = {
+        name: record.skillName,
+        source: 'tool',
+        runId: randomUUID(),
+        ...(open && { parentRunId: open.runId }),
+      };
+      runs.set(agentKey, stamp);
+      return stamp;
     }
-    return runs.get(agentKey) ?? runs.get(MAIN_AGENT_KEY) ?? null;
+    return open ?? null;
   }
 
   recordPrompt(sessionId: string | null | undefined, slashCommand: string | null): void {

@@ -295,6 +295,8 @@ export interface SkillStamp {
   readonly name: string;
   readonly source: SkillSource;
   readonly runId: string;
+  /** The run that was open when this one started, e.g. the skill that invoked this one. */
+  readonly parentRunId?: string;
 }
 
 export interface ToolCallRecord {

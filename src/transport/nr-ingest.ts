@@ -213,6 +213,7 @@ function skillRunAttributes(stamp: SkillStamp): NrEventData {
     skill_name: redactSensitive(stamp.name),
     skill_source: stamp.source,
     skill_run_id: stamp.runId,
+    ...(stamp.parentRunId !== undefined && { skill_parent_run_id: stamp.parentRunId }),
   };
 }
 
