@@ -445,8 +445,9 @@ fixes or removes it.
    version files. Then merge it. Every push to `main` gives the PR a new head commit, which
    drops its checks and its approval. When that happens, reopen it again and approve only once
    CI passes: `main` requires the approval but not CI, so the approval is the only gate. Before
-   merging, also check that no Release PR run is queued or in progress in the Actions tab,
-   since until it pushes, the PR still shows the old commit's green checks. If a push lands
+   merging, also check the Actions tab: no Release PR run should be queued or in progress, and
+   the latest one shouldn't have failed, since until a run pushes, the PR still shows the old
+   commit's green checks. If a push lands
    while the PR is closed, the workflow opens a new release PR instead; leave the old one
    closed, and close and reopen the new one before merging it.
 3. Right after the release PR merges, run the Release workflow
@@ -463,10 +464,12 @@ the changeset lands, and run Release then. That release also ships everything in
 keeps its CHANGELOG entry but never reaches npm under its own number.
 
 If Release fails after tagging, for example at the npm publish, use **Re-run failed jobs** on
-that run, which uses the commit it started from. Don't start a new run: by then `main` may
-have moved past the tagged commit, and Release refuses to run when the existing tag points at
-a different commit than the one it checked out, so it can't publish that commit under the tag's
-version. The GitHub release's notes are the version's CHANGELOG entry.
+that run, which uses the commit it started from. If only the Homebrew tap step failed, the run
+still finishes green (that step is allowed to fail, and shows a warning), so use **Re-run all
+jobs** instead; the steps already done skip themselves. Don't start a new run: by then `main`
+may have moved past the tagged commit, and Release refuses to run when the existing tag points
+at a different commit than the one it checked out, so it can't publish that commit under the
+tag's version. The GitHub release's notes are the version's CHANGELOG entry.
 
 If the Release PR workflow can't run, run `npm run version-packages` on a branch named
 `changeset-release/main` off `main`, commit the result, and open the PR yourself. CI's

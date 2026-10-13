@@ -88,7 +88,7 @@ jobs:
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
             git fetch --quiet --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
             if [ "$(git rev-parse "$TAG^{commit}")" != "$(git rev-parse HEAD)" ]; then
-              echo "::error::$TAG already exists and points at $(git rev-parse --short "$TAG^{commit}"), not this commit ($(git rev-parse --short HEAD)). If any step of the run that created it failed, re-run that run's failed jobs. Otherwise $VERSION is fully released, and this commit has nothing to release until the next release PR merges."
+              echo "::error::$TAG already exists and points at $(git rev-parse --short "$TAG^{commit}"), not this commit ($(git rev-parse --short HEAD)). Check the run that created it: if it's still running, wait for it; if a step failed, re-run that run's failed jobs; if only the Homebrew tap step failed (the run is green with a warning on that step), use Re-run all jobs. Otherwise $VERSION is fully released, and this commit has nothing to release until the next release PR merges."
               exit 1
             fi
             echo "Tag $TAG already exists on origin at this commit, skipping"
