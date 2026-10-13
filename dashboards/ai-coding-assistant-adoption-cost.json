@@ -1132,7 +1132,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "FROM AiTurnCost SELECT uniqueCount(skill_run_id) AS 'Runs', sum(cost_usd) AS 'Cost (USD)', sum(cost_usd) / uniqueCount(skill_run_id) AS 'USD / Run', sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS 'Tokens' WHERE skill_name IS NOT NULL FACET skill_name SINCE 7 days ago LIMIT 25"
+                "query": "FROM AiToolCall, AiTurnCost SELECT uniqueCount(skill_run_id) AS 'Runs', sum(cost_usd) AS 'Cost (USD)', sum(cost_usd) / uniqueCount(skill_run_id) AS 'USD / Run', sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS 'Tokens' WHERE skill_name IS NOT NULL FACET skill_name SINCE 7 days ago LIMIT 25"
               }
             ],
             "platformOptions": {

@@ -368,6 +368,11 @@ export class TurnCostAttributor {
     }
   }
 
+  /** Counts a run as soon as it opens, so one that never makes a tool call still has a row. */
+  recordSkillRun(sessionId: string | null | undefined, stamp: SkillStamp): void {
+    addSkillRun(this.getOrCreateSession(sessionId).skillRuns, stamp.name, stamp.runId);
+  }
+
   recordTokenEvent(event: TokenEvent): ClosedTurn | null {
     const state = this.getOrCreateSession(event.sessionId);
 
@@ -586,6 +591,14 @@ export class TurnCostAttributor {
         }
         for (const counter of BUCKET_COUNTERS) entry[counter] += bucket[counter];
       }
+    }
+
+    // A run whose replies made no tool calls has no bucket but still counts.
+    for (const skillName of state.skillRuns.keys()) {
+      if (skillAccum.has(skillName)) continue;
+      const entry = {} as Pick<AttributionBucket, (typeof BUCKET_COUNTERS)[number]>;
+      for (const counter of BUCKET_COUNTERS) entry[counter] = 0;
+      skillAccum.set(skillName, entry);
     }
 
     const costBySkill: Record<string, SkillCostEntry> = {};

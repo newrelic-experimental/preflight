@@ -690,14 +690,15 @@ function mergeSkillCostEntry(
   bucket: AttributionBucket,
 ): SkillCostEntry {
   const totalCost = (existing?.totalCost ?? 0) + bucket.costUsd;
+  // A persisted skill bucket's `count` is runs, not tool calls, and it keeps
+  // no attributed-call count, so it adds runs only; avgCost is per run on
+  // every path, matching SkillCostEntry.
   const callCount = (existing?.callCount ?? 0) + bucket.count;
-  // A persisted bucket only ever holds attributed cost, so every call it counts is attributed.
-  const attributedCallCount = (existing?.attributedCallCount ?? 0) + bucket.count;
   return {
     callCount,
-    attributedCallCount,
+    attributedCallCount: existing?.attributedCallCount ?? 0,
     totalCost,
-    avgCost: attributedCallCount > 0 ? totalCost / attributedCallCount : 0,
+    avgCost: callCount > 0 ? totalCost / callCount : 0,
     inputTokens: (existing?.inputTokens ?? 0) + (bucket.breakdown?.inputTokens ?? 0),
     outputTokens: (existing?.outputTokens ?? 0) + (bucket.breakdown?.outputTokens ?? 0),
     cacheReadTokens: (existing?.cacheReadTokens ?? 0) + (bucket.breakdown?.cacheReadTokens ?? 0),

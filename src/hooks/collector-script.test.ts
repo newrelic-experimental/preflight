@@ -1232,6 +1232,18 @@ describe('collector-script', () => {
       expect(event.slashCommand).toBe('simplify');
     });
 
+    it('captures a bare slash command with nothing after it', () => {
+      processHook(makeUserPromptSubmit({ prompt: '/loop' }));
+
+      expect(readBufferEvents()[0]!.slashCommand).toBe('loop');
+    });
+
+    it('omits slashCommand when the prompt starts with an absolute path', () => {
+      processHook(makeUserPromptSubmit({ prompt: '/Users/adam/app/src/foo.ts throws, fix it' }));
+
+      expect(readBufferEvents()[0]!.slashCommand).toBeUndefined();
+    });
+
     it('omits slashCommand when prompt does not start with slash', () => {
       processHook(makeUserPromptSubmit({ prompt: 'hello /not-a-command' }));
 

@@ -77,7 +77,7 @@ describe('SkillActivationTracker', () => {
     expect(stamp2!.runId).not.toBe(stamp1!.runId);
   });
 
-  it('prompt without slash clears all runs', () => {
+  it('prompt without slash closes the main run', () => {
     const t = new SkillActivationTracker();
     t.recordToolCall(
       makeRecord({
@@ -272,6 +272,58 @@ describe('SkillActivationTracker', () => {
 
     expect(toolRun!.parentRunId).toBeUndefined();
     expect(slashRun!.parentRunId).toBeUndefined();
+  });
+
+  it('a subagent keeps the run open when it first appeared after main moves on', () => {
+    const t = new SkillActivationTracker();
+    const spawning = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'a' }));
+    t.recordToolCall(makeRecord({ toolName: 'Read', agentId: 'bg-1' }));
+
+    t.recordPrompt('s1', 'simplify');
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'b' }));
+    const later = t.recordToolCall(makeRecord({ toolName: 'Bash', agentId: 'bg-1' }));
+
+    expect(later!.runId).toBe(spawning!.runId);
+  });
+
+  it('a subagent that appeared outside any run stays unattributed', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Read', agentId: 'bg-1' }));
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'a' }));
+
+    expect(t.recordToolCall(makeRecord({ toolName: 'Bash', agentId: 'bg-1' }))).toBeNull();
+  });
+
+  it('a failed or interrupted Skill call opens no run', () => {
+    const t = new SkillActivationTracker();
+    const stamp = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'code-review', success: false }),
+    );
+
+    expect(stamp).toBeNull();
+    expect(t.recordToolCall(makeRecord({ toolName: 'Read' }))).toBeNull();
+  });
+
+  it('recordPrompt returns the slash run it opens', () => {
+    const t = new SkillActivationTracker();
+
+    expect(t.recordPrompt('s1', 'simplify')).toMatchObject({ name: 'simplify', source: 'slash' });
+    expect(t.recordPrompt('s1', null)).toBeNull();
+  });
+
+  it('getMetrics lists each open run once, scoped by session when asked', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', 'a');
+    t.recordToolCall(makeRecord({ toolName: 'Read', agentId: 'sub-1' }));
+    t.recordPrompt('s2', 'b');
+
+    expect(
+      t
+        .getMetrics()
+        .openRuns.map((r) => r.name)
+        .sort(),
+    ).toEqual(['a', 'b']);
+    expect(t.getMetrics('s1').openRuns.map((r) => r.name)).toEqual(['a']);
   });
 
   it('reset clears everything', () => {
