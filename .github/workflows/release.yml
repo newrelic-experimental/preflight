@@ -212,9 +212,20 @@ jobs:
       # npm publish above. GitHub OIDC auth covers the
       # io.github.newrelic-experimental/* namespace with no extra secret.
       # It submits the committed server.json, whose version the release PR
-      # wrote and the version check above verified.
+      # wrote and the version check above verified. Like the steps above, it
+      # skips a version that's already there, so re-running a run (Re-run all
+      # jobs, after a failed tap step) doesn't submit it twice.
       - name: Publish to MCP Registry
         run: |
+          NAME="$(node -p "require('./server.json').name")"
+          VERSION="$(node -p "require('./server.json').version")"
+          ENCODED_NAME="$(node -p "encodeURIComponent(require('./server.json').name)")"
+          STATUS="$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://registry.modelcontextprotocol.io/v0/servers/$ENCODED_NAME/versions/$VERSION")"
+          if [ "$STATUS" = 200 ]; then
+            echo "$NAME $VERSION is already in the MCP Registry, skipping"
+            exit 0
+          fi
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
           ./mcp-publisher login github-oidc
           ./mcp-publisher publish
