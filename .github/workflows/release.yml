@@ -70,14 +70,15 @@ jobs:
           PART=entry VERSION="$VERSION" awk -f scripts/changelog-entry.awk CHANGELOG.md \
             > "$RUNNER_TEMP/release-notes.md"
           if [ ! -s "$RUNNER_TEMP/release-notes.md" ]; then
-            echo "::error::CHANGELOG.md's first section isn't a dated entry for $VERSION"
+            echo "::error::CHANGELOG.md's first section isn't a dated entry for $VERSION with a body: a '## $VERSION - YYYY-MM-DD' heading, then the entry"
             exit 1
           fi
 
       # A tag that already exists must point at this commit. Otherwise this is a fresh run on a
       # main that has moved past a release whose publish failed, and the steps below would
       # publish the newer commit under the older tag's version. Re-run the original run's
-      # failed jobs instead, which checks out the tagged commit.
+      # failed jobs instead, which checks out the tagged commit. If that run fully succeeded,
+      # there's nothing to release until the next release PR merges.
       - name: Create tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -87,12 +88,7 @@ jobs:
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
             git fetch --quiet --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
             if [ "$(git rev-parse "$TAG^{commit}")" != "$(git rev-parse HEAD)" ]; then
-              where="$TAG already exists and points at $(git rev-parse --short "$TAG^{commit}"), not this commit ($(git rev-parse --short HEAD))"
-              if npm view "@newrelic/preflight@$VERSION" version >/dev/null 2>&1; then
-                echo "::error::$where. $VERSION is already released, so this commit has nothing to release until the next release PR merges."
-              else
-                echo "::error::$where. Re-run the failed jobs of the run that created it instead of starting a new one."
-              fi
+              echo "::error::$TAG already exists and points at $(git rev-parse --short "$TAG^{commit}"), not this commit ($(git rev-parse --short HEAD)). If any step of the run that created it failed, re-run that run's failed jobs. Otherwise $VERSION is fully released, and this commit has nothing to release until the next release PR merges."
               exit 1
             fi
             echo "Tag $TAG already exists on origin at this commit, skipping"
