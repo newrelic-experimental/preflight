@@ -301,6 +301,27 @@ describe('Cross-session tool handlers', () => {
   // 4. get_collaboration_profile
   // -------------------------------------------------------------------------
 
+  it('handleGetCollaborationProfile falls back to the configured developer, not "unknown"', () => {
+    store.saveSession(makeSummary({ sessionId: 's-dev', userMessages: 10, toolCallCount: 20 }));
+    const profiler = new CollaborationProfiler({ sessionStore: store });
+
+    const result = handleGetCollaborationProfile(profiler, {}, 'alice');
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    expect(parsed.developer).toBe('alice');
+    expect(parsed.session_count).toBe(1);
+  });
+
+  it('handleGetCollaborationProfile reports insufficient data when the developer has no sessions', () => {
+    const profiler = new CollaborationProfiler({ sessionStore: store });
+
+    const result = handleGetCollaborationProfile(profiler, { developer: 'nobody' });
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    expect(parsed.session_count).toBe(0);
+    expect(parsed.classification).toBe('Insufficient data');
+  });
+
   it('handleGetCollaborationProfile returns dimension scores and classification', () => {
     store.saveSession(
       makeSummary({
@@ -404,6 +425,44 @@ describe('Cross-session tool handlers', () => {
     expect(parsed).toHaveProperty('total_cost');
     expect(parsed).toHaveProperty('total_tasks');
     expect(parsed).toHaveProperty('roi_estimate');
+  });
+
+  it('handleGetCostPerOutcome reads persisted sessions when a session store is given', () => {
+    store.saveSession(
+      makeSummary({
+        sessionId: 'cpo-1',
+        toolCallCount: 4,
+        toolBreakdown: { Write: 1, Edit: 3 },
+        filesModified: ['/src/a.ts'],
+        testRunCount: 0,
+        testPassCount: 0,
+        estimatedCostUsd: 2,
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: 'cpo-2',
+        toolCallCount: 2,
+        toolBreakdown: { Edit: 2 },
+        filesModified: ['/state.json'],
+        testRunCount: 0,
+        testPassCount: 0,
+        estimatedCostUsd: 1,
+      }),
+    );
+
+    const result = handleGetCostPerOutcome(
+      new CostPerOutcomeAnalyzer(),
+      new TaskDetector(),
+      {},
+      store,
+    );
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    expect(parsed.total_tasks).toBe(2);
+    expect(parsed.total_cost).toBe(3);
+    expect(parsed.outcome_distribution.feature.count).toBe(1);
+    expect(parsed.outcome_distribution.configuration.count).toBe(1);
   });
 
   it('handleGetCostPerOutcome filters tasks by since parameter', () => {

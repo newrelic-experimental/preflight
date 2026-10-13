@@ -1288,6 +1288,11 @@ describe('stdio integration', () => {
     try {
       await client.connect(transport);
       await client.listTools();
+      // An idle session is not persisted, so give the checkpoint something to write.
+      await client.callTool({
+        name: 'nr_observe_report_tokens',
+        arguments: { input_tokens: 100, output_tokens: 50, model: 'claude-sonnet-5' },
+      });
 
       const dateStr = new Date().toISOString().slice(0, 10);
       const expectedFile = resolve(
@@ -1350,6 +1355,11 @@ describe('stdio integration', () => {
     try {
       await client.connect(transport);
       await client.listTools();
+      // An idle session is not persisted, so give the checkpoint something to write.
+      await client.callTool({
+        name: 'nr_observe_report_tokens',
+        arguments: { input_tokens: 100, output_tokens: 50, model: 'claude-sonnet-5' },
+      });
 
       // The spawned child sees this test process as its ppid — same
       // convention as the existing correction tests.
@@ -1460,6 +1470,11 @@ describe('stdio integration', () => {
     try {
       await client.connect(transport);
       await client.listTools();
+      // An idle session is not persisted, so give the checkpoint something to write.
+      await client.callTool({
+        name: 'nr_observe_report_tokens',
+        arguments: { input_tokens: 100, output_tokens: 50, model: 'claude-sonnet-5' },
+      });
     } catch (err) {
       cleanup();
       throw err;
@@ -1861,6 +1876,25 @@ describe('stdio integration', () => {
         'corrected-resume-session-id',
       );
 
+      // The correction resets accumulated cost, so usage has to land after it
+      // for the corrected session to be worth a checkpoint file.
+      let corrected = false;
+      for (let i = 0; i < 20 && !corrected; i++) {
+        const stats = await client.callTool({
+          name: 'nr_observe_get_session_stats',
+          arguments: {},
+        });
+        const text = (stats.content as Array<{ text: string }>)[0]?.text ?? '{}';
+        corrected =
+          (JSON.parse(text) as { session_id: string }).session_id === 'corrected-resume-session-id';
+        if (!corrected) await new Promise((r) => setTimeout(r, 300));
+      }
+      expect(corrected).toBe(true);
+      await client.callTool({
+        name: 'nr_observe_report_tokens',
+        arguments: { input_tokens: 100, output_tokens: 50, model: 'claude-sonnet-5' },
+      });
+
       const dateStr = new Date().toISOString().slice(0, 10);
       const expectedFile = resolve(
         tmpStoragePath,
@@ -1922,6 +1956,11 @@ describe('stdio integration', () => {
     try {
       await client.connect(transport);
       await client.listTools();
+      // An idle session is not persisted, so give the checkpoint something to write.
+      await client.callTool({
+        name: 'nr_observe_report_tokens',
+        arguments: { input_tokens: 100, output_tokens: 50, model: 'claude-sonnet-5' },
+      });
 
       await client.close();
 

@@ -25,6 +25,7 @@ import { getIsoWeekId } from '../storage/weekly-summary.js';
 import type { TrendAnalyzer } from '../metrics/trend-analyzer.js';
 import type { CollaborationProfiler } from '../metrics/collaboration-profile.js';
 import type { ClaudeMdTracker } from '../metrics/claudemd-tracker.js';
+import { attributeSessionCosts } from '../metrics/cost-per-outcome.js';
 import type { CostPerOutcomeAnalyzer } from '../metrics/cost-per-outcome.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
@@ -145,13 +146,14 @@ export const CLAUDEMD_IMPACT_TOOL = {
 export const COST_PER_OUTCOME_TOOL = {
   name: 'nr_observe_get_cost_per_outcome',
   description:
-    'Get cost breakdown by outcome type (bug fix, feature, refactor, etc.) with waste ratio and ROI estimate.',
+    'Get cost breakdown by outcome type (bug fix, feature, refactor, etc.) with waste ratio and ROI estimate. When session history is available, each saved session counts as one task, and the current session is included as of its last 30s checkpoint.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       since: {
         type: 'string',
-        description: 'ISO date string to filter from (e.g., "2026-04-01")',
+        description:
+          'ISO date string to filter from (e.g., "2026-04-01"). Saved sessions are filtered by start date, not time of day.',
       },
     },
   },
@@ -465,14 +467,23 @@ export function handleGetTrends(
   };
 }
 
+/**
+ * An explicit `developer` argument wins. Without one, the tool's documented
+ * "current developer" is the configured one, not the literal 'unknown' (no
+ * session is ever stored under that name, so every default call came back empty).
+ */
+function resolveDeveloper(requested: unknown, defaultDeveloper: string | undefined): string {
+  const fallback = defaultDeveloper?.trim() || 'unknown';
+  if (typeof requested !== 'string') return fallback;
+  return requested.trim().slice(0, 256) || fallback;
+}
+
 export function handleGetCollaborationProfile(
   collaborationProfiler: CollaborationProfiler,
   args: { developer?: string },
+  defaultDeveloper?: string,
 ) {
-  const developer =
-    typeof args.developer === 'string'
-      ? args.developer.trim().slice(0, 256) || 'unknown'
-      : 'unknown';
+  const developer = resolveDeveloper(args.developer, defaultDeveloper);
   const profile = collaborationProfiler.computeProfile(developer);
   const comparison = collaborationProfiler.compareToTeam(developer);
 
@@ -549,7 +560,49 @@ export function handleGetCostPerOutcome(
   costPerOutcomeAnalyzer: CostPerOutcomeAnalyzer,
   taskDetector: TaskDetector,
   args: { since?: string },
+  sessionStore?: SessionStore,
 ) {
+  if (sessionStore) {
+    // Live task state belongs to this process alone, so a fresh MCP server
+    // reported almost nothing. Persisted sessions include this process
+    // (checkpointed every 30s) and every earlier one.
+    let since: Date | undefined;
+    if (args.since) {
+      since = new Date(args.since);
+      if (isNaN(since.getTime())) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ error: `Invalid since date: "${args.since}"` }),
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+    const attribution = attributeSessionCosts(sessionStore.loadAllSessions({ since }));
+    const roi = costPerOutcomeAnalyzer.estimateROI(attribution, 75); // default $75/hr
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify(
+            {
+              outcome_distribution: attribution.outcomeDistribution,
+              waste_ratio: attribution.wasteRatio,
+              total_cost: attribution.totalCost,
+              total_tasks: attribution.totalTasks,
+              roi_estimate: roi,
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  }
+
   let tasks = taskDetector.getCompletedTasks();
 
   const current = taskDetector.getCurrentTask();
@@ -599,11 +652,9 @@ export function handleGetCostPerOutcome(
 export function handleGetRecommendations(
   recommendationEngine: RecommendationEngine,
   args: { developer?: string; topN?: number },
+  defaultDeveloper?: string,
 ) {
-  const developer =
-    typeof args.developer === 'string'
-      ? args.developer.trim().slice(0, 256) || 'unknown'
-      : 'unknown';
+  const developer = resolveDeveloper(args.developer, defaultDeveloper);
   const recs = recommendationEngine.generateAllRecommendations(developer, {
     topN: args.topN,
   });
@@ -1160,9 +1211,11 @@ export function registerCrossSessionTools(deps: CrossSessionToolsDeps): Register
       handle: (args) => {
         const check = requireTracker(deps.collaborationProfiler, 'CollaborationProfiler');
         if (!check.ok) return check.result;
-        return handleGetCollaborationProfile(check.value, {
-          developer: args?.developer as string | undefined,
-        });
+        return handleGetCollaborationProfile(
+          check.value,
+          { developer: args?.developer as string | undefined },
+          deps.developer,
+        );
       },
     },
     {
@@ -1183,9 +1236,12 @@ export function registerCrossSessionTools(deps: CrossSessionToolsDeps): Register
           'CostPerOutcomeAnalyzer or TaskDetector not available',
         );
         if (missing) return missing;
-        return handleGetCostPerOutcome(deps.costPerOutcomeAnalyzer!, deps.taskDetector!, {
-          since: args?.since as string | undefined,
-        });
+        return handleGetCostPerOutcome(
+          deps.costPerOutcomeAnalyzer!,
+          deps.taskDetector!,
+          { since: args?.since as string | undefined },
+          deps.sessionStore,
+        );
       },
     },
     {
@@ -1194,10 +1250,14 @@ export function registerCrossSessionTools(deps: CrossSessionToolsDeps): Register
       handle: (args) => {
         const check = requireTracker(deps.recommendationEngine, 'RecommendationEngine');
         if (!check.ok) return check.result;
-        return handleGetRecommendations(check.value, {
-          developer: args?.developer as string | undefined,
-          topN: args?.topN as number | undefined,
-        });
+        return handleGetRecommendations(
+          check.value,
+          {
+            developer: args?.developer as string | undefined,
+            topN: args?.topN as number | undefined,
+          },
+          deps.developer,
+        );
       },
     },
     {

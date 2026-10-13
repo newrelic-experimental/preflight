@@ -684,6 +684,30 @@ describe('attributeSessionCosts', () => {
     expect(result.wasteRatio).toBeCloseTo(0.2941, 3);
   });
 
+  it('does not count sessions with no tool calls and no cost as feature work', () => {
+    const idle = {
+      testRunCount: 0,
+      testPassCount: 0,
+      filesModified: [] as string[],
+      toolBreakdown: {},
+      toolCallCount: 0,
+      estimatedCostUsd: 0,
+    };
+    const result = attributeSessionCosts([
+      idle,
+      idle,
+      {
+        ...idle,
+        filesModified: ['src/x.ts'],
+        toolBreakdown: { Write: 1 },
+        toolCallCount: 1,
+        estimatedCostUsd: 0.1,
+      },
+    ]);
+    expect(result.totalTasks).toBe(1);
+    expect(result.outcomeDistribution.feature.count).toBe(1);
+  });
+
   it('handles null estimatedCostUsd as zero', () => {
     const result = attributeSessionCosts([
       {

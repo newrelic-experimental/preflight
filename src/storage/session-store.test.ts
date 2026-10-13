@@ -574,6 +574,38 @@ describe('SessionStore', () => {
     expect(store.loadSession('clobber-me')!.toolCallCount).toBe(12);
   });
 
+  it('does not create a file for a session that recorded no usage', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    store.saveSession(
+      makeSummary({
+        sessionId: 'idle-window',
+        toolCallCount: 0,
+        toolBreakdown: {},
+        model: null,
+        estimatedCostUsd: 0,
+        tokensInput: 0,
+        tokensOutput: 0,
+        tokensThinking: 0,
+      }),
+    );
+
+    expect(store.loadSession('idle-window')).toBeNull();
+  });
+
+  it('still creates a file for a chat-only session with cost but no tool calls', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    store.saveSession(
+      makeSummary({
+        sessionId: 'chat-only',
+        toolCallCount: 0,
+        toolBreakdown: {},
+        estimatedCostUsd: 0.4,
+      }),
+    );
+
+    expect(store.loadSession('chat-only')).not.toBeNull();
+  });
+
   it('still overwrites when the new summary has activity', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const startTime = new Date('2026-04-15T10:00:00Z').getTime();
