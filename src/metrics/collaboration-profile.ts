@@ -79,7 +79,10 @@ export class CollaborationProfiler {
 
     const dimensions = computeDimensions(sessions);
     const weeklyProfiles = computeWeeklyProfiles(sessions);
-    const classification = classify(dimensions, hasRealDelegation(sessions));
+    const classification =
+      sessions.length === 0
+        ? 'Insufficient data'
+        : classify(dimensions, hasRealDelegation(sessions));
 
     return {
       developer,
