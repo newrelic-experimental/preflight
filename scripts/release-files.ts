@@ -14,9 +14,10 @@
  *     Fails if any of those files disagrees with package.json, or if the newest CHANGELOG
  *     entry isn't for package.json's version. Without --base, which is how release.yml runs it
  *     before tagging, it also fails while .changeset/ holds a changeset that releases
- *     something. With --base it fails if, since its merge base with <ref>, HEAD has changed the
- *     version or an already-released CHANGELOG entry, or deleted, emptied, or lowered a pending
- *     changeset's bump; CI runs that on every PR except the release PR.
+ *     something, or one it can't read. With --base it fails if, since its merge base with
+ *     <ref>, HEAD has changed the version or an already-released CHANGELOG entry, deleted,
+ *     emptied, or lowered a pending changeset's bump, or holds a changeset it can't read; CI
+ *     runs that on every PR except the release PR.
  */
 import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -303,24 +304,20 @@ export interface Snapshot {
  * version file that disagrees with package.json.
  */
 export function findBranchProblems(base: Snapshot, head: Snapshot): string[] {
-  const baseTexts = new Set(base.changesets.values());
   return [
     ...findReleaseEdits(base.read, head.read),
-    // Only the changesets this PR adds or edits: text the merge base doesn't already hold under
-    // any name, so neither leaving one that reached main unreadable alone nor renaming it
-    // unchanged fails a PR. Release still refuses to run while one is pending.
-    ...findUnreadableChangesets(
-      new Map([...head.changesets].filter(([, text]) => !baseTexts.has(text))),
-    ),
+    // Every changeset in the head, as Release reads them all and npm test parses them all.
+    ...findUnreadableChangesets(head.changesets),
     ...findDroppedReleases(base.changesets, head.changesets),
     ...findVersionMismatches(head.read),
   ];
 }
 
 /**
- * Each changeset this script can't read, as a problem. findBranchProblems runs it on the
- * changesets a PR adds or edits, so the PR that adds an unreadable one is the one that fails,
- * not every PR after it merges.
+ * Each changeset this script can't read, as a problem. findBranchProblems runs it on a PR's
+ * changesets, so the PR that adds an unreadable one fails. If one reaches main anyway (a
+ * maintainer merged over the check), every PR fails until one fixes or removes it, and
+ * findReleaseBlockers keeps Release from running meanwhile.
  */
 export function findUnreadableChangesets(changesets: ReadonlyMap<string, string>): string[] {
   const problems: string[] = [];

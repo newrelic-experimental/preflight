@@ -337,22 +337,21 @@ describe('findBranchProblems', () => {
     const odd = "---\n'@newrelic/preflight': soon\n---\n";
     const onMain = { read: files, changesets: new Map([['odd.md', odd]]) };
 
-    it("passes a PR that doesn't touch it", () => {
+    // Only a maintainer merging over the check gets one there. npm test's repo-wide parse fails
+    // every PR then too, so this check fails them the same way until one fixes it.
+    it("fails a PR that doesn't touch it", () => {
       const unrelated = new Map([
         ['odd.md', odd],
         ['other.md', makeChangeset('patch')],
       ]);
-      expect(findBranchProblems(onMain, { read: files, changesets: unrelated })).toEqual([]);
+      expect(findBranchProblems(onMain, { read: files, changesets: unrelated })).toEqual([
+        expect.stringMatching(/^\.changeset\/odd\.md has a frontmatter line/),
+      ]);
     });
 
     it('passes the PR that fixes it', () => {
       const fixed = new Map([['odd.md', makeChangeset('patch')]]);
       expect(findBranchProblems(onMain, { read: files, changesets: fixed })).toEqual([]);
-    });
-
-    it('passes a PR that only renames it', () => {
-      const renamed = new Map([['odd-renamed.md', odd]]);
-      expect(findBranchProblems(onMain, { read: files, changesets: renamed })).toEqual([]);
     });
 
     it('fails a PR that edits it and leaves it unreadable', () => {
@@ -672,7 +671,8 @@ describe('the files in this repo', () => {
   });
 
   it('hold only changesets whose frontmatter Release can read', () => {
-    // Release throws on a changeset it can't read, so catch one in the PR that adds it.
+    // Release refuses to run while a changeset it can't read is pending, so catch one in the PR
+    // that adds it.
     for (const [name, text] of readPendingChangesets(resolve(repoRoot, '.changeset'))) {
       expect(() => changesetReleases(text, name)).not.toThrow();
     }
