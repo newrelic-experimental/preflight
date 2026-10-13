@@ -350,6 +350,11 @@ describe('findBranchProblems', () => {
       expect(findBranchProblems(onMain, { read: files, changesets: fixed })).toEqual([]);
     });
 
+    it('passes a PR that only renames it', () => {
+      const renamed = new Map([['odd-renamed.md', odd]]);
+      expect(findBranchProblems(onMain, { read: files, changesets: renamed })).toEqual([]);
+    });
+
     it('fails a PR that edits it and leaves it unreadable', () => {
       const stillOdd = new Map([['odd.md', `${odd}\nReworded.\n`]]);
       expect(findBranchProblems(onMain, { read: files, changesets: stillOdd })).toEqual([
@@ -565,6 +570,15 @@ describe('findReleaseBlockers', () => {
   it('passes a release commit whose only pending changesets are empty', () => {
     const changesets = new Map([['tooling.md', '---\n---\n\nTooling only.\n']]);
     expect(findReleaseBlockers(makeReader(makeFiles('1.63.1')), changesets)).toEqual([]);
+  });
+
+  it('blocks a commit with a changeset it cannot read, and says how to fix it', () => {
+    const changesets = new Map([['odd.md', "---\n'@newrelic/preflight': soon\n---\n"]]);
+    expect(findReleaseBlockers(makeReader(makeFiles('1.63.1')), changesets)).toEqual([
+      expect.stringMatching(
+        /^\.changeset\/odd\.md has a frontmatter line .* Write each bump as `'@newrelic\/preflight': patch`/,
+      ),
+    ]);
   });
 
   it('blocks a commit where a changeset merged after the release PR', () => {

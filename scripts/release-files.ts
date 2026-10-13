@@ -232,9 +232,12 @@ export function findPendingReleases(
   changesets: ReadonlyMap<string, string>,
   version: string,
 ): string[] {
+  // An unreadable changeset is reported by findUnreadableChangesets in findReleaseBlockers.
   const releasing = [...changesets]
     .filter(([name, text]) =>
-      [...changesetReleases(text, `.changeset/${name}`).values()].some((bump) => bump !== 'none'),
+      [...(readReleasesOrUndefined(text, `.changeset/${name}`)?.values() ?? [])].some(
+        (bump) => bump !== 'none',
+      ),
     )
     .map(([name]) => `.changeset/${name}`)
     .sort();
@@ -251,7 +254,8 @@ export function findPendingReleases(
 
 /**
  * Everything that stops Release from tagging this commit: a version file that disagrees with
- * package.json, and a pending changeset whose change the CHANGELOG entry leaves out.
+ * package.json, a pending changeset whose change the CHANGELOG entry leaves out, and a pending
+ * changeset this script can't read, since it can't tell whether that one releases something.
  */
 export function findReleaseBlockers(
   read: ReadFile,
@@ -259,6 +263,7 @@ export function findReleaseBlockers(
 ): string[] {
   return [
     ...findVersionMismatches(read),
+    ...findUnreadableChangesets(changesets),
     ...findPendingReleases(changesets, readPackageJson(read).version),
   ];
 }
@@ -298,12 +303,14 @@ export interface Snapshot {
  * version file that disagrees with package.json.
  */
 export function findBranchProblems(base: Snapshot, head: Snapshot): string[] {
+  const baseTexts = new Set(base.changesets.values());
   return [
     ...findReleaseEdits(base.read, head.read),
-    // Only the changesets this PR adds or edits, so one that reached main unreadable fails the
-    // PR that fixes it (if that PR leaves it unreadable) and no other.
+    // Only the changesets this PR adds or edits: text the merge base doesn't already hold under
+    // any name, so neither leaving one that reached main unreadable alone nor renaming it
+    // unchanged fails a PR. Release still refuses to run while one is pending.
     ...findUnreadableChangesets(
-      new Map([...head.changesets].filter(([name, text]) => base.changesets.get(name) !== text)),
+      new Map([...head.changesets].filter(([, text]) => !baseTexts.has(text))),
     ),
     ...findDroppedReleases(base.changesets, head.changesets),
     ...findVersionMismatches(head.read),
