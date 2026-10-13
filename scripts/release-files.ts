@@ -195,8 +195,9 @@ export function findVersionMismatches(read: ReadFile): string[] {
 }
 
 // A frontmatter line naming a package and its bump, as `changeset add` writes it:
-// `'@newrelic/preflight': minor`. The quotes are optional, and a trailing comment is allowed.
-const CHANGESET_RELEASE = /^(['"]?)([^'"]+)\1\s*:\s*(major|minor|patch|none)\s*(?:#.*)?$/;
+// `'@newrelic/preflight': minor`. Either side may be quoted, as YAML (and so Changesets)
+// allows, and a trailing comment is allowed.
+const CHANGESET_RELEASE = /^(['"]?)([^'"]+)\1\s*:\s*(['"]?)(major|minor|patch|none)\3\s*(?:#.*)?$/;
 
 /**
  * The bump a changeset asks for, by package name: none for an empty changeset
@@ -216,7 +217,7 @@ export function changesetReleases(text: string, label: string): Map<string, stri
     if (trimmed === '' || trimmed.startsWith('#')) continue;
     const m = CHANGESET_RELEASE.exec(trimmed);
     if (!m) throw new Error(`${label} has a frontmatter line this script can't read: ${trimmed}`);
-    releases.set(m[2], m[3]);
+    releases.set(m[2], m[4]);
   }
   return releases;
 }
@@ -299,9 +300,37 @@ export interface Snapshot {
 export function findBranchProblems(base: Snapshot, head: Snapshot): string[] {
   return [
     ...findReleaseEdits(base.read, head.read),
+    ...findUnreadableChangesets(head.changesets),
     ...findDroppedReleases(base.changesets, head.changesets),
     ...findVersionMismatches(head.read),
   ];
+}
+
+/**
+ * Each changeset this script can't read, as a problem. Run on the PR's own changesets, so the
+ * PR that adds an unreadable one is the one that fails, not every PR after it merges.
+ */
+export function findUnreadableChangesets(changesets: ReadonlyMap<string, string>): string[] {
+  const problems: string[] = [];
+  for (const [name, text] of [...changesets].sort(([a], [b]) => a.localeCompare(b))) {
+    try {
+      changesetReleases(text, `.changeset/${name}`);
+    } catch (err: unknown) {
+      problems.push(
+        `${err instanceof Error ? err.message : String(err)} Write each bump as ` +
+          `\`'@newrelic/preflight': patch\`, \`minor\`, or \`major\` (${CHANGESETS_DOC}).`,
+      );
+    }
+  }
+  return problems;
+}
+
+function readReleasesOrUndefined(text: string, label: string): Map<string, string> | undefined {
+  try {
+    return changesetReleases(text, label);
+  } catch {
+    return undefined;
+  }
 }
 
 const BUMP_RANK: Readonly<Record<string, number>> = { none: 0, patch: 1, minor: 2, major: 3 };
@@ -311,18 +340,24 @@ const BUMP_RANK: Readonly<Record<string, number>> = { none: 0, patch: 1, minor: 
  * bumped something and was deleted, emptied, or lowered to a smaller bump. Both maps are file
  * name to contents. Only the release PR consumes changesets, and any of these drops a change
  * from the next CHANGELOG entry, or shrinks its bump, without anything else noticing. Deleting
- * an empty changeset drops nothing, so it passes.
+ * an empty changeset drops nothing, and renaming one without changing it keeps its release, so
+ * both pass. A changeset this script can't read is skipped here; findUnreadableChangesets
+ * reports it when it's the PR's own.
  */
 export function findDroppedReleases(
   base: ReadonlyMap<string, string>,
   head: ReadonlyMap<string, string>,
 ): string[] {
+  const addedTexts = new Set([...head].filter(([name]) => !base.has(name)).map(([, t]) => t));
   const dropped: string[] = [];
   for (const [name, text] of [...base].sort(([a], [b]) => a.localeCompare(b))) {
     const label = `.changeset/${name}`;
-    const before = changesetReleases(text, label);
+    const before = readReleasesOrUndefined(text, label);
+    if (before === undefined) continue;
     const headText = head.get(name);
-    const after = headText === undefined ? undefined : changesetReleases(headText, label);
+    if (headText === undefined && addedTexts.has(text)) continue;
+    const after = headText === undefined ? undefined : readReleasesOrUndefined(headText, label);
+    if (headText !== undefined && after === undefined) continue;
     for (const [pkg, bump] of before) {
       if (bump === 'none') continue;
       if (after === undefined) {
@@ -339,7 +374,8 @@ export function findDroppedReleases(
   return [
     `${dropped.join('; ')}. Only the release PR consumes changesets, so restore what was ` +
       `dropped; to change an entry's text, edit its changeset in place (${CHANGESETS_DOC}). If ` +
-      'this PR reverts the change a changeset describes, a maintainer can merge over this check.',
+      'this PR reverts the change a changeset describes, or a reviewer agreed a bump should be ' +
+      'lower, a maintainer can merge over this check.',
   ];
 }
 

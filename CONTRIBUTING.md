@@ -417,10 +417,12 @@ was wrong and what happens now. When an entry runs long, lead with one bolded se
 summary goes into the CHANGELOG exactly as written, and Prettier checks `.changeset/` files
 like any others, so run `npm run format` before committing.
 
-**Changing a changeset that's already on `main`.** Edit its text in place, or raise its bump.
-CI fails a PR that deletes a pending changeset, empties it, or lowers its bump, since any of
-those quietly drops a change from the next release. The one exception is a PR that reverts the
-change a changeset describes, where a maintainer can merge over the check.
+**Changing a changeset that's already on `main`.** Edit its text in place, raise its bump, or
+rename the file without changing it. CI fails a PR that deletes a pending changeset, empties
+it, or lowers its bump, since any of those quietly drops a change from the next release. A
+maintainer can merge over the check for a PR that reverts the change a changeset describes,
+or when a reviewer agrees a bump should be lower. CI also fails a PR whose own changeset it
+can't read, so write each bump as `'@newrelic/preflight': patch` (or `minor`, or `major`).
 
 ### Releasing
 

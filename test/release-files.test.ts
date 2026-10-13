@@ -285,6 +285,13 @@ describe('findDroppedReleases', () => {
     expect(findDroppedReleases(base, head)).toEqual([]);
   });
 
+  it('passes a PR that renames a changeset without changing it', () => {
+    const head = new Map(base);
+    head.delete('feature.md');
+    head.set('feature-renamed.md', makeChangeset('minor'));
+    expect(findDroppedReleases(base, head)).toEqual([]);
+  });
+
   it('passes a PR that deletes an empty changeset, which drops nothing', () => {
     const head = new Map(base);
     head.delete('tooling.md');
@@ -313,6 +320,29 @@ describe('findDroppedReleases', () => {
 });
 
 describe('findBranchProblems', () => {
+  it('fails the PR that adds a changeset this script cannot read', () => {
+    const files = makeReader(makeFiles('1.63.1'));
+    const problems = findBranchProblems(
+      { read: files, changesets: new Map() },
+      { read: files, changesets: new Map([['odd.md', "---\n'@newrelic/preflight': soon\n---\n"]]) },
+    );
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(
+      /^\.changeset\/odd\.md has a frontmatter line this script can't read/,
+    );
+  });
+
+  it("doesn't fail a later PR over an unreadable changeset it didn't add or touch", () => {
+    // If one reached main anyway, the PR that fixes it must pass, and others only see it once.
+    const files = makeReader(makeFiles('1.63.1'));
+    const odd = "---\n'@newrelic/preflight': soon\n---\n";
+    const fixing = findBranchProblems(
+      { read: files, changesets: new Map([['odd.md', odd]]) },
+      { read: files, changesets: new Map([['odd.md', makeChangeset('patch')]]) },
+    );
+    expect(fixing).toEqual([]);
+  });
+
   it('compares the merge base with the head, not the other way round', () => {
     const files = makeReader(makeFiles('1.63.1'));
     const problems = findBranchProblems(
@@ -353,6 +383,8 @@ describe('readChangesetsAtCommit', () => {
     env = {
       ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
       HOME: dir,
+      // Git also reads $XDG_CONFIG_HOME/git/config as global config.
+      XDG_CONFIG_HOME: dir,
       GIT_CONFIG_NOSYSTEM: '1',
     };
     const git = (...args: string[]) =>
@@ -402,6 +434,15 @@ describe('changesetReleases', () => {
     );
     expect(changesetReleases('---\npreflight: major # breaking\n---\n', 'c.md')).toEqual(
       new Map([['preflight', 'major']]),
+    );
+  });
+
+  it('reads a quoted bump, which Changesets accepts too', () => {
+    expect(changesetReleases("---\n'@newrelic/preflight': 'minor'\n---\n", 'd.md')).toEqual(
+      new Map([['@newrelic/preflight', 'minor']]),
+    );
+    expect(changesetReleases('---\n"@newrelic/preflight": "patch"\n---\n', 'e.md')).toEqual(
+      new Map([['@newrelic/preflight', 'patch']]),
     );
   });
 
