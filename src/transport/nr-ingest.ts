@@ -180,6 +180,8 @@ const STANDARD_KEYS = new Set([
   'platform',
   'agentId',
   'agentType',
+  'skillName',
+  'activeSkill',
 ]);
 
 /**
@@ -203,7 +205,6 @@ const REDACT_FIELD_KEYS = new Set([
   'grepPath',
   'globPath',
   'agentTeamName',
-  'skillName',
 ]);
 
 export function attachTeamAttribution(
@@ -279,6 +280,12 @@ export function toolCallToNrEvent(
     } else if (typeof value === 'number' || typeof value === 'boolean') {
       event[key] = value;
     }
+  }
+
+  if (record.activeSkill) {
+    event.skill_name = redactSensitive(record.activeSkill.name);
+    event.skill_source = record.activeSkill.source;
+    event.skill_run_id = record.activeSkill.runId;
   }
 
   return event;
@@ -921,8 +928,10 @@ export function turnCostToNrEvents(
       platform,
     };
 
-    if (call.skillName !== null) {
-      event.skillName = redactSensitive(call.skillName);
+    if (call.skill !== null) {
+      event.skill_name = redactSensitive(call.skill.name);
+      event.skill_source = call.skill.source;
+      event.skill_run_id = call.skill.runId;
     }
 
     if (attrs.teamId) event.team_id = attrs.teamId;
