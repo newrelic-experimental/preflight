@@ -814,7 +814,6 @@ describe('TurnCostAttributor', () => {
       const attributor = new TurnCostAttributor();
       const skill = { name: 'code-review', source: 'slash' as const, runId: 'run-1' };
 
-      attributor.recordSlashCommand('sess-001', 'code-review');
       attributor.recordToolCall(
         makeRecord({ toolName: 'Skill', activeSkill: skill, timestamp: 1000 }),
       );
@@ -826,7 +825,6 @@ describe('TurnCostAttributor', () => {
       const attributor = new TurnCostAttributor();
       const skill = { name: 'simplify', source: 'slash' as const, runId: 'run-1' };
 
-      attributor.recordSlashCommand('sess-001', 'simplify');
       attributor.recordToolCall(
         makeRecord({ toolUseId: 'toolu_001', activeSkill: skill, timestamp: 1000 }),
       );
@@ -866,97 +864,55 @@ describe('TurnCostAttributor', () => {
     });
   });
 
-  describe('recordSlashCommand()', () => {
-    it('records slash command invocations counted as callCount', () => {
+  describe('skill invocation counts', () => {
+    it('counts one invocation per run id, across tool and slash runs of the same skill', () => {
       const attributor = new TurnCostAttributor();
-
-      attributor.recordSlashCommand('sess-001', 'pstack:poteto-mode');
-      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
-      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
-
-      const metrics = attributor.getMetrics();
-      const entry = metrics.costBySkill['pstack:poteto-mode'];
-      expect(entry).toBeDefined();
-      expect(entry!.callCount).toBe(1);
-    });
-
-    it('slash command is not charged after calling recordSlashCommand with null', () => {
-      const attributor = new TurnCostAttributor();
-
-      attributor.recordSlashCommand('sess-001', 'simplify');
-      attributor.recordSlashCommand('sess-001', null);
-      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 2000 }));
-      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 2100 }));
-
-      const metrics = attributor.getMetrics();
-      const entry = metrics.costBySkill.simplify;
-      expect(entry).toBeDefined();
-      expect(entry!.callCount).toBe(1);
-      expect(entry!.attributedCallCount).toBe(0);
-      expect(entry!.totalCost).toBe(0);
-    });
-
-    it('folds Skill and SlashCommand invocation counts for the same skill into one costBySkill row', () => {
-      const attributor = new TurnCostAttributor();
-      const skill = { name: 'design', source: 'tool' as const, runId: 'run-1' };
+      const toolRun = { name: 'design', source: 'tool' as const, runId: 'run-1' };
+      const slashRun = { name: 'design', source: 'slash' as const, runId: 'run-2' };
 
       attributor.recordToolCall(
         makeRecord({
           toolName: 'Skill',
-          activeSkill: skill,
-          skillName: skill.name,
+          skillName: 'design',
+          activeSkill: toolRun,
           timestamp: 1000,
-          toolUseId: 'skill-1',
         }),
       );
-      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+      attributor.recordToolCall(makeRecord({ activeSkill: toolRun, timestamp: 1500 }));
+      attributor.recordToolCall(makeRecord({ activeSkill: slashRun, timestamp: 5000 }));
 
-      attributor.recordSlashCommand('sess-001', 'design');
-      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_002', timestamp: 5000 }));
-      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 5100 }));
-
-      const metrics = attributor.getMetrics();
-      const entry = metrics.costBySkill.design;
-      expect(entry).toBeDefined();
-      expect(entry!.callCount).toBe(2);
+      expect(attributor.getMetrics().costBySkill.design.callCount).toBe(2);
     });
 
-    it('aggregates slash command invocations across sessions in no-arg getMetrics()', () => {
+    it('aggregates runs across sessions in no-arg getMetrics()', () => {
       const attributor = new TurnCostAttributor();
 
-      attributor.recordSlashCommand('sess-001', 'code-review');
       attributor.recordToolCall(
-        makeRecord({ sessionId: 'sess-001', toolUseId: 'toolu_001', timestamp: 1000 }),
+        makeRecord({
+          sessionId: 'sess-001',
+          activeSkill: { name: 'code-review', source: 'slash', runId: 'run-1' },
+        }),
       );
-      attributor.recordTokenEvent(makeTokenEvent({ sessionId: 'sess-001', timestamp: 1100 }));
-
-      attributor.recordSlashCommand('sess-002', 'code-review');
       attributor.recordToolCall(
-        makeRecord({ sessionId: 'sess-002', toolUseId: 'toolu_002', timestamp: 5000 }),
+        makeRecord({
+          sessionId: 'sess-002',
+          activeSkill: { name: 'code-review', source: 'slash', runId: 'run-2' },
+        }),
       );
-      attributor.recordTokenEvent(makeTokenEvent({ sessionId: 'sess-002', timestamp: 5100 }));
 
-      const metrics = attributor.getMetrics();
-      const entry = metrics.costBySkill['code-review'];
-      expect(entry).toBeDefined();
-      expect(entry!.callCount).toBe(2);
+      expect(attributor.getMetrics().costBySkill['code-review'].callCount).toBe(2);
+      expect(attributor.getMetrics('sess-001').costBySkill['code-review'].callCount).toBe(1);
     });
 
-    it('does not double-count an active slash command into costByToolType', () => {
+    it('a call outside any run belongs to no skill', () => {
       const attributor = new TurnCostAttributor();
 
-      attributor.recordSlashCommand('sess-001', 'pstack:poteto-mode');
       attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
       attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
 
       const metrics = attributor.getMetrics();
-      expect(metrics.costByToolType.SlashCommand).toBeUndefined();
-      expect(metrics.costByToolType.Read!.totalCost).toBeCloseTo(metrics.totalAttributedCost, 10);
-      const sumByToolType = Object.values(metrics.costByToolType).reduce(
-        (sum, entry) => sum + entry.totalCost,
-        0,
-      );
-      expect(sumByToolType).toBeCloseTo(metrics.totalAttributedCost, 10);
+      expect(metrics.costBySkill).toEqual({});
+      expect(metrics.costByToolType.Read.totalCost).toBeCloseTo(metrics.totalAttributedCost, 10);
     });
   });
 

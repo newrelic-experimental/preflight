@@ -1,16 +1,7 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { SkillActivationTracker } from './skill-activation-tracker.js';
+import { describe, it, expect } from '@jest/globals';
+
 import type { ToolCallRecord } from '../storage/types.js';
-
-let stderrSpy: ReturnType<typeof jest.spyOn>;
-
-beforeEach(() => {
-  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
-});
-
-afterEach(() => {
-  stderrSpy.mockRestore();
-});
+import { SkillActivationTracker } from './skill-activation-tracker.js';
 
 function makeRecord(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
   return {
@@ -126,7 +117,7 @@ describe('SkillActivationTracker', () => {
 
   it('subagent skill call is scoped to that agentId', () => {
     const t = new SkillActivationTracker();
-    const _mainStamp = t.recordToolCall(
+    t.recordToolCall(
       makeRecord({
         toolName: 'Skill',
         skillName: 'main-skill',
@@ -135,7 +126,7 @@ describe('SkillActivationTracker', () => {
       }),
     );
 
-    const _subagentStamp = t.recordToolCall(
+    t.recordToolCall(
       makeRecord({
         toolName: 'Skill',
         skillName: 'subagent-skill',

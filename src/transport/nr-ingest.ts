@@ -23,7 +23,7 @@ import {
 const logger = createLogger('nr-ingest');
 import { redactSensitive } from '../config.js';
 import { VERSION } from '../version.js';
-import type { ToolCallRecord, SubagentTokenEvent } from '../storage/types.js';
+import type { SkillStamp, ToolCallRecord, SubagentTokenEvent } from '../storage/types.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import type { OutcomeType } from '../metrics/cost-per-outcome.js';
@@ -207,6 +207,15 @@ const REDACT_FIELD_KEYS = new Set([
   'agentTeamName',
 ]);
 
+/** The skill-run attributes shared by AiToolCall and AiTurnCost. */
+function skillRunAttributes(stamp: SkillStamp): NrEventData {
+  return {
+    skill_name: redactSensitive(stamp.name),
+    skill_source: stamp.source,
+    skill_run_id: stamp.runId,
+  };
+}
+
 export function attachTeamAttribution(
   event: NrEventData,
   attrs: {
@@ -282,11 +291,7 @@ export function toolCallToNrEvent(
     }
   }
 
-  if (record.activeSkill) {
-    event.skill_name = redactSensitive(record.activeSkill.name);
-    event.skill_source = record.activeSkill.source;
-    event.skill_run_id = record.activeSkill.runId;
-  }
+  if (record.activeSkill) Object.assign(event, skillRunAttributes(record.activeSkill));
 
   return event;
 }
@@ -928,11 +933,7 @@ export function turnCostToNrEvents(
       platform,
     };
 
-    if (call.skill !== null) {
-      event.skill_name = redactSensitive(call.skill.name);
-      event.skill_source = call.skill.source;
-      event.skill_run_id = call.skill.runId;
-    }
+    if (call.skill !== null) Object.assign(event, skillRunAttributes(call.skill));
 
     if (attrs.teamId) event.team_id = attrs.teamId;
     if (attrs.projectId) event.project_id = attrs.projectId;
