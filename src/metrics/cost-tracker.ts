@@ -114,7 +114,7 @@ export interface EstimatedModelUsage extends UnpricedModelUsage {
  * The part of the session total that came from byte-size estimates
  * (`recordEstimatedTokens`) rather than a real token report. Kept as its own
  * ledger so the first real report can take it back out: the same turns arrive
- * again as exact usage once the transcript watcher reads from byte 0. See #882.
+ * again as exact usage once the transcript watcher reads from byte 0.
  */
 export interface ByteEstimateLedger {
   readonly costUsd: number;

@@ -2359,7 +2359,7 @@ async function main(): Promise<void> {
         // A --stdio engine's CostTracker total is persisted as its own
         // session's cost, so another session's exact tokens (drained while the
         // id is still provisional) are priced for that session's rollup only.
-        // --local owns no single session and keeps folding everything (#883).
+        // --local owns no single session and keeps folding everything.
         const isForeignToStdioSession =
           options.stdio && !isOwnSessionRecord(tokenEvent.sessionId ?? null, sessionTraceId);
         let breakdown: CostBreakdown;

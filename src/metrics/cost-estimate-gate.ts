@@ -34,7 +34,6 @@ export function shouldApplyCostEstimate(params: CostEstimateParams): boolean {
  * as ours. Applies to exact token events as well as byte estimates: a
  * provisional `--stdio` engine drains every session's buffer before its own id
  * resolves, and would otherwise persist a crashed session's cost as its own.
- * See #883.
  */
 export function isOwnSessionRecord(recordSessionId: string | null, ownSessionId: string): boolean {
   return recordSessionId === null || recordSessionId === ownSessionId;

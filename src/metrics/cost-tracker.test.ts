@@ -1796,7 +1796,7 @@ describe('priceUsage()', () => {
   });
 });
 
-describe('byte-estimate ledger (#882)', () => {
+describe('byte-estimate ledger', () => {
   const real = makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 });
   const MODEL = 'claude-sonnet-4';
 
