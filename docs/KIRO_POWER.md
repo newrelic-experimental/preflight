@@ -246,5 +246,6 @@ before looking anywhere else.
 - **`kiro-power/skills/observability/`** — the `observability` Agent Skill
   (`SKILL.md`), documenting the `nr_observe_*` tools.
 
-> **Note:** `plugin.json`'s `version` field is not auto-synced from
-> `package.json` — bump both together when cutting a release.
+> **Note:** the release PR writes `plugin.json`'s `version` along with
+> `package.json`'s (`npm run version-packages`), so don't bump it by hand. See
+> [Changesets](../CONTRIBUTING.md#changesets).

@@ -186,8 +186,8 @@ describe('Claude Code plugin manifests', () => {
   });
 
   it('plugin.json version stays in sync with package.json', () => {
-    // Not auto-synced (docs/PLUGIN.md) — this test exists to catch drift
-    // that would otherwise only surface at release time.
+    // `npm run version-packages` writes it in the release PR
+    // (scripts/release-files.ts); this catches a hand edit in any other PR.
     expect(pluginManifest.version).toBe(packageJson.version);
   });
 
@@ -252,11 +252,11 @@ describe('Claude Code plugin manifests', () => {
   });
 
   it('kiro-power/plugin.json version stays in sync with package.json', () => {
-    // Not auto-synced (no registry/publish step reads it) — this went two
-    // releases stale (1.36.0, 1.37.0) with nothing catching it before this
-    // test existed. See CLAUDE.md and .github/workflows/release.yml's
-    // "Verify manifest versions are in sync" gate for the release-time half
-    // of this check.
+    // No registry or publish step reads it, so when it was bumped by hand it
+    // went two releases stale (1.36.0, 1.37.0) before this test existed. Now
+    // `npm run version-packages` writes it in the release PR
+    // (scripts/release-files.ts), and release.yml's `check:release-files`
+    // step is the release-time half of this check.
     expect(kiroPluginManifest.version).toBe(packageJson.version);
   });
 
