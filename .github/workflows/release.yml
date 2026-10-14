@@ -1,6 +1,9 @@
 name: Release
 
-# Triggered manually from the GitHub Actions UI.
+# Triggered manually from the GitHub Actions UI, after the "Chore: Release x.y.z"
+# PR that release-pr.yml opens has merged. That PR bumps the version in every
+# file that carries it and adds the CHANGELOG entry; this releases what it
+# merged.
 # Creates a git tag, a GitHub release, and publishes to npm via
 # npm Trusted Publishing (OIDC — no NPM_TOKEN secret required).
 # Requires the Node.js Agent team to configure the OIDC connection
@@ -13,6 +16,9 @@ permissions:
 
 jobs:
   publish:
+    # Releases come from main only. Any other branch, including the release PR's own
+    # changeset-release/main before it merges, would publish unreviewed commits.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       HUSKY: 0 # disable git hooks in CI
@@ -44,34 +50,48 @@ jobs:
       - name: Verify plugin hook bundle is up to date
         run: npm run verify:plugin-hook
 
-      # main is protected by rulesets with zero bypass actors, so this job
-      # can't push a fix-up commit — it can only fail loudly and point at
-      # the PR that needs to land first.
-      - name: Verify manifest versions are in sync
-        run: |
-          node -e "
-            const version = require('./package.json').version;
-            const mismatches = [];
-            for (const path of ['plugin/.claude-plugin/plugin.json', 'kiro-power/plugin.json']) {
-              const p = require('./' + path);
-              if (p.version !== version) {
-                mismatches.push(path + ' is at ' + p.version + ', expected ' + version);
-              }
-            }
-            if (mismatches.length) {
-              console.error(mismatches.join('\n'));
-              console.error('Fix these in a merged PR before releasing — this workflow cannot push directly to main.');
-              process.exit(1);
-            }
-          "
+      # Checks that package-lock.json, server.json, and both plugin manifests
+      # carry package.json's version, and that the newest CHANGELOG entry is
+      # for it. Also fails while .changeset/ holds a changeset that releases
+      # something, or one it can't read: the tag below goes on this checkout, so
+      # its change would ship under a version whose entry leaves it out. main
+      # only takes changes through a reviewed PR, so this job can't push a
+      # fix-up commit. It can only fail loudly and point at the PR that needs
+      # to land first, which is normally the release PR.
+      - name: Verify version files are in sync
+        run: npm run check:release-files
 
+      # The release notes are the version's CHANGELOG entry, the text the release PR was
+      # reviewed with, rather than a list of merged PR titles. Extracted before the tag is
+      # pushed, so a CHANGELOG this can't read stops the run while there's nothing to undo.
+      - name: Extract release notes
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          PART=entry VERSION="$VERSION" awk -f scripts/changelog-entry.awk CHANGELOG.md \
+            > "$RUNNER_TEMP/release-notes.md"
+          if [ ! -s "$RUNNER_TEMP/release-notes.md" ]; then
+            echo "::error::CHANGELOG.md's first section isn't a dated entry for $VERSION with a body: a '## $VERSION - YYYY-MM-DD' heading, then the entry"
+            exit 1
+          fi
+
+      # A tag that already exists must point at this commit. Otherwise this is a fresh run on a
+      # main that has moved past a release whose publish failed, and the steps below would
+      # publish the newer commit under the older tag's version. Re-run the original run's
+      # failed jobs instead, which checks out the tagged commit. If that run fully succeeded,
+      # there's nothing to release until the next release PR merges.
       - name: Create tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v$(node -p "require('./package.json').version")"
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v$VERSION"
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists on origin, skipping"
+            git fetch --quiet --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
+            if [ "$(git rev-parse "$TAG^{commit}")" != "$(git rev-parse HEAD)" ]; then
+              echo "::error::$TAG already exists and points at $(git rev-parse --short "$TAG^{commit}"), not this commit ($(git rev-parse --short HEAD)). Check the run that created it: if it's still running, wait for it; if a step failed, re-run that run's failed jobs; if only the Homebrew tap step failed (the run is green with a warning on that step), use Re-run all jobs. Otherwise $VERSION is fully released, and this commit has nothing to release until the next release PR merges."
+              exit 1
+            fi
+            echo "Tag $TAG already exists on origin at this commit, skipping"
           else
             git tag "$TAG"
             git push origin "$TAG"
@@ -85,7 +105,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists, skipping"
           else
-            gh release create "$TAG" --generate-notes
+            gh release create "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
           fi
 
       - name: Publish to npm
@@ -127,14 +147,13 @@ jobs:
 
       # homebrew/Formula/preflight.rb points at the npm tarball, so this must
       # run after the npm availability wait above — update-homebrew.sh curls
-      # the tarball to hash it. This mutates the local checkout only (same
-      # reasoning as the server.json sync below: main's ruleset means this
-      # job can't push the bump back). The tap repo lives outside this job's
-      # default GITHUB_TOKEN scope, so it needs the separately-scoped
-      # HOMEBREW_TAP_TOKEN — and that repo's own org-wide ruleset requires a
-      # PR with one approving review on its default branch, so this opens a
-      # PR and arms auto-merge rather than pushing to main directly; a
-      # maintainer still needs to approve it once before it merges.
+      # the tarball to hash it. This mutates the local checkout only, since
+      # this job can't push to main (see the version check above). The tap
+      # repo lives outside this job's default GITHUB_TOKEN scope, so it needs
+      # the separately-scoped HOMEBREW_TAP_TOKEN — and that repo's own org-wide
+      # ruleset requires a PR with one approving review on its default branch,
+      # so this opens a PR and arms auto-merge rather than pushing to main
+      # directly; a maintainer still needs to approve it once before it merges.
       # continue-on-error keeps a tap failure from blocking the MCP Registry
       # publish below; the failure still shows as an annotation on the run.
       - name: Update Homebrew tap
@@ -192,24 +211,21 @@ jobs:
       # npm package carries a matching `mcpName`, so this must run after the
       # npm publish above. GitHub OIDC auth covers the
       # io.github.newrelic-experimental/* namespace with no extra secret.
-      # This mutates the job's local checkout only — main's ruleset (see
-      # above) means it can't be pushed back, so it exists purely to make
-      # this run's registry submission correct even if the checked-in
-      # server.json (which has no hard gate like the plugin manifests do)
-      # drifted.
-      - name: Sync server.json version
-        run: |
-          node -e "
-            const fs = require('node:fs');
-            const version = require('./package.json').version;
-            const s = JSON.parse(fs.readFileSync('server.json', 'utf8'));
-            s.version = version;
-            s.packages[0].version = version;
-            fs.writeFileSync('server.json', JSON.stringify(s, null, 2) + '\n');
-          "
-
+      # It submits the committed server.json, whose version the release PR
+      # wrote and the version check above verified. Like the steps above, it
+      # skips a version that's already there, so re-running a run (Re-run all
+      # jobs, after a failed tap step) doesn't submit it twice.
       - name: Publish to MCP Registry
         run: |
+          NAME="$(node -p "require('./server.json').name")"
+          VERSION="$(node -p "require('./server.json').version")"
+          ENCODED_NAME="$(node -p "encodeURIComponent(require('./server.json').name)")"
+          STATUS="$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://registry.modelcontextprotocol.io/v0/servers/$ENCODED_NAME/versions/$VERSION")"
+          if [ "$STATUS" = 200 ]; then
+            echo "$NAME $VERSION is already in the MCP Registry, skipping"
+            exit 0
+          fi
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
           ./mcp-publisher login github-oidc
           ./mcp-publisher publish
