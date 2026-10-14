@@ -68,6 +68,13 @@ export type PersistedCostBaseline = Pick<
   'estimatedCostUsd' | 'subagentCostUsd' | 'costByDayUsd' | 'subagentCostByDayUsd'
 >;
 
+interface EmittedCost {
+  readonly costUsd: number;
+  readonly subagentCostUsd: number;
+  readonly costByDayUsd: ReadonlyMap<string, number>;
+  readonly subagentCostByDayUsd: ReadonlyMap<string, number>;
+}
+
 export interface LocalSessionAggregatorOptions {
   /**
    * Called at most once per session, on that session's first subagent
@@ -116,6 +123,12 @@ export interface LocalSessionRollup {
   subagentCostByDayUsd: Map<string, number>;
   /** Set once the persisted baseline has been folded in — see recordTokenUsage. */
   costBaselineApplied: boolean;
+  /**
+   * The cost quadruple as of the last `toSummaries()` call, i.e. what this
+   * aggregator has already offered to the session file. A later baseline fold
+   * subtracts it, because the file may be this aggregator's own checkpoint.
+   */
+  lastEmittedCost: EmittedCost | null;
   tokensInput: number;
   tokensOutput: number;
   tokensCacheRead: number;
@@ -353,6 +366,7 @@ export class LocalSessionAggregator {
         subagentCostUsd: 0,
         subagentCostByDayUsd: new Map(),
         costBaselineApplied: false,
+        lastEmittedCost: null,
         tokensInput: 0,
         tokensOutput: 0,
         tokensCacheRead: 0,
@@ -554,13 +568,21 @@ export class LocalSessionAggregator {
     rollup.costBaselineApplied = true;
     const baseline = this.persistedCostBaseline?.(sessionId) ?? null;
     if (baseline === null) return;
-    rollup.costUsd += baseline.estimatedCostUsd ?? 0;
-    rollup.subagentCostUsd += baseline.subagentCostUsd;
+    const emitted = rollup.lastEmittedCost;
+    rollup.costUsd += excessOver(baseline.estimatedCostUsd ?? 0, emitted?.costUsd);
+    rollup.subagentCostUsd += excessOver(baseline.subagentCostUsd, emitted?.subagentCostUsd);
     for (const [day, usd] of Object.entries(baseline.costByDayUsd ?? {})) {
-      rollup.costByDayUsd.set(day, (rollup.costByDayUsd.get(day) ?? 0) + usd);
+      rollup.costByDayUsd.set(
+        day,
+        (rollup.costByDayUsd.get(day) ?? 0) + excessOver(usd, emitted?.costByDayUsd.get(day)),
+      );
     }
     for (const [day, usd] of Object.entries(baseline.subagentCostByDayUsd ?? {})) {
-      rollup.subagentCostByDayUsd.set(day, (rollup.subagentCostByDayUsd.get(day) ?? 0) + usd);
+      rollup.subagentCostByDayUsd.set(
+        day,
+        (rollup.subagentCostByDayUsd.get(day) ?? 0) +
+          excessOver(usd, emitted?.subagentCostByDayUsd.get(day)),
+      );
     }
   }
 
@@ -597,6 +619,12 @@ export class LocalSessionAggregator {
     for (const rollup of this.sessions.values()) {
       if (!hasAttributableActivity(rollup)) continue;
       const models = [...rollup.models];
+      rollup.lastEmittedCost = {
+        costUsd: rollup.costUsd,
+        subagentCostUsd: rollup.subagentCostUsd,
+        costByDayUsd: new Map(rollup.costByDayUsd),
+        subagentCostByDayUsd: new Map(rollup.subagentCostByDayUsd),
+      };
       out.push({
         sessionId: rollup.sessionId,
         sessionName: null,
@@ -670,6 +698,16 @@ export class LocalSessionAggregator {
     }
     return out;
   }
+}
+
+/**
+ * What `persisted` holds beyond `emitted`. A session file only ever grows
+ * relative to what this aggregator last wrote (the store merges by max), so
+ * the difference is what another writer added; with nothing emitted yet the
+ * whole persisted figure is foreign.
+ */
+function excessOver(persisted: number, emitted: number | undefined): number {
+  return Math.max(0, persisted - (emitted ?? 0));
 }
 
 /**

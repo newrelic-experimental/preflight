@@ -1654,6 +1654,54 @@ describe('buildSessionSummary', () => {
     expect(none.estimatedByModel).toBeUndefined();
   });
 
+  it('mergeSummaries lets the incoming byteEstimates replace the existing ledger instead of taking the max', () => {
+    const ledger = (costUsd: number) => ({
+      costUsd,
+      inputTokens: 0,
+      outputTokens: 0,
+      costByModel: {},
+      costByDayUsd: {},
+    });
+    const existing = makeSummary({ byteEstimates: ledger(0.5) });
+
+    expect(
+      mergeSummaries(existing, makeSummary({ byteEstimates: ledger(0) })).byteEstimates,
+    ).toEqual(ledger(0));
+    expect(mergeSummaries(existing, makeSummary()).byteEstimates).toEqual(ledger(0.5));
+    expect(mergeSummaries(makeSummary(), makeSummary()).byteEstimates).toBeUndefined();
+  });
+
+  it('deserializeFullSessionSummary keeps only well-formed byteEstimates fields', () => {
+    const raw = {
+      sessionId: 'sess-byte-estimates',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+      byteEstimates: {
+        costUsd: 0.25,
+        inputTokens: 'bad',
+        outputTokens: 40,
+        costByModel: { a: 0.25, b: 'nope' },
+        costByDayUsd: [1],
+      },
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.byteEstimates).toEqual({
+      costUsd: 0.25,
+      inputTokens: 0,
+      outputTokens: 40,
+      costByModel: { a: 0.25 },
+      costByDayUsd: {},
+    });
+    const none = deserializeFullSessionSummary({
+      ...raw,
+      byteEstimates: 'x',
+    } as unknown as Record<string, unknown>);
+    expect(none.byteEstimates).toBeUndefined();
+  });
+
   it('mergeSummaries unions timeline entries from both sides instead of keeping only the longer array', () => {
     // Simulates a Claude Code --stdio resume: the old process's on-disk
     // timeline is longer than what the new process has accumulated so far,

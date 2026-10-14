@@ -35,5 +35,6 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     daySubagentCostUsd: persisted.subagentCostUsd * todayRatio,
     ...(persisted.unpricedByModel && { unpricedByModel: persisted.unpricedByModel }),
     ...(persisted.estimatedByModel && { estimatedByModel: persisted.estimatedByModel }),
+    ...(persisted.byteEstimates && { byteEstimates: persisted.byteEstimates }),
   };
 }

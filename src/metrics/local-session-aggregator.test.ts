@@ -686,6 +686,58 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
   });
 });
 
+describe('LocalSessionAggregator baseline fold after its own checkpoint', () => {
+  const DAY = new Date(2026, 8, 10, 12).getTime();
+
+  it('does not re-add parent cost the aggregator already checkpointed', () => {
+    let file: ReturnType<typeof summariesOf>[number] | undefined;
+    const agg = new LocalSessionAggregator({
+      persistedCostBaseline: () =>
+        file === undefined
+          ? null
+          : {
+              estimatedCostUsd: file.estimatedCostUsd as number,
+              subagentCostUsd: file.subagentCostUsd as number,
+              costByDayUsd: file.costByDayUsd as Record<string, number>,
+              subagentCostByDayUsd: file.subagentCostByDayUsd as Record<string, number>,
+            },
+    });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
+    [file] = summariesOf(agg);
+
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.estimatedCostUsd).toBe(6);
+    expect(summary?.subagentCostUsd).toBe(1);
+    expect(summary?.costByDayUsd).toEqual({ '2026-09-10': 6 });
+    expect(summary?.subagentCostByDayUsd).toEqual({ '2026-09-10': 1 });
+  });
+
+  it('still folds the part of the file another writer added beyond the checkpoint', () => {
+    let fileCost = 0;
+    const agg = new LocalSessionAggregator({
+      persistedCostBaseline: () => ({
+        estimatedCostUsd: fileCost,
+        subagentCostUsd: 0,
+        costByDayUsd: { '2026-09-10': fileCost },
+        subagentCostByDayUsd: {},
+      }),
+    });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
+    summariesOf(agg);
+    fileCost = 8;
+
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.estimatedCostUsd).toBe(9);
+    expect(summary?.costByDayUsd).toEqual({ '2026-09-10': 9 });
+  });
+});
+
 describe('stripHeredocs', () => {
   it.each([
     ['a closed heredoc', "cat <<'EOF'\ngit push\nEOF\ngit log", "cat <<'EOF'\ngit log", false],
