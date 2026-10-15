@@ -217,13 +217,16 @@ function numAttr(v: unknown): number {
 
 /**
  * The attribution fields every record shape carries. Pre wins over post for
- * `cwd`, `agentId`, `agentType`, and `platform`: the collector stamps both,
- * and pre is the event that observed the call start. The collector copies the
+ * `transcriptPath`, `permissionMode`, `cwd`, `agentId`, `agentType`, and
+ * `platform`: the collector stamps both, and pre is the event that observed
+ * the call start. The collector copies the
  * envelope's `agent_type` raw, so it passes `normalizeAgentType()` here like
  * every other type source; an invalid value counts as absent, which leaves it
  * for `backfillAgentType()` to fill.
  */
 function attributionFields(pre: PreHookEvent | undefined, post?: PostHookEvent) {
+  const transcriptPath = pre?.transcriptPath ?? post?.transcriptPath;
+  const permissionMode = pre?.permissionMode ?? post?.permissionMode;
   const cwd = pre?.cwd ?? post?.cwd;
   const agentId = pre?.agentId ?? post?.agentId;
   const agentType = normalizeAgentType(pre?.agentType) ?? normalizeAgentType(post?.agentType);
@@ -231,8 +234,8 @@ function attributionFields(pre: PreHookEvent | undefined, post?: PostHookEvent) 
   return {
     ...(pre?.inputSize !== undefined && { inputSizeBytes: pre.inputSize }),
     ...(pre?.inputHash !== undefined && { inputHash: pre.inputHash }),
-    ...(pre?.transcriptPath !== undefined && { transcriptPath: pre.transcriptPath }),
-    ...(pre?.permissionMode !== undefined && { permissionMode: pre.permissionMode }),
+    ...(transcriptPath !== undefined && { transcriptPath }),
+    ...(permissionMode !== undefined && { permissionMode }),
     ...(cwd !== undefined && { cwd }),
     ...(agentId !== undefined && { agentId }),
     ...(agentType !== undefined && { agentType }),
