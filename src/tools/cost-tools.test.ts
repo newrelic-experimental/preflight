@@ -346,7 +346,6 @@ describe('handleGetPromptCacheHealth()', () => {
     // we need precise control, so spy on getMetrics instead.
     jest.spyOn(tracker, 'getMetrics').mockReturnValue({
       sessionTotalCostUsd: null,
-      costByTask: null,
       costByModel: {},
       costPerLineOfCode: null,
       costPerFileModified: null,

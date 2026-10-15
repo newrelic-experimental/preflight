@@ -264,6 +264,32 @@ describe('HookEventProcessor', () => {
       expect(record.agentType).toBe('Explore');
     });
 
+    it('falls back to the post event transcriptPath/permissionMode when the pre event has none', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent(),
+        makePostEvent({ transcriptPath: '/tmp/post-transcript.jsonl', permissionMode: 'plan' }),
+      ]);
+
+      const record = records[0]!;
+      expect(record.transcriptPath).toBe('/tmp/post-transcript.jsonl');
+      expect(record.permissionMode).toBe('plan');
+    });
+
+    it('prefers the pre event transcriptPath/permissionMode over a conflicting post value', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent({ transcriptPath: '/tmp/pre.jsonl', permissionMode: 'default' }),
+        makePostEvent({ transcriptPath: '/tmp/post.jsonl', permissionMode: 'plan' }),
+      ]);
+
+      const record = records[0]!;
+      expect(record.transcriptPath).toBe('/tmp/pre.jsonl');
+      expect(record.permissionMode).toBe('default');
+    });
+
     it('falls back to the post event cwd when the pre event has none', () => {
       const processor = new HookEventProcessor({ store, onRecord });
 

@@ -964,7 +964,6 @@ describe('buildSessionSummary', () => {
     const mockCostTracker = {
       getMetrics: () => ({
         sessionTotalCostUsd: 0.12,
-        costByTask: null,
         costPerLineOfCode: null,
         costPerFileModified: null,
         model: 'claude-opus-4-20250514',
@@ -1788,7 +1787,6 @@ describe('buildSessionSummary', () => {
     // recordTokenUsage with real cache tokens so fields are non-zero
     jest.spyOn(costTracker, 'getMetrics').mockReturnValue({
       sessionTotalCostUsd: 0.05,
-      costByTask: null,
       costByModel: {},
       costPerLineOfCode: null,
       costPerFileModified: null,
@@ -1832,7 +1830,6 @@ describe('buildSessionSummary', () => {
     const costTracker = new CostTracker();
     jest.spyOn(costTracker, 'getMetrics').mockReturnValue({
       sessionTotalCostUsd: 0.05,
-      costByTask: null,
       costByModel: {},
       costPerLineOfCode: null,
       costPerFileModified: null,
