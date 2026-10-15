@@ -233,7 +233,6 @@ export interface CostBreakdown {
 
 export interface CostMetrics {
   readonly sessionTotalCostUsd: number | null;
-  readonly costByTask: null;
   readonly costByModel: Record<string, number>;
   readonly costPerLineOfCode: number | null;
   readonly costPerFileModified: number | null;

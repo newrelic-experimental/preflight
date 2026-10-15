@@ -435,7 +435,6 @@ describe('CostTracker', () => {
       expect(metrics.costPerLineOfCode).toBeNull();
       expect(metrics.costPerFileModified).toBeNull();
       expect(metrics.costPerMillionTokens).toBeNull();
-      expect(metrics.costByTask).toBeNull();
       expect(metrics.model).toBeNull();
       expect(metrics.latestCostBreakdown).toBeNull();
       expect(metrics.reportCount).toBe(0);
