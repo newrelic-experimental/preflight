@@ -87,6 +87,14 @@ function scaleCostBreakdown(breakdown: CostBreakdown, factor: number): CostBreak
   };
 }
 
+function subtractFromMap(target: Map<string, number>, amounts: ReadonlyMap<string, number>): void {
+  for (const [key, usd] of amounts) {
+    const remaining = (target.get(key) ?? 0) - usd;
+    if (remaining > 1e-12) target.set(key, remaining);
+    else target.delete(key);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -100,6 +108,20 @@ export interface UnpricedModelUsage {
 export interface EstimatedModelUsage extends UnpricedModelUsage {
   /** Table id whose price stood in for this model's missing one. */
   readonly estimatedFrom: string;
+}
+
+/**
+ * The part of the session total that came from byte-size estimates
+ * (`recordEstimatedTokens`) rather than a real token report. Kept as its own
+ * ledger so the first real report can take it back out: the same turns arrive
+ * again as exact usage once the transcript watcher reads from byte 0.
+ */
+export interface ByteEstimateLedger {
+  readonly costUsd: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly costByModel: Readonly<Record<string, number>>;
+  readonly costByDayUsd: Readonly<Record<string, number>>;
 }
 
 export interface CostMetrics {
@@ -124,6 +146,13 @@ export interface CostMetrics {
   readonly totalCacheSavingsUsd: number;
   readonly reportCount: number;
   readonly estimationCount: number;
+  /**
+   * Byte-estimated share of the totals still awaiting a real report. Present
+   * once any estimate has been recorded or seeded; all-zero after a real
+   * report took the estimates back out, so a persisted copy is overwritten
+   * rather than left stale.
+   */
+  readonly byteEstimates?: ByteEstimateLedger;
   readonly latestCostBreakdown: CostBreakdown | null;
   /** Cumulative cost attributed to subagent calls (ctx.agentId was set). */
   readonly subagentCostUsd: number;
@@ -220,6 +249,8 @@ export interface CostTrackerSeed {
   readonly costByWorkflowRunId: Readonly<Record<string, Readonly<Record<string, number>>>>;
   readonly unpricedByModel?: Readonly<Record<string, UnpricedModelUsage>>;
   readonly estimatedByModel?: Readonly<Record<string, EstimatedModelUsage>>;
+  /** Restored separately because `seedFromPersisted` counts as a report. See `ByteEstimateLedger`. */
+  readonly byteEstimates?: ByteEstimateLedger;
 }
 
 export interface SubagentMetrics {
@@ -251,6 +282,13 @@ export class CostTracker implements Resettable {
   private currentModel: string | null = null;
   private reportCount = 0;
   private estimationCount = 0;
+  private byteEstimateCostUsd = 0;
+  private byteEstimateInputTokens = 0;
+  private byteEstimateOutputTokens = 0;
+  private byteEstimateCostByModel = new Map<string, number>();
+  private byteEstimateCostByDay = new Map<string, number>();
+  /** True once a ledger exists to report, even if a real report has since emptied it. */
+  private hasByteEstimateHistory = false;
   private latestCostBreakdown: CostBreakdown | null = null;
   private costByModel = new Map<string, number>();
   private unpricedByModel = new Map<string, UnpricedModelUsage>();
@@ -310,6 +348,19 @@ export class CostTracker implements Resettable {
   }
 
   /**
+   * Prices a usage without recording it, applying this tracker's rate
+   * multiplier. For events that belong to another session: the caller still
+   * needs the dollar figure for that session's own rollup, but must not fold it
+   * into this process-wide total.
+   */
+  priceUsage(usage: TokenUsage, model: string): CostBreakdown {
+    const { breakdown } = priceModelUsage(model, usage);
+    return this.rateMultiplier === 1
+      ? breakdown
+      : scaleCostBreakdown(breakdown, this.rateMultiplier);
+  }
+
+  /**
    * Primary path: record exact token usage from self-reporting.
    *
    * The optional `ctx` argument lets the subagent watcher attribute tokens
@@ -319,6 +370,9 @@ export class CostTracker implements Resettable {
    */
   recordTokenUsage(usage: TokenUsage, model: string, ctx?: TokenRecordContext): CostBreakdown {
     this.reportCount++;
+    // A subagent report says nothing about the parent's own turns, which is
+    // what the byte estimates stand in for.
+    if (ctx?.agentId === undefined) this.discardByteEstimates();
     return this.accumulateTokens(usage, model, ctx);
   }
 
@@ -339,7 +393,42 @@ export class CostTracker implements Resettable {
     };
 
     this.estimationCount++;
-    return this.accumulateTokens(usage, model);
+    const nowMs = Date.now();
+    const breakdown = this.accumulateTokens(usage, model, { timestampMs: nowMs });
+    this.hasByteEstimateHistory = true;
+    this.byteEstimateCostUsd += breakdown.totalUsd;
+    this.byteEstimateInputTokens += inputTokens;
+    this.byteEstimateOutputTokens += outputTokens;
+    this.byteEstimateCostByModel.set(
+      model,
+      (this.byteEstimateCostByModel.get(model) ?? 0) + breakdown.totalUsd,
+    );
+    const dayKey = localDateKey(nowMs);
+    this.byteEstimateCostByDay.set(
+      dayKey,
+      (this.byteEstimateCostByDay.get(dayKey) ?? 0) + breakdown.totalUsd,
+    );
+    return breakdown;
+  }
+
+  /**
+   * Takes the byte-estimated share back out of the totals. Subtraction clamps
+   * at zero because a seeded ledger can name a day or model the seeded totals
+   * bucketed differently.
+   */
+  private discardByteEstimates(): void {
+    if (this.byteEstimateCostUsd === 0 && this.byteEstimateInputTokens === 0) return;
+    this.totalCostUsd = Math.max(0, this.totalCostUsd - this.byteEstimateCostUsd);
+    this.parentCostUsd = Math.max(0, this.parentCostUsd - this.byteEstimateCostUsd);
+    this.totalInputTokens = Math.max(0, this.totalInputTokens - this.byteEstimateInputTokens);
+    this.totalOutputTokens = Math.max(0, this.totalOutputTokens - this.byteEstimateOutputTokens);
+    subtractFromMap(this.costByModel, this.byteEstimateCostByModel);
+    subtractFromMap(this.costByDayUsd, this.byteEstimateCostByDay);
+    this.byteEstimateCostUsd = 0;
+    this.byteEstimateInputTokens = 0;
+    this.byteEstimateOutputTokens = 0;
+    this.byteEstimateCostByModel = new Map();
+    this.byteEstimateCostByDay = new Map();
   }
 
   /**
@@ -537,6 +626,21 @@ export class CostTracker implements Resettable {
     this.totalCacheCreationTokens += seed.totalCacheCreationTokens;
     this.totalCacheSavingsUsd += seed.totalCacheSavingsUsd;
     this.reportCount += 1;
+    if (seed.byteEstimates !== undefined) {
+      this.hasByteEstimateHistory = true;
+      this.byteEstimateCostUsd += seed.byteEstimates.costUsd;
+      this.byteEstimateInputTokens += seed.byteEstimates.inputTokens;
+      this.byteEstimateOutputTokens += seed.byteEstimates.outputTokens;
+      for (const [model, usd] of Object.entries(seed.byteEstimates.costByModel)) {
+        this.byteEstimateCostByModel.set(
+          model,
+          (this.byteEstimateCostByModel.get(model) ?? 0) + usd,
+        );
+      }
+      for (const [day, usd] of Object.entries(seed.byteEstimates.costByDayUsd)) {
+        this.byteEstimateCostByDay.set(day, (this.byteEstimateCostByDay.get(day) ?? 0) + usd);
+      }
+    }
 
     for (const [model, usd] of Object.entries(seed.costByModel)) {
       this.costByModel.set(model, (this.costByModel.get(model) ?? 0) + usd);
@@ -726,6 +830,15 @@ export class CostTracker implements Resettable {
       totalCacheSavingsUsd: this.totalCacheSavingsUsd,
       reportCount: this.reportCount,
       estimationCount: this.estimationCount,
+      ...(this.hasByteEstimateHistory && {
+        byteEstimates: {
+          costUsd: this.byteEstimateCostUsd,
+          inputTokens: this.byteEstimateInputTokens,
+          outputTokens: this.byteEstimateOutputTokens,
+          costByModel: Object.fromEntries(this.byteEstimateCostByModel),
+          costByDayUsd: Object.fromEntries(this.byteEstimateCostByDay),
+        },
+      }),
       latestCostBreakdown: this.latestCostBreakdown,
       subagentCostUsd: this.subagentCostUsd,
       parentCostUsd: this.parentCostUsd,
@@ -808,6 +921,12 @@ export class CostTracker implements Resettable {
     this.currentModel = null;
     this.reportCount = 0;
     this.estimationCount = 0;
+    this.byteEstimateCostUsd = 0;
+    this.byteEstimateInputTokens = 0;
+    this.byteEstimateOutputTokens = 0;
+    this.byteEstimateCostByModel = new Map();
+    this.byteEstimateCostByDay = new Map();
+    this.hasByteEstimateHistory = false;
     this.latestCostBreakdown = null;
     this.costByModel = new Map();
     this.unpricedByModel = new Map();

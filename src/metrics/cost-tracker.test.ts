@@ -1775,3 +1775,111 @@ describe('seedFromPersisted()', () => {
     expect(tracker.getCostForWorkflowRun('wf_cross_day_run')).toBeCloseTo(liveCostToday + 5, 4);
   });
 });
+
+describe('priceUsage()', () => {
+  const usage = makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 });
+
+  it('returns the same breakdown as recordTokenUsage without recording anything', () => {
+    const tracker = new CostTracker();
+
+    const priced = tracker.priceUsage(usage, 'claude-sonnet-4');
+
+    expect(priced.totalUsd).toBeCloseTo(0.06, 6);
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeNull();
+    expect(tracker.getMetrics().reportCount).toBe(0);
+  });
+
+  it('applies the rate multiplier', () => {
+    const tracker = new CostTracker(undefined, { rateMultiplier: 0.5 });
+
+    expect(tracker.priceUsage(usage, 'claude-sonnet-4').totalUsd).toBeCloseTo(0.03, 6);
+  });
+});
+
+describe('byte-estimate ledger', () => {
+  const real = makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 });
+  const MODEL = 'claude-sonnet-4';
+
+  it('removes the estimated share when the first real parent report arrives', () => {
+    const tracker = new CostTracker();
+    tracker.recordEstimatedTokens(4_000, 2_000, MODEL);
+    tracker.recordEstimatedTokens(4_000, 2_000, MODEL);
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeGreaterThan(0);
+
+    const exact = tracker.recordTokenUsage(real, MODEL);
+
+    const m = tracker.getMetrics();
+    expect(m.sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 9);
+    expect(m.parentCostUsd).toBeCloseTo(exact.totalUsd, 9);
+    expect(m.totalInputTokens).toBe(1_000);
+    expect(m.totalOutputTokens).toBe(500);
+    expect(m.costByModel[MODEL]).toBeCloseTo(exact.totalUsd, 9);
+    expect(Object.values(m.costByDayUsd).reduce((a, b) => a + b, 0)).toBeCloseTo(exact.totalUsd, 9);
+  });
+
+  it('keeps the estimate when no real report ever arrives', () => {
+    const tracker = new CostTracker();
+    const est = tracker.recordEstimatedTokens(4_000, 2_000, MODEL);
+
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(est.totalUsd, 9);
+  });
+
+  it('does not discard parent estimates on a subagent report', () => {
+    const tracker = new CostTracker();
+    const est = tracker.recordEstimatedTokens(4_000, 2_000, MODEL);
+
+    const sub = tracker.recordTokenUsage(real, MODEL, { agentId: 'agent-1' });
+
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(est.totalUsd + sub.totalUsd, 9);
+  });
+
+  it('reports an all-zero ledger after a real report so a persisted copy is overwritten', () => {
+    const tracker = new CostTracker();
+    tracker.recordEstimatedTokens(4_000, 2_000, MODEL);
+    tracker.recordTokenUsage(real, MODEL);
+
+    expect(tracker.getMetrics().byteEstimates).toEqual({
+      costUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costByModel: {},
+      costByDayUsd: {},
+    });
+  });
+
+  it('omits the ledger for a session that never estimated', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(real, MODEL);
+
+    expect(tracker.getMetrics().byteEstimates).toBeUndefined();
+  });
+
+  it('restores the ledger across a restart so the next real report still removes it', () => {
+    const first = new CostTracker();
+    const est = first.recordEstimatedTokens(4_000, 2_000, MODEL);
+    const before = first.getMetrics();
+
+    const second = new CostTracker();
+    second.seedFromPersisted({
+      totalCostUsd: est.totalUsd,
+      subagentCostUsd: 0,
+      parentCostUsd: est.totalUsd,
+      totalInputTokens: before.totalInputTokens,
+      totalOutputTokens: before.totalOutputTokens,
+      totalThinkingTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheCreationTokens: 0,
+      totalCacheSavingsUsd: 0,
+      costByModel: { [MODEL]: est.totalUsd },
+      dayKey: Object.keys(before.costByDayUsd)[0] as string,
+      dayCostUsd: est.totalUsd,
+      daySubagentCostUsd: 0,
+      costByWorkflowRunId: {},
+      ...(before.byteEstimates && { byteEstimates: before.byteEstimates }),
+    });
+
+    const exact = second.recordTokenUsage(real, MODEL);
+
+    expect(second.getMetrics().sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 9);
+  });
+});
