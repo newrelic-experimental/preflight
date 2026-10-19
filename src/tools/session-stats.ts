@@ -330,6 +330,7 @@ export interface ConfigSummary {
   readonly dashboardUrl: string;
   readonly configFilePath: string;
   readonly companionMode: boolean;
+  readonly companionModeSource: string;
 }
 
 export function handleGetConfig(configSummary: ConfigSummary): {

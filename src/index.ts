@@ -1149,7 +1149,12 @@ async function main(): Promise<void> {
     // dashboard owner's GC pass can tell which buffer files still have a live
     // owner. Removed in the shutdown handler below. Skipped during the
     // provisional window — the real heartbeat is written after resolution.
-    if (options.stdio && !isProvisional) localStore.writeHeartbeat();
+    if (options.stdio && !isProvisional) {
+      localStore.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
+        value: config.companionMode,
+        source: config.companionModeSource,
+      });
+    }
     localStoreForShutdown = localStore;
 
     // Migrate any pre-existing events from the legacy shared `buffer.jsonl` into
@@ -2960,7 +2965,10 @@ async function main(): Promise<void> {
       // Replace the current LocalStore with one scoped to the real id.
       const realLocalStore = new LocalStore(config!.storagePath, realId);
       realLocalStore.initialize();
-      realLocalStore.writeHeartbeat();
+      realLocalStore.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
+        value: config!.companionMode,
+        source: config!.companionModeSource,
+      });
       localStoreForShutdown = realLocalStore;
       try {
         realLocalStore.migrateLegacyBuffer();
@@ -3053,6 +3061,7 @@ async function main(): Promise<void> {
         dashboardUrl: `http://${config!.dashboard.host}:${config!.dashboard.port}`,
         configFilePath,
         companionMode: config!.companionMode,
+        companionModeSource: config!.companionModeSource,
       };
       registerTools(mcpServer!.server, {
         sessionTracker: sessionTracker!,
@@ -3219,6 +3228,7 @@ async function main(): Promise<void> {
             dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
             configFilePath: pendingConfigFilePath,
             companionMode: config.companionMode,
+            companionModeSource: config.companionModeSource,
           },
         });
         logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
@@ -3286,6 +3296,7 @@ async function main(): Promise<void> {
           dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
           configFilePath,
           companionMode: config.companionMode,
+          companionModeSource: config.companionModeSource,
         };
         registerTools(mcpServer!.server, {
           sessionTracker,

@@ -13,6 +13,7 @@ import { resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
 import type { HookEvent, AuditEntry } from './types.js';
+import type { ResolvedCompanionMode } from '../config.js';
 
 const logger = createLogger('local-store');
 
@@ -338,9 +339,9 @@ export class LocalStore {
    * resolving its session_id, and remove it on graceful shutdown via
    * `removeHeartbeat()`.
    *
-   * Also writes a sidecar `active-<sessionId>.meta.json` file with `argv`
-   * and `cwd`, consumed by `listActiveStdioInstances()`. `argv`/`cwd`
-   * default to the current process's own argv/cwd.
+   * Also writes a sidecar `active-<sessionId>.meta.json` file with `argv`,
+   * `cwd`, and optionally `companionMode`, consumed by `listActiveStdioInstances()`.
+   * `argv`/`cwd` default to the current process's own argv/cwd.
    *
    * No-op if the LocalStore is not bound to a sessionId (e.g. --local mode).
    */
@@ -348,6 +349,7 @@ export class LocalStore {
     pid: number = process.pid,
     argv: readonly string[] = process.argv.slice(1),
     cwd: string = process.cwd(),
+    companionMode?: ResolvedCompanionMode,
   ): void {
     if (!this.sessionId) return;
     if (!Number.isFinite(pid) || pid <= 0) return;
@@ -362,7 +364,15 @@ export class LocalStore {
       // the heartbeat's own bare-PID content so hasLiveOwner(),
       // getActiveSessionIdsFromHeartbeats(), and gcOrphanBuffers() (which all
       // parse active-<sessionId>.pid as a bare PID) are unaffected.
-      writeFileSync(metaPath, JSON.stringify({ argv: Array.from(argv), cwd }), { mode: 0o600 });
+      const meta: {
+        argv: string[];
+        cwd: string;
+        companionMode?: ResolvedCompanionMode;
+      } = { argv: Array.from(argv), cwd };
+      if (companionMode !== undefined) {
+        meta.companionMode = companionMode;
+      }
+      writeFileSync(metaPath, JSON.stringify(meta), { mode: 0o600 });
     } catch (err) {
       logger.warn('Failed to write heartbeat file', { error: String(err) });
     }
@@ -906,6 +916,7 @@ export class LocalStore {
     cwd: string | null;
     startedAt: number;
     alive: boolean;
+    companionMode: ResolvedCompanionMode | null;
   }> {
     if (!existsSync(this.storagePath)) return [];
     let entries: string[];
@@ -924,6 +935,7 @@ export class LocalStore {
       cwd: string | null;
       startedAt: number;
       alive: boolean;
+      companionMode: ResolvedCompanionMode | null;
     }> = [];
     for (const name of entries) {
       if (!name.startsWith('active-') || !name.endsWith('.pid')) continue;
@@ -942,21 +954,34 @@ export class LocalStore {
 
       let argv: string[] = [];
       let cwd: string | null = null;
+      let companionMode: ResolvedCompanionMode | null = null;
       try {
         const metaPath = resolve(this.storagePath, `active-${sessionId}.meta.json`);
         const meta = JSON.parse(readFileSync(metaPath, 'utf-8')) as {
           argv?: unknown;
           cwd?: unknown;
+          companionMode?: unknown;
         };
         if (Array.isArray(meta.argv) && meta.argv.every((a) => typeof a === 'string')) {
           argv = meta.argv as string[];
         }
         if (typeof meta.cwd === 'string') cwd = meta.cwd;
+        if (meta.companionMode !== undefined) {
+          const cm = meta.companionMode as unknown;
+          if (
+            cm !== null &&
+            typeof cm === 'object' &&
+            typeof (cm as Record<string, unknown>).value === 'boolean' &&
+            typeof (cm as Record<string, unknown>).source === 'string'
+          ) {
+            companionMode = cm as ResolvedCompanionMode;
+          }
+        }
       } catch {
-        // No sidecar (pre-upgrade heartbeat) or unreadable — leave argv/cwd at their defaults.
+        // No sidecar (pre-upgrade heartbeat) or unreadable — leave argv/cwd/companionMode at their defaults.
       }
 
-      result.push({ pid, sessionId, argv, cwd, startedAt, alive: isPidAlive(pid) });
+      result.push({ pid, sessionId, argv, cwd, startedAt, alive: isPidAlive(pid), companionMode });
     }
     return result;
   }

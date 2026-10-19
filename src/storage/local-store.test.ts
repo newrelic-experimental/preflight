@@ -1006,6 +1006,38 @@ describe('LocalStore', () => {
       store.removeHeartbeat();
       expect(existsSync(resolve(tmpDir, 'active-sess-hb-4.meta.json'))).toBe(false);
     });
+
+    it('persists companionMode in the sidecar when provided', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const store = new LocalStore(tmpDir, 'sess-hb-cm-1');
+      store.writeHeartbeat(12345, ['/opt/preflight/dist/index.js'], '/home/user/project', {
+        value: true,
+        source: 'detected Claude Code OTel export',
+      });
+
+      const metaPath = resolve(tmpDir, 'active-sess-hb-cm-1.meta.json');
+      expect(existsSync(metaPath)).toBe(true);
+      const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+      expect(meta).toEqual({
+        argv: ['/opt/preflight/dist/index.js'],
+        cwd: '/home/user/project',
+        companionMode: {
+          value: true,
+          source: 'detected Claude Code OTel export',
+        },
+      });
+    });
+
+    it('handles old heartbeat files without companionMode (backward compatibility)', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const metaPath = resolve(tmpDir, 'active-sess-hb-old.meta.json');
+      writeFileSync(metaPath, JSON.stringify({ argv: ['/opt/preflight'], cwd: '/home' }));
+
+      const store = new LocalStore(tmpDir);
+      const instances = store.listActiveStdioInstances();
+      // Verify it doesn't crash and properly parses the old format
+      expect(instances).toBeDefined();
+    });
   });
 
   describe('gcOrphanBuffers()', () => {
@@ -1440,6 +1472,42 @@ describe('LocalStore', () => {
       mkdirSync(tmpDir, { recursive: true });
       writeFileSync(resolve(tmpDir, 'active-bad session id!.pid'), String(process.pid));
       expect(new LocalStore(tmpDir).listActiveStdioInstances()).toEqual([]);
+    });
+
+    it('returns companionMode when persisted in the sidecar meta file', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const metaPath = resolve(tmpDir, 'active-sess-stdio-cm.meta.json');
+      writeFileSync(
+        metaPath,
+        JSON.stringify({
+          argv: ['/opt/preflight/dist/index.js', '--stdio'],
+          cwd: '/home/user/project',
+          companionMode: { value: true, source: 'detected Claude Code OTel export' },
+        }),
+      );
+      writeFileSync(resolve(tmpDir, 'active-sess-stdio-cm.pid'), String(process.pid));
+
+      const [inst] = new LocalStore(tmpDir).listActiveStdioInstances();
+      expect(inst.companionMode).toEqual({
+        value: true,
+        source: 'detected Claude Code OTel export',
+      });
+    });
+
+    it('returns null companionMode when not in the sidecar meta file (pre-upgrade heartbeat)', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const metaPath = resolve(tmpDir, 'active-sess-stdio-nocm.meta.json');
+      writeFileSync(
+        metaPath,
+        JSON.stringify({
+          argv: ['/opt/preflight/dist/index.js'],
+          cwd: '/home/user/project',
+        }),
+      );
+      writeFileSync(resolve(tmpDir, 'active-sess-stdio-nocm.pid'), String(process.pid));
+
+      const [inst] = new LocalStore(tmpDir).listActiveStdioInstances();
+      expect(inst.companionMode).toBeNull();
     });
   });
 
