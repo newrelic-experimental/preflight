@@ -338,6 +338,7 @@ function makeConfigSummary(overrides?: Partial<ConfigSummary>): ConfigSummary {
     configFilePath: '/home/alice/.newrelic-preflight/config.json',
     allowHeadlessInstall: false,
     companionMode: false,
+    companionModeSource: 'default',
     ...overrides,
   };
 }
@@ -940,6 +941,7 @@ describe('registerPendingTools()', () => {
       configFilePath: '/tmp/x/config.json',
       companionMode: false,
       allowHeadlessInstall: false,
+      companionModeSource: 'default',
     };
     registerPendingTools(server.server, {
       sessionStartMs: Date.now(),

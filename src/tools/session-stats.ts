@@ -339,6 +339,7 @@ export interface ConfigSummary {
   readonly companionMode: boolean;
   /** Whether nr_observe_install_hooks may write ~/.claude/settings.json. Default false. */
   readonly allowHeadlessInstall: boolean;
+  readonly companionModeSource: string;
 }
 
 export function handleGetConfig(configSummary: ConfigSummary): {
