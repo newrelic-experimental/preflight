@@ -13,6 +13,7 @@ import {
 import type { FullSessionSummary } from './session-store.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
+import { buildCostTrackerSeed } from '../metrics/cost-tracker-seed.js';
 import type { CostMetrics } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
@@ -1669,6 +1670,73 @@ describe('buildSessionSummary', () => {
     ).toEqual(ledger(0));
     expect(mergeSummaries(existing, makeSummary()).byteEstimates).toEqual(ledger(0.5));
     expect(mergeSummaries(makeSummary(), makeSummary()).byteEstimates).toBeUndefined();
+  });
+
+  describe('a checkpoint written before the first real report', () => {
+    const MODEL = 'claude-sonnet-4';
+    const usage = {
+      inputTokens: 1_000,
+      outputTokens: 500,
+      thinkingTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 1_500,
+    };
+
+    function checkpoint(store: SessionStore, tracker: CostTracker, sessionId: string): void {
+      const m = tracker.getMetrics();
+      store.saveSession(
+        makeSummary({
+          sessionId,
+          startTime: 1_700_000_000_000,
+          estimatedCostUsd: m.sessionTotalCostUsd,
+          costByDayUsd: m.costByDayUsd,
+          tokensInput: m.totalInputTokens,
+          tokensOutput: m.totalOutputTokens,
+          ...(m.byteEstimates && { byteEstimates: m.byteEstimates }),
+        }),
+      );
+    }
+
+    it('does not keep the estimate on disk once the real report shrinks the total', () => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const tracker = new CostTracker();
+      for (let i = 0; i < 5; i++) tracker.recordEstimatedTokens(40_000, 20_000, MODEL);
+      checkpoint(store, tracker, 'sess-shrink');
+
+      const exact = tracker.recordTokenUsage(usage, MODEL, { replacesEstimates: true });
+      checkpoint(store, tracker, 'sess-shrink');
+
+      const onDisk = store.loadSession('sess-shrink');
+      expect(onDisk?.estimatedCostUsd).toBeCloseTo(exact.totalUsd, 9);
+      expect(onDisk?.tokensInput).toBe(1_000);
+      expect(onDisk?.tokensOutput).toBe(500);
+      expect(Object.values(onDisk?.costByDayUsd ?? {}).reduce((a, b) => a + b, 0)).toBeCloseTo(
+        exact.totalUsd,
+        9,
+      );
+
+      const restarted = new CostTracker();
+      restarted.seedFromPersisted(buildCostTrackerSeed(onDisk as FullSessionSummary));
+      expect(restarted.getMetrics().sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 9);
+    });
+
+    it('keeps growing past the shrunk total as later exact reports arrive', () => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const tracker = new CostTracker();
+      tracker.recordEstimatedTokens(40_000, 20_000, MODEL);
+      checkpoint(store, tracker, 'sess-grow');
+      tracker.recordTokenUsage(usage, MODEL, { replacesEstimates: true });
+      checkpoint(store, tracker, 'sess-grow');
+      const second = tracker.recordTokenUsage(usage, MODEL, { replacesEstimates: true });
+      checkpoint(store, tracker, 'sess-grow');
+
+      expect(store.loadSession('sess-grow')?.estimatedCostUsd).toBeCloseTo(
+        tracker.getMetrics().sessionTotalCostUsd ?? 0,
+        9,
+      );
+      expect(second.totalUsd).toBeGreaterThan(0);
+    });
   });
 
   it('deserializeFullSessionSummary keeps only well-formed byteEstimates fields', () => {

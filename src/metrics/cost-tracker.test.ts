@@ -1799,6 +1799,7 @@ describe('priceUsage()', () => {
 describe('byte-estimate ledger', () => {
   const real = makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 });
   const MODEL = 'claude-sonnet-4';
+  const REPLAY = { replacesEstimates: true };
 
   it('removes the estimated share when the first real parent report arrives', () => {
     const tracker = new CostTracker();
@@ -1806,7 +1807,7 @@ describe('byte-estimate ledger', () => {
     tracker.recordEstimatedTokens(4_000, 2_000, MODEL);
     expect(tracker.getMetrics().sessionTotalCostUsd).toBeGreaterThan(0);
 
-    const exact = tracker.recordTokenUsage(real, MODEL);
+    const exact = tracker.recordTokenUsage(real, MODEL, REPLAY);
 
     const m = tracker.getMetrics();
     expect(m.sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 9);
@@ -1824,6 +1825,18 @@ describe('byte-estimate ledger', () => {
     expect(tracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(est.totalUsd, 9);
   });
 
+  it('keeps earlier estimates when a self-report arrives without the replay flag', () => {
+    const tracker = new CostTracker();
+    const est = tracker.recordEstimatedTokens(4_000, 2_000, MODEL);
+
+    const reported = tracker.recordTokenUsage(real, MODEL);
+
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(
+      est.totalUsd + reported.totalUsd,
+      9,
+    );
+  });
+
   it('does not discard parent estimates on a subagent report', () => {
     const tracker = new CostTracker();
     const est = tracker.recordEstimatedTokens(4_000, 2_000, MODEL);
@@ -1836,7 +1849,7 @@ describe('byte-estimate ledger', () => {
   it('reports an all-zero ledger after a real report so a persisted copy is overwritten', () => {
     const tracker = new CostTracker();
     tracker.recordEstimatedTokens(4_000, 2_000, MODEL);
-    tracker.recordTokenUsage(real, MODEL);
+    tracker.recordTokenUsage(real, MODEL, REPLAY);
 
     expect(tracker.getMetrics().byteEstimates).toEqual({
       costUsd: 0,
@@ -1878,7 +1891,7 @@ describe('byte-estimate ledger', () => {
       ...(before.byteEstimates && { byteEstimates: before.byteEstimates }),
     });
 
-    const exact = second.recordTokenUsage(real, MODEL);
+    const exact = second.recordTokenUsage(real, MODEL, REPLAY);
 
     expect(second.getMetrics().sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 9);
   });

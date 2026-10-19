@@ -63,6 +63,13 @@ export interface TokenRecordContext {
    * observation.
    */
   readonly responseMs?: number;
+  /**
+   * Set only by the transcript watcher, whose report replays the parent's
+   * whole history from byte 0 and so covers every turn the byte estimates
+   * stood in for. A self-report (`nr_observe_report_tokens`) describes one
+   * response and must leave the estimates for earlier turns in place.
+   */
+  readonly replacesEstimates?: boolean;
 }
 
 const LATE_ARRIVAL_REJECTION_MS = 48 * 60 * 60 * 1000;
@@ -370,9 +377,7 @@ export class CostTracker implements Resettable {
    */
   recordTokenUsage(usage: TokenUsage, model: string, ctx?: TokenRecordContext): CostBreakdown {
     this.reportCount++;
-    // A subagent report says nothing about the parent's own turns, which is
-    // what the byte estimates stand in for.
-    if (ctx?.agentId === undefined) this.discardByteEstimates();
+    if (ctx?.replacesEstimates === true && ctx.agentId === undefined) this.discardByteEstimates();
     return this.accumulateTokens(usage, model, ctx);
   }
 

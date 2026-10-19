@@ -423,6 +423,37 @@ function mergeTimeline(
     : merged;
 }
 
+/** What `incoming`'s ledger gave back relative to `existing`'s; all zero when `incoming` carries none. */
+function ledgerShrinkage(
+  existing: ByteEstimateLedger | undefined,
+  incoming: ByteEstimateLedger | undefined,
+): {
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  costByDayUsd: Record<string, number>;
+} {
+  if (!existing || !incoming) {
+    return { costUsd: 0, inputTokens: 0, outputTokens: 0, costByDayUsd: {} };
+  }
+  return {
+    costUsd: Math.max(0, existing.costUsd - incoming.costUsd),
+    inputTokens: Math.max(0, existing.inputTokens - incoming.inputTokens),
+    outputTokens: Math.max(0, existing.outputTokens - incoming.outputTokens),
+    costByDayUsd: subtractRecord(existing.costByDayUsd, incoming.costByDayUsd),
+  };
+}
+
+/** Per-key `a - b`, clamped at zero. */
+function subtractRecord(
+  a: Readonly<Record<string, number>>,
+  b: Readonly<Record<string, number>>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(a)) out[k] = Math.max(0, v - (b[k] ?? 0));
+  return out;
+}
+
 export function mergeSummaries(
   existing: FullSessionSummary,
   incoming: FullSessionSummary,
@@ -485,7 +516,18 @@ export function mergeSummaries(
     b: Record<string, number> | undefined,
   ): Record<string, number> | undefined =>
     a === undefined && b === undefined ? undefined : mergeCounts(a, b);
-  const costByDayUsd = mergeDayMap(existing.costByDayUsd, incoming.costByDayUsd);
+  // The ledger is latest-wins and shrinks when a real report replaces it, but
+  // the totals below merge by max, which would keep the larger estimate-laden
+  // value on disk. Take the shrinkage back out of the existing side first.
+  const shrunk = ledgerShrinkage(existing.byteEstimates, incoming.byteEstimates);
+  const existingCostUsd =
+    existing.estimatedCostUsd === null
+      ? null
+      : Math.max(0, existing.estimatedCostUsd - shrunk.costUsd);
+  const costByDayUsd = mergeDayMap(
+    existing.costByDayUsd && subtractRecord(existing.costByDayUsd, shrunk.costByDayUsd),
+    incoming.costByDayUsd,
+  );
   const subagentCostByDayUsd = mergeDayMap(
     existing.subagentCostByDayUsd,
     incoming.subagentCostByDayUsd,
@@ -594,15 +636,21 @@ export function mergeSummaries(
     testPassCount: maxNum(existing.testPassCount, incoming.testPassCount),
     buildRunCount: maxNum(existing.buildRunCount, incoming.buildRunCount),
     buildPassCount: maxNum(existing.buildPassCount, incoming.buildPassCount),
-    estimatedCostUsd: maxNullable(existing.estimatedCostUsd, incoming.estimatedCostUsd),
+    estimatedCostUsd: maxNullable(existingCostUsd, incoming.estimatedCostUsd),
     subagentCostUsd: maxNum(existing.subagentCostUsd, incoming.subagentCostUsd),
     ...(costByDayUsd !== undefined ? { costByDayUsd } : {}),
     ...(subagentCostByDayUsd !== undefined ? { subagentCostByDayUsd } : {}),
     ...(unpricedByModel !== undefined ? { unpricedByModel } : {}),
     ...(estimatedByModel !== undefined ? { estimatedByModel } : {}),
     ...(byteEstimates !== undefined ? { byteEstimates } : {}),
-    tokensInput: maxNum(existing.tokensInput, incoming.tokensInput),
-    tokensOutput: maxNum(existing.tokensOutput, incoming.tokensOutput),
+    tokensInput: maxNum(
+      Math.max(0, (existing.tokensInput ?? 0) - shrunk.inputTokens),
+      incoming.tokensInput,
+    ),
+    tokensOutput: maxNum(
+      Math.max(0, (existing.tokensOutput ?? 0) - shrunk.outputTokens),
+      incoming.tokensOutput,
+    ),
     tokensThinking: maxNum(existing.tokensThinking, incoming.tokensThinking),
     tokensCacheRead: maxNum(existing.tokensCacheRead, incoming.tokensCacheRead),
     tokensCacheCreation: maxNum(existing.tokensCacheCreation, incoming.tokensCacheCreation),

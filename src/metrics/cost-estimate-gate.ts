@@ -38,3 +38,18 @@ export function shouldApplyCostEstimate(params: CostEstimateParams): boolean {
 export function isOwnSessionRecord(recordSessionId: string | null, ownSessionId: string): boolean {
   return recordSessionId === null || recordSessionId === ownSessionId;
 }
+
+/**
+ * Whether a token event's cost belongs to this process's session rather than
+ * only to that session's rollup. A `--stdio` engine persists its process-wide
+ * `CostTracker` total as its own session's cost, and stamps its own session id
+ * on every `AiTurnCost` it emits, so another session's token event must feed
+ * neither. `--local` owns no single session and keeps everything.
+ */
+export function isTokenEventForThisProcess(params: {
+  readonly stdio: boolean;
+  readonly eventSessionId: string | null;
+  readonly ownSessionId: string;
+}): boolean {
+  return !params.stdio || isOwnSessionRecord(params.eventSessionId, params.ownSessionId);
+}
