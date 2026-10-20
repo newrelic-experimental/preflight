@@ -218,6 +218,7 @@ Add `--project` to `install`/`uninstall` to scope changes to the current directo
 - [**SCORECARDS.md**](docs/SCORECARDS.md) — New Relic Scorecard rules for team attribution
 - [**ARCHITECTURE.md**](docs/ARCHITECTURE.md) — Data flow, component reference, and operating modes
 - [**ADAPTERS.md**](docs/ADAPTERS.md) — Per-platform integration mechanism, setup steps, and known gaps
+- [**FLEET_DEPLOYMENT.md**](docs/FLEET_DEPLOYMENT.md) — Roll out the Claude Code plugin to many machines with managed settings and MDM
 - [**TROUBLESHOOTING.md**](docs/TROUBLESHOOTING.md) — Common setup and connection problems, and how to fix them
 - [**CONTRIBUTING.md**](CONTRIBUTING.md) — Development, testing, submitting PRs
 - [**SECURITY.md**](./SECURITY.md) — Security guidelines and best practices
