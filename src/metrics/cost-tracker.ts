@@ -64,10 +64,14 @@ export interface TokenRecordContext {
    */
   readonly responseMs?: number;
   /**
-   * Set only by the transcript watcher, whose report replays the parent's
-   * whole history from byte 0 and so covers every turn the byte estimates
-   * stood in for. A self-report (`nr_observe_report_tokens`) describes one
-   * response and must leave the estimates for earlier turns in place.
+   * Set by `onTokenEvent`, i.e. by the usage watchers (the Claude Code
+   * transcript watcher, `CopilotUsageWatcher`, `CopilotAppUsageWatcher`, and
+   * the Copilot SDK extension), whose reports replay history and so cover the
+   * turns the byte estimates stood in for. `CopilotAppUsageWatcher` skips an
+   * over-threshold first-seen backlog, so its next delta can drop estimates
+   * for turns that are never reported. A self-report
+   * (`nr_observe_report_tokens`) describes one response and must leave the
+   * estimates for earlier turns in place.
    */
   readonly replacesEstimates?: boolean;
 }

@@ -164,6 +164,13 @@ export interface FullSessionSummary extends SessionSummary {
    * report arrives so it overwrites an earlier non-zero copy on merge.
    */
   readonly byteEstimates?: ByteEstimateLedger;
+  /**
+   * The totals above without the ledger. `mergeSummaries` max-merges these and
+   * adds the latest ledger back, so a shrinking ledger never competes with
+   * another writer's larger exact total. Absent on summaries written before
+   * this field, where it is derived as total minus ledger.
+   */
+  readonly exactTotals?: ExactTotals;
   readonly tokensInput: number;
   readonly tokensOutput: number;
   readonly tokensThinking: number;
@@ -423,25 +430,38 @@ function mergeTimeline(
     : merged;
 }
 
-/** What `incoming`'s ledger gave back relative to `existing`'s; all zero when `incoming` carries none. */
-function ledgerShrinkage(
-  existing: ByteEstimateLedger | undefined,
-  incoming: ByteEstimateLedger | undefined,
-): {
-  costUsd: number;
-  inputTokens: number;
-  outputTokens: number;
-  costByDayUsd: Record<string, number>;
-} {
-  if (!existing || !incoming) {
-    return { costUsd: 0, inputTokens: 0, outputTokens: 0, costByDayUsd: {} };
-  }
+/** Exact-only (non-byte-estimated) share of the cost and token totals. */
+export interface ExactTotals {
+  readonly costUsd: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly costByDayUsd: Readonly<Record<string, number>>;
+}
+
+/**
+ * `exactTotals` as stored, or derived as total minus ledger for a summary that
+ * predates the field. A merged total cannot be split afterwards (the file does
+ * not record which writer's figure won the max), so writers persist the split.
+ */
+function exactTotalsOf(s: FullSessionSummary): ExactTotals {
+  if (s.exactTotals) return s.exactTotals;
+  const ledger = s.byteEstimates;
   return {
-    costUsd: Math.max(0, existing.costUsd - incoming.costUsd),
-    inputTokens: Math.max(0, existing.inputTokens - incoming.inputTokens),
-    outputTokens: Math.max(0, existing.outputTokens - incoming.outputTokens),
-    costByDayUsd: subtractRecord(existing.costByDayUsd, incoming.costByDayUsd),
+    costUsd: Math.max(0, (s.estimatedCostUsd ?? 0) - (ledger?.costUsd ?? 0)),
+    inputTokens: Math.max(0, (s.tokensInput ?? 0) - (ledger?.inputTokens ?? 0)),
+    outputTokens: Math.max(0, (s.tokensOutput ?? 0) - (ledger?.outputTokens ?? 0)),
+    costByDayUsd: subtractRecord(s.costByDayUsd ?? {}, ledger?.costByDayUsd ?? {}),
   };
+}
+
+/** Per-key `a + b` over the union of keys. */
+function addRecord(
+  a: Readonly<Record<string, number>>,
+  b: Readonly<Record<string, number>>,
+): Record<string, number> {
+  const out: Record<string, number> = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = (out[k] ?? 0) + v;
+  return out;
 }
 
 /** Per-key `a - b`, clamped at zero. */
@@ -460,8 +480,6 @@ export function mergeSummaries(
 ): FullSessionSummary {
   const maxNum = (a: unknown, b: unknown): number =>
     Math.max(typeof a === 'number' ? a : 0, typeof b === 'number' ? b : 0);
-  const maxNullable = (a: number | null, b: number | null): number | null =>
-    a === null && b === null ? null : Math.max(a ?? 0, b ?? 0);
   const mergeCounts = (
     a: Record<string, number> = {},
     b: Record<string, number> = {},
@@ -516,18 +534,26 @@ export function mergeSummaries(
     b: Record<string, number> | undefined,
   ): Record<string, number> | undefined =>
     a === undefined && b === undefined ? undefined : mergeCounts(a, b);
-  // The ledger is latest-wins and shrinks when a real report replaces it, but
-  // the totals below merge by max, which would keep the larger estimate-laden
-  // value on disk. Take the shrinkage back out of the existing side first.
-  const shrunk = ledgerShrinkage(existing.byteEstimates, incoming.byteEstimates);
-  const existingCostUsd =
-    existing.estimatedCostUsd === null
+  // The ledger is latest-wins and shrinks when a real report replaces it, so
+  // only the exact-only totals are max-merged; the merged ledger is added back
+  // on top. A max over the estimate-laden totals would keep the stale estimate.
+  const mergedLedger = incoming.byteEstimates ?? existing.byteEstimates;
+  const existingExact = exactTotalsOf(existing);
+  const incomingExact = exactTotalsOf(incoming);
+  const exactTotals: ExactTotals = {
+    costUsd: Math.max(existingExact.costUsd, incomingExact.costUsd),
+    inputTokens: Math.max(existingExact.inputTokens, incomingExact.inputTokens),
+    outputTokens: Math.max(existingExact.outputTokens, incomingExact.outputTokens),
+    costByDayUsd: mergeCounts(existingExact.costByDayUsd, incomingExact.costByDayUsd),
+  };
+  const estimatedCostUsd =
+    existing.estimatedCostUsd === null && incoming.estimatedCostUsd === null
       ? null
-      : Math.max(0, existing.estimatedCostUsd - shrunk.costUsd);
-  const costByDayUsd = mergeDayMap(
-    existing.costByDayUsd && subtractRecord(existing.costByDayUsd, shrunk.costByDayUsd),
-    incoming.costByDayUsd,
-  );
+      : exactTotals.costUsd + (mergedLedger?.costUsd ?? 0);
+  const costByDayUsd =
+    existing.costByDayUsd === undefined && incoming.costByDayUsd === undefined
+      ? undefined
+      : addRecord(exactTotals.costByDayUsd, mergedLedger?.costByDayUsd ?? {});
   const subagentCostByDayUsd = mergeDayMap(
     existing.subagentCostByDayUsd,
     incoming.subagentCostByDayUsd,
@@ -537,7 +563,7 @@ export function mergeSummaries(
   const estimatedByModel = mergeCallUsageMax(existing.estimatedByModel, incoming.estimatedByModel);
   // Latest writer wins, not max: the ledger shrinks to zero when a real report
   // replaces it, and a max-merge would resurrect the stale estimate.
-  const byteEstimates = incoming.byteEstimates ?? existing.byteEstimates;
+  const byteEstimates = mergedLedger;
 
   const mergeCostByWorkflowRunId = (
     a: Record<string, Record<string, number>> = {},
@@ -636,21 +662,16 @@ export function mergeSummaries(
     testPassCount: maxNum(existing.testPassCount, incoming.testPassCount),
     buildRunCount: maxNum(existing.buildRunCount, incoming.buildRunCount),
     buildPassCount: maxNum(existing.buildPassCount, incoming.buildPassCount),
-    estimatedCostUsd: maxNullable(existingCostUsd, incoming.estimatedCostUsd),
+    estimatedCostUsd,
     subagentCostUsd: maxNum(existing.subagentCostUsd, incoming.subagentCostUsd),
     ...(costByDayUsd !== undefined ? { costByDayUsd } : {}),
     ...(subagentCostByDayUsd !== undefined ? { subagentCostByDayUsd } : {}),
     ...(unpricedByModel !== undefined ? { unpricedByModel } : {}),
     ...(estimatedByModel !== undefined ? { estimatedByModel } : {}),
     ...(byteEstimates !== undefined ? { byteEstimates } : {}),
-    tokensInput: maxNum(
-      Math.max(0, (existing.tokensInput ?? 0) - shrunk.inputTokens),
-      incoming.tokensInput,
-    ),
-    tokensOutput: maxNum(
-      Math.max(0, (existing.tokensOutput ?? 0) - shrunk.outputTokens),
-      incoming.tokensOutput,
-    ),
+    exactTotals,
+    tokensInput: exactTotals.inputTokens + (mergedLedger?.inputTokens ?? 0),
+    tokensOutput: exactTotals.outputTokens + (mergedLedger?.outputTokens ?? 0),
     tokensThinking: maxNum(existing.tokensThinking, incoming.tokensThinking),
     tokensCacheRead: maxNum(existing.tokensCacheRead, incoming.tokensCacheRead),
     tokensCacheCreation: maxNum(existing.tokensCacheCreation, incoming.tokensCacheCreation),
@@ -1204,6 +1225,28 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     ...(costMetrics?.byteEstimates !== undefined
       ? { byteEstimates: costMetrics.byteEstimates }
       : {}),
+    ...(costMetrics?.byteEstimates !== undefined
+      ? {
+          exactTotals: {
+            costUsd: Math.max(
+              0,
+              (costMetrics.sessionTotalCostUsd ?? 0) - costMetrics.byteEstimates.costUsd,
+            ),
+            inputTokens: Math.max(
+              0,
+              costMetrics.totalInputTokens - costMetrics.byteEstimates.inputTokens,
+            ),
+            outputTokens: Math.max(
+              0,
+              costMetrics.totalOutputTokens - costMetrics.byteEstimates.outputTokens,
+            ),
+            costByDayUsd: subtractRecord(
+              costMetrics.costByDayUsd,
+              costMetrics.byteEstimates.costByDayUsd,
+            ),
+          },
+        }
+      : {}),
     tokensInput: costMetrics?.totalInputTokens ?? 0,
     tokensOutput: costMetrics?.totalOutputTokens ?? 0,
     tokensThinking: costMetrics?.totalThinkingTokens ?? 0,
@@ -1307,6 +1350,7 @@ interface SerializedFullSessionSummary {
   readonly unpricedByModel?: unknown;
   readonly estimatedByModel?: unknown;
   readonly byteEstimates?: unknown;
+  readonly exactTotals?: unknown;
   readonly tokensInput?: unknown;
   readonly tokensOutput?: unknown;
   readonly tokensThinking?: unknown;
@@ -1454,6 +1498,18 @@ function parseByteEstimates(value: unknown): ByteEstimateLedger | undefined {
     inputTokens: finite(obj.inputTokens),
     outputTokens: finite(obj.outputTokens),
     costByModel: parseNumberRecord(obj.costByModel) ?? {},
+    costByDayUsd: parseNumberRecord(obj.costByDayUsd) ?? {},
+  };
+}
+
+function parseExactTotals(value: unknown): ExactTotals | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const obj = value as Record<string, unknown>;
+  const finite = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  return {
+    costUsd: finite(obj.costUsd),
+    inputTokens: finite(obj.inputTokens),
+    outputTokens: finite(obj.outputTokens),
     costByDayUsd: parseNumberRecord(obj.costByDayUsd) ?? {},
   };
 }
@@ -1685,6 +1741,7 @@ export function deserializeFullSessionSummary(
     unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
     estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
     byteEstimates: parseByteEstimates(obj.byteEstimates),
+    exactTotals: parseExactTotals(obj.exactTotals),
     tokensInput: typeof obj.tokensInput === 'number' ? obj.tokensInput : 0,
     tokensOutput: typeof obj.tokensOutput === 'number' ? obj.tokensOutput : 0,
     tokensThinking: typeof obj.tokensThinking === 'number' ? obj.tokensThinking : 0,

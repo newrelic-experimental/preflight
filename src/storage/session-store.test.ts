@@ -1721,6 +1721,30 @@ describe('buildSessionSummary', () => {
       expect(restarted.getMetrics().sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 9);
     });
 
+    it("keeps another writer's larger exact total when the ledger shrinks", () => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const tracker = new CostTracker();
+      for (let i = 0; i < 5; i++) tracker.recordEstimatedTokens(40_000, 20_000, MODEL);
+      checkpoint(store, tracker, 'sess-other');
+      store.saveSession(
+        makeSummary({
+          sessionId: 'sess-other',
+          startTime: 1_700_000_000_000,
+          estimatedCostUsd: 0.2,
+          tokensInput: 9_000,
+          tokensOutput: 4_000,
+        }),
+      );
+
+      tracker.recordTokenUsage(usage, MODEL, { replacesEstimates: true });
+      checkpoint(store, tracker, 'sess-other');
+
+      const onDisk = store.loadSession('sess-other');
+      expect(onDisk?.estimatedCostUsd).toBeCloseTo(0.2, 9);
+      expect(onDisk?.tokensInput).toBe(9_000);
+      expect(onDisk?.tokensOutput).toBe(4_000);
+    });
+
     it('keeps growing past the shrunk total as later exact reports arrive', () => {
       const store = new SessionStore({ storagePath: tmpDir });
       const tracker = new CostTracker();
