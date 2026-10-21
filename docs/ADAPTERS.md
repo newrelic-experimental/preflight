@@ -67,7 +67,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Setup:**
 
-1. Register the Preflight MCP server for `nr_observe_*` tools: Cursor Settings → MCP → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`
+1. Register the Preflight MCP server for `nr_observe_*` tools: Cursor Settings → MCP → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
 2. Configure Cursor hooks so tool-call activity is captured — create `.cursor/hooks.json` (project) or `~/.cursor/hooks.json` (global):
    ```json
    {
@@ -99,7 +99,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Setup:**
 
-1. Windsurf Settings → MCP Servers → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`
+1. Windsurf Settings → MCP Servers → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
 2. MCP tool calls via Cascade are captured automatically through the MCP connection
 3. Built-in tool calls (file reads/writes, terminal commands) require Cascade Hooks — create `.windsurf/hooks.json` and register `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`, each running `preflight-collector`
 4. See [docs.windsurf.com/windsurf/cascade/hooks](https://docs.windsurf.com/windsurf/cascade/hooks) for the full schema
@@ -127,6 +127,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
          "command": "npx",
          "args": ["preflight", "--stdio"],
          "env": {
+           "NR_AI_MODE": "cloud",
            "NEW_RELIC_LICENSE_KEY": "<your-key>",
            "NEW_RELIC_ACCOUNT_ID": "<your-account-id>"
          }
@@ -159,6 +160,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
        command: npx
        args: ['preflight', '--stdio']
        env:
+         NR_AI_MODE: cloud
          NEW_RELIC_LICENSE_KEY: <your-key>
          NEW_RELIC_ACCOUNT_ID: <your-account-id>
    ```
@@ -188,6 +190,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
          "args": ["preflight", "--stdio"],
          "env": {
            "MCP_CLIENT": "cline",
+           "NR_AI_MODE": "cloud",
            "NEW_RELIC_LICENSE_KEY": "<your-key>",
            "NEW_RELIC_ACCOUNT_ID": "<your-account-id>"
          }
@@ -219,6 +222,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
        "command": "npx",
        "args": ["preflight", "--stdio"],
        "env": {
+         "NR_AI_MODE": "cloud",
          "NEW_RELIC_LICENSE_KEY": "<your-key>",
          "NEW_RELIC_ACCOUNT_ID": "<your-account-id>"
        }
@@ -272,6 +276,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
        "command": "npx",
        "args": ["preflight", "--stdio"],
        "env": {
+         "NR_AI_MODE": "cloud",
          "NEW_RELIC_LICENSE_KEY": "<your-key>",
          "NEW_RELIC_ACCOUNT_ID": "<your-account-id>",
          "NEW_RELIC_AI_PLATFORM": "kiro"
@@ -323,6 +328,7 @@ documented step for wiring Kiro's native `.kiro/hooks/` system
    ```
    droid mcp add preflight "npx preflight --stdio" \
      --env MCP_CLIENT=droid \
+     --env NR_AI_MODE=cloud \
      --env NEW_RELIC_LICENSE_KEY=<your-key> \
      --env NEW_RELIC_ACCOUNT_ID=<your-account-id>
    ```
@@ -364,6 +370,7 @@ documented step for wiring Kiro's native `.kiro/hooks/` system
    ```
    gemini mcp add preflight "npx preflight --stdio" \
      -e MCP_CLIENT=gemini-cli \
+     -e NR_AI_MODE=cloud \
      -e NEW_RELIC_LICENSE_KEY=<your-key> \
      -e NEW_RELIC_ACCOUNT_ID=<your-account-id>
    ```
@@ -405,6 +412,7 @@ documented step for wiring Kiro's native `.kiro/hooks/` system
 4. Register the Preflight MCP server:
    ```
    codex mcp add preflight --env MCP_CLIENT=codex \
+     --env NR_AI_MODE=cloud \
      --env NEW_RELIC_LICENSE_KEY=<your-key> \
      --env NEW_RELIC_ACCOUNT_ID=<your-account-id> \
      -- npx preflight --stdio
@@ -439,6 +447,7 @@ documented step for wiring Kiro's native `.kiro/hooks/` system
          "command": ["npx", "preflight", "--stdio"],
          "environment": {
            "MCP_CLIENT": "opencode",
+           "NR_AI_MODE": "cloud",
            "NEW_RELIC_LICENSE_KEY": "<your-key>",
            "NEW_RELIC_ACCOUNT_ID": "<your-account-id>"
          }
@@ -479,6 +488,7 @@ documented step for wiring Kiro's native `.kiro/hooks/` system
          "command": ["npx", "preflight", "--stdio"],
          "environment": {
            "MCP_CLIENT": "kilocode",
+           "NR_AI_MODE": "cloud",
            "NEW_RELIC_LICENSE_KEY": "<your-key>",
            "NEW_RELIC_ACCOUNT_ID": "<your-account-id>"
          }
@@ -548,6 +558,7 @@ Antigravity's hook payloads have **no field naming the event type at all**, and 
          "args": ["preflight", "--stdio"],
          "env": {
            "MCP_CLIENT": "antigravity",
+           "NR_AI_MODE": "cloud",
            "NEW_RELIC_LICENSE_KEY": "<your-key>",
            "NEW_RELIC_ACCOUNT_ID": "<your-account-id>"
          }
@@ -624,7 +635,7 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
    The `NEW_RELIC_AI_PLATFORM=copilot` prefix is required: Copilot's hooks-runner process is spawned separately from the MCP server process and does not inherit env vars set on an MCP registration (e.g. `copilot mcp add --env MCP_CLIENT=...`), so without embedding the tag directly in the command string, every event silently falls through to the `claude-code` platform default.
    1b. VS Code also reads Claude-format hooks from `~/.claude/settings.json` by default, so a `preflight install` done for Claude Code is picked up automatically — but hooks from all locations are _collected_, so same-event hooks in both files double-capture every tool call. The installer (step 0) fixes this automatically by writing `"chat.hookFilesLocations": { "<claude-settings-path>": false }` into VS Code's `settings.json`; doing it by hand means disabling the Claude location for Copilot the same way.
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`).
-3. Register the Preflight MCP server for `nr_observe_*` tools with env `MCP_CLIENT=copilot`, `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`.
+3. Register the Preflight MCP server for `nr_observe_*` tools with env `MCP_CLIENT=copilot`, `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`.
 4. For token-exact cost, add `"github.copilot.chat.agentDebugLog.fileLogging.enabled": true` to VS Code User `settings.json` and reload the window (see **Required setting** above). Not needed for tool-call/session telemetry, only for exact cost.
 5. For the GitHub Copilot CLI/SDK runtime instead of VS Code, use the `copilot-sdk` adapter's own setup (see the "GitHub Copilot SDK" section below) — Copilot CLI's native lowerCamelCase hooks are not compatible with this adapter.
 
@@ -675,6 +686,7 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
    ```bash
    copilot mcp add preflight \
      --env MCP_CLIENT=copilot-sdk \
+     --env NR_AI_MODE=cloud \
      --env NEW_RELIC_LICENSE_KEY=<your-key> \
      --env NEW_RELIC_ACCOUNT_ID=<your-account-id> \
      -- npx preflight --stdio
@@ -726,6 +738,7 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
    ```bash
    copilot mcp add preflight \
      --env MCP_CLIENT=copilot-app \
+     --env NR_AI_MODE=cloud \
      --env NEW_RELIC_LICENSE_KEY=<your-key> \
      --env NEW_RELIC_ACCOUNT_ID=<your-account-id> \
      -- npx preflight --stdio
@@ -747,7 +760,7 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
 **Setup:**
 
 1. Add the Preflight MCP server to your client's MCP configuration: `npx preflight --stdio`
-2. Set `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`
+2. Set `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
 3. MCP tool calls are captured automatically via the proxy
 4. Use `nr_observe_report_tool_call` for non-MCP tool activity
 5. Use `nr_observe_report_session_start` / `nr_observe_report_session_end` for session tracking
