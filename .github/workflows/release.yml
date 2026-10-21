@@ -132,17 +132,21 @@ jobs:
       # publish). A previous 150s retry budget (5 attempts, 10-50s backoff)
       # consistently failed here and only passed on a manual re-run minutes
       # later, once propagation had caught up. Poll for up to 10 minutes.
+      # The tarball URL can lag the metadata that `npm view` reads, and the
+      # Homebrew step hashes that tarball, so both have to resolve.
       - name: Wait for npm package availability
         run: |
           VERSION="$(node -p "require('./package.json').version")"
+          TARBALL_URL="https://registry.npmjs.org/@newrelic/preflight/-/preflight-${VERSION}.tgz"
           for attempt in $(seq 1 20); do
-            if npm view "@newrelic/preflight@$VERSION" version >/dev/null 2>&1; then
+            if npm view "@newrelic/preflight@$VERSION" version >/dev/null 2>&1 \
+              && curl -fsI -o /dev/null "$TARBALL_URL"; then
               exit 0
             fi
-            echo "@newrelic/preflight@$VERSION not yet visible on npm, attempt $attempt"
+            echo "@newrelic/preflight@$VERSION metadata or tarball not yet visible on npm, attempt $attempt"
             sleep 30
           done
-          echo "@newrelic/preflight@$VERSION never became visible on npm" >&2
+          echo "@newrelic/preflight@$VERSION never became fully visible on npm (metadata and $TARBALL_URL)" >&2
           exit 1
 
       # homebrew/Formula/preflight.rb points at the npm tarball, so this must
@@ -155,8 +159,9 @@ jobs:
       # so this opens a PR and arms auto-merge rather than pushing to main
       # directly; a maintainer still needs to approve it once before it merges.
       # continue-on-error keeps a tap failure from blocking the MCP Registry
-      # publish below; the failure still shows as an annotation on the run.
+      # publish below; the next step reports the failure on the run summary.
       - name: Update Homebrew tap
+        id: homebrew
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -206,6 +211,16 @@ jobs:
           fi
           gh pr merge "$BRANCH" --repo newrelic-experimental/homebrew-preflight --auto --squash \
             || echo "auto-merge not armed, approve and merge the tap PR by hand"
+
+      # A continue-on-error step that fails leaves the run green, so without
+      # this a missing tap PR is silent.
+      - name: Report Homebrew tap failure
+        if: steps.homebrew.outcome == 'failure'
+        run: |
+          MESSAGE="The Homebrew tap step failed, so no tap PR was opened for this release. Re-run all jobs once the cause is fixed."
+          echo "::warning title=Homebrew tap not updated::$MESSAGE"
+          echo "### Homebrew tap not updated" >> "$GITHUB_STEP_SUMMARY"
+          echo "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
 
       # The MCP Registry (registry.modelcontextprotocol.io) verifies that the
       # npm package carries a matching `mcpName`, so this must run after the
