@@ -10,6 +10,13 @@ import type { FullSessionSummary } from './session-store.js';
 // because the today/yesterday boundary is the host's local midnight.
 const local = (day: number, hour: number): number => new Date(2026, 9, day, hour).getTime();
 const REF_TS = local(15, 12);
+const DAY = 24 * 60 * 60 * 1000;
+const HOUR = 60 * 60 * 1000;
+
+// loadAllSessions() keeps a session when the UTC date in its filename is on or
+// after the UTC date seven days before refTs, so the window starts at UTC
+// midnight of that date rather than at refTs - 7 days.
+const WINDOW_START = Date.parse(new Date(REF_TS - 7 * DAY).toISOString().slice(0, 10));
 
 let tmpDir: string;
 let store: SessionStore;
@@ -69,8 +76,8 @@ describe('computeHistoricalCosts', () => {
     });
   });
 
-  it('counts a session from six days ago toward the week', () => {
-    save('last-week', local(9, 10), local(9, 11), 3);
+  it('counts a session from the first day of the window toward the week', () => {
+    save('first-day', WINDOW_START, WINDOW_START + HOUR, 3);
 
     expect(computeHistoricalCosts(store, 'current', REF_TS)).toEqual({
       priorDailyCostUsd: 0,
@@ -78,8 +85,8 @@ describe('computeHistoricalCosts', () => {
     });
   });
 
-  it('ignores a session older than seven days', () => {
-    save('old', local(7, 10), local(7, 11), 8);
+  it('ignores a session from the day before the window', () => {
+    save('day-before', WINDOW_START - HOUR, WINDOW_START, 8);
 
     expect(computeHistoricalCosts(store, 'current', REF_TS)).toEqual({
       priorDailyCostUsd: 0,
@@ -110,7 +117,7 @@ describe('computeHistoricalCosts', () => {
     save('yesterday', local(14, 10), local(14, 11), 1);
     save('today', local(15, 8), local(15, 9), 2);
     save('overnight', local(14, 23), local(15, 1), 4);
-    save('old', local(7, 10), local(7, 11), 8);
+    save('old', WINDOW_START - HOUR, WINDOW_START, 8);
     save('current', local(15, 10), local(15, 11), 16);
 
     expect(computeHistoricalCosts(store, 'current', REF_TS)).toEqual({
