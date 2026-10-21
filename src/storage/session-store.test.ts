@@ -3895,3 +3895,15 @@ describe('attribution field', () => {
     });
   });
 });
+
+describe('deserializeFullSessionSummary repoName', () => {
+  it.each([
+    ['tok3n@github.com/widgets', 'github.com/widgets'],
+    ['user:pass@host.example/org/repo', 'host.example/org/repo'],
+    ['org/repo', 'org/repo'],
+    ['github.com/widgets', 'github.com/widgets'],
+    ['tok3n@', null],
+  ])('loads %s as %s', (stored, expected) => {
+    expect(deserializeFullSessionSummary({ repoName: stored }).repoName).toBe(expected);
+  });
+});
