@@ -289,12 +289,33 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
    subprocess are Kiro-specific, so without this forced stamp, detection
    falls through to `generic-mcp` and every normalized-name metric reports
    zero while the raw tool-call count still looks fine.
-2. Restart Kiro (or reconnect MCP servers from the Kiro MCP panel).
+2. Confirm `preflight-collector` resolves on `PATH` (`command -v preflight-collector`, or `npm install -g @newrelic/preflight`). Do this before step 3: Kiro treats `PreToolUse` as a blocking trigger, so a hook command missing from `PATH` blocks every tool call in the session.
+3. Add `.kiro/hooks/preflight-observability.json` in your project. Hooks are workspace-scoped, and `preflight setup` does not write this file for you:
+   ```json
+   {
+     "version": "v1",
+     "hooks": [
+       {
+         "name": "Preflight: pre tool call",
+         "trigger": "PreToolUse",
+         "action": { "type": "command", "command": "MCP_CLIENT=kiro preflight-collector" },
+         "timeout": 10
+       },
+       {
+         "name": "Preflight: post tool call",
+         "trigger": "PostToolUse",
+         "action": { "type": "command", "command": "MCP_CLIENT=kiro preflight-collector" },
+         "timeout": 10
+       }
+     ]
+   }
+   ```
+   The `MCP_CLIENT=kiro` prefix is required. Kiro runs the hook command as a separate process from the MCP server, so it never sees the `NEW_RELIC_AI_PLATFORM` value from `mcp.json`. [KIRO_POWER.md](./KIRO_POWER.md#enable-automatic-tool-call-capture) explains the reasoning in full.
+4. Restart Kiro (or reconnect MCP servers from the Kiro MCP panel).
 
-Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md) — it
-provisions the same MCP server without manually editing `mcp.json`, plus a
-documented step for wiring Kiro's native `.kiro/hooks/` system
-([kiro.dev/docs/hooks/](https://kiro.dev/docs/hooks/)) for automatic capture.
+Without step 3, Kiro is observed through Preflight's own MCP tools only (`mcp-tools-only` visibility), and `nr_observe_health` still succeeds.
+
+Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisions the same MCP server without manually editing `mcp.json`, and its `setup` skill walks through the same hook file.
 
 ---
 
