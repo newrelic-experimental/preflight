@@ -866,9 +866,11 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     typeof file.highSecurity === 'boolean' ? file.highSecurity : false,
   );
 
-  const resolvedProjectId = sanitizeOrgField(
+  const rawProjectId =
     process.env.NEW_RELIC_AI_PROJECT_ID ??
-      (typeof file.projectId === 'string' ? file.projectId : inferProjectId()),
+    (typeof file.projectId === 'string' ? file.projectId : inferProjectId());
+  const resolvedProjectId = sanitizeOrgField(
+    rawProjectId === null ? null : redactSensitive(rawProjectId),
   );
 
   // Dedicated opt-out, independent of projectId's — repo_url can carry an
