@@ -104,7 +104,6 @@ export interface TokenHookEvent extends HookEventBase {
 /** Emitted by the SubagentWatcher for each subagent assistant turn. */
 export interface SubagentTokenHookEvent extends HookEventBase {
   readonly mode: 'subagent_token';
-  readonly agentId?: string;
   readonly messageId?: string;
   readonly sessionId?: string;
   readonly workflowRunId?: string | null;
