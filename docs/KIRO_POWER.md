@@ -108,7 +108,8 @@ preflight-collector` (or run
    a blocking trigger, so a hook command missing from `PATH` would block
    every tool call in the session, not just skip Preflight's own
    observability.
-2. Add `.kiro/hooks/preflight-observability.json` in your project (not
+2. From your project directory, run `preflight install --kiro` to write the
+   file below, or add `.kiro/hooks/preflight-observability.json` yourself (not
    inside `kiro-power/` — hooks are workspace-scoped):
 
    ```json

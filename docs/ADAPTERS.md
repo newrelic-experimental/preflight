@@ -290,7 +290,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
    falls through to `generic-mcp` and every normalized-name metric reports
    zero while the raw tool-call count still looks fine.
 2. Confirm `preflight-collector` resolves on `PATH` (`command -v preflight-collector`, or `npm install -g @newrelic/preflight`). Do this before step 3: Kiro treats `PreToolUse` as a blocking trigger, so a hook command missing from `PATH` blocks every tool call in the session.
-3. Add `.kiro/hooks/preflight-observability.json` in your project. Hooks are workspace-scoped, and `preflight setup` does not write this file for you:
+3. From your project directory, run `preflight install --kiro`. It writes `.kiro/hooks/preflight-observability.json` (hooks are workspace-scoped, so repeat it in each project), keeps any other hooks already in the file, and refuses to run if `preflight-collector` is not on `PATH`. To write the file by hand instead, use:
    ```json
    {
      "version": "v1",

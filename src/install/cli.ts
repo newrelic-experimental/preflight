@@ -53,6 +53,7 @@ import {
 } from './schedule.js';
 import { detectUpdateSupport, updateBlockerLines } from './update-support.js';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
+import { kiroHooksPath, mergeKiroHooksFile } from './kiro-install-helper.js';
 import { LocalStore } from '../storage/index.js';
 import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
 import type { DiagnosticCheck } from './diagnostics.js';
@@ -795,6 +796,27 @@ function registerCopilotMcpServer(
     ...targetArgs,
   ];
   execFileSync(copilotCliPath, args, { stdio: 'pipe' });
+}
+
+function handleKiroInstall(): void {
+  // Kiro treats PreToolUse as blocking, so a collector missing from PATH would
+  // block every tool call in the workspace.
+  if (!resolveNamedBinaryOnPath('preflight-collector')) {
+    eprint(
+      '\n✗ preflight-collector is not on your PATH, so the Kiro hooks would block tool calls.',
+    );
+    eprint('  Fix: npm install -g @newrelic/preflight, then re-run this command.');
+    process.exit(1);
+  }
+  const hooksPath = kiroHooksPath(process.cwd());
+  try {
+    writeJsonFile(hooksPath, mergeKiroHooksFile(readJsonFileStrict(hooksPath)));
+  } catch (err) {
+    eprint(`\n✗ Failed to write Kiro hooks (${hooksPath}): ${errMsg(err)}`);
+    process.exit(1);
+  }
+  print(`\n✓ Kiro hooks written: ${hooksPath}`);
+  print('  Hooks are workspace-scoped; run this in each project. Restart Kiro to load them.');
 }
 
 function handleCopilotInstall(options: {
@@ -1597,6 +1619,10 @@ export function createInstallProgram(): Command {
       '--copilot',
       'Configure GitHub Copilot instead — Copilot CLI hooks/MCP and VS Code Copilot Chat hooks/MCP',
     )
+    .option(
+      '--kiro',
+      'Configure Amazon Kiro instead — writes .kiro/hooks/preflight-observability.json in the current directory',
+    )
     .action(
       (options: {
         licenseKey?: string;
@@ -1606,7 +1632,16 @@ export function createInstallProgram(): Command {
         windowsCc?: boolean;
         linuxCc?: boolean;
         copilot?: boolean;
+        kiro?: boolean;
       }) => {
+        if (options.kiro) {
+          if (options.copilot || options.windowsCc || options.linuxCc) {
+            print('\n  ⚠ --kiro cannot be combined with --copilot, --windows-cc, or --linux-cc.');
+            process.exit(1);
+          }
+          handleKiroInstall();
+          return;
+        }
         if (options.copilot) {
           if (options.windowsCc || options.linuxCc) {
             print('\n  ⚠ --copilot cannot be combined with --windows-cc or --linux-cc.');
