@@ -965,6 +965,21 @@ describe('redactSensitive()', () => {
     expect(redactSensitive('glpat-short')).toBe('glpat-short');
   });
 
+  it.each([
+    'acme/risk-assessment-pipeline-v2',
+    'acme/task-scheduler-service-api',
+    'disk-usage-report-generator-v1',
+  ])('leaves a hyphenated name that merely ends in "sk" alone: %s', (name) => {
+    expect(redactSensitive(name)).toBe(name);
+  });
+
+  it('still redacts sk- keys at a word boundary', () => {
+    const key = 'sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    for (const input of [key, `key=${key}`, `"${key}"`, `my-${key}`]) {
+      expect(redactSensitive(input)).not.toContain('ABCDEFGHIJ');
+    }
+  });
+
   it('redacts all Slack token types', () => {
     const inputs = [
       'xoxa-123-456-789-abc',
@@ -987,9 +1002,9 @@ describe('redactSensitive()', () => {
   });
 
   it('still redacts secrets that appear within the first 1 MB of a large input', () => {
-    const secret = 'sk-secretvalue12345';
+    const secret = 'sk-secretvalue1234567890abcdef';
     const padding = 'x'.repeat(100_000);
-    const result = redactSensitive(`${padding}${secret}${padding}`);
+    const result = redactSensitive(`${padding} ${secret} ${padding}`);
     expect(result).not.toContain(secret);
   });
 
