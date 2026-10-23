@@ -952,6 +952,34 @@ describe('redactSensitive()', () => {
     expect(result).toContain('[REDACTED]');
   });
 
+  it('redacts GitLab personal access tokens, legacy and routable', () => {
+    const inputs = ['glpat-ABCDEFGHIJKLMNOPQRST', 'glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZ0.01.abcdefghi'];
+    for (const token of inputs) {
+      const result = redactSensitive(`remote: https://oauth2:${token}@gitlab.com/g/p.git`);
+      expect(result).not.toContain(token);
+      expect(result).not.toContain('ABCDEFGHIJ');
+    }
+  });
+
+  it('leaves a short glpat- lookalike alone', () => {
+    expect(redactSensitive('glpat-short')).toBe('glpat-short');
+  });
+
+  it.each([
+    'acme/risk-assessment-pipeline-v2',
+    'acme/task-scheduler-service-api',
+    'disk-usage-report-generator-v1',
+  ])('leaves a hyphenated name that merely ends in "sk" alone: %s', (name) => {
+    expect(redactSensitive(name)).toBe(name);
+  });
+
+  it('still redacts sk- keys at a word boundary', () => {
+    const key = 'sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    for (const input of [key, `key=${key}`, `"${key}"`, `my-${key}`]) {
+      expect(redactSensitive(input)).not.toContain('ABCDEFGHIJ');
+    }
+  });
+
   it('redacts all Slack token types', () => {
     const inputs = [
       'xoxa-123-456-789-abc',
@@ -974,9 +1002,9 @@ describe('redactSensitive()', () => {
   });
 
   it('still redacts secrets that appear within the first 1 MB of a large input', () => {
-    const secret = 'sk-secretvalue12345';
+    const secret = 'sk-secretvalue1234567890abcdef';
     const padding = 'x'.repeat(100_000);
-    const result = redactSensitive(`${padding}${secret}${padding}`);
+    const result = redactSensitive(`${padding} ${secret} ${padding}`);
     expect(result).not.toContain(secret);
   });
 
@@ -1352,6 +1380,20 @@ describe('developer sanitization via loadMcpConfig()', () => {
     const configPath = writeConfigFile({});
     const config = loadMcpConfig({ config: configPath });
     expect(config.teamId).toBeNull();
+  });
+
+  it.each([
+    ['env var', 'env'],
+    ['config file', 'file'],
+  ])('redacts a token in a projectId from the %s', (_label, source) => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const leaky = 'glpat-ABCDEFGHIJKLMNOPQRST/widgets';
+    let configPath: string | undefined;
+    if (source === 'env') process.env.NEW_RELIC_AI_PROJECT_ID = leaky;
+    else configPath = writeConfigFile({ projectId: leaky });
+    const config = loadMcpConfig(configPath ? { config: configPath } : {});
+    expect(config.projectId).toBe('[REDACTED]/widgets');
   });
 
   it('projectId uses config file value when no env var set', () => {

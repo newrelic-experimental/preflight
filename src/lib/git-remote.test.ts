@@ -7,41 +7,6 @@ import {
   stripRemoteCredentials,
 } from './git-remote.js';
 
-// Verbatim copies of the four parsers this module replaced (#716), kept so the
-// matrix below records exactly where the shared parser's output differs.
-function legacyConfigProjectId(remote: string): string | null {
-  // src/config.ts inferProjectId(), applied to the already-trimmed remote.
-  const match = remote.trim().match(/[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/);
-  return match ? match[1] : null;
-}
-
-function legacyRepoName(remote: string): string | null {
-  // src/index.ts repo-context hydration and
-  // src/metrics/local-session-aggregator.ts repoNameFromRemote() used the same regex.
-  const match = remote.trim().match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
-  return match?.[1] ?? null;
-}
-
-function legacyCommitUrl(remote: string, hash: string): string | null {
-  // src/metrics/local-session-aggregator.ts commitUrlFromRemote().
-  if (!remote || !hash) return null;
-  const trimmed = remote.trim().replace(/\.git$/, '');
-  const ssh = /^(?:ssh:\/\/)?[^@]+@([^:/]+)[:/](.+)$/.exec(trimmed);
-  const https = /^https?:\/\/(?:[^@/]+@)?([^/]+)\/(.+)$/.exec(trimmed);
-  const match = ssh ?? https;
-  if (!match) return null;
-  const [, host, path] = match;
-  if (!host || !path) return null;
-  return `https://${host}/${path}/commit/${hash}`;
-}
-
-function legacyRepoUrl(remote: string): string | null {
-  // src/config.ts: inferRepoUrl() returned the raw remote; loadMcpConfig()
-  // then ran redactSensitive() on it.
-  const trimmed = remote.trim();
-  return trimmed === '' ? null : redactSensitive(trimmed);
-}
-
 function newRepoUrl(remote: string): string | null {
   const stripped = stripRemoteCredentials(remote);
   return stripped === null ? null : redactSensitive(stripped);
@@ -52,13 +17,6 @@ const commit = (hostPath: string): string => `https://${hostPath}/commit/${HASH}
 
 interface Row {
   readonly remote: string;
-  /** What the old parsers returned. */
-  readonly legacy: {
-    readonly configProjectId: string | null;
-    readonly repoName: string | null;
-    readonly commitUrl: string | null;
-    readonly repoUrl: string | null;
-  };
   /** What the shared parser returns. */
   readonly next: {
     readonly repoName: string | null;
@@ -70,13 +28,10 @@ interface Row {
 
 function row(
   remote: string,
-  legacy: [string | null, string | null, string | null, string | null],
   next: [string | null, string | null, string | null, (string | null)?],
 ): Row {
-  const [configProjectId, repoName, commitUrl, repoUrl] = legacy;
   return {
     remote,
-    legacy: { configProjectId, repoName, commitUrl, repoUrl },
     next: {
       repoName: next[0],
       commitUrl: next[1],
@@ -87,366 +42,183 @@ function row(
 }
 
 const GH = 'github.com/acme/widgets';
-// Columns: legacy [config projectId, index/aggregator repoName, commitUrl, repoUrl]
-//          next   [repoName (index, aggregator, workspace identity), commitUrl, repoUrl,
-//                  config projectId when it differs from repoName]
+// Columns: [repoName (index, aggregator, workspace identity), commitUrl, repoUrl,
+//           config projectId when it differs from repoName]
 const MATRIX: readonly Row[] = [
-  // Unchanged: the common shapes.
-  row(
-    `https://${GH}.git`,
-    ['acme/widgets', 'acme/widgets', commit(GH), `https://${GH}.git`],
-    ['acme/widgets', commit(GH), `https://${GH}.git`],
-  ),
-  row(
-    `https://${GH}`,
-    ['acme/widgets', 'acme/widgets', commit(GH), `https://${GH}`],
-    ['acme/widgets', commit(GH), `https://${GH}`],
-  ),
-  row(
-    `http://${GH}.git`,
-    ['acme/widgets', 'acme/widgets', commit(GH), `http://${GH}.git`],
-    ['acme/widgets', commit(GH), `http://${GH}.git`],
-  ),
-  row(
+  // The common shapes.
+  row(`https://${GH}.git`, ['acme/widgets', commit(GH), `https://${GH}.git`]),
+  row(`https://${GH}`, ['acme/widgets', commit(GH), `https://${GH}`]),
+  row(`http://${GH}.git`, ['acme/widgets', commit(GH), `http://${GH}.git`]),
+  row('git@github.com:acme/widgets.git', [
+    'acme/widgets',
+    commit(GH),
     'git@github.com:acme/widgets.git',
-    ['acme/widgets', 'acme/widgets', commit(GH), 'git@github.com:acme/widgets.git'],
-    ['acme/widgets', commit(GH), 'git@github.com:acme/widgets.git'],
-  ),
-  row(
-    'git@github.com:acme/widgets',
-    ['acme/widgets', 'acme/widgets', commit(GH), 'git@github.com:acme/widgets'],
-    ['acme/widgets', commit(GH), 'git@github.com:acme/widgets'],
-  ),
-  row(
-    `ssh://git@${GH}.git`,
-    ['acme/widgets', 'acme/widgets', commit(GH), `ssh://git@${GH}.git`],
-    ['acme/widgets', commit(GH), `ssh://git@${GH}.git`],
-  ),
-  row(
+  ]),
+  row('git@github.com:acme/widgets', ['acme/widgets', commit(GH), 'git@github.com:acme/widgets']),
+  row(`ssh://git@${GH}.git`, ['acme/widgets', commit(GH), `ssh://git@${GH}.git`]),
+  row('git://github.com/acme/widgets.git', [
+    'acme/widgets',
+    null,
     'git://github.com/acme/widgets.git',
-    ['acme/widgets', 'acme/widgets', null, 'git://github.com/acme/widgets.git'],
-    ['acme/widgets', null, 'git://github.com/acme/widgets.git'],
-  ),
-  row(
-    '  https://github.com/acme/widgets.git\n',
-    ['acme/widgets', 'acme/widgets', commit(GH), `https://${GH}.git`],
-    ['acme/widgets', commit(GH), `https://${GH}.git`],
-  ),
+  ]),
+  row('  https://github.com/acme/widgets.git\n', ['acme/widgets', commit(GH), `https://${GH}.git`]),
   // GitHub Enterprise and other self-hosted hosts.
-  row(
+  row('https://source.datanerd.us/acme/widgets.git', [
+    'acme/widgets',
+    commit('source.datanerd.us/acme/widgets'),
     'https://source.datanerd.us/acme/widgets.git',
-    [
-      'acme/widgets',
-      'acme/widgets',
-      commit('source.datanerd.us/acme/widgets'),
-      'https://source.datanerd.us/acme/widgets.git',
-    ],
-    [
-      'acme/widgets',
-      commit('source.datanerd.us/acme/widgets'),
-      'https://source.datanerd.us/acme/widgets.git',
-    ],
-  ),
-  row(
+  ]),
+  row('git@source.datanerd.us:acme/widgets.git', [
+    'acme/widgets',
+    commit('source.datanerd.us/acme/widgets'),
     'git@source.datanerd.us:acme/widgets.git',
-    [
-      'acme/widgets',
-      'acme/widgets',
-      commit('source.datanerd.us/acme/widgets'),
-      'git@source.datanerd.us:acme/widgets.git',
-    ],
-    [
-      'acme/widgets',
-      commit('source.datanerd.us/acme/widgets'),
-      'git@source.datanerd.us:acme/widgets.git',
-    ],
-  ),
-  row(
+  ]),
+  row('https://ghe.example.com:8443/acme/widgets.git', [
+    'acme/widgets',
+    commit('ghe.example.com:8443/acme/widgets'),
     'https://ghe.example.com:8443/acme/widgets.git',
-    [
-      'acme/widgets',
-      'acme/widgets',
-      commit('ghe.example.com:8443/acme/widgets'),
-      'https://ghe.example.com:8443/acme/widgets.git',
-    ],
-    [
-      'acme/widgets',
-      commit('ghe.example.com:8443/acme/widgets'),
-      'https://ghe.example.com:8443/acme/widgets.git',
-    ],
-  ),
+  ]),
   // Nested groups: repoName stays the last two segments; the link keeps the full path.
-  row(
+  row('https://gitlab.com/group/sub/widgets.git', [
+    'sub/widgets',
+    commit('gitlab.com/group/sub/widgets'),
     'https://gitlab.com/group/sub/widgets.git',
-    [
-      'sub/widgets',
-      'sub/widgets',
-      commit('gitlab.com/group/sub/widgets'),
-      'https://gitlab.com/group/sub/widgets.git',
-    ],
-    [
-      'sub/widgets',
-      commit('gitlab.com/group/sub/widgets'),
-      'https://gitlab.com/group/sub/widgets.git',
-    ],
-  ),
-  row(
+  ]),
+  row('git@gitlab.com:group/sub/widgets.git', [
+    'sub/widgets',
+    commit('gitlab.com/group/sub/widgets'),
     'git@gitlab.com:group/sub/widgets.git',
-    [
-      'sub/widgets',
-      'sub/widgets',
-      commit('gitlab.com/group/sub/widgets'),
-      'git@gitlab.com:group/sub/widgets.git',
-    ],
-    ['sub/widgets', commit('gitlab.com/group/sub/widgets'), 'git@gitlab.com:group/sub/widgets.git'],
-  ),
+  ]),
   // Local remotes: a name, never a link.
-  row(
-    '/srv/git/acme/widgets.git',
-    ['acme/widgets', 'acme/widgets', null, '/srv/git/acme/widgets.git'],
-    ['acme/widgets', null, '/srv/git/acme/widgets.git'],
-  ),
-  row(
+  row('/srv/git/acme/widgets.git', ['acme/widgets', null, '/srv/git/acme/widgets.git']),
+  row('file:///srv/git/acme/widgets.git', [
+    'acme/widgets',
+    null,
     'file:///srv/git/acme/widgets.git',
-    ['acme/widgets', 'acme/widgets', null, 'file:///srv/git/acme/widgets.git'],
-    ['acme/widgets', null, 'file:///srv/git/acme/widgets.git'],
-  ),
-  row(
-    'C:/repos/acme/widgets',
-    ['acme/widgets', 'acme/widgets', null, 'C:/repos/acme/widgets'],
-    ['acme/widgets', null, 'C:/repos/acme/widgets'],
-  ),
-  row('../widgets', [null, null, null, '../widgets'], [null, null, '../widgets']),
+  ]),
+  row('C:/repos/acme/widgets', ['acme/widgets', null, 'C:/repos/acme/widgets']),
+  row('../widgets', [null, null, '../widgets']),
   // A one-letter host is an ssh alias unless a slash follows its colon.
-  row(
-    'g:acme/widgets.git',
-    ['acme/widgets', 'acme/widgets', null, 'g:acme/widgets.git'],
-    ['acme/widgets', null, 'g:acme/widgets.git'],
-  ),
-  row('', [null, null, null, null], [null, null, null]),
+  row('g:acme/widgets.git', ['acme/widgets', null, 'g:acme/widgets.git']),
+  row('', [null, null, null]),
   // One path segment: the host stands in for the owner in the local repo name.
-  // CHANGED: projectId keeps only the name, since the host can be internal.
-  row(
+  // projectId keeps only the name, since the host can be internal.
+  row('https://github.com/widgets', [
+    'github.com/widgets',
+    commit('github.com/widgets'),
     'https://github.com/widgets',
-    [
-      'github.com/widgets',
-      'github.com/widgets',
-      commit('github.com/widgets'),
-      'https://github.com/widgets',
-    ],
-    ['github.com/widgets', commit('github.com/widgets'), 'https://github.com/widgets', 'widgets'],
-  ),
+    'widgets',
+  ]),
   // A userless ssh or scp remote gets no link.
-  row(
+  row('ssh://github.com/acme/widgets.git', [
+    'acme/widgets',
+    null,
     'ssh://github.com/acme/widgets.git',
-    ['acme/widgets', 'acme/widgets', null, 'ssh://github.com/acme/widgets.git'],
-    ['acme/widgets', null, 'ssh://github.com/acme/widgets.git'],
-  ),
-  row(
-    'github.com:acme/widgets.git',
-    ['acme/widgets', 'acme/widgets', null, 'github.com:acme/widgets.git'],
-    ['acme/widgets', null, 'github.com:acme/widgets.git'],
-  ),
+  ]),
+  row('github.com:acme/widgets.git', ['acme/widgets', null, 'github.com:acme/widgets.git']),
 
-  // CHANGED: credentials no longer reach any output.
-  row(
-    'https://token@github.com/acme/widgets.git',
-    ['acme/widgets', 'acme/widgets', commit(GH), 'https://token@github.com/acme/widgets.git'],
-    ['acme/widgets', commit(GH), `https://${GH}.git`],
-  ),
-  row(
-    'https://user:ghp_secret@github.com/acme/widgets.git',
-    ['acme/widgets', 'acme/widgets', commit(GH), '[REDACTED]/acme/widgets.git'],
-    ['acme/widgets', commit(GH), `https://${GH}.git`],
-  ),
-  row(
-    'https://oauth2:glpat-abc123@gitlab.com/acme/widgets.git',
-    [
-      'acme/widgets',
-      'acme/widgets',
-      commit('gitlab.com/acme/widgets'),
-      '[REDACTED]/acme/widgets.git',
-    ],
-    ['acme/widgets', commit('gitlab.com/acme/widgets'), 'https://gitlab.com/acme/widgets.git'],
-  ),
-  row(
-    'https://ghp_secret@github.com/widgets.git',
-    [
-      null,
-      'ghp_secret@github.com/widgets',
-      commit('github.com/widgets'),
-      'https://ghp_secret@github.com/widgets.git',
-    ],
-    [
-      'github.com/widgets',
-      commit('github.com/widgets'),
-      'https://github.com/widgets.git',
-      'widgets',
-    ],
-  ),
-  row(
-    'https://user:p@ss@github.com/acme/widgets.git',
-    [
-      'acme/widgets',
-      'acme/widgets',
-      commit('ss@github.com/acme/widgets'),
-      '[REDACTED]/acme/widgets.git',
-    ],
-    ['acme/widgets', commit(GH), `https://${GH}.git`],
-  ),
-  row(
-    'https://github.com/acme/widgets.git?token=abc',
-    [
-      null,
-      'acme/widgets.git?token=abc',
-      commit('github.com/acme/widgets.git?token=abc'),
-      'https://github.com/acme/widgets.git?[REDACTED]',
-    ],
-    ['acme/widgets', commit(GH), `https://${GH}.git`],
-  ),
-  row(
+  // Credentials never reach any output.
+  row('https://token@github.com/acme/widgets.git', [
+    'acme/widgets',
+    commit(GH),
+    `https://${GH}.git`,
+  ]),
+  row('https://user:ghp_secret@github.com/acme/widgets.git', [
+    'acme/widgets',
+    commit(GH),
+    `https://${GH}.git`,
+  ]),
+  row('https://oauth2:glpat-abc123@gitlab.com/acme/widgets.git', [
+    'acme/widgets',
+    commit('gitlab.com/acme/widgets'),
+    'https://gitlab.com/acme/widgets.git',
+  ]),
+  row('https://ghp_secret@github.com/widgets.git', [
+    'github.com/widgets',
+    commit('github.com/widgets'),
+    'https://github.com/widgets.git',
+    'widgets',
+  ]),
+  row('https://user:p@ss@github.com/acme/widgets.git', [
+    'acme/widgets',
+    commit(GH),
+    `https://${GH}.git`,
+  ]),
+  row('https://github.com/acme/widgets.git?token=abc', [
+    'acme/widgets',
+    commit(GH),
+    `https://${GH}.git`,
+  ]),
+  row('ssh://git@github.com/widgets.git', [
+    'github.com/widgets',
+    commit('github.com/widgets'),
     'ssh://git@github.com/widgets.git',
-    [
-      null,
-      'git@github.com/widgets',
-      commit('github.com/widgets'),
-      'ssh://git@github.com/widgets.git',
-    ],
-    [
-      'github.com/widgets',
-      commit('github.com/widgets'),
-      'ssh://git@github.com/widgets.git',
-      'widgets',
-    ],
-  ),
+    'widgets',
+  ]),
   // Remote-helper remotes (`<transport>::<address>`).
-  row(
-    'hg::https://user:s3cret@hg.example.com/acme/widgets',
-    [
-      'acme/widgets',
-      'acme/widgets',
-      commit('hg.example.com/acme/widgets'),
-      'hg::[REDACTED]/acme/widgets',
-    ],
-    [null, null, null],
-  ),
-  row(
-    'gcrypt::https://glpat-abc123@gitlab.com/widgets.git',
-    [
-      null,
-      'glpat-abc123@gitlab.com/widgets',
-      commit('gitlab.com/widgets'),
-      'gcrypt::https://glpat-abc123@gitlab.com/widgets.git',
-    ],
-    [null, null, null],
-  ),
+  row('hg::https://user:s3cret@hg.example.com/acme/widgets', [null, null, null]),
+  row('gcrypt::https://glpat-abc123@gitlab.com/widgets.git', [null, null, null]),
 
-  // CHANGED: shapes the old parsers got wrong.
-  row(
+  // Trailing slashes, uppercase .GIT, ports, and one-segment paths.
+  row('https://github.com/acme/widgets/', [
+    'acme/widgets',
+    commit(GH),
     'https://github.com/acme/widgets/',
-    [null, null, commit('github.com/acme/widgets/'), 'https://github.com/acme/widgets/'],
-    ['acme/widgets', commit(GH), 'https://github.com/acme/widgets/'],
-  ),
-  row(
+  ]),
+  row('https://github.com/acme/widgets.git/', [
+    'acme/widgets',
+    commit(GH),
     'https://github.com/acme/widgets.git/',
-    [null, null, commit('github.com/acme/widgets.git/'), 'https://github.com/acme/widgets.git/'],
-    ['acme/widgets', commit(GH), 'https://github.com/acme/widgets.git/'],
-  ),
-  row(
+  ]),
+  row('git@github.com:acme/widgets.git/', [
+    'acme/widgets',
+    commit(GH),
     'git@github.com:acme/widgets.git/',
-    [null, null, commit('github.com/acme/widgets.git/'), 'git@github.com:acme/widgets.git/'],
-    ['acme/widgets', commit(GH), 'git@github.com:acme/widgets.git/'],
-  ),
-  row(
+  ]),
+  row('https://github.com/acme/widgets.GIT', [
+    'acme/widgets',
+    commit(GH),
     'https://github.com/acme/widgets.GIT',
-    [
-      'acme/widgets.GIT',
-      'acme/widgets.GIT',
-      commit('github.com/acme/widgets.GIT'),
-      'https://github.com/acme/widgets.GIT',
-    ],
-    ['acme/widgets', commit(GH), 'https://github.com/acme/widgets.GIT'],
-  ),
-  row(
+  ]),
+  row('ssh://git@github.com:22/acme/widgets.git', [
+    'acme/widgets',
+    commit(GH),
     'ssh://git@github.com:22/acme/widgets.git',
-    [
-      'acme/widgets',
-      'acme/widgets',
-      commit('github.com/22/acme/widgets'),
-      'ssh://git@github.com:22/acme/widgets.git',
-    ],
-    ['acme/widgets', commit(GH), 'ssh://git@github.com:22/acme/widgets.git'],
-  ),
-  row(
+  ]),
+  row('git@git.example.com:widgets.git', [
+    'git.example.com/widgets',
+    commit('git.example.com/widgets'),
     'git@git.example.com:widgets.git',
-    [null, null, commit('git.example.com/widgets'), 'git@git.example.com:widgets.git'],
-    [
-      'git.example.com/widgets',
-      commit('git.example.com/widgets'),
-      'git@git.example.com:widgets.git',
-      'widgets',
-    ],
-  ),
-  row(
+    'widgets',
+  ]),
+  row('ssh://git@gerrit.example.com:29418/widgets', [
+    'gerrit.example.com/widgets',
+    commit('gerrit.example.com/widgets'),
     'ssh://git@gerrit.example.com:29418/widgets',
-    [
-      '29418/widgets',
-      'git@gerrit.example.com:29418/widgets',
-      commit('gerrit.example.com/29418/widgets'),
-      'ssh://git@gerrit.example.com:29418/widgets',
-    ],
-    [
-      'gerrit.example.com/widgets',
-      commit('gerrit.example.com/widgets'),
-      'ssh://git@gerrit.example.com:29418/widgets',
-      'widgets',
-    ],
-  ),
-  // CHANGED for config.ts's projectId only: its `[\w.-]` class rejected these.
-  row(
+    'widgets',
+  ]),
+  // Characters outside `[\w.-]` in a name are kept.
+  row('https://bitbucket.example.com/scm/~jdoe/widgets.git', [
+    '~jdoe/widgets',
+    commit('bitbucket.example.com/scm/~jdoe/widgets'),
     'https://bitbucket.example.com/scm/~jdoe/widgets.git',
-    [
-      null,
-      '~jdoe/widgets',
-      commit('bitbucket.example.com/scm/~jdoe/widgets'),
-      'https://bitbucket.example.com/scm/~jdoe/widgets.git',
-    ],
-    [
-      '~jdoe/widgets',
-      commit('bitbucket.example.com/scm/~jdoe/widgets'),
-      'https://bitbucket.example.com/scm/~jdoe/widgets.git',
-    ],
-  ),
-  row(
+  ]),
+  row('https://github.com/acme/my+repo.git', [
+    'acme/my+repo',
+    commit('github.com/acme/my+repo'),
     'https://github.com/acme/my+repo.git',
-    [
-      null,
-      'acme/my+repo',
-      commit('github.com/acme/my+repo'),
-      'https://github.com/acme/my+repo.git',
-    ],
-    ['acme/my+repo', commit('github.com/acme/my+repo'), 'https://github.com/acme/my+repo.git'],
-  ),
-  row(
+  ]),
+  row('/Users/me/My Drive/widgets.git', [
+    'My Drive/widgets',
+    null,
     '/Users/me/My Drive/widgets.git',
-    [null, 'My Drive/widgets', null, '/Users/me/My Drive/widgets.git'],
-    ['My Drive/widgets', null, '/Users/me/My Drive/widgets.git'],
-  ),
-  row(
+  ]),
+  row('file:///Users/me/My Drive/widgets.git', [
+    'My Drive/widgets',
+    null,
     'file:///Users/me/My Drive/widgets.git',
-    [null, 'My Drive/widgets', null, 'file:///Users/me/My Drive/widgets.git'],
-    ['My Drive/widgets', null, 'file:///Users/me/My Drive/widgets.git'],
-  ),
+  ]),
 ];
-
-describe('legacy parsers (characterization of the code #716 replaced)', () => {
-  it.each(MATRIX.map((r) => [JSON.stringify(r.remote), r] as const))('%s', (_label, r) => {
-    expect(legacyConfigProjectId(r.remote)).toBe(r.legacy.configProjectId);
-    expect(legacyRepoName(r.remote)).toBe(r.legacy.repoName);
-    expect(legacyCommitUrl(r.remote, HASH)).toBe(r.legacy.commitUrl);
-    expect(legacyRepoUrl(r.remote)).toBe(r.legacy.repoUrl);
-  });
-});
 
 describe('shared parser', () => {
   it.each(MATRIX.map((r) => [JSON.stringify(r.remote), r] as const))('%s', (_label, r) => {

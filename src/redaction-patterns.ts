@@ -7,12 +7,13 @@
 // structurally impossible.
 export const REDACTION_PATTERNS: readonly RegExp[] = [
   /(?<![a-zA-Z])(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-zA-Z])[\s]*[=:]\s*\S+/gi,
-  /(?:sk-|ghp_|gho_|ghs_|github_pat_|xoxb-|xoxp-|Bearer\s+)[A-Za-z0-9_-]{20,200}/g,
+  /(?<![A-Za-z0-9])(?:sk-|ghp_|gho_|ghs_|github_pat_|xoxb-|xoxp-|Bearer\s+)[A-Za-z0-9_-]{20,200}/g,
   /-----BEGIN[^-\n]{0,100}-----[A-Za-z0-9+/=\r\n. ]{0,65536}-----END[^-\n]{0,100}-----/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\bAIzaSy[0-9A-Za-z_-]{33}\b/g,
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
   /\bnpm_[A-Za-z0-9]{36}\b/g,
+  /\bglpat-[A-Za-z0-9_.-]{20,300}/g,
   /\bxox[a-z]-[0-9A-Za-z-]+/g,
   /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g,
   /\bpypi-[A-Za-z0-9_-]{20,}\b/g,
