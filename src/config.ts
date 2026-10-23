@@ -92,6 +92,8 @@ export interface McpServerConfig {
    * (session_id === OTel's session.id). See docs/ADVANCED.md § Companion mode.
    */
   readonly companionMode: boolean;
+  /** Source of the resolved companionMode value (env, config file, detected, or default). */
+  readonly companionModeSource: CompanionModeSource;
   readonly redactionPatterns: readonly RegExp[];
   readonly hookBufferPath: string;
   readonly storagePath: string;
@@ -961,6 +963,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
         ),
 
     companionMode: resolvedCompanionMode.value,
+    companionModeSource: resolvedCompanionMode.source,
 
     redactionPatterns: DEFAULT_REDACTION_PATTERNS,
 

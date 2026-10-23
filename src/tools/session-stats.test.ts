@@ -333,6 +333,7 @@ function makeConfigSummary(overrides?: Partial<ConfigSummary>): ConfigSummary {
     dashboardUrl: 'http://127.0.0.1:9847',
     configFilePath: '/home/alice/.newrelic-preflight/config.json',
     companionMode: false,
+    companionModeSource: 'default',
     ...overrides,
   };
 }
@@ -919,6 +920,7 @@ describe('registerPendingTools()', () => {
       dashboardUrl: 'http://127.0.0.1:7777',
       configFilePath: '/tmp/x/config.json',
       companionMode: false,
+      companionModeSource: 'default',
     };
     registerPendingTools(server.server, {
       sessionStartMs: Date.now(),
