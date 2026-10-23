@@ -870,7 +870,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     process.env.NEW_RELIC_AI_PROJECT_ID ??
     (typeof file.projectId === 'string' ? file.projectId : inferProjectId());
   const resolvedProjectId = sanitizeOrgField(
-    rawProjectId === null ? null : redactSensitive(rawProjectId),
+    rawProjectId === null ? null : redactIdentifier(rawProjectId),
   );
 
   // Dedicated opt-out, independent of projectId's — repo_url can carry an
@@ -891,10 +891,10 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     process.env.NEW_RELIC_AI_REPO_URL ??
     (typeof file.repoUrl === 'string' ? file.repoUrl : getGitRemoteUrl());
   // stripRemoteCredentials drops URL userinfo and query strings;
-  // redactSensitive then catches any token elsewhere in the value.
+  // redactIdentifier then catches any token elsewhere in the value.
   const strippedRepoUrl = stripRemoteCredentials(rawRepoUrl);
   const resolvedRepoUrl = sanitizeOrgField(
-    strippedRepoUrl === null ? null : redactSensitive(strippedRepoUrl),
+    strippedRepoUrl === null ? null : redactIdentifier(strippedRepoUrl),
   );
 
   const resolvedCompanionMode = resolveCompanionMode(
@@ -1669,6 +1669,47 @@ export function redactSensitive(value: string, patterns?: readonly RegExp[]): st
   for (const pattern of pats) {
     pattern.lastIndex = 0;
     result = result.replace(pattern, '[REDACTED]');
+  }
+  return result;
+}
+
+const WORD_CHAR_RE = /[A-Za-z0-9]/;
+
+/**
+ * redactSensitive() for identifiers (project_id, repo_url, repo names), which
+ * carry a token only as a whole path segment or a segment's prefix. A match that
+ * starts right after a letter or digit is part of an ordinary name
+ * (`acme/risk-assessment-…` holds `sk-assessment-…`) and is left alone. The scan
+ * resumes one character later, so a token further into that span
+ * (`acme/risk-ghp_…`) is still caught.
+ *
+ * Free-form content keeps redactSensitive()'s plain matching: there a token
+ * routinely follows a letter or digit, after a JSON escape (`\nghp_…`), an ANSI
+ * colour code (`ESC[32m`) or `%3A`.
+ */
+export function redactIdentifier(value: string): string {
+  let result = value;
+  for (const pattern of DEFAULT_REDACTION_PATTERNS) {
+    const re = new RegExp(
+      pattern.source,
+      pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`,
+    );
+    let out = '';
+    let last = 0;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(result)) !== null) {
+      if (match[0] === '') {
+        re.lastIndex++;
+        continue;
+      }
+      if (match.index > 0 && WORD_CHAR_RE.test(result[match.index - 1])) {
+        re.lastIndex = match.index + 1;
+        continue;
+      }
+      out += `${result.slice(last, match.index)}[REDACTED]`;
+      last = re.lastIndex;
+    }
+    result = out + result.slice(last);
   }
   return result;
 }

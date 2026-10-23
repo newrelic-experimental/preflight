@@ -6,6 +6,7 @@ import { execSync } from 'node:child_process';
 import {
   loadMcpConfig,
   MissingCloudCredentialError,
+  redactIdentifier,
   redactSensitive,
   sanitizeDeveloper,
   normalizeDeveloperName,
@@ -965,19 +966,34 @@ describe('redactSensitive()', () => {
     expect(redactSensitive('glpat-short')).toBe('glpat-short');
   });
 
-  it.each([
-    'acme/risk-assessment-pipeline-v2',
-    'acme/task-scheduler-service-api',
-    'disk-usage-report-generator-v1',
-  ])('leaves a hyphenated name that merely ends in "sk" alone: %s', (name) => {
-    expect(redactSensitive(name)).toBe(name);
-  });
-
-  it('still redacts sk- keys at a word boundary', () => {
+  it('redacts sk- keys wherever they appear', () => {
     const key = 'sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ';
     for (const input of [key, `key=${key}`, `"${key}"`, `my-${key}`]) {
       expect(redactSensitive(input)).not.toContain('ABCDEFGHIJ');
     }
+  });
+
+  // The collector redacts tool input and output after JSON.stringify, and terminal
+  // output carries colour codes, so a token often follows a letter or digit.
+  // Fixtures are joined at runtime so secret scanning doesn't read them as live tokens.
+  describe.each([
+    ['ghp_', 'ghp_Zq7Xw9a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5'],
+    ['github_pat_', 'github_pat_11ABZq7Xw9cdEFghIJklMNopQRstUV'],
+    ['sk-proj-', 'sk-proj-Zq7Xw9a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'],
+    ['sk-ant-', 'sk-ant-api03-Zq7Xw9a1B2c3D4e5F6g7H8i9J0k1L2m3'],
+    ['xoxb-', ['xoxb', '1234567890', '0987654321', 'Zq7Xw9abcdEFGHijklMNOP'].join('-')],
+    ['Bearer', 'Bearer Zq7Xw9a1B2c3D4e5F6g7H8i9J0k1L2'],
+  ])('a %s token right after a letter or digit', (_prefix, token) => {
+    it.each([
+      ['a JSON-escaped line break', JSON.stringify({ stdout: `done\n${token}\n` })],
+      ['a JSON-escaped tab', JSON.stringify({ stdout: `KEY\t${token}` })],
+      ['a JSON \\u escape', JSON.stringify({ stdout: `\u0007${token}` })],
+      ['an ANSI colour code', `\u001b[32m${token}\u001b[0m`],
+      ['percent-encoded userinfo', `https://x-access-token%3A${token}@github.com/o/r.git`],
+    ])('is redacted after %s', (_context, input) => {
+      expect(input).toContain('Zq7Xw9');
+      expect(redactSensitive(input)).not.toContain('Zq7Xw9');
+    });
   });
 
   it('redacts all Slack token types', () => {
@@ -1327,6 +1343,39 @@ describe('configVersion', () => {
   });
 });
 
+describe('redactIdentifier()', () => {
+  it.each([
+    'acme/risk-assessment-pipeline-v2',
+    'acme/task-scheduler-service-api',
+    'disk-usage-report-generator-v1',
+    'pallets/flask-sqlalchemy-integration',
+    'acme/kiosk-management-dashboard-app',
+    'https://github.com/acme/helpdesk-ticketing-system-backend.git',
+    'newrelic-experimental/preflight',
+  ])('leaves an ordinary name alone: %s', (name) => {
+    expect(redactIdentifier(name)).toBe(name);
+  });
+
+  it.each([
+    ['glpat-ABCDEFGHIJKLMNOPQRST/widgets', '[REDACTED]/widgets'],
+    ['acme/ghp_Zq7Xw9a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5', 'acme/[REDACTED]'],
+    [
+      'https://gitlab.com/sk-Zq7Xw9a1B2c3D4e5F6g7H8i9J0k1L2m3/widgets.git',
+      'https://gitlab.com/[REDACTED]/widgets.git',
+    ],
+  ])('redacts a token used as a path segment: %s', (value, expected) => {
+    expect(redactIdentifier(value)).toBe(expected);
+  });
+
+  it('still finds a token later in a span it skipped', () => {
+    // `sk-ghp_…` starts after the `i` of "risk" and is skipped; the scan resumes and
+    // the ghp_ token after the hyphen is redacted.
+    expect(redactIdentifier('acme/risk-ghp_Zq7Xw9a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5')).toBe(
+      'acme/risk-[REDACTED]',
+    );
+  });
+});
+
 describe('developer sanitization via loadMcpConfig()', () => {
   it('strips control characters from NEW_RELIC_AI_MCP_DEVELOPER env var', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
@@ -1394,6 +1443,13 @@ describe('developer sanitization via loadMcpConfig()', () => {
     else configPath = writeConfigFile({ projectId: leaky });
     const config = loadMcpConfig(configPath ? { config: configPath } : {});
     expect(config.projectId).toBe('[REDACTED]/widgets');
+  });
+
+  it('keeps an ordinary projectId that contains "sk-" intact', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_PROJECT_ID = 'acme/risk-assessment-pipeline-v2';
+    expect(loadMcpConfig({}).projectId).toBe('acme/risk-assessment-pipeline-v2');
   });
 
   it('projectId uses config file value when no env var set', () => {
