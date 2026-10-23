@@ -37,7 +37,12 @@ import {
 } from './copilot-install-helper.js';
 import { copilotSdkExtensionInstallPath } from '../hooks/copilot-sdk-extension-health.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
-import { validateConfigFile, DEFAULT_STORAGE_PATH, ConfigFileSchema } from '../config.js';
+import {
+  validateConfigFile,
+  DEFAULT_STORAGE_PATH,
+  ConfigFileSchema,
+  loadMcpConfig,
+} from '../config.js';
 import { VALID_MODES, type Mode } from '../config.js';
 import type { PlatformTarget } from '../config.js';
 import { migrateStoragePath } from './migrate.js';
@@ -1524,6 +1529,18 @@ function doctorExitCode(checks: readonly DiagnosticCheck[]): number {
   return checks.some((c) => c.status === 'warn') ? 2 : 0;
 }
 
+// `doctor` never boots the server, so it loads the user's pricing the way the
+// server does, minus the network refresh. An unloadable config falls back to
+// the default pricing table; the "Config valid" check reports why.
+async function initDoctorPricing(configPath: string): Promise<void> {
+  const { initModelPricing } = await import('../metrics/pricing-init.js');
+  try {
+    initModelPricing(loadMcpConfig({ config: configPath }), { refresh: false });
+  } catch (err) {
+    logger.debug('Could not load config for doctor pricing', { error: errMsg(err) });
+  }
+}
+
 async function handleDoctor(options: {
   config?: string;
   platform?: string;
@@ -1536,6 +1553,7 @@ async function handleDoctor(options: {
   if (!options.json) {
     print('Running diagnostics...');
   }
+  await initDoctorPricing(configPath);
   const checks = await runDiagnostics({ configPath, storagePath, platform: options.platform });
 
   if (options.json) {

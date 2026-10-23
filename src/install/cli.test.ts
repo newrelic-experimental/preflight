@@ -26,6 +26,9 @@ jest.mock('node:child_process', () => ({
 jest.mock('./diagnostics.js', () => ({
   runDiagnostics: jest.fn(async () => []),
 }));
+jest.mock('../metrics/pricing-init.js', () => ({
+  initModelPricing: jest.fn(),
+}));
 jest.mock('./schedule.js', () => ({
   installSchedule: jest.fn(),
   removeSchedule: jest.fn(() => false),
@@ -95,9 +98,13 @@ import * as installHelperMod from './install-helper.js';
 import * as copilotInstallHelperMod from './copilot-install-helper.js';
 import * as configMod from '../config.js';
 import * as setupWizardMod from './setup-wizard.js';
+import * as pricingInitMod from '../metrics/pricing-init.js';
 
 const mockedRunDiagnostics = diagnostics.runDiagnostics as jest.MockedFunction<
   typeof diagnostics.runDiagnostics
+>;
+const mockedInitModelPricing = pricingInitMod.initModelPricing as jest.MockedFunction<
+  typeof pricingInitMod.initModelPricing
 >;
 
 const mockedSchedule = scheduleMod as unknown as {
@@ -2400,6 +2407,33 @@ describe('preflight doctor', () => {
     const prog = createInstallProgram();
     await prog.parseAsync(['node', 'preflight', 'doctor', '--json']);
     expect(output.join('')).toBe(`${JSON.stringify(checks)}\n`);
+  });
+
+  it("loads the config's pricing, without the network refresh, before running checks", async () => {
+    const config = {
+      customPricingFile: '/test-home/pricing.json',
+      pricingRefresh: true,
+      storagePath: '/test-home/.newrelic-preflight',
+    };
+    mockedConfig.loadMcpConfig.mockReturnValue(config);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor', '--json']);
+    expect(mockedInitModelPricing).toHaveBeenCalledWith(config, { refresh: false });
+    expect(mockedInitModelPricing.mock.invocationCallOrder[0]).toBeLessThan(
+      mockedRunDiagnostics.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('still runs the checks when the config cannot be loaded', async () => {
+    mockedConfig.loadMcpConfig.mockImplementation(() => {
+      throw new Error('bad config');
+    });
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor', '--json']);
+    expect(mockedInitModelPricing).not.toHaveBeenCalled();
+    expect(mockedRunDiagnostics).toHaveBeenCalled();
   });
 });
 
