@@ -1,7 +1,7 @@
 import * as nodeFs from 'node:fs';
 import * as nodeOs from 'node:os';
 import { dirname, resolve } from 'node:path';
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 
 // Suppress logger output.
 jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -94,6 +94,7 @@ import * as config from '../config.js';
 import * as installHelper from './install-helper.js';
 import * as platform from './platform.js';
 import { LocalStore, SessionStore } from '../storage/index.js';
+import { applyPricingOverlay } from '../metrics/pricing-overlay.js';
 
 const mockedExistSync = nodeFs.existsSync as jest.Mock;
 const mockedReadFileSync = nodeFs.readFileSync as jest.Mock;
@@ -380,6 +381,26 @@ describe('runDiagnostics', () => {
       const checks = await runDiagnostics(makeOpts());
       const c = checks.find((x) => x.check === 'Unpriced models')!;
       expect(c.status).toBe('ok');
+    });
+
+    describe('with a customPricingFile', () => {
+      afterEach(() => applyPricingOverlay(null));
+
+      it('drops a model the file aliases to a priced one', async () => {
+        mockSessions([{ unpricedByModel: { 'acme-gateway-x': { calls: 3, tokens: 1200 } } }]);
+        mockedLoadMcpConfig.mockReturnValue({
+          mode: 'local',
+          companionMode: false,
+          customPricingFile: '/test-home/pricing.json',
+        });
+        (nodeFs.statSync as jest.Mock).mockReturnValue({ size: 64 });
+        (nodeFs.readFileSync as jest.Mock).mockReturnValue(
+          JSON.stringify({ aliases: { 'acme-gateway-x': 'claude-sonnet-4-6' } }),
+        );
+        const checks = await runDiagnostics(makeOpts());
+        const c = checks.find((x) => x.check === 'Unpriced models')!;
+        expect(c.status).toBe('ok');
+      });
     });
 
     it('skips with the reason when session history is unreadable', async () => {
