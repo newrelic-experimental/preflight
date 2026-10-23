@@ -27,7 +27,7 @@ import {
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { LocalStore, SessionStore } from '../storage/index.js';
 import { createDefaultRegistry } from '../platforms/index.js';
-import { applyPricingOverlay, resolvePricing } from '../metrics/pricing-overlay.js';
+import { resolvePricing } from '../metrics/pricing-overlay.js';
 
 const logger = createLogger('diagnostics');
 
@@ -201,23 +201,12 @@ function listRunningServerCompanionModes(
 
 const UNPRICED_LOOKBACK_DAYS = 7;
 
-// `doctor` never boots the server, so the user's customPricingFile (and its
-// aliases) must be applied here before resolvePricing() can see them. The
-// network pricing refresh is deliberately not started.
-function loadPricingOverlay(configPath: string): void {
-  let customPricingFile: string | null = null;
-  try {
-    customPricingFile = loadMcpConfig({ config: configPath }).customPricingFile ?? null;
-  } catch (err) {
-    logger.debug('Could not load config for custom pricing', { error: String(err) });
-  }
-  applyPricingOverlay(customPricingFile);
-}
-
-function checkUnpricedModels(configPath: string, storagePath: string): DiagnosticCheck {
+// Reads the process's pricing state as it stands; it never loads pricing itself,
+// because the running server calls runDiagnostics from /api/diagnostics.
+// Each entry point calls initModelPricing() first.
+function checkUnpricedModels(storagePath: string): DiagnosticCheck {
   const name = 'Unpriced models';
   try {
-    loadPricingOverlay(configPath);
     const since = new Date();
     since.setDate(since.getDate() - UNPRICED_LOOKBACK_DAYS);
     const sessions = new SessionStore({ storagePath }).loadAllSessions({ since });
@@ -765,7 +754,7 @@ export async function runDiagnostics(opts?: {
     configCheck,
     modeCheck,
     companionModeCheck,
-    checkUnpricedModels(configPath, context.storagePath),
+    checkUnpricedModels(context.storagePath),
     checkNodeVersionDiagnostic(),
     ...checkDaemon(),
     checkUpdateSchedule(),

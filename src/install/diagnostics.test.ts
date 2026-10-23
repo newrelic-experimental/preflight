@@ -94,7 +94,7 @@ import * as config from '../config.js';
 import * as installHelper from './install-helper.js';
 import * as platform from './platform.js';
 import { LocalStore, SessionStore } from '../storage/index.js';
-import { applyPricingOverlay } from '../metrics/pricing-overlay.js';
+import { applyPricingOverlay, resolvePricing } from '../metrics/pricing-overlay.js';
 
 const mockedExistSync = nodeFs.existsSync as jest.Mock;
 const mockedReadFileSync = nodeFs.readFileSync as jest.Mock;
@@ -352,22 +352,35 @@ describe('runDiagnostics', () => {
     });
 
     describe('with a customPricingFile', () => {
-      afterEach(() => applyPricingOverlay(null));
-
-      it('drops a model the file aliases to a priced one', async () => {
-        mockSessions([{ unpricedByModel: { 'acme-gateway-x': { calls: 3, tokens: 1200 } } }]);
-        mockedLoadMcpConfig.mockReturnValue({
-          mode: 'local',
-          companionMode: false,
-          customPricingFile: '/test-home/pricing.json',
-        });
+      // Stands in for the entry point's initModelPricing() call before runDiagnostics.
+      const loadAliasFile = (): void => {
         (nodeFs.statSync as jest.Mock).mockReturnValue({ size: 64 });
         (nodeFs.readFileSync as jest.Mock).mockReturnValue(
           JSON.stringify({ aliases: { 'acme-gateway-x': 'claude-sonnet-4-6' } }),
         );
+        applyPricingOverlay('/test-home/pricing.json');
+      };
+      afterEach(() => applyPricingOverlay(null));
+
+      it('drops a model the loaded file aliases to a priced one', async () => {
+        mockSessions([{ unpricedByModel: { 'acme-gateway-x': { calls: 3, tokens: 1200 } } }]);
+        loadAliasFile();
         const checks = await runDiagnostics(makeOpts());
         const c = checks.find((x) => x.check === 'Unpriced models')!;
         expect(c.status).toBe('ok');
+      });
+
+      it('leaves the pricing the process loaded untouched', async () => {
+        // The running server calls runDiagnostics from /api/diagnostics, so a config
+        // file that changed since startup must not replace the server's pricing.
+        loadAliasFile();
+        mockedLoadMcpConfig.mockReturnValue({
+          mode: 'local',
+          companionMode: false,
+          customPricingFile: null,
+        });
+        await runDiagnostics(makeOpts());
+        expect(resolvePricing('acme-gateway-x')).not.toBeNull();
       });
     });
 

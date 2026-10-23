@@ -53,8 +53,7 @@ import { shouldApplyCostEstimate } from './metrics/cost-estimate-gate.js';
 import { ContextCompositionTracker } from './metrics/context-composition-tracker.js';
 import { ContextTrackerRegistry } from './metrics/context-tracker.js';
 import { ContextWindowTracker } from './metrics/context-window-tracker.js';
-import { applyPricingOverlay } from './metrics/pricing-overlay.js';
-import { startPricingRefresh } from './metrics/pricing-refresh.js';
+import { initModelPricing } from './metrics/pricing-init.js';
 import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
 import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
@@ -776,14 +775,6 @@ export function parseArgs(argv: string[]): CliOptions {
     local,
     validate,
   };
-}
-
-function initModelPricing(config: McpServerConfig): void {
-  applyPricingOverlay(config.customPricingFile);
-  void startPricingRefresh({
-    enabled: config.pricingRefresh,
-    cachePath: resolve(config.storagePath, 'pricing-cache.json'),
-  });
 }
 
 async function main(): Promise<void> {
