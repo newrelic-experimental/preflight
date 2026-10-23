@@ -64,7 +64,8 @@ telemetry to New Relic, set three environment variables:
 startup, because telemetry export is opt-in, and the plugin's tools do not
 appear.
 
-Set them in your shell profile or in Claude Code's `env` settings. This is the
+Set them in your shell profile or in Claude Code's `env` settings. For a whole
+fleet, see [FLEET_DEPLOYMENT.md](./FLEET_DEPLOYMENT.md). This is the
 shape an admin puts in `settings.json` or managed settings:
 
 ```json
