@@ -61,7 +61,9 @@ One managed settings document does three jobs.
 
 Set `ref` and `NEW_RELIC_AI_PREFLIGHT_VERSION` to the same release so the hook
 collector bundled with the plugin and the MCP server stay in lockstep. Omit
-both to follow the latest release. `ref` needs plugin 1.61.0 or later.
+`ref` and the plugin tracks `main`, which can carry unreleased changes. Omit
+the env var and the server follows npm's `latest` tag. `ref` needs plugin
+1.61.0 or later.
 
 The license key sits in a file readable by every local user. Use an ingest
 license key scoped to this purpose, never a user API key (`NRAK-…`).
