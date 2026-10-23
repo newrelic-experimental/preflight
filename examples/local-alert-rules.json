@@ -14,6 +14,34 @@
     "description": "Session cumulative spend has crossed $10."
   },
   {
+    "id": "daily-cost-spike",
+    "name": "Daily cost spike",
+    "type": "cost.window",
+    "severity": "warning",
+    "enabled": true,
+    "threshold": 25.0,
+    "operator": "above",
+    "deduplicateSeconds": 3600,
+    "windowSeconds": 3600,
+    "costPeriod": "today",
+    "channels": ["banner"],
+    "description": "Today's cumulative spend has crossed $25."
+  },
+  {
+    "id": "weekly-cost-spike",
+    "name": "Weekly cost spike",
+    "type": "cost.window",
+    "severity": "info",
+    "enabled": true,
+    "threshold": 100.0,
+    "operator": "above",
+    "deduplicateSeconds": 3600,
+    "windowSeconds": 3600,
+    "costPeriod": "week",
+    "channels": ["banner"],
+    "description": "This week's cumulative spend has crossed $100."
+  },
+  {
     "id": "low-efficiency-score",
     "name": "Low efficiency score",
     "type": "efficiency.below",

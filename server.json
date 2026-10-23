@@ -26,10 +26,17 @@
       "environmentVariables": [
         {
           "name": "NEW_RELIC_LICENSE_KEY",
-          "description": "New Relic ingest license key. Optional: without it Preflight runs local-only with the dashboard at localhost:7777.",
+          "description": "New Relic ingest license key. Optional: without it Preflight runs local-only with the dashboard at localhost:7777. Setting it also requires NR_AI_MODE, or the server fails to start.",
           "isRequired": false,
           "isSecret": true,
           "format": "string"
+        },
+        {
+          "name": "NR_AI_MODE",
+          "description": "Where telemetry goes: \"cloud\" (New Relic only), \"both\" (New Relic plus the local dashboard) or \"local\". Required when NEW_RELIC_LICENSE_KEY is set.",
+          "isRequired": false,
+          "format": "string",
+          "choices": ["cloud", "both", "local"]
         },
         {
           "name": "NEW_RELIC_ACCOUNT_ID",
