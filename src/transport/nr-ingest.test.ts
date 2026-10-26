@@ -510,6 +510,32 @@ describe('toolCallToNrEvent()', () => {
       expect(event).not.toHaveProperty('skill_parent_run_id');
     });
 
+    it('names the attempted skill on a failed Skill call outside any run', () => {
+      const record = makeRecord({ toolName: 'Skill', skillName: 'deploy', success: false });
+
+      const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event).toMatchObject({ skill_name: 'deploy', skill_source: 'tool' });
+      expect(event).not.toHaveProperty('skill_run_id');
+    });
+
+    it('names the attempted skill on a failed Skill call inside another run', () => {
+      const record = makeRecord({
+        toolName: 'Skill',
+        skillName: 'deploy',
+        success: false,
+        activeSkill: { name: 'review', source: 'slash', runId: 'run-1' },
+      });
+
+      const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event).toMatchObject({
+        skill_name: 'deploy',
+        skill_source: 'slash',
+        skill_run_id: 'run-1',
+      });
+    });
+
     it('emits skill_parent_run_id for a nested skill run', () => {
       const record = makeRecord({
         toolName: 'Read',

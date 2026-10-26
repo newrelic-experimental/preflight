@@ -590,6 +590,9 @@ export class TurnCostAttributor {
           skillAccum.set(bucket.skillName, entry);
         }
         for (const counter of BUCKET_COUNTERS) entry[counter] += bucket[counter];
+        // The subagent's own calls carry the same run, so its Agent call's
+        // duration would count that time twice.
+        if (bucket.toolName === 'Agent') entry.totalDurationMs -= bucket.totalDurationMs;
       }
     }
 

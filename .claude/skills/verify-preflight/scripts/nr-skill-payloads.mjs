@@ -15,7 +15,16 @@ const sessionId = 'sess-1';
 const events = [];
 
 function call(toolName, timestamp, extra = {}) {
-  const raw = { id: `r${timestamp}`, sessionId, toolName, toolUseId: `tu${timestamp}`, timestamp, durationMs: 10, success: true, ...extra };
+  const raw = {
+    id: `r${timestamp}`,
+    sessionId,
+    toolName,
+    toolUseId: `tu${timestamp}`,
+    timestamp,
+    durationMs: 10,
+    success: true,
+    ...extra,
+  };
   const activeSkill = skills.recordToolCall(raw);
   const record = activeSkill ? { ...raw, activeSkill } : raw;
   attributor.recordToolCall(record);
@@ -23,7 +32,16 @@ function call(toolName, timestamp, extra = {}) {
 }
 
 function tokens(timestamp) {
-  const turn = attributor.recordTokenEvent({ mode: 'token', sessionId, timestamp, inputTokens: 10000, outputTokens: 2000, cacheReadTokens: 0, cacheCreationTokens: 0, model: 'claude-sonnet-4-5-20250929' });
+  const turn = attributor.recordTokenEvent({
+    mode: 'token',
+    sessionId,
+    timestamp,
+    inputTokens: 10000,
+    outputTokens: 2000,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    model: 'claude-sonnet-4-5-20250929',
+  });
   events.push(...turnCostToNrEvents(turn, attrs));
 }
 
@@ -38,13 +56,32 @@ skills.recordPrompt(sessionId, null);
 call('Bash', 20000, { command: 'npm test' });
 tokens(21000);
 
-const pick = (e) => ({ eventType: e.eventType, tool: e.tool, skill_name: e.skill_name, skill_source: e.skill_source, skill_run_id: e.skill_run_id, cost_usd: e.cost_usd, has_skillName: 'skillName' in e });
+const pick = (e) => ({
+  eventType: e.eventType,
+  tool: e.tool,
+  skill_name: e.skill_name,
+  skill_source: e.skill_source,
+  skill_run_id: e.skill_run_id,
+  cost_usd: e.cost_usd,
+  has_skillName: 'skillName' in e,
+});
 for (const e of events) console.log(JSON.stringify(pick(e)));
 
 const byTool = (type, tool) => events.find((e) => e.eventType === type && e.tool === tool);
-assert.equal(byTool('AiToolCall', 'Read').skill_name, 'code-review', 'Read inside the run carries the skill');
-assert.equal(byTool('AiToolCall', 'Read').skill_run_id, byTool('AiToolCall', 'Skill').skill_run_id, 'Skill and Read share one run');
+assert.equal(
+  byTool('AiToolCall', 'Read').skill_name,
+  'code-review',
+  'Read inside the run carries the skill',
+);
+assert.equal(
+  byTool('AiToolCall', 'Read').skill_run_id,
+  byTool('AiToolCall', 'Skill').skill_run_id,
+  'Skill and Read share one run',
+);
 assert.equal(byTool('AiTurnCost', 'Edit').skill_source, 'slash', 'slash run reaches AiTurnCost');
 assert.equal(byTool('AiToolCall', 'Bash').skill_name, undefined, 'run closes on the next prompt');
-assert.ok(events.every((e) => !('skillName' in e)), 'camelCase skillName is gone from every event');
+assert.ok(
+  events.every((e) => !('skillName' in e)),
+  'camelCase skillName is gone from every event',
+);
 console.log('ok all assertions');

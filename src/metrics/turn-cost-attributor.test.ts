@@ -810,6 +810,34 @@ describe('TurnCostAttributor', () => {
       expect(metrics.costByToolType['Read'].totalCost).toBeCloseTo(turnCost / 2, 10);
     });
 
+    it("a subagent's time counts once, through its own calls and not its Agent call", () => {
+      const attributor = new TurnCostAttributor();
+      const skill = { name: 'code-review', source: 'tool' as const, runId: 'run-1' };
+
+      attributor.recordToolCall(
+        makeRecord({
+          toolName: 'Read',
+          agentId: 'sub-1',
+          activeSkill: skill,
+          durationMs: 300,
+          timestamp: 1000,
+          toolUseId: 'read-1',
+        }),
+      );
+      attributor.recordToolCall(
+        makeRecord({
+          toolName: 'Agent',
+          activeSkill: skill,
+          durationMs: 600,
+          timestamp: 1400,
+          toolUseId: 'agent-1',
+        }),
+      );
+
+      const metrics = attributor.getMetrics();
+      expect(metrics.costBySkill['code-review'].totalDurationMs).toBe(300);
+    });
+
     it('a nameless Skill call inside a run is not an invocation of the outer skill', () => {
       const attributor = new TurnCostAttributor();
       const skill = { name: 'code-review', source: 'slash' as const, runId: 'run-1' };

@@ -1158,7 +1158,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "FROM AiToolCall SELECT uniqueCount(developer) AS 'Users', uniqueCount(skill_run_id) AS 'Runs', count(*) AS 'Tool Calls', sum(duration_ms) / 3600000 AS 'Hours', percentage(count(*), WHERE success = false) AS 'Error %' WHERE skill_name IS NOT NULL FACET skill_name SINCE 7 days ago LIMIT 25"
+                "query": "FROM AiToolCall SELECT uniqueCount(developer) AS 'Users', uniqueCount(skill_run_id) AS 'Runs', count(*) AS 'Tool Calls', filter(sum(duration_ms), WHERE tool != 'Agent') / 3600000 AS 'Hours', percentage(count(*), WHERE success = false) AS 'Error %' WHERE skill_name IS NOT NULL FACET skill_name SINCE 7 days ago LIMIT 25"
               }
             ],
             "platformOptions": {
@@ -1184,7 +1184,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "FROM AiToolCall SELECT uniqueCount(skill_run_id) AS 'Runs', sum(duration_ms) / 3600000 AS 'Hours' WHERE skill_name IS NOT NULL FACET developer, skill_name SINCE 7 days ago LIMIT 100"
+                "query": "FROM AiToolCall SELECT uniqueCount(skill_run_id) AS 'Runs', filter(sum(duration_ms), WHERE tool != 'Agent') / 3600000 AS 'Hours' WHERE skill_name IS NOT NULL FACET developer, skill_name SINCE 7 days ago LIMIT 100"
               }
             ],
             "platformOptions": {
