@@ -144,6 +144,9 @@ preflight-collector` (or run
    as a real shell command, so the leading `VAR=value` assignment is parsed
    normally — it is not a literal program name.
 
+   The leading `VAR=value` form needs a POSIX shell. `cmd.exe` and PowerShell
+   do not parse it, and Preflight has not verified Kiro hooks on Windows.
+
    Both entries run the same command — `preflight-collector` tells pre-
    from post-call apart from the hook payload's own `hook_event_name` field,
    not a CLI argument (`src/hooks/collector-script.ts`). Neither sets a

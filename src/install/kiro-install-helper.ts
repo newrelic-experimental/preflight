@@ -28,14 +28,19 @@ export function kiroHooksPath(projectDir: string): string {
 
 export function generateKiroHooks(): readonly KiroHook[] {
   return [
-    ['Preflight: pre tool call', 'PreToolUse'],
-    ['Preflight: post tool call', 'PostToolUse'],
-  ].map(([name, trigger]) => ({
-    name: name!,
-    trigger: trigger!,
-    action: { type: 'command', command: KIRO_HOOK_COMMAND },
-    timeout: KIRO_HOOK_TIMEOUT_SECONDS,
-  }));
+    {
+      name: 'Preflight: pre tool call',
+      trigger: 'PreToolUse',
+      action: { type: 'command', command: KIRO_HOOK_COMMAND },
+      timeout: KIRO_HOOK_TIMEOUT_SECONDS,
+    },
+    {
+      name: 'Preflight: post tool call',
+      trigger: 'PostToolUse',
+      action: { type: 'command', command: KIRO_HOOK_COMMAND },
+      timeout: KIRO_HOOK_TIMEOUT_SECONDS,
+    },
+  ];
 }
 
 /** Replaces Preflight's own entries and keeps every other hook in the file. */
