@@ -70,12 +70,19 @@ export default {
 
   // ── Security ──────────────────────────────────────────────────────────────
 
-  // When true, recordContent is forced off and tool input/output is never sent to NR.
+  // When true, recordContent is forced off, so literal file contents, command output, and
+  // agent text are never sent to New Relic, whatever recordContent says. Use it where content
+  // must never leave the machine. Do not bypass it. Set it in the config file rather than only
+  // in the environment. See PRIVACY.md (highSecurity).
   // Env: NEW_RELIC_AI_HIGH_SECURITY  (true/false)
   // Default: false
   highSecurity: false,
 
-  // When true, tool input/output content is included in NR events.
+  // When true, literal file contents, command output, and agent text are included in NR events
+  // (and written to the local buffer). Content may contain secrets and proprietary code.
+  // Credential-pattern redaction runs first, but it matches known secret formats only. It is
+  // pattern-based, not data-loss prevention, so it does not catch other sensitive code or text.
+  // Review what the AI assistant reads and runs before enabling this. See PRIVACY.md (recordContent).
   // Forced off when highSecurity is true.
   // Env: NEW_RELIC_AI_MCP_RECORD_CONTENT  (true/false)
   // Default: false

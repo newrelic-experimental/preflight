@@ -600,7 +600,7 @@ Source: `src/tools/cross-session-tools.ts`
 
 ### `nr_observe_get_collaboration_profile`
 
-Developer collaboration style profile with team comparison.
+Developer collaboration style profile with team comparison. It is a self-coaching aid, not a tool for evaluating, ranking, or monitoring individuals, and its classifications come from fixed heuristic thresholds.
 
 **Parameters:**
 
@@ -799,7 +799,7 @@ Source: `src/tools/cross-session-tools.ts`, `src/metrics/recommendation-engine.t
 
 ### `nr_observe_get_personal_insights`
 
-Narrative coaching report comparing this week's personal AI coding metrics against the developer's historical baseline. Generates highlights, regressions, streaks, and a top recommendation as plain English strings — no LLM call is made; narrative is built from template expressions over computed deltas.
+Narrative coaching report comparing this week's personal AI coding metrics against the developer's historical baseline. Generates highlights, regressions, streaks, and a top recommendation as plain English strings — no LLM call is made; narrative is built from template expressions over computed deltas. It is a self-coaching aid, not a tool for evaluating, ranking, or monitoring individuals, and its comparisons come from fixed heuristic thresholds.
 
 **Parameters:** None
 
