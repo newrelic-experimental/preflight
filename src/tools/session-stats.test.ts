@@ -432,7 +432,7 @@ describe('handleInstallHooks()', () => {
     const result = handleInstallHooks(installer);
     const data = JSON.parse(result.content[0].text);
 
-    expect(data.status).toBe('error');
+    expect(data.status).toBe('disabled');
     expect(data.message).toContain('preflight install');
     expect(data.message).toContain('allowHeadlessInstall');
     expect(result.isError).toBe(true);

@@ -304,7 +304,11 @@ export function handleInstallHooks(
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ status: 'error', message: installResult.message }, null, 2),
+          text: JSON.stringify(
+            { status: installResult.status, message: installResult.message },
+            null,
+            2,
+          ),
         },
       ],
       isError: true,

@@ -55,8 +55,9 @@ export function installHooksHeadless(
 }
 
 /**
- * Builds the `headlessInstaller` the MCP tool calls. The flag and audit trail
- * are read at call time. An audit entry is written only when hooks were
+ * Builds the `headlessInstaller` the MCP tool calls. `allowHeadlessInstall` is
+ * captured by value, so callers rebuild the installer once config has loaded.
+ * The audit trail is read at call time via `getAuditTrail`. An audit entry is written only when hooks were
  * actually changed, so a refusal or an already-installed no-op leaves no entry.
  */
 export function createHeadlessInstaller(options: {
