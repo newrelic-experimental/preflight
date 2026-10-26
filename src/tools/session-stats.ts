@@ -17,6 +17,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { createLogger } from '../shared/index.js';
 import { redactSensitive } from '../config.js';
+import type { SecretSources } from '../secret-command.js';
 import { VERSION } from '../version.js';
 
 const logger = createLogger('session-stats');
@@ -325,6 +326,7 @@ export interface ConfigSummary {
   readonly accountId: string | null;
   readonly licenseKeyMasked: string | null;
   readonly nrApiKeyMasked: string | null;
+  readonly secretSources: SecretSources;
   readonly region: string;
   readonly storagePath: string;
   readonly dashboardUrl: string;
@@ -472,6 +474,7 @@ export interface ToolRegistrationOptions {
   nrApiKey?: string | null;
   collectorHost?: string | null;
   configFilePath?: string;
+  digestWebhookUrlOverride?: string;
   configSummary?: ConfigSummary;
   hooksInstalledFn?: () => boolean;
   headlessInstaller?: () => import('../install/headless-install.js').HeadlessInstallResult;

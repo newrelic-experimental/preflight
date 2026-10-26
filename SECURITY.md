@@ -219,7 +219,19 @@ When spawning an upstream MCP server as a child process, two invariants must hol
 
    Note: `PATH` is intentionally **not** stripped. `StdioClientTransport` (MCP SDK) spreads `getDefaultEnvironment()` before applying the caller-supplied env, so stripping `PATH` from config input has no effect — it would always flow through anyway. PATH-based hijacking is prevented instead by the absolute-path requirement in invariant 1.
 
-If you add a new subprocess invocation anywhere in the codebase, apply both checks.
+The full key list lives in `DANGEROUS_ENV_KEYS` (`src/lib/child-env.ts`). If you add a new subprocess invocation anywhere in the codebase, apply both checks.
+
+### Secret helper commands — `src/secret-command.ts`
+
+`licenseKeyCommand`, `nrApiKeyCommand` and `digestWebhookUrlCommand` run a configured program at startup to read a secret from stdout. See [ADVANCED.md](./docs/ADVANCED.md#secret-helper-commands) for user-facing behavior. Invariants:
+
+1. **argv only, no shell** — the config value is a JSON array passed to `spawnSync` with `shell: false`. A string form is rejected by the schema.
+2. **Absolute executable path** — same rule as `StdioUpstream`.
+3. **Dangerous env keys stripped** — the child gets `process.env` through `stripDangerousEnv()`.
+4. **Bounded** — 20-second timeout, 64 KiB stdout cap, stdin closed, stderr discarded.
+5. **Errors never carry output or argv** — `SecretCommandError` names only the field and the failure class. stdout is the secret, and stderr or arguments can contain parts of it.
+6. **Never logged** — the resolved value lands in the same config field as the plaintext value and is handled the same way. Source reporting (`secretSources`) carries `env | command | file | unset`, never the value.
+7. **Not run when outranked** — an env var for the same field skips the command, and `licenseKeyCommand` never runs in `mode: 'local'`.
 
 ---
 

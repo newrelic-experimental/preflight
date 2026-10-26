@@ -11,7 +11,12 @@ import { LocalAlertEngine } from './alerts/local-alert-engine.js';
 import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
 import { OsNotifier } from './alerts/os-notifier.js';
 import type { McpServerConfig } from './config.js';
-import { DEFAULT_STORAGE_PATH, loadMcpConfig, redactSensitive } from './config.js';
+import {
+  DEFAULT_STORAGE_PATH,
+  digestWebhookUrlOverride,
+  loadMcpConfig,
+  redactSensitive,
+} from './config.js';
 import { checkBasicAuthToken } from './dashboard/basic-auth.js';
 import { DashboardServer } from './dashboard/dashboard-server.js';
 import { LiveEventBus } from './dashboard/index.js';
@@ -3068,6 +3073,7 @@ async function main(): Promise<void> {
         accountId: config!.accountId ?? null,
         licenseKeyMasked: config!.licenseKey ? maskCredential(config!.licenseKey) : null,
         nrApiKeyMasked: config!.nrApiKey ? maskCredential(config!.nrApiKey) : null,
+        secretSources: config!.secretSources,
         region: config!.collectorHost ?? 'us',
         storagePath: config!.storagePath,
         dashboardUrl: `http://${config!.dashboard.host}:${config!.dashboard.port}`,
@@ -3119,6 +3125,7 @@ async function main(): Promise<void> {
         nrApiKey: config!.nrApiKey,
         collectorHost: config!.collectorHost,
         configFilePath,
+        digestWebhookUrlOverride: digestWebhookUrlOverride(config!),
         configSummary,
       });
 
@@ -3234,6 +3241,7 @@ async function main(): Promise<void> {
             accountId: config.accountId ?? null,
             licenseKeyMasked: config.licenseKey ? maskCredential(config.licenseKey) : null,
             nrApiKeyMasked: config.nrApiKey ? maskCredential(config.nrApiKey) : null,
+            secretSources: config.secretSources,
             region: config.collectorHost ?? 'us',
             storagePath: config.storagePath,
             dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
@@ -3301,6 +3309,7 @@ async function main(): Promise<void> {
           accountId: config.accountId ?? null,
           licenseKeyMasked: config.licenseKey ? maskCredential(config.licenseKey) : null,
           nrApiKeyMasked: config.nrApiKey ? maskCredential(config.nrApiKey) : null,
+          secretSources: config.secretSources,
           region: config.collectorHost ?? 'us',
           storagePath: config.storagePath,
           dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
@@ -3352,6 +3361,7 @@ async function main(): Promise<void> {
           nrApiKey: config.nrApiKey,
           collectorHost: config.collectorHost,
           configFilePath,
+          digestWebhookUrlOverride: digestWebhookUrlOverride(config),
           configSummary,
         });
 

@@ -1337,6 +1337,25 @@ describe('Cross-session tool handlers', () => {
         fetchSpy.mockRestore();
       }
     });
+
+    it('posts to the startup-resolved override instead of the file URL', async () => {
+      const configFilePath = resolve(tmpDir, 'config.json');
+      const fileUrl = 'https://hooks.slack.com/services/T000/B000/FILE';
+      const overrideUrl = 'https://hooks.slack.com/services/T000/B000/OVERRIDE';
+      writeFileSync(configFilePath, JSON.stringify({ digestWebhookUrl: fileUrl }), 'utf-8');
+      const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+
+      const fetchSpy = jest
+        .spyOn(global, 'fetch')
+        .mockImplementation(async () => ({ ok: true }) as Response);
+
+      try {
+        await handleSendDigest(generator, configFilePath, overrideUrl);
+        expect(fetchSpy.mock.calls.map((call) => call[0])).toEqual([overrideUrl]);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
   });
 
   describe('handleGetPersonalInsights()', () => {

@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
-import { normalizeDeveloperName, redactSensitive } from '../../config.js';
+import { digestWebhookUrlOverride, normalizeDeveloperName, redactSensitive } from '../../config.js';
 import {
   isSyntheticSessionId,
   isUnscopedAggregatorSessionId,
@@ -3322,7 +3322,11 @@ export function createApiHandler(
 
   routes.set('POST /api/digest/send', async (_req, res) => {
     if (!deps.weeklySummaryGenerator || !deps.configFilePath) return unavailable(res, 'digest');
-    const result = await handleSendDigest(deps.weeklySummaryGenerator, deps.configFilePath);
+    const result = await handleSendDigest(
+      deps.weeklySummaryGenerator,
+      deps.configFilePath,
+      deps.config && digestWebhookUrlOverride(deps.config),
+    );
     jsonOk(res, result);
   });
 

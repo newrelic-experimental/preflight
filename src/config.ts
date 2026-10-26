@@ -14,6 +14,8 @@ import { resolveRecordContent } from './record-content-gate.js';
 import { projectIdFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
 import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
 import type { ResolvedTier } from './transport/tier-types.js';
+import { isSecretConfigured, resolveSecret } from './secret-command.js';
+import type { SecretSources } from './secret-command.js';
 
 const logger = createLogger('mcp-config');
 
@@ -104,6 +106,8 @@ export interface McpServerConfig {
   readonly collectorHost: string | null;
   readonly proxyUpstreams: readonly UpstreamConfig[];
   readonly nrApiKey: string | null;
+  /** Which source supplied each secret. Never the value. */
+  readonly secretSources: SecretSources;
   /** Path to a custom pricing JSON file, applied via `initPricing()`. See `NEW_RELIC_AI_CUSTOM_PRICING_FILE`. */
   readonly customPricingFile: string | null;
   /**
@@ -217,6 +221,10 @@ const CURRENT_CONFIG_VERSION = 1;
 
 export type PlatformTarget = 'native' | 'wsl-windows-cc' | 'wsl-linux-cc';
 
+// argv array only: a single string would invite shell-style quoting that
+// Preflight never interprets, since the command runs without a shell.
+const SecretCommandSchema = z.array(z.string().min(1)).min(1);
+
 export const ConfigFileSchema = z
   .object({
     configVersion: z.number().int().optional(),
@@ -252,6 +260,9 @@ export const ConfigFileSchema = z
     // generic union-mismatch issue.
     tiers: z.array(z.unknown()).optional(),
     nrApiKey: z.string().nullable().optional(),
+    licenseKeyCommand: SecretCommandSchema.optional(),
+    nrApiKeyCommand: SecretCommandSchema.optional(),
+    digestWebhookUrlCommand: SecretCommandSchema.optional(),
     customPricingFile: z.string().nullable().optional(),
     costRateMultiplier: z.number().nullable().optional(),
     dataResidencyPremium: z.boolean().optional(),
@@ -677,6 +688,20 @@ export class MissingCloudCredentialError extends Error {
   }
 }
 
+/**
+ * The startup-resolved digest webhook URL when a source that outranks the
+ * file's `digestWebhookUrl` (env var or digestWebhookUrlCommand) supplied it.
+ * Undefined means "read the file at send time".
+ */
+export function digestWebhookUrlOverride(
+  config: Pick<McpServerConfig, 'digestWebhookUrl' | 'secretSources'>,
+): string | undefined {
+  const source = config.secretSources.digestWebhookUrl;
+  return (source === 'env' || source === 'command') && config.digestWebhookUrl !== null
+    ? config.digestWebhookUrl
+    : undefined;
+}
+
 export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpServerConfig> {
   const configFilePath = cliOptions?.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
   const file = loadConfigFile(configFilePath);
@@ -765,12 +790,17 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     }
   }
 
-  // --- licenseKey: CLI has no flag for this, so env > file ---
-  // Hoisted ahead of mode resolution: an ambiguous licenseKey-without-mode
-  // config must fail closed instead of silently defaulting to 'cloud'.
-  const licenseKeyRaw =
-    process.env.NEW_RELIC_LICENSE_KEY ??
-    (typeof file.licenseKey === 'string' ? file.licenseKey : undefined);
+  // --- licenseKey: CLI has no flag for this, so env > licenseKeyCommand > file ---
+  // Presence is checked ahead of mode resolution: an ambiguous
+  // licenseKey-without-mode config must fail closed instead of silently
+  // defaulting to 'cloud'. The command itself runs only after mode resolves,
+  // so a local-mode process never runs it.
+  const licenseKeySources = {
+    env: process.env.NEW_RELIC_LICENSE_KEY,
+    command: file.licenseKeyCommand,
+    file: typeof file.licenseKey === 'string' ? file.licenseKey : undefined,
+  };
+  const licenseKeyConfigured = isSecretConfigured(licenseKeySources);
 
   // --- Resolve mode early so we can gate licenseKey/accountId requirements ---
   // File mode is already validated by the zod schema in loadConfigFile.
@@ -786,7 +816,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     mode = envMode;
   } else if (fileMode !== undefined) {
     mode = fileMode;
-  } else if (licenseKeyRaw) {
+  } else if (licenseKeyConfigured) {
     // Local-first default (README): telemetry export is opt-in, so a config
     // with credentials but no explicit mode must not silently export.
     throw new Error(
@@ -795,6 +825,12 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
   } else {
     mode = 'local';
   }
+
+  const licenseKeySecret = resolveSecret(
+    'licenseKey',
+    mode === 'local' ? { ...licenseKeySources, command: undefined } : licenseKeySources,
+  );
+  const licenseKeyRaw = licenseKeySecret.value;
 
   if (mode !== 'local' && !licenseKeyRaw) {
     throw new MissingCloudCredentialError('licenseKey', mode, configFilePath);
@@ -904,9 +940,26 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     source: resolvedCompanionMode.source,
   });
 
+  const nrApiKeySecret = resolveSecret('nrApiKey', {
+    env: process.env.NEW_RELIC_API_KEY,
+    command: file.nrApiKeyCommand,
+    file: typeof file.nrApiKey === 'string' ? file.nrApiKey : undefined,
+  });
+  const digestWebhookUrlSecret = resolveSecret('digestWebhookUrl', {
+    env: process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL,
+    command: file.digestWebhookUrlCommand,
+    file: typeof file.digestWebhookUrl === 'string' ? file.digestWebhookUrl : undefined,
+  });
+
   const config: McpServerConfig = {
     licenseKey,
     accountId,
+
+    secretSources: {
+      licenseKey: licenseKeySecret.source,
+      nrApiKey: nrApiKeySecret.source,
+      digestWebhookUrl: digestWebhookUrlSecret.source,
+    },
 
     configVersion:
       typeof file.configVersion === 'number' ? file.configVersion : CURRENT_CONFIG_VERSION,
@@ -1054,8 +1107,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       file.proxyUpstreams,
     ),
 
-    nrApiKey:
-      process.env.NEW_RELIC_API_KEY ?? (typeof file.nrApiKey === 'string' ? file.nrApiKey : null),
+    nrApiKey: nrApiKeySecret.value ?? null,
 
     customPricingFile:
       process.env.NEW_RELIC_AI_CUSTOM_PRICING_FILE ??
@@ -1078,9 +1130,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       typeof file.dataResidencyPremium === 'boolean' ? file.dataResidencyPremium : false,
     ),
 
-    digestWebhookUrl:
-      process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL ??
-      (typeof file.digestWebhookUrl === 'string' ? file.digestWebhookUrl : null),
+    digestWebhookUrl: digestWebhookUrlSecret.value ?? null,
 
     digestSchedule:
       process.env.NEW_RELIC_AI_DIGEST_SCHEDULE ??
@@ -1490,7 +1540,7 @@ export interface ConfigValidationResult {
   readonly storagePath?: string;
   /** The `companionMode` field from the parsed config, if present and a boolean. */
   readonly companionMode?: boolean;
-  /** True when a non-blank licenseKey is present in the parsed config. Raw value is intentionally not exposed. */
+  /** True when a non-blank licenseKey or a licenseKeyCommand is present in the parsed config. Raw value is intentionally not exposed. */
   readonly hasLicenseKey: boolean;
   /** Fatal problems that will prevent the MCP server from starting. */
   readonly errors: readonly string[];
@@ -1620,7 +1670,9 @@ export function validateConfigFile(filePath: string): ConfigValidationResult {
     mode: typeof file.mode === 'string' ? file.mode : undefined,
     storagePath: typeof file.storagePath === 'string' ? file.storagePath : undefined,
     companionMode: typeof file.companionMode === 'boolean' ? file.companionMode : undefined,
-    hasLicenseKey: typeof file.licenseKey === 'string' && file.licenseKey.trim().length > 0,
+    hasLicenseKey:
+      (typeof file.licenseKey === 'string' && file.licenseKey.trim().length > 0) ||
+      Array.isArray(file.licenseKeyCommand),
     errors,
     warnings,
   };

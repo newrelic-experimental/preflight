@@ -13,6 +13,7 @@ import {
   DEFAULT_STORAGE_PATH,
   resolveCompanionMode,
 } from '../config.js';
+import type { McpServerConfig } from '../config.js';
 import { getDashboardDaemonStatus, findExecutableNodeDir, getScheduleStatus } from './schedule.js';
 import { detectUpdateSupport, upgradeCommandFor } from './update-support.js';
 import { HOOK_EVENT_TYPES, type HookEventType } from '../hook-subcommands.js';
@@ -121,12 +122,25 @@ function checkConfigValid(
   };
 }
 
-// Reports the mode the running server would actually resolve — via the real
-// loader, not a re-derived approximation — plus which of env/file/default
-// produced it. Also the only place a licenseKey-without-explicit-mode config
-// (loadMcpConfig's fail-closed throw, see config.ts) surfaces to `doctor`
-// instead of crashing it with a stack trace.
-function checkTelemetryMode(configPath: string, fileMode: string | undefined): DiagnosticCheck {
+type LoadedConfig =
+  | { readonly ok: true; readonly config: Readonly<McpServerConfig> }
+  | { readonly ok: false; readonly message: string };
+
+// Loaded once through the real loader, not a re-derived approximation, so
+// secret helper commands run once per doctor run.
+function loadConfigForDiagnostics(configPath: string): LoadedConfig {
+  try {
+    return { ok: true, config: loadMcpConfig({ config: configPath }) };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// Reports the mode the running server would actually resolve plus which of
+// env/file/default produced it. Also the only place a
+// licenseKey-without-explicit-mode config (loadMcpConfig's fail-closed throw,
+// see config.ts) surfaces to `doctor` instead of crashing it with a stack trace.
+function checkTelemetryMode(loaded: LoadedConfig, fileMode: string | undefined): DiagnosticCheck {
   const envMode = process.env.NR_AI_MODE;
   const source =
     envMode !== undefined && envMode !== ''
@@ -134,28 +148,44 @@ function checkTelemetryMode(configPath: string, fileMode: string | undefined): D
       : fileMode !== undefined
         ? 'config file'
         : 'default (local)';
-  try {
-    const resolved = loadMcpConfig({ config: configPath });
+  if (loaded.ok) {
     return {
       check: 'Telemetry mode',
       status: 'ok',
-      detail: `Resolved to '${resolved.mode}' (source: ${source})`,
-    };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    // loadMcpConfig can throw for reasons that have nothing to do with mode
-    // (invalid accountId, a literal "null" licenseKey, etc.) — those aren't
-    // caught by the "Config valid" check above (its Zod schema doesn't
-    // validate those runtime-only rules), so still surface them here rather
-    // than dropping them, but don't imply the mode itself is at fault.
-    const isModeError = message.includes('no explicit mode');
-    return {
-      check: 'Telemetry mode',
-      status: 'fail',
-      detail: isModeError ? message : `Could not resolve config to determine mode: ${message}`,
-      fix: 'Apply the remedy named in the message, then re-run doctor.',
+      detail: `Resolved to '${loaded.config.mode}' (source: ${source})`,
     };
   }
+  // loadMcpConfig can throw for reasons that have nothing to do with mode
+  // (invalid accountId, a literal "null" licenseKey, a failing secret helper
+  // command, etc.) — those aren't caught by the "Config valid" check above
+  // (its Zod schema doesn't validate those runtime-only rules), so still
+  // surface them here rather than dropping them, but don't imply the mode
+  // itself is at fault.
+  const { message } = loaded;
+  const isModeError = message.includes('no explicit mode');
+  return {
+    check: 'Telemetry mode',
+    status: 'fail',
+    detail: isModeError ? message : `Could not resolve config to determine mode: ${message}`,
+    fix: 'Apply the remedy named in the message, then re-run doctor.',
+  };
+}
+
+function checkSecretSources(loaded: LoadedConfig): DiagnosticCheck {
+  if (!loaded.ok) {
+    return {
+      check: 'Secret sources',
+      status: 'skip',
+      detail: 'Skipped (config could not be resolved — see Telemetry mode)',
+    };
+  }
+  return {
+    check: 'Secret sources',
+    status: 'ok',
+    detail: Object.entries(loaded.config.secretSources)
+      .map(([field, source]) => `${field}: ${source}`)
+      .join(', '),
+  };
 }
 
 function checkCompanionMode(fileValue: boolean | undefined): DiagnosticCheck {
@@ -667,7 +697,8 @@ export async function runDiagnostics(opts?: {
 }): Promise<DiagnosticCheck[]> {
   const configPath = opts?.configPath ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
   const { check: configCheck, context } = checkConfigValid(configPath, opts?.storagePath);
-  const modeCheck = checkTelemetryMode(configPath, context.fileMode);
+  const loaded = loadConfigForDiagnostics(configPath);
+  const modeCheck = checkTelemetryMode(loaded, context.fileMode);
   const companionModeCheck = checkCompanionMode(context.fileCompanionMode);
 
   const settingsPaths: string[] = [detectSettingsPath('user')];
@@ -679,6 +710,7 @@ export async function runDiagnostics(opts?: {
   return [
     configCheck,
     modeCheck,
+    checkSecretSources(loaded),
     companionModeCheck,
     checkNodeVersionDiagnostic(),
     ...checkDaemon(),

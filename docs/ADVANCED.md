@@ -281,6 +281,72 @@ Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a sep
 
 ---
 
+## Secret Helper Commands
+
+`licenseKey`, `nrApiKey` and `digestWebhookUrl` can come from a command instead of sitting in plaintext in `config.json`. Set the matching `*Command` field to the command's argv. Preflight runs it once at startup and reads the secret from stdout.
+
+```jsonc
+{
+  "mode": "cloud",
+  "accountId": "12345",
+  // macOS Keychain. Store it first with:
+  //   security add-generic-password -a preflight -s preflight-license-key -w
+  "licenseKeyCommand": [
+    "/usr/bin/security",
+    "find-generic-password",
+    "-a",
+    "preflight",
+    "-s",
+    "preflight-license-key",
+    "-w",
+  ],
+  // 1Password CLI (run `command -v op` for the path on your machine)
+  "nrApiKeyCommand": ["/opt/homebrew/bin/op", "read", "op://Private/Preflight/nr-api-key"],
+  // HashiCorp Vault
+  "digestWebhookUrlCommand": [
+    "/usr/local/bin/vault",
+    "kv",
+    "get",
+    "-field=webhook_url",
+    "secret/preflight",
+  ],
+}
+```
+
+| Field                     | Supplies           | Env var that outranks it          |
+| ------------------------- | ------------------ | --------------------------------- |
+| `licenseKeyCommand`       | `licenseKey`       | `NEW_RELIC_LICENSE_KEY`           |
+| `nrApiKeyCommand`         | `nrApiKey`         | `NEW_RELIC_API_KEY`               |
+| `digestWebhookUrlCommand` | `digestWebhookUrl` | `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` |
+
+**Precedence.** Env var > `*Command` > plaintext value in the file > unset. None of these fields has a CLI flag. The command does not run when the env var is set. If both `licenseKeyCommand` and `licenseKey` are in the file, the command wins and Preflight logs a warning. `licenseKeyCommand` also does not run when the resolved mode is `local`, since local mode never sends anything to New Relic.
+
+**How the command runs.**
+
+- The value is a JSON array: the executable, then its arguments. A single string is rejected. There is no shell, so quoting, `$VARS`, pipes and `~` are passed to the command literally.
+- The first element must be an absolute path. A bare name such as `security` is rejected, so a writable directory early in `PATH` cannot substitute another program.
+- The command inherits Preflight's environment minus the injection-capable variables listed in [SECURITY.md](../SECURITY.md#process-execution-safety) (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS` and the rest).
+- stdin is closed and stderr is discarded. One trailing newline is removed from stdout. Everything else is kept as is.
+- The command must exit with status 0 within 20 seconds and print at most 64 KiB.
+
+**Failures stop startup.** A command that is not an absolute path, cannot be started, exits non-zero, is killed, times out, prints too much, or prints nothing fails config load with an error that names the field and the failure, for example `Could not read licenseKey from licenseKeyCommand: the command exited with a non-zero status (1)`. The error never contains the command's output or arguments. Run the command yourself in a terminal to see why it failed. `preflight doctor` reports the same error under "Telemetry mode".
+
+**Validation is unchanged.** The resolved value goes through the same checks as a plaintext one. A license key of `"null"` is rejected at load, and the digest webhook URL must be an `https://hooks.slack.com/` URL when the digest is sent.
+
+**Seeing where a secret came from.** `nr_observe_get_config` returns a `secretSources` object, and `preflight doctor` prints a "Secret sources" line. Each field reports `env`, `command`, `file` or `unset`, never the value.
+
+**GUI-launched clients and launchd.** An MCP client started from the Dock or Finder does not see variables set in your shell profile. A helper that needs `VAULT_ADDR`, `VAULT_TOKEN` or 1Password's `OP_*` variables either reads them from its own config file (`~/.vault-token`, the 1Password desktop app integration) or fails. The macOS Keychain needs a logged-in GUI session, so a launchd daemon or SSH session can get `User interaction is not allowed`. The first Keychain read from Preflight's `node` binary can show an access prompt. Startup waits for it until the 20-second timeout, so choose **Always Allow**.
+
+**Weekly digest.** When `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` or `digestWebhookUrlCommand` supplies the webhook URL, sending the digest uses that value. A URL written to the file by `nr_observe_subscribe_digest` or the dashboard is ignored until you remove both.
+
+**Not covered.** Tier destinations (`tiers[].destination.licenseKey`) take a plaintext key only. A `licenseKeyCommand` value reaches the implicit `default` tier that Preflight builds when `tiers` is absent, but an explicit `tiers` array is used as written.
+
+### Scoping `nrApiKey`
+
+`nrApiKey` is a New Relic User API key. It carries its user's permissions across every account that user can reach, not just `accountId`. Only `nr_observe_get_team_summary` uses it. Leave it unset if you do not need team summaries. Otherwise create it for a user whose role can only query the accounts that hold Preflight data.
+
+---
+
 ## Setup Wizard — Environment Variable Pre-Fill
 
 If `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, or `NEW_RELIC_API_KEY` are set in the environment when `preflight setup` is run, the wizard pre-fills those prompts and shows the env var name as the hint (`$NEW_RELIC_LICENSE_KEY`). Pressing Enter accepts the value — no copy-paste needed. This makes the wizard scriptable in CI pipelines or Docker-based dev environments where credentials are already injected as environment variables.
