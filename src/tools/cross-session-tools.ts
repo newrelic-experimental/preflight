@@ -117,7 +117,7 @@ export const TRENDS_TOOL = {
 export const COLLABORATION_PROFILE_TOOL = {
   name: 'nr_observe_get_collaboration_profile',
   description:
-    "Get a developer's collaboration profile: specificity, autonomy, correction rate, task complexity, and classification. Self-coaching aid only, not for evaluating, ranking, or monitoring individuals; classifications come from fixed heuristic thresholds.",
+    "Get a developer's collaboration profile: specificity, autonomy, correction rate, task complexity, and classification. Self-coaching only; not for evaluating individuals.",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -277,7 +277,7 @@ export const PERSONAL_INSIGHTS_TOOL = {
     'Includes highlights, regressions, streaks, and a top recommendation. ' +
     'Requires at least 2 weeks of session history. ' +
     'Returns status: "insufficient_data" with a message when history is too sparse. ' +
-    'Self-coaching aid only, not for evaluating, ranking, or monitoring individuals; comparisons come from fixed heuristic thresholds.',
+    'Self-coaching only; not for evaluating individuals.',
   inputSchema: {
     type: 'object' as const,
     properties: {},
