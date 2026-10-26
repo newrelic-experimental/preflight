@@ -10,6 +10,19 @@ entry here; see [Changesets](CONTRIBUTING.md#changesets) in CONTRIBUTING.md. Rel
 (Added, Fixed, and so on). Later releases group them by semver bump: Major, Minor, or Patch
 Changes.
 
+## 1.67.3 - 2026-10-26
+
+### Patch Changes
+
+- **Preflight's dependencies had known vulnerabilities, and two code paths were flagged by CodeQL.** The server's dependencies (`@modelcontextprotocol/sdk`, `undici`, `hono`, `proxy-addr`, `ip-address`, `fast-uri`, `brace-expansion`) are upgraded, which clears every open Dependabot alert. The minimum versions in `package.json` are raised so installs of Preflight resolve the patched releases. Stripping `[1m]`-style suffixes from model IDs during pricing no longer uses a backtracking regular expression, so a crafted model name can't make it run for a long time. `scripts/generate-demo-data.ts` no longer prints the request URL, which contains the account ID, in its error output.
+- **A session's cost could be counted twice.** Three cases are fixed.
+
+  - A session's saved cost no longer counts the parent's spend twice when a subagent starts after a checkpoint. Preflight now folds in only the part of the saved cost that another writer added beyond what it had already checkpointed.
+  - Byte-size cost estimates are taken back out once the transcript watcher's first real token report arrives, instead of staying in the total alongside the same turns reported as exact usage. The estimated share is saved with the session, so a restart before the first report doesn't keep it either. Subagent reports and single-response self-reports (`nr_observe_report_tokens`) don't remove it. Platforms that never report tokens keep their estimate.
+  - A `--stdio` server that drains another session's token reports before its own session id resolves no longer adds that cost to its own session total or model usage, and no longer emits an `AiTurnCost` event for it under its own session id. The cost still goes to the other session's record. `--local` is unchanged.
+
+- Cost metrics no longer include a `costByTask` field that was always `null`. Per-task cost is reported on the task records themselves.
+
 ## 1.67.2 - 2026-10-13
 
 ### Fixed
