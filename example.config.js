@@ -72,8 +72,8 @@ export default {
 
   // When true, recordContent is forced off, so literal file contents, command output, and
   // agent text are never sent to New Relic, whatever recordContent says. Use it where content
-  // must never leave the machine. Do not bypass it. Set it in the config file rather than only
-  // in the environment. See PRIVACY.md (highSecurity).
+  // must never leave the machine. Do not bypass it.
+  // See PRIVACY.md (highSecurity).
   // Env: NEW_RELIC_AI_HIGH_SECURITY  (true/false)
   // Default: false
   highSecurity: false,
