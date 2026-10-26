@@ -92,6 +92,12 @@ export interface McpServerConfig {
    * (session_id === OTel's session.id). See docs/ADVANCED.md § Companion mode.
    */
   readonly companionMode: boolean;
+  /**
+   * Lets the `nr_observe_install_hooks` MCP tool rewrite ~/.claude/settings.json.
+   * Default false: any connected MCP client can call the tool, so it is opt-in.
+   * See docs/ADVANCED.md § allowHeadlessInstall.
+   */
+  readonly allowHeadlessInstall: boolean;
   readonly redactionPatterns: readonly RegExp[];
   readonly hookBufferPath: string;
   readonly storagePath: string;
@@ -235,6 +241,7 @@ export const ConfigFileSchema = z
     recordContent: z.boolean().optional(),
     pricingRefresh: z.boolean().optional(),
     companionMode: z.boolean().optional(),
+    allowHeadlessInstall: z.boolean().optional(),
     storagePath: z.string().optional(),
     hookBufferPath: z.string().optional(),
     harvestEventsMs: z.number().optional(),
@@ -961,6 +968,11 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
         ),
 
     companionMode: resolvedCompanionMode.value,
+
+    allowHeadlessInstall: envBool(
+      'NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL',
+      typeof file.allowHeadlessInstall === 'boolean' ? file.allowHeadlessInstall : false,
+    ),
 
     redactionPatterns: DEFAULT_REDACTION_PATTERNS,
 

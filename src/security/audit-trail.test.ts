@@ -666,6 +666,21 @@ describe('AuditTrailManager', () => {
     });
   });
 
+  it('records a HookInstall entry for a headless hook install and persists it', () => {
+    const { store, appendSpy } = makeLocalStore();
+    const mgr = makeManager({ localStore: store });
+
+    const entry = mgr.recordHeadlessHookInstall('/home/dev/.claude/settings.json');
+
+    expect(entry.action).toBe('HookInstall');
+    expect(entry.tool).toBe('nr_observe_install_hooks');
+    expect(entry.detail).toBe('HookInstall: /home/dev/.claude/settings.json');
+    expect(entry.securityAlert).toBeUndefined();
+    expect(entry.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(appendSpy).toHaveBeenCalledTimes(1);
+    expect(appendSpy.mock.calls[0][0]).toMatchObject({ action: 'HookInstall' });
+  });
+
   // 20. no localStore — no crash
   it('does not throw when no localStore is provided', () => {
     const mgr = makeManager();

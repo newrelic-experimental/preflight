@@ -39,6 +39,7 @@ import {
 import { SubagentWatcher, type SubagentTokenEvent } from './hooks/subagent-watcher.js';
 import { WorkflowWatcher } from './hooks/workflow-watcher.js';
 import { migrateStoragePath } from './install/migrate.js';
+import { createHeadlessInstaller } from './install/headless-install.js';
 import { checkNodeVersion } from './install/node-version-check.js';
 import { localDateKey } from './lib/date.js';
 import { repoNameFromRemote } from './lib/git-remote.js';
@@ -3073,8 +3074,13 @@ async function main(): Promise<void> {
         dashboardUrl: `http://${config!.dashboard.host}:${config!.dashboard.port}`,
         configFilePath,
         companionMode: config!.companionMode,
+        allowHeadlessInstall: config!.allowHeadlessInstall,
       };
       registerTools(mcpServer!.server, {
+        headlessInstaller: createHeadlessInstaller({
+          allowHeadlessInstall: config!.allowHeadlessInstall,
+          getAuditTrail: () => mcpServer?.auditTrailManager,
+        }),
         sessionTracker: sessionTracker!,
         costTracker,
         budgetTracker,
@@ -3239,6 +3245,7 @@ async function main(): Promise<void> {
             dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
             configFilePath: pendingConfigFilePath,
             companionMode: config.companionMode,
+            allowHeadlessInstall: config.allowHeadlessInstall,
           },
         });
         logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
@@ -3306,8 +3313,13 @@ async function main(): Promise<void> {
           dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
           configFilePath,
           companionMode: config.companionMode,
+          allowHeadlessInstall: config.allowHeadlessInstall,
         };
         registerTools(mcpServer!.server, {
+          headlessInstaller: createHeadlessInstaller({
+            allowHeadlessInstall: config.allowHeadlessInstall,
+            getAuditTrail: () => mcpServer?.auditTrailManager,
+          }),
           sessionTracker,
           costTracker,
           budgetTracker,

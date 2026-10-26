@@ -81,6 +81,13 @@ export default {
   // Default: false
   recordContent: false,
 
+  // When true, the nr_observe_install_hooks MCP tool may rewrite
+  // ~/.claude/settings.json. Off by default: any connected MCP client can call
+  // the tool. Each install is recorded in the audit trail. See docs/ADVANCED.md.
+  // Env: NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL  (true/false)
+  // Default: false
+  allowHeadlessInstall: false,
+
   // ── Storage ───────────────────────────────────────────────────────────────
 
   // Root directory for local storage (sessions, buffer, weekly summaries).

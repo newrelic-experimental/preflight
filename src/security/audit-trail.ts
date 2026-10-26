@@ -4,6 +4,7 @@
  * alerting.
  */
 
+import { randomUUID } from 'node:crypto';
 import { createLogger } from '../shared/index.js';
 import type { NrEventData } from '../shared/index.js';
 import type { ToolCallRecord, AuditEntry } from '../storage/types.js';
@@ -27,6 +28,7 @@ export type AuditAction =
   | 'McpToolCall'
   | 'AgentSpawn'
   | 'Search'
+  | 'HookInstall'
   | 'Other';
 
 export type AlertSeverity = 'critical' | 'high' | 'medium';
@@ -371,6 +373,7 @@ function isAuditAction(value: string): value is AuditAction {
     value === 'McpToolCall' ||
     value === 'AgentSpawn' ||
     value === 'Search' ||
+    value === 'HookInstall' ||
     value === 'Other'
   );
 }
@@ -518,6 +521,28 @@ export class AuditTrailManager {
   recordProxyCall(record: ProxyToolCallRecord): AuditRecord {
     const detail = `McpToolCall: ${record.serverName}/${record.toolName}`;
     return this.commit(record, 'McpToolCall', detail);
+  }
+
+  /**
+   * Records that `nr_observe_install_hooks` wrote Preflight's hook entries to
+   * `settingsPath`. Not a tool call, so there is no security alert to run.
+   * The entry is kept in memory and persisted like any other audit record.
+   */
+  recordHeadlessHookInstall(settingsPath: string): AuditRecord {
+    const auditRecord: AuditRecord = {
+      id: randomUUID(),
+      timestamp: Date.now(),
+      sessionId: resolveAuditSessionId(null, this.sessionId),
+      action: 'HookInstall',
+      tool: 'nr_observe_install_hooks',
+      detail: `HookInstall: ${redactSensitive(settingsPath)}`,
+      developer: this.developer,
+    };
+    if (this.entries.length >= AuditTrailManager.MAX_ENTRIES) this.entries.shift();
+    this.entries.push(auditRecord);
+    this.persistToDisk(auditRecord);
+    logger.info('Hook install recorded', { settingsPath: redactSensitive(settingsPath) });
+    return auditRecord;
   }
 
   private commit(record: ToolCallRecord, action: AuditAction, detail: string): AuditRecord {

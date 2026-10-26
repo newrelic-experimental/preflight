@@ -130,6 +130,22 @@ Similarly, Preflight cannot detect the data-residency premium per-response the w
 
 ---
 
+## allowHeadlessInstall
+
+**`allowHeadlessInstall`** (env: `NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL`, default `false`): lets the `nr_observe_install_hooks` MCP tool write Preflight's hook entries into `~/.claude/settings.json`. Any connected MCP client can call that tool, so it is off by default. With the default, the tool returns an error that tells the user to run `preflight install` or set this flag, and changes nothing on disk.
+
+To opt in, set it in the config file or the environment:
+
+```json
+{
+  "allowHeadlessInstall": true
+}
+```
+
+Each install that changes `settings.json` adds a `HookInstall` entry to the audit trail (`nr-observe://session/audit-log`), recording the settings path. A call that finds the hooks already installed changes nothing and adds no entry. The value is also reported by `nr_observe_get_config`.
+
+---
+
 ## Companion Mode (Running Alongside Claude Code's Built-in OTel)
 
 Claude Code has its own built-in OTel export for cost, tokens, lines-of-code, and session-time metrics. Preflight's `session_id` equals that export's `session.id` for Claude Code sessions, so the two streams join cleanly — which also means an org that enables both, feeding them into one blended "org AI spend" dashboard, roughly doubles the true cost and token counts. `companionMode` exists to stop that without losing either signal.

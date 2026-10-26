@@ -41,6 +41,7 @@ beforeEach(() => {
   delete process.env.NEW_RELIC_HOST;
   delete process.env.NEW_RELIC_AI_MCP_PROXY_UPSTREAMS;
   delete process.env.NEW_RELIC_AI_HIGH_SECURITY;
+  delete process.env.NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL;
   delete process.env.NEW_RELIC_AI_PRICING_REFRESH;
   delete process.env.NEW_RELIC_AI_MODEL;
   delete process.env.NEW_RELIC_AI_SESSION_BUDGET_USD;
@@ -558,6 +559,37 @@ describe('loadMcpConfig()', () => {
     expect(config.proxyUpstreams).toEqual([
       { name: 'valid', url: 'http://localhost:3000', transportType: 'http' },
     ]);
+  });
+
+  // allowHeadlessInstall gates nr_observe_install_hooks
+  it('allowHeadlessInstall defaults to false', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.allowHeadlessInstall).toBe(false);
+  });
+
+  it('allowHeadlessInstall=true set in the config file', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const config = loadMcpConfig({ config: writeConfigFile({ allowHeadlessInstall: true }) });
+    expect(config.allowHeadlessInstall).toBe(true);
+  });
+
+  it('NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL env var overrides the config file in both directions', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL = 'true';
+    expect(
+      loadMcpConfig({ config: writeConfigFile({ allowHeadlessInstall: false }) })
+        .allowHeadlessInstall,
+    ).toBe(true);
+
+    process.env.NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL = 'false';
+    expect(
+      loadMcpConfig({ config: writeConfigFile({ allowHeadlessInstall: true }) })
+        .allowHeadlessInstall,
+    ).toBe(false);
   });
 
   // highSecurity mode
