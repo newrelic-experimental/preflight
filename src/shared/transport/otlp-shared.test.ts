@@ -105,12 +105,12 @@ describe('validateOtlpEndpoint', () => {
   });
 
   it('blocks plain http to a private-range, non-loopback address', () => {
-    expect(() => validateOtlpEndpoint('http://10.0.0.5:4318', 'Test')).toThrow(
-      'private-network host',
-    );
-    expect(() => validateOtlpEndpoint('http://192.168.1.10:4318', 'Test')).toThrow(
-      'private-network host',
-    );
+    expect(() => validateOtlpEndpoint('http://10.0.0.5:4318', 'Test')).toThrow('use https://');
+    expect(() => validateOtlpEndpoint('http://192.168.1.10:4318', 'Test')).toThrow('use https://');
+  });
+
+  it('blocks plain http to the 0.0.0.0 wildcard', () => {
+    expect(() => validateOtlpEndpoint('http://0.0.0.0:4318', 'Test')).toThrow('use https://');
   });
 
   it('blocks a cloud metadata host regardless of scheme', () => {
@@ -128,10 +128,10 @@ describe('validateOtlpEndpoint', () => {
     );
   });
 
-  it('still only warns for plain http to an ordinary public non-loopback host', () => {
-    const warnSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-    expect(() => validateOtlpEndpoint('http://example.com', 'Test')).not.toThrow();
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+  it('blocks plain http to a public host with a message pointing at https://', () => {
+    expect(() => validateOtlpEndpoint('http://collector.example.com:4318', 'Test')).toThrow(
+      'use https://',
+    );
+    expect(() => validateOtlpEndpoint('http://example.com', 'Test')).toThrow('non-loopback host');
   });
 });

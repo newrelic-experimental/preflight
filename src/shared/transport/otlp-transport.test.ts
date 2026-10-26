@@ -874,26 +874,20 @@ describe('OtlpTransport', () => {
       expect(warnedCleartext).toBe(false);
     });
 
-    it('emits a cleartext warning for http:// to a non-loopback host', () => {
-      // Plain http to a non-loopback host: must construct (consumer may have a
-      // real reason — e.g. an internal collector behind mTLS) but we surface a
-      // warn so it shows up in operator logs.
+    it('throws for http:// to a non-loopback host, pointing at https://', () => {
       expect(
         () =>
           new OtlpTransport({
-            endpoint: 'http://internal-collector.example.com:4318',
+            endpoint: 'http://collector.example.com:4318',
             appName: 'test-app',
           }),
-      ).not.toThrow();
-      const stderrText = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0] ?? '')).join('\n');
-      expect(stderrText).toMatch(/plain http:\/\//);
-      expect(stderrText).toMatch(/internal-collector\.example\.com/);
+      ).toThrow(/use https:\/\//);
     });
 
     it('throws for http://0.0.0.0 — wildcard bind address, not a legitimate collector target', () => {
       expect(
         () => new OtlpTransport({ endpoint: 'http://0.0.0.0:4318', appName: 'test-app' }),
-      ).toThrow(/private-network host/);
+      ).toThrow(/use https:\/\//);
     });
 
     it('throws on a non-http(s) scheme', () => {
