@@ -255,7 +255,7 @@ describe('HttpUpstream', () => {
       ).not.toThrow();
     });
 
-    it('allows public HTTP URLs', () => {
+    it('rejects public HTTP URLs at construction', () => {
       expect(
         () =>
           new HttpUpstream({
@@ -263,7 +263,124 @@ describe('HttpUpstream', () => {
             url: 'http://my-mcp-server.example.com:3000',
             transportType: 'http',
           }),
-      ).not.toThrow();
+      ).toThrow(
+        /HttpUpstream "test": http:\/\/ to host "my-mcp-server.example.com" is not allowed/,
+      );
+    });
+
+    describe('cleartext http:// requirement', () => {
+      it('rejects http://example.com/mcp at construction', () => {
+        expect(
+          () =>
+            new HttpUpstream({
+              name: 'remote',
+              url: 'http://example.com/mcp',
+              transportType: 'http',
+            }),
+        ).toThrow(/HttpUpstream "remote".*use https:\/\//);
+      });
+
+      it('accepts https://example.com/mcp', () => {
+        expect(
+          () =>
+            new HttpUpstream({
+              name: 'test',
+              url: 'https://example.com/mcp',
+              transportType: 'http',
+            }),
+        ).not.toThrow();
+      });
+
+      it('accepts http://localhost:3000 with allowPrivateHosts', () => {
+        expect(
+          () =>
+            new HttpUpstream({
+              name: 'test',
+              url: 'http://localhost:3000',
+              transportType: 'http',
+              allowPrivateHosts: true,
+            }),
+        ).not.toThrow();
+      });
+
+      it('accepts http://127.0.0.1 and http://[::1] with allowPrivateHosts', () => {
+        for (const url of ['http://127.0.0.1:3000/mcp', 'http://[::1]:3000/mcp']) {
+          expect(
+            () =>
+              new HttpUpstream({
+                name: 'test',
+                url,
+                transportType: 'http',
+                allowPrivateHosts: true,
+              }),
+          ).not.toThrow();
+        }
+      });
+
+      it('rejects http:// to a private range without allowInsecureHttp', () => {
+        expect(
+          () =>
+            new HttpUpstream({
+              name: 'lan',
+              url: 'http://10.1.2.3:3000/mcp',
+              transportType: 'http',
+              allowPrivateHosts: true,
+            }),
+        ).toThrow(
+          /HttpUpstream "lan": http:\/\/ to private host "10.1.2.3" requires https:\/\/ or allowInsecureHttp/,
+        );
+      });
+
+      it('accepts http:// to a private range with allowPrivateHosts and allowInsecureHttp', () => {
+        expect(
+          () =>
+            new HttpUpstream({
+              name: 'lan',
+              url: 'http://10.1.2.3:3000/mcp',
+              transportType: 'http',
+              allowPrivateHosts: true,
+              allowInsecureHttp: true,
+            }),
+        ).not.toThrow();
+      });
+
+      it('accepts https:// to a private range with allowPrivateHosts', () => {
+        expect(
+          () =>
+            new HttpUpstream({
+              name: 'lan',
+              url: 'https://10.1.2.3:3000/mcp',
+              transportType: 'http',
+              allowPrivateHosts: true,
+            }),
+        ).not.toThrow();
+      });
+
+      it('rejects http:// to a public host even with allowPrivateHosts and allowInsecureHttp', () => {
+        expect(
+          () =>
+            new HttpUpstream({
+              name: 'remote',
+              url: 'http://example.com/mcp',
+              transportType: 'http',
+              allowPrivateHosts: true,
+              allowInsecureHttp: true,
+            }),
+        ).toThrow(/HttpUpstream "remote": http:\/\/ to host "example.com" is not allowed/);
+      });
+
+      it('treats allowInsecureHttp as opt-in only when the value is exactly true', () => {
+        expect(
+          () =>
+            new HttpUpstream({
+              name: 'lan',
+              url: 'http://10.1.2.3:3000/mcp',
+              transportType: 'http',
+              allowPrivateHosts: true,
+              allowInsecureHttp: 'true' as unknown as boolean,
+            }),
+        ).toThrow(/requires https:\/\/ or allowInsecureHttp/);
+      });
     });
 
     it('blocks hex-normalized IPv4-mapped loopback (::ffff:7f00:1)', () => {
@@ -356,7 +473,7 @@ describe('HttpUpstream', () => {
           () =>
             new HttpUpstream({
               name: 'test',
-              url: 'http://server-12345.example.com/',
+              url: 'https://server-12345.example.com/',
               transportType: 'http',
             }),
         ).not.toThrow();
@@ -389,12 +506,12 @@ describe('HttpUpstream', () => {
 
       const allowedBoundaries: Array<[string, string]> = [
         // Just outside 10.0.0.0/8
-        ['11.0.0.0 (just above 10/8)', 'http://11.0.0.0/'],
+        ['11.0.0.0 (just above 10/8)', 'https://11.0.0.0/'],
         // Just outside 172.16.0.0/12
-        ['172.15.255.255 (just below 172.16/12)', 'http://172.15.255.255/'],
-        ['172.32.0.0 (just above 172.31/12)', 'http://172.32.0.0/'],
+        ['172.15.255.255 (just below 172.16/12)', 'https://172.15.255.255/'],
+        ['172.32.0.0 (just above 172.31/12)', 'https://172.32.0.0/'],
         // Just outside multicast range
-        ['223.255.255.255 (just below 224/4 multicast)', 'http://223.255.255.255/'],
+        ['223.255.255.255 (just below 224/4 multicast)', 'https://223.255.255.255/'],
       ];
 
       it.each(allowedBoundaries)('allows %s', (_label, url) => {
@@ -448,7 +565,7 @@ describe('HttpUpstream', () => {
           () =>
             new HttpUpstream({
               name: 'test',
-              url: 'http://user:pass@my-mcp-server.example.com/',
+              url: 'https://user:pass@my-mcp-server.example.com/',
               transportType: 'http',
             }),
         ).not.toThrow();

@@ -12,7 +12,7 @@ This document captures the security practices and invariants baked into this cod
 - [ ] License key and accountId absent from all logger calls
 - [ ] New storage directories created with `{ mode: 0o700 }`, files with `0o600`
 - [ ] File paths from user-controlled config validated (`.json` extension at minimum)
-- [ ] New `HttpUpstream` URLs rejected if scheme is not `http:`/`https:`, or host is RFC-1918/loopback
+- [ ] New `HttpUpstream` URLs rejected unless `https:`, or `http:` to loopback (`localhost`, `127.0.0.1`, `::1`), or `http:` to a private host with `allowPrivateHosts` and `allowInsecureHttp`; RFC-1918/loopback hosts also rejected unless `allowPrivateHosts`
 - [ ] Subprocess commands validated as absolute paths; dangerous env keys stripped
 - [ ] `MetricAggregator.record()` only called with values known to be finite
 - [ ] High security mode respected: never bypass `recordContent=false` when `highSecurity=true`
@@ -140,7 +140,7 @@ Follow this pattern for any new storage paths the MCP server creates.
 
 `validateSsrfUrl()` validates any user-configured URL against two criteria:
 
-1. **Scheme** — only `http:` and `https:` are allowed
+1. **Scheme** — only `http:` and `https:` are allowed by this function. Proxy `HttpUpstream` is stricter: it requires `https:` for every host except loopback (`localhost`, `127.0.0.1`, `::1`), and for private-range hosts it also requires `allowInsecureHttp: true` alongside `allowPrivateHosts` before it accepts `http:`. See [Proxy HTTP Upstreams](docs/ADVANCED.md#proxy-http-upstreams-https-required).
 2. **Host** — RFC-1918 addresses (`10.*`, `172.16–31.*`, `192.168.*`), loopback (`127.*`, `::1`, `localhost`), and link-local (`169.254.*`) are rejected
 
 ```typescript

@@ -81,6 +81,19 @@ Point your application's OTel SDK at `http://localhost:4318`. JSON and protobuf 
 
 ---
 
+## Proxy HTTP Upstreams (`https://` Required)
+
+Each `proxyUpstreams` entry with `transportType: "http"` must use `https://`. Cleartext `http://` is accepted only when the host is loopback (`localhost`, `127.0.0.1`, `::1`) and `allowPrivateHosts` is set, or when the host is a private-range address with both `allowPrivateHosts: true` and `allowInsecureHttp: true`. Any other `http://` upstream fails at startup with an error naming the upstream.
+
+| Field               | Effect                                                                                                                                                            | Default |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `allowPrivateHosts` | Skips the RFC-1918/loopback host check for this upstream. Development and testing only.                                                                           | `false` |
+| `allowInsecureHttp` | With `allowPrivateHosts`, permits `http://` to a private-range host. Has no effect on public hosts, and is not needed for loopback. Development and testing only. | `false` |
+
+Migration: an upstream configured as `http://` with a non-loopback host (for example `http://mcp.internal.example.com`) must move to `https://`, or, if it is a private-range address on a trusted LAN you are testing, set `allowPrivateHosts: true` and `allowInsecureHttp: true` on that upstream.
+
+---
+
 ## OTLP Config Field Names and Legacy Compatibility
 
 The fields above (`otlpEndpoint`, `otlpHeaders`, `transport`, `otlpReceiverEnabled`, `otlpReceiverPort`, `otlpReceiverBindAddress`, `otlpForwardEndpoint`, `otlpForwardHeaders`) are the legacy flat top-level keys. On the resolved `McpServerConfig` (in code), all 8 live nested under an `otlp: {...}` object instead — matching the `dashboard`/`alerts` nesting precedent (e.g. `otlp.endpoint`, `otlp.receiverEnabled`).

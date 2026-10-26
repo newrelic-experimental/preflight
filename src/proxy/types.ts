@@ -24,6 +24,13 @@ export interface UpstreamConfig {
    */
   readonly allowPrivateHosts?: boolean;
   /**
+   * Allow plain `http:` to a private-range host (RFC-1918, link-local) when
+   * `allowPrivateHosts` is also set. Without it, only `https:` is accepted for
+   * anything other than loopback. Never permits cleartext http to a public host.
+   * For local development and testing only.
+   */
+  readonly allowInsecureHttp?: boolean;
+  /**
    * Allow bare command names (e.g., "node" instead of "/usr/bin/node").
    * For local development and testing only — never set in production deployments.
    */
