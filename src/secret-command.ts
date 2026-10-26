@@ -13,7 +13,9 @@ export type SecretSource = 'env' | 'command' | 'file' | 'unset';
 export type SecretSources = { readonly [F in SecretField]: SecretSource };
 
 export type ResolvedSecret =
-  | { readonly source: 'env' | 'command' | 'file'; readonly value: string }
+  | { readonly source: 'env' | 'file'; readonly value: string }
+  // `value` is undefined only when the caller asked not to run commands.
+  | { readonly source: 'command'; readonly value: string | undefined }
   | { readonly source: 'unset'; readonly value: undefined };
 
 export type SecretCommandFailure =
@@ -126,18 +128,20 @@ export function isSecretConfigured(sources: SecretInputs): boolean {
  * Precedence: env var > helper command > plaintext file value. The command
  * runs only when no env var supplied the value. With `optional`, a failing
  * command is logged as a warning and the secret is treated as unset instead of
- * stopping startup; the plaintext value is not used as a fallback.
+ * stopping startup; the plaintext value is not used as a fallback. With
+ * `skipCommand`, a winning command is reported as the source but not run.
  */
 export function resolveSecret(
   field: SecretField,
   sources: SecretInputs,
-  options: { readonly optional?: boolean } = {},
+  options: { readonly optional?: boolean; readonly skipCommand?: boolean } = {},
 ): ResolvedSecret {
   if (sources.env !== undefined) return { source: 'env', value: sources.env };
   if (sources.command !== undefined) {
     if (sources.file !== undefined) {
       logger.warn(`Both ${field} and ${field}Command are set; using ${field}Command`, { field });
     }
+    if (options.skipCommand) return { source: 'command', value: undefined };
     try {
       return { source: 'command', value: resolveSecretCommand(field, sources.command) };
     } catch (err) {

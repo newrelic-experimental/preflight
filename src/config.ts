@@ -702,7 +702,21 @@ export function digestWebhookUrlOverride(
     : undefined;
 }
 
-export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpServerConfig> {
+export interface LoadMcpConfigOptions {
+  /**
+   * Run the `*Command` secret helpers. Pass false from callers that poll or
+   * only read non-secret fields (dashboard diagnostics, host/port lookup):
+   * `secretSources` still reports `command`, but the secrets resolve to
+   * undefined/null and `tiers` stays empty unless explicit.
+   */
+  readonly resolveSecrets?: boolean;
+}
+
+export function loadMcpConfig(
+  cliOptions?: Partial<CliOptions>,
+  loadOptions: LoadMcpConfigOptions = {},
+): Readonly<McpServerConfig> {
+  const skipCommand = loadOptions.resolveSecrets === false;
   const configFilePath = cliOptions?.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
   const file = loadConfigFile(configFilePath);
 
@@ -829,10 +843,15 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
   const licenseKeySecret = resolveSecret(
     'licenseKey',
     mode === 'local' ? { ...licenseKeySources, command: undefined } : licenseKeySources,
+    { skipCommand },
   );
   const licenseKeyRaw = licenseKeySecret.value;
 
-  if (mode !== 'local' && !licenseKeyRaw) {
+  if (
+    mode !== 'local' &&
+    !licenseKeyRaw &&
+    !(skipCommand && licenseKeySecret.source === 'command')
+  ) {
     throw new MissingCloudCredentialError('licenseKey', mode, configFilePath);
   }
   // Reject the literal string "null" — it's truthy but not a valid key
@@ -944,10 +963,10 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     'nrApiKey',
     {
       env: process.env.NEW_RELIC_API_KEY,
-      command: file.nrApiKeyCommand,
+      command: mode === 'local' ? undefined : file.nrApiKeyCommand,
       file: typeof file.nrApiKey === 'string' ? file.nrApiKey : undefined,
     },
-    { optional: true },
+    { optional: true, skipCommand },
   );
   const digestWebhookUrlSecret = resolveSecret(
     'digestWebhookUrl',
@@ -956,7 +975,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       command: file.digestWebhookUrlCommand,
       file: typeof file.digestWebhookUrl === 'string' ? file.digestWebhookUrl : undefined,
     },
-    { optional: true },
+    { optional: true, skipCommand },
   );
 
   const config: McpServerConfig = {

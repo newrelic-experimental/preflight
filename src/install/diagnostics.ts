@@ -126,11 +126,12 @@ type LoadedConfig =
   | { readonly ok: true; readonly config: Readonly<McpServerConfig> }
   | { readonly ok: false; readonly message: string };
 
-// Loaded once through the real loader, not a re-derived approximation, so
-// secret helper commands run once per doctor run.
-function loadConfigForDiagnostics(configPath: string): LoadedConfig {
+// Loaded through the real loader, not a re-derived approximation. Helpers run
+// only for `doctor`: the dashboard polls this route, and a Keychain or `op`
+// helper could prompt on every poll and block the server's event loop.
+function loadConfigForDiagnostics(configPath: string, resolveSecrets: boolean): LoadedConfig {
   try {
-    return { ok: true, config: loadMcpConfig({ config: configPath }) };
+    return { ok: true, config: loadMcpConfig({ config: configPath }, { resolveSecrets }) };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
@@ -694,10 +695,12 @@ export async function runDiagnostics(opts?: {
   configPath?: string;
   storagePath?: string;
   platform?: string;
+  /** Run the `*Command` secret helpers. Defaults to true; the dashboard route passes false. */
+  resolveSecrets?: boolean;
 }): Promise<DiagnosticCheck[]> {
   const configPath = opts?.configPath ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
   const { check: configCheck, context } = checkConfigValid(configPath, opts?.storagePath);
-  const loaded = loadConfigForDiagnostics(configPath);
+  const loaded = loadConfigForDiagnostics(configPath, opts?.resolveSecrets ?? true);
   const modeCheck = checkTelemetryMode(loaded, context.fileMode);
   const companionModeCheck = checkCompanionMode(context.fileCompanionMode);
 

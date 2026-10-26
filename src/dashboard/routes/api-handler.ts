@@ -3069,6 +3069,8 @@ export function createApiHandler(
       // storagePath, so the same path the MCP server writes to is always checked.
       storagePath: deps.config?.storagePath,
       platform: deps.getActivePlatform?.(),
+      // The Settings page polls this route; never run secret helpers here.
+      resolveSecrets: false,
     });
     jsonOk(res, checks);
   });

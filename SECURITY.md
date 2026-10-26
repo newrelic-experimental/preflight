@@ -231,7 +231,7 @@ The full key list lives in `DANGEROUS_ENV_KEYS` (`src/lib/child-env.ts`). If you
 4. **Bounded** — 20-second timeout, 64 KiB stdout cap, stdin closed, stderr discarded.
 5. **Errors never carry output or argv** — `SecretCommandError` names only the field and the failure class. stdout is the secret, and stderr or arguments can contain parts of it.
 6. **Never logged** — the resolved value lands in the same config field as the plaintext value and is handled the same way. Source reporting (`secretSources`) carries `env | command | file | unset`, never the value.
-7. **Not run when outranked** — an env var for the same field skips the command, and `licenseKeyCommand` never runs in `mode: 'local'`.
+7. **Not run when outranked** — an env var for the same field skips the command, `licenseKeyCommand` and `nrApiKeyCommand` never run in `mode: 'local'`, and the dashboard's polled `/api/diagnostics` route and `getDashboardAddress()` load config with `resolveSecrets: false` so they never run a helper.
 
 ---
 

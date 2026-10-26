@@ -319,7 +319,9 @@ Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a sep
 | `nrApiKeyCommand`         | `nrApiKey`         | `NEW_RELIC_API_KEY`               |
 | `digestWebhookUrlCommand` | `digestWebhookUrl` | `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` |
 
-**Precedence.** Env var > `*Command` > plaintext value in the file > unset. None of these fields has a CLI flag. The command does not run when the env var is set. If both `licenseKeyCommand` and `licenseKey` are in the file, the command wins and Preflight logs a warning. `licenseKeyCommand` also does not run when the resolved mode is `local`, since local mode never sends anything to New Relic.
+**Precedence.** Env var > `*Command` > plaintext value in the file > unset. None of these fields has a CLI flag. The command does not run when the env var is set. If both `licenseKeyCommand` and `licenseKey` are in the file, the command wins and Preflight logs a warning. `licenseKeyCommand` and `nrApiKeyCommand` do not run when the resolved mode is `local`, since local mode never sends anything to New Relic. `digestWebhookUrlCommand` does run in local mode, because the digest goes to Slack, not New Relic.
+
+**Where helpers run.** Only at server startup and in `preflight doctor`. The dashboard's Settings page polls `/api/diagnostics` every 60 seconds; that route reports each secret's source without running the helper, so a Keychain or `op` helper never prompts on a poll.
 
 **How the command runs.**
 

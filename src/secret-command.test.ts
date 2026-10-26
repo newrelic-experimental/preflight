@@ -219,8 +219,10 @@ describe('loadMcpConfig() with *Command fields', () => {
     ['nrApiKeyCommand', 'nrApiKey'],
     ['digestWebhookUrlCommand', 'digestWebhookUrl'],
   ] as const)('warns and continues when %s fails', (commandField, field) => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'env-license';
     const path = writeConfig({
-      mode: 'local',
+      mode: 'cloud',
+      accountId: '12345',
       [commandField]: script(
         'fail',
         `process.stdout.write(${JSON.stringify(SECRET)}); process.exit(1);`,
@@ -233,6 +235,38 @@ describe('loadMcpConfig() with *Command fields', () => {
     expect(config[field]).toBeNull();
     expect(logged.join('\n')).toContain(`Could not read ${field} from ${commandField}`);
     expect(logged.join('\n')).not.toContain(SECRET);
+  });
+
+  it('does not run nrApiKeyCommand in local mode', () => {
+    const { argv, ranMarker } = trackedPrint(SECRET);
+    const path = writeConfig({ mode: 'local', nrApiKeyCommand: argv });
+
+    const config = loadMcpConfig({ config: path });
+
+    expect(config.nrApiKey).toBeNull();
+    expect(config.secretSources.nrApiKey).toBe('unset');
+    expect(() => writeFileSync(ranMarker, '', { flag: 'wx' })).not.toThrow();
+  });
+
+  it('reports sources without running any command when resolveSecrets is false', () => {
+    const { argv, ranMarker } = trackedPrint(SECRET);
+    const path = writeConfig({
+      mode: 'cloud',
+      accountId: '12345',
+      licenseKeyCommand: argv,
+      nrApiKeyCommand: argv,
+      digestWebhookUrlCommand: argv,
+    });
+
+    const config = loadMcpConfig({ config: path }, { resolveSecrets: false });
+
+    expect(config.secretSources).toEqual({
+      licenseKey: 'command',
+      nrApiKey: 'command',
+      digestWebhookUrl: 'command',
+    });
+    expect(config.nrApiKey).toBeNull();
+    expect(() => writeFileSync(ranMarker, '', { flag: 'wx' })).not.toThrow();
   });
 
   it('rejects a string command at schema validation, naming the field', () => {
@@ -270,8 +304,10 @@ describe('loadMcpConfig() with *Command fields', () => {
       'env=%s command=%s file=%s resolves nrApiKey to %s from %s',
       (env, command, file, value, source) => {
         if (env !== undefined) process.env.NEW_RELIC_API_KEY = env;
+        process.env.NEW_RELIC_LICENSE_KEY = 'env-license';
         const path = writeConfig({
-          mode: 'local',
+          mode: 'cloud',
+          accountId: '12345',
           ...(command !== undefined && { nrApiKeyCommand: printArg(command) }),
           ...(file !== undefined && { nrApiKey: file }),
         });

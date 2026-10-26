@@ -13,7 +13,7 @@ function sleep(ms: number): Promise<void> {
  */
 export function getDashboardAddress(): { host: string; port: number } | null {
   try {
-    const config = loadMcpConfig();
+    const config = loadMcpConfig(undefined, { resolveSecrets: false });
     return { host: config.dashboard.host, port: config.dashboard.port };
   } catch {
     return null;
