@@ -940,16 +940,24 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     source: resolvedCompanionMode.source,
   });
 
-  const nrApiKeySecret = resolveSecret('nrApiKey', {
-    env: process.env.NEW_RELIC_API_KEY,
-    command: file.nrApiKeyCommand,
-    file: typeof file.nrApiKey === 'string' ? file.nrApiKey : undefined,
-  });
-  const digestWebhookUrlSecret = resolveSecret('digestWebhookUrl', {
-    env: process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL,
-    command: file.digestWebhookUrlCommand,
-    file: typeof file.digestWebhookUrl === 'string' ? file.digestWebhookUrl : undefined,
-  });
+  const nrApiKeySecret = resolveSecret(
+    'nrApiKey',
+    {
+      env: process.env.NEW_RELIC_API_KEY,
+      command: file.nrApiKeyCommand,
+      file: typeof file.nrApiKey === 'string' ? file.nrApiKey : undefined,
+    },
+    { optional: true },
+  );
+  const digestWebhookUrlSecret = resolveSecret(
+    'digestWebhookUrl',
+    {
+      env: process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL,
+      command: file.digestWebhookUrlCommand,
+      file: typeof file.digestWebhookUrl === 'string' ? file.digestWebhookUrl : undefined,
+    },
+    { optional: true },
+  );
 
   const config: McpServerConfig = {
     licenseKey,

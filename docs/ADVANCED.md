@@ -325,11 +325,14 @@ Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a sep
 
 - The value is a JSON array: the executable, then its arguments. A single string is rejected. There is no shell, so quoting, `$VARS`, pipes and `~` are passed to the command literally.
 - The first element must be an absolute path. A bare name such as `security` is rejected, so a writable directory early in `PATH` cannot substitute another program.
+- On Windows the command is started without a shell, so `.cmd` and `.bat` shims such as `op.cmd` do not work. Point at the real `.exe`.
 - The command inherits Preflight's environment minus the injection-capable variables listed in [SECURITY.md](../SECURITY.md#process-execution-safety) (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS` and the rest).
 - stdin is closed and stderr is discarded. One trailing newline is removed from stdout. Everything else is kept as is.
 - The command must exit with status 0 within 20 seconds and print at most 64 KiB.
 
-**Failures stop startup.** A command that is not an absolute path, cannot be started, exits non-zero, is killed, times out, prints too much, or prints nothing fails config load with an error that names the field and the failure, for example `Could not read licenseKey from licenseKeyCommand: the command exited with a non-zero status (1)`. The error never contains the command's output or arguments. Run the command yourself in a terminal to see why it failed. `preflight doctor` reports the same error under "Telemetry mode".
+**Failures stop startup.** For `licenseKeyCommand`, a command that is not an absolute path, cannot be started, exits non-zero, is killed, times out, prints too much, or prints nothing fails config load with an error that names the field and the failure, for example `Could not read licenseKey from licenseKeyCommand: the command exited with a non-zero status (1)`. The error never contains the command's output or arguments. Run the command yourself in a terminal to see why it failed. `preflight doctor` reports the same error under "Telemetry mode".
+
+**Optional secrets only warn.** `nrApiKeyCommand` and `digestWebhookUrlCommand` feed features that are not needed to run (team summaries, the weekly digest). When one fails, Preflight logs the same error as a warning, starts without that secret, and reports its source as `unset`. The plaintext value in the file is not used as a fallback.
 
 **Validation is unchanged.** The resolved value goes through the same checks as a plaintext one. A license key of `"null"` is rejected at load, and the digest webhook URL must be an `https://hooks.slack.com/` URL when the digest is sent.
 

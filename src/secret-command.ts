@@ -124,15 +124,27 @@ export function isSecretConfigured(sources: SecretInputs): boolean {
 
 /**
  * Precedence: env var > helper command > plaintext file value. The command
- * runs only when no env var supplied the value.
+ * runs only when no env var supplied the value. With `optional`, a failing
+ * command is logged as a warning and the secret is treated as unset instead of
+ * stopping startup; the plaintext value is not used as a fallback.
  */
-export function resolveSecret(field: SecretField, sources: SecretInputs): ResolvedSecret {
+export function resolveSecret(
+  field: SecretField,
+  sources: SecretInputs,
+  options: { readonly optional?: boolean } = {},
+): ResolvedSecret {
   if (sources.env !== undefined) return { source: 'env', value: sources.env };
   if (sources.command !== undefined) {
     if (sources.file !== undefined) {
       logger.warn(`Both ${field} and ${field}Command are set; using ${field}Command`, { field });
     }
-    return { source: 'command', value: resolveSecretCommand(field, sources.command) };
+    try {
+      return { source: 'command', value: resolveSecretCommand(field, sources.command) };
+    } catch (err) {
+      if (!options.optional || !(err instanceof SecretCommandError)) throw err;
+      logger.warn(`${err.message} Continuing without ${field}.`, { field, failure: err.failure });
+      return { source: 'unset', value: undefined };
+    }
   }
   if (sources.file !== undefined) return { source: 'file', value: sources.file };
   return { source: 'unset', value: undefined };

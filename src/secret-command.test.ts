@@ -215,6 +215,26 @@ describe('loadMcpConfig() with *Command fields', () => {
     expect(logged.join('\n')).not.toContain(SECRET);
   });
 
+  it.each([
+    ['nrApiKeyCommand', 'nrApiKey'],
+    ['digestWebhookUrlCommand', 'digestWebhookUrl'],
+  ] as const)('warns and continues when %s fails', (commandField, field) => {
+    const path = writeConfig({
+      mode: 'local',
+      [commandField]: script(
+        'fail',
+        `process.stdout.write(${JSON.stringify(SECRET)}); process.exit(1);`,
+      ),
+    });
+
+    const config = loadMcpConfig({ config: path });
+
+    expect(config.secretSources[field]).toBe('unset');
+    expect(config[field]).toBeNull();
+    expect(logged.join('\n')).toContain(`Could not read ${field} from ${commandField}`);
+    expect(logged.join('\n')).not.toContain(SECRET);
+  });
+
   it('rejects a string command at schema validation, naming the field', () => {
     const path = writeConfig({ mode: 'local', nrApiKeyCommand: '/usr/bin/security -w' });
     expect(() => loadMcpConfig({ config: path })).toThrow(/nrApiKeyCommand/);
