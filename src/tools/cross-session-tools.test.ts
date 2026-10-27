@@ -1280,6 +1280,23 @@ describe('Cross-session tool handlers', () => {
       const written = JSON.parse(readFileSync(configFilePath, 'utf-8'));
       expect(written.digestWebhookUrl).toBe(webhookUrl);
       expect(written.developer).toBe('alice');
+      expect(JSON.parse(result.content[0]!.text)).not.toHaveProperty('warning');
+    });
+
+    it.each([
+      ['env', 'NEW_RELIC_AI_DIGEST_WEBHOOK_URL'],
+      ['command', 'digestWebhookUrlCommand'],
+    ] as const)('warns that %s outranks the saved URL', (source, label) => {
+      const configFilePath = resolve(tmpDir, 'config.json');
+      const webhookUrl = 'https://hooks.slack.com/services/T000/B000/XXXX';
+
+      const result = handleSubscribeDigest(webhookUrl, configFilePath, source);
+
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(readFileSync(configFilePath, 'utf-8')).digestWebhookUrl).toBe(webhookUrl);
+      const body = JSON.parse(result.content[0]!.text);
+      expect(body.warning).toContain(label);
+      expect(result.content[0]!.text).not.toContain(webhookUrl);
     });
   });
 

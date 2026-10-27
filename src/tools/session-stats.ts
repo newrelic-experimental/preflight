@@ -482,6 +482,7 @@ export interface ToolRegistrationOptions {
   collectorHost?: string | null;
   configFilePath?: string;
   digestWebhookUrlOverride?: string;
+  digestWebhookUrlSource?: 'env' | 'command';
   configSummary?: ConfigSummary;
   hooksInstalledFn?: () => boolean;
   headlessInstaller?: () => import('../install/headless-install.js').HeadlessInstallResult;

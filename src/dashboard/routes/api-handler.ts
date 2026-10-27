@@ -1,7 +1,12 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
-import { digestWebhookUrlOverride, normalizeDeveloperName, redactSensitive } from '../../config.js';
+import {
+  digestWebhookUrlOverrideSource,
+  digestWebhookUrlOverride,
+  normalizeDeveloperName,
+  redactSensitive,
+} from '../../config.js';
 import {
   isSyntheticSessionId,
   isUnscopedAggregatorSessionId,
@@ -3093,6 +3098,16 @@ export function createApiHandler(
       }
     }
 
+    // c.digestWebhookUrl holds the env or command value when one outranks the
+    // file, so it is never a fallback for the file's value.
+    const overrideSource = digestWebhookUrlOverrideSource(c);
+    const fileWebhookUrl =
+      'digestWebhookUrl' in disk
+        ? (disk.digestWebhookUrl as string | null)
+        : overrideSource
+          ? null
+          : c.digestWebhookUrl;
+
     const diskAlerts = (disk.alerts ?? {}) as Record<string, unknown>;
     const diskPersonal = (diskAlerts['personal'] ?? {}) as Record<string, unknown>;
 
@@ -3110,8 +3125,10 @@ export function createApiHandler(
         'retainSessionsDays' in disk
           ? (disk.retainSessionsDays as number | null)
           : c.retainSessionsDays,
-      digestWebhookUrl:
-        'digestWebhookUrl' in disk ? (disk.digestWebhookUrl as string | null) : c.digestWebhookUrl,
+      digestWebhookUrl: fileWebhookUrl,
+      // Where sends actually read the URL from. The value above is only the
+      // file's; env or a command outranks it, and its value is never returned.
+      digestWebhookUrlSource: overrideSource ?? (fileWebhookUrl ? 'file' : 'unset'),
       digestSchedule:
         typeof disk.digestSchedule === 'string' ? disk.digestSchedule : c.digestSchedule,
       alerts: {

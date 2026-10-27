@@ -994,9 +994,15 @@ export async function handleGetTeamSummary(options: {
   return { content: [{ type: 'text', text: JSON.stringify(result) }] };
 }
 
+const DIGEST_OVERRIDE_LABELS = {
+  env: 'NEW_RELIC_AI_DIGEST_WEBHOOK_URL',
+  command: 'digestWebhookUrlCommand',
+} as const;
+
 export function handleSubscribeDigest(
   webhookUrl: string,
   configFilePath: string,
+  overrideSource?: 'env' | 'command',
 ): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } {
   if (!webhookUrl.startsWith('https://hooks.slack.com/')) {
     return {
@@ -1028,6 +1034,9 @@ export function handleSubscribeDigest(
             ok: true,
             message:
               "Webhook registered. Delivery is manual — call nr_observe_send_digest to send this week's digest.",
+            ...(overrideSource && {
+              warning: `Digests are sent to the URL from ${DIGEST_OVERRIDE_LABELS[overrideSource]}, not the one just saved. Remove that source to use the saved URL.`,
+            }),
           }),
         },
       ],
@@ -1161,6 +1170,8 @@ export interface CrossSessionToolsDeps {
   configFilePath?: string;
   /** See handleSendDigest's `webhookUrlOverride`. */
   digestWebhookUrlOverride?: string;
+  /** Which source supplied `digestWebhookUrlOverride`; named in the subscribe warning. */
+  digestWebhookUrlSource?: 'env' | 'command';
   developer?: string;
 }
 
@@ -1307,6 +1318,7 @@ export function registerCrossSessionTools(deps: CrossSessionToolsDeps): Register
         return handleSubscribeDigest(
           typeof args?.webhookUrl === 'string' ? args.webhookUrl : '',
           deps.configFilePath!,
+          deps.digestWebhookUrlSource,
         );
       },
     },

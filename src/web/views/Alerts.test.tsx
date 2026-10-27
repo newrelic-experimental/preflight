@@ -78,6 +78,35 @@ describe('Alerts view', () => {
     expect(input).toHaveValue('');
   });
 
+  it('shows no override notice when the file value is the one in use', async () => {
+    renderAlerts({ ...BASE_SETTINGS, digestWebhookUrlSource: 'file' } as typeof BASE_SETTINGS);
+    await screen.findByText('Configured');
+    expect(screen.queryByRole('note')).toBeNull();
+  });
+
+  it.each([
+    ['env', /NEW_RELIC_AI_DIGEST_WEBHOOK_URL environment variable/],
+    ['command', /digestWebhookUrlCommand/],
+  ] as const)('shows a notice when %s overrides the file value', async (source, label) => {
+    renderAlerts({
+      ...BASE_SETTINGS,
+      digestWebhookUrlSource: source,
+    } as typeof BASE_SETTINGS);
+    const note = await screen.findByRole('note');
+    expect(note).toHaveTextContent(label);
+    expect(note).toHaveTextContent(/ignored until you remove that source/);
+  });
+
+  it('counts an env-supplied URL as configured and allows sending when the file has none', async () => {
+    renderAlerts({
+      ...BASE_SETTINGS,
+      digestWebhookUrl: null,
+      digestWebhookUrlSource: 'env',
+    } as unknown as typeof BASE_SETTINGS);
+    expect(await screen.findByText('Configured')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send test now' })).toBeEnabled();
+  });
+
   it('saves an edited threshold and shows the "Saved" confirmation', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
     const patchBodies: unknown[] = [];

@@ -371,7 +371,7 @@ Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a sep
 
 **GUI-launched clients and launchd.** An MCP client started from the Dock or Finder does not see variables set in your shell profile. A helper that needs `VAULT_ADDR`, `VAULT_TOKEN` or 1Password's `OP_*` variables either reads them from its own config file (`~/.vault-token`, the 1Password desktop app integration) or fails. The macOS Keychain needs a logged-in GUI session, so a launchd daemon or SSH session can get `User interaction is not allowed`. The first Keychain read from Preflight's `node` binary can show an access prompt. Startup waits for it until the 20-second timeout, so choose **Always Allow**.
 
-**Weekly digest.** When `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` or `digestWebhookUrlCommand` supplies the webhook URL, sending the digest uses that value. A URL written to the file by `nr_observe_subscribe_digest` or the dashboard is ignored until you remove both.
+**Weekly digest.** When `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` or `digestWebhookUrlCommand` supplies the webhook URL, sending the digest uses that value. A URL written to the file by `nr_observe_subscribe_digest` or the dashboard is ignored until you remove both. The dashboard's Alerts page and `nr_observe_subscribe_digest` say so when an override is active, without showing the overriding value.
 
 **Not covered.** Tier destinations (`tiers[].destination.licenseKey`) take a plaintext key only. A `licenseKeyCommand` value reaches the implicit `default` tier that Preflight builds when `tiers` is absent, but an explicit `tiers` array is used as written.
 

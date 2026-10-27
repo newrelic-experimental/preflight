@@ -14,6 +14,7 @@ import type { McpServerConfig } from './config.js';
 import {
   DEFAULT_STORAGE_PATH,
   digestWebhookUrlOverride,
+  digestWebhookUrlOverrideSource,
   loadMcpConfig,
   redactSensitive,
 } from './config.js';
@@ -3132,6 +3133,7 @@ async function main(): Promise<void> {
         collectorHost: config!.collectorHost,
         configFilePath,
         digestWebhookUrlOverride: digestWebhookUrlOverride(config!),
+        digestWebhookUrlSource: digestWebhookUrlOverrideSource(config!),
         configSummary,
       });
 
@@ -3374,6 +3376,7 @@ async function main(): Promise<void> {
           collectorHost: config.collectorHost,
           configFilePath,
           digestWebhookUrlOverride: digestWebhookUrlOverride(config),
+          digestWebhookUrlSource: digestWebhookUrlOverrideSource(config),
           configSummary,
         });
 

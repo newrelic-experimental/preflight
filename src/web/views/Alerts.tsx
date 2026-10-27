@@ -25,8 +25,14 @@ interface PersonalThresholds {
   readonly antiPatternCountMax: number;
 }
 
+const WEBHOOK_OVERRIDE_LABELS = {
+  env: 'the NEW_RELIC_AI_DIGEST_WEBHOOK_URL environment variable',
+  command: 'digestWebhookUrlCommand',
+} as const;
+
 interface SettingsData {
   readonly digestWebhookUrl: string | null;
+  readonly digestWebhookUrlSource?: 'env' | 'command' | 'file' | 'unset';
   readonly digestSchedule: string;
   readonly alerts: { readonly personal: PersonalThresholds };
 }
@@ -79,6 +85,10 @@ export function Alerts(): JSX.Element {
 
   const budget = budgetQ.data;
   const settings = settingsQ.data;
+  const webhookSource = settings?.digestWebhookUrlSource;
+  const webhookOverride =
+    webhookSource === 'env' || webhookSource === 'command' ? webhookSource : null;
+  const webhookConfigured = webhookOverride !== null || Boolean(settings?.digestWebhookUrl);
 
   // Personal threshold local state
   const [thresholds, setThresholds] = useState<Partial<PersonalThresholds>>({});
@@ -273,10 +283,17 @@ export function Alerts(): JSX.Element {
         {settings && (
           <>
             <div className="flex items-center gap-2 mb-3">
-              <Pill tone={settings.digestWebhookUrl ? 'success' : 'neutral'} size="sm">
-                {settings.digestWebhookUrl ? 'Configured' : 'Not configured'}
+              <Pill tone={webhookConfigured ? 'success' : 'neutral'} size="sm">
+                {webhookConfigured ? 'Configured' : 'Not configured'}
               </Pill>
             </div>
+
+            {webhookOverride && (
+              <p role="note" className="text-xs text-accent-amber mb-3">
+                Digests are sent to the URL from {WEBHOOK_OVERRIDE_LABELS[webhookOverride]}, not the
+                one shown here. This URL is ignored until you remove that source.
+              </p>
+            )}
 
             <div className="flex items-center gap-3 py-1.5">
               <label className="text-xs text-ink-muted w-28 shrink-0">Webhook URL</label>
@@ -338,7 +355,7 @@ export function Alerts(): JSX.Element {
                 variant="secondary"
                 size="md"
                 onClick={() => sendMutation.mutate()}
-                disabled={sendMutation.isPending || !settings.digestWebhookUrl}
+                disabled={sendMutation.isPending || !webhookConfigured}
                 loading={sendMutation.isPending}
               >
                 {sendMutation.isPending ? 'Sending…' : 'Send test now'}
