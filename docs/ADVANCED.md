@@ -257,14 +257,15 @@ Requires `mode: "cloud"` or `mode: "both"`. Tiers fan out the cloud export path;
 
 ### Tier fields
 
-| Field                    | Required     | Notes                                                                                                                                |
-| ------------------------ | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`                   | yes          | Unique, non-empty. `"default"` is the reserved name of the implicit tier and is the only name exempt from the personal-only warning. |
-| `destination.type`       | yes          | `"nr"` or `"local"`.                                                                                                                 |
-| `destination.licenseKey` | `nr` only    | This tier's own NR ingest license key.                                                                                               |
-| `destination.accountId`  | `nr` only    | 1–12 decimal digits, as a JSON string.                                                                                               |
-| `destination.path`       | `local` only | Directory for JSONL output. Relative paths are resolved to absolute at config load.                                                  |
-| `eventTypes`             | yes          | Non-empty. Either `["*"]` (everything) or an explicit list of known event types.                                                     |
+| Field                           | Required     | Notes                                                                                                                                |
+| ------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`                          | yes          | Unique, non-empty. `"default"` is the reserved name of the implicit tier and is the only name exempt from the personal-only warning. |
+| `destination.type`              | yes          | `"nr"` or `"local"`.                                                                                                                 |
+| `destination.licenseKey`        | `nr` only    | This tier's own NR ingest license key.                                                                                               |
+| `destination.licenseKeyCommand` | `nr` only    | Argv array run to read this tier's key instead of `licenseKey`. See [Secret Helper Commands](#secret-helper-commands).               |
+| `destination.accountId`         | `nr` only    | 1–12 decimal digits, as a JSON string.                                                                                               |
+| `destination.path`              | `local` only | Directory for JSONL output. Relative paths are resolved to absolute at config load.                                                  |
+| `eventTypes`                    | yes          | Non-empty. Either `["*"]` (everything) or an explicit list of known event types.                                                     |
 
 There is no environment variable or CLI flag for `tiers` — config file only.
 
@@ -302,7 +303,7 @@ Omit `tiers` entirely and nothing changes: the flat `licenseKey`/`accountId` bec
 
 ### Misconfiguration is fatal at startup
 
-The following throw at config load with a specific message, following the same fail-fast convention as the `licenseKey`/`accountId`/`homelabServerUrl` checks: an empty `tiers` array, a duplicate tier name, a blank name, an unknown `destination.type`, an `nr` destination missing `licenseKey` or with a malformed `accountId`, a `local` destination missing `path`, an empty or unknown-valued `eventTypes`, and an array with no `nr`-type tier.
+The following throw at config load with a specific message, following the same fail-fast convention as the `licenseKey`/`accountId`/`homelabServerUrl` checks: an empty `tiers` array, a duplicate tier name, a blank name, an unknown `destination.type`, an `nr` destination missing both `licenseKey` and `licenseKeyCommand` or with a malformed `accountId`, a `local` destination missing `path`, an empty or unknown-valued `eventTypes`, and an array with no `nr`-type tier.
 
 ### Not covered
 
@@ -373,7 +374,7 @@ Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a sep
 
 **Weekly digest.** When `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` or `digestWebhookUrlCommand` supplies the webhook URL, sending the digest uses that value. A URL written to the file by `nr_observe_subscribe_digest` or the dashboard is ignored until you remove both.
 
-**Not covered.** Tier destinations (`tiers[].destination.licenseKey`) take a plaintext key only. A `licenseKeyCommand` value reaches the implicit `default` tier that Preflight builds when `tiers` is absent, but an explicit `tiers` array is used as written.
+**Tier destinations.** An `nr` tier can set `destination.licenseKeyCommand` (an argv array) instead of `destination.licenseKey`. See [Tier fields](#tier-fields). It follows the same rules as the top-level field: no shell, stripped env, 20-second timeout, and an error that never contains the output. A failure names the tier, for example `Could not read licenseKey for tier "team" from licenseKeyCommand: the command exited with a non-zero status (1)`. Tiers have no environment variable, so the order is `licenseKeyCommand` > `licenseKey`; with both set, the command wins and Preflight logs a warning. The top-level `licenseKey` (or `licenseKeyCommand`) and `accountId` are still required when `mode` is not `local`.
 
 ### Scoping `nrApiKey`
 

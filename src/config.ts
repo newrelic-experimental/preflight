@@ -14,7 +14,7 @@ import { resolveRecordContent } from './record-content-gate.js';
 import { projectIdFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
 import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
 import type { ResolvedTier } from './transport/tier-types.js';
-import { isSecretConfigured, resolveSecret } from './secret-command.js';
+import { isSecretConfigured, resolveSecret, resolveSecretCommand } from './secret-command.js';
 import type { SecretSources } from './secret-command.js';
 
 const logger = createLogger('mcp-config');
@@ -903,7 +903,19 @@ export function loadMcpConfig(
           "mode='cloud' or mode='both'. Remove the tiers array for local-only use, or set the mode.",
       );
     }
-    resolvedTiers = validateTiers(rawTiers);
+    resolvedTiers = validateTiers(rawTiers, {
+      resolveLicenseKey: skipCommand
+        ? undefined
+        : (tier, argv) => resolveSecretCommand('licenseKey', argv, undefined, tier),
+    });
+    // A tier whose key was never read has no usable destination, so none are
+    // reported; the caller asked not to run helpers.
+    if (
+      skipCommand &&
+      resolvedTiers.some((t) => t.destination.type === 'nr' && t.destination.licenseKey === '')
+    ) {
+      resolvedTiers = [];
+    }
   } else if (mode !== 'local' && licenseKey !== undefined && accountId !== undefined) {
     // Implicit single tier — byte-identical to the existing single-tier default.
     resolvedTiers = [
