@@ -106,9 +106,10 @@ export interface CostAttributionMetrics {
   readonly totalAttributedCost: number;
   readonly attributionRate: number;
   /**
-   * Count of token reports no tool burst claimed (each still returned as a
-   * response turn and emitted as a no-tool `AiTurnCost` row), plus pending
-   * bursts evicted unclosed. See `recordTokenEvent()`.
+   * Count of pending tool bursts evicted without a closing token report,
+   * because it went stale or the queue overflowed. Their cost is lost. A token
+   * report no burst claims is not counted here: it becomes a response turn.
+   * See `recordTokenEvent()`.
    */
   readonly droppedTokenEvents: number;
 }
@@ -423,7 +424,7 @@ export class TurnCostAttributor {
 
     const costUsd = this.priceTokenEvent(event);
     const toolCount = pendingTurn.toolCalls.length;
-    const costPerTool = toolCount > 0 ? costUsd / toolCount : 0;
+    const costPerTool = costUsd / toolCount;
 
     const attribution: TurnCostAttribution = {
       turnId: pendingTurn.turnId,
@@ -490,12 +491,13 @@ export class TurnCostAttributor {
   }
 
   /**
-   * A token report no tool burst claimed. It is counted as dropped for local
-   * metrics, which stay unchanged, but still priced and returned so the
-   * report reaches AiTurnCost.
+   * A token report no tool burst claimed. Local metrics leave it out, but it
+   * is priced and returned so the report still reaches AiTurnCost, with
+   * `costPerToolCall` equal to the whole cost since it has no calls to split
+   * across.
    */
   private responseTurn(state: SessionState, event: TokenEvent): ClosedTurn {
-    state.droppedTokenEvents++;
+    const costUsd = this.priceTokenEvent(event);
     return {
       id: randomUUID(),
       attribution: {
@@ -509,8 +511,8 @@ export class TurnCostAttributor {
         cacheReadTokens: event.cacheReadTokens,
         cacheCreationTokens: event.cacheCreationTokens,
         model: event.model,
-        estimatedCostUsd: this.priceTokenEvent(event),
-        costPerToolCall: 0,
+        estimatedCostUsd: costUsd,
+        costPerToolCall: costUsd,
         sessionId: event.sessionId ?? null,
       },
       calls: [],

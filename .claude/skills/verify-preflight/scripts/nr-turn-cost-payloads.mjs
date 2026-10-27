@@ -31,17 +31,18 @@ const manager = new NrIngestManager({
 
 const attributor = new TurnCostAttributor();
 const report = (timestamp) => {
-  const turn = attributor.recordTokenEvent({
-    mode: 'token',
-    sessionId: 'sess-1',
-    timestamp,
-    inputTokens: 10_000,
-    outputTokens: 2_000,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    model: 'claude-sonnet-4-5-20250929',
-  });
-  if (turn) manager.ingestTurnCost(turn);
+  manager.ingestTurnCost(
+    attributor.recordTokenEvent({
+      mode: 'token',
+      sessionId: 'sess-1',
+      timestamp,
+      inputTokens: 10_000,
+      outputTokens: 2_000,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      model: 'claude-sonnet-4-5-20250929',
+    }),
+  );
 };
 
 manager.start();

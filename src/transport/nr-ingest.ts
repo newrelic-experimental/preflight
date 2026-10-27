@@ -906,9 +906,8 @@ export function turnCostToNrEvents(
   },
 ): NrEventData[] {
   const { attribution } = turn;
-  const callCount = turn.calls.length;
-  // A response row is the whole report, so it divides by one, not zero.
-  const share = Math.max(callCount, 1);
+  // A response turn has no calls, so it yields one row carrying the whole report.
+  const shares: readonly (TurnToolCall | null)[] = turn.calls.length > 0 ? turn.calls : [null];
   const platform = turn.platform ?? 'claude-code';
 
   const rowFor = (call: TurnToolCall | null): NrEventData => {
@@ -917,13 +916,13 @@ export function turnCostToNrEvents(
       event_version: 1,
       timestamp: attribution.endTime,
       turn_id: turn.id,
-      cost_usd: attribution.estimatedCostUsd / share,
-      input_tokens: attribution.inputTokens / share,
-      output_tokens: attribution.outputTokens / share,
-      cache_read_tokens: attribution.cacheReadTokens / share,
-      cache_creation_tokens: attribution.cacheCreationTokens / share,
+      cost_usd: attribution.costPerToolCall,
+      input_tokens: attribution.inputTokens / shares.length,
+      output_tokens: attribution.outputTokens / shares.length,
+      cache_read_tokens: attribution.cacheReadTokens / shares.length,
+      cache_creation_tokens: attribution.cacheCreationTokens / shares.length,
       turn_cost_usd: attribution.estimatedCostUsd,
-      turn_tool_call_count: callCount,
+      turn_tool_call_count: turn.calls.length,
       model: attribution.model,
       developer: attrs.developer,
       app_name: attrs.appName,
@@ -957,8 +956,7 @@ export function turnCostToNrEvents(
     return event;
   };
 
-  if (callCount === 0) return [rowFor(null)];
-  return turn.calls.map((call) => rowFor(call));
+  return shares.map(rowFor);
 }
 
 // ---------------------------------------------------------------------------

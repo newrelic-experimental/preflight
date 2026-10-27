@@ -123,12 +123,14 @@ describe('TurnCostAttributor', () => {
       const result = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1000 }));
 
       expect(result.calls).toEqual([]);
+      expect(result.attribution.toolCalls).toEqual([]);
       expect(result.attribution.estimatedCostUsd).toBeGreaterThan(0);
+      expect(result.attribution.costPerToolCall).toBe(result.attribution.estimatedCostUsd);
 
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(0);
       expect(metrics.totalAttributedCost).toBe(0);
-      expect(metrics.droppedTokenEvents).toBe(1);
+      expect(metrics.droppedTokenEvents).toBe(0);
     });
 
     it('returns a response turn for a token event that predates the pending turn it would close', () => {
@@ -147,7 +149,7 @@ describe('TurnCostAttributor', () => {
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(0);
       expect(metrics.totalAttributedCost).toBe(0);
-      expect(metrics.droppedTokenEvents).toBe(1);
+      expect(metrics.droppedTokenEvents).toBe(0);
     });
 
     it('leaves the pending turn queued for the token event that does postdate it', () => {
@@ -159,7 +161,7 @@ describe('TurnCostAttributor', () => {
       attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1200 }));
       const closed = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1600 }));
 
-      expect(closed!.calls.map((c) => c.toolUseId)).toEqual(['toolu_001']);
+      expect(closed.calls.map((c) => c.toolUseId)).toEqual(['toolu_001']);
     });
 
     it('stamps a response turn with the platform of the session most recent tool call', () => {
@@ -171,8 +173,8 @@ describe('TurnCostAttributor', () => {
       attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
       const response = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 9000 }));
 
-      expect(response!.calls).toEqual([]);
-      expect(response!.platform).toBe('github-copilot');
+      expect(response.calls).toEqual([]);
+      expect(response.platform).toBe('github-copilot');
     });
 
     it('leaves a response turn platform undefined before any tool call', () => {
@@ -180,7 +182,7 @@ describe('TurnCostAttributor', () => {
 
       const response = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1000 }));
 
-      expect(response!.platform).toBeUndefined();
+      expect(response.platform).toBeUndefined();
     });
 
     it('queues a second burst of tool calls instead of dropping the first when its token event is still outstanding', () => {
@@ -925,15 +927,6 @@ describe('TurnCostAttributor', () => {
   });
 
   describe('recordTokenEvent() return value (ClosedTurn)', () => {
-    it('returns a response turn with no pending turn', () => {
-      const attributor = new TurnCostAttributor();
-      const result = attributor.recordTokenEvent(makeTokenEvent());
-      expect(result.calls).toEqual([]);
-      expect(result.attribution.toolCalls).toEqual([]);
-      expect(result.attribution.costPerToolCall).toBe(0);
-      expect(result.attribution.estimatedCostUsd).toBeGreaterThan(0);
-    });
-
     it('closes the turn even when the token event arrives well outside the old fixed window', () => {
       const attributor = new TurnCostAttributor();
       attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));

@@ -3890,8 +3890,7 @@ describe('AiTurnCost coverage of token reports', () => {
     const attributor = new TurnCostAttributor();
     const rows: ReturnType<typeof turnCostToNrEvents> = [];
     const report = (timestamp: number) => {
-      const turn = attributor.recordTokenEvent(tokens(timestamp));
-      if (turn) rows.push(...turnCostToNrEvents(turn, attrs));
+      rows.push(...turnCostToNrEvents(attributor.recordTokenEvent(tokens(timestamp)), attrs));
     };
 
     report(1_000);
