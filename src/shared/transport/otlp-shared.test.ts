@@ -97,6 +97,7 @@ describe('validateOtlpEndpoint', () => {
   it('allows http to loopback', () => {
     expect(() => validateOtlpEndpoint('http://localhost:4318', 'Test')).not.toThrow();
     expect(() => validateOtlpEndpoint('http://127.0.0.1:4318', 'Test')).not.toThrow();
+    expect(() => validateOtlpEndpoint('http://[::1]:4318', 'Test')).not.toThrow();
   });
 
   it('allows https to a private-range address (internal-VPC collector topology)', () => {
@@ -106,6 +107,7 @@ describe('validateOtlpEndpoint', () => {
 
   it('blocks plain http to a private-range, non-loopback address', () => {
     expect(() => validateOtlpEndpoint('http://10.0.0.5:4318', 'Test')).toThrow('use https://');
+    expect(() => validateOtlpEndpoint('http://[::2]:4318', 'Test')).toThrow('use https://');
     expect(() => validateOtlpEndpoint('http://192.168.1.10:4318', 'Test')).toThrow('use https://');
   });
 

@@ -64,8 +64,9 @@ export function validateOtlpEndpoint(endpoint: string, source: string): void {
   // http:// is only acceptable on loopback. Private-range and public hosts
   // are rejected alike: payloads may contain PII, so any non-local hop must
   // use TLS. 0.0.0.0 binds ALL interfaces, so it is not treated as loopback.
+  // URL.hostname brackets IPv6 literals, so the loopback form is '[::1]'.
   const host = parsed.hostname;
-  const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
   if (isLoopback) return;
 
   throw new Error(
