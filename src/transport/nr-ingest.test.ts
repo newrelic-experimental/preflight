@@ -1,6 +1,7 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import {
   toolCallToNrEvent,
+  turnCostToNrEvents,
   codingTaskToNrEvent,
   antiPatternToNrEvent,
   retryAlertToNrEvent,
@@ -34,6 +35,7 @@ import { EfficiencyScorer } from '../metrics/efficiency-score.js';
 import { GitEfficiencyTracker } from '../metrics/git-efficiency-tracker.js';
 import { FeedbackCollector } from '../tools/workflow-tools.js';
 import { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
+import { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 import type { TokenUsage } from '../shared/index.js';
 import type { ResolvedTier } from './tier-types.js';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
@@ -3858,5 +3860,74 @@ describe('NrIngestManager — routeEvent fan-out', () => {
     manager.start();
     await manager.stop();
     expect(eventsSentWithKey('lk-team')).toEqual([]);
+  });
+});
+
+describe('AiTurnCost coverage of token reports', () => {
+  const attrs = { developer: 'dev', appName: 'app' };
+  const tokens = (timestamp: number) => ({
+    mode: 'token' as const,
+    timestamp,
+    inputTokens: 10_000,
+    outputTokens: 2_000,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    model: 'claude-sonnet-4-20250514',
+    sessionId: 'sess-1',
+  });
+  const read = (timestamp: number): ToolCallRecord => ({
+    id: `r${timestamp}`,
+    sessionId: 'sess-1',
+    toolName: 'Read',
+    toolUseId: `tu${timestamp}`,
+    timestamp,
+    durationMs: 100,
+    success: true,
+    platform: 'github-copilot',
+  });
+
+  it('every token report lands in AiTurnCost exactly once, and local tool totals are unchanged', () => {
+    const attributor = new TurnCostAttributor();
+    const rows: ReturnType<typeof turnCostToNrEvents> = [];
+    const report = (timestamp: number) => {
+      const turn = attributor.recordTokenEvent(tokens(timestamp));
+      if (turn) rows.push(...turnCostToNrEvents(turn, attrs));
+    };
+
+    report(1_000);
+    attributor.recordToolCall(read(2_000));
+    report(1_500);
+    report(3_000);
+    report(5_000);
+
+    const readRow = rows.find((r) => r.tool === 'Read')!;
+    const perReport = readRow.turn_cost_usd as number;
+    const responseRows = rows.filter((r) => !('tool' in r));
+
+    expect(rows).toHaveLength(4);
+    expect(responseRows).toHaveLength(3);
+    expect(rows.reduce((sum, r) => sum + (r.cost_usd as number), 0)).toBeCloseTo(4 * perReport, 10);
+    for (const row of responseRows) {
+      expect(row).toMatchObject({
+        eventType: 'AiTurnCost',
+        cost_usd: perReport,
+        turn_cost_usd: perReport,
+        input_tokens: 10_000,
+        output_tokens: 2_000,
+        turn_tool_call_count: 0,
+        session_id: 'sess-1',
+      });
+      expect(row).not.toHaveProperty('tool_use_id');
+    }
+    expect(responseRows.map((r) => r.platform)).toEqual([
+      'claude-code',
+      'github-copilot',
+      'github-copilot',
+    ]);
+
+    const metrics = attributor.getMetrics();
+    expect(metrics.totalAttributedCost).toBeCloseTo(perReport, 10);
+    expect(metrics.turns).toHaveLength(1);
+    expect(metrics.costByToolType.Read.totalCost).toBeCloseTo(perReport, 10);
   });
 });
