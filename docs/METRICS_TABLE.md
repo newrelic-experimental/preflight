@@ -482,7 +482,7 @@ Source: `src/transport/nr-ingest.ts` — `retryAlertToNrEvent()`
 
 #### `AiTurnCost`
 
-Emitted for each tool call in an attributed turn, carrying the turn's cost and tokens split evenly across the calls. `tool_use_id` cross-references the call's `AiToolCall` row; facet by `skillName` for cost per skill.
+Emitted for each tool call in an attributed turn, carrying the turn's cost and tokens split evenly across the calls, and once for each token report no tool call claimed (a response row). `tool_use_id` cross-references the call's `AiToolCall` row; facet by `skillName` for cost per skill.
 
 | Field                   | Type   | Description                                                                                                                                      |
 | ----------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -490,16 +490,16 @@ Emitted for each tool call in an attributed turn, carrying the turn's cost and t
 | `event_version`         | number | Always `1`                                                                                                                                       |
 | `timestamp`             | number | Unix epoch milliseconds — the turn's end time (when the token event arrived)                                                                     |
 | `turn_id`               | string | Unique identifier for the turn (fresh UUID minted at cost close); groups all rows from one turn                                                  |
-| `tool_use_id`           | string | Joins to `AiToolCall.tool_use_id`                                                                                                                |
-| `tool`                  | string | Tool name (e.g., `"Read"`, `"Skill"`)                                                                                                            |
+| `tool_use_id`           | string | Joins to `AiToolCall.tool_use_id`. Absent on response rows                                                                                       |
+| `tool`                  | string | Tool name (e.g., `"Read"`, `"Skill"`). Absent on response rows                                                                                   |
 | `skillName`             | string | Present only for Skill calls; the skill name from the call's `skillName` field (note: camelCase, case-sensitive in NRQL; see `AiToolCall` below) |
-| `cost_usd`              | number | This call's share of the turn's cost (turn total ÷ call count)                                                                                   |
+| `cost_usd`              | number | This call's share of the turn's cost (turn total ÷ call count); the whole response's cost on a response row                                      |
 | `input_tokens`          | number | This call's share of the turn's input tokens (fractional)                                                                                        |
 | `output_tokens`         | number | This call's share of the turn's output tokens (fractional)                                                                                       |
 | `cache_read_tokens`     | number | This call's share of cache-read tokens (fractional)                                                                                              |
 | `cache_creation_tokens` | number | This call's share of cache-creation tokens (fractional)                                                                                          |
 | `turn_cost_usd`         | number | The full turn's cost (identical on all rows from one turn)                                                                                       |
-| `turn_tool_call_count`  | number | The number of calls in this turn (identical on all rows from one turn)                                                                           |
+| `turn_tool_call_count`  | number | The number of calls in this turn (identical on all rows from one turn); `0` on a response row                                                    |
 | `model`                 | string | Model used to generate the turn's response                                                                                                       |
 | `developer`             | string | Developer identifier                                                                                                                             |
 | `app_name`              | string | Application name                                                                                                                                 |
@@ -510,7 +510,7 @@ Emitted for each tool call in an attributed turn, carrying the turn's cost and t
 | `org_id`                | string | Organization identifier (if configured)                                                                                                          |
 | `cost_authority`        | string | `"external"` only when `companionMode` is true and `platform === 'claude-code'`; omitted otherwise                                               |
 
-One row per tool call in an attributed turn. A row measures the usage of the model response that followed the turn, split evenly across the turn's calls — the same approximation `nr_observe_get_cost_per_tool` reports. Turns whose next response lands more than 5 seconds after the last tool produce no rows, so long responses are under-represented; tool-free turns (pure text responses) never appear; rows come from watcher-sourced token events only, never from `nr_observe_report_tokens` calls. Every row of a turn shares the turn's end `timestamp`, so a timeseries of this event spikes at turn boundaries rather than tracing per-call timing. Replayed token events are deduplicated by `(session_id, message_id)` before attribution, so a turn closes once and produces its rows once.
+Rows come in two shapes. A tool row has `tool` and `tool_use_id` and measures the usage of the model response that followed the turn, split evenly across the turn's calls, the same approximation `nr_observe_get_cost_per_tool` reports. A response row has `turn_tool_call_count: 0` and no `tool`, `tool_use_id`, or `skillName`. It is a token report no tool call claimed, such as the first response after a prompt (the one that asks for the tools) or a text-only reply, and carries that response's whole cost. `sum(cost_usd)` now covers every main-agent response, so per-tool queries need `WHERE tool IS NOT NULL`. Rows come from watcher-sourced token events only, never from `nr_observe_report_tokens` calls. Every row of a turn shares the turn's end `timestamp`, so a timeseries of this event spikes at turn boundaries rather than tracing per-call timing. Replayed token events are deduplicated by `(session_id, message_id)` before attribution, so a turn closes once and produces its rows once.
 
 Source: `src/transport/nr-ingest.ts` — `turnCostToNrEvents()` and `ingestTurnCost()`
 

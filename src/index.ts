@@ -2367,7 +2367,7 @@ async function main(): Promise<void> {
           ownSessionId: sessionTraceId,
         });
         const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
-        if (closedTurn && isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
+        if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
         const usage = {
           inputTokens: tokenEvent.inputTokens,
           outputTokens: tokenEvent.outputTokens,

@@ -85,8 +85,17 @@ export interface TurnToolCall {
 export interface ClosedTurn {
   readonly id: string;
   readonly attribution: TurnCostAttribution;
+  /**
+   * Empty for a response turn: a token report no tool burst claimed, so the
+   * cost is the response's alone. Such turns are never stored in local
+   * metrics; they exist so the report still reaches AiTurnCost.
+   */
   readonly calls: readonly TurnToolCall[];
-  /** `ToolCallRecord.platform` of the turn's first call; undefined when the hook carried no stamp. */
+  /**
+   * For a tool turn, `ToolCallRecord.platform` of its first call. For a
+   * response turn, the platform of the session's most recent tool call.
+   * Undefined when the hook carried no stamp.
+   */
   readonly platform: string | undefined;
 }
 
@@ -97,9 +106,9 @@ export interface CostAttributionMetrics {
   readonly totalAttributedCost: number;
   readonly attributionRate: number;
   /**
-   * Count of token events (or, on overflow/staleness, whole pending turns)
-   * that could not be attributed to any tool call. A rising count alongside
-   * a low `attributionRate` means turns are being lost — see `recordTokenEvent()`.
+   * Count of token reports no tool burst claimed (each still returned as a
+   * response turn and emitted as a no-tool `AiTurnCost` row), plus pending
+   * bursts evicted unclosed. See `recordTokenEvent()`.
    */
   readonly droppedTokenEvents: number;
 }
@@ -210,6 +219,11 @@ interface SessionState {
   attributedToolCalls: number;
   activeSlashSkill: string | null;
   droppedTokenEvents: number;
+  /**
+   * Platform of the most recent tool call. Token reports carry no platform,
+   * so a response turn takes its platform from here.
+   */
+  lastPlatform: string | undefined;
 }
 
 function createSessionState(): SessionState {
@@ -222,6 +236,7 @@ function createSessionState(): SessionState {
     attributedToolCalls: 0,
     activeSlashSkill: null,
     droppedTokenEvents: 0,
+    lastPlatform: undefined,
   };
 }
 
@@ -319,6 +334,8 @@ export class TurnCostAttributor {
     const state = this.getOrCreateSession(record.sessionId);
     state.totalToolCalls++;
     const endTime = record.timestamp + (record.durationMs ?? 0);
+    const platform = typeof record.platform === 'string' ? record.platform : undefined;
+    state.lastPlatform = platform;
 
     const id = bucketIdentityOf(record);
     const key = bucketKeyOf(id);
@@ -350,7 +367,7 @@ export class TurnCostAttributor {
           bucketKey: key,
         },
       ],
-      platform: typeof record.platform === 'string' ? record.platform : undefined,
+      platform,
     });
 
     // A new burst starting while MAX_PENDING_TURNS earlier bursts are still
@@ -375,7 +392,7 @@ export class TurnCostAttributor {
     }
   }
 
-  recordTokenEvent(event: TokenEvent): ClosedTurn | null {
+  recordTokenEvent(event: TokenEvent): ClosedTurn {
     const state = this.getOrCreateSession(event.sessionId);
 
     // Self-heal: a pending turn sitting unclosed for longer than any
@@ -392,33 +409,19 @@ export class TurnCostAttributor {
 
     const pendingTurn = state.pendingTurns[0];
     if (!pendingTurn) {
-      state.droppedTokenEvents++;
-      return null;
+      return this.responseTurn(state, event);
     }
 
-    // The event must postdate the turn it's closing — one that doesn't can't
-    // belong to it (this turn hadn't even finished yet). Silently drop it
-    // rather than risk mis-attributing cost to the wrong turn. Dropped
-    // events show up as a lower `attributionRate` and a rising
-    // `droppedTokenEvents`, not as an error.
+    // The event must postdate the turn it's closing. One that doesn't can't
+    // belong to that burst (it hadn't even finished yet), so it stays queued
+    // for the next token report and this one is claimed by no burst.
     const timeSinceLastTool = event.timestamp - pendingTurn.endTime;
     if (timeSinceLastTool < 0) {
-      state.droppedTokenEvents++;
-      return null;
+      return this.responseTurn(state, event);
     }
     state.pendingTurns.shift();
 
-    const usage: TokenUsage = {
-      inputTokens: event.inputTokens,
-      outputTokens: event.outputTokens,
-      thinkingTokens: 0,
-      cacheReadTokens: event.cacheReadTokens,
-      cacheCreationTokens: event.cacheCreationTokens,
-      totalTokens: event.inputTokens + event.outputTokens,
-    };
-
-    const breakdown = calculateModelCost(event.model, usage);
-    const costUsd = breakdown.totalUsd * this.rateMultiplier;
+    const costUsd = this.priceTokenEvent(event);
     const toolCount = pendingTurn.toolCalls.length;
     const costPerTool = toolCount > 0 ? costUsd / toolCount : 0;
 
@@ -484,6 +487,48 @@ export class TurnCostAttributor {
     };
 
     return closedTurn;
+  }
+
+  /**
+   * A token report no tool burst claimed. It is counted as dropped for local
+   * metrics, which stay unchanged, but still priced and returned so the
+   * report reaches AiTurnCost.
+   */
+  private responseTurn(state: SessionState, event: TokenEvent): ClosedTurn {
+    state.droppedTokenEvents++;
+    return {
+      id: randomUUID(),
+      attribution: {
+        turnId: randomUUID(),
+        startTime: event.timestamp,
+        endTime: event.timestamp,
+        toolCalls: [],
+        toolNames: [],
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+        cacheReadTokens: event.cacheReadTokens,
+        cacheCreationTokens: event.cacheCreationTokens,
+        model: event.model,
+        estimatedCostUsd: this.priceTokenEvent(event),
+        costPerToolCall: 0,
+        sessionId: event.sessionId ?? null,
+      },
+      calls: [],
+      platform: state.lastPlatform,
+    };
+  }
+
+  /** The one place a token report is priced; tool and response turns both go through it. */
+  private priceTokenEvent(event: TokenEvent): number {
+    const usage: TokenUsage = {
+      inputTokens: event.inputTokens,
+      outputTokens: event.outputTokens,
+      thinkingTokens: 0,
+      cacheReadTokens: event.cacheReadTokens,
+      cacheCreationTokens: event.cacheCreationTokens,
+      totalTokens: event.inputTokens + event.outputTokens,
+    };
+    return calculateModelCost(event.model, usage).totalUsd * this.rateMultiplier;
   }
 
   getCostForToolCall(
