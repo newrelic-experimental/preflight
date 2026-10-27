@@ -17,6 +17,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { createLogger } from '../shared/index.js';
 import { redactSensitive } from '../config.js';
+import type { SecretSources } from '../secret-command.js';
 import { VERSION } from '../version.js';
 
 const logger = createLogger('session-stats');
@@ -150,6 +151,7 @@ const INSTALL_HOOKS_TOOL = {
   description:
     'Install PreToolUse, PostToolUse, PermissionRequest, and PermissionDenied monitoring hooks into ~/.claude/settings.json. ' +
     'Call when nr_observe_health reports hooks_installed: false. ' +
+    'Refuses unless allowHeadlessInstall is true in the Preflight config (or NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL=true); otherwise run `preflight install`. ' +
     'Requires a Claude Code restart to activate monitoring.',
   inputSchema: { type: 'object' as const, properties: {} },
   annotations: { readOnlyHint: false },
@@ -303,7 +305,11 @@ export function handleInstallHooks(
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ status: 'error', message: installResult.message }, null, 2),
+          text: JSON.stringify(
+            { status: installResult.status, message: installResult.message },
+            null,
+            2,
+          ),
         },
       ],
       isError: true,
@@ -325,11 +331,14 @@ export interface ConfigSummary {
   readonly accountId: string | null;
   readonly licenseKeyMasked: string | null;
   readonly nrApiKeyMasked: string | null;
+  readonly secretSources: SecretSources;
   readonly region: string;
   readonly storagePath: string;
   readonly dashboardUrl: string;
   readonly configFilePath: string;
   readonly companionMode: boolean;
+  /** Whether nr_observe_install_hooks may write ~/.claude/settings.json. Default false. */
+  readonly allowHeadlessInstall: boolean;
 }
 
 export function handleGetConfig(configSummary: ConfigSummary): {
@@ -472,6 +481,7 @@ export interface ToolRegistrationOptions {
   nrApiKey?: string | null;
   collectorHost?: string | null;
   configFilePath?: string;
+  digestWebhookUrlOverride?: string;
   configSummary?: ConfigSummary;
   hooksInstalledFn?: () => boolean;
   headlessInstaller?: () => import('../install/headless-install.js').HeadlessInstallResult;

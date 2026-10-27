@@ -22,7 +22,8 @@ import {
 } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
-import { redactSensitive } from '../config.js';
+import { redactIdentifier, redactSensitive } from '../config.js';
+import { stripRepoNameCredentials } from '../lib/git-remote.js';
 import { isSyntheticSessionId, type SessionNameSource } from '../hooks/session-resolver.js';
 import { GENERIC_MCP_PLATFORM_NAME } from '../platforms/generic-mcp-adapter.js';
 import type {
@@ -1190,7 +1191,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     sessionIntent: sessionMetrics.sessionIntent
       ? redactSensitive(sessionMetrics.sessionIntent)
       : null,
-    repoName: sources.repoName ? redactSensitive(sources.repoName) : null,
+    repoName: sources.repoName ? redactIdentifier(sources.repoName) : null,
     startTime: sessionMetrics.sessionStartTime,
     endTime: now,
     // Recalculate durationMs from wall-clock times rather than trusting the
@@ -1712,7 +1713,7 @@ export function deserializeFullSessionSummary(
         ? obj.sessionNameSource
         : null,
     sessionIntent: typeof obj.sessionIntent === 'string' ? obj.sessionIntent : null,
-    repoName: typeof obj.repoName === 'string' ? obj.repoName : null,
+    repoName: typeof obj.repoName === 'string' ? stripRepoNameCredentials(obj.repoName) : null,
     startTime: typeof obj.startTime === 'number' ? obj.startTime : 0,
     endTime: typeof obj.endTime === 'number' ? obj.endTime : 0,
     durationMs: typeof obj.durationMs === 'number' ? obj.durationMs : 0,

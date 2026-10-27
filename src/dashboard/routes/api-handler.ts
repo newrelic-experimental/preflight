@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
-import { normalizeDeveloperName, redactSensitive } from '../../config.js';
+import { digestWebhookUrlOverride, normalizeDeveloperName, redactSensitive } from '../../config.js';
 import {
   isSyntheticSessionId,
   isUnscopedAggregatorSessionId,
@@ -3070,6 +3070,8 @@ export function createApiHandler(
       // storagePath, so the same path the MCP server writes to is always checked.
       storagePath: deps.config?.storagePath,
       platform: deps.getActivePlatform?.(),
+      // The Settings page polls this route; never run secret helpers here.
+      resolveSecrets: false,
     });
     jsonOk(res, checks);
   });
@@ -3323,7 +3325,11 @@ export function createApiHandler(
 
   routes.set('POST /api/digest/send', async (_req, res) => {
     if (!deps.weeklySummaryGenerator || !deps.configFilePath) return unavailable(res, 'digest');
-    const result = await handleSendDigest(deps.weeklySummaryGenerator, deps.configFilePath);
+    const result = await handleSendDigest(
+      deps.weeklySummaryGenerator,
+      deps.configFilePath,
+      deps.config && digestWebhookUrlOverride(deps.config),
+    );
     jsonOk(res, result);
   });
 

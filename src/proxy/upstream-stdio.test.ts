@@ -1,12 +1,8 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import {
-  StdioUpstream,
-  sanitizeEnv,
-  validateCommand,
-  DANGEROUS_ENV_KEYS,
-} from './upstream-stdio.js';
+import { StdioUpstream, sanitizeEnv, validateCommand } from './upstream-stdio.js';
+import { DANGEROUS_ENV_KEYS } from '../lib/child-env.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

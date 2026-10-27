@@ -24,7 +24,10 @@ import {
   registerTools,
 } from './session-stats.js';
 import type { ConfigSummary, ToolRegistrationOptions } from './session-stats.js';
-import type { HeadlessInstallResult } from '../install/headless-install.js';
+import {
+  HEADLESS_INSTALL_DISABLED_MESSAGE,
+  type HeadlessInstallResult,
+} from '../install/headless-install.js';
 import type { ToolCallRecord, TokenEvent } from '../storage/types.js';
 import type { WeeklySummaryGenerator } from '../storage/weekly-summary.js';
 import type { TrendAnalyzer } from '../metrics/trend-analyzer.js';
@@ -328,10 +331,12 @@ function makeConfigSummary(overrides?: Partial<ConfigSummary>): ConfigSummary {
     accountId: '1234567',
     licenseKeyMasked: 'NRAA...1234',
     nrApiKeyMasked: 'NRAK...5678',
+    secretSources: { licenseKey: 'command', nrApiKey: 'env', digestWebhookUrl: 'unset' },
     region: 'us',
     storagePath: '/home/alice/.newrelic-preflight',
     dashboardUrl: 'http://127.0.0.1:9847',
     configFilePath: '/home/alice/.newrelic-preflight/config.json',
+    allowHeadlessInstall: false,
     companionMode: false,
     ...overrides,
   };
@@ -417,6 +422,20 @@ describe('handleInstallHooks()', () => {
 
     expect(data.status).toBe('error');
     expect(data.message).toContain('EACCES');
+    expect(result.isError).toBe(true);
+  });
+
+  it('returns isError: true and tells the user how to proceed when installs are disabled', () => {
+    const installer = (): HeadlessInstallResult => ({
+      status: 'disabled',
+      message: HEADLESS_INSTALL_DISABLED_MESSAGE,
+    });
+    const result = handleInstallHooks(installer);
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.status).toBe('disabled');
+    expect(data.message).toContain('preflight install');
+    expect(data.message).toContain('allowHeadlessInstall');
     expect(result.isError).toBe(true);
   });
 
@@ -914,11 +933,13 @@ describe('registerPendingTools()', () => {
       accountId: null,
       licenseKeyMasked: null,
       nrApiKeyMasked: null,
+      secretSources: { licenseKey: 'unset', nrApiKey: 'unset', digestWebhookUrl: 'unset' },
       region: 'us',
       storagePath: '/tmp/x',
       dashboardUrl: 'http://127.0.0.1:7777',
       configFilePath: '/tmp/x/config.json',
       companionMode: false,
+      allowHeadlessInstall: false,
     };
     registerPendingTools(server.server, {
       sessionStartMs: Date.now(),

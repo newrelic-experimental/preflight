@@ -13,6 +13,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { z } from 'zod';
 import { createLogger } from '../shared/index.js';
+import { stripDangerousEnv } from '../lib/child-env.js';
 import type { ForwardResult, ProxyUpstream, UpstreamConfig } from './types.js';
 
 const logger = createLogger('proxy-stdio');
@@ -25,39 +26,13 @@ const logger = createLogger('proxy-stdio');
 // PATH hijacking is prevented instead by validateCommand requiring absolute paths.
 // ---------------------------------------------------------------------------
 
-export const DANGEROUS_ENV_KEYS = new Set([
-  'LD_PRELOAD',
-  'LD_LIBRARY_PATH',
-  'DYLD_INSERT_LIBRARIES',
-  'DYLD_LIBRARY_PATH',
-  'NODE_OPTIONS',
-  'PYTHONPATH',
-  'PYTHONSTARTUP',
-  'RUBYOPT',
-  'PERL5LIB',
-  'LD_AUDIT',
-  'GCONV_PATH',
-  'BASH_ENV',
-  'ENV',
-  'ELECTRON_RUN_AS_NODE',
-]);
-
 export function sanitizeEnv(
   env: Record<string, string> | undefined,
   upstreamName: string,
 ): Record<string, string> | undefined {
   if (!env) return undefined;
 
-  const sanitized: Record<string, string> = {};
-  const stripped: string[] = [];
-
-  for (const [key, value] of Object.entries(env)) {
-    if (DANGEROUS_ENV_KEYS.has(key)) {
-      stripped.push(key);
-    } else {
-      sanitized[key] = value;
-    }
-  }
+  const { env: sanitized, stripped } = stripDangerousEnv(env);
 
   if (stripped.length > 0) {
     logger.warn(`StdioUpstream "${upstreamName}": stripped dangerous env keys`, { keys: stripped });

@@ -14,6 +14,8 @@ import { resolveRecordContent } from './record-content-gate.js';
 import { projectIdFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
 import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
 import type { ResolvedTier } from './transport/tier-types.js';
+import { isSecretConfigured, resolveSecret } from './secret-command.js';
+import type { SecretSources } from './secret-command.js';
 
 const logger = createLogger('mcp-config');
 
@@ -92,6 +94,12 @@ export interface McpServerConfig {
    * (session_id === OTel's session.id). See docs/ADVANCED.md § Companion mode.
    */
   readonly companionMode: boolean;
+  /**
+   * Lets the `nr_observe_install_hooks` MCP tool rewrite ~/.claude/settings.json.
+   * Default false: any connected MCP client can call the tool, so it is opt-in.
+   * See docs/ADVANCED.md § allowHeadlessInstall.
+   */
+  readonly allowHeadlessInstall: boolean;
   readonly redactionPatterns: readonly RegExp[];
   readonly hookBufferPath: string;
   readonly storagePath: string;
@@ -104,6 +112,8 @@ export interface McpServerConfig {
   readonly collectorHost: string | null;
   readonly proxyUpstreams: readonly UpstreamConfig[];
   readonly nrApiKey: string | null;
+  /** Which source supplied each secret. Never the value. */
+  readonly secretSources: SecretSources;
   /** Path to a custom pricing JSON file, applied via `initPricing()`. See `NEW_RELIC_AI_CUSTOM_PRICING_FILE`. */
   readonly customPricingFile: string | null;
   /**
@@ -217,6 +227,10 @@ const CURRENT_CONFIG_VERSION = 1;
 
 export type PlatformTarget = 'native' | 'wsl-windows-cc' | 'wsl-linux-cc';
 
+// argv array only: a single string would invite shell-style quoting that
+// Preflight never interprets, since the command runs without a shell.
+const SecretCommandSchema = z.array(z.string().min(1)).min(1);
+
 export const ConfigFileSchema = z
   .object({
     configVersion: z.number().int().optional(),
@@ -235,6 +249,7 @@ export const ConfigFileSchema = z
     recordContent: z.boolean().optional(),
     pricingRefresh: z.boolean().optional(),
     companionMode: z.boolean().optional(),
+    allowHeadlessInstall: z.boolean().optional(),
     storagePath: z.string().optional(),
     hookBufferPath: z.string().optional(),
     harvestEventsMs: z.number().optional(),
@@ -252,6 +267,9 @@ export const ConfigFileSchema = z
     // generic union-mismatch issue.
     tiers: z.array(z.unknown()).optional(),
     nrApiKey: z.string().nullable().optional(),
+    licenseKeyCommand: SecretCommandSchema.optional(),
+    nrApiKeyCommand: SecretCommandSchema.optional(),
+    digestWebhookUrlCommand: SecretCommandSchema.optional(),
     customPricingFile: z.string().nullable().optional(),
     costRateMultiplier: z.number().nullable().optional(),
     dataResidencyPremium: z.boolean().optional(),
@@ -677,7 +695,35 @@ export class MissingCloudCredentialError extends Error {
   }
 }
 
-export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpServerConfig> {
+/**
+ * The startup-resolved digest webhook URL when a source that outranks the
+ * file's `digestWebhookUrl` (env var or digestWebhookUrlCommand) supplied it.
+ * Undefined means "read the file at send time".
+ */
+export function digestWebhookUrlOverride(
+  config: Pick<McpServerConfig, 'digestWebhookUrl' | 'secretSources'>,
+): string | undefined {
+  const source = config.secretSources.digestWebhookUrl;
+  return (source === 'env' || source === 'command') && config.digestWebhookUrl !== null
+    ? config.digestWebhookUrl
+    : undefined;
+}
+
+export interface LoadMcpConfigOptions {
+  /**
+   * Run the `*Command` secret helpers. Pass false from callers that poll or
+   * only read non-secret fields (dashboard diagnostics, host/port lookup):
+   * `secretSources` still reports `command`, but the secrets resolve to
+   * undefined/null and `tiers` stays empty unless explicit.
+   */
+  readonly resolveSecrets?: boolean;
+}
+
+export function loadMcpConfig(
+  cliOptions?: Partial<CliOptions>,
+  loadOptions: LoadMcpConfigOptions = {},
+): Readonly<McpServerConfig> {
+  const skipCommand = loadOptions.resolveSecrets === false;
   const configFilePath = cliOptions?.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
   const file = loadConfigFile(configFilePath);
 
@@ -765,12 +811,17 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     }
   }
 
-  // --- licenseKey: CLI has no flag for this, so env > file ---
-  // Hoisted ahead of mode resolution: an ambiguous licenseKey-without-mode
-  // config must fail closed instead of silently defaulting to 'cloud'.
-  const licenseKeyRaw =
-    process.env.NEW_RELIC_LICENSE_KEY ??
-    (typeof file.licenseKey === 'string' ? file.licenseKey : undefined);
+  // --- licenseKey: CLI has no flag for this, so env > licenseKeyCommand > file ---
+  // Presence is checked ahead of mode resolution: an ambiguous
+  // licenseKey-without-mode config must fail closed instead of silently
+  // defaulting to 'cloud'. The command itself runs only after mode resolves,
+  // so a local-mode process never runs it.
+  const licenseKeySources = {
+    env: process.env.NEW_RELIC_LICENSE_KEY,
+    command: file.licenseKeyCommand,
+    file: typeof file.licenseKey === 'string' ? file.licenseKey : undefined,
+  };
+  const licenseKeyConfigured = isSecretConfigured(licenseKeySources);
 
   // --- Resolve mode early so we can gate licenseKey/accountId requirements ---
   // File mode is already validated by the zod schema in loadConfigFile.
@@ -786,7 +837,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     mode = envMode;
   } else if (fileMode !== undefined) {
     mode = fileMode;
-  } else if (licenseKeyRaw) {
+  } else if (licenseKeyConfigured) {
     // Local-first default (README): telemetry export is opt-in, so a config
     // with credentials but no explicit mode must not silently export.
     throw new Error(
@@ -796,7 +847,18 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     mode = 'local';
   }
 
-  if (mode !== 'local' && !licenseKeyRaw) {
+  const licenseKeySecret = resolveSecret(
+    'licenseKey',
+    mode === 'local' ? { ...licenseKeySources, command: undefined } : licenseKeySources,
+    { skipCommand },
+  );
+  const licenseKeyRaw = licenseKeySecret.value;
+
+  if (
+    mode !== 'local' &&
+    !licenseKeyRaw &&
+    !(skipCommand && licenseKeySecret.source === 'command')
+  ) {
     throw new MissingCloudCredentialError('licenseKey', mode, configFilePath);
   }
   // Reject the literal string "null" — it's truthy but not a valid key
@@ -866,9 +928,11 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     typeof file.highSecurity === 'boolean' ? file.highSecurity : false,
   );
 
-  const resolvedProjectId = sanitizeOrgField(
+  const rawProjectId =
     process.env.NEW_RELIC_AI_PROJECT_ID ??
-      (typeof file.projectId === 'string' ? file.projectId : inferProjectId()),
+    (typeof file.projectId === 'string' ? file.projectId : inferProjectId());
+  const resolvedProjectId = sanitizeOrgField(
+    rawProjectId === null ? null : redactIdentifier(rawProjectId),
   );
 
   // Dedicated opt-out, independent of projectId's — repo_url can carry an
@@ -889,10 +953,10 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     process.env.NEW_RELIC_AI_REPO_URL ??
     (typeof file.repoUrl === 'string' ? file.repoUrl : getGitRemoteUrl());
   // stripRemoteCredentials drops URL userinfo and query strings;
-  // redactSensitive then catches any token elsewhere in the value.
+  // redactIdentifier then catches any token elsewhere in the value.
   const strippedRepoUrl = stripRemoteCredentials(rawRepoUrl);
   const resolvedRepoUrl = sanitizeOrgField(
-    strippedRepoUrl === null ? null : redactSensitive(strippedRepoUrl),
+    strippedRepoUrl === null ? null : redactIdentifier(strippedRepoUrl),
   );
 
   const resolvedCompanionMode = resolveCompanionMode(
@@ -904,9 +968,34 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     source: resolvedCompanionMode.source,
   });
 
+  const nrApiKeySecret = resolveSecret(
+    'nrApiKey',
+    {
+      env: process.env.NEW_RELIC_API_KEY,
+      command: mode === 'local' ? undefined : file.nrApiKeyCommand,
+      file: typeof file.nrApiKey === 'string' ? file.nrApiKey : undefined,
+    },
+    { optional: true, skipCommand },
+  );
+  const digestWebhookUrlSecret = resolveSecret(
+    'digestWebhookUrl',
+    {
+      env: process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL,
+      command: file.digestWebhookUrlCommand,
+      file: typeof file.digestWebhookUrl === 'string' ? file.digestWebhookUrl : undefined,
+    },
+    { optional: true, skipCommand },
+  );
+
   const config: McpServerConfig = {
     licenseKey,
     accountId,
+
+    secretSources: {
+      licenseKey: licenseKeySecret.source,
+      nrApiKey: nrApiKeySecret.source,
+      digestWebhookUrl: digestWebhookUrlSecret.source,
+    },
 
     configVersion:
       typeof file.configVersion === 'number' ? file.configVersion : CURRENT_CONFIG_VERSION,
@@ -961,6 +1050,11 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
         ),
 
     companionMode: resolvedCompanionMode.value,
+
+    allowHeadlessInstall: envBool(
+      'NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL',
+      typeof file.allowHeadlessInstall === 'boolean' ? file.allowHeadlessInstall : false,
+    ),
 
     redactionPatterns: DEFAULT_REDACTION_PATTERNS,
 
@@ -1054,8 +1148,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       file.proxyUpstreams,
     ),
 
-    nrApiKey:
-      process.env.NEW_RELIC_API_KEY ?? (typeof file.nrApiKey === 'string' ? file.nrApiKey : null),
+    nrApiKey: nrApiKeySecret.value ?? null,
 
     customPricingFile:
       process.env.NEW_RELIC_AI_CUSTOM_PRICING_FILE ??
@@ -1078,9 +1171,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       typeof file.dataResidencyPremium === 'boolean' ? file.dataResidencyPremium : false,
     ),
 
-    digestWebhookUrl:
-      process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL ??
-      (typeof file.digestWebhookUrl === 'string' ? file.digestWebhookUrl : null),
+    digestWebhookUrl: digestWebhookUrlSecret.value ?? null,
 
     digestSchedule:
       process.env.NEW_RELIC_AI_DIGEST_SCHEDULE ??
@@ -1490,7 +1581,7 @@ export interface ConfigValidationResult {
   readonly storagePath?: string;
   /** The `companionMode` field from the parsed config, if present and a boolean. */
   readonly companionMode?: boolean;
-  /** True when a non-blank licenseKey is present in the parsed config. Raw value is intentionally not exposed. */
+  /** True when a non-blank licenseKey or a licenseKeyCommand is present in the parsed config. Raw value is intentionally not exposed. */
   readonly hasLicenseKey: boolean;
   /** Fatal problems that will prevent the MCP server from starting. */
   readonly errors: readonly string[];
@@ -1620,7 +1711,9 @@ export function validateConfigFile(filePath: string): ConfigValidationResult {
     mode: typeof file.mode === 'string' ? file.mode : undefined,
     storagePath: typeof file.storagePath === 'string' ? file.storagePath : undefined,
     companionMode: typeof file.companionMode === 'boolean' ? file.companionMode : undefined,
-    hasLicenseKey: typeof file.licenseKey === 'string' && file.licenseKey.trim().length > 0,
+    hasLicenseKey:
+      (typeof file.licenseKey === 'string' && file.licenseKey.trim().length > 0) ||
+      Array.isArray(file.licenseKeyCommand),
     errors,
     warnings,
   };
@@ -1667,6 +1760,47 @@ export function redactSensitive(value: string, patterns?: readonly RegExp[]): st
   for (const pattern of pats) {
     pattern.lastIndex = 0;
     result = result.replace(pattern, '[REDACTED]');
+  }
+  return result;
+}
+
+const WORD_CHAR_RE = /[A-Za-z0-9]/;
+
+/**
+ * redactSensitive() for identifiers (project_id, repo_url, repo names), which
+ * carry a token only as a whole path segment or a segment's prefix. A match that
+ * starts right after a letter or digit is part of an ordinary name
+ * (`acme/risk-assessment-…` holds `sk-assessment-…`) and is left alone. The scan
+ * resumes one character later, so a token further into that span
+ * (`acme/risk-ghp_…`) is still caught.
+ *
+ * Free-form content keeps redactSensitive()'s plain matching: there a token
+ * routinely follows a letter or digit, after a JSON escape (`\nghp_…`), an ANSI
+ * colour code (`ESC[32m`) or `%3A`.
+ */
+export function redactIdentifier(value: string): string {
+  let result = value;
+  for (const pattern of DEFAULT_REDACTION_PATTERNS) {
+    const re = new RegExp(
+      pattern.source,
+      pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`,
+    );
+    let out = '';
+    let last = 0;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(result)) !== null) {
+      if (match[0] === '') {
+        re.lastIndex++;
+        continue;
+      }
+      if (match.index > 0 && WORD_CHAR_RE.test(result[match.index - 1])) {
+        re.lastIndex = match.index + 1;
+        continue;
+      }
+      out += `${result.slice(last, match.index)}[REDACTED]`;
+      last = re.lastIndex;
+    }
+    result = out + result.slice(last);
   }
   return result;
 }

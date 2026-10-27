@@ -223,7 +223,7 @@ See [SECURITY.md](./SECURITY.md) for the full guidelines, invariants, and code r
 
 - **Redaction** — `DEFAULT_REDACTION_PATTERNS` in `src/config.ts` covers API keys, Bearer tokens, AWS/Google/npm/Slack secrets, JWTs, and PEM blocks. Apply `redact()` / `redactSensitive()` before any string reaches a log or NR event field.
 - **Input validation** — `accountId` is validated as `/^\d{1,12}$/` at config load. `envInt` callers supply `{ min, max }` bounds. Tool names are truncated to 256 chars with control chars stripped.
-- **SSRF protection** — `HttpUpstream` rejects non-`http:`/`https:` schemes and RFC-1918/loopback hosts before connecting.
+- **SSRF protection** — `HttpUpstream` requires `https:` unless the host is loopback (`localhost`, `127.0.0.1`, `::1`), or a private host with `allowPrivateHosts` and `allowInsecureHttp`; it also rejects RFC-1918/loopback hosts before connecting unless `allowPrivateHosts`.
 - **Process safety** — `StdioUpstream` requires an absolute command path and strips `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`, and related keys from the child env.
 - **Storage permissions** — Directories created with `0o700`, files with `0o600`.
 - **High security mode** — `highSecurity=true` forces `recordContent=false`; this must never be bypassed.

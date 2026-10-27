@@ -16,6 +16,20 @@ export default {
   // Env: NEW_RELIC_LICENSE_KEY
   licenseKey: 'YOUR_LICENSE_KEY_NRAL',
 
+  // Or read it from a secret store instead of keeping it in this file.
+  // argv array, absolute executable path, no shell. Runs once at startup.
+  // Precedence: env var > *Command > plaintext value. Same for nrApiKeyCommand
+  // and digestWebhookUrlCommand. See docs/ADVANCED.md § Secret Helper Commands.
+  licenseKeyCommand: [
+    '/usr/bin/security',
+    'find-generic-password',
+    '-a',
+    'preflight',
+    '-s',
+    'preflight-license-key',
+    '-w',
+  ],
+
   // New Relic account ID (1–12 decimal digits).
   // Env: NEW_RELIC_ACCOUNT_ID
   accountId: 'YOUR_ACCOUNT_ID',
@@ -70,16 +84,30 @@ export default {
 
   // ── Security ──────────────────────────────────────────────────────────────
 
-  // When true, recordContent is forced off and tool input/output is never sent to NR.
+  // When true, recordContent is forced off, so literal file contents, command output, and
+  // agent text are never sent to New Relic, whatever recordContent says. Use it where content
+  // must never leave the machine. Do not bypass it.
+  // See PRIVACY.md (highSecurity).
   // Env: NEW_RELIC_AI_HIGH_SECURITY  (true/false)
   // Default: false
   highSecurity: false,
 
-  // When true, tool input/output content is included in NR events.
+  // When true, literal file contents, command output, and agent text are included in NR events
+  // (and written to the local buffer). Content may contain secrets and proprietary code.
+  // Credential-pattern redaction runs first, but it matches known secret formats only. It is
+  // pattern-based, not data-loss prevention, so it does not catch other sensitive code or text.
+  // Review what the AI assistant reads and runs before enabling this. See PRIVACY.md (recordContent).
   // Forced off when highSecurity is true.
   // Env: NEW_RELIC_AI_MCP_RECORD_CONTENT  (true/false)
   // Default: false
   recordContent: false,
+
+  // When true, the nr_observe_install_hooks MCP tool may rewrite
+  // ~/.claude/settings.json. Off by default: any connected MCP client can call
+  // the tool. Each install is recorded in the audit trail. See docs/ADVANCED.md.
+  // Env: NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL  (true/false)
+  // Default: false
+  allowHeadlessInstall: false,
 
   // ── Storage ───────────────────────────────────────────────────────────────
 
@@ -187,14 +215,29 @@ export default {
   // ── NR User API key (for team queries and deploying dashboards/alerts) ───────
 
   // User API key (NRAK-...). Used for team summary queries and deploying dashboards/alerts.
+  // It carries its user's permissions across every account that user can reach:
+  // use a minimally privileged user, or leave it unset (the MCP server only
+  // needs it for nr_observe_get_team_summary).
   // Env: NEW_RELIC_API_KEY
   nrApiKey: 'NRAK-XXXXXXXXXXXXXXXXXXXXXXXXXX',
+
+  // Read nrApiKey from a secret store instead (see licenseKeyCommand above).
+  nrApiKeyCommand: ['/opt/homebrew/bin/op', 'read', 'op://Private/Preflight/nr-api-key'],
 
   // ── Weekly digest ─────────────────────────────────────────────────────────
 
   // Slack incoming webhook URL for weekly cost/efficiency digest.
   // Env: NEW_RELIC_AI_DIGEST_WEBHOOK_URL
   digestWebhookUrl: 'https://hooks.slack.com/services/TXXXXXXXX/BXXXXXXXX/XXXXXXXXXXXXXXXXXXXXXXXX',
+
+  // Read digestWebhookUrl from a secret store instead (see licenseKeyCommand above).
+  digestWebhookUrlCommand: [
+    '/usr/local/bin/vault',
+    'kv',
+    'get',
+    '-field=webhook_url',
+    'secret/preflight',
+  ],
 
   // Cron expression for digest delivery schedule (server's local timezone).
   // Env: NEW_RELIC_AI_DIGEST_SCHEDULE

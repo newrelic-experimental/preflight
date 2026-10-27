@@ -11,7 +11,12 @@ import { LocalAlertEngine } from './alerts/local-alert-engine.js';
 import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
 import { OsNotifier } from './alerts/os-notifier.js';
 import type { McpServerConfig } from './config.js';
-import { DEFAULT_STORAGE_PATH, loadMcpConfig, redactSensitive } from './config.js';
+import {
+  DEFAULT_STORAGE_PATH,
+  digestWebhookUrlOverride,
+  loadMcpConfig,
+  redactSensitive,
+} from './config.js';
 import { checkBasicAuthToken } from './dashboard/basic-auth.js';
 import { DashboardServer } from './dashboard/dashboard-server.js';
 import { LiveEventBus } from './dashboard/index.js';
@@ -39,6 +44,7 @@ import {
 import { SubagentWatcher, type SubagentTokenEvent } from './hooks/subagent-watcher.js';
 import { WorkflowWatcher } from './hooks/workflow-watcher.js';
 import { migrateStoragePath } from './install/migrate.js';
+import { createHeadlessInstaller } from './install/headless-install.js';
 import { checkNodeVersion } from './install/node-version-check.js';
 import { localDateKey } from './lib/date.js';
 import { repoNameFromRemote } from './lib/git-remote.js';
@@ -3076,13 +3082,19 @@ async function main(): Promise<void> {
         accountId: config!.accountId ?? null,
         licenseKeyMasked: config!.licenseKey ? maskCredential(config!.licenseKey) : null,
         nrApiKeyMasked: config!.nrApiKey ? maskCredential(config!.nrApiKey) : null,
+        secretSources: config!.secretSources,
         region: config!.collectorHost ?? 'us',
         storagePath: config!.storagePath,
         dashboardUrl: `http://${config!.dashboard.host}:${config!.dashboard.port}`,
         configFilePath,
         companionMode: config!.companionMode,
+        allowHeadlessInstall: config!.allowHeadlessInstall,
       };
       registerTools(mcpServer!.server, {
+        headlessInstaller: createHeadlessInstaller({
+          allowHeadlessInstall: config!.allowHeadlessInstall,
+          getAuditTrail: () => mcpServer?.auditTrailManager,
+        }),
         sessionTracker: sessionTracker!,
         costTracker,
         budgetTracker,
@@ -3127,6 +3139,7 @@ async function main(): Promise<void> {
         nrApiKey: config!.nrApiKey,
         collectorHost: config!.collectorHost,
         configFilePath,
+        digestWebhookUrlOverride: digestWebhookUrlOverride(config!),
         configSummary,
       });
 
@@ -3242,11 +3255,13 @@ async function main(): Promise<void> {
             accountId: config.accountId ?? null,
             licenseKeyMasked: config.licenseKey ? maskCredential(config.licenseKey) : null,
             nrApiKeyMasked: config.nrApiKey ? maskCredential(config.nrApiKey) : null,
+            secretSources: config.secretSources,
             region: config.collectorHost ?? 'us',
             storagePath: config.storagePath,
             dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
             configFilePath: pendingConfigFilePath,
             companionMode: config.companionMode,
+            allowHeadlessInstall: config.allowHeadlessInstall,
           },
         });
         logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
@@ -3309,13 +3324,19 @@ async function main(): Promise<void> {
           accountId: config.accountId ?? null,
           licenseKeyMasked: config.licenseKey ? maskCredential(config.licenseKey) : null,
           nrApiKeyMasked: config.nrApiKey ? maskCredential(config.nrApiKey) : null,
+          secretSources: config.secretSources,
           region: config.collectorHost ?? 'us',
           storagePath: config.storagePath,
           dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
           configFilePath,
           companionMode: config.companionMode,
+          allowHeadlessInstall: config.allowHeadlessInstall,
         };
         registerTools(mcpServer!.server, {
+          headlessInstaller: createHeadlessInstaller({
+            allowHeadlessInstall: config.allowHeadlessInstall,
+            getAuditTrail: () => mcpServer?.auditTrailManager,
+          }),
           sessionTracker,
           costTracker,
           budgetTracker,
@@ -3360,6 +3381,7 @@ async function main(): Promise<void> {
           nrApiKey: config.nrApiKey,
           collectorHost: config.collectorHost,
           configFilePath,
+          digestWebhookUrlOverride: digestWebhookUrlOverride(config),
           configSummary,
         });
 

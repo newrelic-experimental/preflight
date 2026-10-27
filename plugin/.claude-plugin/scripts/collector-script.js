@@ -24,6 +24,7 @@ var REDACTION_PATTERNS = [
   /\bAIzaSy[0-9A-Za-z_-]{33}\b/g,
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
   /\bnpm_[A-Za-z0-9]{36}\b/g,
+  /\bglpat-[A-Za-z0-9_.-]{20,300}/g,
   /\bxox[a-z]-[0-9A-Za-z-]+/g,
   /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g,
   /\bpypi-[A-Za-z0-9_-]{20,}\b/g,

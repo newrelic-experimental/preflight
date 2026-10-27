@@ -11,7 +11,9 @@ jest.mock('./schedule.js', () => ({
 import { resolveBinaryPath } from './schedule.js';
 import { writeJsonFile, readJsonFileStrict } from './json-utils.js';
 import { mergeSettings } from './install-helper.js';
-import { installHooksHeadless } from './headless-install.js';
+import { installHooksHeadless, createHeadlessInstaller } from './headless-install.js';
+import { existsSync } from 'node:fs';
+import { AuditTrailManager } from '../security/audit-trail.js';
 
 const mockResolveBinaryPath = resolveBinaryPath as jest.MockedFunction<typeof resolveBinaryPath>;
 
@@ -29,9 +31,38 @@ describe('installHooksHeadless()', () => {
     jest.restoreAllMocks();
   });
 
-  it('creates settings.json with hooks when file does not exist', () => {
+  it('refuses by default and writes nothing when allowHeadlessInstall is not set', () => {
     const settingsPath = join(tmpDir, 'settings.json');
     const result = installHooksHeadless({ _settingsPathOverride: settingsPath });
+
+    expect(result.status).toBe('disabled');
+    if (result.status === 'disabled') {
+      expect(result.message).toContain('preflight install');
+      expect(result.message).toContain('allowHeadlessInstall');
+    }
+    expect(existsSync(settingsPath)).toBe(false);
+  });
+
+  it('refuses and leaves an existing settings.json byte-identical when the flag is false', () => {
+    const settingsPath = join(tmpDir, 'settings.json');
+    writeJsonFile(settingsPath, { permissions: { allow: [] } }, tmpDir);
+    const before = readJsonFileStrict(settingsPath);
+
+    const result = installHooksHeadless({
+      allowHeadlessInstall: false,
+      _settingsPathOverride: settingsPath,
+    });
+
+    expect(result.status).toBe('disabled');
+    expect(readJsonFileStrict(settingsPath)).toEqual(before);
+  });
+
+  it('creates settings.json with hooks when file does not exist', () => {
+    const settingsPath = join(tmpDir, 'settings.json');
+    const result = installHooksHeadless({
+      allowHeadlessInstall: true,
+      _settingsPathOverride: settingsPath,
+    });
 
     expect(result.status).toBe('installed');
     if (result.status === 'installed') {
@@ -46,7 +77,10 @@ describe('installHooksHeadless()', () => {
     const settingsPath = join(tmpDir, 'settings.json');
     writeJsonFile(settingsPath, { permissions: { allow: [] } }, tmpDir);
 
-    const result = installHooksHeadless({ _settingsPathOverride: settingsPath });
+    const result = installHooksHeadless({
+      allowHeadlessInstall: true,
+      _settingsPathOverride: settingsPath,
+    });
     expect(result.status).toBe('installed');
   });
 
@@ -54,7 +88,10 @@ describe('installHooksHeadless()', () => {
     const settingsPath = join(tmpDir, 'settings.json');
     writeJsonFile(settingsPath, mergeSettings({}), tmpDir);
 
-    const result = installHooksHeadless({ _settingsPathOverride: settingsPath });
+    const result = installHooksHeadless({
+      allowHeadlessInstall: true,
+      _settingsPathOverride: settingsPath,
+    });
     expect(result.status).toBe('already_installed');
   });
 
@@ -68,7 +105,10 @@ describe('installHooksHeadless()', () => {
     ];
     writeJsonFile(settingsPath, { hooks: { PreToolUse: pre, PostToolUse: post } }, tmpDir);
 
-    const result = installHooksHeadless({ _settingsPathOverride: settingsPath });
+    const result = installHooksHeadless({
+      allowHeadlessInstall: true,
+      _settingsPathOverride: settingsPath,
+    });
     expect(result.status).toBe('installed');
 
     const written = readJsonFileStrict(settingsPath);
@@ -80,10 +120,94 @@ describe('installHooksHeadless()', () => {
   it('returns error when settings directory is not writable', () => {
     // Point at a non-existent deep path to trigger write failure
     const settingsPath = '/nonexistent/deeply/nested/settings.json';
-    const result = installHooksHeadless({ _settingsPathOverride: settingsPath });
+    const result = installHooksHeadless({
+      allowHeadlessInstall: true,
+      _settingsPathOverride: settingsPath,
+    });
     expect(result.status).toBe('error');
     if (result.status === 'error') {
       expect(result.message.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('createHeadlessInstaller()', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'headless-installer-test-'));
+    mockResolveBinaryPath.mockReturnValue(null);
+    jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    jest.restoreAllMocks();
+  });
+
+  function hookInstallEntries(audit: AuditTrailManager) {
+    return audit.getAuditLog().filter((r) => r.action === 'HookInstall');
+  }
+
+  it('refuses without writing settings or an audit entry when the flag is off', () => {
+    const settingsPath = join(tmpDir, 'settings.json');
+    const audit = new AuditTrailManager({ developer: 'dev', sessionId: 'sess-off' });
+    const installer = createHeadlessInstaller({
+      allowHeadlessInstall: false,
+      getAuditTrail: () => audit,
+      _settingsPathOverride: settingsPath,
+    });
+
+    const result = installer();
+
+    expect(result.status).toBe('disabled');
+    expect(existsSync(settingsPath)).toBe(false);
+    expect(hookInstallEntries(audit)).toHaveLength(0);
+  });
+
+  it('installs hooks and records one HookInstall audit entry when the flag is on', () => {
+    const settingsPath = join(tmpDir, 'settings.json');
+    const audit = new AuditTrailManager({ developer: 'dev', sessionId: 'sess-on' });
+    const installer = createHeadlessInstaller({
+      allowHeadlessInstall: true,
+      getAuditTrail: () => audit,
+      _settingsPathOverride: settingsPath,
+    });
+
+    const result = installer();
+
+    expect(result.status).toBe('installed');
+    const entries = hookInstallEntries(audit);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].tool).toBe('nr_observe_install_hooks');
+    expect(entries[0].detail).toBe(`HookInstall: ${settingsPath}`);
+    expect(entries[0].sessionId).toBe('sess-on');
+  });
+
+  it('writes no audit entry when hooks are already installed', () => {
+    const settingsPath = join(tmpDir, 'settings.json');
+    writeJsonFile(settingsPath, mergeSettings({}), tmpDir);
+    const audit = new AuditTrailManager({ developer: 'dev', sessionId: 'sess-noop' });
+    const installer = createHeadlessInstaller({
+      allowHeadlessInstall: true,
+      getAuditTrail: () => audit,
+      _settingsPathOverride: settingsPath,
+    });
+
+    const result = installer();
+
+    expect(result.status).toBe('already_installed');
+    expect(hookInstallEntries(audit)).toHaveLength(0);
+  });
+
+  it('does not throw when no audit trail is available', () => {
+    const settingsPath = join(tmpDir, 'settings.json');
+    const installer = createHeadlessInstaller({
+      allowHeadlessInstall: true,
+      getAuditTrail: () => undefined,
+      _settingsPathOverride: settingsPath,
+    });
+
+    expect(installer().status).toBe('installed');
   });
 });

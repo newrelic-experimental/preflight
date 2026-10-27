@@ -46,6 +46,23 @@ export class ByteCountTransform extends Transform {
 // HttpUpstream
 // ---------------------------------------------------------------------------
 
+// Hosts where cleartext http: is acceptable. URL.hostname keeps brackets on IPv6 literals.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+
+function isLoopbackHost(hostname: string): boolean {
+  return LOOPBACK_HOSTS.has(hostname.replace(/^\[(.*)\]$/, '$1').toLowerCase());
+}
+
+// True when validateSsrfUrl would reject the URL's host for being private, loopback or metadata.
+function isPrivateTarget(label: string, url: URL): boolean {
+  try {
+    validateSsrfUrl(label, url);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 export class HttpUpstream implements ProxyUpstream {
   readonly name: string;
   readonly transportType = 'http' as const;
@@ -60,8 +77,19 @@ export class HttpUpstream implements ProxyUpstream {
     this.name = config.name;
     this.url = new URL(config.url);
     this.allowPrivateHosts = config.allowPrivateHosts ?? false;
+    const label = `HttpUpstream "${this.name}"`;
     if (!this.allowPrivateHosts) {
-      validateSsrfUrl(`HttpUpstream "${this.name}"`, this.url);
+      validateSsrfUrl(label, this.url);
+    }
+    if (this.url.protocol === 'http:' && !isLoopbackHost(this.url.hostname)) {
+      const privateTarget = this.allowPrivateHosts && isPrivateTarget(label, this.url);
+      if (!(privateTarget && config.allowInsecureHttp === true)) {
+        throw new Error(
+          privateTarget
+            ? `${label}: http:// to private host "${this.url.hostname}" requires https:// or allowInsecureHttp: true on this upstream`
+            : `${label}: http:// to host "${this.url.hostname}" is not allowed; use https:// (http:// is only accepted for localhost, 127.0.0.1 and ::1)`,
+        );
+      }
     }
     this.timeoutMs = config.timeoutMs ?? 30_000;
   }

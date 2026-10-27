@@ -11,7 +11,7 @@ npm install -g @newrelic/preflight
 ```
 
 :::note[Using Smithery?]
-Installing Preflight from the Smithery MCP registry wires up the MCP server for you, but Smithery has no mechanism to write Claude Code hooks. After install, ask Claude Code to call the `nr_observe_install_hooks` MCP tool (it offers to do this automatically once `nr_observe_health` reports `setup_required: true`), then restart Claude Code to activate monitoring.
+Installing Preflight from the Smithery MCP registry wires up the MCP server for you, but Smithery has no mechanism to write Claude Code hooks. After install, either run `preflight install` in a terminal, or set `"allowHeadlessInstall": true` in your Preflight config (or `NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL=true`) and ask Claude Code to call the `nr_observe_install_hooks` MCP tool. The tool refuses by default, because any connected MCP client can call it. With the flag on, it offers to do this automatically once `nr_observe_health` reports `setup_required: true`. Then restart Claude Code to activate monitoring.
 :::
 
 ## Run Setup

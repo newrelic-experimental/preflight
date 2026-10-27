@@ -21,7 +21,7 @@ and wiring the hooks that populate this data in the first place.
 ### Session
 
 - `nr_observe_health` — server health, connection status, hook-install state
-- `nr_observe_install_hooks` — install/repair hook wiring for the detected platform
+- `nr_observe_install_hooks` — install/repair hook wiring for the detected platform. Refuses unless `allowHeadlessInstall` is `true` in the Preflight config (or `NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL=true`); otherwise have the user run `preflight install`
 - `nr_observe_get_config` — current config with secrets masked
 - `nr_observe_get_session_stats` — tool call counts, success rate, files touched
 - `nr_observe_get_session_timeline` — ordered list of recent tool calls

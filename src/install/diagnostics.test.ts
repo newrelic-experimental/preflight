@@ -105,6 +105,8 @@ const mockedLoadMcpConfig = config.loadMcpConfig as jest.Mock;
 const mockedDetectSettingsPath = installHelper.detectSettingsPath as jest.Mock;
 const mockedIsWsl = platform.isWsl as jest.Mock;
 
+const UNSET_SOURCES = { licenseKey: 'unset', nrApiKey: 'unset', digestWebhookUrl: 'unset' };
+
 function makeOpts() {
   return {
     configPath: '/test-home/.newrelic-preflight/config.json',
@@ -139,7 +141,7 @@ describe('runDiagnostics', () => {
       errors: [],
       warnings: [],
     });
-    mockedLoadMcpConfig.mockReturnValue({ mode: 'local' });
+    mockedLoadMcpConfig.mockReturnValue({ mode: 'local', secretSources: UNSET_SOURCES });
     mockedDetectSettingsPath.mockReturnValue('/test-home/.claude/settings.json');
     mockedIsWsl.mockReturnValue(false);
     mockFetch.mockImplementation(async () => {
@@ -209,7 +211,7 @@ describe('runDiagnostics', () => {
   describe('Check: Telemetry mode', () => {
     it('reports the resolved mode and env as its source', async () => {
       process.env.NR_AI_MODE = 'both';
-      mockedLoadMcpConfig.mockReturnValue({ mode: 'both' });
+      mockedLoadMcpConfig.mockReturnValue({ mode: 'both', secretSources: UNSET_SOURCES });
       const checks = await runDiagnostics(makeOpts());
       delete process.env.NR_AI_MODE;
       const c = checks.find((x) => x.check === 'Telemetry mode')!;
@@ -225,7 +227,7 @@ describe('runDiagnostics', () => {
         errors: [],
         warnings: [],
       });
-      mockedLoadMcpConfig.mockReturnValue({ mode: 'cloud' });
+      mockedLoadMcpConfig.mockReturnValue({ mode: 'cloud', secretSources: UNSET_SOURCES });
       const checks = await runDiagnostics(makeOpts());
       const c = checks.find((x) => x.check === 'Telemetry mode')!;
       expect(c.status).toBe('ok');
@@ -233,7 +235,7 @@ describe('runDiagnostics', () => {
     });
 
     it('reports the local default as the source when neither env nor file set a mode', async () => {
-      mockedLoadMcpConfig.mockReturnValue({ mode: 'local' });
+      mockedLoadMcpConfig.mockReturnValue({ mode: 'local', secretSources: UNSET_SOURCES });
       const checks = await runDiagnostics(makeOpts());
       const c = checks.find((x) => x.check === 'Telemetry mode')!;
       expect(c.status).toBe('ok');
@@ -254,6 +256,36 @@ describe('runDiagnostics', () => {
       expect(c.status).toBe('fail');
       expect(c.detail).toContain('no explicit mode');
       expect(c.fix).toBeTruthy();
+    });
+  });
+
+  describe('Check: Secret sources', () => {
+    it('reports which source supplied each secret, never the value', async () => {
+      mockedLoadMcpConfig.mockReturnValue({
+        mode: 'cloud',
+        licenseKey: 'SECRET-LICENSE-VALUE',
+        secretSources: { licenseKey: 'command', nrApiKey: 'env', digestWebhookUrl: 'file' },
+      });
+      const checks = await runDiagnostics(makeOpts());
+      expect(checks.find((x) => x.check === 'Secret sources')).toEqual({
+        check: 'Secret sources',
+        status: 'ok',
+        detail: 'licenseKey: command, nrApiKey: env, digestWebhookUrl: file',
+      });
+      expect(JSON.stringify(checks)).not.toContain('SECRET-LICENSE-VALUE');
+    });
+
+    it('skips, and Telemetry mode names the field, when a secret helper command fails', async () => {
+      mockedLoadMcpConfig.mockImplementation(() => {
+        throw new Error(
+          'Could not read licenseKey from licenseKeyCommand: the command exited with a non-zero status (1).',
+        );
+      });
+      const checks = await runDiagnostics(makeOpts());
+      expect(checks.find((x) => x.check === 'Secret sources')?.status).toBe('skip');
+      expect(checks.find((x) => x.check === 'Telemetry mode')?.detail).toBe(
+        'Could not resolve config to determine mode: Could not read licenseKey from licenseKeyCommand: the command exited with a non-zero status (1).',
+      );
     });
   });
 
@@ -930,7 +962,7 @@ describe('runDiagnostics', () => {
       const checks = await runDiagnostics({ configPath: '/tmp/does-not-exist.json' });
       // Every check must still be present — one throwing dependency must not
       // take down the rest of the diagnostic run.
-      expect(checks).toHaveLength(13);
+      expect(checks).toHaveLength(14);
       const check = checks.find((c) => c.check === 'Local instances');
       expect(check?.status).toBe('warn');
       expect(check?.detail).toContain('registry file is corrupt');
@@ -981,6 +1013,6 @@ describe('runDiagnostics', () => {
 
   it('returns every check on macOS', async () => {
     const checks = await runDiagnostics(makeOpts());
-    expect(checks).toHaveLength(13);
+    expect(checks).toHaveLength(14);
   });
 });

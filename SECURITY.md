@@ -12,7 +12,7 @@ This document captures the security practices and invariants baked into this cod
 - [ ] License key and accountId absent from all logger calls
 - [ ] New storage directories created with `{ mode: 0o700 }`, files with `0o600`
 - [ ] File paths from user-controlled config validated (`.json` extension at minimum)
-- [ ] New `HttpUpstream` URLs rejected if scheme is not `http:`/`https:`, or host is RFC-1918/loopback
+- [ ] New `HttpUpstream` URLs rejected unless `https:`, or `http:` to loopback (`localhost`, `127.0.0.1`, `::1`), or `http:` to a private host with `allowPrivateHosts` and `allowInsecureHttp`; RFC-1918/loopback hosts also rejected unless `allowPrivateHosts`
 - [ ] Subprocess commands validated as absolute paths; dangerous env keys stripped
 - [ ] `MetricAggregator.record()` only called with values known to be finite
 - [ ] High security mode respected: never bypass `recordContent=false` when `highSecurity=true`
@@ -140,7 +140,7 @@ Follow this pattern for any new storage paths the MCP server creates.
 
 `validateSsrfUrl()` validates any user-configured URL against two criteria:
 
-1. **Scheme** — only `http:` and `https:` are allowed
+1. **Scheme** — only `http:` and `https:` are allowed by this function. Proxy `HttpUpstream` is stricter: it requires `https:` for every host except loopback (`localhost`, `127.0.0.1`, `::1`), and for private-range hosts it also requires `allowInsecureHttp: true` alongside `allowPrivateHosts` before it accepts `http:`. See [Proxy HTTP Upstreams](docs/ADVANCED.md#proxy-http-upstreams-https-required).
 2. **Host** — RFC-1918 addresses (`10.*`, `172.16–31.*`, `192.168.*`), loopback (`127.*`, `::1`, `localhost`), and link-local (`169.254.*`) are rejected
 
 ```typescript
@@ -219,7 +219,19 @@ When spawning an upstream MCP server as a child process, two invariants must hol
 
    Note: `PATH` is intentionally **not** stripped. `StdioClientTransport` (MCP SDK) spreads `getDefaultEnvironment()` before applying the caller-supplied env, so stripping `PATH` from config input has no effect — it would always flow through anyway. PATH-based hijacking is prevented instead by the absolute-path requirement in invariant 1.
 
-If you add a new subprocess invocation anywhere in the codebase, apply both checks.
+The full key list lives in `DANGEROUS_ENV_KEYS` (`src/lib/child-env.ts`). If you add a new subprocess invocation anywhere in the codebase, apply both checks.
+
+### Secret helper commands — `src/secret-command.ts`
+
+`licenseKeyCommand`, `nrApiKeyCommand` and `digestWebhookUrlCommand` run a configured program at startup to read a secret from stdout. See [ADVANCED.md](./docs/ADVANCED.md#secret-helper-commands) for user-facing behavior. Invariants:
+
+1. **argv only, no shell** — the config value is a JSON array passed to `spawnSync` with `shell: false`. A string form is rejected by the schema.
+2. **Absolute executable path** — same rule as `StdioUpstream`.
+3. **Dangerous env keys stripped** — the child gets `process.env` through `stripDangerousEnv()`. Everything else is inherited, so a helper can read `NEW_RELIC_LICENSE_KEY` and any other secret in Preflight's environment. Only point these fields at programs you trust with that environment.
+4. **Bounded** — 20-second timeout, 64 KiB stdout cap, stdin closed, stderr discarded.
+5. **Errors never carry output or argv** — `SecretCommandError` names only the field and the failure class. stdout is the secret, and stderr or arguments can contain parts of it.
+6. **Never logged** — the resolved value lands in the same config field as the plaintext value and is handled the same way. Source reporting (`secretSources`) carries `env | command | file | unset`, never the value.
+7. **Not run when outranked** — an env var for the same field skips the command, `licenseKeyCommand` and `nrApiKeyCommand` never run in `mode: 'local'`, and the dashboard's polled `/api/diagnostics` route and `getDashboardAddress()` load config with `resolveSecrets: false` so they never run a helper.
 
 ---
 

@@ -117,7 +117,7 @@ export const TRENDS_TOOL = {
 export const COLLABORATION_PROFILE_TOOL = {
   name: 'nr_observe_get_collaboration_profile',
   description:
-    "Get a developer's collaboration profile: specificity, autonomy, correction rate, task complexity, and classification.",
+    "Get a developer's collaboration profile: specificity, autonomy, correction rate, task complexity, and classification. Self-coaching only; not for evaluating individuals.",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -276,7 +276,8 @@ export const PERSONAL_INSIGHTS_TOOL = {
     "Returns a narrative coaching report comparing this week's personal AI coding metrics against your historical baseline. " +
     'Includes highlights, regressions, streaks, and a top recommendation. ' +
     'Requires at least 2 weeks of session history. ' +
-    'Returns status: "insufficient_data" with a message when history is too sparse.',
+    'Returns status: "insufficient_data" with a message when history is too sparse. ' +
+    'Self-coaching only; not for evaluating individuals.',
   inputSchema: {
     type: 'object' as const,
     properties: {},
@@ -1066,17 +1067,22 @@ export function handleUnsubscribeDigest(configFilePath: string): {
 export async function handleSendDigest(
   weeklySummaryGenerator: WeeklySummaryGenerator,
   configFilePath: string,
+  webhookUrlOverride?: string,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  // Read webhook URL from config file at call time (not in-memory config, which won't
+  // An env var or digestWebhookUrlCommand outranks the file's
+  // digestWebhookUrl, so the startup-resolved value wins when one supplied it.
+  // Otherwise read the file at call time (not in-memory config, which won't
   // reflect updates made via nr_observe_subscribe_digest without a server restart).
-  let webhookUrl: string | undefined;
-  try {
-    const raw = JSON.parse(readFileSync(configFilePath, 'utf-8')) as Record<string, unknown>;
-    if (typeof raw.digestWebhookUrl === 'string') {
-      webhookUrl = raw.digestWebhookUrl;
+  let webhookUrl = webhookUrlOverride;
+  if (webhookUrl === undefined) {
+    try {
+      const raw = JSON.parse(readFileSync(configFilePath, 'utf-8')) as Record<string, unknown>;
+      if (typeof raw.digestWebhookUrl === 'string') {
+        webhookUrl = raw.digestWebhookUrl;
+      }
+    } catch {
+      /* config file may not exist yet */
     }
-  } catch {
-    /* config file may not exist yet */
   }
 
   if (!webhookUrl) {
@@ -1153,6 +1159,8 @@ export interface CrossSessionToolsDeps {
   accountId?: string;
   collectorHost?: string | null;
   configFilePath?: string;
+  /** See handleSendDigest's `webhookUrlOverride`. */
+  digestWebhookUrlOverride?: string;
   developer?: string;
 }
 
@@ -1320,7 +1328,11 @@ export function registerCrossSessionTools(deps: CrossSessionToolsDeps): Register
           'configFilePath or WeeklySummaryGenerator not available',
         );
         if (missing) return missing;
-        return handleSendDigest(deps.weeklySummaryGenerator!, deps.configFilePath!);
+        return handleSendDigest(
+          deps.weeklySummaryGenerator!,
+          deps.configFilePath!,
+          deps.digestWebhookUrlOverride,
+        );
       },
     },
     {
