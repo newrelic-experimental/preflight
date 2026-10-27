@@ -15,6 +15,7 @@ import * as keyValidator from './key-validator.js';
 import * as cliMod from './cli.js';
 import * as platformMod from './platform.js';
 import * as dashboardHealthMod from './dashboard-health.js';
+import * as keychainMod from './keychain.js';
 
 // ---------------------------------------------------------------------------
 // Module-level mocks (hoisted above imports by jest at runtime).
@@ -59,6 +60,10 @@ jest.mock('./schedule.js', () => ({
   resolveBinaryPath: jest.fn(() => null),
   installDashboardDaemon: jest.fn(),
 }));
+jest.mock('./keychain.js', () => ({
+  isKeychainSupported: jest.fn(() => false),
+  storeInKeychain: jest.fn(),
+}));
 jest.mock('./dashboard-health.js', () => ({
   getDashboardAddress: jest.fn(),
   waitForHealthyDashboard: jest.fn(),
@@ -72,6 +77,10 @@ const mockedKeyValidator = {
   validateApiKey: keyValidator.validateApiKey as jest.MockedFunction<
     typeof keyValidator.validateApiKey
   >,
+};
+const mockedKeychain = keychainMod as unknown as {
+  isKeychainSupported: jest.Mock;
+  storeInKeychain: jest.Mock;
 };
 const mockedFs = fsMod as unknown as {
   readFileSync: jest.Mock;
@@ -2076,5 +2085,181 @@ describe('setupWizard Copilot hooks install step', () => {
 
     expect(mockedCli.runInstallCli).toHaveBeenCalledTimes(1);
     expect(mockedCli.runInstallCli).toHaveBeenCalledWith(['install', '--copilot']);
+  });
+});
+
+describe('setupWizard macOS Keychain offer', () => {
+  let stdoutSpy: ReturnType<typeof jest.spyOn>;
+  let stderrSpy: ReturnType<typeof jest.spyOn>;
+  let mockRl: { question: jest.Mock; close: jest.Mock };
+  const prompts: string[] = [];
+
+  const LICENSE_CMD = ['/usr/bin/security', 'find-generic-password', '-s', 'lic', '-a', 'u', '-w'];
+  const API_CMD = ['/usr/bin/security', 'find-generic-password', '-s', 'api', '-a', 'u', '-w'];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    prompts.length = 0;
+    stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockRl = { question: jest.fn(), close: jest.fn() };
+    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedFs.mkdirSync.mockReturnValue(undefined);
+    mockedFs.writeFileSync.mockReturnValue(undefined);
+    mockedFs.readFileSync.mockReturnValue('{}');
+    delete process.env.NEW_RELIC_API_KEY;
+    delete process.env.NEW_RELIC_LICENSE_KEY;
+    mockedKeyValidator.validateLicenseKey.mockResolvedValue({ valid: true });
+    mockedKeyValidator.validateApiKey.mockResolvedValue({ valid: true });
+    mockedKeychain.isKeychainSupported.mockReturnValue(true);
+    mockedKeychain.storeInKeychain.mockImplementation((field: unknown) =>
+      field === 'licenseKey' ? LICENSE_CMD : API_CMD,
+    );
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+    mockedKeychain.isKeychainSupported.mockReturnValue(false);
+  });
+
+  function answers(...values: string[]): void {
+    let i = 0;
+    mockRl.question.mockImplementation(async (prompt: unknown) => {
+      prompts.push(String(prompt));
+      return values[i++] ?? '';
+    });
+  }
+
+  function written(): Record<string, unknown> {
+    return JSON.parse(mockedFs.writeFileSync.mock.calls[0][1] as string) as Record<string, unknown>;
+  }
+
+  // Order: mode, accountId, licenseKey, keychain(license), environment, nrApiKey,
+  //        keychain(api, only when a key was entered), developer, teamId, projectId,
+  //        repoUrlEnabled, sessionBudget, installHooks
+  it('writes licenseKeyCommand and no plaintext key when accepted', async () => {
+    answers('cloud', '12345', 'NRLIC-secret', 'y', 'us', '', 'tester', '', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    expect(mockedKeychain.storeInKeychain).toHaveBeenCalledWith('licenseKey', 'NRLIC-secret');
+    const config = written();
+    expect(config.licenseKeyCommand).toEqual(LICENSE_CMD);
+    expect(config).not.toHaveProperty('licenseKey');
+    expect(JSON.stringify(config)).not.toContain('NRLIC-secret');
+  });
+
+  it('keeps the plaintext key when declined', async () => {
+    answers('cloud', '12345', 'NRLIC-secret', 'n', 'us', '', 'tester', '', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    expect(mockedKeychain.storeInKeychain).not.toHaveBeenCalled();
+    const config = written();
+    expect(config.licenseKey).toBe('NRLIC-secret');
+    expect(config).not.toHaveProperty('licenseKeyCommand');
+  });
+
+  it('defaults to declining', async () => {
+    answers('cloud', '12345', 'NRLIC-secret', '', 'us', '', 'tester', '', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    expect(mockedKeychain.storeInKeychain).not.toHaveBeenCalled();
+    expect(written().licenseKey).toBe('NRLIC-secret');
+  });
+
+  it('stores the API key too and writes nrApiKeyCommand', async () => {
+    answers(
+      'cloud',
+      '12345',
+      'NRLIC-secret',
+      'y',
+      'us',
+      'NRAK-secret',
+      'y',
+      'tester',
+      '',
+      '',
+      '',
+      '',
+      'n',
+    );
+
+    await runSetupWizard();
+
+    expect(mockedKeychain.storeInKeychain).toHaveBeenCalledWith('nrApiKey', 'NRAK-secret');
+    const config = written();
+    expect(config.nrApiKeyCommand).toEqual(API_CMD);
+    expect(config).not.toHaveProperty('nrApiKey');
+    expect(JSON.stringify(config)).not.toContain('NRAK-secret');
+  });
+
+  it('falls back to plaintext and says so when the Keychain write fails', async () => {
+    mockedKeychain.storeInKeychain.mockImplementation(() => {
+      throw new Error('security add-generic-password failed');
+    });
+    answers('cloud', '12345', 'NRLIC-secret', 'y', 'us', '', 'tester', '', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    const config = written();
+    expect(config.licenseKey).toBe('NRLIC-secret');
+    expect(config).not.toHaveProperty('licenseKeyCommand');
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Could not store the license key in the Keychain');
+    expect(output).not.toContain('NRLIC-secret');
+  });
+
+  it('does not ask when the Keychain is not available', async () => {
+    mockedKeychain.isKeychainSupported.mockReturnValue(false);
+    answers('cloud', '12345', 'NRLIC-secret', 'us', '', 'tester', '', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    expect(prompts.some((p) => p.includes('Keychain'))).toBe(false);
+    expect(written().licenseKey).toBe('NRLIC-secret');
+  });
+
+  it('does not ask in local mode', async () => {
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n');
+
+    await runSetupWizard();
+
+    expect(prompts.some((p) => p.includes('Keychain'))).toBe(false);
+  });
+
+  it('keeps an existing licenseKeyCommand when the key prompt is left blank', async () => {
+    mockedFs.readFileSync.mockReturnValue(
+      JSON.stringify({
+        accountId: '12345',
+        licenseKeyCommand: [process.execPath, '-e', 'process.stdout.write("NRLIC-from-cmd")'],
+      }),
+    );
+    answers('cloud', '', '', 'us', '', 'tester', '', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    expect(mockedKeyValidator.validateLicenseKey).toHaveBeenCalledWith(
+      expect.objectContaining({ licenseKey: 'NRLIC-from-cmd' }),
+    );
+    expect(prompts.some((p) => p.includes('Keychain'))).toBe(false);
+    const config = written();
+    expect(config).toHaveProperty('licenseKeyCommand');
+    expect(config).not.toHaveProperty('licenseKey');
+  });
+
+  it('drops a stale licenseKeyCommand when a new plaintext key is typed', async () => {
+    mockedFs.readFileSync.mockReturnValue(
+      JSON.stringify({ accountId: '12345', licenseKeyCommand: LICENSE_CMD }),
+    );
+    answers('cloud', '', 'NRLIC-new', 'n', 'us', '', 'tester', '', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    const config = written();
+    expect(config.licenseKey).toBe('NRLIC-new');
+    expect(config).not.toHaveProperty('licenseKeyCommand');
   });
 });
