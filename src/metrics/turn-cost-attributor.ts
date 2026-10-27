@@ -520,7 +520,6 @@ export class TurnCostAttributor {
     };
   }
 
-  /** The one place a token report is priced; tool and response turns both go through it. */
   private priceTokenEvent(event: TokenEvent): number {
     const usage: TokenUsage = {
       inputTokens: event.inputTokens,

@@ -906,7 +906,6 @@ export function turnCostToNrEvents(
   },
 ): NrEventData[] {
   const { attribution } = turn;
-  // A response turn has no calls, so it yields one row carrying the whole report.
   const shares: readonly (TurnToolCall | null)[] = turn.calls.length > 0 ? turn.calls : [null];
   const platform = turn.platform ?? 'claude-code';
 
