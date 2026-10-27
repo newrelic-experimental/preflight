@@ -1535,7 +1535,9 @@ function doctorExitCode(checks: readonly DiagnosticCheck[]): number {
 async function initDoctorPricing(configPath: string): Promise<void> {
   const { initModelPricing } = await import('../metrics/pricing-init.js');
   try {
-    initModelPricing(loadMcpConfig({ config: configPath }), { refresh: false });
+    initModelPricing(loadMcpConfig({ config: configPath }, { resolveSecrets: false }), {
+      refresh: false,
+    });
   } catch (err) {
     logger.debug('Could not load config for doctor pricing', { error: errMsg(err) });
   }

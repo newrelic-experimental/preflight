@@ -2420,6 +2420,10 @@ describe('preflight doctor', () => {
     const prog = createInstallProgram();
     await prog.parseAsync(['node', 'preflight', 'doctor', '--json']);
     expect(mockedInitModelPricing).toHaveBeenCalledWith(config, { refresh: false });
+    expect(mockedConfig.loadMcpConfig).toHaveBeenCalledWith(
+      { config: expect.any(String) },
+      { resolveSecrets: false },
+    );
     expect(mockedInitModelPricing.mock.invocationCallOrder[0]).toBeLessThan(
       mockedRunDiagnostics.mock.invocationCallOrder[0],
     );
