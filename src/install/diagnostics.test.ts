@@ -410,6 +410,7 @@ describe('runDiagnostics', () => {
           mode: 'local',
           companionMode: false,
           customPricingFile: null,
+          secretSources: UNSET_SOURCES,
         });
         await runDiagnostics(makeOpts());
         expect(resolvePricing('acme-gateway-x')).not.toBeNull();
@@ -1103,7 +1104,7 @@ describe('runDiagnostics', () => {
       const checks = await runDiagnostics({ configPath: '/tmp/does-not-exist.json' });
       // Every check must still be present — one throwing dependency must not
       // take down the rest of the diagnostic run.
-      expect(checks).toHaveLength(14);
+      expect(checks).toHaveLength(15);
       const check = checks.find((c) => c.check === 'Local instances');
       expect(check?.status).toBe('warn');
       expect(check?.detail).toContain('registry file is corrupt');
@@ -1154,6 +1155,6 @@ describe('runDiagnostics', () => {
 
   it('returns every check on macOS', async () => {
     const checks = await runDiagnostics(makeOpts());
-    expect(checks).toHaveLength(14);
+    expect(checks).toHaveLength(15);
   });
 });
