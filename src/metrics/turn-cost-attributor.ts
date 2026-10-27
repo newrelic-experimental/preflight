@@ -93,8 +93,8 @@ export interface ClosedTurn {
   readonly calls: readonly TurnToolCall[];
   /**
    * For a tool turn, `ToolCallRecord.platform` of its first call. For a
-   * response turn, the platform of the session's most recent tool call.
-   * Undefined when the hook carried no stamp.
+   * response turn, the token report's platform, else the session's most
+   * recent stamped tool call's. Undefined when neither is known.
    */
   readonly platform: string | undefined;
 }
@@ -221,8 +221,8 @@ interface SessionState {
   activeSlashSkill: string | null;
   droppedTokenEvents: number;
   /**
-   * Platform of the most recent tool call. Token reports carry no platform,
-   * so a response turn takes its platform from here.
+   * Platform of the most recent stamped tool call, for a response turn whose
+   * token report came from a source with no known platform.
    */
   lastPlatform: string | undefined;
 }
@@ -336,7 +336,7 @@ export class TurnCostAttributor {
     state.totalToolCalls++;
     const endTime = record.timestamp + (record.durationMs ?? 0);
     const platform = typeof record.platform === 'string' ? record.platform : undefined;
-    state.lastPlatform = platform;
+    if (platform !== undefined) state.lastPlatform = platform;
 
     const id = bucketIdentityOf(record);
     const key = bucketKeyOf(id);
@@ -498,10 +498,11 @@ export class TurnCostAttributor {
    */
   private responseTurn(state: SessionState, event: TokenEvent): ClosedTurn {
     const costUsd = this.priceTokenEvent(event);
+    const id = randomUUID();
     return {
-      id: randomUUID(),
+      id,
       attribution: {
-        turnId: randomUUID(),
+        turnId: id,
         startTime: event.timestamp,
         endTime: event.timestamp,
         toolCalls: [],
@@ -516,7 +517,7 @@ export class TurnCostAttributor {
         sessionId: event.sessionId ?? null,
       },
       calls: [],
-      platform: state.lastPlatform,
+      platform: event.platform ?? state.lastPlatform,
     };
   }
 

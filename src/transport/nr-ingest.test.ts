@@ -3929,4 +3929,13 @@ describe('AiTurnCost coverage of token reports', () => {
     expect(metrics.turns).toHaveLength(1);
     expect(metrics.costByToolType.Read.totalCost).toBeCloseTo(perReport, 10);
   });
+
+  it('tags a Claude Code response row cost_authority=external in companion mode before any tool call', () => {
+    const attributor = new TurnCostAttributor();
+    const turn = attributor.recordTokenEvent({ ...tokens(1_000), platform: 'claude-code' });
+
+    const [row] = turnCostToNrEvents(turn, { ...attrs, companionMode: true });
+
+    expect(row).toMatchObject({ platform: 'claude-code', cost_authority: 'external' });
+  });
 });

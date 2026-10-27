@@ -276,6 +276,8 @@ export interface TokenEvent {
   readonly sessionId?: string;
   /** See `TokenHookEvent.responseMs`'s doc comment. */
   readonly responseMs?: number;
+  /** The report's platform: the line's own stamp, else its source's (see `TOKEN_SOURCE_PLATFORM`). */
+  readonly platform?: string;
 }
 
 export interface SessionSummary {

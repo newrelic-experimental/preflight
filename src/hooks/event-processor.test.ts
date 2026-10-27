@@ -1358,6 +1358,38 @@ describe('HookEventProcessor', () => {
       expect(records).toHaveLength(0);
     });
 
+    it.each([
+      ['transcript', undefined, 'claude-code'],
+      ['copilot-usage', undefined, 'copilot'],
+      ['copilot-sdk-usage', undefined, 'copilot'],
+      ['copilot-app-usage', undefined, 'copilot-app'],
+      ['copilot-usage', 'cursor', 'cursor'],
+      ['unknown-source', undefined, undefined],
+    ])('a %s token line with stamp %s gets platform %s', (tool, stamp, expected) => {
+      const tokenEvents: Array<{ platform?: string }> = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onTokenEvent: (event) => {
+          tokenEvents.push(event);
+        },
+      });
+
+      processor.processEvents([
+        {
+          mode: 'token',
+          tool,
+          timestamp: 5000,
+          inputTokens: 1,
+          outputTokens: 1,
+          sessionId: 'sess-001',
+          ...(stamp !== undefined && { platform: stamp }),
+        },
+      ]);
+
+      expect(tokenEvents[0].platform).toBe(expected);
+    });
+
     it('does not error when onTokenEvent is not provided', () => {
       const processor = new HookEventProcessor({
         store,

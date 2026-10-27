@@ -177,6 +177,31 @@ describe('TurnCostAttributor', () => {
       expect(response.platform).toBe('github-copilot');
     });
 
+    it("uses the token report's own platform over the session's last tool call", () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordToolCall(makeRecord({ timestamp: 1000, platform: 'copilot' }));
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+      const response = attributor.recordTokenEvent(
+        makeTokenEvent({ timestamp: 9000, platform: 'claude-code' }),
+      );
+
+      expect(response.platform).toBe('claude-code');
+    });
+
+    it('keeps the last stamped platform when a later tool call carries none', () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordToolCall(
+        makeRecord({ toolUseId: 'a', timestamp: 1000, platform: 'copilot' }),
+      );
+      attributor.recordToolCall(makeRecord({ toolUseId: 'b', timestamp: 1500 }));
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1600 }));
+      const response = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 9000 }));
+
+      expect(response.platform).toBe('copilot');
+    });
+
     it('leaves a response turn platform undefined before any tool call', () => {
       const attributor = new TurnCostAttributor();
 
