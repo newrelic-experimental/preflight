@@ -38,6 +38,7 @@ import {
 import { copilotSdkExtensionInstallPath } from '../hooks/copilot-sdk-extension-health.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { resolveInstallCredentials } from './credentials.js';
+import { lookupUser, runInstallAsUser, type TargetUser } from './target-user.js';
 import {
   validateConfigFile,
   DEFAULT_STORAGE_PATH,
@@ -1597,6 +1598,47 @@ async function handleDoctor(options: {
 // CLI program
 // ---------------------------------------------------------------------------
 
+/**
+ * Handles `install` when the caller is root or names a --target-user.
+ * Returns true when the install already ran as the target user.
+ */
+function installForTargetUser(
+  options: { targetUser?: string; project?: boolean },
+  credentials: { licenseKey?: string; accountId?: string },
+): boolean {
+  const currentUid = process.getuid?.();
+  if (!options.targetUser) {
+    if (currentUid === 0) {
+      print(
+        `\n  ⚠ Running as root: this configures root's home (${homedir()}). ` +
+          "To configure a user's home instead, add --target-user <name>.",
+      );
+    }
+    return false;
+  }
+
+  if (options.project) {
+    eprint('\n✗ --project cannot be combined with --target-user.');
+    process.exit(1);
+  }
+  let user: TargetUser;
+  try {
+    user = lookupUser(options.targetUser);
+  } catch (err) {
+    eprint(`\n✗ ${errMsg(err)}`);
+    process.exit(1);
+  }
+  if (user.uid === currentUid) return false;
+  if (currentUid !== 0) {
+    eprint(`\n✗ --target-user ${user.name} requires running as root.`);
+    process.exit(1);
+  }
+
+  print(`\n  Installing for ${user.name} (${user.home})`);
+  process.exitCode = runInstallAsUser(user, process.argv.slice(1), credentials);
+  return true;
+}
+
 export function createInstallProgram(): Command {
   const program = new Command();
   program.name('preflight').description('New Relic AI observability for Claude Code');
@@ -1618,6 +1660,10 @@ export function createInstallProgram(): Command {
         [...VALID_MODES],
       ),
     )
+    .option(
+      '--target-user <name>',
+      "Run as root and configure this user's home (for MDM tools such as Jamf that run scripts as root)",
+    )
     .option('--project', 'Write to project-level .claude/settings.json instead of user-level')
     .option('--windows-cc', 'Target Windows Claude Code (desktop app) when running inside WSL')
     .option('--linux-cc', 'Target Linux Claude Code (npm in WSL) when running inside WSL')
@@ -1630,6 +1676,7 @@ export function createInstallProgram(): Command {
         licenseKey?: string;
         licenseKeyFile?: string;
         accountId?: string;
+        targetUser?: string;
         mode?: Mode;
         project?: boolean;
         windowsCc?: boolean;
@@ -1648,6 +1695,7 @@ export function createInstallProgram(): Command {
           process.exit(1);
         }
         for (const warning of credentials.warnings) print(`\n  ⚠ ${warning}`);
+        if (installForTargetUser(cliOptions, credentials)) return;
         const options = {
           ...cliOptions,
           licenseKey: credentials.licenseKey,

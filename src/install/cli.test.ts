@@ -89,6 +89,10 @@ jest.mock('../config.js', () => ({
 jest.mock('./setup-wizard.js', () => ({
   runSetupWizard: jest.fn(),
 }));
+jest.mock('./target-user.js', () => ({
+  lookupUser: jest.fn(),
+  runInstallAsUser: jest.fn(() => 0),
+}));
 
 import { LocalStore } from '../storage/index.js';
 import * as scheduleMod from './schedule.js';
@@ -98,6 +102,7 @@ import * as installHelperMod from './install-helper.js';
 import * as copilotInstallHelperMod from './copilot-install-helper.js';
 import * as configMod from '../config.js';
 import * as setupWizardMod from './setup-wizard.js';
+import * as targetUserMod from './target-user.js';
 import * as pricingInitMod from '../metrics/pricing-init.js';
 
 const mockedRunDiagnostics = diagnostics.runDiagnostics as jest.MockedFunction<
@@ -139,6 +144,10 @@ const mockedHelper = installHelperMod as unknown as {
   detectSettingsPath: jest.Mock;
   detectMcpConfigPath: jest.Mock;
   generateNrConfig: jest.Mock;
+};
+const mockedTargetUser = targetUserMod as unknown as {
+  lookupUser: jest.Mock;
+  runInstallAsUser: jest.Mock;
 };
 const mockedConfig = configMod as unknown as { loadMcpConfig: jest.Mock };
 const mockedSetupWizard = {
@@ -1336,6 +1345,137 @@ describe('platform transition matrix', () => {
     }
 
     expect(mockedHelper.generateNrConfig).toHaveBeenCalledWith('NRLIC-from-env', '4242');
+  });
+
+  describe('--target-user', () => {
+    const dev = { name: 'dev', uid: 501, gid: 20, home: '/Users/dev' };
+    let uidSpy: ReturnType<typeof jest.spyOn>;
+    let stderrSpy: ReturnType<typeof jest.spyOn>;
+    let exitSpy: ReturnType<typeof jest.spyOn>;
+
+    function asUid(uid: number): void {
+      uidSpy = jest.spyOn(process, 'getuid').mockReturnValue(uid);
+    }
+
+    beforeEach(() => {
+      mFs.readFileSync.mockReturnValue('{}');
+      mockedTargetUser.lookupUser.mockReset().mockReturnValue(dev);
+      mockedTargetUser.runInstallAsUser.mockReset().mockReturnValue(0);
+      stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      exitSpy = jest.spyOn(process, 'exit').mockImplementation((() => {
+        throw new Error('process.exit');
+      }) as never);
+    });
+
+    afterEach(() => {
+      uidSpy?.mockRestore();
+      stderrSpy.mockRestore();
+      exitSpy.mockRestore();
+      process.exitCode = undefined;
+    });
+
+    it('as root re-runs the install as the user and writes nothing itself', async () => {
+      asUid(0);
+
+      await runInstallCli([
+        'install',
+        '--target-user',
+        'dev',
+        '--license-key',
+        'NRLIC-k',
+        '--account-id',
+        '9',
+      ]);
+
+      expect(mockedTargetUser.lookupUser).toHaveBeenCalledWith('dev');
+      expect(mockedTargetUser.runInstallAsUser).toHaveBeenCalledWith(
+        dev,
+        expect.any(Array),
+        expect.objectContaining({ licenseKey: 'NRLIC-k', accountId: '9' }),
+      );
+      expect(mockedHelper.mergeSettings).not.toHaveBeenCalled();
+    });
+
+    it('hands the resolved key to the child so it never goes through argv', async () => {
+      asUid(0);
+      process.env.NEW_RELIC_LICENSE_KEY = 'NRLIC-env';
+      try {
+        await runInstallCli(['install', '--target-user', 'dev']);
+      } finally {
+        delete process.env.NEW_RELIC_LICENSE_KEY;
+      }
+
+      expect(mockedTargetUser.runInstallAsUser).toHaveBeenCalledWith(
+        dev,
+        expect.any(Array),
+        expect.objectContaining({ licenseKey: 'NRLIC-env' }),
+      );
+    });
+
+    it('passes the child exit status through', async () => {
+      asUid(0);
+      mockedTargetUser.runInstallAsUser.mockReturnValue(3);
+
+      await runInstallCli(['install', '--target-user', 'dev']);
+
+      expect(process.exitCode).toBe(3);
+    });
+
+    it('refuses when not root', async () => {
+      asUid(777);
+
+      await expect(runInstallCli(['install', '--target-user', 'dev'])).rejects.toThrow(
+        'process.exit',
+      );
+
+      const stderr = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(stderr).toContain('--target-user dev requires running as root');
+      expect(mockedTargetUser.runInstallAsUser).not.toHaveBeenCalled();
+    });
+
+    it('installs in place when the target is the current user', async () => {
+      asUid(501);
+
+      await runInstallCli(['install', '--target-user', 'dev']);
+
+      expect(mockedTargetUser.runInstallAsUser).not.toHaveBeenCalled();
+      expect(mockedHelper.mergeSettings).toHaveBeenCalled();
+    });
+
+    it('exits 1 on an unknown user', async () => {
+      asUid(0);
+      mockedTargetUser.lookupUser.mockImplementation(() => {
+        throw new Error('User not found: ghost');
+      });
+
+      await expect(runInstallCli(['install', '--target-user', 'ghost'])).rejects.toThrow(
+        'process.exit',
+      );
+
+      const stderr = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(stderr).toContain('User not found: ghost');
+    });
+
+    it('rejects --project', async () => {
+      asUid(0);
+
+      await expect(runInstallCli(['install', '--target-user', 'dev', '--project'])).rejects.toThrow(
+        'process.exit',
+      );
+
+      expect(mockedTargetUser.runInstallAsUser).not.toHaveBeenCalled();
+    });
+
+    it('warns which home a root install without a target will configure', async () => {
+      asUid(0);
+
+      await runInstallCli(['install']);
+
+      const stdout = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(stdout).toContain('Running as root');
+      expect(stdout).toContain('--target-user <name>');
+      expect(mockedHelper.mergeSettings).toHaveBeenCalled();
+    });
   });
 
   // Bug fix: !nrConfigWriteFailed guard was suppressing the "Both required" hint when

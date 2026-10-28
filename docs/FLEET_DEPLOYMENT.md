@@ -116,6 +116,25 @@ person is attributed individually without a per-machine setting.
 If the server shows `Failed to connect`, the most common cause is a license key
 with no `NR_AI_MODE`. See [Cloud mode](./PLUGIN.md#cloud-mode) in PLUGIN.md.
 
+## Installing the npm package from a root-run script
+
+MDM tools such as Jamf run scripts as root, and `preflight install` configures
+the home directory of whoever runs it. Add `--target-user` to configure the
+logged-in user instead:
+
+```bash
+preflight install --mode cloud --target-user "$LOGGED_IN_USER" \
+  --license-key-file /path/to/key --account-id 123456
+```
+
+The install re-runs itself as that user with their `HOME`, so `config.json`
+(`0600`), `~/.claude/settings.json`, `~/.mcp.json` and the storage directory
+belong to them, and nothing is written under root's home. The license key is
+read as root and passed to the child through its environment, so the key file
+can stay root-only and the key never appears in `ps`. `--target-user` works on
+macOS and Linux, and not with `--project`. Without it, a root-run install warns
+which home it is configuring.
+
 ## What has been tested
 
 - **Tested.** On Linux with Claude Code 2.1.304 and a `managed-settings.json` in
