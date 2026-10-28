@@ -292,12 +292,12 @@ export function toolCallToNrEvent(
     }
   }
 
-  if (record.activeSkill) Object.assign(event, skillRunAttributes(record.activeSkill));
-  // A failed Skill call opens no run, so without this it would carry no skill
-  // name, or the name of the run it failed inside.
-  if (record.toolName === 'Skill' && typeof record.skillName === 'string') {
+  if (record.activeSkill) {
+    Object.assign(event, skillRunAttributes(record.activeSkill));
+  } else if (record.toolName === 'Skill' && typeof record.skillName === 'string') {
+    // A failed Skill call opens no run, so outside any run it would carry no skill name.
     event.skill_name = redactSensitive(record.skillName);
-    event.skill_source ??= 'tool';
+    event.skill_source = 'tool';
   }
 
   return event;

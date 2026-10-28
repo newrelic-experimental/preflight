@@ -519,7 +519,7 @@ describe('toolCallToNrEvent()', () => {
       expect(event).not.toHaveProperty('skill_run_id');
     });
 
-    it('names the attempted skill on a failed Skill call inside another run', () => {
+    it('keeps the surrounding run intact on a failed Skill call inside it', () => {
       const record = makeRecord({
         toolName: 'Skill',
         skillName: 'deploy',
@@ -530,7 +530,7 @@ describe('toolCallToNrEvent()', () => {
       const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
 
       expect(event).toMatchObject({
-        skill_name: 'deploy',
+        skill_name: 'review',
         skill_source: 'slash',
         skill_run_id: 'run-1',
       });
