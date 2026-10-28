@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { MAX_AGENT_TYPE_LENGTH } from '../lib/agent-id.js';
 import { LocalStore } from '../storage/local-store.js';
 import { HookEventProcessor } from './event-processor.js';
+import { SkillActivationTracker } from '../metrics/skill-activation-tracker.js';
 import { AntigravityAdapter } from '../platforms/antigravity-adapter.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import type {
@@ -2332,6 +2333,43 @@ describe('HookEventProcessor', () => {
 
       expect(frames).toHaveLength(1);
       expect(frames[0].slashCommand).toBe('simplify');
+    });
+
+    it('delivers prompt frames and tool records in buffer order so a skill tracker stamps them correctly', () => {
+      const tracker = new SkillActivationTracker();
+      const stamped: Array<{ tool: string; skill: string | undefined }> = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: (record) => {
+          stamped.push({ tool: record.toolName, skill: tracker.recordToolCall(record)?.name });
+        },
+        onUserPromptSubmit: (f) => tracker.recordPrompt(f.sessionId, f.slashCommand ?? null),
+      });
+      const prompt = (
+        slashCommand?: string,
+        timestamp = 1700000000000,
+      ): UserPromptSubmitHookEvent =>
+        ({
+          mode: 'user_prompt_submit',
+          tool: 'user_prompt_submit',
+          timestamp,
+          sessionId: 's1',
+          ...(slashCommand && { slashCommand }),
+        }) as UserPromptSubmitHookEvent;
+
+      processor.processEvents([
+        prompt('simplify'),
+        makePreEvent({ tool: 'Read', toolUseId: 'r1', sessionId: 's1' }),
+        makePostEvent({ tool: 'Read', toolUseId: 'r1', sessionId: 's1' }),
+        prompt(undefined, 1700000001000),
+        makePreEvent({ tool: 'Bash', toolUseId: 'b1', sessionId: 's1' }),
+        makePostEvent({ tool: 'Bash', toolUseId: 'b1', sessionId: 's1' }),
+      ]);
+
+      expect(stamped).toEqual([
+        { tool: 'Read', skill: 'simplify' },
+        { tool: 'Bash', skill: undefined },
+      ]);
     });
 
     it('omits slashCommand from onUserPromptSubmit frame when absent', () => {
