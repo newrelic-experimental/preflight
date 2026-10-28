@@ -348,7 +348,7 @@ Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a sep
 | `nrApiKeyCommand`         | `nrApiKey`         | `NEW_RELIC_API_KEY`               |
 | `digestWebhookUrlCommand` | `digestWebhookUrl` | `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` |
 
-**Precedence.** Env var > `*Command` > plaintext value in the file > unset. None of these fields has a CLI flag. The command does not run when the env var is set. If both `licenseKeyCommand` and `licenseKey` are in the file, the command wins and Preflight logs a warning. `licenseKeyCommand` and `nrApiKeyCommand` do not run when the resolved mode is `local`, since local mode never sends anything to New Relic. `digestWebhookUrlCommand` does run in local mode, because the digest goes to Slack, not New Relic.
+**Precedence.** Env var > `*Command` > plaintext value in the file > unset. A blank env var counts as unset. None of these fields has a CLI flag. The command does not run when the env var is set. If both `licenseKeyCommand` and `licenseKey` are in the file, the command wins and Preflight logs a warning. `licenseKeyCommand` and `nrApiKeyCommand` do not run when the resolved mode is `local`, since local mode never sends anything to New Relic. `digestWebhookUrlCommand` does run in local mode, because the digest goes to Slack, not New Relic.
 
 **Where helpers run.** Only at server startup and in `preflight doctor`. The dashboard's Settings page polls `/api/diagnostics` every 60 seconds; that route reports each secret's source without running the helper, so a Keychain or `op` helper never prompts on a poll.
 
@@ -361,7 +361,7 @@ Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a sep
 - stdin is closed and stderr is discarded. One trailing newline is removed from stdout. Everything else is kept as is.
 - The command must exit with status 0 within 20 seconds and print at most 64 KiB.
 
-**Failures stop startup.** For `licenseKeyCommand`, a command that is not an absolute path, cannot be started, exits non-zero, is killed, times out, prints too much, or prints nothing fails config load with an error that names the field and the failure, for example `Could not read licenseKey from licenseKeyCommand: the command exited with a non-zero status (1)`. The error never contains the command's output or arguments. Run the command yourself in a terminal to see why it failed. `preflight doctor` reports the same error under "Telemetry mode".
+**Failures stop startup.** For `licenseKeyCommand`, a command that is not an absolute path, cannot be started, exits non-zero, is killed, times out, prints too much, or prints nothing fails config load with an error that names the field and the failure, for example `Could not read licenseKey from licenseKeyCommand: the command exited with a non-zero status (1)`. The error never contains the command's output or arguments. Run the command yourself in a terminal to see why it failed. `preflight doctor` reports the same error under "Telemetry mode". The `--local` dashboard does not exit on this failure: it falls back to local mode, as it does for a missing key, and logs that the helper failed.
 
 **Optional secrets only warn.** `nrApiKeyCommand` and `digestWebhookUrlCommand` feed features that are not needed to run (team summaries, the weekly digest). When one fails, Preflight logs the same error as a warning, starts without that secret, and reports its source as `unset`. The plaintext value in the file is not used as a fallback.
 
@@ -371,7 +371,7 @@ Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a sep
 
 **GUI-launched clients and launchd.** An MCP client started from the Dock or Finder does not see variables set in your shell profile. A helper that needs `VAULT_ADDR`, `VAULT_TOKEN` or 1Password's `OP_*` variables either reads them from its own config file (`~/.vault-token`, the 1Password desktop app integration) or fails. The macOS Keychain needs a logged-in GUI session, so a launchd daemon or SSH session can get `User interaction is not allowed`. The first Keychain read from Preflight's `node` binary can show an access prompt. Startup waits for it until the 20-second timeout, so choose **Always Allow**.
 
-**Weekly digest.** When `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` or `digestWebhookUrlCommand` supplies the webhook URL, sending the digest uses that value. A URL written to the file by `nr_observe_subscribe_digest` or the dashboard is ignored until you remove both.
+**Weekly digest.** When `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` or `digestWebhookUrlCommand` supplies the webhook URL, sending the digest uses that value. A URL written to the file by the dashboard is ignored until you remove both, and `nr_observe_subscribe_digest` refuses to save one while `digestWebhookUrlCommand` is set. If the command fails, the digest is not sent to the file's URL.
 
 **Not covered.** Tier destinations (`tiers[].destination.licenseKey`) take a plaintext key only. A `licenseKeyCommand` value reaches the implicit `default` tier that Preflight builds when `tiers` is absent, but an explicit `tiers` array is used as written.
 

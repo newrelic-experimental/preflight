@@ -134,7 +134,7 @@ import { TaskSpanTracker } from './tracing/task-span-tracker.js';
 import { emitToolCallSpan } from './tracing/tool-call-span.js';
 import { NrIngestManager } from './transport/nr-ingest.js';
 import {
-  UNFORWARDED_SESSIONS_HINT,
+  unforwardedSessionsHint,
   UnforwardedSessionMonitor,
   detectCloudForwardingGap,
 } from './transport/unforwarded-session-monitor.js';
@@ -1118,9 +1118,17 @@ async function main(): Promise<void> {
         process.env.NR_AI_MODE = 'local';
         config = loadConfigOrDie(options);
         unforwardedSessionMonitor = new UnforwardedSessionMonitor({ gap });
+        const problem =
+          gap.reason === 'secret-helper-failed'
+            ? `could not read ${gap.missingField} from its helper command`
+            : `has no ${gap.missingField}`;
         logger.warn(
-          `Cloud export is configured (mode='${gap.requestedMode}') but this --local process has no ${gap.missingField}; sessions it drains will not reach New Relic`,
-          { reason: gap.reason, requestedMode: gap.requestedMode, hint: UNFORWARDED_SESSIONS_HINT },
+          `Cloud export is configured (mode='${gap.requestedMode}') but this --local process ${problem}; sessions it drains will not reach New Relic`,
+          {
+            reason: gap.reason,
+            requestedMode: gap.requestedMode,
+            hint: unforwardedSessionsHint(gap.reason),
+          },
         );
       }
 
