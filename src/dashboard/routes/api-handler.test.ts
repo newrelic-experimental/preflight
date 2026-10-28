@@ -5831,6 +5831,23 @@ describe('api-handler PATCH /api/settings', () => {
     });
   });
 
+  it('refuses to save a digestWebhookUrl that digestWebhookUrlCommand would shadow', async () => {
+    const configFilePath = makeConfigFilePath({
+      digestWebhookUrlCommand: ['/usr/bin/vault', 'read', 'slack'],
+    });
+    const handler = createApiHandler({ configFilePath });
+
+    const req = makePatchRequest({ digestWebhookUrl: 'https://hooks.slack.com/services/T/B/X' });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+
+    expect(status()).toBe(400);
+    expect(JSON.parse(body()).errors[0]).toMatch(/^digestWebhookUrlCommand is configured/);
+    expect(JSON.parse(fs.readFileSync(configFilePath, 'utf-8'))).not.toHaveProperty(
+      'digestWebhookUrl',
+    );
+  });
+
   it('sets restartRequired: false when the ONLY changed field is digestWebhookUrl', async () => {
     const configFilePath = makeConfigFilePath({});
     const handler = createApiHandler({ configFilePath });

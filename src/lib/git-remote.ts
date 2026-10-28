@@ -197,6 +197,20 @@ export function projectIdFromRemote(remote: string | null | undefined): string |
 }
 
 /**
+ * A repo name saved before the shared parser existed can lead with the remote's
+ * userinfo (`<token>@github.com/widgets`). A real name never has an `@` in its
+ * first segment, so everything through the last `@` there is userinfo. Returns
+ * null when nothing is left.
+ */
+export function stripRepoNameCredentials(name: string): string | null {
+  const slash = name.indexOf('/');
+  const firstSegment = slash === -1 ? name : name.slice(0, slash);
+  const at = firstSegment.lastIndexOf('@');
+  const stripped = name.slice(at + 1);
+  return stripped.length > 0 ? stripped : null;
+}
+
+/**
  * A browsable commit URL (`https://<host>/<path>/commit/<hash>`) for a network
  * remote. Null for local, `file://`, and `git://` remotes, for an ssh or scp
  * remote with no login name, which usually names a `Host` alias from

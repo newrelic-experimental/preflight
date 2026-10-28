@@ -15,7 +15,7 @@
  */
 
 import { createLogger } from '../shared/index.js';
-import { MissingCloudCredentialError, type Mode } from '../config.js';
+import { CloudSecretCommandError, MissingCloudCredentialError, type Mode } from '../config.js';
 
 const logger = createLogger('unforwarded-session-monitor');
 
@@ -24,12 +24,16 @@ const DEFAULT_MAX_TRACKED_SESSIONS = 500;
 /** How many sessions `getSnapshot()` lists, newest activity first. */
 const SNAPSHOT_SESSION_LIMIT = 20;
 
-/** Which credential this process was missing when it fell back to local mode. */
-export type CloudForwardingGapReason = 'missing-license-key' | 'missing-account-id';
+/**
+ * Why this process fell back to local mode: a credential was missing, or the
+ * helper command that supplies it failed.
+ */
+export type CloudForwardingGapReason =
+  'missing-license-key' | 'missing-account-id' | 'secret-helper-failed';
 
 export interface CloudForwardingGap {
   readonly reason: CloudForwardingGapReason;
-  /** The config field named by `reason`. */
+  /** The credential `reason` is about. */
   readonly missingField: 'licenseKey' | 'accountId';
   /** The mode the config asked for before the fallback (`cloud` or `both`). */
   readonly requestedMode: Mode;
@@ -83,13 +87,36 @@ export const UNFORWARDED_SESSIONS_HINT =
   'credentials. Add licenseKey and accountId to the config file (the dashboard LaunchAgent ' +
   'does not inherit shell environment variables), then restart the dashboard.';
 
+/** Same fix-it hint for a gap caused by a failing secret helper command. */
+export const SECRET_HELPER_FAILED_HINT =
+  'This dashboard process is not forwarding to New Relic because the helper command that supplies ' +
+  'your license key failed, for example because nobody could answer its Keychain or password-manager ' +
+  'prompt. Run licenseKeyCommand yourself to see why, then restart the dashboard.';
+
+export function unforwardedSessionsHint(reason: CloudForwardingGapReason): string {
+  return reason === 'secret-helper-failed' ? SECRET_HELPER_FAILED_HINT : UNFORWARDED_SESSIONS_HINT;
+}
+
 /**
  * Read the config-load error `--local` catches before falling back to local
- * mode: a `MissingCloudCredentialError`, thrown directly or carried as the
- * `cause` of a wrapping error. Returns null for any other error, which
- * `--local` rethrows.
+ * mode: a `MissingCloudCredentialError` or a `CloudSecretCommandError`,
+ * thrown directly or carried as the `cause` of a wrapping error. Returns null
+ * for any other error, which `--local` rethrows.
  */
 export function detectCloudForwardingGap(err: unknown): CloudForwardingGap | null {
+  const helperFailure =
+    err instanceof CloudSecretCommandError
+      ? err
+      : err instanceof Error && err.cause instanceof CloudSecretCommandError
+        ? err.cause
+        : undefined;
+  if (helperFailure) {
+    return {
+      reason: 'secret-helper-failed',
+      missingField: 'licenseKey',
+      requestedMode: helperFailure.mode,
+    };
+  }
   const source =
     err instanceof MissingCloudCredentialError
       ? err
@@ -184,7 +211,7 @@ export class UnforwardedSessionMonitor {
       untrackedToolCalls: this.untrackedToolCalls,
       sessions,
       truncated: sessions.length < this.sessions.size,
-      hint: UNFORWARDED_SESSIONS_HINT,
+      hint: unforwardedSessionsHint(this.gap.reason),
     };
   }
 }

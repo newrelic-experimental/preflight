@@ -14,8 +14,8 @@ import { resolveRecordContent } from './record-content-gate.js';
 import { projectIdFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
 import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
 import type { ResolvedTier } from './transport/tier-types.js';
-import { isSecretConfigured, resolveSecret } from './secret-command.js';
-import type { SecretSources } from './secret-command.js';
+import { SecretCommandError, isSecretConfigured, resolveSecret } from './secret-command.js';
+import type { ResolvedSecret, SecretSources } from './secret-command.js';
 
 const logger = createLogger('mcp-config');
 
@@ -229,7 +229,7 @@ export type PlatformTarget = 'native' | 'wsl-windows-cc' | 'wsl-linux-cc';
 
 // argv array only: a single string would invite shell-style quoting that
 // Preflight never interprets, since the command runs without a shell.
-const SecretCommandSchema = z.array(z.string().min(1)).min(1);
+export const SecretCommandSchema = z.array(z.string().min(1)).min(1);
 
 export const ConfigFileSchema = z
   .object({
@@ -696,6 +696,23 @@ export class MissingCloudCredentialError extends Error {
 }
 
 /**
+ * A `SecretCommandError` raised while resolving a secret that cloud export
+ * needs. It keeps the helper's own message for stdio users and adds the mode
+ * the config asked for, so `--local` can tell a failing helper from a missing
+ * credential and still fall back to local mode.
+ */
+export class CloudSecretCommandError extends SecretCommandError {
+  readonly mode: Mode;
+
+  constructor(original: SecretCommandError, mode: Mode) {
+    super(original.field, original.failure);
+    this.message = original.message;
+    this.cause = original;
+    this.mode = mode;
+  }
+}
+
+/**
  * The startup-resolved digest webhook URL when a source that outranks the
  * file's `digestWebhookUrl` (env var or digestWebhookUrlCommand) supplied it.
  * Undefined means "read the file at send time".
@@ -856,11 +873,17 @@ export function loadMcpConfig(
     mode = 'local';
   }
 
-  const licenseKeySecret = resolveSecret(
-    'licenseKey',
-    mode === 'local' ? { ...licenseKeySources, command: undefined } : licenseKeySources,
-    { skipCommand },
-  );
+  let licenseKeySecret: ResolvedSecret;
+  try {
+    licenseKeySecret = resolveSecret(
+      'licenseKey',
+      mode === 'local' ? { ...licenseKeySources, command: undefined } : licenseKeySources,
+      { skipCommand },
+    );
+  } catch (err) {
+    if (err instanceof SecretCommandError) throw new CloudSecretCommandError(err, mode);
+    throw err;
+  }
   const licenseKeyRaw = licenseKeySecret.value;
 
   if (
@@ -881,9 +904,9 @@ export function loadMcpConfig(
   // In local mode, undefined if licenseKey is missing (NR transport won't be used)
   const licenseKey = licenseKeyRaw;
 
-  // --- accountId: env > file ---
+  // --- accountId: env > file; a blank env var counts as unset, as for the secrets ---
   const accountIdRaw =
-    process.env.NEW_RELIC_ACCOUNT_ID ??
+    (process.env.NEW_RELIC_ACCOUNT_ID?.trim() ? process.env.NEW_RELIC_ACCOUNT_ID : undefined) ??
     (typeof file.accountId === 'string' ? file.accountId : undefined);
   if (mode !== 'local' && !accountIdRaw) {
     throw new MissingCloudCredentialError('accountId', mode, configFilePath);
@@ -937,9 +960,11 @@ export function loadMcpConfig(
     typeof file.highSecurity === 'boolean' ? file.highSecurity : false,
   );
 
-  const resolvedProjectId = sanitizeOrgField(
+  const rawProjectId =
     process.env.NEW_RELIC_AI_PROJECT_ID ??
-      (typeof file.projectId === 'string' ? file.projectId : inferProjectId()),
+    (typeof file.projectId === 'string' ? file.projectId : inferProjectId());
+  const resolvedProjectId = sanitizeOrgField(
+    rawProjectId === null ? null : redactIdentifier(rawProjectId),
   );
 
   // Dedicated opt-out, independent of projectId's — repo_url can carry an
@@ -960,10 +985,10 @@ export function loadMcpConfig(
     process.env.NEW_RELIC_AI_REPO_URL ??
     (typeof file.repoUrl === 'string' ? file.repoUrl : getGitRemoteUrl());
   // stripRemoteCredentials drops URL userinfo and query strings;
-  // redactSensitive then catches any token elsewhere in the value.
+  // redactIdentifier then catches any token elsewhere in the value.
   const strippedRepoUrl = stripRemoteCredentials(rawRepoUrl);
   const resolvedRepoUrl = sanitizeOrgField(
-    strippedRepoUrl === null ? null : redactSensitive(strippedRepoUrl),
+    strippedRepoUrl === null ? null : redactIdentifier(strippedRepoUrl),
   );
 
   const resolvedCompanionMode = resolveCompanionMode(
@@ -1058,10 +1083,12 @@ export function loadMcpConfig(
 
     companionMode: resolvedCompanionMode.value,
 
-    allowHeadlessInstall: envBool(
-      'NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL',
-      typeof file.allowHeadlessInstall === 'boolean' ? file.allowHeadlessInstall : false,
-    ),
+    allowHeadlessInstall: highSecurity
+      ? false
+      : envBool(
+          'NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL',
+          typeof file.allowHeadlessInstall === 'boolean' ? file.allowHeadlessInstall : false,
+        ),
 
     redactionPatterns: DEFAULT_REDACTION_PATTERNS,
 
@@ -1767,6 +1794,47 @@ export function redactSensitive(value: string, patterns?: readonly RegExp[]): st
   for (const pattern of pats) {
     pattern.lastIndex = 0;
     result = result.replace(pattern, '[REDACTED]');
+  }
+  return result;
+}
+
+const WORD_CHAR_RE = /[A-Za-z0-9]/;
+
+/**
+ * redactSensitive() for identifiers (project_id, repo_url, repo names), which
+ * carry a token only as a whole path segment or a segment's prefix. A match that
+ * starts right after a letter or digit is part of an ordinary name
+ * (`acme/risk-assessment-…` holds `sk-assessment-…`) and is left alone. The scan
+ * resumes one character later, so a token further into that span
+ * (`acme/risk-ghp_…`) is still caught.
+ *
+ * Free-form content keeps redactSensitive()'s plain matching: there a token
+ * routinely follows a letter or digit, after a JSON escape (`\nghp_…`), an ANSI
+ * colour code (`ESC[32m`) or `%3A`.
+ */
+export function redactIdentifier(value: string): string {
+  let result = value;
+  for (const pattern of DEFAULT_REDACTION_PATTERNS) {
+    const re = new RegExp(
+      pattern.source,
+      pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`,
+    );
+    let out = '';
+    let last = 0;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(result)) !== null) {
+      if (match[0] === '') {
+        re.lastIndex++;
+        continue;
+      }
+      if (match.index > 0 && WORD_CHAR_RE.test(result[match.index - 1])) {
+        re.lastIndex = match.index + 1;
+        continue;
+      }
+      out += `${result.slice(last, match.index)}[REDACTED]`;
+      last = re.lastIndex;
+    }
+    result = out + result.slice(last);
   }
   return result;
 }

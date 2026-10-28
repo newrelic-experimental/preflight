@@ -8,6 +8,7 @@
 
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { isIP } from 'node:net';
 import { Transform, type TransformCallback } from 'node:stream';
 import { performance } from 'node:perf_hooks';
 import { createLogger } from '../shared/index.js';
@@ -49,12 +50,18 @@ export class ByteCountTransform extends Transform {
 // Hosts where cleartext http: is acceptable. URL.hostname keeps brackets on IPv6 literals.
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 
-function isLoopbackHost(hostname: string): boolean {
-  return LOOPBACK_HOSTS.has(hostname.replace(/^\[(.*)\]$/, '$1').toLowerCase());
+function bareHost(hostname: string): string {
+  return hostname.replace(/^\[(.*)\]$/, '$1');
 }
 
-// True when validateSsrfUrl would reject the URL's host for being private, loopback or metadata.
+function isLoopbackHost(hostname: string): boolean {
+  return LOOPBACK_HOSTS.has(bareHost(hostname).toLowerCase());
+}
+
+// True only for an IP literal that validateSsrfUrl rejects as private. Hostnames are
+// never resolved here, so a metadata FQDN can't pass as private.
 function isPrivateTarget(label: string, url: URL): boolean {
+  if (isIP(bareHost(url.hostname)) === 0) return false;
   try {
     validateSsrfUrl(label, url);
     return false;
@@ -84,11 +91,18 @@ export class HttpUpstream implements ProxyUpstream {
     if (this.url.protocol === 'http:' && !isLoopbackHost(this.url.hostname)) {
       const privateTarget = this.allowPrivateHosts && isPrivateTarget(label, this.url);
       if (!(privateTarget && config.allowInsecureHttp === true)) {
-        throw new Error(
-          privateTarget
-            ? `${label}: http:// to private host "${this.url.hostname}" requires https:// or allowInsecureHttp: true on this upstream`
-            : `${label}: http:// to host "${this.url.hostname}" is not allowed; use https:// (http:// is only accepted for localhost, 127.0.0.1 and ::1)`,
-        );
+        const host = this.url.hostname;
+        let message: string;
+        if (privateTarget) {
+          message = `${label}: http:// to private host "${host}" requires https:// or allowInsecureHttp: true on this upstream`;
+        } else if (this.allowPrivateHosts && isIP(bareHost(host)) === 0) {
+          message = `${label}: http:// to host "${host}" is not allowed; allowInsecureHttp only applies to a private IP address (hostnames are not resolved for this check), so use https:// or the host's private IP address`;
+        } else if (this.allowPrivateHosts) {
+          message = `${label}: http:// to public address "${host}" is not allowed; allowInsecureHttp only applies to a private IP address, so use https://`;
+        } else {
+          message = `${label}: http:// to host "${host}" is not allowed; use https:// (http:// is only accepted for localhost, 127.0.0.1 and ::1, or for a private IP address with both allowPrivateHosts and allowInsecureHttp)`;
+        }
+        throw new Error(message);
       }
     }
     this.timeoutMs = config.timeoutMs ?? 30_000;

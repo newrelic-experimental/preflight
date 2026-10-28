@@ -1,8 +1,17 @@
 import { dirname } from 'node:path';
-import { areHooksInstalled, mergeSettings, detectSettingsPath } from './install-helper.js';
+
+import { createLogger } from '../shared/index.js';
+import type { AuditRecord, AuditTrailManager } from '../security/audit-trail.js';
+import {
+  areHooksInstalled,
+  mergeSettings,
+  detectSettingsPath,
+  readAndCheckHooks,
+} from './install-helper.js';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
 import { resolveBinaryPath } from './schedule.js';
-import type { AuditTrailManager } from '../security/audit-trail.js';
+
+const logger = createLogger('headless-install');
 
 export type HeadlessInstallResult =
   | { readonly status: 'installed'; readonly settingsPath: string }
@@ -21,7 +30,8 @@ export const HEADLESS_INSTALL_DISABLED_MESSAGE =
  *
  * Refuses unless `allowHeadlessInstall` is true. Any connected MCP client can
  * call the tool, so rewriting the user's agent hook config is opt-in. A refusal
- * reads and writes nothing.
+ * reads and writes nothing. Hooks already present at project scope count as
+ * installed, since Claude Code would run a second user-scope set as well.
  *
  * Returns a typed result so MCP tool callers can format a user-facing message.
  */
@@ -30,6 +40,7 @@ export function installHooksHeadless(
     scope?: 'user' | 'project';
     allowHeadlessInstall?: boolean;
     _settingsPathOverride?: string;
+    _projectSettingsPathOverride?: string;
   } = {},
 ): HeadlessInstallResult {
   if (options.allowHeadlessInstall !== true) {
@@ -37,6 +48,11 @@ export function installHooksHeadless(
   }
   const scope = options.scope ?? 'user';
   const settingsPath = options._settingsPathOverride ?? detectSettingsPath(scope, null);
+  const projectSettingsPath =
+    options._projectSettingsPathOverride ?? detectSettingsPath('project', null);
+  if (projectSettingsPath !== settingsPath && readAndCheckHooks(projectSettingsPath)) {
+    return { status: 'already_installed', settingsPath: projectSettingsPath };
+  }
   const binPath = resolveBinaryPath();
 
   try {
@@ -63,15 +79,26 @@ export function installHooksHeadless(
 export function createHeadlessInstaller(options: {
   allowHeadlessInstall: boolean;
   getAuditTrail: () => AuditTrailManager | undefined;
+  /** Sends the install's audit record on to New Relic as an AiAuditEvent. */
+  onAuditRecord?: (record: AuditRecord) => void;
   _settingsPathOverride?: string;
+  _projectSettingsPathOverride?: string;
 }): () => HeadlessInstallResult {
   return () => {
     const result = installHooksHeadless({
       allowHeadlessInstall: options.allowHeadlessInstall,
       _settingsPathOverride: options._settingsPathOverride,
+      _projectSettingsPathOverride: options._projectSettingsPathOverride,
     });
     if (result.status === 'installed') {
-      options.getAuditTrail()?.recordHeadlessHookInstall(result.settingsPath);
+      // The hooks are already on disk, so a failed audit step must not turn
+      // the call into an error the client would retry.
+      try {
+        const record = options.getAuditTrail()?.recordHeadlessHookInstall(result.settingsPath);
+        if (record) options.onAuditRecord?.(record);
+      } catch (err) {
+        logger.warn('Hook install succeeded but its audit record failed', { error: errMsg(err) });
+      }
     }
     return result;
   };

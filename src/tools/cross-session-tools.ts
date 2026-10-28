@@ -15,6 +15,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 
+import { SecretCommandSchema } from '../config.js';
 import { validateSsrfUrl } from '../security/index.js';
 import { stagingHost } from '../shared/transport/http-client.js';
 import type { SessionStore } from '../storage/session-store.js';
@@ -994,15 +995,25 @@ export async function handleGetTeamSummary(options: {
   return { content: [{ type: 'text', text: JSON.stringify(result) }] };
 }
 
-const DIGEST_OVERRIDE_LABELS = {
-  env: 'NEW_RELIC_AI_DIGEST_WEBHOOK_URL',
-  command: 'digestWebhookUrlCommand',
-} as const;
+/** Whether the raw config file sets a `digestWebhookUrlCommand` the loader would accept. */
+export function isDigestWebhookCommandConfigured(raw: Record<string, unknown>): boolean {
+  return SecretCommandSchema.safeParse(raw.digestWebhookUrlCommand).success;
+}
+
+/** Why a webhook URL saved to the config file would never be used, or null when it would be. */
+export function digestWebhookUrlShadowedBy(raw: Record<string, unknown>): string | null {
+  if (process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL?.trim()) {
+    return 'NEW_RELIC_AI_DIGEST_WEBHOOK_URL is set and outranks digestWebhookUrl, so a webhook saved here would never be used. Unset it to subscribe a URL.';
+  }
+  if (isDigestWebhookCommandConfigured(raw)) {
+    return 'digestWebhookUrlCommand is configured and outranks digestWebhookUrl, so a webhook saved here would never be used. Remove digestWebhookUrlCommand from the config file to subscribe a URL.';
+  }
+  return null;
+}
 
 export function handleSubscribeDigest(
   webhookUrl: string,
   configFilePath: string,
-  overrideSource?: 'env' | 'command',
 ): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } {
   if (!webhookUrl.startsWith('https://hooks.slack.com/')) {
     return {
@@ -1024,6 +1035,13 @@ export function handleSubscribeDigest(
     } catch {
       /* no existing config */
     }
+    const shadowedBy = digestWebhookUrlShadowedBy(existing);
+    if (shadowedBy) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ error: shadowedBy }) }],
+        isError: true,
+      };
+    }
     existing.digestWebhookUrl = webhookUrl;
     writeFileSync(configFilePath, JSON.stringify(existing, null, 2), { mode: 0o600 });
     return {
@@ -1034,9 +1052,6 @@ export function handleSubscribeDigest(
             ok: true,
             message:
               "Webhook registered. Delivery is manual — call nr_observe_send_digest to send this week's digest.",
-            ...(overrideSource && {
-              warning: `Digests are sent to the URL from ${DIGEST_OVERRIDE_LABELS[overrideSource]}, not the one just saved. Remove that source to use the saved URL.`,
-            }),
           }),
         },
       ],
@@ -1083,10 +1098,14 @@ export async function handleSendDigest(
   // Otherwise read the file at call time (not in-memory config, which won't
   // reflect updates made via nr_observe_subscribe_digest without a server restart).
   let webhookUrl = webhookUrlOverride;
+  let commandConfigured = false;
   if (webhookUrl === undefined) {
     try {
       const raw = JSON.parse(readFileSync(configFilePath, 'utf-8')) as Record<string, unknown>;
-      if (typeof raw.digestWebhookUrl === 'string') {
+      // A configured command outranks the file, so a plaintext URL left
+      // beside it is never a fallback when the command fails.
+      commandConfigured = isDigestWebhookCommandConfigured(raw);
+      if (typeof raw.digestWebhookUrl === 'string' && !commandConfigured) {
         webhookUrl = raw.digestWebhookUrl;
       }
     } catch {
@@ -1100,7 +1119,9 @@ export async function handleSendDigest(
         {
           type: 'text',
           text: JSON.stringify({
-            error: 'No webhook URL configured. Call nr_observe_subscribe_digest first.',
+            error: commandConfigured
+              ? "digestWebhookUrlCommand is configured, so the file's digestWebhookUrl is not used, and no URL from the command is loaded. If the command was added after Preflight started, restart Preflight; otherwise run the command yourself to see why it failed."
+              : 'No webhook URL configured. Call nr_observe_subscribe_digest first.',
           }),
         },
       ],
@@ -1318,7 +1339,6 @@ export function registerCrossSessionTools(deps: CrossSessionToolsDeps): Register
         return handleSubscribeDigest(
           typeof args?.webhookUrl === 'string' ? args.webhookUrl : '',
           deps.configFilePath!,
-          deps.digestWebhookUrlSource,
         );
       },
     },

@@ -207,41 +207,45 @@ describe('HttpUpstream', () => {
   });
 
   describe('SSRF protection', () => {
+    const SSRF_ERROR = /metadata service|private or loopback|scheme "/;
+
     const ssrfCases: Array<[string, string]> = [
-      ['loopback IPv4', 'http://127.0.0.1:8080'],
-      ['localhost', 'http://localhost:8080'],
-      ['RFC-1918 10.x', 'http://10.0.0.1/mcp'],
-      ['RFC-1918 172.16.x', 'http://172.16.5.1/mcp'],
-      ['RFC-1918 172.31.x', 'http://172.31.255.1/mcp'],
-      ['RFC-1918 192.168.x', 'http://192.168.1.1/mcp'],
-      ['link-local', 'http://169.254.169.254/latest/meta-data/'],
-      ['IPv6 loopback', 'http://[::1]/mcp'],
-      ['IPv6 unspecified', 'http://[::]'],
-      ['IPv4-mapped loopback', 'http://[::ffff:127.0.0.1]'],
-      ['IPv4-mapped RFC-1918 10.x', 'http://[::ffff:10.0.0.1]'],
-      ['IPv4-mapped RFC-1918 192.168.x', 'http://[::ffff:192.168.1.1]'],
-      ['IPv4-mapped link-local', 'http://[::ffff:169.254.1.1]'],
-      ['IPv6 ULA fc00::/7', 'http://[fc00::1]'],
-      ['IPv6 ULA fd00::/8', 'http://[fd00::1]'],
-      ['IPv6 link-local fe80::/10', 'http://[fe80::1]'],
-      ['IPv6 link-local fe89::/10', 'http://[fe89::1]'],
-      ['IPv6 link-local feab::/10', 'http://[feab::1]'],
-      ['all-zeros', 'http://0.0.0.0/mcp'],
+      ['loopback IPv4', 'https://127.0.0.1:8080'],
+      ['localhost', 'https://localhost:8080'],
+      ['RFC-1918 10.x', 'https://10.0.0.1/mcp'],
+      ['RFC-1918 172.16.x', 'https://172.16.5.1/mcp'],
+      ['RFC-1918 172.31.x', 'https://172.31.255.1/mcp'],
+      ['RFC-1918 192.168.x', 'https://192.168.1.1/mcp'],
+      ['link-local', 'https://169.254.169.254/latest/meta-data/'],
+      ['IPv6 loopback', 'https://[::1]/mcp'],
+      ['IPv6 unspecified', 'https://[::]'],
+      ['IPv4-mapped loopback', 'https://[::ffff:127.0.0.1]'],
+      ['IPv4-mapped RFC-1918 10.x', 'https://[::ffff:10.0.0.1]'],
+      ['IPv4-mapped RFC-1918 192.168.x', 'https://[::ffff:192.168.1.1]'],
+      ['IPv4-mapped link-local', 'https://[::ffff:169.254.1.1]'],
+      ['IPv6 ULA fc00::/7', 'https://[fc00::1]'],
+      ['IPv6 ULA fd00::/8', 'https://[fd00::1]'],
+      ['IPv6 link-local fe80::/10', 'https://[fe80::1]'],
+      ['IPv6 link-local fe89::/10', 'https://[fe89::1]'],
+      ['IPv6 link-local feab::/10', 'https://[feab::1]'],
+      ['all-zeros', 'https://0.0.0.0/mcp'],
       ['disallowed scheme', 'file:///etc/passwd'],
       ['ftp scheme', 'ftp://example.com/file'],
-      ['GCP metadata', 'http://metadata.google.internal/'],
-      ['GCP metadata uppercase', 'http://METADATA.GOOGLE.INTERNAL/'],
-      ['Azure metadata', 'http://metadata.azure.com/'],
-      ['Alibaba metadata IP', 'http://100.100.100.200/'],
-      ['AWS EC2 metadata FQDN', 'http://ec2.internal/'],
-      ['AWS EC2 amazonaws FQDN', 'http://ec2.amazonaws.com/'],
-      ['localhost with trailing dot', 'http://localhost./'],
-      ['127.0.0.1 with trailing dot', 'http://127.0.0.1./'],
-      ['192.168.1.1 with trailing dot', 'http://192.168.1.1./'],
+      ['GCP metadata', 'https://metadata.google.internal/'],
+      ['GCP metadata uppercase', 'https://METADATA.GOOGLE.INTERNAL/'],
+      ['Azure metadata', 'https://metadata.azure.com/'],
+      ['Alibaba metadata IP', 'https://100.100.100.200/'],
+      ['AWS EC2 metadata FQDN', 'https://ec2.internal/'],
+      ['AWS EC2 amazonaws FQDN', 'https://ec2.amazonaws.com/'],
+      ['localhost with trailing dot', 'https://localhost./'],
+      ['127.0.0.1 with trailing dot', 'https://127.0.0.1./'],
+      ['192.168.1.1 with trailing dot', 'https://192.168.1.1./'],
     ];
 
     it.each(ssrfCases)('blocks %s (%s)', (_label, url) => {
-      expect(() => new HttpUpstream({ name: 'test', url, transportType: 'http' })).toThrow();
+      expect(() => new HttpUpstream({ name: 'test', url, transportType: 'http' })).toThrow(
+        SSRF_ERROR,
+      );
     });
 
     it('allows public HTTPS URLs', () => {
@@ -369,6 +373,59 @@ describe('HttpUpstream', () => {
         ).toThrow(/HttpUpstream "remote": http:\/\/ to host "example.com" is not allowed/);
       });
 
+      it('rejects http:// to a LAN hostname even with allowPrivateHosts and allowInsecureHttp', () => {
+        expect(
+          () =>
+            new HttpUpstream({
+              name: 'nas',
+              url: 'http://nas.lan/mcp',
+              transportType: 'http',
+              allowPrivateHosts: true,
+              allowInsecureHttp: true,
+            }),
+        ).toThrow(/"nas.lan" is not allowed; allowInsecureHttp only applies to a private IP/);
+      });
+
+      it('rejects http:// to a cloud metadata hostname even with both flags', () => {
+        expect(
+          () =>
+            new HttpUpstream({
+              name: 'meta',
+              url: 'http://metadata.google.internal/',
+              transportType: 'http',
+              allowPrivateHosts: true,
+              allowInsecureHttp: true,
+            }),
+        ).toThrow(/"metadata.google.internal" is not allowed/);
+      });
+
+      it('tells a public IP with both flags to use https, not its IP', () => {
+        expect(
+          () =>
+            new HttpUpstream({
+              name: 'pub',
+              url: 'http://8.8.8.8/mcp',
+              transportType: 'http',
+              allowPrivateHosts: true,
+              allowInsecureHttp: true,
+            }),
+        ).toThrow(
+          'HttpUpstream "pub": http:// to public address "8.8.8.8" is not allowed; allowInsecureHttp only applies to a private IP address, so use https://',
+        );
+      });
+
+      it('names allowPrivateHosts as a requirement when a public http:// host is rejected', () => {
+        expect(
+          () =>
+            new HttpUpstream({
+              name: 'remote',
+              url: 'http://example.com/mcp',
+              transportType: 'http',
+              allowInsecureHttp: true,
+            }),
+        ).toThrow(/with both allowPrivateHosts and allowInsecureHttp/);
+      });
+
       it('treats allowInsecureHttp as opt-in only when the value is exactly true', () => {
         expect(
           () =>
@@ -424,48 +481,54 @@ describe('HttpUpstream', () => {
       it('blocks decimal encoding of loopback (2130706433 = 127.0.0.1)', () => {
         expect(
           () =>
-            new HttpUpstream({ name: 'test', url: 'http://2130706433/', transportType: 'http' }),
-        ).toThrow();
+            new HttpUpstream({ name: 'test', url: 'https://2130706433/', transportType: 'http' }),
+        ).toThrow(SSRF_ERROR);
       });
 
       it('blocks decimal encoding of RFC-1918 10.0.0.1 (167772161)', () => {
         expect(
-          () => new HttpUpstream({ name: 'test', url: 'http://167772161/', transportType: 'http' }),
-        ).toThrow();
+          () =>
+            new HttpUpstream({ name: 'test', url: 'https://167772161/', transportType: 'http' }),
+        ).toThrow(SSRF_ERROR);
       });
 
       it('blocks octal encoding of loopback (0177.0.0.1)', () => {
         expect(
           () =>
-            new HttpUpstream({ name: 'test', url: 'http://0177.0.0.1/', transportType: 'http' }),
-        ).toThrow();
+            new HttpUpstream({ name: 'test', url: 'https://0177.0.0.1/', transportType: 'http' }),
+        ).toThrow(SSRF_ERROR);
       });
 
       it('blocks octal encoding of RFC-1918 192.168.1.1 (0300.0250.0.1)', () => {
         expect(
           () =>
-            new HttpUpstream({ name: 'test', url: 'http://0300.0250.0.1/', transportType: 'http' }),
-        ).toThrow();
+            new HttpUpstream({
+              name: 'test',
+              url: 'https://0300.0250.0.1/',
+              transportType: 'http',
+            }),
+        ).toThrow(SSRF_ERROR);
       });
 
       it('blocks hex encoding of loopback (0x7f.0.0.1)', () => {
         expect(
           () =>
-            new HttpUpstream({ name: 'test', url: 'http://0x7f.0.0.1/', transportType: 'http' }),
-        ).toThrow();
+            new HttpUpstream({ name: 'test', url: 'https://0x7f.0.0.1/', transportType: 'http' }),
+        ).toThrow(SSRF_ERROR);
       });
 
       it('blocks hex encoding of RFC-1918 10.0.0.1 (0xa.0.0.1)', () => {
         expect(
-          () => new HttpUpstream({ name: 'test', url: 'http://0xa.0.0.1/', transportType: 'http' }),
-        ).toThrow();
+          () =>
+            new HttpUpstream({ name: 'test', url: 'https://0xa.0.0.1/', transportType: 'http' }),
+        ).toThrow(SSRF_ERROR);
       });
 
       it('blocks mixed decimal/hex encoding (127.0x0.0.1)', () => {
         expect(
           () =>
-            new HttpUpstream({ name: 'test', url: 'http://127.0x0.0.1/', transportType: 'http' }),
-        ).toThrow();
+            new HttpUpstream({ name: 'test', url: 'https://127.0x0.0.1/', transportType: 'http' }),
+        ).toThrow(SSRF_ERROR);
       });
 
       it('allows public URLs with numeric-looking suffixes that are not IPs', () => {

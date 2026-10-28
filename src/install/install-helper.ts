@@ -346,6 +346,14 @@ export function readAndCheckHooks(settingsPath?: string): boolean {
   }
 }
 
+/** Whether NR hooks are installed in user-scope or project-scope Claude Code settings. */
+export function areHooksInstalledAtAnyScope(home?: string | null): boolean {
+  return (
+    readAndCheckHooks(detectSettingsPath('user', home)) ||
+    readAndCheckHooks(detectSettingsPath('project', null))
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Zod schemas — validate existing file shapes before merging
 // ---------------------------------------------------------------------------

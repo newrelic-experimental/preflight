@@ -1280,23 +1280,43 @@ describe('Cross-session tool handlers', () => {
       const written = JSON.parse(readFileSync(configFilePath, 'utf-8'));
       expect(written.digestWebhookUrl).toBe(webhookUrl);
       expect(written.developer).toBe('alice');
-      expect(JSON.parse(result.content[0]!.text)).not.toHaveProperty('warning');
+    });
+  });
+
+  describe('handleSubscribeDigest() with digestWebhookUrlCommand', () => {
+    it('refuses to save a URL the command would outrank, leaving the file unchanged', () => {
+      const configFilePath = resolve(tmpDir, 'config.json');
+      const original = JSON.stringify({ digestWebhookUrlCommand: ['vault', 'read', 'slack'] });
+      writeFileSync(configFilePath, original, 'utf-8');
+
+      const result = handleSubscribeDigest(
+        'https://hooks.slack.com/services/T000/B000/XXXX',
+        configFilePath,
+      );
+
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0]!.text).error).toMatch(/digestWebhookUrlCommand/);
+      expect(readFileSync(configFilePath, 'utf-8')).toBe(original);
     });
 
-    it.each([
-      ['env', 'NEW_RELIC_AI_DIGEST_WEBHOOK_URL'],
-      ['command', 'digestWebhookUrlCommand'],
-    ] as const)('warns that %s outranks the saved URL', (source, label) => {
+    it('refuses to save a URL NEW_RELIC_AI_DIGEST_WEBHOOK_URL would outrank', () => {
       const configFilePath = resolve(tmpDir, 'config.json');
-      const webhookUrl = 'https://hooks.slack.com/services/T000/B000/XXXX';
+      const saved = process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL;
+      process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL = 'https://hooks.slack.com/services/T/B/ENV';
 
-      const result = handleSubscribeDigest(webhookUrl, configFilePath, source);
-
-      expect(result.isError).toBeUndefined();
-      expect(JSON.parse(readFileSync(configFilePath, 'utf-8')).digestWebhookUrl).toBe(webhookUrl);
-      const body = JSON.parse(result.content[0]!.text);
-      expect(body.warning).toContain(label);
-      expect(result.content[0]!.text).not.toContain(webhookUrl);
+      try {
+        const result = handleSubscribeDigest(
+          'https://hooks.slack.com/services/T000/B000/XXXX',
+          configFilePath,
+        );
+        expect(result.isError).toBe(true);
+        expect(JSON.parse(result.content[0]!.text).error).toMatch(
+          /^NEW_RELIC_AI_DIGEST_WEBHOOK_URL is set/,
+        );
+      } finally {
+        if (saved === undefined) delete process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL;
+        else process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL = saved;
+      }
     });
   });
 
@@ -1369,6 +1389,31 @@ describe('Cross-session tool handlers', () => {
       try {
         await handleSendDigest(generator, configFilePath, overrideUrl);
         expect(fetchSpy.mock.calls.map((call) => call[0])).toEqual([overrideUrl]);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('does not fall back to the file URL when digestWebhookUrlCommand is configured', async () => {
+      const configFilePath = resolve(tmpDir, 'config.json');
+      writeFileSync(
+        configFilePath,
+        JSON.stringify({
+          digestWebhookUrl: 'https://hooks.slack.com/services/T000/B000/RETIRED',
+          digestWebhookUrlCommand: ['vault', 'read', 'slack'],
+        }),
+        'utf-8',
+      );
+      const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+      const fetchSpy = jest.spyOn(global, 'fetch');
+
+      try {
+        const result = await handleSendDigest(generator, configFilePath);
+        const body = JSON.parse(result.content[0]!.text);
+        expect(body.error).toMatch(
+          /digestWebhookUrlCommand is configured, so the file.s digestWebhookUrl is not used/,
+        );
+        expect(fetchSpy).not.toHaveBeenCalled();
       } finally {
         fetchSpy.mockRestore();
       }

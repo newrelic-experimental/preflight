@@ -81,6 +81,7 @@ function peekJsonRpc(body: Buffer): JsonRpcPeek | null {
 
 export class ProxyManager {
   private readonly upstreams = new Map<string, ProxyUpstream>();
+  private readonly skippedUpstreams: string[] = [];
   private readonly connectionSessionIds = new WeakMap<Socket, string>();
   private httpServer: Server | null = null;
   private otlpReceiver: OtlpReceiver | null = null;
@@ -103,14 +104,38 @@ export class ProxyManager {
 
   /** Register an upstream MCP server for proxying. */
   registerUpstream(config: UpstreamConfig): void {
-    const upstream = createUpstream(config);
+    let upstream: ProxyUpstream;
+    try {
+      upstream = createUpstream(config);
+    } catch (err) {
+      // One invalid http entry (e.g. a legacy http:// URL) must not take down
+      // the other upstreams; start() already tolerates individual connect
+      // failures. A stdio entry that fails command validation is a security
+      // misconfiguration and still stops startup.
+      if (config.transportType !== 'http') throw err;
+      if (!this.upstreams.has(config.name) && !this.skippedUpstreams.includes(config.name)) {
+        this.skippedUpstreams.push(config.name);
+      }
+      logger.error('Skipping invalid upstream', {
+        name: config.name,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
     this.upstreams.set(config.name, upstream);
+    const skippedIndex = this.skippedUpstreams.indexOf(config.name);
+    if (skippedIndex >= 0) this.skippedUpstreams.splice(skippedIndex, 1);
     logger.info(`Registered upstream "${config.name}"`, { transportType: config.transportType });
   }
 
   /** Get the list of registered upstream names. */
   getUpstreamNames(): string[] {
     return Array.from(this.upstreams.keys());
+  }
+
+  /** Names of configured upstreams that failed validation and were not registered. */
+  getSkippedUpstreamNames(): string[] {
+    return [...this.skippedUpstreams];
   }
 
   /** Get a registered upstream by name (for testing). */
@@ -129,6 +154,18 @@ export class ProxyManager {
 
   /** Connect all upstreams and start the HTTP proxy server. */
   async start(): Promise<void> {
+    if (this.skippedUpstreams.length > 0 && this.upstreams.size === 0) {
+      throw new Error(
+        `All configured upstreams were rejected (${this.skippedUpstreams.join(', ')}). Proxy cannot start.`,
+      );
+    }
+    if (this.skippedUpstreams.length > 0) {
+      logger.warn('Some upstreams were rejected — proxy starting in degraded mode', {
+        skipped: this.skippedUpstreams,
+        registered: this.upstreams.size,
+      });
+    }
+
     // Connect all upstreams
     const upstreamNames = Array.from(this.upstreams.keys());
     const connectResults = await Promise.allSettled(
@@ -144,8 +181,12 @@ export class ProxyManager {
       }
     }
     if (failedNames.length > 0 && failedNames.length === this.upstreams.size) {
+      const skipped =
+        this.skippedUpstreams.length > 0
+          ? ` Also rejected at startup: ${this.skippedUpstreams.join(', ')}.`
+          : '';
       throw new Error(
-        `All upstreams failed to connect (${failedNames.join(', ')}). Proxy cannot start.`,
+        `All upstreams failed to connect (${failedNames.join(', ')}). Proxy cannot start.${skipped}`,
       );
     }
     if (failedNames.length > 0) {
@@ -275,8 +316,9 @@ export class ProxyManager {
     // Health check
     if (url === '/health' && req.method === 'GET') {
       const body = JSON.stringify({
-        status: 'ok',
+        status: this.skippedUpstreams.length > 0 ? 'degraded' : 'ok',
         upstreams: this.getUpstreamNames(),
+        skippedUpstreams: this.getSkippedUpstreamNames(),
         ...(this.options.otlpReceiverEnabled
           ? { otlpReceiverStatus: this.otlpReceiverStatus }
           : {}),
