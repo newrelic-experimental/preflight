@@ -415,7 +415,9 @@ export class TurnCostAttributor {
 
     // The event must postdate the turn it's closing. One that doesn't can't
     // belong to that burst (it hadn't even finished yet), so it stays queued
-    // for the next token report and this one is claimed by no burst.
+    // for the next token report and this one is claimed by no burst. If no
+    // later report arrives, the burst is evicted as stale above and counted
+    // in `droppedTokenEvents`.
     const timeSinceLastTool = event.timestamp - pendingTurn.endTime;
     if (timeSinceLastTool < 0) {
       return this.responseTurn(state, event);

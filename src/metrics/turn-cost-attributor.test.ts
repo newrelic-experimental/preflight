@@ -252,6 +252,25 @@ describe('TurnCostAttributor', () => {
       expect(metrics.droppedTokenEvents).toBe(1);
     });
 
+    it('counts a burst as dropped when only a report that predates it ever arrives before it goes stale', () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordToolCall(
+        makeRecord({ toolUseId: 'toolu_001', timestamp: 1000, durationMs: 500 }),
+      );
+      const early = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1200 }));
+      const late = attributor.recordTokenEvent(
+        makeTokenEvent({ timestamp: 1500 + 11 * 60 * 1000 }),
+      );
+
+      expect(early.calls).toEqual([]);
+      expect(late.calls).toEqual([]);
+      expect(early.id).not.toBe(late.id);
+      const metrics = attributor.getMetrics();
+      expect(metrics.turns).toHaveLength(0);
+      expect(metrics.droppedTokenEvents).toBe(1);
+    });
+
     it('evicts the oldest queued burst once more than MAX_PENDING_TURNS bursts are outstanding', () => {
       const attributor = new TurnCostAttributor();
 
