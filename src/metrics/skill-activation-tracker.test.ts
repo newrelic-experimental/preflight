@@ -304,6 +304,50 @@ describe('SkillActivationTracker', () => {
     expect(t.recordToolCall(makeRecord({ toolName: 'Read' }))).toBeNull();
   });
 
+  it('a Skill call naming the slash skill already open continues that run', () => {
+    const t = new SkillActivationTracker();
+    const slash = t.recordPrompt('s1', 'code-review');
+
+    const stamp = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'code-review', toolUseId: 'u2' }),
+    );
+
+    expect(stamp).toEqual(slash);
+    expect(stamp!.parentRunId).toBeUndefined();
+  });
+
+  it('a Skill call naming a different skill after a slash run still opens a child run', () => {
+    const t = new SkillActivationTracker();
+    const slash = t.recordPrompt('s1', 'code-review');
+
+    const stamp = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'unslop', toolUseId: 'u2' }),
+    );
+
+    expect(stamp).toMatchObject({ name: 'unslop', source: 'tool', parentRunId: slash!.runId });
+  });
+
+  it('a repeated tool-source Skill call of the same skill still opens a new run', () => {
+    const t = new SkillActivationTracker();
+    const first = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'lint' }));
+    const second = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', toolUseId: 'u2' }),
+    );
+
+    expect(second!.runId).not.toBe(first!.runId);
+  });
+
+  it('caps the subagents remembered per session and keeps the main run', () => {
+    const t = new SkillActivationTracker();
+    const main = t.recordPrompt('s1', 'big-skill');
+    for (let i = 0; i < 300; i++) {
+      t.recordToolCall(makeRecord({ agentId: `agent-${i}`, toolUseId: `u${i}` }));
+    }
+
+    expect(t.recordToolCall(makeRecord({ toolUseId: 'main-call' }))).toEqual(main);
+    expect(t.getMetrics('s1').openRuns).toEqual([main]);
+  });
+
   it('recordPrompt returns the slash run it opens', () => {
     const t = new SkillActivationTracker();
 

@@ -6,6 +6,7 @@ import type { Resettable } from './tracker-contracts.js';
 const NULL_SESSION_KEY = '__no_session__';
 const MAIN_AGENT_KEY = '';
 const DEFAULT_MAX_SESSIONS = 50;
+const MAX_AGENTS_PER_SESSION = 100;
 
 export interface SkillActivationMetrics {
   /** Every open run, main agent and subagents, across the sessions in view. */
@@ -46,12 +47,22 @@ export class SkillActivationTracker implements Resettable {
     const runs = this.runsFor(record.sessionId);
     const agentKey = record.agentId ?? MAIN_AGENT_KEY;
     if (agentKey !== MAIN_AGENT_KEY && !runs.has(agentKey)) {
+      if (runs.size > MAX_AGENTS_PER_SESSION) {
+        for (const key of runs.keys()) {
+          if (key === MAIN_AGENT_KEY) continue;
+          runs.delete(key);
+          break;
+        }
+      }
       runs.set(agentKey, runs.get(MAIN_AGENT_KEY) ?? null);
     }
     const open = runs.get(agentKey) ?? null;
     // An interrupted or failed Skill call never loaded the skill, and the
     // orphan sweep can emit it after later prompts; neither should open a run.
     if (record.toolName === 'Skill' && record.skillName && record.success) {
+      // Claude Code expands a slash-invoked skill itself; a Skill call naming
+      // the same skill right after is the same invocation, not a second one.
+      if (open?.source === 'slash' && open.name === record.skillName) return open;
       const stamp: SkillStamp = {
         name: record.skillName,
         source: 'tool',
