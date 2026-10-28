@@ -95,6 +95,35 @@ describe('installHooksHeadless()', () => {
     expect(result.status).toBe('already_installed');
   });
 
+  it('returns already_installed and writes nothing when project-scope hooks exist', () => {
+    const settingsPath = join(tmpDir, 'settings.json');
+    const projectSettingsPath = join(tmpDir, 'project-settings.json');
+    writeJsonFile(projectSettingsPath, mergeSettings({}), tmpDir);
+
+    const result = installHooksHeadless({
+      allowHeadlessInstall: true,
+      _settingsPathOverride: settingsPath,
+      _projectSettingsPathOverride: projectSettingsPath,
+    });
+
+    expect(result).toEqual({ status: 'already_installed', settingsPath: projectSettingsPath });
+    expect(existsSync(settingsPath)).toBe(false);
+  });
+
+  it('installs at user scope when the project settings have no Preflight hooks', () => {
+    const settingsPath = join(tmpDir, 'settings.json');
+    const projectSettingsPath = join(tmpDir, 'project-settings.json');
+    writeJsonFile(projectSettingsPath, { permissions: { allow: [] } }, tmpDir);
+
+    const result = installHooksHeadless({
+      allowHeadlessInstall: true,
+      _settingsPathOverride: settingsPath,
+      _projectSettingsPathOverride: projectSettingsPath,
+    });
+
+    expect(result).toEqual({ status: 'installed', settingsPath });
+  });
+
   it('upgrades a pre/post-only install by adding the permission hooks', () => {
     const settingsPath = join(tmpDir, 'settings.json');
     const pre = [
@@ -182,6 +211,53 @@ describe('createHeadlessInstaller()', () => {
     expect(entries[0].tool).toBe('nr_observe_install_hooks');
     expect(entries[0].detail).toBe(`HookInstall: ${settingsPath}`);
     expect(entries[0].sessionId).toBe('sess-on');
+  });
+
+  it('hands the HookInstall audit record to onAuditRecord', () => {
+    const settingsPath = join(tmpDir, 'settings.json');
+    const audit = new AuditTrailManager({ developer: 'dev', sessionId: 'sess-nr' });
+    const sent: string[] = [];
+    const installer = createHeadlessInstaller({
+      allowHeadlessInstall: true,
+      getAuditTrail: () => audit,
+      onAuditRecord: (record) => sent.push(`${record.action} ${record.detail}`),
+      _settingsPathOverride: settingsPath,
+    });
+
+    installer();
+
+    expect(sent).toEqual([`HookInstall HookInstall: ${settingsPath}`]);
+  });
+
+  it.each([
+    [
+      'onAuditRecord throws',
+      (audit: AuditTrailManager) => ({
+        getAuditTrail: () => audit,
+        onAuditRecord: () => {
+          throw new Error('ingest down');
+        },
+      }),
+    ],
+    [
+      'the audit trail throws',
+      () => ({
+        getAuditTrail: (): AuditTrailManager | undefined => {
+          throw new Error('audit store gone');
+        },
+      }),
+    ],
+  ])('still reports installed when %s', (_label, makeOptions) => {
+    const settingsPath = join(tmpDir, 'settings.json');
+    const audit = new AuditTrailManager({ developer: 'dev', sessionId: 'sess-guard' });
+    const installer = createHeadlessInstaller({
+      allowHeadlessInstall: true,
+      _settingsPathOverride: settingsPath,
+      ...makeOptions(audit),
+    });
+
+    expect(installer()).toEqual({ status: 'installed', settingsPath });
+    expect(existsSync(settingsPath)).toBe(true);
   });
 
   it('writes no audit entry when hooks are already installed', () => {

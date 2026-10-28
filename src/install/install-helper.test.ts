@@ -16,6 +16,7 @@ import {
   entryHasAnyCommandHook,
   areHooksInstalled,
   readAndCheckHooks,
+  areHooksInstalledAtAnyScope,
   NR_HOOK_RE,
 } from './install-helper.js';
 import { writeJsonFile } from './json-utils.js';
@@ -1455,5 +1456,41 @@ describe('readAndCheckHooks()', () => {
     const path = join(tmpDir, 'settings.json');
     writeJsonFile(path, mergeSettings({}), tmpDir);
     expect(readAndCheckHooks(path)).toBe(true);
+  });
+});
+
+describe('areHooksInstalledAtAnyScope()', () => {
+  let home: string;
+  let project: string;
+  const originalCwd = process.cwd();
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'hooks-home-'));
+    project = mkdtempSync(join(tmpdir(), 'hooks-project-'));
+    process.chdir(project);
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    rmSync(home, { recursive: true, force: true });
+    rmSync(project, { recursive: true, force: true });
+  });
+
+  function installAt(dir: string) {
+    writeJsonFile(join(dir, '.claude', 'settings.json'), mergeSettings({}), join(dir, '.claude'));
+  }
+
+  it('returns false when neither scope has NR hooks', () => {
+    expect(areHooksInstalledAtAnyScope(home)).toBe(false);
+  });
+
+  it('returns true for user-scope hooks', () => {
+    installAt(home);
+    expect(areHooksInstalledAtAnyScope(home)).toBe(true);
+  });
+
+  it('returns true for project-scope hooks', () => {
+    installAt(project);
+    expect(areHooksInstalledAtAnyScope(home)).toBe(true);
   });
 });

@@ -20,7 +20,7 @@ team rollups, alerting and cross-session history.
 2. Find **Preflight** under **Available** powers and install it
 3. Click **Try power**, then ask the agent to set up Preflight
 
-The agent will read [`steering/setup.md`](steering/setup.md) and walk through
+The agent will use the [`setup` skill](skills/setup/SKILL.md) and walk through
 the rest.
 
 > **Not listed yet, or want to run an unreleased version?** You can also install
@@ -39,22 +39,22 @@ the rest.
 A Kiro Power cannot ship hooks or executables, so capture can't be automated by
 the power itself. Without it the install still _looks_ healthy —
 `nr_observe_health` succeeds — while most of the session goes unobserved. The
-setup steering file covers it.
+`setup` skill covers it.
 
 ## Contents
 
-| Path                          | Purpose                                                             |
-| ----------------------------- | ------------------------------------------------------------------- |
-| `POWER.md`                    | Manifest frontmatter, overview, and the `nr_observe_*` tool catalog |
-| `plugin.json`                 | Agent Plugins manifest, kept for registry eligibility               |
-| `mcp.json`                    | MCP server declaration                                              |
-| `steering/setup.md`           | First-run setup: dependencies, hook wiring, local vs. cloud mode    |
-| `steering/troubleshooting.md` | Session-id resolution, hook exit codes, platform attribution        |
-| `scripts/validate-deps.sh`    | Checks that `preflight` and `preflight-collector` resolve on `PATH` |
-| `assets/`                     | Logo                                                                |
+| Path                                         | Purpose                                                             |
+| -------------------------------------------- | ------------------------------------------------------------------- |
+| `plugin.json`                                | Agent Plugins manifest                                              |
+| `mcp.json`                                   | MCP server declaration                                              |
+| `skills/setup/SKILL.md`                      | First-run setup: dependencies, hook wiring, local vs. cloud mode    |
+| `skills/setup/references/troubleshooting.md` | Session-id resolution, hook exit codes, platform attribution        |
+| `skills/setup/scripts/validate-deps.sh`      | Checks that `preflight` and `preflight-collector` resolve on `PATH` |
+| `skills/observability/SKILL.md`              | The `nr_observe_*` tool catalog and when to use each tool           |
+| `assets/`                                    | Logo                                                                |
 
-This power uses Kiro's `POWER.md` + `steering/` format, matching Kiro's own
-first-party powers.
+This power uses the Agent Plugins format: a `plugin.json` manifest, an
+`mcp.json` server declaration, and `skills/`.
 
 ## Requirements
 

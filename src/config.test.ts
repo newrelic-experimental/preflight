@@ -661,6 +661,14 @@ describe('loadMcpConfig()', () => {
     expect(config.recordContent).toBe(false);
   });
 
+  it('highSecurity forces allowHeadlessInstall to false', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ highSecurity: true, allowHeadlessInstall: true });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.allowHeadlessInstall).toBe(false);
+  });
+
   it('highSecurity env var overrides highSecurity=false in config file', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';

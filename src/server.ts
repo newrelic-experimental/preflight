@@ -10,7 +10,7 @@ import { createLogger } from './shared/index.js';
 import { VERSION } from './version.js';
 import type { ServerOptions } from './types.js';
 import { registerTools } from './tools/session-stats.js';
-import { readAndCheckHooks } from './install/install-helper.js';
+import { areHooksInstalledAtAnyScope } from './install/install-helper.js';
 import { createHeadlessInstaller } from './install/headless-install.js';
 
 const logger = createLogger('mcp-server');
@@ -71,7 +71,7 @@ export class NrMcpServer {
       teamId: options.teamId,
       projectId: options.projectId,
       sessionStartMs: serverStartMs,
-      hooksInstalledFn: () => readAndCheckHooks(),
+      hooksInstalledFn: () => areHooksInstalledAtAnyScope(),
       // Refuses by default. index.ts re-registers the tools with the configured
       // allowHeadlessInstall once config loads, so this initial set never enables it.
       headlessInstaller: createHeadlessInstaller({

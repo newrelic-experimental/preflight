@@ -117,16 +117,18 @@ type SecretInputs = {
 
 /**
  * Whether any source would supply a non-empty value, without running the
- * command. Follows resolveSecret's precedence: a set env var decides alone.
+ * command. Follows resolveSecret's precedence: a non-empty env var decides
+ * alone, and a blank one is treated as unset.
  */
 export function isSecretConfigured(sources: SecretInputs): boolean {
-  if (sources.env !== undefined) return sources.env !== '';
+  if (sources.env?.trim()) return true;
   return sources.command !== undefined || Boolean(sources.file);
 }
 
 /**
- * Precedence: env var > helper command > plaintext file value. The command
- * runs only when no env var supplied the value. With `optional`, a failing
+ * Precedence: non-empty env var > helper command > plaintext file value. A
+ * blank env var counts as unset, so it cannot shadow the other two. The
+ * command runs only when no env var supplied the value. With `optional`, a failing
  * command is logged as a warning and the secret is treated as unset instead of
  * stopping startup; the plaintext value is not used as a fallback. With
  * `skipCommand`, a winning command is reported as the source but not run.
@@ -136,7 +138,7 @@ export function resolveSecret(
   sources: SecretInputs,
   options: { readonly optional?: boolean; readonly skipCommand?: boolean } = {},
 ): ResolvedSecret {
-  if (sources.env !== undefined) return { source: 'env', value: sources.env };
+  if (sources.env?.trim()) return { source: 'env', value: sources.env };
   if (sources.command !== undefined) {
     if (sources.file !== undefined) {
       logger.warn(`Both ${field} and ${field}Command are set; using ${field}Command`, { field });
