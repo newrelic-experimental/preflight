@@ -320,12 +320,12 @@ function wasBlockedByPreToolUseHook(
  * CopilotSdkAdapter's setup instructions, and `copilot-app` per the
  * `MCP_CLIENT=copilot-app` hook command in CopilotAppAdapter's.
  */
-const TOKEN_SOURCE_PLATFORM: Readonly<Record<string, string>> = {
-  transcript: 'claude-code',
-  'copilot-usage': 'copilot',
-  'copilot-sdk-usage': 'copilot',
-  'copilot-app-usage': 'copilot-app',
-};
+const TOKEN_SOURCE_PLATFORM: ReadonlyMap<string, string> = new Map([
+  ['transcript', 'claude-code'],
+  ['copilot-usage', 'copilot'],
+  ['copilot-sdk-usage', 'copilot'],
+  ['copilot-app-usage', 'copilot-app'],
+]);
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_ORPHAN_TIMEOUT_MS = 60_000;
@@ -818,7 +818,7 @@ export class HookEventProcessor {
       if (this.tokenDedupRegistry.hasAndAdd(scopeKey, event.messageId)) return;
     }
 
-    const platform = event.platform ?? TOKEN_SOURCE_PLATFORM[event.tool];
+    const platform = event.platform ?? TOKEN_SOURCE_PLATFORM.get(event.tool);
     const tokenEvent: TokenEvent = {
       mode: 'token',
       timestamp: event.timestamp,

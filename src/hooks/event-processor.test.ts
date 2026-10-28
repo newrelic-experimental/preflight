@@ -1365,6 +1365,9 @@ describe('HookEventProcessor', () => {
       ['copilot-app-usage', undefined, 'copilot-app'],
       ['copilot-usage', 'cursor', 'cursor'],
       ['unknown-source', undefined, undefined],
+      ['constructor', undefined, undefined],
+      ['__proto__', undefined, undefined],
+      ['toString', undefined, undefined],
     ])('a %s token line with stamp %s gets platform %s', (tool, stamp, expected) => {
       const tokenEvents: Array<{ platform?: string }> = [];
       const processor = new HookEventProcessor({
