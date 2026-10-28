@@ -37,6 +37,7 @@ import {
 } from './copilot-install-helper.js';
 import { copilotSdkExtensionInstallPath } from '../hooks/copilot-sdk-extension-health.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
+import { resolveInstallCredentials } from './credentials.js';
 import {
   validateConfigFile,
   DEFAULT_STORAGE_PATH,
@@ -1603,8 +1604,15 @@ export function createInstallProgram(): Command {
   program
     .command('install')
     .description('Configure Claude Code hooks and MCP server for AI observability')
-    .option('--license-key <key>', 'New Relic license key')
-    .option('--account-id <id>', 'New Relic account ID')
+    .option(
+      '--license-key <key>',
+      'New Relic license key (visible in `ps`; prefer --license-key-file or NEW_RELIC_LICENSE_KEY)',
+    )
+    .option(
+      '--license-key-file <path>',
+      'Read the New Relic license key from a file (overrides NEW_RELIC_LICENSE_KEY)',
+    )
+    .option('--account-id <id>', 'New Relic account ID (default: NEW_RELIC_ACCOUNT_ID)')
     .addOption(
       new Option('--mode <mode>', 'Telemetry mode: cloud, local, or both (default: local)').choices(
         [...VALID_MODES],
@@ -1618,8 +1626,9 @@ export function createInstallProgram(): Command {
       'Configure GitHub Copilot instead — Copilot CLI hooks/MCP and VS Code Copilot Chat hooks/MCP',
     )
     .action(
-      (options: {
+      (cliOptions: {
         licenseKey?: string;
+        licenseKeyFile?: string;
         accountId?: string;
         mode?: Mode;
         project?: boolean;
@@ -1627,11 +1636,24 @@ export function createInstallProgram(): Command {
         linuxCc?: boolean;
         copilot?: boolean;
       }) => {
+        if (cliOptions.copilot && (cliOptions.windowsCc || cliOptions.linuxCc)) {
+          print('\n  ⚠ --copilot cannot be combined with --windows-cc or --linux-cc.');
+          process.exit(1);
+        }
+        let credentials: ReturnType<typeof resolveInstallCredentials>;
+        try {
+          credentials = resolveInstallCredentials(cliOptions);
+        } catch (err) {
+          eprint(`\n✗ ${errMsg(err)}`);
+          process.exit(1);
+        }
+        for (const warning of credentials.warnings) print(`\n  ⚠ ${warning}`);
+        const options = {
+          ...cliOptions,
+          licenseKey: credentials.licenseKey,
+          accountId: credentials.accountId,
+        };
         if (options.copilot) {
-          if (options.windowsCc || options.linuxCc) {
-            print('\n  ⚠ --copilot cannot be combined with --windows-cc or --linux-cc.');
-            process.exit(1);
-          }
           handleCopilotInstall(options);
           return;
         }

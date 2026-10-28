@@ -138,6 +138,7 @@ const mockedHelper = installHelperMod as unknown as {
   mergeMcpConfig: jest.Mock;
   detectSettingsPath: jest.Mock;
   detectMcpConfigPath: jest.Mock;
+  generateNrConfig: jest.Mock;
 };
 const mockedConfig = configMod as unknown as { loadMcpConfig: jest.Mock };
 const mockedSetupWizard = {
@@ -1315,6 +1316,26 @@ describe('platform transition matrix', () => {
       String(c[0]).endsWith('config.json.tmp'),
     );
     expect(configWrites).toHaveLength(0);
+  });
+
+  it('install takes the license key and account id from the environment', async () => {
+    const saved = {
+      key: process.env.NEW_RELIC_LICENSE_KEY,
+      account: process.env.NEW_RELIC_ACCOUNT_ID,
+    };
+    process.env.NEW_RELIC_LICENSE_KEY = 'NRLIC-from-env';
+    process.env.NEW_RELIC_ACCOUNT_ID = '4242';
+    mFs.readFileSync.mockReturnValue('{}');
+    try {
+      await runInstallCli(['install']);
+    } finally {
+      if (saved.key === undefined) delete process.env.NEW_RELIC_LICENSE_KEY;
+      else process.env.NEW_RELIC_LICENSE_KEY = saved.key;
+      if (saved.account === undefined) delete process.env.NEW_RELIC_ACCOUNT_ID;
+      else process.env.NEW_RELIC_ACCOUNT_ID = saved.account;
+    }
+
+    expect(mockedHelper.generateNrConfig).toHaveBeenCalledWith('NRLIC-from-env', '4242');
   });
 
   // Bug fix: !nrConfigWriteFailed guard was suppressing the "Both required" hint when
