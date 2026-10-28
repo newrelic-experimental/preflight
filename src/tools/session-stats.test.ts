@@ -2,9 +2,10 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHeadlessInstaller } from '../install/headless-install.js';
 import { createServer, NrMcpServer } from '../server.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
@@ -919,6 +920,62 @@ describe('registerPendingTools()', () => {
 
     await client.close();
     await server.close();
+  });
+
+  describe('nr_observe_install_hooks while pending', () => {
+    let settingsDir: string;
+    let client: Client;
+    let server: ReturnType<typeof createServer>;
+
+    beforeEach(() => {
+      settingsDir = mkdtempSync(resolve(tmpdir(), 'nr-pending-install-'));
+    });
+
+    afterEach(async () => {
+      await client?.close();
+      await server?.close();
+      rmSync(settingsDir, { recursive: true, force: true });
+    });
+
+    async function callInstallHooks(allowHeadlessInstall: boolean) {
+      const { registerPendingTools } = await import('./session-stats.js');
+      server = createServer({ name: 'pending-install', version: '0.0.1' });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      client = new Client({ name: 'test', version: '1.0.0' });
+      registerPendingTools(server.server, {
+        sessionStartMs: Date.now(),
+        developer: 'tester',
+        headlessInstaller: createHeadlessInstaller({
+          allowHeadlessInstall,
+          getAuditTrail: () => undefined,
+          _settingsPathOverride: resolve(settingsDir, 'settings.json'),
+        }),
+      });
+      await Promise.all([server.server.connect(st), client.connect(ct)]);
+      const result = await client.callTool({ name: 'nr_observe_install_hooks', arguments: {} });
+      return {
+        isError: result.isError,
+        body: JSON.parse((result.content as Array<{ text: string }>)[0].text),
+      };
+    }
+
+    it('refuses with the opt-in message and writes nothing when the flag is off', async () => {
+      const { isError, body } = await callInstallHooks(false);
+
+      expect(isError).toBe(true);
+      expect(body.status).toBe('disabled');
+      expect(body.message).toContain('allowHeadlessInstall');
+      expect(existsSync(resolve(settingsDir, 'settings.json'))).toBe(false);
+    });
+
+    it('installs the hooks when the flag is on', async () => {
+      const { isError, body } = await callInstallHooks(true);
+
+      expect(isError).toBeUndefined();
+      expect(body.status).toBe('installed');
+      const written = JSON.parse(readFileSync(resolve(settingsDir, 'settings.json'), 'utf-8'));
+      expect(Object.keys(written.hooks)).toContain('PreToolUse');
+    });
   });
 
   it('exposes nr_observe_get_config when configSummary is provided', async () => {

@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { __resetLogLevelCache } from './shared/logger.js';
 import { digestWebhookUrlOverride, loadMcpConfig } from './config.js';
 import { resolveSecretCommand, SecretCommandError } from './secret-command.js';
+import { detectCloudForwardingGap } from './transport/unforwarded-session-monitor.js';
 
 const SECRET = 'test-user-api-key-0001';
 const WEBHOOK = 'https://hooks.slack.com/services/T000/B000/abcdefSECRET';
@@ -213,6 +214,82 @@ describe('loadMcpConfig() with *Command fields', () => {
     );
     expect(() => loadMcpConfig({ config: path })).not.toThrow(SECRET);
     expect(logged.join('\n')).not.toContain(SECRET);
+  });
+
+  it('lets --local fall back to local mode when licenseKeyCommand fails', () => {
+    const path = writeConfig({
+      mode: 'cloud',
+      accountId: '12345',
+      licenseKeyCommand: script('fail', 'process.exit(1);'),
+    });
+
+    let thrown: unknown;
+    try {
+      loadMcpConfig({ config: path });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(SecretCommandError);
+    expect((thrown as Error).message).toContain('Could not read licenseKey from licenseKeyCommand');
+    expect(detectCloudForwardingGap(thrown)).toEqual({
+      reason: 'secret-helper-failed',
+      missingField: 'licenseKey',
+      requestedMode: 'cloud',
+    });
+  });
+
+  it('reads the file webhook URL when NEW_RELIC_AI_DIGEST_WEBHOOK_URL is blank', () => {
+    process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL = '';
+    const path = writeConfig({ digestWebhookUrl: WEBHOOK });
+
+    const config = loadMcpConfig({ config: path });
+
+    expect(config.secretSources.digestWebhookUrl).toBe('file');
+    expect(digestWebhookUrlOverride(config)).toBeUndefined();
+  });
+
+  it('runs digestWebhookUrlCommand when NEW_RELIC_AI_DIGEST_WEBHOOK_URL is blank', () => {
+    process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL = '';
+    const path = writeConfig({ digestWebhookUrlCommand: printArg(WEBHOOK) });
+
+    const config = loadMcpConfig({ config: path });
+
+    expect(config.secretSources.digestWebhookUrl).toBe('command');
+    expect(digestWebhookUrlOverride(config)).toBe(WEBHOOK);
+  });
+
+  it('runs licenseKeyCommand when NEW_RELIC_LICENSE_KEY is blank', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = '';
+    const path = writeConfig({
+      mode: 'cloud',
+      accountId: '12345',
+      licenseKeyCommand: printArg(SECRET),
+    });
+
+    const config = loadMcpConfig({ config: path });
+
+    expect(config.licenseKey).toBe(SECRET);
+    expect(config.secretSources.licenseKey).toBe('command');
+  });
+
+  it('runs licenseKeyCommand when NEW_RELIC_LICENSE_KEY is only whitespace', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = '  ';
+    const path = writeConfig({
+      mode: 'cloud',
+      accountId: '12345',
+      licenseKeyCommand: printArg(SECRET),
+    });
+
+    expect(loadMcpConfig({ config: path }).licenseKey).toBe(SECRET);
+  });
+
+  it('reads the file accountId when NEW_RELIC_ACCOUNT_ID is blank', () => {
+    process.env.NEW_RELIC_ACCOUNT_ID = '';
+    process.env.NEW_RELIC_LICENSE_KEY = 'env-license';
+    const path = writeConfig({ mode: 'cloud', accountId: '12345' });
+
+    expect(loadMcpConfig({ config: path }).accountId).toBe('12345');
   });
 
   it.each([

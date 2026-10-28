@@ -90,7 +90,7 @@ import type {
 } from '../../storage/types.js';
 import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
-import { handleSendDigest } from '../../tools/cross-session-tools.js';
+import { digestWebhookUrlShadowedBy, handleSendDigest } from '../../tools/cross-session-tools.js';
 import type { AlertEvent } from '../live-event-bus.js';
 import type {
   AgentCall,
@@ -3241,9 +3241,14 @@ export function createApiHandler(
           'digestWebhookUrl must be a Slack incoming webhook URL (https://hooks.slack.com/...) or null',
         );
       } else {
-        existing.digestWebhookUrl = body.digestWebhookUrl ?? undefined;
-        if (existing.digestWebhookUrl === undefined) {
+        const shadowedBy =
+          body.digestWebhookUrl === null ? null : digestWebhookUrlShadowedBy(existing);
+        if (shadowedBy) {
+          errors.push(shadowedBy);
+        } else if (body.digestWebhookUrl === null) {
           delete existing.digestWebhookUrl;
+        } else {
+          existing.digestWebhookUrl = body.digestWebhookUrl;
         }
       }
     }

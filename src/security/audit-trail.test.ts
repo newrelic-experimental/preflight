@@ -681,6 +681,14 @@ describe('AuditTrailManager', () => {
     expect(appendSpy.mock.calls[0][0]).toMatchObject({ action: 'HookInstall' });
   });
 
+  it('leaves the HookInstall sessionId null while the manager holds a pending id', () => {
+    const mgr = makeManager({ sessionId: 'pending-1700000000000' });
+
+    const entry = mgr.recordHeadlessHookInstall('/home/dev/.claude/settings.json');
+
+    expect(entry.sessionId).toBeNull();
+  });
+
   // 20. no localStore — no crash
   it('does not throw when no localStore is provided', () => {
     const mgr = makeManager();

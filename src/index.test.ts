@@ -1111,6 +1111,97 @@ describe('stdio integration', () => {
     }
   }, 30000);
 
+  describe('nr_observe_install_hooks while the session is still pending', () => {
+    async function withPendingServer(
+      opts: { mcpClient: string; allow: boolean },
+      run: (
+        call: (name: string) => Promise<{ body: Record<string, unknown>; isError: unknown }>,
+        settingsPath: string,
+      ) => Promise<void>,
+    ): Promise<void> {
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+      const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+      const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-pending-install-storage-'));
+      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-pending-install-home-'));
+
+      // No breadcrumb and no CLAUDE_* vars keeps the server in pending mode for
+      // the whole call, as on a fresh install that has no hooks yet. MCP_CLIENT
+      // names the client explicitly instead.
+      const env = { ...process.env };
+      for (const name of Object.keys(env)) {
+        if (name.startsWith('CLAUDE')) delete env[name];
+      }
+
+      const transport = new StdioClientTransport({
+        command: 'node',
+        args: [binPath, '--stdio'],
+        env: {
+          ...env,
+          HOME: tmpHome,
+          MCP_CLIENT: opts.mcpClient,
+          NR_AI_DASHBOARD_PORT: '0',
+          NR_AI_MODE: 'local',
+          NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+          NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL: String(opts.allow),
+        },
+      });
+
+      const client = new Client({ name: 'test-client', version: '1.0.0' });
+      try {
+        await client.connect(transport);
+        const names = (await client.listTools()).tools.map((t) => t.name);
+        expect(names).not.toContain('nr_observe_get_session_stats');
+        await run(
+          async (name) => {
+            const result = await client.callTool({ name, arguments: {} });
+            const text = (result.content as Array<{ text: string }>)[0].text;
+            return { body: JSON.parse(text) as Record<string, unknown>, isError: result.isError };
+          },
+          resolve(tmpHome, '.claude', 'settings.json'),
+        );
+        await client.close();
+      } finally {
+        rmSync(tmpStoragePath, { recursive: true, force: true });
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    }
+
+    it('refuses with the opt-in message and writes nothing when allowHeadlessInstall is off', async () => {
+      await withPendingServer({ mcpClient: 'claude-code', allow: false }, async (call, path) => {
+        const { body, isError } = await call('nr_observe_install_hooks');
+        expect(isError).toBe(true);
+        expect(body.status).toBe('disabled');
+        expect(existsSync(path)).toBe(false);
+      });
+    }, 30000);
+
+    it('installs the hooks for Claude Code when allowHeadlessInstall is on', async () => {
+      await withPendingServer({ mcpClient: 'claude-code', allow: true }, async (call, path) => {
+        const health = await call('nr_observe_health');
+        expect(health.body.setup_required).toBe(true);
+
+        const { body } = await call('nr_observe_install_hooks');
+        expect(body.status).toBe('installed');
+        expect(readFileSync(path, 'utf-8')).toContain('PreToolUse');
+      });
+    }, 30000);
+
+    it('neither reports setup_required nor installs hooks for a non-Claude client', async () => {
+      await withPendingServer({ mcpClient: 'zed', allow: true }, async (call, path) => {
+        const health = await call('nr_observe_health');
+        expect('setup_required' in health.body).toBe(false);
+        expect('hooks_installed' in health.body).toBe(false);
+
+        const { body, isError } = await call('nr_observe_install_hooks');
+        expect(isError).toBe(true);
+        expect(body.error).toBe('Hook installer not available in this server mode');
+        expect(existsSync(path)).toBe(false);
+      });
+    }, 30000);
+  });
+
   it('self-corrects when the pending path resolves via the cwd fallback and a differing PPID breadcrumb appears later', async () => {
     // The pending -> async poller flow (not the eager synchronous one) can
     // also resolve via cwd instead of ppid. Mirrors the provisional-path
@@ -2140,17 +2231,21 @@ describe('preflight server subcommand', () => {
 });
 
 describe('NrIngestManager tier wiring', () => {
-  // NrIngestOptions.tiers is optional for backward compatibility, so a missing
-  // `tiers:` at a construction site compiles clean and silently degrades
-  // multi-tier routing to single-tier. src/index.privacy.test.ts documents why
-  // main()'s branches can't be driven in-process, so this asserts on source.
-  it('passes config.tiers at every NrIngestManager construction site', () => {
+  // NrIngestOptions.tiers is optional for backward compatibility, so a site
+  // that skipped nrIngestOptionsFromConfig (which carries config.tiers) would
+  // compile clean and silently degrade multi-tier routing to single-tier.
+  // src/index.privacy.test.ts documents why main()'s branches can't be driven
+  // in-process, so this asserts on source.
+  it('builds every NrIngestManager from nrIngestOptionsFromConfig', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/index.ts'), 'utf-8');
 
     const constructionSites = source.match(/new NrIngestManager\(\{/g) ?? [];
-    const tierWirings = source.match(/^\s*tiers: config!?\.tiers,$/gm) ?? [];
+    const configWirings =
+      source.match(
+        /new NrIngestManager\(\{\s*\.\.\.(nrIngestOptionsFromConfig\(|configOptions,)/g,
+      ) ?? [];
 
     expect(constructionSites).toHaveLength(3);
-    expect(tierWirings).toHaveLength(constructionSites.length);
+    expect(configWirings).toHaveLength(constructionSites.length);
   });
 });
