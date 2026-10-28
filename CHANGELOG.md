@@ -10,6 +10,32 @@ entry here; see [Changesets](CONTRIBUTING.md#changesets) in CONTRIBUTING.md. Rel
 (Added, Fixed, and so on). Later releases group them by semver bump: Major, Minor, or Patch
 Changes.
 
+## 1.68.0 - 2026-10-28
+
+### Minor Changes
+
+- `preflight doctor` has a new "Unpriced models" check. It lists models from the last 7 days of sessions that Preflight cannot price (their cost shows as $0) with a call count, and points you at the `aliases` option in `customPricingFile`. A model drops off the list once it can be priced.
+- `nr_observe_install_hooks` no longer writes to `~/.claude/settings.json` by default. Any MCP client connected to Preflight could call the tool, so it now refuses and changes nothing unless you opt in. A refusal returns `status: "disabled"`. To install the hooks, run `preflight install` in a terminal, or set `"allowHeadlessInstall": true` in your config (or `NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL=true`). With the flag on, the tool installs the hooks (over stdio it previously had no installer wired in, so there it now works for the first time) and records a `HookInstall` entry in the audit trail, which is also sent to New Relic as an `AiAuditEvent`. This works on a fresh install with no hooks yet, before the session is identified, and the audit event is sent right away in that case too. Hooks already present in the project's `.claude/settings.json` count as installed, so the tool writes nothing. Before the session is identified, only Claude Code is offered the tool and told setup is required. `highSecurity` forces the flag off. `nr_observe_get_config` reports the setting. See docs/ADVANCED.md.
+- Proxy HTTP upstreams now require `https://` unless the host is loopback (`localhost`, `127.0.0.1`, `::1`), so MCP traffic is no longer sent in cleartext to other hosts. An upstream at a private-range IP address that uses `http://` also needs the new `allowInsecureHttp: true` field, alongside `allowPrivateHosts`. Hostnames are not resolved for this check, so a LAN host given by name needs `https://` or its IP address.
+
+  Migration: any existing `proxyUpstreams` entry with a non-loopback `http://` URL is now skipped at startup with an error naming it, and listed under `skippedUpstreams` in the proxy's `/health` response, which reports `status: "degraded"` while any upstream is skipped; the other upstreams still start. If every configured upstream is rejected, the proxy refuses to start. Change its URL to `https://`, or, for a private-range IP address on a trusted network, set `allowPrivateHosts: true` and `allowInsecureHttp: true` on that entry.
+
+- Keep your license key, User API key, and Slack digest webhook out of plaintext `config.json`. New `licenseKeyCommand`, `nrApiKeyCommand`, and `digestWebhookUrlCommand` fields take a command (an argv array with an absolute path, such as macOS Keychain's `security find-generic-password ... -w`, 1Password's `op read`, or `vault kv get`) that Preflight runs once at startup to read the secret. Environment variables still win over these fields, and the command wins over a plaintext value. A `licenseKeyCommand` that fails, times out, or prints nothing stops startup with an error that names the field and never shows the command's output; a failing `nrApiKeyCommand` or `digestWebhookUrlCommand` only logs a warning and starts without that secret. `nr_observe_get_config` and `preflight doctor` now report where each secret came from (`env`, `command`, `file`, or `unset`), never the value.
+
+  Sending the weekly digest now honors `NEW_RELIC_AI_DIGEST_WEBHOOK_URL`, which it used to ignore in favor of the config file. If you set that variable, digests will now go out to that URL where they previously did not.
+
+### Patch Changes
+
+- `preflight doctor` now reports the companion mode a running Preflight MCP server actually resolved, along with where it came from, instead of only what your terminal's environment would resolve. This matters for managed rollouts that set the Claude Code OTel variables in settings rather than the shell. With no server running, the detail says it reflects the shell. `nr_observe_get_config` also returns `companionModeSource`.
+- The collaboration profile and personal insights tools are now described as self-coaching aids, not tools for evaluating, ranking, or monitoring individuals. PRIVACY.md explains this, and the `recordContent` and `highSecurity` comments in `example.config.js` now spell out what enabling content capture sends to New Relic.
+- **GitLab tokens are now redacted, and a token in a saved repository name no longer reaches the dashboard.** GitLab personal access tokens (`glpat-...`) are caught by the redaction patterns in logs, tool output and event fields. A `project_id` set through `NEW_RELIC_AI_PROJECT_ID` or the config file is redacted like `repo_url`. Session summaries saved by older versions can hold a repository name that starts with the remote's credentials (`<token>@github.com/widgets`). Preflight now drops that prefix whenever it loads a summary, so the dashboard and every metric derived from it show `github.com/widgets`. The saved file is not rewritten, so a token already on disk stays there until that session is saved again or you edit or delete its `repoName` field.
+- **A failing secret helper could stop the dashboard or send the digest to the wrong webhook.** Four cases are fixed.
+
+  - When `licenseKeyCommand` fails, the `--local` dashboard falls back to local mode, as it does for a missing license key, instead of exiting. This matters when nobody is there to answer the helper's Keychain or 1Password prompt, such as after an automatic update. The startup warning and `/api/health` hint say the helper failed rather than that the key is missing.
+  - When `digestWebhookUrlCommand` fails, the digest is not sent to a plaintext `digestWebhookUrl` left in the config file. The command outranks the file, so the file's URL is never a fallback.
+  - `nr_observe_subscribe_digest` now refuses to save a webhook URL while `digestWebhookUrlCommand` is set, since the command would outrank it, and `nr_observe_send_digest` says the command supplied no URL instead of asking you to subscribe again.
+  - A blank `NEW_RELIC_AI_DIGEST_WEBHOOK_URL`, `NEW_RELIC_LICENSE_KEY`, or `NEW_RELIC_API_KEY` is now treated as unset, so it no longer hides a configured `*Command` or the value in the config file.
+
 ## 1.67.3 - 2026-10-26
 
 ### Patch Changes
