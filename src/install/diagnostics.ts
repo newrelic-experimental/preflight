@@ -12,6 +12,7 @@ import {
   loadMcpConfig,
   DEFAULT_STORAGE_PATH,
   resolveCompanionMode,
+  type ResolvedCompanionMode,
 } from '../config.js';
 import type { McpServerConfig } from '../config.js';
 import { getDashboardDaemonStatus, findExecutableNodeDir, getScheduleStatus } from './schedule.js';
@@ -25,8 +26,9 @@ import {
   NR_HOOK_RE,
 } from './install-helper.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
-import { LocalStore } from '../storage/index.js';
+import { LocalStore, SessionStore } from '../storage/index.js';
 import { createDefaultRegistry } from '../platforms/index.js';
+import { resolvePricing } from '../metrics/pricing-overlay.js';
 
 const logger = createLogger('diagnostics');
 
@@ -189,13 +191,85 @@ function checkSecretSources(loaded: LoadedConfig): DiagnosticCheck {
   };
 }
 
-function checkCompanionMode(fileValue: boolean | undefined): DiagnosticCheck {
-  const resolved = resolveCompanionMode(process.env, fileValue);
+function checkCompanionMode(fileValue: boolean | undefined, storagePath: string): DiagnosticCheck {
+  const shell = resolveCompanionMode(process.env, fileValue);
+  const shellText = `${shell.value} (source: ${shell.source})`;
+  const servers = listRunningServerCompanionModes(storagePath);
+
+  if (servers.length === 0) {
+    return {
+      check: 'Companion mode',
+      status: 'ok',
+      detail: `Resolved to ${shellText} from this shell's environment; no running Preflight MCP server to confirm.`,
+    };
+  }
+
+  const serverText = servers
+    .map((s) => `${s.mode.value} (source: ${s.mode.source}, PID ${s.pid})`)
+    .join('; ');
+  const differs = servers.some((s) => s.mode.value !== shell.value);
   return {
     check: 'Companion mode',
     status: 'ok',
-    detail: `Resolved to ${resolved.value} (source: ${resolved.source})`,
+    detail: `Running MCP server resolved ${serverText}.${
+      differs ? ` This shell would resolve ${shellText}.` : ''
+    }`,
   };
+}
+
+function listRunningServerCompanionModes(
+  storagePath: string,
+): Array<{ pid: number; mode: ResolvedCompanionMode }> {
+  try {
+    return new LocalStore(storagePath)
+      .listActiveStdioInstances()
+      .flatMap((i) => (i.alive && i.companionMode ? [{ pid: i.pid, mode: i.companionMode }] : []));
+  } catch (err) {
+    logger.debug('Could not list running MCP servers for companion mode', { error: String(err) });
+    return [];
+  }
+}
+
+const UNPRICED_LOOKBACK_DAYS = 7;
+
+// Reads the process's pricing state as it stands; it never loads pricing itself,
+// because the running server calls runDiagnostics from /api/diagnostics.
+// Each entry point calls initModelPricing() first.
+function checkUnpricedModels(storagePath: string): DiagnosticCheck {
+  const name = 'Unpriced models';
+  try {
+    const since = new Date();
+    since.setDate(since.getDate() - UNPRICED_LOOKBACK_DAYS);
+    const sessions = new SessionStore({ storagePath }).loadAllSessions({ since });
+
+    const callsByModel = new Map<string, number>();
+    for (const session of sessions) {
+      for (const [model, usage] of Object.entries(session.unpricedByModel ?? {})) {
+        callsByModel.set(model, (callsByModel.get(model) ?? 0) + usage.calls);
+      }
+    }
+
+    // A later alias or pricing refresh can price a model that was unpriced when
+    // its session was saved, so re-resolve instead of trusting the summary.
+    const stillUnpriced = [...callsByModel].filter(([model]) => resolvePricing(model) === null);
+    if (stillUnpriced.length === 0) {
+      return { check: name, status: 'ok', detail: 'No unpriced models in recent sessions.' };
+    }
+
+    const models = stillUnpriced
+      .map(([model, calls]) => `${model} (${calls} ${calls === 1 ? 'call' : 'calls'})`)
+      .sort()
+      .join(', ');
+    return {
+      check: name,
+      status: 'warn',
+      detail: `Sessions in the last ${UNPRICED_LOOKBACK_DAYS} days used models with no price, so their cost is reported as $0: ${models}.`,
+      fix: 'Map each model to a priced one with the `aliases` object in your customPricingFile (see docs/ADVANCED.md, "Model name matching").',
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { check: name, status: 'skip', detail: `Could not read session history: ${message}` };
+  }
 }
 
 function checkDaemon(): DiagnosticCheck[] {
@@ -702,7 +776,7 @@ export async function runDiagnostics(opts?: {
   const { check: configCheck, context } = checkConfigValid(configPath, opts?.storagePath);
   const loaded = loadConfigForDiagnostics(configPath, opts?.resolveSecrets ?? true);
   const modeCheck = checkTelemetryMode(loaded, context.fileMode);
-  const companionModeCheck = checkCompanionMode(context.fileCompanionMode);
+  const companionModeCheck = checkCompanionMode(context.fileCompanionMode, context.storagePath);
 
   const settingsPaths: string[] = [detectSettingsPath('user')];
   if (isWsl()) {
@@ -715,6 +789,7 @@ export async function runDiagnostics(opts?: {
     modeCheck,
     checkSecretSources(loaded),
     companionModeCheck,
+    checkUnpricedModels(context.storagePath),
     checkNodeVersionDiagnostic(),
     ...checkDaemon(),
     checkUpdateSchedule(),

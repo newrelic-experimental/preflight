@@ -1,7 +1,7 @@
 import * as nodeFs from 'node:fs';
 import * as nodeOs from 'node:os';
 import { dirname, resolve } from 'node:path';
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 
 // Suppress logger output.
 jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -76,6 +76,10 @@ jest.mock('../storage/index.js', () => ({
   LocalStore: jest.fn().mockImplementation(() => ({
     getLiveLocalDashboardProcess: jest.fn(() => null),
     listLocalInstances: jest.fn(() => []),
+    listActiveStdioInstances: jest.fn(() => []),
+  })),
+  SessionStore: jest.fn().mockImplementation(() => ({
+    loadAllSessions: jest.fn(() => []),
   })),
 }));
 
@@ -89,7 +93,8 @@ import * as updateSupport from './update-support.js';
 import * as config from '../config.js';
 import * as installHelper from './install-helper.js';
 import * as platform from './platform.js';
-import { LocalStore } from '../storage/index.js';
+import { LocalStore, SessionStore } from '../storage/index.js';
+import { applyPricingOverlay, resolvePricing } from '../metrics/pricing-overlay.js';
 
 const mockedExistSync = nodeFs.existsSync as jest.Mock;
 const mockedReadFileSync = nodeFs.readFileSync as jest.Mock;
@@ -286,6 +291,143 @@ describe('runDiagnostics', () => {
       expect(checks.find((x) => x.check === 'Telemetry mode')?.detail).toBe(
         'Could not resolve config to determine mode: Could not read licenseKey from licenseKeyCommand: the command exited with a non-zero status (1).',
       );
+    });
+  });
+
+  describe('Check: Companion mode', () => {
+    const mockStdioInstances = (instances: unknown[]) =>
+      (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+        getLiveLocalDashboardProcess: jest.fn(() => null),
+        listLocalInstances: jest.fn(() => []),
+        listActiveStdioInstances: jest.fn(() => instances),
+      }));
+    const makeInstance = (overrides: Record<string, unknown>) => ({
+      pid: 12345,
+      sessionId: 'sess-1',
+      argv: [],
+      cwd: '/home',
+      startedAt: 0,
+      alive: true,
+      companionMode: { value: true, source: 'detected Claude Code OTel export' },
+      ...overrides,
+    });
+
+    it('labels the value as the shell environment when no server is running', async () => {
+      mockStdioInstances([]);
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Companion mode')!;
+      expect(c.status).toBe('ok');
+      expect(c.detail).toBe(
+        "Resolved to false (source: default) from this shell's environment; no running Preflight MCP server to confirm.",
+      );
+    });
+
+    it("reports the running server's value and notes when the shell differs", async () => {
+      mockStdioInstances([makeInstance({})]);
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Companion mode')!;
+      expect(c.detail).toBe(
+        'Running MCP server resolved true (source: detected Claude Code OTel export, PID 12345). This shell would resolve false (source: default).',
+      );
+    });
+
+    it('does not mention the shell when it agrees with the server', async () => {
+      mockStdioInstances([makeInstance({ companionMode: { value: false, source: 'default' } })]);
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Companion mode')!;
+      expect(c.detail).toBe('Running MCP server resolved false (source: default, PID 12345).');
+    });
+
+    it('ignores dead instances and pre-upgrade sidecars without a companion mode', async () => {
+      mockStdioInstances([makeInstance({ alive: false }), makeInstance({ companionMode: null })]);
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Companion mode')!;
+      expect(c.detail).toContain("from this shell's environment");
+    });
+  });
+
+  describe('Check: Unpriced models', () => {
+    const mockSessions = (sessions: unknown[]) =>
+      (SessionStore as unknown as jest.Mock).mockImplementation(() => ({
+        loadAllSessions: jest.fn(() => sessions),
+      }));
+
+    it('reports ok when no recent session has unpriced models', async () => {
+      mockSessions([{ sessionId: 'a' }]);
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Unpriced models')!;
+      expect(c).toEqual({
+        check: 'Unpriced models',
+        status: 'ok',
+        detail: 'No unpriced models in recent sessions.',
+      });
+    });
+
+    it('names each unpriced model with its call count summed across sessions', async () => {
+      mockSessions([
+        { unpricedByModel: { 'acme-gateway-x': { calls: 2, tokens: 10 } } },
+        { unpricedByModel: { 'acme-gateway-x': { calls: 1, tokens: 5 } } },
+      ]);
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Unpriced models')!;
+      expect(c.status).toBe('warn');
+      expect(c.detail).toContain('acme-gateway-x (3 calls)');
+      expect(c.fix).toContain('aliases');
+      expect(c.fix).toContain('customPricingFile');
+    });
+
+    it('drops a model that now resolves to a price', async () => {
+      mockSessions([{ unpricedByModel: { 'claude-sonnet-4-6': { calls: 4, tokens: 1 } } }]);
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Unpriced models')!;
+      expect(c.status).toBe('ok');
+    });
+
+    describe('with a customPricingFile', () => {
+      // Stands in for the entry point's initModelPricing() call before runDiagnostics.
+      const loadAliasFile = (): void => {
+        (nodeFs.statSync as jest.Mock).mockReturnValue({ size: 64 });
+        (nodeFs.readFileSync as jest.Mock).mockReturnValue(
+          JSON.stringify({ aliases: { 'acme-gateway-x': 'claude-sonnet-4-6' } }),
+        );
+        applyPricingOverlay('/test-home/pricing.json');
+      };
+      afterEach(() => applyPricingOverlay(null));
+
+      it('drops a model the loaded file aliases to a priced one', async () => {
+        mockSessions([{ unpricedByModel: { 'acme-gateway-x': { calls: 3, tokens: 1200 } } }]);
+        loadAliasFile();
+        const checks = await runDiagnostics(makeOpts());
+        const c = checks.find((x) => x.check === 'Unpriced models')!;
+        expect(c.status).toBe('ok');
+      });
+
+      it('leaves the pricing the process loaded untouched', async () => {
+        // The running server calls runDiagnostics from /api/diagnostics, so a config
+        // file that changed since startup must not replace the server's pricing.
+        loadAliasFile();
+        mockedLoadMcpConfig.mockReturnValue({
+          mode: 'local',
+          companionMode: false,
+          customPricingFile: null,
+          secretSources: UNSET_SOURCES,
+        });
+        await runDiagnostics(makeOpts());
+        expect(resolvePricing('acme-gateway-x')).not.toBeNull();
+      });
+    });
+
+    it('skips with the reason when session history is unreadable', async () => {
+      (SessionStore as unknown as jest.Mock).mockImplementation(() => {
+        throw new Error('Cannot read sessions');
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Unpriced models')!;
+      expect(c).toEqual({
+        check: 'Unpriced models',
+        status: 'skip',
+        detail: 'Could not read session history: Cannot read sessions',
+      });
     });
   });
 
@@ -962,7 +1104,7 @@ describe('runDiagnostics', () => {
       const checks = await runDiagnostics({ configPath: '/tmp/does-not-exist.json' });
       // Every check must still be present — one throwing dependency must not
       // take down the rest of the diagnostic run.
-      expect(checks).toHaveLength(14);
+      expect(checks).toHaveLength(15);
       const check = checks.find((c) => c.check === 'Local instances');
       expect(check?.status).toBe('warn');
       expect(check?.detail).toContain('registry file is corrupt');
@@ -1013,6 +1155,6 @@ describe('runDiagnostics', () => {
 
   it('returns every check on macOS', async () => {
     const checks = await runDiagnostics(makeOpts());
-    expect(checks).toHaveLength(14);
+    expect(checks).toHaveLength(15);
   });
 });

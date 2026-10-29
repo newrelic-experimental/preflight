@@ -1294,8 +1294,12 @@ function processHook(raw: string, cliEvent?: string): void {
     // tool_input.skill already captured by parseSkill() — no other prompt
     // content is read. Not gated behind recordContent, matching skillName on
     // Skill tool calls.
+    // The lookahead rejects a pasted absolute path (`/Users/me/app.ts`), which
+    // would otherwise open a skill run named `Users`.
     const slashCommand =
-      typeof data.prompt === 'string' ? /^\/([A-Za-z0-9_:.\-]+)/.exec(data.prompt)?.[1] : undefined;
+      typeof data.prompt === 'string'
+        ? /^\/([A-Za-z0-9_:.\-]+)(?=\s|$)/.exec(data.prompt)?.[1]
+        : undefined;
     event = {
       mode: 'user_prompt_submit' as const,
       timestamp,

@@ -100,6 +100,8 @@ export interface McpServerConfig {
    * See docs/ADVANCED.md § allowHeadlessInstall.
    */
   readonly allowHeadlessInstall: boolean;
+  /** Source of the resolved companionMode value (env, config file, detected, or default). */
+  readonly companionModeSource: CompanionModeSource;
   readonly redactionPatterns: readonly RegExp[];
   readonly hookBufferPath: string;
   readonly storagePath: string;
@@ -1073,6 +1075,7 @@ export function loadMcpConfig(
         ),
 
     companionMode: resolvedCompanionMode.value,
+    companionModeSource: resolvedCompanionMode.source,
 
     allowHeadlessInstall: highSecurity
       ? false

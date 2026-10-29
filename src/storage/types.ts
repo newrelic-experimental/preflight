@@ -290,6 +290,17 @@ export interface SessionSummary {
   readonly [key: string]: unknown;
 }
 
+export type SkillSource = 'tool' | 'slash';
+
+/** The skill run a tool call happened inside; see SkillActivationTracker. */
+export interface SkillStamp {
+  readonly name: string;
+  readonly source: SkillSource;
+  readonly runId: string;
+  /** The run that was open when this one started, e.g. the skill that invoked this one. */
+  readonly parentRunId?: string;
+}
+
 export interface ToolCallRecord {
   readonly id: string;
   readonly sessionId: string | null;
@@ -352,6 +363,8 @@ export interface ToolCallRecord {
    * passes `normalizeAgentType()` is never overwritten.
    */
   readonly agentType?: string;
+  /** The skill run this tool call happened inside. */
+  readonly activeSkill?: SkillStamp;
   /** Skill invoked, from the hook's `tool_input.skill`; only on `toolName === 'Skill'` records. */
   readonly skillName?: string;
   /** Length of the free-text `tool_input.args`; the text itself is never recorded. */

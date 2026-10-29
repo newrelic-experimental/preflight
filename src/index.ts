@@ -63,8 +63,7 @@ import {
 import { ContextCompositionTracker } from './metrics/context-composition-tracker.js';
 import { ContextTrackerRegistry } from './metrics/context-tracker.js';
 import { ContextWindowTracker } from './metrics/context-window-tracker.js';
-import { applyPricingOverlay } from './metrics/pricing-overlay.js';
-import { startPricingRefresh } from './metrics/pricing-refresh.js';
+import { initModelPricing } from './metrics/pricing-init.js';
 import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
 import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
@@ -99,6 +98,7 @@ import { QualityProxyTracker } from './metrics/quality-proxy-tracker.js';
 import { RecommendationEngine } from './metrics/recommendation-engine.js';
 import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
+import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
 import { buildTaskDetectorSeed } from './metrics/task-detector-seed.js';
 import { TaskDetector } from './metrics/task-detector.js';
@@ -790,14 +790,6 @@ export function parseArgs(argv: string[]): CliOptions {
   };
 }
 
-function initModelPricing(config: McpServerConfig): void {
-  applyPricingOverlay(config.customPricingFile);
-  void startPricingRefresh({
-    enabled: config.pricingRefresh,
-    cachePath: resolve(config.storagePath, 'pricing-cache.json'),
-  });
-}
-
 async function main(): Promise<void> {
   const nodeVersionError = checkNodeVersion();
   if (nodeVersionError) {
@@ -1185,7 +1177,12 @@ async function main(): Promise<void> {
     // dashboard owner's GC pass can tell which buffer files still have a live
     // owner. Removed in the shutdown handler below. Skipped during the
     // provisional window — the real heartbeat is written after resolution.
-    if (options.stdio && !isProvisional) localStore.writeHeartbeat();
+    if (options.stdio && !isProvisional) {
+      localStore.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
+        value: config.companionMode,
+        source: config.companionModeSource,
+      });
+    }
     localStoreForShutdown = localStore;
 
     // Migrate any pre-existing events from the legacy shared `buffer.jsonl` into
@@ -1325,6 +1322,7 @@ async function main(): Promise<void> {
     // window is named later via adoptRealSessionId once its real id resolves.
     if (options.stdio) applyAuthoritativeSessionName(sessionTraceId);
     const turnCostAttributor = new TurnCostAttributor({ rateMultiplier });
+    const skillActivationTracker = new SkillActivationTracker();
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
     const gitWorkspaceReporter = new GitWorkspaceReporter();
@@ -2094,10 +2092,12 @@ async function main(): Promise<void> {
         // record, so audit/security events carry agentId and agentType.
         // The watcher's on-demand read is synchronous, which is what keeps it
         // ahead of auditTrail.
-        const rawRecord = subagentAttribution.attributeAtIntake(
+        const attributed = subagentAttribution.attributeAtIntake(
           incomingRecord,
           activeSubagentWatcher,
         );
+        const activeSkill = skillActivationTracker.recordToolCall(attributed);
+        const rawRecord = activeSkill ? { ...attributed, activeSkill } : attributed;
         if (!config || !sessionTracker || !taskDetector) {
           logger.warn('onRecord called before full initialization; skipping');
           return;
@@ -2625,7 +2625,11 @@ async function main(): Promise<void> {
         });
       },
       onUserPromptSubmit: (frame) => {
-        turnCostAttributor.recordSlashCommand(frame.sessionId, frame.slashCommand ?? null);
+        const slashRun = skillActivationTracker.recordPrompt(
+          frame.sessionId,
+          frame.slashCommand ?? null,
+        );
+        if (slashRun) turnCostAttributor.recordSkillRun(frame.sessionId, slashRun);
         taskDetector!.startTaskIfNone(frame.timestamp);
       },
       onStop: (frame) => {
@@ -2991,7 +2995,10 @@ async function main(): Promise<void> {
       // Replace the current LocalStore with one scoped to the real id.
       const realLocalStore = new LocalStore(config!.storagePath, realId);
       realLocalStore.initialize();
-      realLocalStore.writeHeartbeat();
+      realLocalStore.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
+        value: config!.companionMode,
+        source: config!.companionModeSource,
+      });
       localStoreForShutdown = realLocalStore;
       try {
         realLocalStore.migrateLegacyBuffer();
@@ -3066,6 +3073,7 @@ async function main(): Promise<void> {
         configFilePath,
         companionMode: config!.companionMode,
         allowHeadlessInstall: config!.allowHeadlessInstall,
+        companionModeSource: config!.companionModeSource,
       };
       registerTools(mcpServer!.server, {
         headlessInstaller: buildHeadlessInstaller(),
@@ -3236,6 +3244,7 @@ async function main(): Promise<void> {
             configFilePath: pendingConfigFilePath,
             companionMode: config.companionMode,
             allowHeadlessInstall: config.allowHeadlessInstall,
+            companionModeSource: config.companionModeSource,
           },
           // A Claude Code session with no hooks never resolves, so this is
           // where the opt-in install has to work. Other stdio clients have no
@@ -3312,6 +3321,7 @@ async function main(): Promise<void> {
           configFilePath,
           companionMode: config.companionMode,
           allowHeadlessInstall: config.allowHeadlessInstall,
+          companionModeSource: config.companionModeSource,
         };
         registerTools(mcpServer!.server, {
           headlessInstaller: buildHeadlessInstaller(),

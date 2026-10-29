@@ -23,7 +23,7 @@ describe('examples/local-alert-rules.json', () => {
     const json = JSON.parse(raw) as unknown;
     const result = parseLocalAlertRules(json);
     expect(result.invalid).toEqual([]);
-    expect(result.valid).toHaveLength(8);
+    expect(result.valid).toHaveLength(10);
   });
 
   it('contains the expected rule ids', () => {
@@ -34,6 +34,8 @@ describe('examples/local-alert-rules.json', () => {
     expect(ids).toEqual(
       new Set([
         'session-cost-spike',
+        'daily-cost-spike',
+        'weekly-cost-spike',
         'low-efficiency-score',
         'stuck-loop-rate',
         'anti-pattern-rate',
@@ -43,6 +45,14 @@ describe('examples/local-alert-rules.json', () => {
         'weekly-budget-warn',
       ]),
     );
+  });
+
+  it('covers the session, today and week cost.window periods', () => {
+    const raw = readFileSync(fixturePath, 'utf-8');
+    const json = JSON.parse(raw) as unknown;
+    const result = parseLocalAlertRules(json);
+    const periods = result.valid.flatMap((r) => (r.type === 'cost.window' ? [r.costPeriod] : []));
+    expect(periods).toEqual(['session', 'today', 'week']);
   });
 
   it('the stuck-loop rule opts into the os channel (it is the only one)', () => {
