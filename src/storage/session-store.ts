@@ -17,6 +17,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -322,6 +323,13 @@ export interface SessionFileInfo {
 export interface ListSessionsOptions {
   since?: Date;
   developer?: string;
+  /**
+   * Also load files whose filename date is older than `since` when the file
+   * was modified at or after this time. A resumed session keeps its original
+   * start-date filename but is rewritten on every checkpoint, so mtime is the
+   * cheap way to find it without parsing every file on disk.
+   */
+  includeModifiedSince?: Date;
 }
 
 // ---------------------------------------------------------------------------
@@ -893,6 +901,7 @@ export class SessionStore {
     if (!existsSync(this.sessionsDir)) return [];
 
     const sinceDate = options?.since ? formatDate(options.since) : null;
+    const modifiedSinceMs = options?.includeModifiedSince?.getTime() ?? null;
     const results: FullSessionSummary[] = [];
 
     for (const file of readdirSync(this.sessionsDir)) {
@@ -901,7 +910,14 @@ export class SessionStore {
       const parsed = parseSessionFilename(file);
       if (!parsed) continue;
 
-      if (sinceDate && parsed.date < sinceDate) continue;
+      if (sinceDate && parsed.date < sinceDate) {
+        if (modifiedSinceMs === null) continue;
+        try {
+          if (statSync(join(this.sessionsDir, file)).mtimeMs < modifiedSinceMs) continue;
+        } catch {
+          continue;
+        }
+      }
 
       try {
         const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
@@ -942,20 +958,27 @@ export class SessionStore {
    * cross-midnight session, since `loadTodaySessions()` filters by file-name
    * date (= start date) and would silently drop them.
    *
-   * Loads a 2-day window (yesterday + today's date prefixes) and filters by
-   * endTime overlap with [startOfToday, now].
+   * Loads a 2-day window (yesterday + today's date prefixes) plus any older-
+   * dated file modified today, since a resumed session keeps its original
+   * filename. Keeps sessions whose endTime overlaps [startOfToday, now] or
+   * whose tool-call timeline has an entry today.
    */
   loadSessionsOverlappingToday(): FullSessionSummary[] {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const yesterday = new Date(today.getTime() - 86_400_000);
     const startOfToday = today.getTime();
-    const all = this.loadAllSessions({ since: yesterday });
+    const all = this.loadAllSessions({ since: yesterday, includeModifiedSince: today });
     // endTime=0 is the deserialisation default for sessions that crashed or
     // were written by an older build without the endTime field. Treat those as
     // "unknown end" and include them — they are already bounded to the 2-day
     // window by loadAllSessions({ since: yesterday }).
-    return all.filter((s) => s.endTime === 0 || s.endTime >= startOfToday);
+    return all.filter(
+      (s) =>
+        s.endTime === 0 ||
+        s.endTime >= startOfToday ||
+        (s.timeline?.some((t) => t.timestamp >= startOfToday) ?? false),
+    );
   }
 }
 

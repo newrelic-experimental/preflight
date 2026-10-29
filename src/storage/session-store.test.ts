@@ -933,6 +933,42 @@ describe('SessionStore', () => {
     const sessions = store.loadSessionsOverlappingToday();
     expect(sessions.map((s) => s.sessionId).sort()).toEqual(['cross-midnight', 'no-end-time']);
   });
+
+  it('loadSessionsOverlappingToday includes a resumed session saved under an older filename date', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startOfToday = today.getTime();
+    const oldStart = startOfToday - 10 * 86_400_000;
+
+    // Original start-date filename, but the timeline has activity today and
+    // the file was just rewritten (mtime = now).
+    store.saveSession(
+      makeSummary({
+        sessionId: 'resumed',
+        startTime: oldStart,
+        endTime: oldStart + 5000,
+        timeline: [
+          { timestamp: oldStart + 1000, toolName: 'Read' },
+          { timestamp: startOfToday + 60_000, toolName: 'Read' },
+        ] as unknown as FullSessionSummary['timeline'],
+      }),
+    );
+    // Old session also rewritten today but with no activity today.
+    store.saveSession(
+      makeSummary({
+        sessionId: 'old-no-activity',
+        startTime: oldStart,
+        endTime: oldStart + 5000,
+        timeline: [
+          { timestamp: oldStart + 1000, toolName: 'Read' },
+        ] as unknown as FullSessionSummary['timeline'],
+      }),
+    );
+
+    const sessions = store.loadSessionsOverlappingToday();
+    expect(sessions.map((s) => s.sessionId)).toEqual(['resumed']);
+  });
 });
 
 // ---------------------------------------------------------------------------
