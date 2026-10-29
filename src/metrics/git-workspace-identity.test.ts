@@ -177,15 +177,34 @@ describe('WorktreeIdentityResolver', () => {
     expect(identity1!.worktreeLabel).toBe(identity2!.worktreeLabel);
   });
 
-  it('remembers a non-repo directory instead of re-running git on every call', () => {
+  it('does not remember a non-repo directory by default', () => {
     const dir = join(tmpDir, 'becomes-a-repo-later');
     execSync(`mkdir -p "${dir}"`);
     expect(resolver.resolve(dir)).toBeNull();
 
     initGitRepo(dir);
 
-    expect(resolver.resolve(dir)).toBeNull();
-    expect(new WorktreeIdentityResolver().resolve(dir)).not.toBeNull();
+    expect(resolver.resolve(dir)).not.toBeNull();
+  });
+
+  it('remembers a non-repo directory for missTtlMs when opted in', () => {
+    const missResolver = new WorktreeIdentityResolver({ missTtlMs: 30_000 });
+    const dir = join(tmpDir, 'becomes-a-repo-later-opt-in');
+    execSync(`mkdir -p "${dir}"`);
+    const t0 = Date.now();
+    const now = jest.spyOn(Date, 'now').mockReturnValue(t0);
+    try {
+      expect(missResolver.resolve(dir)).toBeNull();
+      initGitRepo(dir);
+
+      now.mockReturnValue(t0 + 29_999);
+      expect(missResolver.resolve(dir)).toBeNull();
+
+      now.mockReturnValue(t0 + 30_000);
+      expect(missResolver.resolve(dir)).not.toBeNull();
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('handles resolve(null) gracefully', () => {

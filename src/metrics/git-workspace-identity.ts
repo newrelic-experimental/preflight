@@ -64,11 +64,26 @@ interface CachedIdentity {
   branchResolvedAt: number;
 }
 
+const NOT_A_REPO = Symbol('not-a-repo');
+
+export interface WorktreeIdentityResolverOptions {
+  /** How long a directory that `git` definitively reported as not a repo is
+   *  remembered. Off by default: the live pipeline wants a directory that
+   *  becomes a repo to be picked up on the next call. Request-path callers
+   *  that re-resolve the same history on every poll opt in. Transient
+   *  failures (timeout, spawn error) are never remembered. */
+  readonly missTtlMs?: number;
+}
+
 export class WorktreeIdentityResolver {
   private readonly cache = new Map<string, CachedIdentity>();
   private readonly branchTtlMs = 30_000;
-  private readonly missTtlMs = 30_000;
+  private readonly missTtlMs: number;
   private readonly misses = new Map<string, number>();
+
+  constructor(options: WorktreeIdentityResolverOptions = {}) {
+    this.missTtlMs = options.missTtlMs ?? 0;
+  }
 
   resolve(dir: string | null | undefined): WorktreeIdentity | null {
     if (typeof dir !== 'string' || dir.length === 0) return null;
@@ -100,15 +115,17 @@ export class WorktreeIdentityResolver {
     }
 
     const identity = this.computeIdentity(dir);
+    if (identity === NOT_A_REPO) {
+      if (this.missTtlMs > 0) this.misses.set(dir, now);
+      return null;
+    }
     if (identity) {
       this.cache.set(dir, { identity, branchResolvedAt: now });
-    } else {
-      this.misses.set(dir, now);
     }
     return identity;
   }
 
-  private computeIdentity(dir: string): WorktreeIdentity | null {
+  private computeIdentity(dir: string): WorktreeIdentity | typeof NOT_A_REPO | null {
     let repoKey: string;
     let worktreeKey: string;
 
@@ -127,7 +144,8 @@ export class WorktreeIdentityResolver {
       );
 
       if (result.status !== 0 || typeof result.stdout !== 'string') {
-        return null;
+        const gitAnswered = result.error === undefined && typeof result.status === 'number';
+        return gitAnswered ? NOT_A_REPO : null;
       }
 
       const lines = result.stdout.trim().split('\n');

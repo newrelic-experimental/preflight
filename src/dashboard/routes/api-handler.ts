@@ -1469,7 +1469,7 @@ export function createApiHandler(
   // Shared for the same reason: the resolver memoizes each working directory
   // (including ones that are not git repos), so a fresh instance per request
   // would re-spawn `git` for every timeline entry of every uncached session.
-  const gitIdentityResolver = new WorktreeIdentityResolver();
+  const gitIdentityResolver = new WorktreeIdentityResolver({ missTtlMs: 30_000 });
 
   routes.set('GET /api/session/current', (_req, res) => {
     if (!deps.sessionTracker) return unavailable(res, 'sessionTracker');
