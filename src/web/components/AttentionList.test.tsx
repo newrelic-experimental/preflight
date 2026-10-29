@@ -82,4 +82,10 @@ describe('AttentionList', () => {
     render(<AttentionList rows={[]} firingCount={0} alertsHref="/alerts" />);
     expect(screen.getByText(/Nothing needs attention/)).toBeInTheDocument();
   });
+
+  it('shows a loading line instead of "Nothing needs attention." while loading', () => {
+    render(<AttentionList rows={[]} firingCount={0} alertsHref="/alerts" loading />);
+    expect(screen.getByRole('status')).toHaveTextContent('Loading…');
+    expect(screen.queryByText('Nothing needs attention.')).not.toBeInTheDocument();
+  });
 });
