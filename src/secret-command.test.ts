@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 import { __resetLogLevelCache } from './shared/logger.js';
-import { digestWebhookUrlOverride, loadMcpConfig } from './config.js';
+import { CloudSecretCommandError, digestWebhookUrlOverride, loadMcpConfig } from './config.js';
 import { resolveSecretCommand, SecretCommandError } from './secret-command.js';
 import { detectCloudForwardingGap } from './transport/unforwarded-session-monitor.js';
 
@@ -508,6 +508,62 @@ describe('licenseKeyCommand on tiers', () => {
 
     expect(config.tiers).toEqual([]);
     expect(() => writeFileSync(ranMarker, '', { flag: 'wx' })).not.toThrow();
+  });
+
+  it('reports a failing tier command as a cloud forwarding gap', () => {
+    const path = writeConfig({
+      mode: 'both',
+      accountId: '12345',
+      licenseKey: 'flat-key',
+      tiers: [nrTier('team', { licenseKeyCommand: script('fail', 'process.exit(1);') })],
+    });
+
+    let thrown: unknown;
+    try {
+      loadMcpConfig({ config: path });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(CloudSecretCommandError);
+    expect(detectCloudForwardingGap(thrown)).toEqual({
+      reason: 'secret-helper-failed',
+      missingField: 'licenseKey',
+      requestedMode: 'both',
+    });
+  });
+
+  it('loads in local mode without the tiers array when ignoreTiers is set', () => {
+    const { argv, ranMarker } = trackedPrint(SECRET);
+    const path = writeConfig({
+      mode: 'cloud',
+      accountId: '12345',
+      licenseKey: 'flat-key',
+      tiers: [nrTier('team', { licenseKeyCommand: argv })],
+    });
+    process.env.NR_AI_MODE = 'local';
+
+    const config = loadMcpConfig({ config: path }, { ignoreTiers: true });
+
+    expect(config.mode).toBe('local');
+    expect(config.tiers).toEqual([]);
+    expect(() => writeFileSync(ranMarker, '', { flag: 'wx' })).not.toThrow();
+  });
+
+  it.each([
+    ['an empty array', []],
+    ['an empty argument', ['/bin/x', '']],
+  ])('rejects a tier command that is %s', (_label, licenseKeyCommand) => {
+    const path = writeConfig({
+      mode: 'cloud',
+      accountId: '12345',
+      licenseKey: 'flat-key',
+      tiers: [nrTier('team', { licenseKeyCommand })],
+    });
+
+    expect(() => loadMcpConfig({ config: path })).toThrow(
+      'Tier "team" destination.licenseKeyCommand must be a non-empty array of non-empty strings',
+    );
   });
 
   it('does not run tier commands in local mode', () => {

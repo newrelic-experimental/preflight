@@ -739,6 +739,12 @@ export interface LoadMcpConfigOptions {
    * undefined/null and `tiers` stays empty unless explicit.
    */
   readonly resolveSecrets?: boolean;
+  /**
+   * Skip the `tiers` array entirely. The `--local` fallback sets this after a
+   * cloud credential failure: it reloads with `NR_AI_MODE=local`, and a
+   * `tiers` array under local mode is otherwise a config error.
+   */
+  readonly ignoreTiers?: boolean;
 }
 
 export function loadMcpConfig(
@@ -919,9 +925,8 @@ export function loadMcpConfig(
   // --- tiers: config file only (no env var / CLI flag equivalent exists) ---
   // Fail closed on tiers-under-local BEFORE validating tier shape, so the
   // mode conflict is always the reported error even for a malformed array.
-  const rawTiers: readonly unknown[] | undefined = Array.isArray(file.tiers)
-    ? file.tiers
-    : undefined;
+  const rawTiers: readonly unknown[] | undefined =
+    Array.isArray(file.tiers) && !loadOptions.ignoreTiers ? file.tiers : undefined;
   let resolvedTiers: readonly ResolvedTier[];
   if (rawTiers !== undefined) {
     if (mode === 'local') {
@@ -931,11 +936,16 @@ export function loadMcpConfig(
           "mode='cloud' or mode='both'. Remove the tiers array for local-only use, or set the mode.",
       );
     }
-    resolvedTiers = validateTiers(rawTiers, {
-      resolveLicenseKey: skipCommand
-        ? undefined
-        : (tier, argv) => resolveSecretCommand('licenseKey', argv, undefined, tier),
-    });
+    try {
+      resolvedTiers = validateTiers(rawTiers, {
+        resolveLicenseKey: skipCommand
+          ? undefined
+          : (tier, argv) => resolveSecretCommand('licenseKey', argv, undefined, tier),
+      });
+    } catch (err) {
+      if (err instanceof SecretCommandError) throw new CloudSecretCommandError(err, mode);
+      throw err;
+    }
     // A tier whose key was never read has no usable destination, so none are
     // reported; the caller asked not to run helpers.
     if (
