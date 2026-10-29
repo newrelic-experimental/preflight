@@ -1,5 +1,10 @@
 import { describe, it, expect } from '@jest/globals';
-import { generateKiroHooks, kiroHooksPath, mergeKiroHooksFile } from './kiro-install-helper.js';
+import {
+  generateKiroHooks,
+  kiroHooksPath,
+  mergeKiroHooksFile,
+  removeKiroHooksFile,
+} from './kiro-install-helper.js';
 
 describe('kiro-install-helper', () => {
   it('places the hook file in the project .kiro/hooks directory', () => {
@@ -40,5 +45,11 @@ describe('kiro-install-helper', () => {
     expect(twice).toEqual(once);
     expect((twice.hooks as unknown[])[0]).toEqual(mine);
     expect(twice.hooks).toHaveLength(3);
+  });
+
+  it('removes only Preflight hooks and keeps the rest of the file', () => {
+    const other = { name: 'Lint on save', trigger: 'PostToolUse' };
+    const removed = removeKiroHooksFile(mergeKiroHooksFile({ version: 'v1', hooks: [other] }));
+    expect(removed).toEqual({ version: 'v1', hooks: [other] });
   });
 });

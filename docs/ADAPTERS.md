@@ -9,6 +9,8 @@ Preflight supports 18 named AI coding platforms plus a generic MCP fallback, eac
 
 This doc is the canonical reference for what each adapter can and can't observe, how detection and setup actually work, and where the gaps are. It mirrors `src/platforms/*.ts` and the hook-event handling in `src/hooks/collector-script.ts` — if you change either, update this doc in the same PR.
 
+> **Telemetry mode in the setup examples:** the examples below set `NR_AI_MODE=cloud` (New Relic only) together with `NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_ACCOUNT_ID`; a license key with no mode makes the server refuse to start, and the account ID is required in `cloud` and `both`. `cloud` turns off the localhost dashboard and the local alert rules. Use `NR_AI_MODE=both` to keep them.
+
 > **Maintenance note:** every adapter implements `getHookInstallInstructions()`, which returns the setup text reproduced below. That method is not currently called from any CLI command (`preflight doctor --platform <x>` explicitly skips it and tells the user to verify manually) — this document is presently the only place that text is surfaced to a user. If a CLI surface is added later, keep this doc and the adapter methods in sync, or replace the relevant section here with a pointer to the command output.
 
 ## Integration mechanisms
@@ -290,7 +292,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
    falls through to `generic-mcp` and every normalized-name metric reports
    zero while the raw tool-call count still looks fine.
 2. Confirm `preflight-collector` resolves on `PATH` (`command -v preflight-collector`, or `npm install -g @newrelic/preflight`). Do this before step 3: Kiro treats `PreToolUse` as a blocking trigger, so a hook command missing from `PATH` blocks every tool call in the session.
-3. From your project directory, run `preflight install --kiro`. It writes `.kiro/hooks/preflight-observability.json` (hooks are workspace-scoped, so repeat it in each project), keeps any other hooks already in the file, and refuses to run if `preflight-collector` is not on `PATH`. To write the file by hand instead, use:
+3. From your project directory, run `preflight install --kiro`. It writes `.kiro/hooks/preflight-observability.json` (hooks are workspace-scoped, so repeat it in each project), keeps any other hooks already in the file, and refuses to run if `preflight-collector` is not on `PATH`. `preflight uninstall --kiro` removes Preflight's entries from the same file. To write the file by hand instead, use:
    ```json
    {
      "version": "v1",

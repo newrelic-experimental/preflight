@@ -109,7 +109,7 @@ preflight-collector` (or run
    every tool call in the session, not just skip Preflight's own
    observability.
 2. From your project directory, run `preflight install --kiro` to write the
-   file below, or add `.kiro/hooks/preflight-observability.json` yourself (not
+   file below (`preflight uninstall --kiro` removes it again), or add `.kiro/hooks/preflight-observability.json` yourself (not
    inside `kiro-power/` — hooks are workspace-scoped):
 
    ```json

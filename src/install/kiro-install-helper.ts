@@ -43,12 +43,24 @@ export function generateKiroHooks(): readonly KiroHook[] {
   ];
 }
 
-/** Replaces Preflight's own entries and keeps every other hook in the file. */
-export function mergeKiroHooksFile(existing: Record<string, unknown>): Record<string, unknown> {
+function withoutPreflightHooks(existing: Record<string, unknown>): unknown[] {
   const current = Array.isArray(existing.hooks) ? (existing.hooks as unknown[]) : [];
-  const others = current.filter((h) => {
+  return current.filter((h) => {
     const name = (h as { name?: unknown } | null)?.name;
     return !(typeof name === 'string' && name.startsWith(KIRO_HOOK_NAME_PREFIX));
   });
-  return { version: 'v1', ...existing, hooks: [...others, ...generateKiroHooks()] };
+}
+
+/** Replaces Preflight's own entries and keeps every other hook in the file. */
+export function mergeKiroHooksFile(existing: Record<string, unknown>): Record<string, unknown> {
+  return {
+    version: 'v1',
+    ...existing,
+    hooks: [...withoutPreflightHooks(existing), ...generateKiroHooks()],
+  };
+}
+
+/** Drops Preflight's own entries and keeps every other hook in the file. */
+export function removeKiroHooksFile(existing: Record<string, unknown>): Record<string, unknown> {
+  return { ...existing, hooks: withoutPreflightHooks(existing) };
 }
