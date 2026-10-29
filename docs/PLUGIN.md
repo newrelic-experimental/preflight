@@ -132,6 +132,12 @@ simply pointing it at this repo's own `dist/`:
 - **`plugin/.claude-plugin/plugin.json`** — the plugin manifest itself, at
   the location required relative to the plugin's own root (`plugin/`, not
   the repo root).
+- **`plugin/.claude-plugin/icon.png`** — the plugin's icon in the Claude
+  plugin marketplace, a 1024 px render of the Preflight logo
+  ([`kiro-power/assets/preflight-logo.svg`](../kiro-power/assets/preflight-logo.svg)).
+  The marketplace reads it only the first time the plugin is saved or
+  submitted in its developer portal, so replacing the file later doesn't
+  change the listing.
 
 Run `npm run build:plugin-hook` to regenerate the bundle after changing
 `collector-script.ts` or either of its two imports. `npm run

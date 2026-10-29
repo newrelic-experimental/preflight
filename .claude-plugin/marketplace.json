@@ -1,5 +1,6 @@
 {
   "name": "newrelic-preflight-marketplace",
+  "description": "New Relic's Preflight plugin: observability for AI coding assistants, with tool-call capture, cost tracking, and efficiency scoring.",
   "owner": {
     "name": "New Relic",
     "url": "https://github.com/newrelic-experimental"
