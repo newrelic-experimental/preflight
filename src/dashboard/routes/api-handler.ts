@@ -403,6 +403,7 @@ export interface ApiHandlerDeps {
     // Older fakes/mocks that don't implement it fall through to the legacy
     // path which sees only same-day-started sessions.
     loadSessionsOverlappingToday?: () => FullSessionSummary[];
+    loadSessionsWithActivityToday?: () => FullSessionSummary[];
     listSessions: (opts?: { since?: Date; developer?: string }) => SessionFileInfo[];
     loadSession: (id: string) => FullSessionSummary | null;
     loadAllSessions?: (opts?: {
@@ -2851,7 +2852,10 @@ export function createApiHandler(
       // loadAllSessions()/loadTodaySessions() already exclude synthetic session
       // ids, so the chart buckets below agree with the session list shown
       // alongside the chart without re-filtering here.
+      // loadSessionsWithActivityToday() additionally finds sessions resumed from
+      // an older start date, which keep their original filename.
       const todaySessions =
+        deps.sessionStore?.loadSessionsWithActivityToday?.() ??
         deps.sessionStore?.loadSessionsOverlappingToday?.() ??
         deps.sessionStore?.loadTodaySessions() ??
         [];

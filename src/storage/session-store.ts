@@ -958,26 +958,42 @@ export class SessionStore {
    * cross-midnight session, since `loadTodaySessions()` filters by file-name
    * date (= start date) and would silently drop them.
    *
-   * Loads a 2-day window (yesterday + today's date prefixes) plus any older-
-   * dated file modified today, since a resumed session keeps its original
-   * filename. Keeps sessions whose endTime overlaps [startOfToday, now] or
-   * whose tool-call timeline has an entry today.
+   * Loads a 2-day window (yesterday + today's date prefixes) and filters by
+   * endTime overlap with [startOfToday, now].
    */
   loadSessionsOverlappingToday(): FullSessionSummary[] {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const yesterday = new Date(today.getTime() - 86_400_000);
     const startOfToday = today.getTime();
-    const all = this.loadAllSessions({ since: yesterday, includeModifiedSince: today });
+    const all = this.loadAllSessions({ since: yesterday });
     // endTime=0 is the deserialisation default for sessions that crashed or
     // were written by an older build without the endTime field. Treat those as
     // "unknown end" and include them — they are already bounded to the 2-day
     // window by loadAllSessions({ since: yesterday }).
-    return all.filter(
-      (s) =>
-        s.endTime === 0 ||
-        s.endTime >= startOfToday ||
-        (s.timeline?.some((t) => t.timestamp >= startOfToday) ?? false),
+    return all.filter((s) => s.endTime === 0 || s.endTime >= startOfToday);
+  }
+
+  /**
+   * `loadSessionsOverlappingToday()` plus resumed sessions that keep an older
+   * start-date filename but have tool-call activity today. Files outside the
+   * 2-day window are found by mtime (a checkpoint rewrites them) and kept only
+   * when their timeline has an entry today. Callers must clamp each session's
+   * activity to today, since a returned session can carry earlier days too.
+   */
+  loadSessionsWithActivityToday(): FullSessionSummary[] {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startOfToday = today.getTime();
+    const windowStart = startOfToday - 86_400_000;
+    const all = this.loadAllSessions({
+      since: new Date(windowStart),
+      includeModifiedSince: today,
+    });
+    return all.filter((s) =>
+      s.startTime >= windowStart
+        ? s.endTime === 0 || s.endTime >= startOfToday
+        : (s.timeline?.some((t) => t.timestamp >= startOfToday) ?? false),
     );
   }
 }

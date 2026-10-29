@@ -934,7 +934,7 @@ describe('SessionStore', () => {
     expect(sessions.map((s) => s.sessionId).sort()).toEqual(['cross-midnight', 'no-end-time']);
   });
 
-  it('loadSessionsOverlappingToday includes a resumed session saved under an older filename date', () => {
+  it('loadSessionsWithActivityToday includes a resumed session saved under an older filename date', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -966,8 +966,8 @@ describe('SessionStore', () => {
       }),
     );
 
-    const sessions = store.loadSessionsOverlappingToday();
-    expect(sessions.map((s) => s.sessionId)).toEqual(['resumed']);
+    expect(store.loadSessionsOverlappingToday()).toEqual([]);
+    expect(store.loadSessionsWithActivityToday().map((s) => s.sessionId)).toEqual(['resumed']);
   });
 });
 
