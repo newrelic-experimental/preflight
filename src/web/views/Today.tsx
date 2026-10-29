@@ -399,7 +399,7 @@ export function Today(): JSX.Element {
           ? 'mixed signals'
           : 'needs attention';
 
-  const flagsLoading = aggregatePending && sessionsPending;
+  const flagsLoading = aggregatePending && sessionsPending && flagsCount === 0;
 
   const noActivityToday =
     !spendLoading &&
@@ -655,11 +655,11 @@ function NeedsAttentionPanel({
   flagsCount,
   loading,
 }: {
-  loading: boolean;
   antiPatterns: readonly AntiPatternEvent[];
   apiAntiPatterns: SessionAntiPattern[] | undefined;
   persistedAntiPatterns: SessionAntiPattern[];
   flagsCount: number;
+  loading: boolean;
 }): JSX.Element {
   // The query returns `null` when the endpoint is 404 (cloud mode — no
   // alert engine), so the panel can fall back to flags-only instead of a

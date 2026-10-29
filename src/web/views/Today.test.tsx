@@ -2767,4 +2767,17 @@ describe('buildSpendTodaySeries()', () => {
     const series = buildSpendTodaySeries(hourlySpendFixture({ 8: 2, 9: 1, 10: 3 }), 6, nowMs);
     expect(series.every((d) => d.projectedUsd === null)).toBe(true);
   });
+
+  it('shows loading indicators, not empty-state copy, while queries are pending', () => {
+    useLiveStore.setState({ cost: null, antiPatterns: [] });
+    globalThis.fetch = vi.fn(() => new Promise<Response>(() => {})) as typeof fetch;
+    renderToday();
+    expect(screen.getByText('Loading spend data…')).toBeInTheDocument();
+    expect(screen.getByText('Loading activity…')).toBeInTheDocument();
+    expect(screen.getByText('Loading sessions…')).toBeInTheDocument();
+    expect(screen.queryByText('No spend data yet')).toBeNull();
+    expect(screen.queryByText('No heatmap data yet')).toBeNull();
+    expect(screen.queryByText('No session data yet')).toBeNull();
+    expect(screen.queryByText('Nothing needs attention.')).toBeNull();
+  });
 });
