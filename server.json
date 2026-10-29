@@ -6,12 +6,12 @@
     "url": "https://github.com/newrelic-experimental/preflight",
     "source": "github"
   },
-  "version": "1.67.3",
+  "version": "1.68.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@newrelic/preflight",
-      "version": "1.67.3",
+      "version": "1.68.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
@@ -26,14 +26,21 @@
       "environmentVariables": [
         {
           "name": "NEW_RELIC_LICENSE_KEY",
-          "description": "New Relic ingest license key. Optional: without it Preflight runs local-only with the dashboard at localhost:7777.",
+          "description": "New Relic ingest license key. Optional: while NR_AI_MODE is unset or local, Preflight runs local-only with the dashboard at localhost:7777. A license key with no mode set by NR_AI_MODE or the config file makes the server fail to start.",
           "isRequired": false,
           "isSecret": true,
           "format": "string"
         },
         {
+          "name": "NR_AI_MODE",
+          "description": "Where telemetry goes: \"cloud\" (New Relic only), \"both\" (New Relic plus the local dashboard) or \"local\". Required when NEW_RELIC_LICENSE_KEY is set, unless the config file sets a mode. cloud turns off the local dashboard and local alerts.",
+          "isRequired": false,
+          "format": "string",
+          "choices": ["cloud", "both", "local"]
+        },
+        {
           "name": "NEW_RELIC_ACCOUNT_ID",
-          "description": "New Relic account id, used for dashboard and alert deployment. Optional.",
+          "description": "New Relic account id. Required when NR_AI_MODE is cloud or both; also used for dashboard and alert deployment.",
           "isRequired": false,
           "format": "string"
         }

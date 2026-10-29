@@ -108,7 +108,8 @@ preflight-collector` (or run
    a blocking trigger, so a hook command missing from `PATH` would block
    every tool call in the session, not just skip Preflight's own
    observability.
-2. Add `.kiro/hooks/preflight-observability.json` in your project (not
+2. From your project directory, run `preflight install --kiro` to write the
+   file below (`preflight uninstall --kiro` removes it again), or add `.kiro/hooks/preflight-observability.json` yourself (not
    inside `kiro-power/` — hooks are workspace-scoped):
 
    ```json
@@ -142,6 +143,9 @@ preflight-collector` (or run
    own hook commands. `kiro.dev/docs/hooks/` confirms `action.command` runs
    as a real shell command, so the leading `VAR=value` assignment is parsed
    normally — it is not a literal program name.
+
+   The leading `VAR=value` form needs a POSIX shell. `cmd.exe` and PowerShell
+   do not parse it, and Preflight has not verified Kiro hooks on Windows.
 
    Both entries run the same command — `preflight-collector` tells pre-
    from post-call apart from the hook payload's own `hook_event_name` field,

@@ -2624,6 +2624,108 @@ describe('--staging is hidden from help everywhere it is supported', () => {
 // Copilot install/uninstall
 // ---------------------------------------------------------------------------
 
+describe('kiro install/uninstall', () => {
+  let stdoutSpy: ReturnType<typeof jest.spyOn>;
+  let stderrSpy: ReturnType<typeof jest.spyOn>;
+  let exitSpy: ReturnType<typeof jest.spyOn>;
+  let mFs: {
+    existsSync: jest.Mock;
+    writeFileSync: jest.Mock;
+    readFileSync: jest.Mock;
+    realpathSync: jest.Mock;
+  };
+  const hooksPath = join(process.cwd(), '.kiro', 'hooks', 'preflight-observability.json');
+  const otherHook = { name: 'Lint on save', trigger: 'PostToolUse' };
+
+  const writtenHooks = (): unknown[] => {
+    const call = mFs.writeFileSync.mock.calls.find((c: unknown[]) =>
+      String(c[0]).includes('preflight-observability.json'),
+    );
+    return (JSON.parse(String(call?.[1])) as { hooks: unknown[] }).hooks;
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mFs = fsMod as unknown as typeof mFs;
+    mFs.existsSync.mockImplementation(() => false);
+    mFs.readFileSync.mockImplementation(() => '{}');
+    mFs.realpathSync.mockImplementation((p: unknown) => p);
+    mockedSchedule.resolveNamedBinaryOnPath.mockReturnValue('/usr/local/bin/preflight-collector');
+    stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    exitSpy = jest
+      .spyOn(process, 'exit')
+      .mockImplementation((code?: string | number | null | undefined) => {
+        throw new Error(`process.exit(${String(code)})`);
+      });
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+    exitSpy.mockRestore();
+    process.exitCode = undefined;
+  });
+
+  it('install --kiro writes the pre and post hooks into the current directory', async () => {
+    await runInstallCli(['install', '--kiro']);
+    expect(writtenHooks()).toEqual([
+      expect.objectContaining({ name: 'Preflight: pre tool call', trigger: 'PreToolUse' }),
+      expect.objectContaining({ name: 'Preflight: post tool call', trigger: 'PostToolUse' }),
+    ]);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain(`Kiro hooks written: ${hooksPath}`);
+  });
+
+  it('install --kiro keeps hooks that are not Preflight entries', async () => {
+    mFs.existsSync.mockImplementation((p: unknown) => p === hooksPath);
+    mFs.readFileSync.mockImplementation(() =>
+      JSON.stringify({ version: 'v1', hooks: [otherHook] }),
+    );
+    await runInstallCli(['install', '--kiro']);
+    expect(writtenHooks()).toHaveLength(3);
+    expect(writtenHooks()[0]).toEqual(otherHook);
+  });
+
+  it('install --kiro refuses to write when preflight-collector is not on PATH', async () => {
+    mockedSchedule.resolveNamedBinaryOnPath.mockReturnValue(null);
+    await expect(runInstallCli(['install', '--kiro'])).rejects.toThrow('process.exit(1)');
+    expect(mFs.writeFileSync).not.toHaveBeenCalled();
+  });
+
+  it('install --kiro rejects --copilot', async () => {
+    await expect(runInstallCli(['install', '--kiro', '--copilot'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+    expect(mFs.writeFileSync).not.toHaveBeenCalled();
+  });
+
+  it('uninstall --kiro removes only the Preflight hooks', async () => {
+    mFs.existsSync.mockImplementation((p: unknown) => p === hooksPath);
+    mFs.readFileSync.mockImplementation(() =>
+      JSON.stringify({
+        version: 'v1',
+        hooks: [otherHook, { name: 'Preflight: pre tool call', trigger: 'PreToolUse' }],
+      }),
+    );
+    await runInstallCli(['uninstall', '--kiro']);
+    expect(writtenHooks()).toEqual([otherHook]);
+  });
+
+  it('uninstall --kiro reports nothing to do when the hook file is absent', async () => {
+    await runInstallCli(['uninstall', '--kiro']);
+    expect(mFs.writeFileSync).not.toHaveBeenCalled();
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Nothing installed for Kiro');
+  });
+
+  it('uninstall --kiro rejects --copilot', async () => {
+    await expect(runInstallCli(['uninstall', '--kiro', '--copilot'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+  });
+});
+
 describe('copilot install/uninstall', () => {
   let stdoutSpy: ReturnType<typeof jest.spyOn>;
   let exitSpy: ReturnType<typeof jest.spyOn>;
