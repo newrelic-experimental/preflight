@@ -139,7 +139,7 @@ jobs:
           # A release only edits the version files and the CHANGELOG, and deletes the changesets
           # it used. Anything else came from somewhere it shouldn't have, so stop before pushing.
           unexpected="$(git diff --cached --name-status | awk -F '\t' '
-            $1 == "M" && $2 ~ /^(package\.json|package-lock\.json|server\.json|plugin\/\.claude-plugin\/plugin\.json|kiro-power\/plugin\.json|CHANGELOG\.md)$/ { next }
+            $1 == "M" && $2 ~ /^(package\.json|package-lock\.json|server\.json|plugin\/\.claude-plugin\/plugin\.json|plugin\/\.mcp\.json|kiro-power\/plugin\.json|CHANGELOG\.md)$/ { next }
             $1 == "D" && $2 ~ /^\.changeset\/[^\/]+\.md$/ && $2 != ".changeset/README.md" { next }
             { print }
           ')"
@@ -149,17 +149,18 @@ jobs:
             exit 1
           fi
 
-          # And each JSON file must equal, as JSON, its HEAD copy with the version fields that
-          # scripts/release-files.ts owns set to the version the version job reported, so the
-          # version job can't, say, add an install script to package.json either. These paths and
-          # filters mirror VERSION_FILES in that script (this job installs nothing, so it can't
-          # run it), and change with it; test/release-files.test.ts fails if the paths or filters
-          # drift from what sync writes.
+          # And each JSON file must equal, as JSON, its HEAD copy with the version fields (and the
+          # plugin's npx pin) that scripts/release-files.ts owns set to the version the version job
+          # reported, so the version job can't, say, add an install script to package.json either.
+          # These paths and filters mirror VERSION_FILES in that script (this job installs nothing,
+          # so it can't run it), and change with it; test/release-files.test.ts fails if the paths
+          # or filters drift from what sync writes.
           for spec in \
             'package.json|.version = $v' \
             'package-lock.json|.version = $v | .packages[""].version = $v' \
             'server.json|.version = $v | (.packages[] | select(.registryType == "npm" and .identifier == "@newrelic/preflight") | .version) = $v' \
             'plugin/.claude-plugin/plugin.json|.version = $v' \
+            'plugin/.mcp.json|(.mcpServers[].args[]? | select(type == "string" and startswith("@newrelic/preflight@"))) = "@newrelic/preflight@" + $v' \
             'kiro-power/plugin.json|.version = $v'; do
             file="${spec%%|*}"
             filter="${spec#*|}"

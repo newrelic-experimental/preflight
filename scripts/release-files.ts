@@ -3,9 +3,10 @@
  * Keeps every file that carries Preflight's version in step with package.json.
  *
  * `changeset version` bumps package.json and adds the release's CHANGELOG.md entry, but the
- * version is also written in package-lock.json, server.json (the MCP Registry manifest), and
- * both plugin manifests. `npm run version-packages` runs `changeset version` and then `sync`
- * below, so the release PR changes all of these files together and no other PR touches them.
+ * version is also written in package-lock.json, server.json (the MCP Registry manifest), both
+ * plugin manifests, and the Claude Code plugin's MCP server launcher (plugin/.mcp.json).
+ * `npm run version-packages` runs `changeset version` and then `sync` below, so the release PR
+ * changes all of these files together and no other PR touches them.
  *
  *   tsx scripts/release-files.ts sync
  *     Copies package.json's version into the other files and dates the CHANGELOG entry that
@@ -32,14 +33,23 @@ export type ReadFile = (path: string) => string;
 interface VersionFile {
   readonly path: string;
   /** The objects whose `version` the release owns, each labelled for error messages. */
-  readonly holders: (
+  readonly holders?: (
     json: JsonObject,
     packageName: string,
   ) => ReadonlyArray<readonly [label: string, holder: JsonObject]>;
   /**
+   * The command arguments the release owns that run the package as `<packageName>@<version>`,
+   * as the array and index each sits at, labelled for error messages.
+   */
+  readonly pins?: (
+    json: JsonObject,
+    packageName: string,
+  ) => ReadonlyArray<readonly [label: string, args: unknown[], index: number]>;
+  /**
    * `npm` rewrites the whole file in the layout npm itself gives package-lock.json.
    * `in-place` replaces the version strings where they stand so that Prettier's layout
-   * survives, which only works while every `"version"` key in the file is one the release owns.
+   * survives, which only works while every `"version"` key and every `<packageName>@...`
+   * string in the file is one the release owns.
    */
   readonly layout: 'npm' | 'in-place';
 }
@@ -74,6 +84,29 @@ export const VERSION_FILES: readonly VersionFile[] = [
     path: 'plugin/.claude-plugin/plugin.json',
     layout: 'in-place',
     holders: (m) => [['version', m]],
+  },
+  {
+    // The plugin's MCP server, which npx fetches. The Claude plugin marketplace only lists a
+    // plugin whose npx launcher names an exact version, not `@latest`, a range, or a `${VAR}`
+    // substitution, so the release pins it to the version it releases.
+    path: 'plugin/.mcp.json',
+    layout: 'in-place',
+    pins: (mcp, packageName) => {
+      const servers = asObject(mcp.mcpServers, 'mcpServers');
+      const pins = Object.entries(servers).flatMap(([server, entry]) => {
+        const { args } = asObject(entry, `mcpServers.${server}`);
+        if (args === undefined) return [];
+        return asArray(args, `mcpServers.${server}.args`).flatMap((arg, i, all) =>
+          typeof arg === 'string' && arg.startsWith(`${packageName}@`)
+            ? [[`mcpServers.${server}.args[${i}]`, all, i] as const]
+            : [],
+        );
+      });
+      if (pins.length === 0) {
+        throw new Error(`plugin/.mcp.json has no server that runs ${packageName}@<version>`);
+      }
+      return pins;
+    },
   },
   { path: 'kiro-power/plugin.json', layout: 'in-place', holders: (m) => [['version', m]] },
 ];
@@ -134,17 +167,25 @@ export function setVersion(
   packageName: string,
 ): string {
   const json = parseObject(text, file.path);
-  for (const [, holder] of file.holders(json, packageName)) holder.version = version;
+  const pin = `${packageName}@${version}`;
+  for (const [, holder] of file.holders?.(json, packageName) ?? []) holder.version = version;
+  for (const [, args, i] of file.pins?.(json, packageName) ?? []) args[i] = pin;
   if (file.layout === 'npm') return `${JSON.stringify(json, null, 2)}\n`;
 
-  const edited = text.replace(
-    /("version"\s*:\s*)"(?:[^"\\]|\\.)*"/g,
-    (_match, key: string) => `${key}${JSON.stringify(version)}`,
-  );
+  const edited = text
+    .replace(
+      /("version"\s*:\s*)"(?:[^"\\]|\\.)*"/g,
+      (_match, key: string) => `${key}${JSON.stringify(version)}`,
+    )
+    // Every string in the file, rewriting the ones that run the package.
+    .replace(/"(?:[^"\\]|\\.)*"/g, (literal) =>
+      (JSON.parse(literal) as string).startsWith(`${packageName}@`) ? JSON.stringify(pin) : literal,
+    );
   if (!isDeepStrictEqual(JSON.parse(edited), json)) {
     throw new Error(
-      `${file.path} has a "version" key that isn't the package's version, so it can't be ` +
-        'edited in place. Teach VERSION_FILES in scripts/release-files.ts which keys to bump.',
+      `${file.path} has a "version" key or a "${packageName}@..." string that isn't the ` +
+        `package's version, so it can't be edited in place. Teach VERSION_FILES in ` +
+        'scripts/release-files.ts which ones to bump.',
     );
   }
   return edited;
@@ -174,12 +215,13 @@ export function findVersionMismatches(read: ReadFile): string[] {
   const problems: string[] = [];
   for (const file of VERSION_FILES) {
     const json = parseObject(read(file.path), file.path);
-    for (const [label, holder] of file.holders(json, name)) {
-      if (holder.version !== version) {
-        problems.push(
-          `${file.path} ${label} is ${JSON.stringify(holder.version)}, but package.json is at ${version}.`,
-        );
-      }
+    const mismatch = (label: string, value: unknown) =>
+      `${file.path} ${label} is ${JSON.stringify(value)}, but package.json is at ${version}.`;
+    for (const [label, holder] of file.holders?.(json, name) ?? []) {
+      if (holder.version !== version) problems.push(mismatch(label, holder.version));
+    }
+    for (const [label, args, i] of file.pins?.(json, name) ?? []) {
+      if (args[i] !== `${name}@${version}`) problems.push(mismatch(label, args[i]));
     }
   }
   const newest = releaseHeadings(read('CHANGELOG.md'))[0];
@@ -283,8 +325,9 @@ export function findReleaseEdits(base: ReadFile, head: ReadFile): string[] {
   if (before !== after) {
     problems.push(
       `package.json's version changed from ${before} to ${after}. Versions are bumped only by ` +
-        'the release PR. Revert the bump in package.json, package-lock.json, server.json, and ' +
-        `both plugin manifests, and describe the change in a changeset instead (${CHANGESETS_DOC}).`,
+        'the release PR. Revert the bump in package.json, package-lock.json, server.json, both ' +
+        'plugin manifests, and the plugin/.mcp.json pin, and describe the change in a changeset ' +
+        `instead (${CHANGESETS_DOC}).`,
     );
   }
   if (releasedEntries(base('CHANGELOG.md')) !== releasedEntries(head('CHANGELOG.md'))) {

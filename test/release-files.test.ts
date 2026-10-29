@@ -44,6 +44,11 @@ function versionFile(path: string): (typeof VERSION_FILES)[number] {
   return file;
 }
 
+/** plugin/.mcp.json in the layout Prettier gives it, launching `spec` with npx. */
+function makeMcpConfig(spec: string): string {
+  return `{\n  "mcpServers": {\n    "newrelic-preflight": {\n      "command": "npx",\n      "args": ["-y", "${spec}", "--stdio"]\n    }\n  }\n}\n`;
+}
+
 /** A repo whose files all carry `version`, as release-files.ts reads them. */
 function makeFiles(
   version: string,
@@ -83,6 +88,7 @@ function makeFiles(
       'plugin/.claude-plugin/plugin.json',
       `{\n  "name": "newrelic-preflight",\n  "version": "${version}",\n  "keywords": ["observability", "mcp"]\n}\n`,
     ],
+    ['plugin/.mcp.json', makeMcpConfig(`@newrelic/preflight@${version}`)],
     ['kiro-power/plugin.json', `{\n  "name": "preflight",\n  "version": "${version}"\n}\n`],
     ['CHANGELOG.md', changelog],
   ]);
@@ -206,6 +212,54 @@ describe('setVersion', () => {
       setVersion(versionFile('server.json'), server, '1.64.0', '@newrelic/preflight'),
     ).toThrow(/no npm package entry/);
   });
+
+  it("pins the plugin's npx launcher to the version, keeping its layout", () => {
+    const mcp = makeFiles('1.63.1').get('plugin/.mcp.json') ?? '';
+    expect(setVersion(versionFile('plugin/.mcp.json'), mcp, '1.64.0', '@newrelic/preflight')).toBe(
+      makeMcpConfig('@newrelic/preflight@1.64.0'),
+    );
+  });
+
+  it('pins a launcher that followed latest or an environment variable', () => {
+    for (const spec of [
+      '@newrelic/preflight@latest',
+      '@newrelic/preflight@${NEW_RELIC_AI_PREFLIGHT_VERSION:-latest}',
+    ]) {
+      expect(
+        setVersion(
+          versionFile('plugin/.mcp.json'),
+          makeMcpConfig(spec),
+          '1.64.0',
+          '@newrelic/preflight',
+        ),
+      ).toBe(makeMcpConfig('@newrelic/preflight@1.64.0'));
+    }
+  });
+
+  it('refuses an in-place edit that would rewrite a pin the release does not own', () => {
+    const mcp = JSON.stringify({
+      mcpServers: {
+        'newrelic-preflight': { command: 'npx', args: ['-y', '@newrelic/preflight@1.63.1'] },
+        other: { command: 'node', env: { NOTE: '@newrelic/preflight@1.0.0' } },
+      },
+    });
+    expect(() =>
+      setVersion(versionFile('plugin/.mcp.json'), mcp, '1.64.0', '@newrelic/preflight'),
+    ).toThrow(/"@newrelic\/preflight@\.\.\." string that isn't the package's version/);
+  });
+
+  it('fails when .mcp.json has no server that runs the package at a version', () => {
+    for (const spec of ['@newrelic/preflight', 'other-package@1.0.0']) {
+      expect(() =>
+        setVersion(
+          versionFile('plugin/.mcp.json'),
+          makeMcpConfig(spec),
+          '1.64.0',
+          '@newrelic/preflight',
+        ),
+      ).toThrow(/no server that runs @newrelic\/preflight@<version>/);
+    }
+  });
 });
 
 describe('syncedFiles', () => {
@@ -245,6 +299,14 @@ describe('findVersionMismatches', () => {
     );
     expect(findVersionMismatches(makeReader(files))).toEqual([
       'kiro-power/plugin.json version is "1.62.0", but package.json is at 1.63.1.',
+    ]);
+  });
+
+  it("flags a plugin launcher that isn't pinned to the package's version", () => {
+    const files = makeFiles('1.63.1');
+    files.set('plugin/.mcp.json', makeMcpConfig('@newrelic/preflight@latest'));
+    expect(findVersionMismatches(makeReader(files))).toEqual([
+      'plugin/.mcp.json mcpServers.newrelic-preflight.args[1] is "@newrelic/preflight@latest", but package.json is at 1.63.1.',
     ]);
   });
 

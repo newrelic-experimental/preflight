@@ -31,7 +31,7 @@ One managed settings document does three jobs.
       "source": {
         "source": "github",
         "repo": "newrelic-experimental/preflight",
-        "ref": "v1.67.2"
+        "ref": "v2.0.0"
       },
       "autoUpdate": false
     }
@@ -44,26 +44,24 @@ One managed settings document does three jobs.
     "NEW_RELIC_LICENSE_KEY": "<your-license-key>",
     "NEW_RELIC_ACCOUNT_ID": "1234567",
     "NEW_RELIC_AI_ORG_ID": "<org-identifier>",
-    "NEW_RELIC_AI_TEAM_ID": "<team-identifier>",
-    "NEW_RELIC_AI_PREFLIGHT_VERSION": "1.67.2"
+    "NEW_RELIC_AI_TEAM_ID": "<team-identifier>"
   }
 }
 ```
 
-| `env` key                        | Purpose                                                                                                                   |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `NR_AI_MODE`                     | `cloud` or `both`. Required, or a license key stops the server starting.                                                  |
-| `NEW_RELIC_LICENSE_KEY`          | Ingest license key for the destination account.                                                                           |
-| `NEW_RELIC_ACCOUNT_ID`           | Numeric account ID, 1 to 12 digits.                                                                                       |
-| `NEW_RELIC_AI_ORG_ID`            | Organization identifier stamped on every event.                                                                           |
-| `NEW_RELIC_AI_TEAM_ID`           | Team identifier stamped on every event.                                                                                   |
-| `NEW_RELIC_AI_PREFLIGHT_VERSION` | Holds the MCP server on one npm version. See [PLUGIN.md](./PLUGIN.md#pinning-the-server-version-for-managed-deployments). |
+| `env` key               | Purpose                                                                  |
+| ----------------------- | ------------------------------------------------------------------------ |
+| `NR_AI_MODE`            | `cloud` or `both`. Required, or a license key stops the server starting. |
+| `NEW_RELIC_LICENSE_KEY` | Ingest license key for the destination account.                          |
+| `NEW_RELIC_ACCOUNT_ID`  | Numeric account ID, 1 to 12 digits.                                      |
+| `NEW_RELIC_AI_ORG_ID`   | Organization identifier stamped on every event.                          |
+| `NEW_RELIC_AI_TEAM_ID`  | Team identifier stamped on every event.                                  |
 
-Set `ref` and `NEW_RELIC_AI_PREFLIGHT_VERSION` to the same release so the hook
-collector bundled with the plugin and the MCP server stay in lockstep. Omit
-`ref` and the plugin tracks `main`, which can carry unreleased changes. Omit
-the env var and the server follows npm's `latest` tag. `ref` needs plugin
-1.61.0 or later.
+`ref` holds the plugin on one release tag, and with it the hook collector
+bundled with the plugin and the MCP server, which the plugin launches at its
+own version. Omit `ref` and the plugin tracks `main`, which can carry
+unreleased changes. A `ref` older than `v2.0.0` holds only the collector; see
+[PLUGIN.md](./PLUGIN.md#pinning-the-version-for-managed-deployments).
 
 The license key sits in a file readable by every local user. Use an ingest
 license key scoped to this purpose, never a user API key (`NRAK-…`).
@@ -120,13 +118,14 @@ with no `NR_AI_MODE`. See [Cloud mode](./PLUGIN.md#cloud-mode) in PLUGIN.md.
 
 - **Tested.** On Linux with Claude Code 2.1.304 and a `managed-settings.json` in
   `/etc/claude-code/`, values in the managed `env` reach the plugin's MCP
-  server. The pin variable expanded into the server command. A license key with
-  no mode failed the server, and the same key with `NR_AI_MODE=cloud` connected.
+  server. A license key with no mode failed the server, and the same key with
+  `NR_AI_MODE=cloud` connected.
 - **Not yet tested.** Delivery as a macOS configuration profile through Jamf.
   Whether the managed `env` reaches hook processes. Whether Claude Code installs
   the plugin without a prompt on first launch, as opposed to an admin running
-  `claude plugin install`. Confirm these on one pilot machine before widening
-  the rollout.
+  `claude plugin install`. Whether changing `ref` moves a machine that already
+  has the plugin to the new tag without `claude plugin marketplace update`.
+  Confirm these on one pilot machine before widening the rollout.
 
 ## What this does not do
 

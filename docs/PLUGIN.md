@@ -20,10 +20,11 @@ install`). The plugin ships a small, dependency-free, precompiled copy of
   on a globally-installed binary.
 - **MCP tools** — all `nr_observe_*` tools (session stats, cost breakdown,
   anti-patterns, recommendations, etc.), run via `npx -y
-@newrelic/preflight@latest --stdio` — always the latest published version,
-  no local build required. Fleet admins can hold the server on a specific
-  version instead; see [Pinning the server version for managed
-  deployments](#pinning-the-server-version-for-managed-deployments).
+@newrelic/preflight@<version> --stdio`, where `<version>` is the plugin's
+  own, so the hooks and the server always come from the same release. No
+  local build required. Fleet admins can hold both on one release; see
+  [Pinning the version for managed
+  deployments](#pinning-the-version-for-managed-deployments).
 
 ## Install
 
@@ -114,14 +115,14 @@ simply pointing it at this repo's own `dist/`:
 
 `plugin/` ships:
 
-- **`plugin/.mcp.json`** — `npx -y
-@newrelic/preflight@${NEW_RELIC_AI_PREFLIGHT_VERSION:-latest} --stdio`.
-  Claude Code expands `${VAR:-default}` in a plugin's `.mcp.json` `args`, so
-  this resolves to `@latest` unless the variable is set (see [Pinning the
-  server version](#pinning-the-server-version-for-managed-deployments)). The
-  MCP server only starts once per session, so `npx`'s one-time resolution
-  cost is a non-issue; this mirrors the same pattern already used in
-  [`smithery.yaml`](../smithery.yaml) for Smithery's MCP registry listing.
+- **`plugin/.mcp.json`** — `npx -y @newrelic/preflight@<version> --stdio`,
+  with `<version>` the plugin's own. The Claude plugin marketplace only lists
+  a plugin whose `npx` launcher names an exact version, so `@latest`, a range,
+  or a `${VAR}` substitution would fail its check; the release PR writes this
+  pin along with the manifest's `version`. The MCP server only starts once per
+  session, so `npx`'s one-time resolution cost is a non-issue;
+  [`smithery.yaml`](../smithery.yaml) launches the server the same way for
+  Smithery's MCP registry listing, but follows `@latest`.
 - **`plugin/.claude-plugin/scripts/collector-script.js`** — an
   [esbuild](https://esbuild.github.io/) bundle of `collector-script.ts` (plus
   its two dependency-free local imports, `redaction-patterns.ts` and
@@ -139,28 +140,27 @@ they've drifted — this runs in `.husky/pre-push` and in
 [`release.yml`](../.github/workflows/release.yml) so a stale bundle can't
 ship.
 
-> **Note:** the release PR writes the plugin manifest's `version` along with
-> `package.json`'s (`npm run version-packages`), so don't bump it by hand. See
+> **Note:** the release PR writes the plugin manifest's `version` and the
+> `.mcp.json` pin along with `package.json`'s version
+> (`npm run version-packages`), so don't bump either by hand. See
 > [Changesets](../CONTRIBUTING.md#changesets).
 
-## Pinning the server version for managed deployments
+## Pinning the version for managed deployments
 
-By default the plugin's MCP server runs whatever `@newrelic/preflight` version
-npm's `latest` tag points at, so every release reaches every plugin user at
-their next session start. That suits individuals. A fleet rolled out through
-MDM and Claude Code [managed
+By default the plugin tracks this repo's `main` branch, so every release
+reaches every plugin user once their marketplace updates. That suits
+individuals. A fleet rolled out through MDM and Claude Code [managed
 settings](https://code.claude.com/docs/en/plugins/org) usually needs change
 control instead: a known-good version, a pilot group, and a rollback that
 does not wait for a new release.
 
-Set `NEW_RELIC_AI_PREFLIGHT_VERSION` to the npm version you want. Claude Code
-reads it when it expands the plugin's `.mcp.json`, so the server launches as
-`npx -y @newrelic/preflight@<that version> --stdio`. The variable is read by
-Claude Code, not by Preflight, and it only affects the MCP server. The hook
-collector is bundled with the plugin and follows the plugin's own version.
+Pin the marketplace to a release tag with `source.ref`. Every release is
+tagged `v<version>`, and the plugin's `.mcp.json` at that tag launches the
+same version of the MCP server, so the one key holds the bundled hook
+collector and the server together.
 
 A managed settings file that registers the marketplace, requires the plugin,
-and holds the server on `1.61.0`:
+and holds it on `2.0.0`:
 
 ```json
 {
@@ -169,40 +169,38 @@ and holds the server on `1.61.0`:
       "source": {
         "source": "github",
         "repo": "newrelic-experimental/preflight",
-        "ref": "v1.61.0"
+        "ref": "v2.0.0"
       },
       "autoUpdate": false
     }
   },
   "enabledPlugins": {
     "newrelic-preflight@newrelic-preflight-marketplace": true
-  },
-  "env": {
-    "NEW_RELIC_AI_PREFLIGHT_VERSION": "1.61.0"
   }
 }
 ```
 
 What each key does:
 
-- **`env.NEW_RELIC_AI_PREFLIGHT_VERSION`** pins the MCP server. This is the
-  only key the pin needs. Leave it unset to follow `latest`.
-- **`source.ref`** pins the plugin itself, and with it the bundled hook
-  collector, to a release tag. Every release is tagged `v<version>`, so
-  giving `ref` and the env var the same version keeps collector and server in
-  lockstep. Omit `ref` to track `main`.
+- **`source.ref`** pins the plugin, and with it the hook collector and the
+  MCP server, to a release tag. Omit it to track `main`.
 - **`autoUpdate: false`** stops the marketplace refreshing in the background.
   It is optional: a plugin whose manifest sets `version` only moves when that
   string changes, and a `ref` tag never does.
 
-To stage a rollout, deliver a different value of the variable to each device
-group (separate managed settings files or MDM profiles). To roll back, change
-the value and users pick it up at their next session start.
+To stage a rollout, deliver a different `ref` to each device group (separate
+managed settings files or MDM profiles). To roll back, point `ref` at an
+earlier tag.
 
-The pin only works with a plugin at 1.61.0 or later. Earlier plugin versions
-launch `@latest` and ignore the variable, so a `ref` older than `v1.61.0` does
-not hold the server.
+`ref` holds the server only from plugin 2.0.0 on. Plugin versions 1.61.0
+through 1.68.0 launch
+`@newrelic/preflight@${NEW_RELIC_AI_PREFLIGHT_VERSION:-latest}`, so with a
+`ref` in that range the server follows npm's `latest` unless the managed
+settings `env` sets `NEW_RELIC_AI_PREFLIGHT_VERSION` to the same version.
+From 2.0.0 on, the plugin ignores that variable. Versions before 1.61.0
+always launch `@latest`.
 
-The pinned version must exist on npm (`npm view @newrelic/preflight versions`)
-or the server fails to start with an npm "No matching version" error in the
-plugin's MCP server log.
+A plugin tracking `main` can update in the minutes between a release merging
+and its npm publish. Until npm has that version, the server fails to start
+with an npm "No matching version" error in the plugin's MCP server log, and
+the next session after the publish starts it normally.
