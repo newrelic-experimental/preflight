@@ -1360,6 +1360,7 @@ function countOpenPrs(
 
 interface SessionStatusAggregateInput {
   readonly replayCache: ReplaySessionCache;
+  readonly identityResolver: WorktreeIdentityResolver;
   readonly sessionIds: ReadonlySet<string>;
   readonly liveSet: ReadonlySet<string>;
   readonly startMs: number;
@@ -1401,7 +1402,7 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
     }
   }
 
-  const identityResolver = new WorktreeIdentityResolver();
+  const { identityResolver } = input;
   const activityStore = new ActivityStore<GitActivityRecord>();
   const activityRecorder = new GitActivityRecorder(activityStore, identityResolver);
   const bufferToolCalls = pairToolCallsFromBufferEvents(
@@ -1465,6 +1466,10 @@ export function createApiHandler(
   // its identity resolution makes — is only ever paid once across every
   // future /api/git-efficiency request, not on every poll.
   const gitReplayCache = new ReplaySessionCache();
+  // Shared for the same reason: the resolver memoizes each working directory
+  // (including ones that are not git repos), so a fresh instance per request
+  // would re-spawn `git` for every timeline entry of every uncached session.
+  const gitIdentityResolver = new WorktreeIdentityResolver();
 
   routes.set('GET /api/session/current', (_req, res) => {
     if (!deps.sessionTracker) return unavailable(res, 'sessionTracker');
@@ -1955,6 +1960,7 @@ export function createApiHandler(
 
     const sessionStatus = computeSessionStatusAggregate({
       replayCache: gitReplayCache,
+      identityResolver: gitIdentityResolver,
       sessionIds: sessionsSeen,
       liveSet,
       startMs,
@@ -2748,7 +2754,6 @@ export function createApiHandler(
     let historical: GitActivityRecord[] = [];
     const historicalIdentities = new Map<string, WorktreeIdentity>();
     if (deps.sessionStore?.loadAllSessions) {
-      const identityResolver = new WorktreeIdentityResolver();
       const sessions = deps.sessionStore.loadAllSessions({
         since: new Date(since),
       }) as unknown as readonly {
@@ -2758,7 +2763,7 @@ export function createApiHandler(
         repoName?: string | null;
       }[];
       for (const session of sessions) {
-        const replayed = gitReplayCache.replay(session, identityResolver);
+        const replayed = gitReplayCache.replay(session, gitIdentityResolver);
         historical = historical.concat(replayed.records);
         for (const [key, identity] of replayed.identities) {
           historicalIdentities.set(key, identity);

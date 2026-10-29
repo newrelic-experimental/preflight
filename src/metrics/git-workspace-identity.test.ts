@@ -177,6 +177,17 @@ describe('WorktreeIdentityResolver', () => {
     expect(identity1!.worktreeLabel).toBe(identity2!.worktreeLabel);
   });
 
+  it('remembers a non-repo directory instead of re-running git on every call', () => {
+    const dir = join(tmpDir, 'becomes-a-repo-later');
+    execSync(`mkdir -p "${dir}"`);
+    expect(resolver.resolve(dir)).toBeNull();
+
+    initGitRepo(dir);
+
+    expect(resolver.resolve(dir)).toBeNull();
+    expect(new WorktreeIdentityResolver().resolve(dir)).not.toBeNull();
+  });
+
   it('handles resolve(null) gracefully', () => {
     const identity = resolver.resolve(null);
     expect(identity).toBeNull();

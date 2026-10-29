@@ -67,12 +67,20 @@ interface CachedIdentity {
 export class WorktreeIdentityResolver {
   private readonly cache = new Map<string, CachedIdentity>();
   private readonly branchTtlMs = 30_000;
+  private readonly missTtlMs = 30_000;
+  private readonly misses = new Map<string, number>();
 
   resolve(dir: string | null | undefined): WorktreeIdentity | null {
     if (typeof dir !== 'string' || dir.length === 0) return null;
 
     const cached = this.cache.get(dir);
     const now = Date.now();
+
+    const missedAt = this.misses.get(dir);
+    if (missedAt !== undefined) {
+      if (now - missedAt < this.missTtlMs) return null;
+      this.misses.delete(dir);
+    }
 
     if (cached) {
       if (now - cached.branchResolvedAt >= this.branchTtlMs) {
@@ -94,6 +102,8 @@ export class WorktreeIdentityResolver {
     const identity = this.computeIdentity(dir);
     if (identity) {
       this.cache.set(dir, { identity, branchResolvedAt: now });
+    } else {
+      this.misses.set(dir, now);
     }
     return identity;
   }
