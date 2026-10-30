@@ -1,15 +1,55 @@
+import { hasAttributableActivity } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import type { CostTrackerSeed } from './cost-tracker.js';
-import { localDateKey, todayPortionOfSessionCost, todayPortionRatio } from '../lib/date.js';
+import { localDateKey, todayPortionRatio } from '../lib/date.js';
+
+export interface TodayCostSource {
+  readonly startTime: number;
+  readonly endTime: number;
+  readonly estimatedCostUsd: number | null;
+  readonly subagentCostUsd?: number;
+  readonly costByDayUsd?: Readonly<Record<string, number>>;
+  readonly subagentCostByDayUsd?: Readonly<Record<string, number>>;
+  readonly toolCallCount?: number;
+  readonly timeline?: ReadonlyArray<{ readonly timestamp: number }>;
+}
+
+// Today's cost of one persisted summary, shared by the CostTracker seed and
+// the dashboard's persisted-session sum so the two can never disagree.
+//
+// The exact per-day bucket wins: each token event was bucketed by its real
+// transcript timestamp. Only a summary with no buckets falls back to pro-rating
+// its lifetime totals by the timeline, and a summary with no attributable
+// activity (see hasAttributableActivity) contributes 0 there: its lifetime
+// total may be a resumed transcript re-read in one pass, which the pro-rate
+// would dump entirely onto today. Subagent cost is clamped to the total so a
+// pro-rated subagent share can never exceed an exact total.
+export function todayCostOfSummary(
+  persisted: TodayCostSource,
+  dayKey: string,
+  refTs?: number,
+): { readonly costUsd: number; readonly subagentCostUsd: number } {
+  const { costByDayUsd, subagentCostByDayUsd } = persisted;
+  const proRated = (lifetimeUsd: number): number =>
+    hasAttributableActivity(persisted) ? lifetimeUsd * todayPortionRatio(persisted, refTs) : 0;
+  const costUsd =
+    costByDayUsd !== undefined
+      ? (costByDayUsd[dayKey] ?? 0)
+      : proRated(Math.max(0, persisted.estimatedCostUsd ?? 0));
+  const subagentUsd =
+    subagentCostByDayUsd !== undefined
+      ? (subagentCostByDayUsd[dayKey] ?? 0)
+      : proRated(persisted.subagentCostUsd ?? 0);
+  return { costUsd, subagentCostUsd: Math.min(subagentUsd, costUsd) };
+}
 
 // Builds the seed a freshly-started process's CostTracker needs to recover a
 // resumed session's pre-restart totals — see CostTracker.seedFromPersisted()
 // for why this exists (ParentTranscriptWatcher's read cursor durably survives
 // a restart; CostTracker's totals do not, without this).
 //
-// dayCostUsd/daySubagentCostUsd use todayPortion*() rather than booking the
-// whole persisted total to `dayKey` so a persisted session whose own prior
-// activity already spanned a midnight doesn't over-attribute to today.
+// dayCostUsd/daySubagentCostUsd come from todayCostOfSummary, so Spend Today
+// is unchanged by a restart.
 export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTrackerSeed {
   const totalCostUsd = persisted.estimatedCostUsd ?? 0;
   const costByModel: Record<string, number> = {};
@@ -17,7 +57,10 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     costByModel[model] = entry.totalCostUsd;
   }
   const dayKey = localDateKey();
-  const todayRatio = todayPortionRatio(persisted);
+  const { costUsd: dayCostUsd, subagentCostUsd: daySubagentCostUsd } = todayCostOfSummary(
+    persisted,
+    dayKey,
+  );
   return {
     totalCostUsd,
     subagentCostUsd: persisted.subagentCostUsd,
@@ -31,8 +74,8 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     costByModel,
     costByWorkflowRunId: persisted.costByWorkflowRunId,
     dayKey,
-    dayCostUsd: todayPortionOfSessionCost(persisted),
-    daySubagentCostUsd: persisted.subagentCostUsd * todayRatio,
+    dayCostUsd,
+    daySubagentCostUsd,
     ...(persisted.unpricedByModel && { unpricedByModel: persisted.unpricedByModel }),
     ...(persisted.estimatedByModel && { estimatedByModel: persisted.estimatedByModel }),
     ...(persisted.byteEstimates && { byteEstimates: persisted.byteEstimates }),
