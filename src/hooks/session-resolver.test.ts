@@ -24,6 +24,7 @@ import {
 } from './session-resolver.js';
 import type { ExecFileSyncFn } from './process-ancestry.js';
 import { redactSensitive } from '../config.js';
+import { createDefaultRegistry } from '../platforms/platform-registry.js';
 
 /** Above every platform's pid_max, so `kill(pid, 0)` always reports ESRCH. */
 const DEAD_PID = 2_147_483_646;
@@ -1631,6 +1632,18 @@ describe('breadcrumbs filed by writer', () => {
       'sess-old-collector',
     );
   });
+
+  it.each(['generic-mcp', 'kiro', 'copilot', 'copilot-sdk'])(
+    'hands a %s engine the breadcrumbs of hooks that stamp no engine',
+    (platformName) => {
+      writeCrumb('unattributed', 'cwd', '-projects-shared', 'sess-unstamped');
+      const adapter = createDefaultRegistry()
+        .getRegistered()
+        .find((a) => a.platformName === platformName)!;
+      const engine = sessionBreadcrumbs(tmpDir, adapter.capabilities.sessionBreadcrumbWriters);
+      expect(engine.cwd('/projects/shared')).toBe('sess-unstamped');
+    },
+  );
 
   it("keeps a Kiro engine polling past a Claude Code session's sources until its own appears", async () => {
     const jobDir = writeClaudeSession();
