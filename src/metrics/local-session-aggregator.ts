@@ -440,33 +440,33 @@ export class LocalSessionAggregator {
     // Persisting the per-call timeline is what lets a restarted process replay
     // this session (git activity, anti-pattern analysis). Capped the same way
     // SessionTracker caps its own timeline so a long session can't grow the
-    // session file without bound.
-    if (rollup.timeline.length < MAX_TIMELINE_ENTRIES) {
-      rollup.timeline.push({
-        timestamp,
-        toolName: tool,
-        durationMs: record.durationMs ?? null,
-        success: record.success !== false,
-        ...(typeof record.filePath === 'string' && { filePath: record.filePath }),
-        ...(typeof record.command === 'string' && { command: record.command }),
-        ...(typeof record.cwd === 'string' && { cwd: record.cwd }),
-        ...(record.isTestCommand === true && { isTestCommand: true }),
-        ...(record.isBuildCommand === true && { isBuildCommand: true }),
-        ...(record.isLintCommand === true && { isLintCommand: true }),
-        ...(typeof record.errorType === 'string' && { errorType: record.errorType }),
-        ...(typeof record.agentId === 'string' && { agentId: record.agentId }),
-        ...(typeof record.createdPrNumber === 'string' && {
-          createdPrNumber: record.createdPrNumber,
-        }),
-        ...(record.runInBackground === true && { runInBackground: true }),
-      });
-    }
+    // session file without bound. Keeps the most recent entries.
+    if (rollup.timeline.length >= MAX_TIMELINE_ENTRIES) rollup.timeline.shift();
+    rollup.timeline.push({
+      timestamp,
+      toolName: tool,
+      durationMs: record.durationMs ?? null,
+      success: record.success !== false,
+      ...(typeof record.filePath === 'string' && { filePath: record.filePath }),
+      ...(typeof record.command === 'string' && { command: record.command }),
+      ...(typeof record.cwd === 'string' && { cwd: record.cwd }),
+      ...(record.isTestCommand === true && { isTestCommand: true }),
+      ...(record.isBuildCommand === true && { isBuildCommand: true }),
+      ...(record.isLintCommand === true && { isLintCommand: true }),
+      ...(typeof record.errorType === 'string' && { errorType: record.errorType }),
+      ...(typeof record.agentId === 'string' && { agentId: record.agentId }),
+      ...(typeof record.createdPrNumber === 'string' && {
+        createdPrNumber: record.createdPrNumber,
+      }),
+      ...(record.runInBackground === true && { runInBackground: true }),
+    });
 
     // Feed the real trackers rather than reimplementing their heuristics, so a
     // rehydrated panel shows exactly what the live one would have shown.
     const fullRecord = record as unknown as ToolCallRecord;
     rollup.quality.recordToolCall(fullRecord);
-    if (rollup.records.length < MAX_TIMELINE_ENTRIES) rollup.records.push(fullRecord);
+    if (rollup.records.length >= MAX_TIMELINE_ENTRIES) rollup.records.shift();
+    rollup.records.push(fullRecord);
   }
 
   recordTokenUsage(

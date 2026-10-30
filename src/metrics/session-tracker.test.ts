@@ -726,3 +726,20 @@ describe('computeP95()', () => {
     expect(computeP95(values)).toBe(95);
   });
 });
+
+describe('SessionTracker timeline cap', () => {
+  it('keeps the most recent 10,000 entries once the cap is exceeded', () => {
+    const tracker = new SessionTracker('test-session');
+    const total = 10_000 + 25;
+    for (let i = 1; i <= total; i++) {
+      tracker.recordToolCall(makeRecord({ timestamp: i }));
+    }
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.toolCallTimeline).toHaveLength(10_000);
+    expect(metrics.toolCallTimeline[0]?.timestamp).toBe(26);
+    expect(metrics.toolCallTimeline[9_999]?.timestamp).toBe(total);
+    expect(metrics.timelineTruncated).toBe(true);
+    expect(metrics.timelineEntryCount).toBe(total);
+  });
+});
