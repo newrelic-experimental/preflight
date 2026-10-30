@@ -1,6 +1,6 @@
 {
   "name": "AI Coding Assistant — Adoption & Cost",
-  "description": "Org-wide adoption, spend, tool/MCP usage, and team leaderboard built entirely from Preflight events. Works on every supported platform with no additional telemetry.",
+  "description": "Org-wide adoption, spend, tool, skill, and MCP usage, and team leaderboard built entirely from Preflight events. Works on every supported platform with no additional telemetry.",
   "permissions": "PUBLIC_READ_WRITE",
   "pages": [
     {
@@ -921,6 +921,296 @@
               {
                 "accountIds": [],
                 "query": "FROM AiMcpToolCall SELECT count(*) AS 'Calls' FACET server SINCE 7 days ago LIMIT 25"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Skills",
+      "description": null,
+      "widgets": [
+        {
+          "title": "Reading Skill Data",
+          "layout": {
+            "column": 1,
+            "row": 1,
+            "width": 12,
+            "height": 1
+          },
+          "visualization": {
+            "id": "viz.markdown"
+          },
+          "rawConfiguration": {
+            "text": "A skill run opens on a named `Skill` call or a `/<skill>` prompt and lasts until the next prompt or the next skill. Every tool call inside the run carries `skill_name`, `skill_source` (`tool` or `slash`), and `skill_run_id`, so runs, time, and cost here cover all the work a skill drove, not only the call that loaded it. Cost comes from `AiTurnCost`, which splits each turn evenly across its tool calls; a run whose replies made no tool calls has no rows. These widgets need a Preflight release with #895. Earlier events carry only `skillName` on the Skill call itself."
+          }
+        },
+        {
+          "title": "Spend in Skills (7d)",
+          "layout": {
+            "column": 1,
+            "row": 2,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiTurnCost SELECT filter(sum(cost_usd), WHERE skill_name IS NOT NULL) / sum(cost_usd) * 100 AS 'Spend in Skills %' SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Skill Runs (7d)",
+          "layout": {
+            "column": 4,
+            "row": 2,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiToolCall SELECT uniqueCount(skill_run_id) AS 'Runs' WHERE skill_name IS NOT NULL SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Skill Users (7d)",
+          "layout": {
+            "column": 7,
+            "row": 2,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiToolCall SELECT uniqueCount(developer) AS 'Users' WHERE skill_name IS NOT NULL SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "How Skills Are Invoked (7d)",
+          "layout": {
+            "column": 10,
+            "row": 2,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.pie"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiToolCall SELECT uniqueCount(skill_run_id) AS 'Runs' WHERE skill_name IS NOT NULL FACET skill_source SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Top Skills by Runs (7d)",
+          "layout": {
+            "column": 1,
+            "row": 5,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.bar"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiToolCall SELECT uniqueCount(skill_run_id) AS 'Runs' WHERE skill_name IS NOT NULL FACET skill_name SINCE 7 days ago LIMIT 25"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Daily Skill Runs (7d)",
+          "layout": {
+            "column": 7,
+            "row": 5,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "yAxisLeft": {
+              "zero": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiToolCall SELECT uniqueCount(skill_run_id) AS 'Runs' WHERE skill_name IS NOT NULL FACET skill_name SINCE 7 days ago TIMESERIES 1 day LIMIT 10"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Skill Cost (7d)",
+          "layout": {
+            "column": 1,
+            "row": 8,
+            "width": 6,
+            "height": 4
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiToolCall, AiTurnCost SELECT uniqueCount(skill_run_id) AS 'Runs', sum(cost_usd) AS 'Cost (USD)', sum(cost_usd) / uniqueCount(skill_run_id) AS 'USD / Run', sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS 'Tokens' WHERE skill_name IS NOT NULL FACET skill_name SINCE 7 days ago LIMIT 25"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Skill Adoption (7d)",
+          "layout": {
+            "column": 7,
+            "row": 8,
+            "width": 6,
+            "height": 4
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiToolCall SELECT uniqueCount(developer) AS 'Users', uniqueCount(skill_run_id) AS 'Runs', count(*) AS 'Tool Calls', filter(sum(duration_ms), WHERE tool != 'Agent') / 3600000 AS 'Hours', percentage(count(*), WHERE success = false) AS 'Error %' WHERE skill_name IS NOT NULL FACET skill_name SINCE 7 days ago LIMIT 25"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Skills by Developer (7d)",
+          "layout": {
+            "column": 1,
+            "row": 12,
+            "width": 6,
+            "height": 4
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiToolCall SELECT uniqueCount(skill_run_id) AS 'Runs', filter(sum(duration_ms), WHERE tool != 'Agent') / 3600000 AS 'Hours' WHERE skill_name IS NOT NULL FACET developer, skill_name SINCE 7 days ago LIMIT 100"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Tools Driven by Skills (7d)",
+          "layout": {
+            "column": 7,
+            "row": 12,
+            "width": 6,
+            "height": 4
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiToolCall SELECT count(*) AS 'Calls', percentage(count(*), WHERE success = false) AS 'Error %' WHERE skill_name IS NOT NULL AND tool != 'Skill' FACET skill_name, tool SINCE 7 days ago LIMIT 50"
               }
             ],
             "platformOptions": {

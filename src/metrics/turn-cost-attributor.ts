@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { TokenUsage } from '../shared/index.js';
 import { calculateModelCost } from './pricing-overlay.js';
-import type { ToolCallRecord, TokenEvent } from '../storage/types.js';
+import type { SkillStamp, ToolCallRecord, TokenEvent } from '../storage/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,13 +44,12 @@ export interface ToolTypeCostEntry {
 }
 
 /**
- * Per-skill row aggregating both `Skill` tool invocations and slash-command
- * invocations. A `Skill` tool call (channel `Skill`) receives an even split
- * of its turn's cost; a slash invocation (channel `SlashCommand`) receives the
- * full cost from that prompt to the next. `callCount` counts both channels
- * (one per `Skill` tool call, one per slash invocation); `totalDurationMs`
- * measures only `Skill` calls (slash commands have none). Cost and tokens
- * cover `attributedCallCount` of them.
+ * Per-skill row covering every tool call made inside that skill's runs (see
+ * SkillActivationTracker), each carrying its even split of its turn's cost.
+ * `callCount` counts invocations (distinct run ids, whether opened by a
+ * `Skill` call or a slash prompt) and `avgCost` is cost per invocation. `totalDurationMs` and
+ * `attributedCallCount` cover the tool calls inside the runs; cost and tokens
+ * cover the `attributedCallCount` of them whose turn got a token report.
  */
 export interface SkillCostEntry {
   readonly callCount: number;
@@ -77,16 +76,25 @@ export interface SkillCostEntry {
 export interface TurnToolCall {
   readonly toolUseId: string;
   readonly toolName: string;
-  /** Set only for Skill calls that carried a skill name; mirrors the bucket identity. */
-  readonly skillName: string | null;
+  /** Set only for tool calls inside a skill run. */
+  readonly skill: SkillStamp | null;
 }
 
 /** What recordTokenEvent() hands back once a turn's cost is known. */
 export interface ClosedTurn {
   readonly id: string;
   readonly attribution: TurnCostAttribution;
+  /**
+   * Empty for a response turn: a token report no tool burst claimed, so the
+   * cost is the response's alone. Such turns are never stored in local
+   * metrics; they exist so the report still reaches AiTurnCost.
+   */
   readonly calls: readonly TurnToolCall[];
-  /** `ToolCallRecord.platform` of the turn's first call; undefined when the hook carried no stamp. */
+  /**
+   * For a tool turn, `ToolCallRecord.platform` of its first call. For a
+   * response turn, the token report's platform, else the session's most
+   * recent stamped tool call's. Undefined when neither is known.
+   */
   readonly platform: string | undefined;
 }
 
@@ -97,9 +105,10 @@ export interface CostAttributionMetrics {
   readonly totalAttributedCost: number;
   readonly attributionRate: number;
   /**
-   * Count of token events (or, on overflow/staleness, whole pending turns)
-   * that could not be attributed to any tool call. A rising count alongside
-   * a low `attributionRate` means turns are being lost — see `recordTokenEvent()`.
+   * Count of pending tool bursts evicted without a closing token report,
+   * because it went stale or the queue overflowed. Their cost is lost. A token
+   * report no burst claims is not counted here: it becomes a response turn.
+   * See `recordTokenEvent()`.
    */
   readonly droppedTokenEvents: number;
 }
@@ -140,8 +149,7 @@ const MAX_TURNS = 200;
 interface BucketIdentity {
   readonly toolName: string;
   /**
-   * Set only for `Skill` tool records that carried a skill name, or for
-   * `SlashCommand` records from slash-invoked skills.
+   * The skill whose run the call happened inside (`ToolCallRecord.activeSkill`).
    */
   readonly skillName: string | null;
 }
@@ -181,7 +189,7 @@ interface PendingTurn {
   toolCalls: Array<{
     toolUseId: string;
     toolName: string;
-    skillName: string | null;
+    skill: SkillStamp | null;
     bucketKey: string;
   }>;
   platform: string | undefined;
@@ -208,8 +216,14 @@ interface SessionState {
   totalAttributedCost: number;
   totalToolCalls: number;
   attributedToolCalls: number;
-  activeSlashSkill: string | null;
   droppedTokenEvents: number;
+  /**
+   * Platform of the most recent stamped tool call, for a response turn whose
+   * token report came from a source with no known platform.
+   */
+  lastPlatform: string | undefined;
+  /** Run ids seen per skill name; its size is the skill's invocation count. */
+  skillRuns: Map<string, Set<string>>;
 }
 
 function createSessionState(): SessionState {
@@ -220,8 +234,9 @@ function createSessionState(): SessionState {
     totalAttributedCost: 0,
     totalToolCalls: 0,
     attributedToolCalls: 0,
-    activeSlashSkill: null,
     droppedTokenEvents: 0,
+    lastPlatform: undefined,
+    skillRuns: new Map(),
   };
 }
 
@@ -229,12 +244,17 @@ function createSessionState(): SessionState {
 // Bucket helpers
 // ---------------------------------------------------------------------------
 
+function addSkillRun(skillRuns: Map<string, Set<string>>, skill: string, runId: string): void {
+  let runIds = skillRuns.get(skill);
+  if (runIds === undefined) {
+    runIds = new Set();
+    skillRuns.set(skill, runIds);
+  }
+  runIds.add(runId);
+}
+
 function bucketIdentityOf(record: ToolCallRecord): BucketIdentity {
-  const skillName =
-    record.toolName === 'Skill' && record.skillName !== undefined && record.skillName !== ''
-      ? record.skillName
-      : null;
-  return { toolName: record.toolName, skillName };
+  return { toolName: record.toolName, skillName: record.activeSkill?.name ?? null };
 }
 
 /** Lookup key only. It is never parsed; the bucket carries its own identity. */
@@ -319,12 +339,16 @@ export class TurnCostAttributor {
     const state = this.getOrCreateSession(record.sessionId);
     state.totalToolCalls++;
     const endTime = record.timestamp + (record.durationMs ?? 0);
+    const platform = typeof record.platform === 'string' ? record.platform : undefined;
+    if (platform !== undefined) state.lastPlatform = platform;
 
     const id = bucketIdentityOf(record);
     const key = bucketKeyOf(id);
     const bucket = getOrCreateBucket(state.buckets, key, id);
     bucket.callCount++;
     bucket.totalDurationMs += record.durationMs ?? 0;
+    if (record.activeSkill)
+      addSkillRun(state.skillRuns, record.activeSkill.name, record.activeSkill.runId);
 
     const last = state.pendingTurns[state.pendingTurns.length - 1];
     if (last && record.timestamp - last.endTime <= TURN_GAP_MS) {
@@ -332,7 +356,7 @@ export class TurnCostAttributor {
       last.toolCalls.push({
         toolUseId: record.toolUseId,
         toolName: record.toolName,
-        skillName: id.skillName,
+        skill: record.activeSkill ?? null,
         bucketKey: key,
       });
       return;
@@ -346,11 +370,11 @@ export class TurnCostAttributor {
         {
           toolUseId: record.toolUseId,
           toolName: record.toolName,
-          skillName: id.skillName,
+          skill: record.activeSkill ?? null,
           bucketKey: key,
         },
       ],
-      platform: typeof record.platform === 'string' ? record.platform : undefined,
+      platform,
     });
 
     // A new burst starting while MAX_PENDING_TURNS earlier bursts are still
@@ -362,20 +386,12 @@ export class TurnCostAttributor {
     }
   }
 
-  recordSlashCommand(sessionId: string | null | undefined, skillName: string | null): void {
-    const state = this.getOrCreateSession(sessionId);
-    if (skillName) {
-      state.activeSlashSkill = skillName;
-      const id: BucketIdentity = { toolName: 'SlashCommand', skillName };
-      const key = bucketKeyOf(id);
-      const bucket = getOrCreateBucket(state.buckets, key, id);
-      bucket.callCount++;
-    } else {
-      state.activeSlashSkill = null;
-    }
+  /** Counts a run as soon as it opens, so one that never makes a tool call still has a row. */
+  recordSkillRun(sessionId: string | null | undefined, stamp: SkillStamp): void {
+    addSkillRun(this.getOrCreateSession(sessionId).skillRuns, stamp.name, stamp.runId);
   }
 
-  recordTokenEvent(event: TokenEvent): ClosedTurn | null {
+  recordTokenEvent(event: TokenEvent): ClosedTurn {
     const state = this.getOrCreateSession(event.sessionId);
 
     // Self-heal: a pending turn sitting unclosed for longer than any
@@ -392,35 +408,23 @@ export class TurnCostAttributor {
 
     const pendingTurn = state.pendingTurns[0];
     if (!pendingTurn) {
-      state.droppedTokenEvents++;
-      return null;
+      return this.responseTurn(state, event);
     }
 
-    // The event must postdate the turn it's closing — one that doesn't can't
-    // belong to it (this turn hadn't even finished yet). Silently drop it
-    // rather than risk mis-attributing cost to the wrong turn. Dropped
-    // events show up as a lower `attributionRate` and a rising
-    // `droppedTokenEvents`, not as an error.
+    // The event must postdate the turn it's closing. One that doesn't can't
+    // belong to that burst (it hadn't even finished yet), so it stays queued
+    // for the next token report and this one is claimed by no burst. If no
+    // later report arrives, the burst is evicted as stale above and counted
+    // in `droppedTokenEvents`.
     const timeSinceLastTool = event.timestamp - pendingTurn.endTime;
     if (timeSinceLastTool < 0) {
-      state.droppedTokenEvents++;
-      return null;
+      return this.responseTurn(state, event);
     }
     state.pendingTurns.shift();
 
-    const usage: TokenUsage = {
-      inputTokens: event.inputTokens,
-      outputTokens: event.outputTokens,
-      thinkingTokens: 0,
-      cacheReadTokens: event.cacheReadTokens,
-      cacheCreationTokens: event.cacheCreationTokens,
-      totalTokens: event.inputTokens + event.outputTokens,
-    };
-
-    const breakdown = calculateModelCost(event.model, usage);
-    const costUsd = breakdown.totalUsd * this.rateMultiplier;
+    const costUsd = this.priceTokenEvent(event);
     const toolCount = pendingTurn.toolCalls.length;
-    const costPerTool = toolCount > 0 ? costUsd / toolCount : 0;
+    const costPerTool = costUsd / toolCount;
 
     const attribution: TurnCostAttribution = {
       turnId: pendingTurn.turnId,
@@ -457,18 +461,6 @@ export class TurnCostAttributor {
       bucket.cacheCreationTokens += event.cacheCreationTokens / toolCount;
     }
 
-    if (state.activeSlashSkill !== null) {
-      const id: BucketIdentity = { toolName: 'SlashCommand', skillName: state.activeSlashSkill };
-      const key = bucketKeyOf(id);
-      const slashBucket = getOrCreateBucket(state.buckets, key, id);
-      slashBucket.attributedCallCount++;
-      slashBucket.totalCost += costUsd;
-      slashBucket.inputTokens += event.inputTokens;
-      slashBucket.outputTokens += event.outputTokens;
-      slashBucket.cacheReadTokens += event.cacheReadTokens;
-      slashBucket.cacheCreationTokens += event.cacheCreationTokens;
-    }
-
     // Minted here rather than reusing `attribution.turnId`: the caller's turn
     // id comes from the process-global TurnTracker and can repeat across two
     // attributor turns, so it cannot group AiTurnCost rows.
@@ -478,12 +470,55 @@ export class TurnCostAttributor {
       calls: pendingTurn.toolCalls.map((tc) => ({
         toolUseId: tc.toolUseId,
         toolName: tc.toolName,
-        skillName: tc.skillName,
+        skill: tc.skill,
       })),
       platform: pendingTurn.platform,
     };
 
     return closedTurn;
+  }
+
+  /**
+   * A token report no tool burst claimed. Local metrics leave it out, but it
+   * is priced and returned so the report still reaches AiTurnCost, with
+   * `costPerToolCall` equal to the whole cost since it has no calls to split
+   * across.
+   */
+  private responseTurn(state: SessionState, event: TokenEvent): ClosedTurn {
+    const costUsd = this.priceTokenEvent(event);
+    const id = randomUUID();
+    return {
+      id,
+      attribution: {
+        turnId: id,
+        startTime: event.timestamp,
+        endTime: event.timestamp,
+        toolCalls: [],
+        toolNames: [],
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+        cacheReadTokens: event.cacheReadTokens,
+        cacheCreationTokens: event.cacheCreationTokens,
+        model: event.model,
+        estimatedCostUsd: costUsd,
+        costPerToolCall: costUsd,
+        sessionId: event.sessionId ?? null,
+      },
+      calls: [],
+      platform: event.platform ?? state.lastPlatform,
+    };
+  }
+
+  private priceTokenEvent(event: TokenEvent): number {
+    const usage: TokenUsage = {
+      inputTokens: event.inputTokens,
+      outputTokens: event.outputTokens,
+      thinkingTokens: 0,
+      cacheReadTokens: event.cacheReadTokens,
+      cacheCreationTokens: event.cacheCreationTokens,
+      totalTokens: event.inputTokens + event.outputTokens,
+    };
+    return calculateModelCost(event.model, usage).totalUsd * this.rateMultiplier;
   }
 
   getCostForToolCall(
@@ -545,6 +580,9 @@ export class TurnCostAttributor {
         const merged = getOrCreateBucket(aggregate.buckets, key, bucket);
         for (const counter of BUCKET_COUNTERS) merged[counter] += bucket[counter];
       }
+      for (const [skill, runIds] of state.skillRuns) {
+        for (const runId of runIds) addSkillRun(aggregate.skillRuns, skill, runId);
+      }
     }
     // Same cap as each per-session bucket already enforces on insert — keep
     // only the most recent MAX_TURNS across the merged set, by start time.
@@ -571,12 +609,8 @@ export class TurnCostAttributor {
 
     for (const bucket of state.buckets.values()) {
       // costByToolType predates the buckets table and only ever listed tools
-      // that received a token event, so the fold keeps that contract. The
-      // SlashCommand channel isn't a real tool call — it charges a turn's
-      // full, unsplit cost to track skill usage (see recordSlashCommand()),
-      // and folding it in here would double-count against whichever real
-      // tool(s) that same turn already split its cost across.
-      if (bucket.toolName !== 'SlashCommand' && bucket.attributedCallCount > 0) {
+      // that received a token event, so the fold keeps that contract.
+      if (bucket.attributedCallCount > 0) {
         let entry = toolTypeAccum.get(bucket.toolName);
         if (entry === undefined) {
           entry = {
@@ -605,16 +639,28 @@ export class TurnCostAttributor {
           skillAccum.set(bucket.skillName, entry);
         }
         for (const counter of BUCKET_COUNTERS) entry[counter] += bucket[counter];
+        // The subagent's own calls carry the same run, so its Agent call's
+        // duration would count that time twice.
+        if (bucket.toolName === 'Agent') entry.totalDurationMs -= bucket.totalDurationMs;
       }
+    }
+
+    // A run whose replies made no tool calls has no bucket but still counts.
+    for (const skillName of state.skillRuns.keys()) {
+      if (skillAccum.has(skillName)) continue;
+      const entry = {} as Pick<AttributionBucket, (typeof BUCKET_COUNTERS)[number]>;
+      for (const counter of BUCKET_COUNTERS) entry[counter] = 0;
+      skillAccum.set(skillName, entry);
     }
 
     const costBySkill: Record<string, SkillCostEntry> = {};
     for (const [skillName, entry] of skillAccum) {
+      const invocations = state.skillRuns.get(skillName)?.size ?? 0;
       costBySkill[skillName] = {
-        callCount: entry.callCount,
+        callCount: invocations,
         attributedCallCount: entry.attributedCallCount,
         totalCost: entry.totalCost,
-        avgCost: entry.attributedCallCount > 0 ? entry.totalCost / entry.attributedCallCount : 0,
+        avgCost: invocations > 0 ? entry.totalCost / invocations : 0,
         inputTokens: Math.round(entry.inputTokens),
         outputTokens: Math.round(entry.outputTokens),
         cacheReadTokens: Math.round(entry.cacheReadTokens),

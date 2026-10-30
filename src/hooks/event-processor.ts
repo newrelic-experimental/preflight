@@ -310,6 +310,23 @@ function wasBlockedByPreToolUseHook(
   return false;
 }
 
+/**
+ * Platform of each token-report source, keyed by the line's `tool` tag.
+ * Watchers run in the server, not the hook subprocess, so their lines carry
+ * no platform stamp. Each value is what that source's sessions' own hooks
+ * stamp, so a token report and its session's tool calls agree:
+ * `claude-code` per ClaudeCodeAdapter.platformName, `copilot` per the
+ * `NEW_RELIC_AI_PLATFORM=copilot` hook command in CopilotAdapter and
+ * CopilotSdkAdapter's setup instructions, and `copilot-app` per the
+ * `MCP_CLIENT=copilot-app` hook command in CopilotAppAdapter's.
+ */
+const TOKEN_SOURCE_PLATFORM: ReadonlyMap<string, string> = new Map([
+  ['transcript', 'claude-code'],
+  ['copilot-usage', 'copilot'],
+  ['copilot-sdk-usage', 'copilot'],
+  ['copilot-app-usage', 'copilot-app'],
+]);
+
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_ORPHAN_TIMEOUT_MS = 60_000;
 // Permission prompts legitimately dwell — a user thinking for 90 seconds is
@@ -801,6 +818,7 @@ export class HookEventProcessor {
       if (this.tokenDedupRegistry.hasAndAdd(scopeKey, event.messageId)) return;
     }
 
+    const platform = event.platform ?? TOKEN_SOURCE_PLATFORM.get(event.tool);
     const tokenEvent: TokenEvent = {
       mode: 'token',
       timestamp: event.timestamp,
@@ -821,6 +839,7 @@ export class HookEventProcessor {
       model: event.model ?? 'unknown',
       sessionId: event.sessionId,
       ...(event.responseMs !== undefined && { responseMs: event.responseMs }),
+      ...(platform !== undefined && { platform }),
     };
     try {
       this.onTokenEvent(tokenEvent);

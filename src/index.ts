@@ -10,7 +10,7 @@ import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
 import { LocalAlertEngine } from './alerts/local-alert-engine.js';
 import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
 import { OsNotifier } from './alerts/os-notifier.js';
-import type { McpServerConfig } from './config.js';
+import type { LoadMcpConfigOptions, McpServerConfig } from './config.js';
 import {
   DEFAULT_STORAGE_PATH,
   digestWebhookUrlOverride,
@@ -98,6 +98,7 @@ import { QualityProxyTracker } from './metrics/quality-proxy-tracker.js';
 import { RecommendationEngine } from './metrics/recommendation-engine.js';
 import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
+import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
 import { buildTaskDetectorSeed } from './metrics/task-detector-seed.js';
 import { TaskDetector } from './metrics/task-detector.js';
@@ -192,9 +193,12 @@ export function maskCredential(key: string): string {
  * Helps users troubleshoot configuration issues without requiring
  * manual diagnosis steps.
  */
-function loadConfigOrDie(options: Partial<CliOptions>): Readonly<McpServerConfig> {
+function loadConfigOrDie(
+  options: Partial<CliOptions>,
+  loadOptions?: LoadMcpConfigOptions,
+): Readonly<McpServerConfig> {
   try {
-    return loadMcpConfig(options);
+    return loadMcpConfig(options, loadOptions);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`${msg}\n\nRun 'preflight doctor' to diagnose.`, { cause: err });
@@ -1124,7 +1128,7 @@ async function main(): Promise<void> {
         const gap = detectCloudForwardingGap(err);
         if (!gap) throw err;
         process.env.NR_AI_MODE = 'local';
-        config = loadConfigOrDie(options);
+        config = loadConfigOrDie(options, { ignoreTiers: true });
         unforwardedSessionMonitor = new UnforwardedSessionMonitor({ gap });
         const problem =
           gap.reason === 'secret-helper-failed'
@@ -1321,6 +1325,7 @@ async function main(): Promise<void> {
     // window is named later via adoptRealSessionId once its real id resolves.
     if (options.stdio) applyAuthoritativeSessionName(sessionTraceId);
     const turnCostAttributor = new TurnCostAttributor({ rateMultiplier });
+    const skillActivationTracker = new SkillActivationTracker();
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
     const gitWorkspaceReporter = new GitWorkspaceReporter();
@@ -2090,10 +2095,12 @@ async function main(): Promise<void> {
         // record, so audit/security events carry agentId and agentType.
         // The watcher's on-demand read is synchronous, which is what keeps it
         // ahead of auditTrail.
-        const rawRecord = subagentAttribution.attributeAtIntake(
+        const attributed = subagentAttribution.attributeAtIntake(
           incomingRecord,
           activeSubagentWatcher,
         );
+        const activeSkill = skillActivationTracker.recordToolCall(attributed);
+        const rawRecord = activeSkill ? { ...attributed, activeSkill } : attributed;
         if (!config || !sessionTracker || !taskDetector) {
           logger.warn('onRecord called before full initialization; skipping');
           return;
@@ -2368,7 +2375,7 @@ async function main(): Promise<void> {
           ownSessionId: sessionTraceId,
         });
         const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
-        if (closedTurn && isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
+        if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
         const usage = {
           inputTokens: tokenEvent.inputTokens,
           outputTokens: tokenEvent.outputTokens,
@@ -2621,7 +2628,11 @@ async function main(): Promise<void> {
         });
       },
       onUserPromptSubmit: (frame) => {
-        turnCostAttributor.recordSlashCommand(frame.sessionId, frame.slashCommand ?? null);
+        const slashRun = skillActivationTracker.recordPrompt(
+          frame.sessionId,
+          frame.slashCommand ?? null,
+        );
+        if (slashRun) turnCostAttributor.recordSkillRun(frame.sessionId, slashRun);
         taskDetector!.startTaskIfNone(frame.timestamp);
       },
       onStop: (frame) => {

@@ -416,17 +416,14 @@ describe('OtlpEventBridge', () => {
       expect(warnedCleartext).toBe(false);
     });
 
-    it('emits a cleartext warning for http:// to a non-loopback host', () => {
+    it('throws for http:// to a non-loopback host, pointing at https://', () => {
       expect(
         () =>
           new OtlpEventBridge({
-            endpoint: 'http://internal-collector.example.com:4318',
+            endpoint: 'http://collector.example.com:4318',
             appName: 'test-app',
           }),
-      ).not.toThrow();
-      const stderrText = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0] ?? '')).join('\n');
-      expect(stderrText).toMatch(/plain http:\/\//);
-      expect(stderrText).toMatch(/internal-collector\.example\.com/);
+      ).toThrow(/use https:\/\//);
     });
 
     it('throws on a non-http(s) scheme', () => {

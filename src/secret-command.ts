@@ -45,15 +45,18 @@ const FAILURE_MESSAGES: Readonly<Record<SecretCommandFailure, string>> = {
 export class SecretCommandError extends Error {
   readonly field: SecretField;
   readonly failure: SecretCommandFailure;
+  readonly tier: string | undefined;
 
-  constructor(field: SecretField, failure: SecretCommandFailure, extra = '') {
+  constructor(field: SecretField, failure: SecretCommandFailure, extra = '', tier?: string) {
+    const where = tier === undefined ? '' : ` for tier "${tier}"`;
     super(
-      `Could not read ${field} from ${field}Command: ${FAILURE_MESSAGES[failure]}${extra}. ` +
+      `Could not read ${field}${where} from ${field}Command: ${FAILURE_MESSAGES[failure]}${extra}. ` +
         'Preflight does not show the command output; run the command yourself to see why it failed.',
     );
     this.name = 'SecretCommandError';
     this.field = field;
     this.failure = failure;
+    this.tier = tier;
   }
 }
 
@@ -62,22 +65,27 @@ const MAX_OUTPUT_BYTES = 64 * 1024;
 
 /**
  * Runs `argv` (absolute executable path first) with no shell and a stripped env, and returns its stdout minus
- * one trailing newline. Throws SecretCommandError on any failure.
+ * one trailing newline. Throws SecretCommandError on any failure; a `tier`
+ * is named in the error so a multi-account config says which key failed.
  */
 export function resolveSecretCommand(
   field: SecretField,
   argv: readonly string[],
   timeoutMs = SECRET_COMMAND_TIMEOUT_MS,
+  tier?: string,
 ): string {
+  const fail = (failure: SecretCommandFailure, extra = ''): SecretCommandError =>
+    new SecretCommandError(field, failure, extra, tier);
   const [executable, ...args] = argv;
   if (executable === undefined || !isAbsolute(executable)) {
-    throw new SecretCommandError(field, 'not-absolute');
+    throw fail('not-absolute');
   }
 
   const { env, stripped } = stripDangerousEnv(process.env);
   if (stripped.length > 0) {
     logger.debug('Stripped injection-capable env vars from secret helper env', {
       field,
+      tier,
       envNames: stripped,
     });
   }
@@ -94,18 +102,17 @@ export function resolveSecretCommand(
 
   if (result.error) {
     const code = (result.error as NodeJS.ErrnoException).code;
-    if (code === 'ETIMEDOUT')
-      throw new SecretCommandError(field, 'timeout', ` after ${timeoutMs}ms`);
-    if (code === 'ENOBUFS') throw new SecretCommandError(field, 'output-too-large');
-    throw new SecretCommandError(field, 'not-runnable', code ? ` (${code})` : '');
+    if (code === 'ETIMEDOUT') throw fail('timeout', ` after ${timeoutMs}ms`);
+    if (code === 'ENOBUFS') throw fail('output-too-large');
+    throw fail('not-runnable', code ? ` (${code})` : '');
   }
-  if (result.signal) throw new SecretCommandError(field, 'killed', ` (${result.signal})`);
+  if (result.signal) throw fail('killed', ` (${result.signal})`);
   if (result.status !== 0) {
-    throw new SecretCommandError(field, 'non-zero-exit', ` (${String(result.status)})`);
+    throw fail('non-zero-exit', ` (${String(result.status)})`);
   }
 
   const output = result.stdout.replace(/\r?\n$/, '');
-  if (output.trim() === '') throw new SecretCommandError(field, 'empty-output');
+  if (output.trim() === '') throw fail('empty-output');
   return output;
 }
 

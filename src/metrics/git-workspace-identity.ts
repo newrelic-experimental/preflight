@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { basename, dirname } from 'node:path';
+import { basename, dirname, resolve as resolvePath } from 'node:path';
 
 import { repoNameFromRemote } from '../lib/git-remote.js';
 
@@ -60,72 +60,63 @@ const GIT_OPTS = {
 };
 
 interface CachedIdentity {
-  identity: WorktreeIdentity;
-  branchResolvedAt: number;
+  identity: WorktreeIdentity | null;
+  resolvedAt: number;
 }
 
-const NOT_A_REPO = Symbol('not-a-repo');
-
-export interface WorktreeIdentityResolverOptions {
-  /** How long a directory that `git` definitively reported as not a repo is
-   *  remembered. Off by default: the live pipeline wants a directory that
-   *  becomes a repo to be picked up on the next call. Request-path callers
-   *  that re-resolve the same history on every poll opt in. Transient
-   *  failures (timeout, spawn error) are never remembered. */
-  readonly missTtlMs?: number;
+// Windows paths are case-insensitive, so every spelling must share one entry.
+export function cacheKeyOf(dir: string): string {
+  const abs = resolvePath(dir);
+  return process.platform === 'win32' ? abs.toLowerCase() : abs;
 }
 
 export class WorktreeIdentityResolver {
   private readonly cache = new Map<string, CachedIdentity>();
-  private readonly branchTtlMs = 30_000;
-  private readonly missTtlMs: number;
-  private readonly misses = new Map<string, number>();
-
-  constructor(options: WorktreeIdentityResolverOptions = {}) {
-    this.missTtlMs = options.missTtlMs ?? 0;
-  }
+  private readonly ttlMs = 30_000;
+  // Short, because live tool calls share this resolver: a session started in
+  // an empty directory must see its `git init` and first commit within a few
+  // seconds. It only needs to outlast one replay burst of repeated lookups.
+  private readonly missTtlMs = 3_000;
 
   resolve(dir: string | null | undefined): WorktreeIdentity | null {
     if (typeof dir !== 'string' || dir.length === 0) return null;
 
-    const cached = this.cache.get(dir);
+    const key = cacheKeyOf(dir);
+    const cached = this.cache.get(key);
     const now = Date.now();
 
-    const missedAt = this.misses.get(dir);
-    if (missedAt !== undefined) {
-      if (now - missedAt < this.missTtlMs) return null;
-      this.misses.delete(dir);
+    const ttl = cached?.identity ? this.ttlMs : this.missTtlMs;
+    if (cached && now - cached.resolvedAt < ttl) return cached.identity;
+
+    if (cached?.identity) {
+      const refreshed = this.resolveBranch(dir);
+      // `refreshed.branch` is legitimately null for detached HEAD, which is
+      // a real state a worktree can transition into — `refreshed.ok`, not
+      // the branch value itself, is what distinguishes that from "the
+      // subprocess call failed, keep reporting the last known branch".
+      const updated: WorktreeIdentity = {
+        ...cached.identity,
+        branch: refreshed.ok ? refreshed.branch : cached.identity.branch,
+      };
+      this.cache.set(key, { identity: updated, resolvedAt: now });
+      return updated;
     }
 
-    if (cached) {
-      if (now - cached.branchResolvedAt >= this.branchTtlMs) {
-        const refreshed = this.resolveBranch(dir);
-        // `refreshed.branch` is legitimately null for detached HEAD, which is
-        // a real state a worktree can transition into — `refreshed.ok`, not
-        // the branch value itself, is what distinguishes that from "the
-        // subprocess call failed, keep reporting the last known branch".
-        const updated: WorktreeIdentity = {
-          ...cached.identity,
-          branch: refreshed.ok ? refreshed.branch : cached.identity.branch,
-        };
-        this.cache.set(dir, { identity: updated, branchResolvedAt: now });
-        return updated;
-      }
-      return cached.identity;
-    }
-
-    const identity = this.computeIdentity(dir);
-    if (identity === NOT_A_REPO) {
-      if (this.missTtlMs > 0) this.misses.set(dir, now);
-      return null;
-    }
-    if (identity) {
-      this.cache.set(dir, { identity, branchResolvedAt: now });
-    }
-    return identity;
+    // Definite misses are cached for the short miss TTL, so a later `git init`
+    // is picked up after expiry. A timed-out or failed spawn is not cached;
+    // the next call retries.
+    const lookup = this.computeIdentity(dir);
+    if (lookup.ok) this.cache.set(key, { identity: lookup.identity, resolvedAt: now });
+    return lookup.identity;
   }
 
-  private computeIdentity(dir: string): WorktreeIdentity | typeof NOT_A_REPO | null {
+  /** `ok: false` means the git process itself failed (timeout, signal, spawn
+   *  error) and the caller must not cache the null. `ok: true, identity: null`
+   *  is a definite answer that `dir` is not a repository. */
+  private computeIdentity(dir: string): {
+    ok: boolean;
+    identity: WorktreeIdentity | null;
+  } {
     let repoKey: string;
     let worktreeKey: string;
 
@@ -143,20 +134,25 @@ export class WorktreeIdentityResolver {
         GIT_OPTS,
       );
 
-      if (result.status !== 0 || typeof result.stdout !== 'string') {
-        const gitAnswered = result.error === undefined && typeof result.status === 'number';
-        return gitAnswered ? NOT_A_REPO : null;
+      if (typeof result.status === 'number' && result.status !== 0) {
+        return { ok: true, identity: null };
+      }
+      if (result.status === null || result.error) {
+        return { ok: false, identity: null };
+      }
+      if (typeof result.stdout !== 'string') {
+        return { ok: true, identity: null };
       }
 
       const lines = result.stdout.trim().split('\n');
       if (lines.length < 2 || !lines[0] || !lines[1]) {
-        return null;
+        return { ok: true, identity: null };
       }
 
       repoKey = lines[0].trim();
       worktreeKey = lines[1].trim();
     } catch {
-      return null;
+      return { ok: false, identity: null };
     }
 
     // Failure here (unborn HEAD, or any other reason) is a real, common
@@ -168,12 +164,15 @@ export class WorktreeIdentityResolver {
     const worktreeLabel = this.deriveLabel(worktreeKey, repoKey, worktreeRoot);
 
     return {
-      repoKey,
-      worktreeKey,
-      repoName,
-      worktreeRoot,
-      worktreeLabel,
-      branch,
+      ok: true,
+      identity: {
+        repoKey,
+        worktreeKey,
+        repoName,
+        worktreeRoot,
+        worktreeLabel,
+        branch,
+      },
     };
   }
 
