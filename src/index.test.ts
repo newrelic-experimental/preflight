@@ -844,6 +844,22 @@ describe('startDashboardRepoll()', () => {
   });
 });
 
+/** Every env var a platform adapter detects its platform by, plus explicit platform overrides. */
+const PLATFORM_ENV =
+  /^(CLAUDE|CURSOR_|WINDSURF_|ZED_|CONTINUE_|KIRO_|AMAZON_Q_|Q_DEVELOPER_|AWS_CODEWHISPERER_|PI_CODING_AGENT$|MCP_CLIENT|NEW_RELIC_AI_PLATFORM$)/;
+
+/**
+ * This process's env without the platform signals the developer's terminal
+ * leaked into it, plus `platformEnv`, so a spawned engine detects only the
+ * platform a test names.
+ */
+function engineEnv(platformEnv: Record<string, string>): NodeJS.ProcessEnv {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !PLATFORM_ENV.test(name)),
+  );
+  return { ...env, NEW_RELIC_AI_COPILOT_DIR: join(tmpdir(), 'nr-no-copilot-app'), ...platformEnv };
+}
+
 describe('stdio integration', () => {
   it('responds to MCP initialize handshake and lists tools', async () => {
     const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
@@ -922,7 +938,7 @@ describe('stdio integration', () => {
     // the PPID breadcrumb never matches, but the cwd one does". Deliberately
     // omit CLAUDE_JOB_DIR and any PPID breadcrumb so only the cwd fallback in
     // the *synchronous* resolution chain can succeed.
-    const breadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    const breadcrumbDir = resolve(tmpStoragePath, 'breadcrumbs', 'claude-code', 'session-by-cwd');
     mkdirSync(breadcrumbDir, { recursive: true });
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(breadcrumbDir, `${sanitizedCwd}.txt`), 'resolved-via-cwd-session-id');
@@ -930,10 +946,11 @@ describe('stdio integration', () => {
     // Sanity check against the real resolver so this test fails loudly (not
     // mysteriously) if the sanitization scheme ever drifts between the
     // collector's write side and resolveFromCwd()'s read side.
-    expect(resolveFromCwd(tmpStoragePath, realProjectCwd)).toBe('resolved-via-cwd-session-id');
+    expect(
+      resolveFromCwd(resolve(tmpStoragePath, 'breadcrumbs', 'claude-code'), realProjectCwd),
+    ).toBe('resolved-via-cwd-session-id');
 
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
+    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -964,53 +981,117 @@ describe('stdio integration', () => {
     }
   }, 30000);
 
-  it('does not adopt a Claude Code cwd breadcrumb when the engine is Cursor', async () => {
-    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
-    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
-
-    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
-    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-cursor-cwd-storage-'));
-    const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-cursor-cwd-project-'));
-    const realProjectCwd = realpathSync(tmpProjectCwd);
-
-    const breadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
-    mkdirSync(breadcrumbDir, { recursive: true });
-    const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
-    writeFileSync(resolve(breadcrumbDir, `${sanitizedCwd}.txt`), 'claude-code-session-id');
-
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
-
-    const transport = new StdioClientTransport({
-      command: 'node',
-      args: [binPath, '--stdio'],
-      cwd: tmpProjectCwd,
-      env: {
-        ...env,
-        NR_AI_DASHBOARD_PORT: '0',
-        MCP_CLIENT: 'cursor',
-        NR_AI_MODE: 'local',
-        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
-      },
-    });
-
-    const client = new Client({ name: 'cursor', version: '1.0.0' });
-    try {
-      await client.connect(transport);
-
-      const result = await client.callTool({
-        name: 'nr_observe_report_tokens',
-        arguments: { input_tokens: 1000, output_tokens: 200, model: 'claude-sonnet-4-6' },
+  describe("an engine adopts only its own hooks' session breadcrumbs", () => {
+    async function startEngine(platformEnv: Record<string, string>) {
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+      const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+      const storagePath = mkdtempSync(join(tmpdir(), 'nr-engine-writer-storage-'));
+      const projectCwd = mkdtempSync(join(tmpdir(), 'nr-engine-writer-project-'));
+      const sanitizedCwd = realpathSync(projectCwd).replace(/[\\/:]/g, '-');
+      const writeCrumb = (writer: string | null, kind: 'ppid' | 'cwd', sessionId: string) => {
+        const root = writer === null ? storagePath : resolve(storagePath, 'breadcrumbs', writer);
+        const dir = resolve(root, `session-by-${kind}`);
+        mkdirSync(dir, { recursive: true });
+        const key = kind === 'ppid' ? String(process.pid) : sanitizedCwd;
+        writeFileSync(resolve(dir, `${key}.txt`), sessionId);
+      };
+      const transport = new StdioClientTransport({
+        command: 'node',
+        args: [resolve(__dirname, '..', 'dist', 'index.js'), '--stdio'],
+        cwd: projectCwd,
+        stderr: 'pipe',
+        env: {
+          ...engineEnv(platformEnv),
+          NR_AI_DASHBOARD_PORT: '0',
+          NR_AI_MODE: 'local',
+          NEW_RELIC_AI_MCP_STORAGE_PATH: storagePath,
+        },
       });
-      const text = JSON.stringify(result.content);
-      expect(text).toContain('session_id not yet resolved');
-
-      await client.close();
-    } finally {
-      rmSync(tmpStoragePath, { recursive: true, force: true });
-      rmSync(tmpProjectCwd, { recursive: true, force: true });
+      let stderr = '';
+      transport.stderr?.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString('utf8');
+      });
+      const client = new Client({ name: 'test-client', version: '1.0.0' });
+      const sessionId = async (): Promise<string | null> => {
+        const { tools } = await client.listTools();
+        if (!tools.some((t) => t.name === 'nr_observe_get_session_stats')) return null;
+        const result = await client.callTool({
+          name: 'nr_observe_get_session_stats',
+          arguments: {},
+        });
+        const content = result.content as Array<{ type: string; text: string }>;
+        return (JSON.parse(content[0]?.text ?? '{}') as { session_id: string }).session_id;
+      };
+      const waitForSessionId = async (expected: string): Promise<string | null> => {
+        let seen: string | null = null;
+        for (let i = 0; i < 40 && seen !== expected; i++) {
+          await new Promise((r) => setTimeout(r, 250));
+          seen = await sessionId();
+        }
+        return seen;
+      };
+      return {
+        writeCrumb,
+        sessionId,
+        waitForSessionId,
+        stderr: () => stderr,
+        connect: () => client.connect(transport),
+        close: async () => {
+          await client.close();
+          rmSync(storagePath, { recursive: true, force: true });
+          rmSync(projectCwd, { recursive: true, force: true });
+        },
+      };
     }
-  }, 30000);
+
+    const pastSeveralPollTicks = () => new Promise((r) => setTimeout(r, 1500));
+
+    it("leaves a Cursor engine unresolved and unpolled beside a Claude Code session's breadcrumbs", async () => {
+      const engine = await startEngine({ MCP_CLIENT: 'cursor' });
+      try {
+        engine.writeCrumb('claude-code', 'cwd', 'claude-session-id');
+        engine.writeCrumb(null, 'cwd', 'claude-session-id');
+        await engine.connect();
+        engine.writeCrumb('claude-code', 'ppid', 'claude-session-id');
+        engine.writeCrumb(null, 'ppid', 'claude-session-id');
+        await pastSeveralPollTicks();
+        expect(await engine.sessionId()).toBeNull();
+        expect(engine.stderr()).not.toContain('breadcrumb poll');
+      } finally {
+        await engine.close();
+      }
+    }, 30000);
+
+    it("keeps a Kiro engine off a Claude Code session's breadcrumbs until its own hooks write one", async () => {
+      const engine = await startEngine({ MCP_CLIENT: 'kiro' });
+      try {
+        engine.writeCrumb('claude-code', 'cwd', 'claude-session-id');
+        await engine.connect();
+        engine.writeCrumb('claude-code', 'ppid', 'claude-session-id');
+        await pastSeveralPollTicks();
+        expect(await engine.sessionId()).toBeNull();
+        engine.writeCrumb('kiro', 'ppid', 'kiro-session-id');
+        expect(await engine.waitForSessionId('kiro-session-id')).toBe('kiro-session-id');
+      } finally {
+        await engine.close();
+      }
+    }, 30000);
+
+    it("keeps Claude Code run from Cursor's terminal off a Kiro session, then adopts its own", async () => {
+      const engine = await startEngine({ CLAUDECODE: '1', CURSOR_TRACE_ID: 'cursor-terminal' });
+      try {
+        engine.writeCrumb('kiro', 'cwd', 'kiro-session-id');
+        await engine.connect();
+        engine.writeCrumb('kiro', 'ppid', 'kiro-session-id');
+        await pastSeveralPollTicks();
+        expect(await engine.sessionId()).toBeNull();
+        engine.writeCrumb('claude-code', 'ppid', 'claude-session-id');
+        expect(await engine.waitForSessionId('claude-session-id')).toBe('claude-session-id');
+      } finally {
+        await engine.close();
+      }
+    }, 30000);
+  });
 
   it('self-corrects a synchronously-resolved cwd session id once the real PPID breadcrumb appears', async () => {
     // A stale cwd breadcrumb (leftover from an unrelated prior session in
@@ -1029,13 +1110,17 @@ describe('stdio integration', () => {
     // like it belongs to a different, unrelated session — and no
     // CLAUDE_JOB_DIR or ppid breadcrumb, so only the synchronous cwd
     // fallback can resolve at startup.
-    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    const cwdBreadcrumbDir = resolve(
+      tmpStoragePath,
+      'breadcrumbs',
+      'claude-code',
+      'session-by-cwd',
+    );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'stale-cwd-session-id');
 
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
+    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1074,7 +1159,12 @@ describe('stdio integration', () => {
       // The spawned child sees this test process as its ppid, matching
       // resolveSessionId()'s default `options.ppid ?? process.ppid` inside
       // the child — same convention as the existing pending-tools test.
-      const ppidBreadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+      const ppidBreadcrumbDir = resolve(
+        tmpStoragePath,
+        'breadcrumbs',
+        'claude-code',
+        'session-by-ppid',
+      );
       mkdirSync(ppidBreadcrumbDir, { recursive: true });
       writeFileSync(resolve(ppidBreadcrumbDir, `${process.pid}.txt`), 'corrected-ppid-session-id');
 
@@ -1106,8 +1196,7 @@ describe('stdio integration', () => {
     // resolveFromJobDir() nor resolveFromBreadcrumb() can resolve synchronously
     // at startup — main() falls back to the provisional `pending-<ts>` session
     // id and registers the pending tool set (registerPendingTools) immediately.
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
+    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1135,7 +1224,12 @@ describe('stdio integration', () => {
       // resolveFromBreadcrumb() looks for <storagePath>/session-by-ppid/<our
       // own process.pid>.txt — matching resolveSessionId()'s default
       // `options.ppid ?? process.ppid` inside the child.
-      const breadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+      const breadcrumbDir = resolve(
+        tmpStoragePath,
+        'breadcrumbs',
+        'claude-code',
+        'session-by-ppid',
+      );
       mkdirSync(breadcrumbDir, { recursive: true });
       writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), 'resolved-real-session-id');
 
@@ -1264,8 +1358,7 @@ describe('stdio integration', () => {
     const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-pending-cwd-correction-project-'));
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
+    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1302,7 +1395,12 @@ describe('stdio integration', () => {
 
       // Supply only the cwd breadcrumb — the poller's ppid check keeps
       // missing, so it must fall back to this.
-      const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+      const cwdBreadcrumbDir = resolve(
+        tmpStoragePath,
+        'breadcrumbs',
+        'claude-code',
+        'session-by-cwd',
+      );
       mkdirSync(cwdBreadcrumbDir, { recursive: true });
       const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
       writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'stale-cwd-via-pending');
@@ -1319,7 +1417,12 @@ describe('stdio integration', () => {
 
       // Now supply a *different* ppid breadcrumb — the correction watch
       // should pick it up and re-adopt.
-      const ppidBreadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+      const ppidBreadcrumbDir = resolve(
+        tmpStoragePath,
+        'breadcrumbs',
+        'claude-code',
+        'session-by-ppid',
+      );
       mkdirSync(ppidBreadcrumbDir, { recursive: true });
       writeFileSync(resolve(ppidBreadcrumbDir, `${process.pid}.txt`), 'corrected-ppid-via-pending');
 
@@ -1352,13 +1455,17 @@ describe('stdio integration', () => {
     const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-pending-suppress-project-'));
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
-    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    const cwdBreadcrumbDir = resolve(
+      tmpStoragePath,
+      'breadcrumbs',
+      'claude-code',
+      'session-by-cwd',
+    );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'unconfirmed-cwd-session-id');
 
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
+    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1401,13 +1508,17 @@ describe('stdio integration', () => {
     const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-cap-timeout-project-'));
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
-    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    const cwdBreadcrumbDir = resolve(
+      tmpStoragePath,
+      'breadcrumbs',
+      'claude-code',
+      'session-by-cwd',
+    );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'cap-timeout-session-id');
 
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
+    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1466,13 +1577,17 @@ describe('stdio integration', () => {
     const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-confirmed-same-project-'));
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
-    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    const cwdBreadcrumbDir = resolve(
+      tmpStoragePath,
+      'breadcrumbs',
+      'claude-code',
+      'session-by-cwd',
+    );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'confirmed-same-session-id');
 
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
+    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1502,7 +1617,12 @@ describe('stdio integration', () => {
 
       // The spawned child sees this test process as its ppid — same
       // convention as the existing correction tests.
-      const ppidBreadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+      const ppidBreadcrumbDir = resolve(
+        tmpStoragePath,
+        'breadcrumbs',
+        'claude-code',
+        'session-by-ppid',
+      );
       mkdirSync(ppidBreadcrumbDir, { recursive: true });
       writeFileSync(resolve(ppidBreadcrumbDir, `${process.pid}.txt`), 'confirmed-same-session-id');
 
@@ -1574,15 +1694,14 @@ describe('stdio integration', () => {
     const binPath = resolve(__dirname, '..', 'dist', 'index.js');
     const storagePath = mkdtempSync(join(tmpdir(), 'nr-ancestor-confirm-storage-'));
     const projectCwd = mkdtempSync(join(tmpdir(), 'nr-ancestor-confirm-project-'));
-    const cwdBreadcrumbDir = resolve(storagePath, 'session-by-cwd');
+    const cwdBreadcrumbDir = resolve(storagePath, 'breadcrumbs', 'claude-code', 'session-by-cwd');
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
     const sanitizedCwd = realpathSync(projectCwd).replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'neighbour-session-id');
-    const ppidBreadcrumbDir = resolve(storagePath, 'session-by-ppid');
+    const ppidBreadcrumbDir = resolve(storagePath, 'breadcrumbs', 'claude-code', 'session-by-ppid');
     mkdirSync(ppidBreadcrumbDir, { recursive: true });
 
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
+    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
     const engineArgs = [...(options.nodeArgs ?? []), binPath, '--stdio'];
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1893,13 +2012,17 @@ describe('stdio integration', () => {
     const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-cost-reset-project-'));
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
-    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    const cwdBreadcrumbDir = resolve(
+      tmpStoragePath,
+      'breadcrumbs',
+      'claude-code',
+      'session-by-cwd',
+    );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'stale-cost-session-id');
 
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
+    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1939,7 +2062,12 @@ describe('stdio integration', () => {
       expect(await readTotalUsd()).toBeGreaterThan(0);
 
       // Now correct to a different ppid-derived id.
-      const ppidBreadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+      const ppidBreadcrumbDir = resolve(
+        tmpStoragePath,
+        'breadcrumbs',
+        'claude-code',
+        'session-by-ppid',
+      );
       mkdirSync(ppidBreadcrumbDir, { recursive: true });
       writeFileSync(resolve(ppidBreadcrumbDir, `${process.pid}.txt`), 'corrected-cost-session-id');
 
@@ -1980,13 +2108,17 @@ describe('stdio integration', () => {
     const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-correction-resume-project-'));
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
-    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    const cwdBreadcrumbDir = resolve(
+      tmpStoragePath,
+      'breadcrumbs',
+      'claude-code',
+      'session-by-cwd',
+    );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'stale-resume-session-id');
 
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
+    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -2008,7 +2140,12 @@ describe('stdio integration', () => {
       await client.connect(transport);
       await client.listTools();
 
-      const ppidBreadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+      const ppidBreadcrumbDir = resolve(
+        tmpStoragePath,
+        'breadcrumbs',
+        'claude-code',
+        'session-by-ppid',
+      );
       mkdirSync(ppidBreadcrumbDir, { recursive: true });
       writeFileSync(
         resolve(ppidBreadcrumbDir, `${process.pid}.txt`),
@@ -2067,13 +2204,17 @@ describe('stdio integration', () => {
     const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-shutdown-pending-project-'));
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
-    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    const cwdBreadcrumbDir = resolve(
+      tmpStoragePath,
+      'breadcrumbs',
+      'claude-code',
+      'session-by-cwd',
+    );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'shutdown-pending-session-id');
 
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
+    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',

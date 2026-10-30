@@ -6,7 +6,7 @@ import {
   resolveSessionId,
   resolveFromJobDir,
   resolveFromBreadcrumb,
-  platformWritesCwdBreadcrumb,
+  sessionBreadcrumbs,
   resolveFromCwd,
   resolveFromAncestorBreadcrumb,
   nextDelayMs,
@@ -292,24 +292,6 @@ describe('session-resolver', () => {
         suppressWarn: true,
       });
       expect(sid).toBe('sess-cwd-fallback');
-    });
-
-    it('ignores the cwd breadcrumb when cwdFallback is false', async () => {
-      mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
-      writeFileSync(resolve(tmpDir, 'session-by-cwd', '-projects-winrepo.txt'), 'sess-claude');
-      const controller = new AbortController();
-      const pending = resolveSessionId({
-        claudeJobDir: null,
-        ppid: 424242,
-        ancestorPids: [],
-        cwd: '/projects/winrepo',
-        storagePath: tmpDir,
-        suppressWarn: true,
-        cwdFallback: false,
-        signal: controller.signal,
-      });
-      setTimeout(() => controller.abort(), 700);
-      await expect(pending).rejects.toThrow('aborted');
     });
 
     it('prefers a ppid breadcrumb that appears just after startup over an already-present, possibly-stale cwd breadcrumb', async () => {
@@ -1537,17 +1519,119 @@ describe('shouldReplaceSessionName', () => {
     expect(shouldReplaceSessionName('ai-title', 'cwd')).toBe(false);
     expect(shouldReplaceSessionName('auto', 'cwd')).toBe(false);
   });
+});
 
-  describe('platformWritesCwdBreadcrumb()', () => {
-    it('is false for engines whose hooks send no session_id', () => {
-      for (const name of ['cursor', 'windsurf', 'antigravity']) {
-        expect(platformWritesCwdBreadcrumb(name)).toBe(false);
-      }
-    });
+describe('breadcrumbs filed by writer', () => {
+  const CLAUDE = ['claude-code'];
+  const KIRO = ['kiro'];
 
-    it('is true for Claude Code and unknown engines', () => {
-      expect(platformWritesCwdBreadcrumb('claude-code')).toBe(true);
-      expect(platformWritesCwdBreadcrumb('kiro')).toBe(true);
+  function writeCrumb(writer: string | null, kind: 'ppid' | 'cwd', key: string, sid: string) {
+    const root = writer === null ? tmpDir : resolve(tmpDir, 'breadcrumbs', writer);
+    const dir = resolve(root, kind === 'ppid' ? 'session-by-ppid' : 'session-by-cwd');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(resolve(dir, `${key}.txt`), sid);
+    return resolve(dir, `${key}.txt`);
+  }
+
+  function writeClaudeSession(): string {
+    const jobDir = resolve(tmpDir, 'job');
+    mkdirSync(jobDir);
+    writeFileSync(
+      resolve(jobDir, 'state.json'),
+      JSON.stringify({ linkScanPath: '/p/sess-claude.jsonl' }),
+    );
+    writeCrumb('claude-code', 'ppid', '424242', 'sess-claude');
+    writeCrumb('claude-code', 'ppid', '424243', 'sess-claude');
+    writeCrumb('claude-code', 'cwd', '-projects-shared', 'sess-claude');
+    return jobDir;
+  }
+
+  it("does not hand a Kiro engine any of a Claude Code session's sources", () => {
+    const jobDir = writeClaudeSession();
+    const kiro = sessionBreadcrumbs(tmpDir, KIRO);
+    expect(kiro.jobDir(jobDir)).toBeNull();
+    expect(kiro.ppid(424242)).toBeNull();
+    expect(kiro.ancestors([1, 424243])).toBeNull();
+    expect(kiro.cwd('/projects/shared')).toBeNull();
+  });
+
+  it("does not hand a Claude Code engine a Kiro session's breadcrumbs", () => {
+    writeCrumb('kiro', 'ppid', '424242', 'sess-kiro');
+    writeCrumb('kiro', 'cwd', '-projects-shared', 'sess-kiro');
+    const claude = sessionBreadcrumbs(tmpDir, CLAUDE);
+    expect(claude.ppid(424242)).toBeNull();
+    expect(claude.cwd('/projects/shared')).toBeNull();
+  });
+
+  it("hands each engine its own writer's breadcrumbs", () => {
+    const jobDir = writeClaudeSession();
+    writeCrumb('kiro', 'ppid', '424242', 'sess-kiro');
+    writeCrumb('kiro', 'cwd', '-projects-shared', 'sess-kiro');
+    const claude = sessionBreadcrumbs(tmpDir, CLAUDE);
+    expect(claude.jobDir(jobDir)).toBe('sess-claude');
+    expect(claude.ppid(424242)).toBe('sess-claude');
+    expect(claude.ancestors([1, 424243])?.sessionId).toBe('sess-claude');
+    expect(claude.cwd('/projects/shared')).toBe('sess-claude');
+    expect(sessionBreadcrumbs(tmpDir, KIRO).ppid(424242)).toBe('sess-kiro');
+    expect(sessionBreadcrumbs(tmpDir, KIRO).cwd('/projects/shared')).toBe('sess-kiro');
+  });
+
+  it('hands an engine whose hooks write no breadcrumb nothing, untagged ones included', () => {
+    const jobDir = writeClaudeSession();
+    writeCrumb(null, 'ppid', '424242', 'sess-old');
+    writeCrumb(null, 'cwd', '-projects-shared', 'sess-old');
+    const cursor = sessionBreadcrumbs(tmpDir, []);
+    expect(cursor.jobDir(jobDir)).toBeNull();
+    expect(cursor.ppid(424242)).toBeNull();
+    expect(cursor.cwd('/projects/shared')).toBeNull();
+  });
+
+  it('counts an untagged breadcrumb only once rewritten since this process started', () => {
+    const path = writeCrumb(null, 'cwd', '-projects-shared', 'sess-old-collector');
+    const startedAt = Date.now();
+    const before = new Date(startedAt - 60_000);
+    utimesSync(path, before, before);
+    expect(sessionBreadcrumbs(tmpDir, KIRO, startedAt).cwd('/projects/shared')).toBeNull();
+    const after = new Date(startedAt + 1_000);
+    utimesSync(path, after, after);
+    expect(sessionBreadcrumbs(tmpDir, KIRO, startedAt).cwd('/projects/shared')).toBe(
+      'sess-old-collector',
+    );
+  });
+
+  it("keeps a Kiro engine polling past a Claude Code session's sources until its own appears", async () => {
+    const jobDir = writeClaudeSession();
+    const pending = resolveSessionId({
+      writers: KIRO,
+      claudeJobDir: jobDir,
+      ppid: 424242,
+      ancestorPids: [424242, 424243],
+      cwd: '/projects/shared',
+      storagePath: tmpDir,
+      suppressWarn: true,
     });
+    setTimeout(() => writeCrumb('kiro', 'cwd', '-projects-shared', 'sess-kiro'), 400);
+    await expect(pending).resolves.toBe('sess-kiro');
+  });
+
+  it("does not correct a Kiro engine onto a Claude Code session's ppid breadcrumb", async () => {
+    writeCrumb('claude-code', 'ppid', '424242', 'sess-claude');
+    const pending = watchPpidBreadcrumb({ writers: KIRO, ppid: 424242, storagePath: tmpDir });
+    setTimeout(() => writeCrumb('kiro', 'ppid', '424242', 'sess-kiro'), 400);
+    await expect(pending).resolves.toBe('sess-kiro');
+  });
+
+  it("does not correct a Kiro engine onto a Claude Code session's cwd breadcrumb", async () => {
+    writeCrumb('claude-code', 'cwd', '-projects-shared', 'sess-claude');
+    writeFileSync(resolve(tmpDir, 'buffer-sess-claude.jsonl'), '{}\n');
+    writeFileSync(resolve(tmpDir, 'buffer-sess-kiro.jsonl'), '{}\n');
+    const pending = watchCwdBreadcrumbForCorrection({
+      writers: KIRO,
+      staleId: 'sess-guess',
+      cwd: '/projects/shared',
+      storagePath: tmpDir,
+    });
+    setTimeout(() => writeCrumb('kiro', 'cwd', '-projects-shared', 'sess-kiro'), 400);
+    await expect(pending).resolves.toBe('sess-kiro');
   });
 });

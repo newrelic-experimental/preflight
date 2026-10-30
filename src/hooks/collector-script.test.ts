@@ -2259,14 +2259,49 @@ describe('collector-script', () => {
       for (let i = 0; i < 50; i++) writeCwdBreadcrumb('sess-stable', '/projects/test');
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-stable');
     });
+  });
 
-    it('processHook() drops the cwd breadcrumb on every fire', () => {
+  describe('processHook() breadcrumb writer', () => {
+    beforeEach(() => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      for (const key of [...CLAUDE_CODE_ENV_SIGNALS, 'MCP_CLIENT', 'NEW_RELIC_AI_PLATFORM']) {
+        delete process.env[key];
+      }
+    });
 
-      processHook(makePreToolUse({ session_id: 'sess-bc', cwd: '/projects/test' }));
-      const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
-      expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-bc');
+    const crumbs = (writer: string) => ({
+      ppid: resolve(tmpDir, 'breadcrumbs', writer, 'session-by-ppid', `${process.ppid}.txt`),
+      cwd: resolve(tmpDir, 'breadcrumbs', writer, 'session-by-cwd', '-projects-test.txt'),
+    });
+
+    it('files a Claude Code hook under claude-code, never the untagged layout', () => {
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
+      expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
+      expect(existsSync(resolve(tmpDir, 'session-by-ppid'))).toBe(false);
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
+    });
+
+    it('files a hook under the engine its command names, over an inherited Claude Code env', () => {
+      process.env.CLAUDECODE = '1';
+      process.env.MCP_CLIENT = 'kiro';
+      processHook(makePreToolUse({ session_id: 'sess-kiro', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('kiro').cwd, 'utf-8')).toBe('sess-kiro');
+      expect(existsSync(crumbs('claude-code').cwd)).toBe(false);
+    });
+
+    it('files a hook that names no engine as unattributed', () => {
+      processHook(makePreToolUse({ session_id: 'sess-codex', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('unattributed').ppid, 'utf-8')).toBe('sess-codex');
+    });
+
+    it('files an engine name unsafe as a path segment as unattributed', () => {
+      process.env.MCP_CLIENT = '../escape';
+      processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('unattributed').cwd, 'utf-8')).toBe('sess-x');
+      expect(existsSync(resolve(tmpDir, 'escape'))).toBe(false);
     });
   });
 
