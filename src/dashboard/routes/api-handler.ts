@@ -849,7 +849,29 @@ interface SessionInterval {
 }
 
 interface SessionActivityLike {
+  readonly sessionId?: string;
   readonly timeline?: readonly { readonly timestamp: number }[];
+}
+
+// One session can be stored across several files (#908). Concatenating their
+// timelines per session id keeps a session from overlapping itself, matching
+// collectTodayActivityWindows' per-id merge for today.
+function timelinesBySession(
+  sessions: readonly SessionActivityLike[],
+): (readonly { readonly timestamp: number }[])[] {
+  const byId = new Map<string, { readonly timestamp: number }[]>();
+  const anonymous: (readonly { readonly timestamp: number }[])[] = [];
+  for (const s of sessions) {
+    if (!s.timeline || s.timeline.length === 0) continue;
+    if (typeof s.sessionId !== 'string' || s.sessionId.length === 0) {
+      anonymous.push(s.timeline);
+      continue;
+    }
+    const existing = byId.get(s.sessionId);
+    if (existing) existing.push(...s.timeline);
+    else byId.set(s.sessionId, [...s.timeline]);
+  }
+  return [...byId.values(), ...anonymous];
 }
 
 interface SessionIdentityLike {
@@ -1021,10 +1043,8 @@ function computeTodayConcurrencyBuckets(
 
 function computeTodayPeakConcurrency(sessions: readonly SessionActivityLike[]): number {
   const events: Array<{ ts: number; delta: number }> = [];
-  for (const session of sessions) {
-    if (!session.timeline || session.timeline.length === 0) continue;
-
-    const windows = mergeActivityWindows(session.timeline);
+  for (const timeline of timelinesBySession(sessions)) {
+    const windows = mergeActivityWindows(timeline);
 
     for (const w of windows) {
       events.push({ ts: w.start, delta: 1 }, { ts: w.end, delta: -1 });
@@ -1100,6 +1120,7 @@ function computeDailyPeakConcurrency(
   // UTC, and disagree with this same file's local-day `aggregateDailyCost`
   // equivalent on the client (History.tsx).
   const todayStart = localStartOfDay();
+  const timelines = timelinesBySession(sessions);
   const result: Array<{ date: string; peak: number }> = [];
 
   for (let d = days - 1; d >= 0; d--) {
@@ -1118,11 +1139,9 @@ function computeDailyPeakConcurrency(
 
     // Find sessions that overlap with this day and have timeline data
     const events: Array<{ ts: number; delta: number }> = [];
-    for (const session of sessions) {
-      if (!session.timeline || session.timeline.length === 0) continue;
-
+    for (const timeline of timelines) {
       // Only include tool calls within this day
-      const dayEntries = session.timeline.filter(
+      const dayEntries = timeline.filter(
         (e) => e.timestamp >= dayStartMs && e.timestamp < dayEndMs,
       );
       if (dayEntries.length === 0) continue;

@@ -5512,6 +5512,30 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     expect(dailyPeaks[1].peak).toBe(1);
   });
 
+  it('view=history counts a session split across two files once', async () => {
+    const yesterday = midnightToday() - 86_400_000;
+    const split = [
+      { sessionId: 'split', timeline: [{ timestamp: yesterday + 5 * 60_000 }] },
+      { sessionId: 'split', timeline: [{ timestamp: yesterday + 6 * 60_000 }] },
+    ];
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => split,
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const { res, body } = fakeRes();
+    await handler(
+      { method: 'GET', url: '/api/concurrency?view=history&days=3' } as IncomingMessage,
+      res,
+    );
+    expect(JSON.parse(body()).dailyPeaks[1].peak).toBe(1);
+  });
+
   it("view=history keys each day's dailyPeaks entry by local date, not UTC", async () => {
     const handler = createApiHandler({
       concurrencyTracker: makeConcurrencyTracker(),
