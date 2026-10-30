@@ -103,7 +103,8 @@ interface ByteEstimateTally {
  * to `accountedCost`. The store keeps only the latest writer's ledger, so each
  * save folds in what the file's ledger holds beyond `accounted`: another
  * writer's calls are kept and this rollup's own are never added twice.
- * `retracted` saw exact usage, so it writes a zero ledger and estimates no more.
+ * `retracted` saw exact parent usage with real tokens or cost, so it writes a
+ * zero ledger and estimates no more.
  */
 type ByteEstimateState =
   | {
@@ -549,9 +550,15 @@ export class LocalSessionAggregator {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
     const timestamp = usage.timestamp ?? Date.now();
     const rollup = this.ensure(sessionId, timestamp);
-    if (usage.agentId === undefined) rollup.byteEstimate = RETRACTED;
     const dayKey = localDateKey(timestamp);
     const usd = usage.costUsd ?? 0;
+    const tokens =
+      (usage.inputTokens ?? 0) +
+      (usage.outputTokens ?? 0) +
+      (usage.thinkingTokens ?? 0) +
+      (usage.cacheReadTokens ?? 0) +
+      (usage.cacheCreationTokens ?? 0);
+    if (usage.agentId === undefined && (usd > 0 || tokens > 0)) rollup.byteEstimate = RETRACTED;
     rollup.costUsd += usd;
     rollup.costByDayUsd.set(dayKey, (rollup.costByDayUsd.get(dayKey) ?? 0) + usd);
     if (usage.agentId !== undefined) {
@@ -582,12 +589,6 @@ export class LocalSessionAggregator {
       entry.thinking += usage.thinkingTokens ?? 0;
       rollup.modelBreakdown.set(usage.model, entry);
 
-      const tokens =
-        (usage.inputTokens ?? 0) +
-        (usage.outputTokens ?? 0) +
-        (usage.thinkingTokens ?? 0) +
-        (usage.cacheReadTokens ?? 0) +
-        (usage.cacheCreationTokens ?? 0);
       if (tokens > 0) {
         const resolution = resolvePricingDetail(usage.model);
         if (resolution.kind === 'unpriced') {
@@ -803,15 +804,16 @@ function copyOfTally(tally: ByteEstimateTally): ByteEstimateTally {
 }
 
 /**
- * `foldSessionFile` for the byte-estimate ledger. Exact usage on file means a
- * report already replaced the estimate, as `CostTracker`'s seed decides for an
- * engine's own session.
+ * `foldSessionFile` for the byte-estimate ledger. Exact parent cost on file
+ * means a report already replaced the estimate, the same rule
+ * `recordTokenUsage` applies live. Subagent cost does not, since it covers
+ * only the subagent's turns, not the parent conversation's. The file keeps no
+ * subagent share of the tokens, so only cost can tell the two apart here.
  */
 function foldByteEstimates(rollup: LocalSessionRollup, file: FullSessionSummary | null): void {
   const state = rollup.byteEstimate;
   if (file === null || state.kind === 'retracted') return;
-  const exact = exactTotalsOf(file);
-  if (exact.costUsd > 0 || exact.inputTokens + exact.outputTokens > 0) {
+  if (exactTotalsOf(file).costUsd - file.subagentCostUsd > 0) {
     rollup.byteEstimate = RETRACTED;
     return;
   }
