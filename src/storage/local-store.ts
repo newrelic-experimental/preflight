@@ -999,7 +999,9 @@ export class LocalStore {
   gcStaleBreadcrumbs(): number {
     let writers: string[] = [];
     try {
-      writers = readdirSync(resolve(this.storagePath, BREADCRUMBS_DIR));
+      writers = readdirSync(resolve(this.storagePath, BREADCRUMBS_DIR), { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
         logger.warn('Failed to enumerate breadcrumb writers for gcStaleBreadcrumbs', {
