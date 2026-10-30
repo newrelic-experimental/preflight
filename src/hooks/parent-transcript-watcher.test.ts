@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
   existsSync,
   appendFileSync,
@@ -256,11 +257,12 @@ describe('ParentTranscriptWatcher', () => {
     const forkId = '00000000-1111-2222-3333-444444444444';
     const shared = makeAssistantLine({ messageId: 'msg_shared' }) + '\n';
     writeFileSync(transcriptPath, shared);
-    writeFileSync(join(projectsDir, 'project-slug', `${forkId}.jsonl`), shared);
     const bufferPath = join(storagePath, `buffer-${SESSION_ID}.jsonl`);
     mkdirSync(bufferPath);
     const watcher = new ParentTranscriptWatcher({ storagePath, projectsDir });
 
+    watcher.poll();
+    writeFileSync(join(projectsDir, 'project-slug', `${forkId}.jsonl`), shared);
     watcher.poll();
     rmSync(bufferPath, { recursive: true });
     watcher.poll();
@@ -718,20 +720,41 @@ describe('ParentTranscriptWatcher', () => {
       expect(readTokenEvents()).toHaveLength(0);
     });
 
-    it('bills turns shared with a fork to the transcript created first, even when the parent was written last', () => {
-      const forkId = '00000000-1111-2222-3333-444444444444';
-      const shared = makeAssistantLine({ messageId: 'msg_shared' }) + '\n';
-      writeFileSync(join(projectsDir, 'project-slug', `${SESSION_ID}.jsonl`), shared);
-      mkdirSync(join(projectsDir, 'a-fork-slug'));
-      const forkPath = join(projectsDir, 'a-fork-slug', `${forkId}.jsonl`);
-      writeFileSync(forkPath, shared);
-      const later = new Date(Date.now() + 60_000);
-      utimesSync(transcriptPath, later, later);
+    // Creation order comes from birthtime, which some filesystems (the Linux CI
+    // runner's among them) do not record; there the order falls back to mtime.
+    (filesystemRecordsCreationOrder() ? it : it.skip)(
+      'bills turns shared with a fork to the transcript created first, even when the parent was written last',
+      () => {
+        const forkId = '00000000-1111-2222-3333-444444444444';
+        const shared = makeAssistantLine({ messageId: 'msg_shared' }) + '\n';
+        writeFileSync(join(projectsDir, 'project-slug', `${SESSION_ID}.jsonl`), shared);
+        mkdirSync(join(projectsDir, 'a-fork-slug'));
+        const forkPath = join(projectsDir, 'a-fork-slug', `${forkId}.jsonl`);
+        writeFileSync(forkPath, shared);
+        const later = new Date(Date.now() + 60_000);
+        utimesSync(transcriptPath, later, later);
 
-      new ParentTranscriptWatcher({ storagePath, projectsDir }).poll();
+        new ParentTranscriptWatcher({ storagePath, projectsDir }).poll();
 
-      expect(readTokenEvents().map((e) => e.messageId)).toEqual(['msg_shared']);
-      expect(existsSync(join(storagePath, `buffer-${forkId}.jsonl`))).toBe(false);
-    });
+        expect(readTokenEvents().map((e) => e.messageId)).toEqual(['msg_shared']);
+        expect(existsSync(join(storagePath, `buffer-${forkId}.jsonl`))).toBe(false);
+      },
+    );
   });
 });
+
+function filesystemRecordsCreationOrder(): boolean {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-birthtime-'));
+  try {
+    const first = join(dir, 'first');
+    const second = join(dir, 'second');
+    writeFileSync(first, '');
+    const until = Date.now() + 5;
+    while (Date.now() < until);
+    writeFileSync(second, '');
+    const a = statSync(first).birthtimeMs;
+    return a > 0 && a < statSync(second).birthtimeMs;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
