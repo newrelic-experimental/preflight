@@ -3262,64 +3262,56 @@ async function main(): Promise<void> {
             headlessInstaller: buildHeadlessInstaller(),
           }),
         });
-        if (breadcrumbWriters.length === 0) {
-          logger.info('Platform hooks write no session breadcrumb; session_id stays unresolved', {
-            platform: activePlatform.platformName,
-          });
-        } else {
-          logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
+        sessionResolutionAbort = new AbortController();
+        let resolvedSource: import('./hooks/session-resolver.js').SessionIdSource | undefined;
+        void (async () => {
+          try {
+            const realId = await resolveSessionId({
+              storagePath: config!.storagePath,
+              signal: sessionResolutionAbort!.signal,
+              writers: breadcrumbWriters,
+              onResolutionSource: (info) => {
+                resolvedSource = info.source;
+              },
+            });
 
-          sessionResolutionAbort = new AbortController();
-          let resolvedSource: import('./hooks/session-resolver.js').SessionIdSource | undefined;
-          void (async () => {
-            try {
-              const realId = await resolveSessionId({
-                storagePath: config!.storagePath,
-                signal: sessionResolutionAbort!.signal,
-                writers: breadcrumbWriters,
-                onResolutionSource: (info) => {
-                  resolvedSource = info.source;
-                },
-              });
-
-              // Guard against a shutdown that fired while we were awaiting —
-              // the signal is aborted but no exception was thrown (e.g. the
-              // resolver returned successfully just before abort was set).
-              if (sessionResolutionAbort?.signal.aborted) {
-                logger.info('Session ID resolution aborted by shutdown (post-await guard)');
-                return;
-              }
-
-              // Adopt the real session ID without clearing accumulated
-              // metrics — see adoptRealSessionId's own comment above. Skip the
-              // eager cost/token seed for a cwd-resolved id (see viaCwdOnly's
-              // doc comment there) — startPpidCorrectionWatch below seeds it
-              // once confirmed, exactly like the synchronous resolution path.
-              await adoptRealSessionId(realId, { viaCwdOnly: resolvedSource === 'cwd' });
-
-              logger.info('Session ID resolved, full initialization complete', {
-                sessionTraceId: realId,
-              });
-
-              // The ppid breadcrumb is precise (no cross-session collision);
-              // the cwd fallback is not, since it's shared by every session
-              // that ever ran in this directory. Only a cwd-sourced
-              // resolution needs the background correction watch.
-              if (resolvedSource === 'cwd') {
-                startPpidCorrectionWatch(realId);
-              }
-            } catch (err) {
-              // Use the signal's own aborted flag rather than matching the error
-              // message string — robust against future changes to the throw site.
-              if (sessionResolutionAbort?.signal.aborted) {
-                logger.info('Session ID resolution aborted by shutdown');
-                return;
-              }
-              logger.error('Session ID resolution failed; shutting down', { error: String(err) });
-              await shutdown();
+            // Guard against a shutdown that fired while we were awaiting —
+            // the signal is aborted but no exception was thrown (e.g. the
+            // resolver returned successfully just before abort was set).
+            if (sessionResolutionAbort?.signal.aborted) {
+              logger.info('Session ID resolution aborted by shutdown (post-await guard)');
+              return;
             }
-          })();
-        }
+
+            // Adopt the real session ID without clearing accumulated
+            // metrics — see adoptRealSessionId's own comment above. Skip the
+            // eager cost/token seed for a cwd-resolved id (see viaCwdOnly's
+            // doc comment there) — startPpidCorrectionWatch below seeds it
+            // once confirmed, exactly like the synchronous resolution path.
+            await adoptRealSessionId(realId, { viaCwdOnly: resolvedSource === 'cwd' });
+
+            logger.info('Session ID resolved, full initialization complete', {
+              sessionTraceId: realId,
+            });
+
+            // The ppid breadcrumb is precise (no cross-session collision);
+            // the cwd fallback is not, since it's shared by every session
+            // that ever ran in this directory. Only a cwd-sourced
+            // resolution needs the background correction watch.
+            if (resolvedSource === 'cwd') {
+              startPpidCorrectionWatch(realId);
+            }
+          } catch (err) {
+            // Use the signal's own aborted flag rather than matching the error
+            // message string — robust against future changes to the throw site.
+            if (sessionResolutionAbort?.signal.aborted) {
+              logger.info('Session ID resolution aborted by shutdown');
+              return;
+            }
+            logger.error('Session ID resolution failed; shutting down', { error: String(err) });
+            await shutdown();
+          }
+        })();
       } else {
         // Session ID resolved synchronously — proceed as normal.
         const configFilePath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');

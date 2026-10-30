@@ -6,13 +6,13 @@ import type {
   PlatformSessionMetadata,
 } from './types.js';
 
+export const CLAUDE_CODE_PLATFORM_NAME = 'claude-code';
+
 // `CLAUDECODE=1`, `CLAUDE_CODE_ENTRYPOINT`, and `CLAUDE_CODE_SESSION_ID` are
 // what current Claude Code actually sets in every child process env (hooks,
 // MCP servers) — verified empirically in a live session 2026-08-31;
 // `CLAUDE_CODE`/`CLAUDE_CODE_VERSION` kept for older builds. Without these,
 // detection falls through to generic-mcp on current versions.
-export const CLAUDE_CODE_PLATFORM_NAME = 'claude-code';
-
 export const CLAUDE_CODE_ENV_SIGNALS = [
   'CLAUDECODE',
   'CLAUDE_CODE_ENTRYPOINT',
@@ -26,7 +26,7 @@ export class ClaudeCodeAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'full-hooks' as const;
   readonly capabilities = {
     instructionFilePaths: ['CLAUDE.md', '.claude/'] as const,
-    sessionBreadcrumbWriters: ['claude-code'] as const,
+    sessionBreadcrumbWriters: [CLAUDE_CODE_PLATFORM_NAME] as const,
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {

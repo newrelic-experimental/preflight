@@ -12,7 +12,7 @@ import {
 import { resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
-import { BREADCRUMBS_DIR } from '../hooks/session-breadcrumbs.js';
+import { BREADCRUMBS_DIR, breadcrumbRoot } from '../hooks/session-breadcrumbs.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -997,25 +997,26 @@ export class LocalStore {
    * @returns the number of breadcrumb files deleted
    */
   gcStaleBreadcrumbs(): number {
-    const writersDir = resolve(this.storagePath, BREADCRUMBS_DIR);
     let writers: string[] = [];
     try {
-      writers = readdirSync(writersDir);
+      writers = readdirSync(resolve(this.storagePath, BREADCRUMBS_DIR));
     } catch {
       // No collector has written a breadcrumb since #979.
     }
     const breadcrumbDirs = [
       resolve(this.storagePath, 'session-by-ppid'),
-      ...writers.map((writer) => resolve(writersDir, writer, 'session-by-ppid')),
+      ...writers.map((writer) =>
+        resolve(breadcrumbRoot(this.storagePath, writer), 'session-by-ppid'),
+      ),
     ];
 
     let deleted = 0;
     for (const breadcrumbDir of breadcrumbDirs) {
-      if (!existsSync(breadcrumbDir)) continue;
       let entries: string[];
       try {
         entries = readdirSync(breadcrumbDir);
       } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
         logger.warn('Failed to enumerate breadcrumb dir for gcStaleBreadcrumbs', {
           error: String(err),
         });

@@ -36,6 +36,8 @@ import type { LocalStore } from './storage/index.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
 import type { NrIngestManager } from './transport/nr-ingest.js';
 import { UNFORWARDED_SESSIONS_HINT } from './transport/unforwarded-session-monitor.js';
+import { breadcrumbRoot } from './hooks/session-breadcrumbs.js';
+import { sanitizeCwdForFilename } from './hooks/session-resolver.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -938,7 +940,7 @@ describe('stdio integration', () => {
     // the PPID breadcrumb never matches, but the cwd one does". Deliberately
     // omit CLAUDE_JOB_DIR and any PPID breadcrumb so only the cwd fallback in
     // the *synchronous* resolution chain can succeed.
-    const breadcrumbDir = resolve(tmpStoragePath, 'breadcrumbs', 'claude-code', 'session-by-cwd');
+    const breadcrumbDir = resolve(breadcrumbRoot(tmpStoragePath, 'claude-code'), 'session-by-cwd');
     mkdirSync(breadcrumbDir, { recursive: true });
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(breadcrumbDir, `${sanitizedCwd}.txt`), 'resolved-via-cwd-session-id');
@@ -946,9 +948,9 @@ describe('stdio integration', () => {
     // Sanity check against the real resolver so this test fails loudly (not
     // mysteriously) if the sanitization scheme ever drifts between the
     // collector's write side and resolveFromCwd()'s read side.
-    expect(
-      resolveFromCwd(resolve(tmpStoragePath, 'breadcrumbs', 'claude-code'), realProjectCwd),
-    ).toBe('resolved-via-cwd-session-id');
+    expect(resolveFromCwd(breadcrumbRoot(tmpStoragePath, 'claude-code'), realProjectCwd)).toBe(
+      'resolved-via-cwd-session-id',
+    );
 
     const env = engineEnv({ MCP_CLIENT: 'claude-code' });
 
@@ -987,9 +989,9 @@ describe('stdio integration', () => {
       const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
       const storagePath = mkdtempSync(join(tmpdir(), 'nr-engine-writer-storage-'));
       const projectCwd = mkdtempSync(join(tmpdir(), 'nr-engine-writer-project-'));
-      const sanitizedCwd = realpathSync(projectCwd).replace(/[\\/:]/g, '-');
+      const sanitizedCwd = sanitizeCwdForFilename(realpathSync(projectCwd));
       const writeCrumb = (writer: string | null, kind: 'ppid' | 'cwd', sessionId: string) => {
-        const root = writer === null ? storagePath : resolve(storagePath, 'breadcrumbs', writer);
+        const root = writer === null ? storagePath : breadcrumbRoot(storagePath, writer);
         const dir = resolve(root, `session-by-${kind}`);
         mkdirSync(dir, { recursive: true });
         const key = kind === 'ppid' ? String(process.pid) : sanitizedCwd;
@@ -1111,9 +1113,7 @@ describe('stdio integration', () => {
     // CLAUDE_JOB_DIR or ppid breadcrumb, so only the synchronous cwd
     // fallback can resolve at startup.
     const cwdBreadcrumbDir = resolve(
-      tmpStoragePath,
-      'breadcrumbs',
-      'claude-code',
+      breadcrumbRoot(tmpStoragePath, 'claude-code'),
       'session-by-cwd',
     );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
@@ -1160,9 +1160,7 @@ describe('stdio integration', () => {
       // resolveSessionId()'s default `options.ppid ?? process.ppid` inside
       // the child — same convention as the existing pending-tools test.
       const ppidBreadcrumbDir = resolve(
-        tmpStoragePath,
-        'breadcrumbs',
-        'claude-code',
+        breadcrumbRoot(tmpStoragePath, 'claude-code'),
         'session-by-ppid',
       );
       mkdirSync(ppidBreadcrumbDir, { recursive: true });
@@ -1225,9 +1223,7 @@ describe('stdio integration', () => {
       // own process.pid>.txt — matching resolveSessionId()'s default
       // `options.ppid ?? process.ppid` inside the child.
       const breadcrumbDir = resolve(
-        tmpStoragePath,
-        'breadcrumbs',
-        'claude-code',
+        breadcrumbRoot(tmpStoragePath, 'claude-code'),
         'session-by-ppid',
       );
       mkdirSync(breadcrumbDir, { recursive: true });
@@ -1396,9 +1392,7 @@ describe('stdio integration', () => {
       // Supply only the cwd breadcrumb — the poller's ppid check keeps
       // missing, so it must fall back to this.
       const cwdBreadcrumbDir = resolve(
-        tmpStoragePath,
-        'breadcrumbs',
-        'claude-code',
+        breadcrumbRoot(tmpStoragePath, 'claude-code'),
         'session-by-cwd',
       );
       mkdirSync(cwdBreadcrumbDir, { recursive: true });
@@ -1418,9 +1412,7 @@ describe('stdio integration', () => {
       // Now supply a *different* ppid breadcrumb — the correction watch
       // should pick it up and re-adopt.
       const ppidBreadcrumbDir = resolve(
-        tmpStoragePath,
-        'breadcrumbs',
-        'claude-code',
+        breadcrumbRoot(tmpStoragePath, 'claude-code'),
         'session-by-ppid',
       );
       mkdirSync(ppidBreadcrumbDir, { recursive: true });
@@ -1456,9 +1448,7 @@ describe('stdio integration', () => {
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
     const cwdBreadcrumbDir = resolve(
-      tmpStoragePath,
-      'breadcrumbs',
-      'claude-code',
+      breadcrumbRoot(tmpStoragePath, 'claude-code'),
       'session-by-cwd',
     );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
@@ -1509,9 +1499,7 @@ describe('stdio integration', () => {
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
     const cwdBreadcrumbDir = resolve(
-      tmpStoragePath,
-      'breadcrumbs',
-      'claude-code',
+      breadcrumbRoot(tmpStoragePath, 'claude-code'),
       'session-by-cwd',
     );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
@@ -1578,9 +1566,7 @@ describe('stdio integration', () => {
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
     const cwdBreadcrumbDir = resolve(
-      tmpStoragePath,
-      'breadcrumbs',
-      'claude-code',
+      breadcrumbRoot(tmpStoragePath, 'claude-code'),
       'session-by-cwd',
     );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
@@ -1618,9 +1604,7 @@ describe('stdio integration', () => {
       // The spawned child sees this test process as its ppid — same
       // convention as the existing correction tests.
       const ppidBreadcrumbDir = resolve(
-        tmpStoragePath,
-        'breadcrumbs',
-        'claude-code',
+        breadcrumbRoot(tmpStoragePath, 'claude-code'),
         'session-by-ppid',
       );
       mkdirSync(ppidBreadcrumbDir, { recursive: true });
@@ -1694,11 +1678,14 @@ describe('stdio integration', () => {
     const binPath = resolve(__dirname, '..', 'dist', 'index.js');
     const storagePath = mkdtempSync(join(tmpdir(), 'nr-ancestor-confirm-storage-'));
     const projectCwd = mkdtempSync(join(tmpdir(), 'nr-ancestor-confirm-project-'));
-    const cwdBreadcrumbDir = resolve(storagePath, 'breadcrumbs', 'claude-code', 'session-by-cwd');
+    const cwdBreadcrumbDir = resolve(breadcrumbRoot(storagePath, 'claude-code'), 'session-by-cwd');
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
     const sanitizedCwd = realpathSync(projectCwd).replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'neighbour-session-id');
-    const ppidBreadcrumbDir = resolve(storagePath, 'breadcrumbs', 'claude-code', 'session-by-ppid');
+    const ppidBreadcrumbDir = resolve(
+      breadcrumbRoot(storagePath, 'claude-code'),
+      'session-by-ppid',
+    );
     mkdirSync(ppidBreadcrumbDir, { recursive: true });
 
     const env = engineEnv({ MCP_CLIENT: 'claude-code' });
@@ -2013,9 +2000,7 @@ describe('stdio integration', () => {
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
     const cwdBreadcrumbDir = resolve(
-      tmpStoragePath,
-      'breadcrumbs',
-      'claude-code',
+      breadcrumbRoot(tmpStoragePath, 'claude-code'),
       'session-by-cwd',
     );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
@@ -2063,9 +2048,7 @@ describe('stdio integration', () => {
 
       // Now correct to a different ppid-derived id.
       const ppidBreadcrumbDir = resolve(
-        tmpStoragePath,
-        'breadcrumbs',
-        'claude-code',
+        breadcrumbRoot(tmpStoragePath, 'claude-code'),
         'session-by-ppid',
       );
       mkdirSync(ppidBreadcrumbDir, { recursive: true });
@@ -2109,9 +2092,7 @@ describe('stdio integration', () => {
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
     const cwdBreadcrumbDir = resolve(
-      tmpStoragePath,
-      'breadcrumbs',
-      'claude-code',
+      breadcrumbRoot(tmpStoragePath, 'claude-code'),
       'session-by-cwd',
     );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
@@ -2141,9 +2122,7 @@ describe('stdio integration', () => {
       await client.listTools();
 
       const ppidBreadcrumbDir = resolve(
-        tmpStoragePath,
-        'breadcrumbs',
-        'claude-code',
+        breadcrumbRoot(tmpStoragePath, 'claude-code'),
         'session-by-ppid',
       );
       mkdirSync(ppidBreadcrumbDir, { recursive: true });
@@ -2205,9 +2184,7 @@ describe('stdio integration', () => {
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
     const cwdBreadcrumbDir = resolve(
-      tmpStoragePath,
-      'breadcrumbs',
-      'claude-code',
+      breadcrumbRoot(tmpStoragePath, 'claude-code'),
       'session-by-cwd',
     );
     mkdirSync(cwdBreadcrumbDir, { recursive: true });

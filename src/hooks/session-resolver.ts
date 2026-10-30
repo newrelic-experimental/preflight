@@ -90,11 +90,7 @@ const READ_ANCESTOR_MAX_DEPTH = 4;
 export type SessionIdSource = 'jobdir' | 'ppid' | 'ppid-ancestor' | 'cwd';
 
 export interface SessionResolverOptions {
-  /**
-   * The engine's `capabilities.sessionBreadcrumbWriters`: whose breadcrumbs
-   * it may adopt. An engine with none has nothing to resolve from, so its
-   * caller must not start a resolver at all.
-   */
+  /** The engine's `capabilities.sessionBreadcrumbWriters`: whose breadcrumbs it may adopt. */
   readonly writers: readonly string[];
   /** Override the storage path used to find the breadcrumb directory. */
   readonly storagePath?: string;
@@ -345,11 +341,14 @@ export function sessionBreadcrumbs(
   writers: readonly string[],
   processStartMs: number = Date.now() - process.uptime() * 1000,
 ): SessionBreadcrumbs {
-  const roots =
+  const roots: readonly { dir: string; writtenSinceMs?: number }[] =
     writers.length === 0
       ? []
-      : [...writers.map((w) => breadcrumbRoot(storagePath, w)), storagePath];
-  const first = <T>(read: (root: string) => T | null): T | null => {
+      : [
+          ...writers.map((w) => ({ dir: breadcrumbRoot(storagePath, w) })),
+          { dir: storagePath, writtenSinceMs: processStartMs },
+        ];
+  const first = <T>(read: (root: { dir: string; writtenSinceMs?: number }) => T | null) => {
     for (const root of roots) {
       const hit = read(root);
       if (hit) return hit;
@@ -359,11 +358,10 @@ export function sessionBreadcrumbs(
   return {
     jobDir: (claudeJobDir) =>
       writers.includes(CLAUDE_CODE_PLATFORM_NAME) ? resolveFromJobDir(claudeJobDir) : null,
-    ppid: (ppid) => first((root) => resolveFromBreadcrumb(root, ppid, processStartMs)),
+    ppid: (ppid) => first(({ dir }) => resolveFromBreadcrumb(dir, ppid, processStartMs)),
     ancestors: (ancestorPids) =>
-      first((root) => resolveFromAncestorBreadcrumb(root, ancestorPids, processStartMs)),
-    cwd: (cwd) =>
-      first((root) => resolveFromCwd(root, cwd, root === storagePath ? processStartMs : undefined)),
+      first(({ dir }) => resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs)),
+    cwd: (cwd) => first(({ dir, writtenSinceMs }) => resolveFromCwd(dir, cwd, writtenSinceMs)),
   };
 }
 
@@ -379,7 +377,8 @@ export function nextDelayMs(attempt: number): number {
 /**
  * Resolve the session_id of the engine whose breadcrumb writers are
  * `options.writers`, polling forever if needed. Never adopts another
- * engine's breadcrumb, so call it only for an engine with writers.
+ * engine's breadcrumb. With no writers there is nothing to adopt, so it
+ * never polls and settles only on abort.
  *
  * - First tries `CLAUDE_JOB_DIR` (synchronous, free; Claude Code only).
  * - Falls back to the PPID, ancestor PPID, then cwd breadcrumbs with
@@ -521,6 +520,11 @@ export async function resolveSessionId(
       handle.unref?.();
     };
 
+    if (options.writers.length === 0) {
+      logger.info('Platform hooks write no session breadcrumb; session_id stays unresolved');
+      return;
+    }
+    logger.info('Awaiting session_id resolution (breadcrumb poll)');
     const delay = nextDelayMs(attempt++);
     const handle = setTimeout(tick, delay);
     handle.unref?.();
