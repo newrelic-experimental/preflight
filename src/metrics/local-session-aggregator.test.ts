@@ -993,14 +993,17 @@ describe('LocalSessionAggregator byte estimates for platforms that cannot self-r
     expect(b?.tokensInput).toBe(200);
   });
 
-  it('saves a Windsurf tool call’s byte estimate too', () => {
-    const agg = makeAggregator();
-    agg.recordToolCall(makeToolCall(CONV_A, { platform: 'windsurf' }));
+  it.each([['windsurf'], ['antigravity']])(
+    'saves %s tool calls’ byte estimates too',
+    (platform) => {
+      const agg = makeAggregator();
+      agg.recordToolCall(makeToolCall(CONV_A, { platform }));
 
-    agg.persist(store, makeContext());
+      agg.persist(store, makeContext());
 
-    expect(store.loadSession(CONV_A)?.estimatedCostUsd).toBeCloseTo(ONE_CALL_USD, 12);
-  });
+      expect(store.loadSession(CONV_A)?.estimatedCostUsd).toBeCloseTo(ONE_CALL_USD, 12);
+    },
+  );
 
   it.each([['claude-code'], ['kiro'], ['amazon-q'], ['copilot'], [null]])(
     'does not estimate a %s record drained by the same aggregator',
