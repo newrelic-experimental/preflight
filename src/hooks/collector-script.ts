@@ -98,13 +98,29 @@ function getMaxContentLength(): number {
 }
 
 /**
+ * The field each platform's hook payload sends in place of `session_id`. No
+ * other platform sends any of these instead of `session_id`.
+ */
+const PAYLOAD_SESSION_FIELDS = [
+  ['conversation_id', 'cursor'],
+  ['trajectory_id', 'windsurf'],
+  ['conversationId', 'antigravity'],
+] as const;
+
+/**
  * Ambient stamping is deliberately limited to Claude Code, the only platform
  * whose hook-process env signal is verified; other platforms stamp via
- * explicit MCP_CLIENT in their generated hook commands.
+ * explicit MCP_CLIENT in their generated hook commands. Cursor's, Windsurf's
+ * and Antigravity's documented hook commands set no MCP_CLIENT, so their
+ * payload's own session field names them instead.
  */
-function detectStampPlatform(): string | undefined {
+function detectStampPlatform(data: HookInput): string | undefined {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
+  if (data.session_id == null) {
+    const match = PAYLOAD_SESSION_FIELDS.find(([field]) => data[field] != null);
+    if (match) return match[1];
+  }
   return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)
     ? 'claude-code'
     : undefined;
@@ -1330,7 +1346,7 @@ function processHook(raw: string, cliEvent?: string): void {
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
   // Stamp the true originating platform at write time, using this hook
-  // invocation's own environment — this is the only point in the pipeline
+  // invocation's own environment and payload — this is the only point in the pipeline
   // that reliably reflects the real host, since whichever process later
   // drains the buffer (e.g. --local's unscoped drain of an unowned session,
   // see LocalSessionAggregator) may have detected a completely different
@@ -1338,7 +1354,7 @@ function processHook(raw: string, cliEvent?: string): void {
   // only the light claude-code-adapter const, not the full registry) instead
   // of going through PlatformRegistry — registry-based detection adds
   // measurable overhead on this hot, pre+post-per-tool-call path.
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = detectStampPlatform(data);
   if (stampedPlatform) event.platform = stampedPlatform;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;

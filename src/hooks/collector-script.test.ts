@@ -1687,9 +1687,43 @@ describe('collector-script', () => {
       expect(existsSync(resolve(tmpDir, 'buffer-conv-aaa.jsonl'))).toBe(true);
       expect(existsSync(resolve(tmpDir, 'buffer-conv-bbb.jsonl'))).toBe(true);
     });
+
+    it('stamps event.platform "cursor" from the payload when no platform env var is set', () => {
+      delete process.env.MCP_CLIENT;
+      delete process.env.NEW_RELIC_AI_PLATFORM;
+      process.env.CLAUDECODE = '1';
+      processHook(makeCursorBeforeShellExecution());
+
+      expect(readBufferEvents()[0]!.platform).toBe('cursor');
+    });
+
+    it('stamps event.platform "cursor" when the payload sends a null session_id', () => {
+      delete process.env.MCP_CLIENT;
+      delete process.env.NEW_RELIC_AI_PLATFORM;
+      process.env.CLAUDECODE = '1';
+      processHook(makeCursorBeforeShellExecution({ session_id: null }));
+
+      expect(readBufferEvents()[0]!.platform).toBe('cursor');
+    });
+
+    it('lets an explicit MCP_CLIENT override the payload-derived platform', () => {
+      process.env.MCP_CLIENT = 'cursor-cli';
+      processHook(makeCursorBeforeShellExecution());
+
+      expect(readBufferEvents()[0]!.platform).toBe('cursor-cli');
+    });
   });
 
   describe('Windsurf hook events', () => {
+    it('stamps event.platform "windsurf" from the payload when no platform env var is set', () => {
+      delete process.env.MCP_CLIENT;
+      delete process.env.NEW_RELIC_AI_PLATFORM;
+      process.env.CLAUDECODE = '1';
+      processHook(makeWindsurfPreReadCode());
+
+      expect(readBufferEvents()[0]!.platform).toBe('windsurf');
+    });
+
     function makeWindsurfPreReadCode(overrides: Record<string, unknown> = {}): string {
       return JSON.stringify({
         agent_action_name: 'pre_read_code',
@@ -2586,6 +2620,19 @@ describe('collector-script', () => {
   });
 
   describe('collector-script — Antigravity hook events (https://antigravity.google/docs/hooks)', () => {
+    it('stamps event.platform "antigravity" from the payload when no platform env var is set', () => {
+      delete process.env.MCP_CLIENT;
+      delete process.env.NEW_RELIC_AI_PLATFORM;
+      process.env.CLAUDECODE = '1';
+      processHook(makeAntigravityPreToolUse(), 'PreToolUse');
+      processHook(makeAntigravityPostToolUse(), 'PostToolUse');
+
+      expect(readBufferEvents().map((event) => event.platform)).toEqual([
+        'antigravity',
+        'antigravity',
+      ]);
+    });
+
     it('writes a pre event with tool from toolCall.name and toolUseId from stepIdx', () => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;

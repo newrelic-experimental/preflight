@@ -67,6 +67,10 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Known gaps:** Cursor has no `afterReadFile` event (`beforeReadFile` is emitted as a completed read directly) and no `beforeFileEdit` event (`afterFileEdit` is post-only). `afterShellExecution`/`afterMCPExecution` have no documented failure-outcome field, so success is reported unconditionally `true`.
 
+**Platform stamp:** the hook command sets no `MCP_CLIENT`, so the collector stamps `cursor` on any payload that carries `conversation_id` and no `session_id` (or a null one).
+
+**Cost:** each conversation's cost is a byte-size estimate of its tool input and output only, at about 4 characters per token, priced at the default model (`config.model`). It leaves out prompts, replies, and cache tokens, so it undercounts. The agent cannot report exact tokens today: the MCP server never resolves a Cursor session id, so `nr_observe_report_tokens` is not listed and a direct call fails with `session_id not yet resolved`.
+
 **Setup:**
 
 1. Register the Preflight MCP server for `nr_observe_*` tools: Cursor Settings → MCP → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
@@ -98,6 +102,10 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 **Event vocabulary handled by `collector-script.ts`:** `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`. Windsurf sends the event name as `agent_action_name`, not `hook_event_name` — the collector checks both.
 
 **Known gaps:** `post_read_code`/`post_run_command` report success `true` unconditionally, the same gap as Cursor's `afterShellExecution`. `pre_write_code` maps to `'Edit'` (it's typically a partial edit, not a full-file write).
+
+**Platform stamp:** the hook command sets no `MCP_CLIENT`, so the collector stamps `windsurf` on any payload that carries `trajectory_id` and no `session_id` (or a null one).
+
+**Cost:** each trajectory's cost is a byte-size estimate of its tool input and output only, at about 4 characters per token, priced at the default model (`config.model`). It leaves out prompts, replies, and cache tokens, so it undercounts. The agent cannot report exact tokens today: the MCP server never resolves a Windsurf session id, so `nr_observe_report_tokens` is not listed and a direct call fails with `session_id not yet resolved`.
 
 **Setup:**
 
@@ -558,6 +566,10 @@ Pi has **no MCP client support at all**, confirmed as deliberate, stated philoso
 **Mechanism:** Google Antigravity (2.0 / IDE / CLI — the Python SDK is out of scope, see Known gaps) ships a real, first-party, documented `hooks.json` mechanism: [antigravity.google/docs/hooks](https://antigravity.google/docs/hooks) (identical content on [/docs/ide/hooks](https://antigravity.google/docs/ide/hooks)). `PreToolUse`/`PostToolUse` fire around every built-in tool call, matched by regex against tool name; handlers receive JSON on stdin and must reply with JSON on stdout. This is a `full-hooks` mechanism, not the `mcp-tools-only` tier a platform lacking any hook mechanism would get — Antigravity's `hooks.json` is real, first-party, and documented, confirmed by fetching Google's own docs directly. Antigravity also supports MCP separately and natively — [/docs/mcp](https://antigravity.google/docs/mcp) — via `mcp_config.json`.
 
 Antigravity's hook payloads have **no field naming the event type at all**, and per the [Input/Output Contract](https://antigravity.google/docs/hooks#inputoutput-contract) both events carry the same keys: `PreToolUse` is `{ toolCall: { name, args }, stepIdx, conversationId, ... }` and `PostToolUse` is the same plus an optional `error` ("Empty if successful"). Payload shape therefore cannot tell them apart, so the setup below registers `preflight-collector PreToolUse` and `preflight-collector PostToolUse` as separate `hooks.json` commands and `collector-script.ts` reads the event from that argument. The replies differ too: `PreToolUse` must return a `decision` (Preflight always sends `{"decision":"allow"}`), while `PostToolUse` returns `{}` — its schema has no `decision` field, and sending one fails Antigravity's protojson unmarshaling and the tool call with it ([#793](https://github.com/newrelic-experimental/preflight/issues/793)). A `hooks.json` without the argument still works on a best-effort basis: a payload carrying an `error` key is read as `PostToolUse`, anything else with `toolCall` as `PreToolUse` — so a successful `PostToolUse` that omits `error` is misread and gets the `decision` reply. Both events set `toolUseId` from `stepIdx` when it is a number, so `HookEventProcessor` pairs them by ID; when it is not, neither event carries a `toolUseId` and pairing falls back to the tool-name FIFO. With an ID, a misread `PostToolUse` replaces its real `PreToolUse` in `HookEventProcessor`'s pending map, so the call is recorded as a timed-out failure.
+
+**Platform stamp:** the `hooks.json` commands set no `MCP_CLIENT`, so the collector stamps `antigravity` on any payload that carries `conversationId` and no `session_id` (or a null one).
+
+**Cost:** each conversation's cost is a byte-size estimate of its tool input (`toolCall.args`) only, at about 4 characters per token, priced at the default model (`config.model`). `PostToolUse` carries no tool output, so output is not counted, nor are prompts, replies, and cache tokens; the estimate undercounts. The agent cannot report exact tokens today: hooks send no `session_id`, so the MCP server never resolves one and `nr_observe_report_tokens` fails with `session_id not yet resolved`.
 
 **Detection (`isSupported()`):** `MCP_CLIENT === 'antigravity'`. No ambient environment variable is confirmed to exist for Antigravity (checked `/docs/cli/reference`, `/docs/cli/settings`, `/docs/ide/settings`, `/docs/cli/sandbox`, `/docs/sidecars`) — explicit opt-in only, same as opencode/Kilo Code/Codex.
 

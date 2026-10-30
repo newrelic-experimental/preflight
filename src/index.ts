@@ -1381,7 +1381,13 @@ async function main(): Promise<void> {
     // synthetic id, which persistSession() skips — so without this rollup the
     // sessions it observes are never written to disk at all. See
     // local-session-aggregator.ts for why that hits Copilot but not Claude Code.
-    const localSessionAggregator = new LocalSessionAggregator();
+    const byteEstimateModel = config.model;
+    const localSessionAggregator = new LocalSessionAggregator({
+      priceByteEstimate: (usage) => ({
+        model: byteEstimateModel,
+        costUsd: costTracker.priceUsage(usage, byteEstimateModel).totalUsd,
+      }),
+    });
     const repoNameResolver = new RepoNameResolver();
 
     const budgetTracker = new BudgetTracker({
