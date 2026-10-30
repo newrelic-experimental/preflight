@@ -325,9 +325,12 @@ function readSessionId(path: string): string | null {
 /**
  * Each breadcrumb source reads the writers' own directories and the untagged
  * layout at the storage root, and returns the hit whose session was active
- * most recently: the later of its breadcrumb's mtime and its session
- * buffer's. Collectors before #979 append every event to the buffer but leave
- * an unchanged cwd breadcrumb's mtime alone.
+ * most recently: the latest mtime of that breadcrumb or of any ppid
+ * breadcrumb in the same root naming its session. Collectors refresh their
+ * ppid breadcrumb's mtime on every event, while collectors before #979 leave
+ * an unchanged cwd breadcrumb's mtime alone. The session's buffer is no such
+ * signal, since a server still waiting for its session drains every unowned
+ * buffer.
  *
  * An untagged breadcrumb names no engine, so it counts only when its session
  * was active since this process started. A session that ended before an
@@ -344,11 +347,19 @@ export function sessionBreadcrumbs(
     writers.length === 0
       ? []
       : [...writers.map((w) => breadcrumbRoot(storagePath, w)), storagePath];
-  const lastActiveMs = (root: string, crumb: string, sessionId: string) =>
-    Math.max(
-      mtimeMs(resolve(root, crumb)),
-      mtimeMs(resolve(storagePath, `buffer-${sessionId}.jsonl`)),
-    );
+  const lastActiveMs = (root: string, crumb: string, sessionId: string) => {
+    const ppidDir = resolve(root, 'session-by-ppid');
+    let names: string[] = [];
+    try {
+      names = readdirSync(ppidDir);
+    } catch {
+      // No ppid breadcrumbs in this root.
+    }
+    return names
+      .map((name) => resolve(ppidDir, name))
+      .filter((path) => readSessionId(path) === sessionId)
+      .reduce((latest, path) => Math.max(latest, mtimeMs(path)), mtimeMs(resolve(root, crumb)));
+  };
   const hasTaggedCopy = (crumb: string, sessionId: string) => {
     let entries: Dirent[];
     try {
@@ -375,13 +386,12 @@ export function sessionBreadcrumbs(
       const crumb = crumbOf(hit);
       const sessionId = sessionIdOf(hit);
       const activeMs = lastActiveMs(root, crumb, sessionId);
+      if (activeMs <= bestMs) continue;
       if (root === storagePath && (activeMs < processStartMs || hasTaggedCopy(crumb, sessionId))) {
         continue;
       }
-      if (activeMs > bestMs) {
-        best = hit;
-        bestMs = activeMs;
-      }
+      best = hit;
+      bestMs = activeMs;
     }
     return best;
   };
