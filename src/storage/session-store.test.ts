@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   rmSync,
+  readFileSync,
   readdirSync,
   utimesSync,
   writeFileSync,
@@ -4110,5 +4111,88 @@ describe('deserializeFullSessionSummary repoName', () => {
     ['tok3n@', null],
   ])('loads %s as %s', (stored, expected) => {
     expect(deserializeFullSessionSummary({ repoName: stored }).repoName).toBe(expected);
+  });
+});
+
+describe('SessionStore split and corrupt session files', () => {
+  const id = 'split-session-1';
+  const day1 = new Date('2026-03-01T10:00:00Z').getTime();
+  const day2 = new Date('2026-03-02T10:00:00Z').getTime();
+
+  function writeSessionFile(date: string, summary: FullSessionSummary, trailing = ''): string {
+    const path = join(tmpDir, 'sessions', `${date}_${summary.sessionId}.json`);
+    writeFileSync(path, JSON.stringify(summary, null, 2) + '\n' + trailing);
+    return path;
+  }
+
+  it('recovers the first document from a file with a leftover tail', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const tail = '  "toolBreakdown": { "Bash": 9 },\n  "note": "has } and \\" in it"\n}\n';
+    writeSessionFile(
+      '2026-03-01',
+      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 7 }),
+      tail,
+    );
+
+    expect(store.loadSession(id)?.toolCallCount).toBe(7);
+    expect(store.loadAllSessions()).toHaveLength(1);
+  });
+
+  it('skips a corrupt file and finds the good one', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeFileSync(join(tmpDir, 'sessions', `2026-03-01_${id}.json`), '{ "sessionId": ');
+    writeSessionFile(
+      '2026-03-02',
+      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 4 }),
+    );
+
+    expect(store.loadSession(id)?.toolCallCount).toBe(4);
+  });
+
+  it('collapses three files, one corrupt, into one merged file on save', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeFileSync(join(tmpDir, 'sessions', `2026-03-01_${id}.json`), '{ "sessionId": ');
+    writeSessionFile(
+      '2026-03-02',
+      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 4 }),
+    );
+    writeSessionFile(
+      '2026-03-03',
+      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 6 }),
+    );
+
+    store.saveSession(makeSummary({ sessionId: id, startTime: day2, toolCallCount: 5 }));
+
+    expect(readdirSync(join(tmpDir, 'sessions'))).toHaveLength(1);
+    expect(store.loadSession(id)?.toolCallCount).toBe(6);
+  });
+
+  it('loadAllSessions returns one merged record for two files with the same id', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeSessionFile(
+      '2026-03-01',
+      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 3 }),
+    );
+    writeSessionFile(
+      '2026-03-02',
+      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 8 }),
+    );
+    writeSessionFile('2026-03-02', makeSummary({ sessionId: 'other', startTime: day2 }));
+
+    const all = store.loadAllSessions();
+    expect(all).toHaveLength(2);
+    expect(all.find((s) => s.sessionId === id)?.toolCallCount).toBe(8);
+  });
+
+  it('writes atomically and leaves no temp files behind', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    store.saveSession(makeSummary({ sessionId: id, startTime: day1 }));
+    store.saveSession(makeSummary({ sessionId: id, startTime: day1, toolCallCount: 99 }));
+
+    const files = readdirSync(join(tmpDir, 'sessions'));
+    expect(files).toEqual([`2026-03-01_${id}.json`]);
+    expect(() =>
+      JSON.parse(readFileSync(join(tmpDir, 'sessions', files[0]), 'utf-8')),
+    ).not.toThrow();
   });
 });

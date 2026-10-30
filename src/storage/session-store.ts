@@ -17,10 +17,12 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { join, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
@@ -810,18 +812,32 @@ export class SessionStore {
       throw new Error(`Session path escaped storage directory: ${filepath}`);
     }
 
+    // Write-then-rename so two processes saving the same session id can never
+    // interleave bytes in the target file (the temp name does not end in .json,
+    // so loaders never see it).
+    const tmpPath = `${filepath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     try {
-      writeFileSync(filepath, JSON.stringify(toWrite, null, 2) + '\n', { mode: 0o600 });
-      // The merge landed on a different filename than where the existing
-      // record lived (a date-rollover case) — remove the now-superseded
-      // file so the session isn't left duplicated across two files.
-      if (existingWithPath && existingWithPath.filepath !== filepath) {
+      try {
+        writeFileSync(tmpPath, JSON.stringify(toWrite, null, 2) + '\n', { mode: 0o600 });
+        renameSync(tmpPath, filepath);
+      } catch (err) {
         try {
-          unlinkSync(existingWithPath.filepath);
+          unlinkSync(tmpPath);
+        } catch {
+          // temp file may not have been created
+        }
+        throw err;
+      }
+      // Remove every other file for this id (a date-rollover relocation, or
+      // duplicates left by earlier corrupt writes) so the session lives in one file.
+      for (const stalePath of existingWithPath?.filepaths ?? []) {
+        if (stalePath === filepath) continue;
+        try {
+          unlinkSync(stalePath);
         } catch (err) {
           logger.warn('Failed to remove superseded session file after merge', {
             sessionId: toWrite.sessionId,
-            stalePath: existingWithPath.filepath,
+            stalePath,
             error: err instanceof Error ? err.message : String(err),
           });
         }
@@ -841,31 +857,39 @@ export class SessionStore {
     return this.loadSessionWithPath(sessionId)?.summary ?? null;
   }
 
-  /** Like loadSession(), but also returns the file path it was loaded from — used by saveSession() to detect and clean up a stale file after a merge relocates a session to a different filename. */
+  /**
+   * Like loadSession(), but also returns every file path found for the id.
+   * A session can span several files (a date-rollover write, or duplicates
+   * from earlier corrupted writes); readable ones are merged and unreadable
+   * ones skipped (but still listed, so saveSession() can remove them along with
+   * the superseded files).
+   */
   private loadSessionWithPath(
     sessionId: string,
-  ): { summary: FullSessionSummary; filepath: string } | null {
+  ): { summary: FullSessionSummary; filepaths: string[] } | null {
     if (!existsSync(this.sessionsDir)) return null;
 
-    for (const file of readdirSync(this.sessionsDir)) {
+    let summary: FullSessionSummary | null = null;
+    const filepaths: string[] = [];
+    for (const file of readdirSync(this.sessionsDir).sort()) {
       if (!file.endsWith('.json')) continue;
       if (parseSessionFilename(file)?.sessionId !== sessionId) continue;
 
       const filepath = join(this.sessionsDir, file);
       try {
-        const raw = readFileSync(filepath, 'utf-8');
-        const session = deserializeSession(raw);
+        const session = deserializeSession(readFileSync(filepath, 'utf-8'), file);
+        filepaths.push(filepath);
         if (session === null) {
           logger.warn('Failed to deserialize session file', { file });
-          return null;
+          continue;
         }
-        return { summary: session, filepath };
+        summary = summary ? mergeSummaries(summary, session) : session;
       } catch {
         logger.warn('Failed to read session file', { file });
       }
     }
 
-    return null;
+    return summary ? { summary, filepaths } : null;
   }
 
   listSessions(options?: ListSessionsOptions): SessionFileInfo[] {
@@ -885,7 +909,7 @@ export class SessionStore {
       if (options?.developer) {
         try {
           const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
-          const session = deserializeSession(raw);
+          const session = deserializeSession(raw, file);
           if (session?.developer !== options.developer) continue;
         } catch {
           continue;
@@ -905,9 +929,9 @@ export class SessionStore {
 
     const sinceDate = options?.since ? formatDate(options.since) : null;
     const modifiedSinceMs = options?.includeModifiedSince?.getTime() ?? null;
-    const results: FullSessionSummary[] = [];
+    const byId = new Map<string, FullSessionSummary>();
 
-    for (const file of readdirSync(this.sessionsDir)) {
+    for (const file of readdirSync(this.sessionsDir).sort()) {
       if (!file.endsWith('.json')) continue;
 
       const parsed = parseSessionFilename(file);
@@ -924,7 +948,7 @@ export class SessionStore {
 
       try {
         const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
-        const session = deserializeSession(raw);
+        const session = deserializeSession(raw, file);
         if (!session) continue;
 
         // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
@@ -939,13 +963,15 @@ export class SessionStore {
 
         if (options?.developer && session.developer !== options.developer) continue;
 
-        results.push(session);
+        // One session can have several files (see loadSessionWithPath).
+        const prior = byId.get(session.sessionId);
+        byId.set(session.sessionId, prior ? mergeSummaries(prior, session) : session);
       } catch {
         logger.warn('Failed to read session file', { file });
       }
     }
 
-    return results.sort((a, b) => a.startTime - b.startTime);
+    return [...byId.values()].sort((a, b) => a.startTime - b.startTime);
   }
 
   loadTodaySessions(): FullSessionSummary[] {
@@ -1850,15 +1876,46 @@ export function deserializeFullSessionSummary(
  * Parse a raw session JSON string and extract known fields. Delegates field
  * extraction to `deserializeFullSessionSummary` to avoid duplication.
  */
-function deserializeSession(raw: string): FullSessionSummary | null {
+function deserializeSession(raw: string, file?: string): FullSessionSummary | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return null;
+    // Overlapping writes from two processes left a full document followed by
+    // the tail of a longer one; the first document is the intact data.
+    const first = firstTopLevelJsonDocument(raw);
+    if (first === null) return null;
+    try {
+      parsed = JSON.parse(first);
+    } catch {
+      return null;
+    }
+    logger.warn('Recovered first JSON document from corrupt session file', { file });
   }
   if (typeof parsed !== 'object' || parsed === null) return null;
   return deserializeFullSessionSummary(parsed as SerializedFullSessionSummary);
+}
+
+/** Returns the leading `{...}` of `raw` (string- and escape-aware), or null if it never closes. */
+function firstTopLevelJsonDocument(raw: string): string | null {
+  const start = raw.search(/\S/);
+  if (start === -1 || raw[start] !== '{') return null;
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inString) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}' && --depth === 0) {
+      return raw.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
 function parseSessionFilename(filename: string): SessionFileInfo | null {
