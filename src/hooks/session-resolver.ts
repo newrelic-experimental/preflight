@@ -321,22 +321,6 @@ function readSessionId(path: string): string | null {
   }
 }
 
-/**
- * Each breadcrumb source reads the writers' own directories and the untagged
- * layout at the storage root, and returns the hit whose session was active
- * most recently: the latest mtime of that breadcrumb or of any ppid
- * breadcrumb in the same root naming its session. Collectors refresh their
- * ppid breadcrumb's mtime on every event, while collectors before #979 leave
- * an unchanged cwd breadcrumb's mtime alone. The session's buffer is no such
- * signal, since a server still waiting for its session drains every unowned
- * buffer.
- *
- * An untagged breadcrumb names no engine, so it counts only when its session
- * was active since this process started. A session that ended before an
- * upgrade never counts again. Current collectors also write the untagged
- * layout for older servers, so an untagged breadcrumb whose session a
- * writer's directory holds for the same key is that copy, and is skipped.
- */
 export function sessionBreadcrumbs(
   storagePath: string,
   writers: readonly string[],
@@ -346,13 +330,13 @@ export function sessionBreadcrumbs(
     writers.length === 0
       ? []
       : [...writers.map((w) => breadcrumbRoot(storagePath, w)), storagePath];
-  const lastActiveMs = (root: string, crumb: string, sessionId: string) => {
+  const lastRefreshedMs = (root: string, crumb: string, sessionId: string) => {
     const ppidDir = resolve(root, 'session-by-ppid');
-    let names: string[] = [];
+    let names: string[];
     try {
       names = readdirSync(ppidDir);
     } catch {
-      // No ppid breadcrumbs in this root.
+      names = [];
     }
     return names
       .map((name) => resolve(ppidDir, name))
@@ -363,6 +347,8 @@ export function sessionBreadcrumbs(
     breadcrumbWriters(storagePath).some(
       (writer) => readSessionId(resolve(breadcrumbRoot(storagePath, writer), crumb)) === sessionId,
     );
+  const isStaleOrDualWritten = (refreshedMs: number, crumb: string, sessionId: string) =>
+    refreshedMs < processStartMs || hasTaggedCopy(crumb, sessionId);
   const newest = <T>(
     read: (root: string) => T | null,
     crumbOf: (hit: T) => string,
@@ -375,13 +361,11 @@ export function sessionBreadcrumbs(
       if (!hit) continue;
       const crumb = crumbOf(hit);
       const sessionId = sessionIdOf(hit);
-      const activeMs = lastActiveMs(root, crumb, sessionId);
-      if (activeMs <= bestMs) continue;
-      if (root === storagePath && (activeMs < processStartMs || hasTaggedCopy(crumb, sessionId))) {
-        continue;
-      }
+      const refreshedMs = lastRefreshedMs(root, crumb, sessionId);
+      if (refreshedMs <= bestMs) continue;
+      if (root === storagePath && isStaleOrDualWritten(refreshedMs, crumb, sessionId)) continue;
       best = hit;
-      bestMs = activeMs;
+      bestMs = refreshedMs;
     }
     return best;
   };

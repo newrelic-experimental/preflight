@@ -775,8 +775,6 @@ function processHook(raw: string, cliEvent?: string): void {
     );
   } else if (typeof data.session_id === 'string' && data.session_id.length > 0) {
     const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    // The writer's copy goes first: a server skips an untagged breadcrumb
-    // only once it finds that copy.
     for (const root of [breadcrumbRoot(storageDir, writer), storageDir]) {
       writePpidBreadcrumb(data.session_id, root);
       writeCwdBreadcrumb(data.session_id, data.cwd, root);

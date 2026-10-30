@@ -13,7 +13,6 @@ import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
  */
 export const BREADCRUMBS_DIR = 'breadcrumbs';
 
-/** Every registered platform's `platformName`, which a hook may name in any case or separator. */
 const PLATFORM_NAMES = [
   'claude-code',
   'cursor',
