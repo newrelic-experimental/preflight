@@ -1392,3 +1392,69 @@ describe('Sessions view — ?sessionIds= deep-link filter', () => {
     window.location = original as unknown as string & Location;
   });
 });
+
+describe('Sessions view — subagent peak label', () => {
+  const SUBAGENT_WINDOW = { startMs: 1_000, endMs: 60_000 };
+
+  function renderWithSubagents(subagentsBody: unknown): void {
+    const detail = {
+      sessionId: 's1',
+      timeline: [{ timestamp: 1_000, toolName: 'Read', durationMs: 120, success: true }],
+    };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = ((url: string) => {
+      const json = (body: unknown) =>
+        Promise.resolve(
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      if (url.includes('/subagents')) return json(subagentsBody);
+      if (url.startsWith('/api/sessions/')) return json(detail);
+      return json(SAMPLE_LIST);
+    }) as typeof globalThis.fetch;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <Sessions />
+      </QueryClientProvider>,
+    );
+  }
+
+  async function openSession(): Promise<void> {
+    await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
+    fireEvent.click(screen.getAllByText(/s1/)[0]!);
+    await waitFor(() => expect(screen.getByText('Session trace')).toBeInTheDocument());
+  }
+
+  it('shows the peak count and the clock time it was reached', async () => {
+    const atMs = Date.parse('2026-05-28T17:35:00Z');
+    renderWithSubagents({ window: SUBAGENT_WINDOW, agents: [], peak: { count: 9, atMs } });
+    await openSession();
+    await waitFor(() =>
+      expect(screen.getByText(/^Peak 9 parallel at \d{1,2}:\d{2}\s?[AP]M$/)).toBeInTheDocument(),
+    );
+  });
+
+  it('shows a plain single-agent label when the peak is one', async () => {
+    renderWithSubagents({
+      window: SUBAGENT_WINDOW,
+      agents: [],
+      peak: { count: 1, atMs: Date.parse('2026-05-28T17:35:00Z') },
+    });
+    await openSession();
+    await waitFor(() => expect(screen.getByText('1 subagent at a time')).toBeInTheDocument());
+  });
+
+  it('hides the label when the session ran no subagents', async () => {
+    renderWithSubagents({
+      window: { startMs: 0, endMs: 0 },
+      agents: [],
+      peak: { count: 0, atMs: null },
+    });
+    await openSession();
+    await waitFor(() => expect(screen.queryByText('Loading subagents')).toBeNull());
+    expect(screen.queryByText(/Peak/)).toBeNull();
+  });
+});

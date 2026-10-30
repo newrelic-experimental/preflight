@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { calculateCost } from '../shared/index.js';
-import { SubagentTimelineStore } from './subagent-timeline-store.js';
+import {
+  computeSubagentPeak,
+  SubagentTimelineStore,
+  type AgentSpan,
+} from './subagent-timeline-store.js';
 
 const STDERR_WRITE = process.stderr.write;
 const SESSION = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -380,12 +384,17 @@ describe('SubagentTimelineStore', () => {
     expect(result.agents.map((a) => a.agentId)).toEqual([AGENT_B, AGENT_A]);
     expect(result.window.startMs).toBe(Date.parse('2026-06-16T12:00:00.000Z'));
     expect(result.window.endMs).toBe(Date.parse('2026-06-16T12:10:00.000Z'));
+    expect(result.peak).toEqual({ count: 1, atMs: Date.parse('2026-06-16T12:00:00.000Z') });
   });
 
   it('returns empty window/agents for a session with no subagents', () => {
     const store = new SubagentTimelineStore({ projectsDir });
     const result = store.getSubagentsForSession('ffffffff-1111-2222-3333-444444444444');
-    expect(result).toEqual({ window: { startMs: 0, endMs: 0 }, agents: [] });
+    expect(result).toEqual({
+      window: { startMs: 0, endMs: 0 },
+      agents: [],
+      peak: { count: 0, atMs: null },
+    });
   });
 
   it('rejects malformed session ids without throwing', () => {
@@ -393,6 +402,7 @@ describe('SubagentTimelineStore', () => {
     expect(store.getSubagentsForSession('../../etc/passwd')).toEqual({
       window: { startMs: 0, endMs: 0 },
       agents: [],
+      peak: { count: 0, atMs: null },
     });
   });
 
@@ -843,5 +853,71 @@ describe('SubagentTimelineStore.getRunLive', () => {
     // so the detail route falls through to its 404.
     const store = new SubagentTimelineStore({ projectsDir });
     expect(store.getRunLive(WF_RUN_ID)).toBeNull();
+  });
+});
+
+describe('computeSubagentPeak', () => {
+  function makeSpan(startMs: number, endMs: number, agentId = `a${startMs}-${endMs}`): AgentSpan {
+    return {
+      agentId,
+      workflowRunId: null,
+      workflowName: null,
+      label: agentId,
+      model: KNOWN_MODEL,
+      startMs,
+      endMs,
+      durationMs: endMs - startMs,
+      turnCount: 1,
+      totalTokens: 0,
+      usd: null,
+    };
+  }
+
+  it('returns a zero peak with no agents', () => {
+    expect(computeSubagentPeak([])).toEqual({ count: 0, atMs: null });
+  });
+
+  it('reports one for a single agent at its start', () => {
+    expect(computeSubagentPeak([makeSpan(1000, 2000)])).toEqual({ count: 1, atMs: 1000 });
+  });
+
+  it('counts a zero-length agent as running at its instant', () => {
+    expect(computeSubagentPeak([makeSpan(5000, 5000)])).toEqual({ count: 1, atMs: 5000 });
+  });
+
+  it('counts a zero-length agent inside a longer span', () => {
+    const agents = [makeSpan(0, 10_000), makeSpan(4000, 4000)];
+    expect(computeSubagentPeak(agents)).toEqual({ count: 2, atMs: 4000 });
+  });
+
+  it('finds the peak of nested overlapping spans', () => {
+    const agents = [makeSpan(0, 10_000), makeSpan(2000, 8000), makeSpan(3000, 4000)];
+    expect(computeSubagentPeak(agents)).toEqual({ count: 3, atMs: 3000 });
+  });
+
+  it('treats touching spans as overlapping', () => {
+    const agents = [makeSpan(0, 1000), makeSpan(1000, 2000)];
+    expect(computeSubagentPeak(agents)).toEqual({ count: 2, atMs: 1000 });
+  });
+
+  it('does not overlap disjoint spans', () => {
+    const agents = [makeSpan(0, 1000), makeSpan(1001, 2000), makeSpan(3000, 4000)];
+    expect(computeSubagentPeak(agents)).toEqual({ count: 1, atMs: 0 });
+  });
+
+  it('reports the first instant the maximum was reached', () => {
+    const agents = [
+      makeSpan(0, 1000),
+      makeSpan(100, 900),
+      makeSpan(2000, 3000),
+      makeSpan(2100, 2900),
+    ];
+    expect(computeSubagentPeak(agents)).toEqual({ count: 2, atMs: 100 });
+  });
+
+  it('does not depend on the input order', () => {
+    const agents = [makeSpan(2000, 3000), makeSpan(0, 2500), makeSpan(2100, 2900)];
+    expect(computeSubagentPeak(agents)).toEqual({ count: 3, atMs: 2100 });
+    expect(computeSubagentPeak([...agents].reverse())).toEqual({ count: 3, atMs: 2100 });
   });
 });
