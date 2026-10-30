@@ -575,6 +575,33 @@ describe('SessionStore', () => {
     expect(store.loadSession('clobber-me')!.toolCallCount).toBe(12);
   });
 
+  it('merges a summary with cost but no tool calls into a recorded session', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(
+      makeSummary({
+        sessionId: 'chat-after',
+        startTime,
+        toolCallCount: 12,
+        estimatedCostUsd: 0.0192,
+      }),
+    );
+
+    store.saveSession(
+      makeSummary({
+        sessionId: 'chat-after',
+        startTime,
+        toolCallCount: 0,
+        toolBreakdown: {},
+        estimatedCostUsd: 0.0288,
+      }),
+    );
+
+    const saved = store.loadSession('chat-after')!;
+    expect(saved.estimatedCostUsd).toBeCloseTo(0.0288, 4);
+    expect(saved.toolCallCount).toBe(12);
+  });
+
   it('does not create a file for a session that recorded no usage', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     store.saveSession(

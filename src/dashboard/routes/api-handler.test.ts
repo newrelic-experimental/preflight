@@ -201,6 +201,26 @@ describe('api-handler GET /api/sessions', () => {
     expect(result[0].sessionId).toBe('sess-90'); // Most recent (highest index)
   });
 
+  it('lists a chat-only session with cost but no tool calls, and hides an idle one', async () => {
+    const fakeSessions = [
+      { sessionId: 'chat-only', toolCallCount: 0, estimatedCostUsd: 1.5 },
+      { sessionId: 'idle', toolCallCount: 0, estimatedCostUsd: 0 },
+      { sessionId: 'tools', toolCallCount: 3 },
+    ];
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => fakeSessions,
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const ids = (JSON.parse(body()) as Array<{ sessionId: string }>).map((s) => s.sessionId);
+    expect(ids).toEqual(['chat-only', 'tools']);
+  });
+
   it('uses default limit of 50 when not specified', async () => {
     const fakeSessions = Array.from({ length: 100 }, (_v, i) => ({
       filename: `2026-05-${String(i + 1).padStart(2, '0')}_sess-${i}.json`,
