@@ -34,6 +34,7 @@ import {
   readJobState,
   readTranscriptTitle,
   resolveFromBreadcrumb,
+  platformWritesCwdBreadcrumb,
   resolveFromCwd,
   resolveFromJobDir,
   resolveSessionId,
@@ -1079,8 +1080,13 @@ async function main(): Promise<void> {
 
       const fromJobDir = resolveFromJobDir(process.env.CLAUDE_JOB_DIR ?? null);
       const fromPpid = fromJobDir ? null : resolveFromBreadcrumb(config.storagePath, process.ppid);
+      const cwdFallback = platformWritesCwdBreadcrumb(
+        createDefaultRegistry().getActive().platformName,
+      );
       const fromCwd =
-        fromJobDir || fromPpid ? null : resolveFromCwd(config.storagePath, process.cwd());
+        fromJobDir || fromPpid || !cwdFallback
+          ? null
+          : resolveFromCwd(config.storagePath, process.cwd());
       const synchronouslyResolved = fromJobDir ?? fromPpid ?? fromCwd;
       resolvedViaCwdOnly = !!fromCwd && !fromJobDir && !fromPpid;
       if (synchronouslyResolved) {
@@ -3266,6 +3272,9 @@ async function main(): Promise<void> {
             const realId = await resolveSessionId({
               storagePath: config!.storagePath,
               signal: sessionResolutionAbort!.signal,
+              cwdFallback: platformWritesCwdBreadcrumb(
+                createDefaultRegistry().getActive().platformName,
+              ),
               onResolutionSource: (info) => {
                 resolvedSource = info.source;
               },

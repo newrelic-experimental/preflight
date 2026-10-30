@@ -6,6 +6,7 @@ import {
   resolveSessionId,
   resolveFromJobDir,
   resolveFromBreadcrumb,
+  platformWritesCwdBreadcrumb,
   resolveFromCwd,
   resolveFromAncestorBreadcrumb,
   nextDelayMs,
@@ -291,6 +292,24 @@ describe('session-resolver', () => {
         suppressWarn: true,
       });
       expect(sid).toBe('sess-cwd-fallback');
+    });
+
+    it('ignores the cwd breadcrumb when cwdFallback is false', async () => {
+      mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'session-by-cwd', '-projects-winrepo.txt'), 'sess-claude');
+      const controller = new AbortController();
+      const pending = resolveSessionId({
+        claudeJobDir: null,
+        ppid: 424242,
+        ancestorPids: [],
+        cwd: '/projects/winrepo',
+        storagePath: tmpDir,
+        suppressWarn: true,
+        cwdFallback: false,
+        signal: controller.signal,
+      });
+      setTimeout(() => controller.abort(), 700);
+      await expect(pending).rejects.toThrow('aborted');
     });
 
     it('prefers a ppid breadcrumb that appears just after startup over an already-present, possibly-stale cwd breadcrumb', async () => {
@@ -1517,5 +1536,18 @@ describe('shouldReplaceSessionName', () => {
     expect(shouldReplaceSessionName('ai-title', 'auto')).toBe(false);
     expect(shouldReplaceSessionName('ai-title', 'cwd')).toBe(false);
     expect(shouldReplaceSessionName('auto', 'cwd')).toBe(false);
+  });
+
+  describe('platformWritesCwdBreadcrumb()', () => {
+    it('is false for engines whose hooks send no session_id', () => {
+      for (const name of ['cursor', 'windsurf', 'antigravity']) {
+        expect(platformWritesCwdBreadcrumb(name)).toBe(false);
+      }
+    });
+
+    it('is true for Claude Code and unknown engines', () => {
+      expect(platformWritesCwdBreadcrumb('claude-code')).toBe(true);
+      expect(platformWritesCwdBreadcrumb('kiro')).toBe(true);
+    });
   });
 });

@@ -93,6 +93,13 @@ export interface SessionResolverOptions {
   /** When true, skip the WARN log (test seam). */
   readonly suppressWarn?: boolean;
   /**
+   * When false, the cwd breadcrumb is never consulted. Engines whose hooks
+   * send no `session_id` never write a breadcrumb of their own, so any cwd
+   * breadcrumb found belongs to a Claude Code session in the same directory.
+   * See `platformWritesCwdBreadcrumb()`. Defaults to true.
+   */
+  readonly cwdFallback?: boolean;
+  /**
    * Invoked once, synchronously, right before resolveSessionId's promise
    * settles, reporting which source produced the winning value. Purely
    * additive — omitting it changes no behavior. Lets callers detect a
@@ -269,6 +276,22 @@ export function sanitizeCwdForFilename(cwd: string): string {
   return cwd.replace(/[\\/:]/g, '-');
 }
 
+const PLATFORMS_WITHOUT_SESSION_ID_HOOKS: ReadonlySet<string> = new Set([
+  'cursor',
+  'windsurf',
+  'antigravity',
+]);
+
+/**
+ * The hook collector writes the cwd breadcrumb only for payloads carrying
+ * `session_id`. Cursor, Windsurf, and Antigravity send other id fields, so a
+ * cwd breadcrumb never belongs to them and adopting one attributes a Claude
+ * Code session's cost to the wrong engine.
+ */
+export function platformWritesCwdBreadcrumb(platformName: string): boolean {
+  return !PLATFORMS_WITHOUT_SESSION_ID_HOOKS.has(platformName);
+}
+
 /**
  * Try to resolve the session_id synchronously from the cwd breadcrumb file.
  * Fallback for platforms where the PPID breadcrumb never matches (see the
@@ -414,7 +437,7 @@ export async function resolveSessionId(
         resolvePromise(fromAncestor.sessionId);
         return;
       }
-      const sidFromCwd = resolveFromCwd(storagePath, cwd);
+      const sidFromCwd = options.cwdFallback === false ? null : resolveFromCwd(storagePath, cwd);
       if (sidFromCwd) {
         const elapsed = Date.now() - startTime;
         logger.info('Resolved session_id from cwd breadcrumb (ppid fallback)', {
