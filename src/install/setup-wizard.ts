@@ -298,6 +298,7 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
     let licenseKeyCommand: readonly string[] | null = null;
     let keychainLicenseKey = false;
     let keychainNrApiKey = false;
+    let nrApiKeyCommand: readonly string[] | null = null;
     let validatedEmail: string | null = null;
     if (mode !== 'local') {
       const envAccountId = process.env.NEW_RELIC_ACCOUNT_ID?.trim() ?? '';
@@ -392,11 +393,14 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
       const envApiKey = process.env.NEW_RELIC_API_KEY?.trim() ?? '';
       const existingApiKey = typeof existing.nrApiKey === 'string' ? existing.nrApiKey : null;
       const defaultApiKey = existingApiKey ?? (envApiKey || null);
-      const apiKeyHint = existingApiKey
-        ? '(already set)'
-        : envApiKey
-          ? '$NEW_RELIC_API_KEY'
-          : 'optional';
+      const existingApiKeyCommand = existing.nrApiKeyCommand ?? null;
+      const apiKeyHint = existingApiKeyCommand
+        ? '(set by nrApiKeyCommand)'
+        : existingApiKey
+          ? '(already set)'
+          : envApiKey
+            ? '$NEW_RELIC_API_KEY'
+            : 'optional';
       const apiKeyRaw = (
         await rl.question(
           `API Key (NRAK-...) — for team queries and deploying dashboards/alerts [${apiKeyHint}]: `,
@@ -404,10 +408,19 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
       ).trim();
       if (apiKeyRaw) {
         nrApiKey = apiKeyRaw;
+      } else if (existingApiKeyCommand) {
+        nrApiKeyCommand = existingApiKeyCommand;
+        try {
+          nrApiKey = resolveSecretCommand('nrApiKey', existingApiKeyCommand);
+        } catch (err) {
+          print(
+            `  ⚠ ${err instanceof Error ? err.message : String(err)} — keeping nrApiKeyCommand without validating it`,
+          );
+        }
       } else if (defaultApiKey) {
         nrApiKey = defaultApiKey;
       }
-      if (nrApiKey && isKeychainSupported()) {
+      if (nrApiKey && !nrApiKeyCommand && isKeychainSupported()) {
         keychainNrApiKey = await offerKeychain(rl, 'API key');
       }
 
@@ -560,8 +573,9 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
     if (keychainLicenseKey) {
       licenseKeyCommand = storeOrWarn('licenseKey', licenseKey, 'license key');
     }
-    const nrApiKeyCommand =
-      keychainNrApiKey && nrApiKey ? storeOrWarn('nrApiKey', nrApiKey, 'API key') : null;
+    if (keychainNrApiKey && nrApiKey) {
+      nrApiKeyCommand = storeOrWarn('nrApiKey', nrApiKey, 'API key');
+    }
     const config = buildConfig(existingForWizard, {
       accountId,
       licenseKey,

@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { userInfo } from 'node:os';
 
+import { stripDangerousEnv } from '../lib/child-env.js';
 import { resolveSecretCommand } from '../secret-command.js';
 import type { SecretField } from '../secret-command.js';
 
@@ -44,6 +45,7 @@ function addViaSecurityStdin(service: string, account: string, secret: string): 
     input: command,
     encoding: 'utf8',
     shell: false,
+    env: stripDangerousEnv(process.env).env,
     timeout: 20_000,
     stdio: ['pipe', 'ignore', 'ignore'],
   });

@@ -2154,6 +2154,7 @@ describe('setupWizard macOS Keychain offer', () => {
     answers('cloud', '12345', 'NRLIC-secret', 'n', 'us', '', 'tester', '', '', '', '', 'n');
 
     await runSetupWizard();
+    expect(prompts.filter((p) => p.includes('Keychain'))).toHaveLength(1);
 
     expect(mockedKeychain.storeInKeychain).not.toHaveBeenCalled();
     const config = written();
@@ -2165,6 +2166,7 @@ describe('setupWizard macOS Keychain offer', () => {
     answers('cloud', '12345', 'NRLIC-secret', '', 'us', '', 'tester', '', '', '', '', 'n');
 
     await runSetupWizard();
+    expect(prompts.filter((p) => p.includes('Keychain'))).toHaveLength(1);
 
     expect(mockedKeychain.storeInKeychain).not.toHaveBeenCalled();
     expect(written().licenseKey).toBe('NRLIC-secret');
@@ -2261,5 +2263,63 @@ describe('setupWizard macOS Keychain offer', () => {
     const config = written();
     expect(config.licenseKey).toBe('NRLIC-new');
     expect(config).not.toHaveProperty('licenseKeyCommand');
+  });
+
+  describe('with an existing nrApiKeyCommand', () => {
+    const NODE_CMD = [process.execPath, '-e', 'process.stdout.write("NRAK-from-cmd")'];
+
+    afterEach(() => {
+      delete process.env.NEW_RELIC_API_KEY;
+    });
+
+    function seed(extra: Record<string, unknown> = {}): void {
+      mockedFs.readFileSync.mockReturnValue(
+        JSON.stringify({
+          accountId: '12345',
+          licenseKey: 'NRLIC-existing',
+          nrApiKeyCommand: NODE_CMD,
+          ...extra,
+        }),
+      );
+    }
+
+    it('keeps the command on a blank answer even when NEW_RELIC_API_KEY is set', async () => {
+      process.env.NEW_RELIC_API_KEY = 'NRAK-env';
+      seed();
+      answers('cloud', '', '', 'n', 'us', '', 'tester', '', '', '', '', 'n');
+
+      await runSetupWizard();
+
+      expect(mockedKeyValidator.validateApiKey).toHaveBeenCalledWith(
+        expect.objectContaining({ nrApiKey: 'NRAK-from-cmd' }),
+      );
+      expect(prompts.filter((p) => p.includes('Keychain'))).toHaveLength(1);
+      expect(prompts.some((p) => p.includes('set by nrApiKeyCommand'))).toBe(true);
+      const config = written();
+      expect(config.nrApiKeyCommand).toEqual(NODE_CMD);
+      expect(config).not.toHaveProperty('nrApiKey');
+    });
+
+    it('keeps the command over a stale plaintext nrApiKey in the file', async () => {
+      seed({ nrApiKey: 'NRAK-stale' });
+      answers('cloud', '', '', 'n', 'us', '', 'tester', '', '', '', '', 'n');
+
+      await runSetupWizard();
+
+      const config = written();
+      expect(config.nrApiKeyCommand).toEqual(NODE_CMD);
+      expect(config).not.toHaveProperty('nrApiKey');
+    });
+
+    it('replaces the command when a new key is typed', async () => {
+      seed();
+      answers('cloud', '', '', 'n', 'us', 'NRAK-new', 'n', 'tester', '', '', '', '', 'n');
+
+      await runSetupWizard();
+
+      const config = written();
+      expect(config.nrApiKey).toBe('NRAK-new');
+      expect(config).not.toHaveProperty('nrApiKeyCommand');
+    });
   });
 });

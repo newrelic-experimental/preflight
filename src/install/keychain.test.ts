@@ -1,4 +1,8 @@
-import { describe, it, expect, jest } from '@jest/globals';
+import { describe, it, expect, jest, beforeEach } from '@jest/globals';
+
+jest.mock('node:child_process', () => ({ spawnSync: jest.fn() }));
+
+import * as childProcess from 'node:child_process';
 
 import { keychainAccount, keychainReadCommand, storeInKeychain } from './keychain.js';
 import type { KeychainDeps } from './keychain.js';
@@ -56,5 +60,48 @@ describe('storeInKeychain', () => {
       'security add-generic-password failed',
     );
     expect(deps.read).not.toHaveBeenCalled();
+  });
+});
+
+describe('storeInKeychain with the default deps', () => {
+  const mockedSpawn = childProcess.spawnSync as unknown as jest.Mock;
+  const ok = (stdout: string) => ({ status: 0, signal: null, stdout, stderr: '' });
+
+  beforeEach(() => {
+    mockedSpawn.mockReset();
+  });
+
+  it('pipes an escaped add command to `security -i` on stdin', () => {
+    mockedSpawn.mockReturnValueOnce(ok('')).mockReturnValueOnce(ok('a"b\\c\n'));
+
+    const argv = storeInKeychain('licenseKey', 'a"b\\c');
+
+    const [bin, args, opts] = mockedSpawn.mock.calls[0] as [string, string[], { input: string }];
+    expect(bin).toBe('/usr/bin/security');
+    expect(args).toEqual(['-i']);
+    expect(opts.input).toBe(
+      `add-generic-password -U -s "preflight-license-key" -a "${keychainAccount()}" -w "a\\"b\\\\c"\n`,
+    );
+    expect(mockedSpawn.mock.calls[1][1]).toEqual(argv.slice(1));
+  });
+
+  it('strips dangerous env keys from the add subprocess', () => {
+    const saved = process.env.DYLD_INSERT_LIBRARIES;
+    process.env.DYLD_INSERT_LIBRARIES = '/tmp/evil.dylib';
+    mockedSpawn.mockReturnValueOnce(ok('')).mockReturnValueOnce(ok('s\n'));
+    try {
+      storeInKeychain('licenseKey', 's');
+    } finally {
+      if (saved === undefined) delete process.env.DYLD_INSERT_LIBRARIES;
+      else process.env.DYLD_INSERT_LIBRARIES = saved;
+    }
+
+    const opts = mockedSpawn.mock.calls[0][2] as { env: Record<string, string> };
+    expect(opts.env).not.toHaveProperty('DYLD_INSERT_LIBRARIES');
+  });
+
+  it('rejects a secret containing a line break without spawning', () => {
+    expect(() => storeInKeychain('licenseKey', 'a\nb')).toThrow('the secret contains a line break');
+    expect(mockedSpawn).not.toHaveBeenCalled();
   });
 });
