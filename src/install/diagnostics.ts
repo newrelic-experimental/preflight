@@ -12,6 +12,7 @@ import {
   loadMcpConfig,
   DEFAULT_STORAGE_PATH,
   resolveCompanionMode,
+  findReceiverDoubleCount,
   type ResolvedCompanionMode,
 } from '../config.js';
 import type { McpServerConfig } from '../config.js';
@@ -191,7 +192,28 @@ function checkSecretSources(loaded: LoadedConfig): DiagnosticCheck {
   };
 }
 
-function checkCompanionMode(fileValue: boolean | undefined, storagePath: string): DiagnosticCheck {
+function checkCompanionMode(
+  fileValue: boolean | undefined,
+  storagePath: string,
+  loaded: LoadedConfig,
+): DiagnosticCheck {
+  const check = describeCompanionMode(fileValue, storagePath);
+  const doubleCount = loaded.ok ? findReceiverDoubleCount(process.env, loaded.config) : null;
+  if (!doubleCount) return check;
+  const grpc = doubleCount.grpc
+    ? ' Claude Code is set to export over gRPC, which the receiver does not accept; switch it to http/protobuf.'
+    : '';
+  return {
+    ...check,
+    status: 'warn',
+    detail: `${check.detail} Claude Code exports metrics to Preflight's OTLP receiver, which forwards to New Relic, while companion mode is off. If that proxy forwards them, New Relic counts cost twice. Set companionMode: true (or NR_AI_COMPANION_MODE=true) when it does.${grpc}`,
+  };
+}
+
+function describeCompanionMode(
+  fileValue: boolean | undefined,
+  storagePath: string,
+): DiagnosticCheck {
   const shell = resolveCompanionMode(process.env, fileValue);
   const shellText = `${shell.value} (source: ${shell.source})`;
   const servers = listRunningServerCompanionModes(storagePath);
@@ -776,7 +798,11 @@ export async function runDiagnostics(opts?: {
   const { check: configCheck, context } = checkConfigValid(configPath, opts?.storagePath);
   const loaded = loadConfigForDiagnostics(configPath, opts?.resolveSecrets ?? true);
   const modeCheck = checkTelemetryMode(loaded, context.fileMode);
-  const companionModeCheck = checkCompanionMode(context.fileCompanionMode, context.storagePath);
+  const companionModeCheck = checkCompanionMode(
+    context.fileCompanionMode,
+    context.storagePath,
+    loaded,
+  );
 
   const settingsPaths: string[] = [detectSettingsPath('user')];
   if (isWsl()) {

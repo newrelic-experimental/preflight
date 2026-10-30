@@ -209,9 +209,9 @@ export class GitActivityRecorder {
   /** True when `segment`, run before a gh call, may have pointed that call
    *  at a repo other than the cwd's: it assigns `GH_REPO`, or it is a `cd`
    *  that can't be shown to stay in the cwd's repo. A target that doesn't
-   *  exist, such as an unexpanded `"$DIR"`, skips the resolver, which caches
-   *  only the identities it finds and would spawn git for it on every
-   *  dashboard poll. */
+   *  exist, such as an unexpanded `"$DIR"`, skips the resolver. The dashboard
+   *  builds a fresh resolver per request, so it would spawn git for that
+   *  target on every poll. */
   private mayLeaveCwdRepo(segment: string, cwd: string | undefined): boolean {
     if (segmentAssignsGhRepo(segment)) return true;
     const dir = cdSegmentTarget(segment);
