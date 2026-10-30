@@ -282,22 +282,11 @@ export function sanitizeCwdForFilename(cwd: string): string {
  * Fallback for platforms where the PPID breadcrumb never matches (see the
  * module doc comment above). Returns the validated session_id or null.
  */
-export function resolveFromCwd(
-  storagePath: string,
-  cwd: string | undefined,
-  writtenSinceMs?: number,
-): string | null {
+export function resolveFromCwd(storagePath: string, cwd: string | undefined): string | null {
   if (typeof cwd !== 'string' || cwd.length === 0) return null;
   const sanitizedCwd = sanitizeCwdForFilename(cwd);
   const breadcrumbPath = resolve(storagePath, 'session-by-cwd', `${sanitizedCwd}.txt`);
   if (!existsSync(breadcrumbPath)) return null;
-  if (writtenSinceMs !== undefined) {
-    try {
-      if (statSync(breadcrumbPath).mtimeMs < writtenSinceMs) return null;
-    } catch {
-      return null;
-    }
-  }
   let raw: string;
   try {
     raw = readFileSync(breadcrumbPath, 'utf-8');
@@ -317,6 +306,14 @@ export interface SessionBreadcrumbs {
   readonly cwd: (cwd: string | undefined) => string | null;
 }
 
+function mtimeMs(path: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return -Infinity;
+  }
+}
+
 function readSessionId(path: string): string | null {
   try {
     return readFileSync(path, 'utf-8').trim();
@@ -328,9 +325,11 @@ function readSessionId(path: string): string | null {
 /**
  * Each breadcrumb source tries the writers' own directories first, then the
  * untagged layout at the storage root. An untagged breadcrumb names no
- * engine, so it counts only when written since this process started: an
- * older collector still running keeps rewriting its own, while one left from
- * before an upgrade never counts again. Current collectors also write the
+ * engine, so it counts only when its session was active since this process
+ * started: an older collector still running rewrites its ppid breadcrumb and
+ * appends to the session's buffer on every event, though it leaves an
+ * unchanged cwd breadcrumb alone, while a session left from before an
+ * upgrade never counts again. Current collectors also write the
  * untagged layout for older servers, so an untagged breadcrumb whose session
  * a writer's directory holds for the same key is that copy, and is skipped.
  */
@@ -339,13 +338,15 @@ export function sessionBreadcrumbs(
   writers: readonly string[],
   processStartMs: number = Date.now() - process.uptime() * 1000,
 ): SessionBreadcrumbs {
-  const roots: readonly { dir: string; writtenSinceMs?: number }[] =
+  const roots =
     writers.length === 0
       ? []
-      : [
-          ...writers.map((w) => ({ dir: breadcrumbRoot(storagePath, w) })),
-          { dir: storagePath, writtenSinceMs: processStartMs },
-        ];
+      : [...writers.map((w) => breadcrumbRoot(storagePath, w)), storagePath];
+  const lastActiveMs = (crumb: string, sessionId: string) =>
+    Math.max(
+      mtimeMs(resolve(storagePath, crumb)),
+      mtimeMs(resolve(storagePath, `buffer-${sessionId}.jsonl`)),
+    );
   const hasTaggedCopy = (crumb: string, sessionId: string) => {
     let entries: Dirent[];
     try {
@@ -360,14 +361,20 @@ export function sessionBreadcrumbs(
     );
   };
   const first = <T>(
-    read: (root: { dir: string; writtenSinceMs?: number }) => T | null,
+    read: (root: string) => T | null,
     crumbOf: (hit: T) => string,
     sessionIdOf: (hit: T) => string,
   ) => {
     for (const root of roots) {
       const hit = read(root);
       if (!hit) continue;
-      if (root.dir === storagePath && hasTaggedCopy(crumbOf(hit), sessionIdOf(hit))) continue;
+      if (root === storagePath) {
+        const crumb = crumbOf(hit);
+        const sessionId = sessionIdOf(hit);
+        if (lastActiveMs(crumb, sessionId) < processStartMs || hasTaggedCopy(crumb, sessionId)) {
+          continue;
+        }
+      }
       return hit;
     }
     return null;
@@ -378,19 +385,19 @@ export function sessionBreadcrumbs(
       writers.includes(CLAUDE_CODE_PLATFORM_NAME) ? resolveFromJobDir(claudeJobDir) : null,
     ppid: (ppid) =>
       first(
-        ({ dir }) => resolveFromBreadcrumb(dir, ppid, processStartMs),
+        (dir) => resolveFromBreadcrumb(dir, ppid, processStartMs),
         () => `session-by-ppid/${ppid}.txt`,
         self,
       ),
     ancestors: (ancestorPids) =>
       first(
-        ({ dir }) => resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs),
+        (dir) => resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs),
         (hit) => `session-by-ppid/${hit.pid}.txt`,
         (hit) => hit.sessionId,
       ),
     cwd: (cwd) =>
       first(
-        ({ dir, writtenSinceMs }) => resolveFromCwd(dir, cwd, writtenSinceMs),
+        (dir) => resolveFromCwd(dir, cwd),
         () => `session-by-cwd/${sanitizeCwdForFilename(cwd!)}.txt`,
         self,
       ),
