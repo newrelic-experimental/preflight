@@ -1526,7 +1526,10 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
     mockReaddirSync.mockClear();
 
     expect(watcher.readLiveTails(PARENT_SESSION)).toBe(1);
-    expect(mockReaddirSync).toHaveBeenCalledTimes(1);
+    const listedOutsideLedger = mockReaddirSync.mock.calls
+      .map(([dir]) => String(dir))
+      .filter((dir) => !dir.endsWith('billed-turns'));
+    expect(listedOutsideLedger).toEqual([subagentsDir]);
     expect(turnsRead[0]).toMatchObject({ agentId: spawnedId, toolUseIds: ['toolu_spawned'] });
     // Tracked from then on: the next record and the next poll do not repeat it.
     expect(watcher.readLiveTails(PARENT_SESSION)).toBe(0);
