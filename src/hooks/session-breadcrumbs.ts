@@ -1,3 +1,4 @@
+import { readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
@@ -38,6 +39,17 @@ const PLATFORM_NAMES = [
 const aliasKey = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
 
 const WRITER_BY_ALIAS = new Map<string, string>(PLATFORM_NAMES.map((n) => [aliasKey(n), n]));
+
+/** The writers with a breadcrumb directory under `storagePath`, whatever else sits beside them. */
+export function breadcrumbWriters(storagePath: string): string[] {
+  try {
+    return readdirSync(resolve(storagePath, BREADCRUMBS_DIR), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
 
 export function breadcrumbRoot(storagePath: string, writer: string): string {
   return resolve(storagePath, BREADCRUMBS_DIR, writer);

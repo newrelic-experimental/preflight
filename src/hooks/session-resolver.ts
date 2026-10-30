@@ -46,7 +46,6 @@ import {
   readSync,
   closeSync,
   constants as fsConstants,
-  type Dirent,
 } from 'node:fs';
 import { resolve, basename } from 'node:path';
 import { homedir } from 'node:os';
@@ -57,7 +56,7 @@ import {
   readParentAndCommand,
   type AncestorPidsOptions,
 } from './process-ancestry.js';
-import { BREADCRUMBS_DIR, breadcrumbRoot } from './session-breadcrumbs.js';
+import { breadcrumbRoot, breadcrumbWriters } from './session-breadcrumbs.js';
 
 import { redactSensitive } from '../config.js';
 import { CLAUDE_CODE_PLATFORM_NAME } from '../platforms/claude-code-adapter.js';
@@ -360,19 +359,10 @@ export function sessionBreadcrumbs(
       .filter((path) => readSessionId(path) === sessionId)
       .reduce((latest, path) => Math.max(latest, mtimeMs(path)), mtimeMs(resolve(root, crumb)));
   };
-  const hasTaggedCopy = (crumb: string, sessionId: string) => {
-    let entries: Dirent[];
-    try {
-      entries = readdirSync(resolve(storagePath, BREADCRUMBS_DIR), { withFileTypes: true });
-    } catch {
-      return false;
-    }
-    return entries.some(
-      (e) =>
-        e.isDirectory() &&
-        readSessionId(resolve(breadcrumbRoot(storagePath, e.name), crumb)) === sessionId,
+  const hasTaggedCopy = (crumb: string, sessionId: string) =>
+    breadcrumbWriters(storagePath).some(
+      (writer) => readSessionId(resolve(breadcrumbRoot(storagePath, writer), crumb)) === sessionId,
     );
-  };
   const newest = <T>(
     read: (root: string) => T | null,
     crumbOf: (hit: T) => string,
