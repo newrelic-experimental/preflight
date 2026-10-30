@@ -44,7 +44,10 @@ export interface BilledTurnLedgerOptions {
 }
 
 interface FileIndex {
-  ino: number | undefined;
+  // The file's leading bytes when it was first read. A day file deleted and
+  // recreated starts with a different claim, while its inode can be reused
+  // (ext4 hands a freed inode straight back), so content is the identity.
+  head: string;
   offset: number;
   partial: string;
   readonly claimants: Map<string, string>;
@@ -54,6 +57,7 @@ const LEDGER_DIR = 'billed-turns';
 const MAX_CACHED_FILES = 8;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TORN_LINE_TERMINATOR = '\n';
+const HEAD_BYTES = 256;
 // Never pruned, so an undated turn keeps one key however late it is re-read.
 const UNDATED_FILE = 'undated';
 
@@ -174,7 +178,7 @@ export class BilledTurnLedger {
   private syncFiles(files: readonly LedgerFile[]): void {
     for (const file of new Set(files)) {
       const index = this.files.get(file) ?? {
-        ino: undefined,
+        head: '',
         offset: 0,
         partial: '',
         claimants: new Map(),
@@ -183,17 +187,20 @@ export class BilledTurnLedger {
       this.files.set(file, index);
 
       let size = 0;
-      let ino: number | undefined;
       try {
-        ({ size, ino } = statSync(this.filePath(file)));
+        ({ size } = statSync(this.filePath(file)));
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
       }
-      if (ino !== index.ino || size < index.offset) {
-        index.ino = ino;
+      const head = size === 0 ? '' : readRange(this.filePath(file), 0, Math.min(size, HEAD_BYTES));
+      const recreated = !head.startsWith(index.head) && !index.head.startsWith(head);
+      if (recreated || size < index.offset) {
+        index.head = head;
         index.offset = 0;
         index.partial = '';
         index.claimants.clear();
+      } else if (head.length > index.head.length) {
+        index.head = head;
       }
       if (size === index.offset) continue;
 
