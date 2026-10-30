@@ -349,6 +349,21 @@ describe('runDiagnostics', () => {
       expect(c.detail).not.toContain('gRPC');
     });
 
+    it('evaluates the receiver check against the loaded config and keeps the base detail', async () => {
+      const loadedConfig = { mode: 'local', companionMode: false, secretSources: {} };
+      mockedLoadMcpConfig.mockReturnValueOnce(loadedConfig);
+      mockedFindReceiverDoubleCount.mockReturnValueOnce({ grpc: false });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Companion mode')!;
+      expect(mockedFindReceiverDoubleCount).toHaveBeenCalledWith(process.env, loadedConfig);
+      expect(c.detail).toMatch(/^Running MCP server resolved false/);
+    });
+
+    it('stays ok when the receiver check finds nothing', async () => {
+      const checks = await runDiagnostics(makeOpts());
+      expect(checks.find((x) => x.check === 'Companion mode')!.status).toBe('ok');
+    });
+
     it('adds the gRPC note when Claude Code exports over gRPC', async () => {
       mockedFindReceiverDoubleCount.mockReturnValueOnce({ grpc: true });
       const checks = await runDiagnostics(makeOpts());

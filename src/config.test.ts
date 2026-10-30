@@ -762,6 +762,79 @@ describe('findReceiverDoubleCount()', () => {
     expect(findReceiverDoubleCount(env, makeReceiverConfig())).toEqual({ grpc: true });
   });
 
+  it('uses the gRPC default port when no endpoint is set', () => {
+    const env = makeClaudeEnv({
+      OTEL_EXPORTER_OTLP_ENDPOINT: undefined,
+      OTEL_EXPORTER_OTLP_PROTOCOL: 'grpc',
+    });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toBeNull();
+    expect(findReceiverDoubleCount(env, makeReceiverConfig({ receiverPort: 4317 }))).toEqual({
+      grpc: true,
+    });
+  });
+
+  it('prefers the metrics-specific endpoint and protocol over the general ones', () => {
+    const env = makeClaudeEnv({
+      OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4400',
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'http://localhost:4318/v1/metrics',
+      OTEL_EXPORTER_OTLP_PROTOCOL: 'grpc',
+      OTEL_EXPORTER_OTLP_METRICS_PROTOCOL: 'http/protobuf',
+    });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toEqual({ grpc: false });
+  });
+
+  it('accepts an endpoint without a scheme and a multi-exporter list', () => {
+    const env = makeClaudeEnv({
+      OTEL_EXPORTER_OTLP_ENDPOINT: '127.0.0.1:4318',
+      OTEL_METRICS_EXPORTER: 'console, otlp',
+    });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toEqual({ grpc: false });
+  });
+
+  it('matches bracketed IPv6 loopback and the default https port', () => {
+    const v6 = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://[::1]:4318' });
+    expect(findReceiverDoubleCount(v6, makeReceiverConfig({ receiverBindAddress: '::1' }))).toEqual(
+      { grpc: false },
+    );
+    const https = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'https://localhost' });
+    expect(findReceiverDoubleCount(https, makeReceiverConfig({ receiverPort: 443 }))).toEqual({
+      grpc: false,
+    });
+  });
+
+  it('matches a loopback client against a wildcard bind and the bind address itself', () => {
+    expect(
+      findReceiverDoubleCount(
+        makeClaudeEnv(),
+        makeReceiverConfig({ receiverBindAddress: '0.0.0.0' }),
+      ),
+    ).toEqual({ grpc: false });
+    const lan = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://10.0.0.5:4318' });
+    expect(
+      findReceiverDoubleCount(lan, makeReceiverConfig({ receiverBindAddress: '10.0.0.5' })),
+    ).toEqual({ grpc: false });
+  });
+
+  it('does not warn for a loopback client when the receiver binds a non-loopback address', () => {
+    const cfg = makeReceiverConfig({ receiverBindAddress: '10.0.0.5' });
+    expect(findReceiverDoubleCount(makeClaudeEnv(), cfg)).toBeNull();
+  });
+
+  it('does not warn for a remote host on the receiver port', () => {
+    const env = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector.example.com:4318' });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toBeNull();
+  });
+
+  it('does not warn when the metrics exporter is not otlp', () => {
+    const env = makeClaudeEnv({ OTEL_METRICS_EXPORTER: 'prometheus' });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toBeNull();
+  });
+
+  it('does not warn when the endpoint is not a parseable URL', () => {
+    const env = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://' });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toBeNull();
+  });
+
   it('does not warn for a non-New Relic forward', () => {
     const cfg = makeReceiverConfig({ forwardEndpoint: 'https://api.honeycomb.io' });
     expect(findReceiverDoubleCount(makeClaudeEnv(), cfg)).toBeNull();

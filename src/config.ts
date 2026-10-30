@@ -45,8 +45,21 @@ function otlpEndpointIsNewRelic(endpoint: string | undefined): boolean {
   }
 }
 
-const SDK_DEFAULT_OTLP_ENDPOINT = 'http://localhost:4318';
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+const SDK_DEFAULT_OTLP_HTTP_ENDPOINT = 'http://localhost:4318';
+const SDK_DEFAULT_OTLP_GRPC_ENDPOINT = 'http://localhost:4317';
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+const WILDCARD_HOSTS = new Set(['0.0.0.0', '::']);
+
+function bareHost(host: string): string {
+  return host.replace(/^\[|\]$/g, '');
+}
+
+function reachesReceiverHost(clientHost: string, bindAddress: string): boolean {
+  const client = bareHost(clientHost);
+  const bind = bareHost(bindAddress);
+  if (client === bind) return true;
+  return LOOPBACK_HOSTS.has(client) && (LOOPBACK_HOSTS.has(bind) || WILDCARD_HOSTS.has(bind));
+}
 
 /**
  * Detects the setup where companion mode is off yet Claude Code's cost metrics
@@ -71,22 +84,22 @@ export function findReceiverDoubleCount(
   if (parseEnvBool(env.CLAUDE_CODE_ENABLE_TELEMETRY) !== true || !exporters.includes('otlp')) {
     return null;
   }
+  const protocol = env.OTEL_EXPORTER_OTLP_METRICS_PROTOCOL || env.OTEL_EXPORTER_OTLP_PROTOCOL;
+  const grpc = protocol === 'grpc';
   const endpoint =
     env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT ||
     env.OTEL_EXPORTER_OTLP_ENDPOINT ||
-    SDK_DEFAULT_OTLP_ENDPOINT;
+    (grpc ? SDK_DEFAULT_OTLP_GRPC_ENDPOINT : SDK_DEFAULT_OTLP_HTTP_ENDPOINT);
   try {
     const url = new URL(endpoint.includes('://') ? endpoint : `http://${endpoint}`);
     const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
-    const toReceiver =
-      port === receiverPort &&
-      (LOOPBACK_HOSTS.has(url.hostname) || url.hostname === receiverBindAddress);
-    if (!toReceiver) return null;
+    if (port !== receiverPort || !reachesReceiverHost(url.hostname, receiverBindAddress)) {
+      return null;
+    }
   } catch {
     return null;
   }
-  const protocol = env.OTEL_EXPORTER_OTLP_METRICS_PROTOCOL || env.OTEL_EXPORTER_OTLP_PROTOCOL;
-  return { grpc: protocol === 'grpc' };
+  return { grpc };
 }
 
 /**
