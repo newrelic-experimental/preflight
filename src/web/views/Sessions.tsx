@@ -1303,10 +1303,10 @@ function SessionTimeline({
 }
 
 // Null when the session ran no subagents, so the label stays hidden. A single
-// agent reads as "1 at a time" because a clock time adds nothing there.
+// agent gets no clock time because there was no parallel moment to point at.
 function subagentPeakLabel(peak: SessionSubagentsResponse['peak'] | undefined): string | null {
   if (peak === undefined || peak.count === 0) return null;
-  if (peak.count === 1) return 'Peak 1 at a time';
+  if (peak.count === 1) return '1 subagent at a time';
   const when = peak.atMs === null ? '' : ` at ${fmtTimeOfDay(peak.atMs)}`;
   return `Peak ${peak.count} parallel${when}`;
 }
@@ -1426,7 +1426,14 @@ function SessionTraceSection({
     <div className="mb-4">
       <div className="mb-2 flex items-baseline justify-between gap-2">
         <Eyebrow>Session trace</Eyebrow>
-        {peakLabel !== null && <span className="text-xs text-ink-muted">{peakLabel}</span>}
+        {peakLabel !== null && (
+          <span
+            className="text-xs text-ink-muted"
+            title="Counts each subagent from its first to its last model turn, so this can read slightly low"
+          >
+            {peakLabel}
+          </span>
+        )}
       </div>
       <Card tone="static" padding="sm">
         {isLoading ? (
