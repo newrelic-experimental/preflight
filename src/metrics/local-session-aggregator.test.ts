@@ -803,3 +803,18 @@ describe('stripHeredocs', () => {
     },
   );
 });
+
+describe('LocalSessionAggregator timeline cap', () => {
+  it('keeps the most recent 10,000 timeline entries once the cap is exceeded', () => {
+    const agg = new LocalSessionAggregator();
+    const total = 10_000 + 25;
+    for (let i = 1; i <= total; i++) {
+      agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: i });
+    }
+
+    const timeline = summariesOf(agg)[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline).toHaveLength(10_000);
+    expect(timeline[0]?.timestamp).toBe(26);
+    expect(timeline[9_999]?.timestamp).toBe(total);
+  });
+});

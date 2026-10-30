@@ -66,7 +66,7 @@ export interface SessionMetrics {
   bashCallsByCategory: Record<string, number>;
   searchQueries: number;
   toolCallTimeline: TimelineEntry[];
-  /** True when the timeline was capped at MAX_TIMELINE_ENTRIES; callers should not assume they have the full history. */
+  /** True when the oldest entries were dropped to stay within MAX_TIMELINE_ENTRIES; callers should not assume they have the full history. */
   timelineTruncated: boolean;
   /** Lifetime total of timeline entries, including those dropped by the cap. */
   timelineEntryCount: number;
@@ -261,16 +261,15 @@ export class SessionTracker implements Resettable {
       this.searchQueries++;
     }
 
-    // Timeline (capped); always increment the lifetime counter.
+    // Timeline (capped, keeps the most recent entries); always increment the lifetime counter.
     this.timelineEntryCount++;
-    if (this.timeline.length < MAX_TIMELINE_ENTRIES) {
-      this.timeline.push({
-        timestamp: record.timestamp,
-        toolName: tool,
-        durationMs: record.durationMs,
-        success: record.success,
-      });
-    }
+    if (this.timeline.length >= MAX_TIMELINE_ENTRIES) this.timeline.shift();
+    this.timeline.push({
+      timestamp: record.timestamp,
+      toolName: tool,
+      durationMs: record.durationMs,
+      success: record.success,
+    });
   }
 
   getMetrics(): SessionMetrics {
