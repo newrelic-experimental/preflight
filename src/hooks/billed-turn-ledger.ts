@@ -1,19 +1,22 @@
 /**
  * Append order in an O_APPEND file is the cross-process arbiter, so two
- * racing claimants both read back the same winner without a lock. Each
- * ledger instance claims under its own random claimant id, so two processes
- * tailing the same session still resolve to one winner.
+ * racing claimants both read back the same winner without a lock. A message
+ * id maps to one file per generation, chosen by a hash of the id and the
+ * claim's wall clock rather than the turn's timestamp, so every line of a
+ * message is arbitrated in the same file. Each ledger instance claims under
+ * its own random claimant id, so two processes tailing the same session
+ * still resolve to one winner.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   closeSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readSync,
-  statSync,
   unlinkSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -22,19 +25,11 @@ import { createLogger } from '../shared/index.js';
 
 const logger = createLogger('billed-turn-ledger');
 
-type DayKey = string & { readonly __brand: 'DayKey' };
-type LedgerFile = DayKey | typeof UNDATED_FILE;
-
 export interface BillableTurn {
   readonly messageId: string;
   readonly timestampMs: number;
-  /** The source line had no timestamp, so the ledger files the turn by when it was read. */
+  /** The source line had no timestamp, so the retention horizon cannot judge the turn. */
   readonly undated?: boolean;
-}
-
-interface Placement {
-  readonly home: LedgerFile;
-  readonly files: readonly LedgerFile[];
 }
 
 export interface BilledTurnLedgerOptions {
@@ -44,34 +39,34 @@ export interface BilledTurnLedgerOptions {
 }
 
 interface FileIndex {
-  // The file's leading bytes when it was first read. A day file deleted and
+  // The file's leading bytes when it was first read. A file deleted and
   // recreated starts with a different claim, while its inode can be reused
   // (ext4 hands a freed inode straight back), so content is the identity.
-  head: string;
+  head: Buffer;
   offset: number;
-  partial: string;
+  partial: Buffer;
   readonly claimants: Map<string, string>;
 }
 
 const LEDGER_DIR = 'billed-turns';
-const MAX_CACHED_FILES = 8;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const GENERATION_MS = 7 * DAY_MS;
+const LEDGER_FILE = /^g(\d+)-([0-9a-f])\.jsonl$/;
 const TORN_LINE_TERMINATOR = '\n';
 const HEAD_BYTES = 256;
-// Never pruned, so an undated turn keeps one key however late it is re-read.
-const UNDATED_FILE = 'undated';
+const NEWLINE = 0x0a;
 
 export class BilledTurnLedger {
   private readonly dir: string;
   private readonly retainDays: number | null;
   private readonly now: () => number;
   private readonly claimant = randomUUID();
-  private readonly files = new Map<LedgerFile, FileIndex>();
-  // Turns this instance claimed but has not delivered, keyed by session and
-  // message id: a claim that threw after some of its lines landed, or a turn
-  // whose append threw. The ledger already holds them, so only this set lets
-  // them out, and only to the session they were claimed for.
-  private readonly undelivered = new Set<string>();
+  private readonly files = new Map<string, FileIndex>();
+  // The session each message this instance won is still owed to: a claim
+  // that threw after some of its lines landed, a turn whose append threw, or
+  // one whose claim line vanished before it was read back. Only this map lets
+  // the ledger's own claims out, and only to the session they were won for.
+  private readonly undelivered = new Map<string, string>();
 
   constructor(options: BilledTurnLedgerOptions) {
     this.dir = join(options.storagePath, LEDGER_DIR);
@@ -92,75 +87,82 @@ export class BilledTurnLedger {
     turns: readonly T[],
     append: (turn: T) => void,
   ): void {
-    const owed = this.claim(sessionId, turns);
-    for (const [i, turn] of owed.entries()) {
-      try {
-        append(turn);
-      } catch (err) {
-        for (const unappended of owed.slice(i)) {
-          this.undelivered.add(undeliveredKey(sessionId, unappended.messageId));
-        }
-        throw err;
-      }
+    for (const turn of this.claim(sessionId, turns)) {
+      append(turn);
+      this.undelivered.delete(turn.messageId);
     }
   }
 
   private claim<T extends BillableTurn>(sessionId: string, turns: readonly T[]): T[] {
-    this.trimCache();
     const nowMs = this.now();
-    const live: Array<{ turn: T; place: Placement }> = [];
+    const horizon = horizonOf(nowMs, this.retainDays);
+    const firstLines = new Map<string, T | null>();
     let refused = 0;
     for (const turn of turns) {
-      const place = placementOf(turn, nowMs);
-      if (!turn.undated && dayIsBeyondHorizon(dayKeyOf(turn.timestampMs), nowMs, this.retainDays)) {
-        refused++;
-        continue;
-      }
-      live.push({ turn, place });
+      if (firstLines.has(turn.messageId)) continue;
+      const beyond =
+        !turn.undated && Number.isFinite(turn.timestampMs) && turn.timestampMs < horizon;
+      if (beyond) refused++;
+      firstLines.set(turn.messageId, beyond ? null : turn);
     }
     if (refused > 0) {
-      logger.info('Refused turns older than the retention horizon', {
+      logger.debug('Refused turns older than the retention horizon', {
         refused,
         retainDays: this.retainDays,
       });
     }
-    this.syncFiles(live.flatMap(({ place }) => place.files));
+    const live = [...firstLines.values()].filter((turn): turn is T => turn !== null);
+    if (live.length === 0) return [];
 
-    const owed = new Map<string, { turn: T; place: Placement }>();
-    const linesByFile = new Map<LedgerFile, string>();
-    for (const entry of live) {
-      const id = entry.turn.messageId;
-      if (owed.has(id)) continue;
-      const key = undeliveredKey(sessionId, id);
-      const claimant = this.claimantOf(id, entry.place.files);
+    // Two processes either side of a generation boundary can both win a
+    // brand-new message claimed within the same few milliseconds.
+    const home = Math.floor(nowMs / GENERATION_MS);
+    const generations = this.listGenerations();
+    const filesOf = (messageId: string): string[] => {
+      const shard = shardOf(messageId);
+      const gens = new Set([...(generations.get(shard) ?? []), home]);
+      return [...gens].sort((a, b) => a - b).map((gen) => fileName(gen, shard));
+    };
+    this.syncFiles(live.flatMap((turn) => filesOf(turn.messageId)));
+
+    const owed: T[] = [];
+    const linesByFile = new Map<string, string>();
+    for (const turn of live) {
+      const id = turn.messageId;
+      const claimant = this.claimantOf(id, filesOf(id));
       if (claimant === undefined) {
+        const file = fileName(home, shardOf(id));
         const line =
-          TORN_LINE_TERMINATOR + JSON.stringify({ m: id, s: sessionId, c: this.claimant });
-        linesByFile.set(entry.place.home, (linesByFile.get(entry.place.home) ?? '') + line);
-      } else if (claimant !== this.claimant || !this.undelivered.has(key)) {
-        this.undelivered.delete(key);
+          TORN_LINE_TERMINATOR +
+          JSON.stringify({ m: id, s: sessionId, c: this.claimant, t: nowMs });
+        linesByFile.set(file, (linesByFile.get(file) ?? '') + line);
+        this.undelivered.set(id, sessionId);
+      } else if (claimant !== this.claimant) {
+        this.undelivered.delete(id);
+        continue;
+      } else if (this.undelivered.get(id) !== sessionId) {
         continue;
       }
-      owed.set(id, entry);
-      this.undelivered.add(key);
+      owed.push(turn);
     }
-    if (owed.size === 0) return [];
+    if (owed.length === 0) return [];
 
     if (linesByFile.size > 0) mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     for (const [file, lines] of linesByFile) {
-      appendFileSync(this.filePath(file), lines + '\n', { mode: 0o600 });
+      appendFileSync(join(this.dir, file), lines + '\n', { mode: 0o600 });
     }
 
-    this.syncFiles([...owed.values()].flatMap(({ place }) => place.files));
-    const out: T[] = [];
-    for (const { turn, place } of owed.values()) {
-      this.undelivered.delete(undeliveredKey(sessionId, turn.messageId));
-      if (this.claimantOf(turn.messageId, place.files) === this.claimant) out.push(turn);
-    }
-    return out;
+    this.syncFiles(owed.flatMap((turn) => filesOf(turn.messageId)));
+    return owed.filter((turn) => {
+      const claimant = this.claimantOf(turn.messageId, filesOf(turn.messageId));
+      if (claimant !== undefined && claimant !== this.claimant) {
+        this.undelivered.delete(turn.messageId);
+      }
+      return claimant === this.claimant;
+    });
   }
 
-  private claimantOf(messageId: string, files: readonly LedgerFile[]): string | undefined {
+  private claimantOf(messageId: string, files: readonly string[]): string | undefined {
     for (const file of files) {
       const claimant = this.files.get(file)?.claimants.get(messageId);
       if (claimant !== undefined) return claimant;
@@ -168,128 +170,138 @@ export class BilledTurnLedger {
     return undefined;
   }
 
-  private trimCache(): void {
-    for (const file of this.files.keys()) {
-      if (this.files.size <= MAX_CACHED_FILES) return;
-      this.files.delete(file);
+  /** Generations on disk per shard. Drops the index of any file no longer listed. */
+  private listGenerations(): Map<string, number[]> {
+    const listed = new Set<string>();
+    const generations = new Map<string, number[]>();
+    for (const name of readLedgerDir(this.dir)) {
+      const parsed = parseFileName(name);
+      if (parsed === null) continue;
+      listed.add(name);
+      generations.set(parsed.shard, [...(generations.get(parsed.shard) ?? []), parsed.generation]);
     }
+    for (const name of this.files.keys()) {
+      if (!listed.has(name)) this.files.delete(name);
+    }
+    return generations;
   }
 
-  private syncFiles(files: readonly LedgerFile[]): void {
+  private syncFiles(files: readonly string[]): void {
     for (const file of new Set(files)) {
-      const index = this.files.get(file) ?? {
-        head: '',
-        offset: 0,
-        partial: '',
-        claimants: new Map(),
-      };
-      this.files.delete(file);
-      this.files.set(file, index);
-
-      let size = 0;
+      let fd: number;
       try {
-        ({ size } = statSync(this.filePath(file)));
+        fd = openSync(join(this.dir, file), 'r');
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        this.files.delete(file);
+        continue;
       }
-      const head = size === 0 ? '' : readRange(this.filePath(file), 0, Math.min(size, HEAD_BYTES));
-      const recreated = !head.startsWith(index.head) && !index.head.startsWith(head);
-      if (recreated || size < index.offset) {
-        index.head = head;
-        index.offset = 0;
-        index.partial = '';
-        index.claimants.clear();
-      } else if (head.length > index.head.length) {
-        index.head = head;
+      try {
+        this.syncFile(file, fd);
+      } finally {
+        closeSync(fd);
       }
-      if (size === index.offset) continue;
-
-      const text = index.partial + readRange(this.filePath(file), index.offset, size);
-      const lastNewline = text.lastIndexOf('\n');
-      foldLines(text.slice(0, lastNewline + 1), index.claimants, file);
-      index.partial = text.slice(lastNewline + 1);
-      index.offset = size;
     }
   }
 
-  private filePath(file: LedgerFile): string {
-    return join(this.dir, `${file}.jsonl`);
+  private syncFile(file: string, fd: number): void {
+    const { size } = fstatSync(fd);
+    const head = readAt(fd, 0, Math.min(size, HEAD_BYTES));
+    let index = this.files.get(file);
+    if (index === undefined || size < index.offset || !onePrefixesOther(head, index.head)) {
+      index = { head, offset: 0, partial: Buffer.alloc(0), claimants: new Map() };
+      this.files.set(file, index);
+    } else if (head.length > index.head.length) {
+      index.head = head;
+    }
+    if (size <= index.offset) return;
+
+    const tail = readAt(fd, index.offset, size);
+    const bytes = Buffer.concat([index.partial, tail]);
+    const end = bytes.lastIndexOf(NEWLINE) + 1;
+    foldLines(bytes.subarray(0, end), index.claimants, file);
+    index.partial = Buffer.from(bytes.subarray(end));
+    index.offset += tail.length;
   }
 }
 
 export function pruneBilledTurns(storagePath: string, retainDays: number, nowMs: number): number {
   const dir = join(storagePath, LEDGER_DIR);
-  let names: string[];
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return 0;
-  }
+  const horizon = horizonOf(nowMs, retainDays);
   let deleted = 0;
-  for (const name of names) {
-    const match = /^(\d{4}-\d{2}-\d{2})\.jsonl$/.exec(name);
-    if (!match || !dayIsBeyondHorizon(match[1] as DayKey, nowMs, retainDays)) continue;
+  for (const name of readLedgerDir(dir)) {
+    const parsed = parseFileName(name);
+    if (parsed === null || (parsed.generation + 1) * GENERATION_MS > horizon) continue;
     try {
       unlinkSync(join(dir, name));
       deleted++;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        logger.warn('Failed to prune billed-turn day file', { file: name, error: String(err) });
+        logger.warn('Failed to prune billed-turn ledger file', { file: name, error: String(err) });
       }
     }
   }
   return deleted;
 }
 
-function dayKeyOf(timestampMs: number): DayKey {
-  return new Date(timestampMs).toISOString().slice(0, 10) as DayKey;
-}
-
-function undeliveredKey(sessionId: string, messageId: string): string {
-  return `${sessionId}\n${messageId}`;
-}
-
 /**
- * A dated turn is claimed in its own day, an undated one in the undated file.
- * Every turn is looked up in the undated file and the days either side of its
- * own, so a message resolves to one claim when its lines straddle UTC midnight
- * or only some of them carry a timestamp. An undated turn's day is the read
- * time: a dated line of the same message was written moments before it.
+ * Turns dated before the horizon are refused and generations ending by it
+ * are pruned. A turn is claimed no earlier than its own timestamp, so a
+ * pruned generation only ever held claims for turns the horizon refuses.
  */
-function placementOf(turn: BillableTurn, nowMs: number): Placement {
-  const day = dayKeyOf(turn.undated ? nowMs : turn.timestampMs);
-  const startMs = Date.parse(`${day}T00:00:00.000Z`);
-  const days = [dayKeyOf(startMs - DAY_MS), day, dayKeyOf(startMs + DAY_MS)];
-  return { home: turn.undated ? UNDATED_FILE : day, files: [...days, UNDATED_FILE] };
+function horizonOf(nowMs: number, retainDays: number | null): number {
+  if (retainDays === null || !(retainDays > 0)) return -Infinity;
+  return nowMs - retainDays * DAY_MS;
 }
 
-function dayIsBeyondHorizon(day: DayKey, nowMs: number, retainDays: number | null): boolean {
-  if (retainDays === null || retainDays <= 0) return false;
-  return Date.parse(`${day}T00:00:00.000Z`) + DAY_MS <= nowMs - retainDays * DAY_MS;
+function shardOf(messageId: string): string {
+  return createHash('sha256').update(messageId).digest('hex')[0];
 }
 
-function readRange(path: string, start: number, end: number): string {
-  const buf = Buffer.allocUnsafe(end - start);
-  const fd = openSync(path, 'r');
+function fileName(generation: number, shard: string): string {
+  return `g${generation}-${shard}.jsonl`;
+}
+
+function parseFileName(name: string): { generation: number; shard: string } | null {
+  const match = LEDGER_FILE.exec(name);
+  return match ? { generation: Number(match[1]), shard: match[2] } : null;
+}
+
+function readLedgerDir(dir: string): string[] {
   try {
-    let read = 0;
-    while (read < buf.length) {
-      const n = readSync(fd, buf, read, buf.length - read, start + read);
-      if (n === 0) break;
-      read += n;
-    }
-    return buf.toString('utf-8', 0, read);
-  } finally {
-    closeSync(fd);
+    return readdirSync(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
   }
 }
 
-function foldLines(text: string, claimants: Map<string, string>, file: LedgerFile): void {
-  for (const line of text.split('\n')) {
-    if (!line) continue;
+function onePrefixesOther(a: Buffer, b: Buffer): boolean {
+  const n = Math.min(a.length, b.length);
+  return a.subarray(0, n).equals(b.subarray(0, n));
+}
+
+function readAt(fd: number, start: number, end: number): Buffer {
+  const buf = Buffer.allocUnsafe(Math.max(0, end - start));
+  let read = 0;
+  while (read < buf.length) {
+    const n = readSync(fd, buf, read, buf.length - read, start + read);
+    if (n === 0) break;
+    read += n;
+  }
+  return buf.subarray(0, read);
+}
+
+function foldLines(bytes: Buffer, claimants: Map<string, string>, file: string): void {
+  let start = 0;
+  while (start < bytes.length) {
+    const end = bytes.indexOf(NEWLINE, start);
+    const line = bytes.subarray(start, end);
+    start = end + 1;
+    if (line.length === 0) continue;
     let parsed: { m?: unknown; c?: unknown };
     try {
-      parsed = JSON.parse(line) as { m?: unknown; c?: unknown };
+      parsed = JSON.parse(line.toString('utf-8')) as { m?: unknown; c?: unknown };
     } catch {
       logger.debug('Skipped a torn billed-turn ledger line', { file, bytes: line.length });
       continue;
