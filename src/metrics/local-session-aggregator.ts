@@ -22,6 +22,8 @@
  */
 
 import { spawnSync } from 'node:child_process';
+
+import type { TokenUsage } from '../shared/index.js';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
@@ -31,7 +33,12 @@ import {
   type FullSessionSummary,
   type SessionStore,
 } from '../storage/session-store.js';
-import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
+import {
+  estimatedUsageFromBytes,
+  type ByteEstimateLedger,
+  type EstimatedModelUsage,
+  type UnpricedModelUsage,
+} from './cost-tracker.js';
 import { addCallUsage } from './call-usage.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import { resolvePricingDetail } from './pricing-overlay.js';
@@ -72,6 +79,40 @@ export interface SummaryContext {
   outcome: string;
   repoResolver: RepoNameResolver;
   toolSelectionScorer: ToolSelectionScorer;
+}
+
+/**
+ * Platforms whose engine never resolves a session id, so it can neither take a
+ * token self-report nor persist its own byte estimate. Their sessions are only
+ * ever written by this aggregator, which therefore estimates them itself.
+ */
+const BYTE_ESTIMATED_PLATFORMS: ReadonlySet<string> = new Set(['cursor', 'windsurf']);
+
+interface ByteEstimateTally {
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  costByModel: Map<string, number>;
+  costByDayUsd: Map<string, number>;
+}
+
+/**
+ * A session's byte-size cost estimate as this process holds it. `unseeded`
+ * holds the estimates made before `persist()` first read the session file;
+ * `estimating` holds the saved ledger plus every estimate since, because the
+ * store keeps only the latest ledger; `retracted` saw exact usage, so it
+ * writes a zero ledger and estimates no more.
+ */
+type ByteEstimateState =
+  | { readonly kind: 'unseeded'; readonly tally: ByteEstimateTally }
+  | { readonly kind: 'estimating'; readonly tally: ByteEstimateTally }
+  | { readonly kind: 'retracted' };
+
+const RETRACTED: ByteEstimateState = { kind: 'retracted' };
+
+export interface LocalSessionAggregatorOptions {
+  /** Prices a byte-estimated tool call. Without it, no session is estimated. */
+  readonly priceByteEstimate?: (usage: TokenUsage) => { model: string; costUsd: number };
 }
 
 interface CostTotals {
@@ -136,6 +177,8 @@ export interface LocalSessionRollup {
   unpricedByModel: Map<string, UnpricedModelUsage>;
   estimatedByModel: Map<string, EstimatedModelUsage>;
   successCount: number;
+  /** Kept apart from the exact totals above; see `ByteEstimateState`. */
+  byteEstimate: ByteEstimateState;
 }
 
 /** A command with its heredoc bodies stripped (see `stripHeredocs`). */
@@ -328,6 +371,11 @@ export class LocalSessionAggregator {
   private readonly sessions = new Map<string, LocalSessionRollup>();
   /** Repo dirs targeted by git commands but never entered as a cwd. */
   private readonly gitTargetDirs = new Set<string>();
+  private readonly priceByteEstimate: LocalSessionAggregatorOptions['priceByteEstimate'];
+
+  constructor(options: LocalSessionAggregatorOptions = {}) {
+    this.priceByteEstimate = options.priceByteEstimate;
+  }
 
   private static isReal(sessionId: string | null | undefined): sessionId is string {
     if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
@@ -374,6 +422,7 @@ export class LocalSessionAggregator {
         unpricedByModel: new Map(),
         estimatedByModel: new Map(),
         successCount: 0,
+        byteEstimate: { kind: 'unseeded', tally: emptyTally() },
       };
       this.sessions.set(sessionId, rollup);
     }
@@ -400,6 +449,8 @@ export class LocalSessionAggregator {
     agentId?: unknown;
     createdPrNumber?: unknown;
     runInBackground?: unknown;
+    inputSizeBytes?: number;
+    outputSizeBytes?: number;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
     const timestamp = record.timestamp ?? Date.now();
@@ -416,6 +467,7 @@ export class LocalSessionAggregator {
     ) {
       rollup.platform = record.platform;
     }
+    this.recordByteEstimate(rollup, record, timestamp);
     // A `git -C <path>` / `cd <path> && git` command works on a repo that the
     // cwd never names, so without this the repo would be invisible to commit
     // hydration — the whole point of driving other repos from one workspace.
@@ -492,6 +544,7 @@ export class LocalSessionAggregator {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
     const timestamp = usage.timestamp ?? Date.now();
     const rollup = this.ensure(sessionId, timestamp);
+    if (usage.agentId === undefined) rollup.byteEstimate = RETRACTED;
     const dayKey = localDateKey(timestamp);
     const usd = usage.costUsd ?? 0;
     rollup.costUsd += usd;
@@ -545,6 +598,29 @@ export class LocalSessionAggregator {
     }
   }
 
+  private recordByteEstimate(
+    rollup: LocalSessionRollup,
+    record: { inputSizeBytes?: number; outputSizeBytes?: number },
+    timestamp: number,
+  ): void {
+    if (this.priceByteEstimate === undefined) return;
+    if (!BYTE_ESTIMATED_PLATFORMS.has(rollup.platform ?? '')) return;
+    if (rollup.byteEstimate.kind === 'retracted') return;
+    const inputBytes = record.inputSizeBytes ?? 0;
+    const outputBytes = record.outputSizeBytes ?? 0;
+    if (inputBytes + outputBytes <= 0) return;
+
+    const usage = estimatedUsageFromBytes(inputBytes, outputBytes);
+    const { model, costUsd } = this.priceByteEstimate(usage);
+    const tally = rollup.byteEstimate.tally;
+    tally.costUsd += costUsd;
+    tally.inputTokens += usage.inputTokens;
+    tally.outputTokens += usage.outputTokens;
+    tally.costByModel.set(model, (tally.costByModel.get(model) ?? 0) + costUsd);
+    const dayKey = localDateKey(timestamp);
+    tally.costByDayUsd.set(dayKey, (tally.costByDayUsd.get(dayKey) ?? 0) + costUsd);
+  }
+
   /** Distinct working directories seen across all sessions. */
   cwds(): string[] {
     const out = new Set<string>(this.gitTargetDirs);
@@ -585,7 +661,11 @@ export class LocalSessionAggregator {
     let written = 0;
     for (const rollup of this.sessions.values()) {
       if (rollup.savedOutcome === context.outcome || !hasUsage(rollup)) continue;
-      foldSessionFile(rollup, store.loadSession(rollup.sessionId));
+      const file = store.loadSession(rollup.sessionId);
+      foldSessionFile(rollup, file);
+      if (rollup.byteEstimate.kind === 'unseeded') {
+        rollup.byteEstimate = seededByteEstimate(file, rollup.byteEstimate.tally);
+      }
       if (!store.saveSession(summaryOf(rollup, context) as unknown as FullSessionSummary)) continue;
       rollup.accountedCost = costTotalsOf(rollup);
       rollup.savedOutcome = context.outcome;
@@ -617,6 +697,9 @@ function hasUsage(rollup: LocalSessionRollup): boolean {
 
 function summaryOf(rollup: LocalSessionRollup, context: SummaryContext): Record<string, unknown> {
   const models = [...rollup.models];
+  const ledger = emittedByteEstimates(rollup);
+  const costUsd = rollup.costUsd + (ledger?.costUsd ?? 0);
+  const costByDayUsd = sumByKey(rollup.costByDayUsd, ledger?.costByDayUsd ?? {});
   return {
     sessionId: rollup.sessionId,
     sessionName: null,
@@ -648,16 +731,14 @@ function summaryOf(rollup: LocalSessionRollup, context: SummaryContext): Record<
     testPassCount: 0,
     buildRunCount: 0,
     buildPassCount: 0,
-    estimatedCostUsd: rollup.costUsd > 0 ? rollup.costUsd : null,
+    estimatedCostUsd: costUsd > 0 ? costUsd : null,
     subagentCostUsd: rollup.subagentCostUsd,
     // Emitted ONLY when non-empty. `undefined` is the documented "this
     // rollup has no per-day buckets, fall back to the timeline pro-rate"
     // signal the aggregate route keys on; writing `{}` would assert
     // "authoritatively $0 today" and silently zero a row that should have
     // pro-rated. Absent and empty are NOT the same value here.
-    ...(rollup.costByDayUsd.size > 0
-      ? { costByDayUsd: Object.fromEntries(rollup.costByDayUsd) }
-      : {}),
+    ...(Object.keys(costByDayUsd).length > 0 ? { costByDayUsd } : {}),
     ...(rollup.subagentCostByDayUsd.size > 0
       ? { subagentCostByDayUsd: Object.fromEntries(rollup.subagentCostByDayUsd) }
       : {}),
@@ -667,8 +748,17 @@ function summaryOf(rollup: LocalSessionRollup, context: SummaryContext): Record<
     ...(rollup.estimatedByModel.size > 0
       ? { estimatedByModel: Object.fromEntries(rollup.estimatedByModel) }
       : {}),
-    tokensInput: rollup.tokensInput,
-    tokensOutput: rollup.tokensOutput,
+    ...(ledger !== undefined && {
+      byteEstimates: ledger,
+      exactTotals: {
+        costUsd: rollup.costUsd,
+        inputTokens: rollup.tokensInput,
+        outputTokens: rollup.tokensOutput,
+        costByDayUsd: Object.fromEntries(rollup.costByDayUsd),
+      },
+    }),
+    tokensInput: rollup.tokensInput + (ledger?.inputTokens ?? 0),
+    tokensOutput: rollup.tokensOutput + (ledger?.outputTokens ?? 0),
     tokensThinking: 0,
     tokensCacheRead: rollup.tokensCacheRead,
     tokensCacheCreation: rollup.tokensCacheCreation,
@@ -686,6 +776,70 @@ function summaryOf(rollup: LocalSessionRollup, context: SummaryContext): Record<
     outcome: context.outcome,
     platform: rollup.platform ?? context.platform ?? null,
   };
+}
+
+function emptyTally(): ByteEstimateTally {
+  return {
+    costUsd: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    costByModel: new Map(),
+    costByDayUsd: new Map(),
+  };
+}
+
+/**
+ * A session's estimate state once its saved file has been read. Exact usage
+ * on file means a report already replaced the estimate, as `CostTracker`'s
+ * seed decides for an engine's own session; otherwise the saved ledger
+ * carries on beneath the estimates made before the read.
+ */
+function seededByteEstimate(
+  file: FullSessionSummary | null,
+  unseeded: ByteEstimateTally,
+): ByteEstimateState {
+  if (file === null) return { kind: 'estimating', tally: unseeded };
+  const exact = exactTotalsOf(file);
+  if (exact.costUsd > 0 || exact.inputTokens + exact.outputTokens > 0) return RETRACTED;
+  const ledger = file.byteEstimates;
+  if (ledger === undefined) return { kind: 'estimating', tally: unseeded };
+  return {
+    kind: 'estimating',
+    tally: {
+      costUsd: ledger.costUsd + unseeded.costUsd,
+      inputTokens: ledger.inputTokens + unseeded.inputTokens,
+      outputTokens: ledger.outputTokens + unseeded.outputTokens,
+      costByModel: new Map(Object.entries(sumByKey(unseeded.costByModel, ledger.costByModel))),
+      costByDayUsd: new Map(Object.entries(sumByKey(unseeded.costByDayUsd, ledger.costByDayUsd))),
+    },
+  };
+}
+
+/** The ledger to save, or undefined to leave the saved one as it is. */
+function emittedByteEstimates(rollup: LocalSessionRollup): ByteEstimateLedger | undefined {
+  if (!BYTE_ESTIMATED_PLATFORMS.has(rollup.platform ?? '')) return undefined;
+  const state = rollup.byteEstimate;
+  if (state.kind === 'retracted') {
+    return { costUsd: 0, inputTokens: 0, outputTokens: 0, costByModel: {}, costByDayUsd: {} };
+  }
+  const { tally } = state;
+  if (tally.costUsd === 0 && tally.inputTokens + tally.outputTokens === 0) return undefined;
+  return {
+    costUsd: tally.costUsd,
+    inputTokens: tally.inputTokens,
+    outputTokens: tally.outputTokens,
+    costByModel: Object.fromEntries(tally.costByModel),
+    costByDayUsd: Object.fromEntries(tally.costByDayUsd),
+  };
+}
+
+function sumByKey(
+  a: ReadonlyMap<string, number>,
+  b: Readonly<Record<string, number>>,
+): Record<string, number> {
+  const out = Object.fromEntries(a);
+  for (const [key, value] of Object.entries(b)) out[key] = (out[key] ?? 0) + value;
+  return out;
 }
 
 function costTotalsOf(rollup: LocalSessionRollup): CostTotals {

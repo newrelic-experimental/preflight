@@ -1209,6 +1209,10 @@ async function main(): Promise<void> {
     const rateMultiplier =
       (config.costRateMultiplier ?? 1) * (config.dataResidencyPremium ? 1.1 : 1);
     const costTracker = new CostTracker(sessionTracker, { rateMultiplier });
+    // Prefer a model already learned from real token events over the config
+    // default (which is just a guess). Falls back to config.model on cold start.
+    const estimateConfig = config;
+    const byteEstimateModel = (): string => costTracker.getMetrics().model ?? estimateConfig.model;
     taskDetector = new TaskDetector({ costTracker });
     const antiPatternDetector = new AntiPatternDetector();
     const efficiencyScorer = new EfficiencyScorer({ costTracker });
@@ -1381,7 +1385,12 @@ async function main(): Promise<void> {
     // synthetic id, which persistSession() skips — so without this rollup the
     // sessions it observes are never written to disk at all. See
     // local-session-aggregator.ts for why that hits Copilot but not Claude Code.
-    const localSessionAggregator = new LocalSessionAggregator();
+    const localSessionAggregator = new LocalSessionAggregator({
+      priceByteEstimate: (usage) => {
+        const model = byteEstimateModel();
+        return { model, costUsd: costTracker.priceUsage(usage, model).totalUsd };
+      },
+    });
     const repoNameResolver = new RepoNameResolver();
 
     const budgetTracker = new BudgetTracker({
@@ -2266,13 +2275,10 @@ async function main(): Promise<void> {
             ownSessionId: sessionTraceId,
           })
         ) {
-          // Prefer a model already learned from real token events over the config
-          // default (which is just a guess). Falls back to config.model on cold start.
-          const estimateModel = costTracker.getMetrics().model ?? config.model;
           costTracker.recordEstimatedTokens(
             record.inputSizeBytes ?? 0,
             record.outputSizeBytes ?? 0,
-            estimateModel,
+            byteEstimateModel(),
           );
         }
 

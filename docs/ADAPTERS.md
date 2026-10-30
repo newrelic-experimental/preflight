@@ -69,6 +69,8 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Platform stamp:** the hook command sets no `MCP_CLIENT`, so the collector stamps `cursor` on any payload that carries `conversation_id` and no `session_id`.
 
+**Cost:** each conversation's cost is a byte-size estimate of its tool input and output only, at about 4 characters per token, priced at the default model (`config.model`). It leaves out prompts, replies, and cache tokens, so it undercounts. The agent cannot report exact tokens today: the MCP server never resolves a Cursor session id, so `nr_observe_report_tokens` is not listed and a direct call fails with `session_id not yet resolved`.
+
 **Setup:**
 
 1. Register the Preflight MCP server for `nr_observe_*` tools: Cursor Settings → MCP → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
@@ -102,6 +104,8 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 **Known gaps:** `post_read_code`/`post_run_command` report success `true` unconditionally, the same gap as Cursor's `afterShellExecution`. `pre_write_code` maps to `'Edit'` (it's typically a partial edit, not a full-file write).
 
 **Platform stamp:** the hook command sets no `MCP_CLIENT`, so the collector stamps `windsurf` on any payload that carries `trajectory_id` and no `session_id`.
+
+**Cost:** each trajectory's cost is a byte-size estimate of its tool input and output only, at about 4 characters per token, priced at the default model (`config.model`). It leaves out prompts, replies, and cache tokens, so it undercounts. The agent cannot report exact tokens today: the MCP server never resolves a Windsurf session id, so `nr_observe_report_tokens` is not listed and a direct call fails with `session_id not yet resolved`.
 
 **Setup:**
 
