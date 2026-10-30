@@ -69,7 +69,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Platform stamp:** the hook command sets no `MCP_CLIENT`, so the collector stamps `cursor` on any payload that carries `conversation_id` and no `session_id` (or a null one).
 
-**Cost:** each conversation's cost is a byte-size estimate of its tool input and output only, at about 4 characters per token, priced at the default model (`config.model`). It leaves out prompts, replies, and cache tokens, so it undercounts. The agent cannot report exact tokens today: the MCP server never resolves a Cursor session id, so `nr_observe_report_tokens` is not listed and a direct call fails with `session_id not yet resolved`.
+**Cost:** each conversation's cost is a byte-size estimate of its tool input and output only, at about 4 characters per token, priced at the default model (`config.model`). It counts each shell command and its `output`, each MCP call's `tool_input` and `result_json`, each read's file path and `content`, and each edit's `edits`. It leaves out prompts, replies, and cache tokens, so it undercounts. The agent cannot report exact tokens today: the MCP server never resolves a Cursor session id, so `nr_observe_report_tokens` is not listed and a direct call fails with `session_id not yet resolved`.
 
 **Setup:**
 
@@ -105,7 +105,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Platform stamp:** the hook command sets no `MCP_CLIENT`, so the collector stamps `windsurf` on any payload that carries `trajectory_id` and no `session_id` (or a null one).
 
-**Cost:** each trajectory's cost is a byte-size estimate of its tool input and output only, at about 4 characters per token, priced at the default model (`config.model`). It leaves out prompts, replies, and cache tokens, so it undercounts. The agent cannot report exact tokens today: the MCP server never resolves a Windsurf session id, so `nr_observe_report_tokens` is not listed and a direct call fails with `session_id not yet resolved`.
+**Cost:** each trajectory's cost is a byte-size estimate of its tool input and output only, at about 4 characters per token, priced at the default model (`config.model`). It counts each command line, each edit's `edits`, each MCP call's `mcp_tool_arguments` and `mcp_result`, and each read's file path and file. `post_read_code` names the file but sends none of its content, so the collector stats the file and counts its whole size on disk, even when the agent read only part of it. `post_run_command` sends no command output, so output is not counted, nor are prompts, replies, and cache tokens; the estimate undercounts. The agent cannot report exact tokens today: the MCP server never resolves a Windsurf session id, so `nr_observe_report_tokens` is not listed and a direct call fails with `session_id not yet resolved`.
 
 **Setup:**
 
