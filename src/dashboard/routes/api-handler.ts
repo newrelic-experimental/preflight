@@ -405,6 +405,7 @@ export interface ApiHandlerDeps {
     loadAllSessions?: (opts?: {
       since?: Date;
       developer?: string;
+      includeModifiedSince?: Date;
     }) => readonly FullSessionSummary[];
   };
   readonly costTracker?: {
@@ -1057,6 +1058,36 @@ function rawQualityCountsFromEvents(events: readonly QualityEvent[]): QualityPro
     backtrackCount: count('backtrack'),
     selfCorrectionCount: count('self_correction'),
   };
+}
+
+/**
+ * Today's 96 x 15-minute concurrency grid and its peak. Shared by the Today and
+ * History views of GET /api/concurrency so today's History bar cannot drift
+ * from the Today headline.
+ */
+function computeTodayConcurrency(deps: ApiHandlerDeps): {
+  startTimestamp: number;
+  buckets: ReturnType<typeof computeTodayConcurrencyBuckets>;
+  peak: number;
+} {
+  // loadSessionsWithActivityToday() so a session resumed from an older start
+  // date (it keeps its original filename) isn't dropped; window-building clamps
+  // each session's activity to today. The loaders and getTodaySessionIds()
+  // already exclude synthetic session ids.
+  const todaySessions =
+    deps.sessionStore?.loadSessionsWithActivityToday?.() ??
+    deps.sessionStore?.loadSessionsOverlappingToday?.() ??
+    deps.sessionStore?.loadTodaySessions() ??
+    [];
+  const startTimestamp = localStartOfDay();
+  // Today-scoped (not 3-min live-scoped): an idle-but-still-open session's
+  // buffered activity must still fold in.
+  const liveIds = deps.liveSessionRegistry?.getTodaySessionIds?.() ?? [];
+  const bufferRecords = deps.toolCallBuffer?.getRecords() ?? [];
+  const windows = collectTodayActivityWindows(todaySessions, liveIds, bufferRecords);
+  const buckets = computeTodayConcurrencyBuckets(windows, startTimestamp);
+  const peak = buckets.reduce((max, b) => Math.max(max, b.count), 0);
+  return { startTimestamp, buckets, peak };
 }
 
 function computeDailyPeakConcurrency(
@@ -2835,20 +2866,21 @@ export function createApiHandler(
         const days = daysParam ? Math.min(Math.max(parseInt(daysParam, 10) || 30, 1), 90) : 30;
         const since = new Date(localStartOfDay());
         since.setDate(since.getDate() - days);
-        const allSessions = deps.sessionStore?.loadAllSessions?.({ since }) ?? [];
+        const allSessions =
+          deps.sessionStore?.loadAllSessions?.({ since, includeModifiedSince: since }) ?? [];
         const dailyPeaks = computeDailyPeakConcurrency(
           allSessions as readonly SessionActivityLike[],
           days,
         );
-        // Override today's bucket with the live peak — disk-derived
-        // concurrency only sees persisted (completed) sessions, so a
-        // dashboard with active concurrent sessions but nothing flushed
-        // to disk yet would otherwise report peak=0 for today.
-        if (dailyPeaks.length > 0 && livePeak > 0) {
+        // Today is replaced (not maxed) with the Today view's headline peak so
+        // the two views agree exactly, and it includes live sessions' buffered
+        // activity that the disk-derived value misses.
+        if (dailyPeaks.length > 0) {
           const today = dailyPeaks[dailyPeaks.length - 1];
-          if (today.peak < livePeak) {
-            dailyPeaks[dailyPeaks.length - 1] = { ...today, peak: livePeak };
-          }
+          dailyPeaks[dailyPeaks.length - 1] = {
+            ...today,
+            peak: computeTodayConcurrency(deps).peak,
+          };
         }
         jsonOk(res, { dailyPeaks });
         return;
@@ -2863,51 +2895,11 @@ export function createApiHandler(
         allSessions as readonly SessionActivityLike[],
       );
 
-      // Prefer loadSessionsWithActivityToday() so a session that started
-      // earlier and is still running, or was resumed from an older start date
-      // (keeping its original filename), isn't invisible to the chart —
-      // loadTodaySessions() filters by filename date (= start date) and would
-      // silently drop it. Downstream window-building clamps each session's
-      // activity to [startTimestamp, dayEnd], so widening the input set here
-      // can't leak earlier days' activity into today's buckets.
-      // loadAllSessions()/loadTodaySessions() already exclude synthetic session
-      // ids, so the chart buckets below agree with the session list shown
-      // alongside the chart without re-filtering here.
-      const todaySessions =
-        deps.sessionStore?.loadSessionsWithActivityToday?.() ??
-        deps.sessionStore?.loadSessionsOverlappingToday?.() ??
-        deps.sessionStore?.loadTodaySessions() ??
-        [];
-
-      // 96 × 15-minute fixed-grid buckets covering today (local midnight →
-      // local midnight + 24h). Each bucket holds the peak concurrent
-      // session count within its window. Bounded payload (~10 KB) and
-      // renders cleanly at any zoom level. Replaces the prior unbounded
-      // 30-second rolling timeSeries.
-      const startTimestamp = localStartOfDay();
-      // Today-scoped (not 3-min live-scoped): an idle-but-still-open session's
-      // buffered activity must still fold into the chart — getTodaySessionIds()
-      // already excludes synthetic session ids too.
-      const liveIds = deps.liveSessionRegistry?.getTodaySessionIds?.() ?? [];
-      const bufferRecords = deps.toolCallBuffer?.getRecords() ?? [];
-      const windows = collectTodayActivityWindows(todaySessions, liveIds, bufferRecords);
-      const buckets = computeTodayConcurrencyBuckets(windows, startTimestamp);
-      // Derive the headline "today peak" from the SAME buckets shown in the
-      // chart — rather than from an independent computation over a
-      // differently-scoped session set — so the two numbers can never
-      // disagree by construction. Computing them from two different
-      // concurrency models is exactly how the headline and chart can
-      // silently drift apart.
-      //
-      // Deliberately NOT folded with `livePeak` here (unlike allTimePeak
-      // below): `livePeak` is a synthetic-id-unfiltered, never-reset
-      // lifetime max from LiveSessionRegistry, so mixing it into today's
-      // headline can reintroduce that same chart/headline disagreement.
-      // It's unnecessary anyway:
-      // `windows` already unions each live session's buffered (not-yet-
-      // persisted) activity into the same buckets, so a currently-live
-      // session with any tool-call activity is already reflected here.
-      const historicalPeak = buckets.reduce((max, b) => Math.max(max, b.count), 0);
+      // The headline peak is derived from the same buckets as the chart so they
+      // cannot disagree. Not folded with `livePeak` (unlike allTimePeak below):
+      // it is a synthetic-id-unfiltered, never-reset lifetime max, and the
+      // buckets already include live sessions' buffered activity.
+      const { startTimestamp, buckets, peak: historicalPeak } = computeTodayConcurrency(deps);
 
       jsonOk(res, {
         current: computeCrossProcessLiveSessionIds(deps).length,
