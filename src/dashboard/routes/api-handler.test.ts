@@ -21,8 +21,12 @@ import { makeUsage } from '../../__test-utils__/token-usage.js';
 import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
 import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
+import { CostTracker } from '../../metrics/cost-tracker.js';
+import { buildCostTrackerSeed } from '../../metrics/cost-tracker-seed.js';
+import { ZERO_QUALITY_PROXY_COUNTS } from '../../metrics/quality-proxy-tracker.js';
 
 import type { ToolCallRecord } from '../../storage/types.js';
+import type { FullSessionSummary } from '../../storage/session-store.js';
 import type { GitWorkspaceReport } from '../../metrics/git-workspace-report.js';
 import type { GitWorkspaceReportWithWindow } from '../../metrics/git-workspace-reporter.js';
 
@@ -8632,5 +8636,195 @@ describe('api-handler — session_intent is never exposed on the HTTP surface', 
     const parsed = JSON.parse(body()) as Record<string, unknown>;
     expect('sessionIntent' in parsed).toBe(false);
     expect(parsed.sessionName).toBe('my session');
+  });
+});
+
+function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummary {
+  const now = Date.now();
+  return {
+    sessionId: `sess-${now}`,
+    sessionName: 'my-project',
+    sessionNameSource: null,
+    sessionIntent: null,
+    repoName: null,
+    startTime: now - 60_000,
+    endTime: now,
+    durationMs: 60_000,
+    toolCallCount: 10,
+    developer: 'alice',
+    model: 'claude-sonnet-4-20250514',
+    toolBreakdown: {},
+    skillBreakdown: {},
+    filesRead: [],
+    filesModified: [],
+    linesAdded: 0,
+    linesRemoved: 0,
+    bashCommandCount: 0,
+    testRunCount: 0,
+    testPassCount: 0,
+    buildRunCount: 0,
+    buildPassCount: 0,
+    estimatedCostUsd: 56.02,
+    subagentCostUsd: 12.5,
+    tokensInput: 143_758,
+    tokensOutput: 383_743,
+    tokensThinking: 0,
+    tokensCacheRead: 171_800_083,
+    tokensCacheCreation: 3_409_635,
+    cacheSavingsUsd: 4.2,
+    efficiencyScore: null,
+    toolSelectionMetrics: null,
+    modelBreakdown: {
+      'claude-sonnet-5': {
+        requestCount: 44,
+        totalInputTokens: 143_758,
+        totalOutputTokens: 383_743,
+        totalCostUsd: 56.02,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
+        totalThinkingTokens: 0,
+      },
+    },
+    costByWorkflowRunId: { wf_abc: { [localDateKey()]: 12.5 } },
+    qualityProxy: { ...ZERO_QUALITY_PROXY_COUNTS },
+    antiPatterns: [],
+    taskCount: 1,
+    taskSuccessRate: null,
+    toolSuccessRate: null,
+    contextCompressions: 0,
+    agentSpawns: 1,
+    userMessages: 0,
+    assistantMessages: 0,
+    userCorrections: 0,
+    outcome: 'completed',
+    ...overrides,
+  };
+}
+
+describe('api-handler Spend Today for the live session', () => {
+  const NOON = new Date(2026, 9, 29, 12, 0, 0).getTime();
+  const TODAY_KEY = localDateKey(NOON);
+  const YESTERDAY_KEY = localDateKey(NOON - 86_400_000);
+  const DAY_START = localStartOfDay(NOON);
+  const HOUR = 3_600_000;
+  const LIVE_SID = 'live-1';
+
+  beforeEach(() => {
+    jest.useFakeTimers({
+      now: NOON,
+      doNotFake: ['setTimeout', 'setInterval', 'setImmediate', 'nextTick', 'queueMicrotask'],
+    });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  function makeCheckpoint(overrides?: Partial<FullSessionSummary>): FullSessionSummary {
+    return makeSummary({
+      sessionId: LIVE_SID,
+      startTime: DAY_START + HOUR,
+      endTime: NOON - 60_000,
+      estimatedCostUsd: 5,
+      subagentCostUsd: 2,
+      costByDayUsd: { [TODAY_KEY]: 5 },
+      subagentCostByDayUsd: { [TODAY_KEY]: 2 },
+      tokensCacheRead: 0,
+      timeline: [],
+      ...overrides,
+    });
+  }
+
+  function makeLiveTracker(checkpoint: FullSessionSummary | null): CostTracker {
+    const tracker = new CostTracker();
+    if (checkpoint) tracker.seedFromPersisted(buildCostTrackerSeed(checkpoint));
+    return tracker;
+  }
+
+  type AggregatePayload = {
+    totalCostUsd: number;
+    subagentUsd: number;
+    forecastEndOfDayUsd: number | null;
+    cacheHealth: { totalCacheReadTokens: number };
+  };
+
+  async function getAggregate(
+    checkpoint: FullSessionSummary,
+    costTracker: CostTracker,
+    buffer: readonly { readonly [key: string]: unknown }[] = [],
+    sessionStartTime = DAY_START + HOUR,
+  ): Promise<AggregatePayload> {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => buffer },
+      sessionStore: {
+        // loadTodaySessions filters by start-date file name, so a session that
+        // started yesterday is only visible to the overlapping loader.
+        loadTodaySessions: () => (checkpoint.startTime >= DAY_START ? [checkpoint] : []),
+        loadSessionsOverlappingToday: () => [checkpoint],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () => ({ sessionId: LIVE_SID, sessionStartTime }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      costTracker,
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    return JSON.parse(body()) as AggregatePayload;
+  }
+
+  it('counts a seeded live session with a checkpoint once', async () => {
+    const checkpoint = makeCheckpoint();
+    const parsed = await getAggregate(checkpoint, makeLiveTracker(checkpoint));
+    expect(parsed.totalCostUsd).toBeCloseTo(5, 6);
+    expect(parsed.subagentUsd).toBeCloseTo(2, 6);
+  });
+
+  it('keeps the checkpoint cost when the live tracker was never seeded', async () => {
+    const parsed = await getAggregate(makeCheckpoint(), makeLiveTracker(null));
+    expect(parsed.totalCostUsd).toBeCloseTo(5, 6);
+    expect(parsed.subagentUsd).toBeCloseTo(2, 6);
+  });
+
+  it('takes the larger of checkpoint and live cost instead of summing them', async () => {
+    const tracker = makeLiveTracker(null);
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 2_000_000, outputTokens: 200_000, totalTokens: 2_200_000 }),
+      'claude-sonnet-4',
+      { timestampMs: NOON - 60_000 },
+    );
+    const liveCost = tracker.getCostForDay(TODAY_KEY);
+    expect(liveCost).toBeGreaterThan(5);
+    const parsed = await getAggregate(makeCheckpoint(), tracker);
+    expect(parsed.totalCostUsd).toBeCloseTo(liveCost, 3);
+  });
+
+  it('adds undrained buffer cache tokens to the live total once', async () => {
+    const checkpoint = makeCheckpoint({ tokensCacheRead: 1000 });
+    const parsed = await getAggregate(checkpoint, makeLiveTracker(checkpoint), [
+      { mode: 'token', sessionId: LIVE_SID, timestamp: NOON - 1000, cacheReadTokens: 500 },
+    ]);
+    expect(parsed.cacheHealth.totalCacheReadTokens).toBe(1500);
+  });
+
+  it('anchors the forecast at the checkpoint first activity today for a cross-midnight live session', async () => {
+    const checkpoint = makeCheckpoint({
+      startTime: DAY_START - 2 * HOUR,
+      costByDayUsd: { [YESTERDAY_KEY]: 3, [TODAY_KEY]: 5 },
+      estimatedCostUsd: 8,
+      timeline: [
+        { timestamp: DAY_START - HOUR, durationMs: null, toolName: 'Read', success: true },
+        { timestamp: DAY_START + HOUR, durationMs: null, toolName: 'Read', success: true },
+      ],
+    });
+    const parsed = await getAggregate(
+      checkpoint,
+      makeLiveTracker(checkpoint),
+      [],
+      DAY_START - 2 * HOUR,
+    );
+    expect(parsed.forecastEndOfDayUsd).not.toBeNull();
   });
 });
