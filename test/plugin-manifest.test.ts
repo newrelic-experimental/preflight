@@ -5,8 +5,6 @@ import { generateHookEntries } from '../src/install/install-helper.js';
 
 const repoRoot = resolve(__dirname, '..');
 
-const SERVER_VERSION_ENV = 'NEW_RELIC_AI_PREFLIGHT_VERSION';
-
 const packageJson: { version: string } = JSON.parse(
   readFileSync(resolve(repoRoot, 'package.json'), 'utf-8'),
 );
@@ -196,20 +194,14 @@ describe('Claude Code plugin manifests', () => {
     expect(existsSync(resolve(repoRoot, 'plugin/.mcp.json'))).toBe(true);
   });
 
-  it('.mcp.json launches the published package over stdio, pinnable by env var', () => {
+  it(".mcp.json launches the published package over stdio, pinned to the plugin's version", () => {
+    // The Claude plugin marketplace rejects an npx launcher that isn't pinned to an exact
+    // version: `@latest`, a range, and a `${VAR}` substitution all fail its check. `npm run
+    // version-packages` writes the pin in the release PR (scripts/release-files.ts).
     const server = mcpConfig.mcpServers['newrelic-preflight'];
     expect(server).toBeDefined();
     expect(server.command).toBe('npx');
-    expect(server.args).toEqual([
-      '-y',
-      `@newrelic/preflight@\${${SERVER_VERSION_ENV}:-latest}`,
-      '--stdio',
-    ]);
-  });
-
-  it('docs/PLUGIN.md documents the same pin variable the manifest expands', () => {
-    const pluginDoc = readFileSync(resolve(repoRoot, 'docs/PLUGIN.md'), 'utf-8');
-    expect(pluginDoc).toContain(SERVER_VERSION_ENV);
+    expect(server.args).toEqual(['-y', `@newrelic/preflight@${packageJson.version}`, '--stdio']);
   });
 
   it('hooks.json wires both PreToolUse and PostToolUse to the bundled collector', () => {

@@ -258,7 +258,7 @@ Run `npm run lint` before committing to verify the lint target is still met.
 
 ## Versioning and CHANGELOG
 
-**Never bump the version or edit `CHANGELOG.md` in a PR.** The version is written in `package.json`, `package-lock.json`, `server.json`, `plugin/.claude-plugin/plugin.json`, and `kiro-power/plugin.json`, and only the release PR (`npm run version-packages`) changes them. Instead, add a changeset holding the change's CHANGELOG entry:
+**Never bump the version or edit `CHANGELOG.md` in a PR.** The version is written in `package.json`, `package-lock.json`, `server.json`, `plugin/.claude-plugin/plugin.json`, `plugin/.mcp.json` (the `npx` pin), and `kiro-power/plugin.json`, and only the release PR (`npm run version-packages`) changes them. Instead, add a changeset holding the change's CHANGELOG entry:
 
 ```md
 ---
