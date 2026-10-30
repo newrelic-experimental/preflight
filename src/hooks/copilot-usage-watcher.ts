@@ -64,6 +64,15 @@ const DEFAULT_DISCOVERY_HOURS = 24;
 const MAX_BYTES_PER_POLL = 1024 * 1024;
 /** See SubagentWatcher's identical constant for the OOM-bug rationale this guards against. */
 const MAX_PARTIAL_LINE_BYTES = 4 * 1024 * 1024; // 4 MiB — sized to the larger log lines
+// A line past the cap is not dropped: its head and tail windows are kept and
+// the middle is elided, so memory stays bounded while the usage fields, which
+// sit near the line's ends, are still extracted when the line completes.
+const ELIDE_KEEP_CHARS = 64 * 1024;
+// A raw JSONL line cannot contain a literal NUL, so the mark is unambiguous.
+const ELIDE_MARK = '\u0000ELIDED\u0000';
+// A replaced log is recognised by its first bytes, not its size or inode: a new
+// file can be larger than the old cursor, and ext4 reuses freed inodes.
+const FINGERPRINT_BYTES = 256;
 const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const COPILOT_LOG_SUBPATH = join('GitHub.copilot-chat', 'debug-logs');
 
@@ -156,6 +165,8 @@ interface ParsedUsageRecord {
 interface CursorState {
   readonly bytePos: number;
   readonly partialLine: string;
+  /** Base64 of the log's first bytes when last read. Absent in cursors written before it existed. */
+  readonly fingerprint?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +182,7 @@ export class CopilotUsageWatcher {
   private readonly localStore: LocalStore | undefined;
 
   private intervalId: ReturnType<typeof setInterval> | null = null;
+  private readonly bytePosBySession = new Map<string, number>();
   private readonly partialByPath = new Map<string, string>();
   private readonly decoderByPath = new Map<string, StringDecoder>();
 
@@ -178,6 +190,7 @@ export class CopilotUsageWatcher {
   private linesRead = 0;
   private bytesRead = 0;
   private parseErrors = 0;
+  private warnedElided = false;
   private debugLoggingLikelyDisabled = false;
   private warnedDebugLoggingDisabled = false;
 
@@ -280,7 +293,13 @@ export class CopilotUsageWatcher {
             if (!st.isFile()) continue;
             // Scoped mode always tails its own session; unscoped applies the
             // recency window so old logs don't trigger unbounded cold scans.
-            if (this.parentSessionFilter === null && st.mtimeMs < cutoffMs) continue;
+            if (
+              this.parentSessionFilter === null &&
+              st.mtimeMs < cutoffMs &&
+              !this.hasUnreadBytes(sessionId, st.size)
+            ) {
+              continue;
+            }
           } catch {
             continue;
           }
@@ -312,10 +331,8 @@ export class CopilotUsageWatcher {
     const cursorPath = this.cursorPath(dirSessionId);
     const persisted = this.readCursor(cursorPath);
     const memPartial = this.partialByPath.get(path);
-    const startCursor: CursorState =
-      memPartial !== undefined
-        ? { bytePos: persisted.bytePos, partialLine: memPartial }
-        : persisted;
+    let startCursor: CursorState =
+      memPartial !== undefined ? { ...persisted, partialLine: memPartial } : persisted;
 
     let size: number;
     try {
@@ -323,24 +340,46 @@ export class CopilotUsageWatcher {
     } catch {
       return;
     }
-    // Truncated/rotated file: restart from 0.
-    const fromPos = startCursor.bytePos > size ? 0 : startCursor.bytePos;
-    if (fromPos >= size) return;
-
-    const toRead = Math.min(size - fromPos, MAX_BYTES_PER_POLL);
-    const buf = Buffer.alloc(toRead);
-    let actuallyRead = 0;
-    let fd: number | null = null;
+    let head: Buffer;
     try {
-      fd = openSync(path, 'r');
-      actuallyRead = readSync(fd, buf, 0, toRead, fromPos);
+      head = readBytes(path, 0, Math.min(size, FINGERPRINT_BYTES));
     } catch (err) {
       this.recordError(err);
       return;
-    } finally {
-      if (fd !== null) closeSync(fd);
     }
-    if (actuallyRead <= 0) return;
+    // Truncated or replaced file: restart from 0, and drop the carried partial
+    // line and decoder state, which belong to the old file's bytes. A cursor
+    // without a fingerprint can only detect truncation.
+    const knownHead =
+      startCursor.fingerprint === undefined ? null : Buffer.from(startCursor.fingerprint, 'base64');
+    const replaced = knownHead !== null && !onePrefixesOther(head, knownHead);
+    if (startCursor.bytePos > size || replaced) {
+      startCursor = { bytePos: 0, partialLine: '' };
+      this.partialByPath.delete(path);
+      this.decoderByPath.delete(path);
+    }
+    const fingerprint = (
+      knownHead !== null && !replaced && knownHead.length > head.length ? knownHead : head
+    ).toString('base64');
+    const fromPos = startCursor.bytePos;
+    if (fromPos >= size) {
+      this.bytePosBySession.set(dirSessionId, fromPos);
+      return;
+    }
+
+    const toRead = Math.min(size - fromPos, MAX_BYTES_PER_POLL);
+    let buf: Buffer;
+    try {
+      buf = readBytes(path, fromPos, toRead);
+    } catch (err) {
+      this.recordError(err);
+      return;
+    }
+    const actuallyRead = buf.length;
+    if (actuallyRead <= 0) {
+      this.bytePosBySession.set(dirSessionId, fromPos);
+      return;
+    }
     this.bytesRead += actuallyRead;
 
     let decoder = this.decoderByPath.get(path);
@@ -358,15 +397,14 @@ export class CopilotUsageWatcher {
       lines = combined.slice(0, lastNewline).split('\n');
       newPartial = combined.slice(lastNewline + 1);
     }
-    if (newPartial.length > MAX_PARTIAL_LINE_BYTES) {
-      newPartial = '';
-      this.parseErrors += 1;
-    }
+    newPartial = elideOversize(newPartial);
 
     for (const line of lines) {
       if (!line) continue;
       this.linesRead += 1;
-      const parsed = this.tryParseLine(line);
+      const parsed = line.includes(ELIDE_MARK)
+        ? this.parseElidedLine(line)
+        : this.tryParseLine(line);
       if (parsed === null) continue;
       const sessionId = parsed.sessionId ?? dirSessionId;
       this.appendToBuffer(sessionId, {
@@ -398,7 +436,8 @@ export class CopilotUsageWatcher {
       });
     }
 
-    this.writeCursor(cursorPath, nextBytePos, newPartial);
+    this.writeCursor(cursorPath, nextBytePos, newPartial, fingerprint);
+    this.bytePosBySession.set(dirSessionId, nextBytePos);
     if (newPartial.length > 0) this.partialByPath.set(path, newPartial);
     else this.partialByPath.delete(path);
   }
@@ -451,12 +490,72 @@ export class CopilotUsageWatcher {
     };
   }
 
+  /**
+   * Extract usage fields from a line whose middle was elided. Only scalar
+   * fields are matched, and an escaped quote inside a string payload never
+   * matches the unescaped patterns below. A field that fell in the elided
+   * middle yields no record: a guessed zero-token record would misreport cost.
+   */
+  private parseElidedLine(line: string): ParsedUsageRecord | null {
+    const at = line.indexOf(ELIDE_MARK);
+    const head = line.slice(0, at);
+    const tail = line.slice(at + ELIDE_MARK.length);
+    const find = (re: RegExp): string | null => (re.exec(head) ?? re.exec(tail))?.[1] ?? null;
+    if (find(/("type":"llm_request")/) === null) return null;
+    // A number must end at a delimiter, or a value cut by the head boundary
+    // would match its leading digits.
+    const findNumber = (name: string): number | null => {
+      const raw = find(new RegExp(`"${name}":(\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)(?=[,}\\s])`));
+      return raw === null ? null : num(Number(raw));
+    };
+    const model = find(/"model":"([^"\\]+)"/);
+    const responseId = find(/"responseId":"([^"\\]+)"/);
+    const inputTokens = findNumber('inputTokens');
+    const outputTokens = findNumber('outputTokens');
+    if (!model || !responseId || inputTokens === null || outputTokens === null) {
+      this.parseErrors += 1;
+      if (!this.warnedElided) {
+        this.warnedElided = true;
+        logger.warn('Skipped an oversize Copilot log line whose usage fields were not recoverable');
+      }
+      return null;
+    }
+    const ts = Number(/"ts":(\d+)/.exec(head)?.[1]);
+    const sid = /"sid":"([^"\\]+)"/.exec(head)?.[1];
+    return {
+      timestampMs: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
+      sessionId: sid !== undefined && SESSION_ID_RE.test(sid) ? sid : null,
+      responseId,
+      model,
+      inputTokens,
+      outputTokens,
+      cachedTokens: findNumber('cachedTokens') ?? 0,
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Buffer + cursor I/O
   // -------------------------------------------------------------------------
 
   private cursorPath(sessionId: string): string {
     return join(this.storagePath, `.copilot-usage-pos-${sessionId}`);
+  }
+
+  /**
+   * True when a cursor exists and the file has bytes past it. An existing
+   * cursor is read from disk once per session and tailFile keeps the cached
+   * position current, so the 2s poll does not re-read every old session's
+   * cursor file. Absence is not cached: another process may create the cursor.
+   */
+  private hasUnreadBytes(sessionId: string, size: number): boolean {
+    let bytePos = this.bytePosBySession.get(sessionId);
+    if (bytePos === undefined) {
+      const cursorPath = this.cursorPath(sessionId);
+      if (!existsSync(cursorPath)) return false;
+      bytePos = this.readCursor(cursorPath).bytePos;
+      this.bytePosBySession.set(sessionId, bytePos);
+    }
+    return bytePos < size;
   }
 
   private readCursor(cursorPath: string): CursorState {
@@ -469,18 +568,26 @@ export class CopilotUsageWatcher {
       const bytePos =
         typeof parsed.bytePos === 'number' && parsed.bytePos >= 0 ? parsed.bytePos : 0;
       const partialLine = typeof parsed.partialLine === 'string' ? parsed.partialLine : '';
-      return { bytePos, partialLine };
+      const fingerprint = typeof parsed.fingerprint === 'string' ? parsed.fingerprint : undefined;
+      return { bytePos, partialLine, fingerprint };
     } catch {
       return { bytePos: 0, partialLine: '' };
     }
   }
 
-  private writeCursor(cursorPath: string, bytePos: number, partialLine: string): void {
+  private writeCursor(
+    cursorPath: string,
+    bytePos: number,
+    partialLine: string,
+    fingerprint: string,
+  ): void {
     try {
       if (!existsSync(this.storagePath)) {
         mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
       }
-      writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine }), { mode: 0o600 });
+      writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine, fingerprint }), {
+        mode: 0o600,
+      });
     } catch (err) {
       this.recordError(err);
     }
@@ -513,6 +620,41 @@ export class CopilotUsageWatcher {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Bound a carried partial line. Past the cap, keep the first and last
+ * ELIDE_KEEP_CHARS and replace the middle with ELIDE_MARK.
+ */
+function elideOversize(partial: string): string {
+  const at = partial.indexOf(ELIDE_MARK);
+  if (at === -1) {
+    if (partial.length <= MAX_PARTIAL_LINE_BYTES) return partial;
+    return (
+      partial.slice(0, ELIDE_KEEP_CHARS) +
+      ELIDE_MARK +
+      partial.slice(partial.length - ELIDE_KEEP_CHARS)
+    );
+  }
+  const tailStart = at + ELIDE_MARK.length;
+  if (partial.length - tailStart <= 2 * ELIDE_KEEP_CHARS) return partial;
+  return partial.slice(0, tailStart) + partial.slice(partial.length - ELIDE_KEEP_CHARS);
+}
+
+function readBytes(path: string, pos: number, len: number): Buffer {
+  const buf = Buffer.alloc(len);
+  const fd = openSync(path, 'r');
+  try {
+    const n = len === 0 ? 0 : readSync(fd, buf, 0, len, pos);
+    return n === len ? buf : buf.subarray(0, n);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function onePrefixesOther(a: Buffer, b: Buffer): boolean {
+  const n = Math.min(a.length, b.length);
+  return a.subarray(0, n).equals(b.subarray(0, n));
+}
 
 function num(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;

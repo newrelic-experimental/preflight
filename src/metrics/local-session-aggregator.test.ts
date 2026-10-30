@@ -225,12 +225,17 @@ describe('LocalSessionAggregator', () => {
     expect(summariesOf(agg)[0]?.model).toBeNull();
   });
 
-  // A token-only rollup would be filtered out of /api/sessions anyway, which
-  // requires toolCallCount > 0 — writing it just burns a file.
-  it('does not emit a summary for a session with no tool calls', () => {
+  it('emits a summary for a chat-only session that recorded cost', () => {
     const agg = new LocalSessionAggregator();
     agg.recordTokenUsage(REAL_ID, { costUsd: 2, inputTokens: 500 });
     expect(agg.size()).toBe(1);
+    expect(summariesOf(agg)).toHaveLength(1);
+    expect(summariesOf(agg)[0]).toMatchObject({ sessionId: REAL_ID, estimatedCostUsd: 2 });
+  });
+
+  it('does not emit a summary for a session with no tool calls and no usage', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, {});
     expect(summariesOf(agg)).toEqual([]);
   });
 
@@ -499,7 +504,7 @@ describe('LocalSessionAggregator panel rehydration', () => {
     expect(toolSelection?.totalCalls).toBe(2);
   });
 
-  it('keeps a token-only session out of the summaries, as before', () => {
+  it('emits a token-only session so its cost is persisted', () => {
     const agg = new LocalSessionAggregator();
     agg.recordTokenUsage(REAL_ID, {
       model: 'gpt-5',
@@ -507,7 +512,7 @@ describe('LocalSessionAggregator panel rehydration', () => {
       outputTokens: 1,
       costUsd: 0.01,
     });
-    expect(summariesOf(agg)).toEqual([]);
+    expect(summariesOf(agg)).toHaveLength(1);
   });
 });
 
