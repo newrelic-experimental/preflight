@@ -767,14 +767,17 @@ function processHook(raw: string, cliEvent?: string): void {
   // evidence that Cursor's own MCP-server child process shares Claude Code's
   // ancestry-based session-resolution model, so extending this to
   // conversation_id would be a guess, not a fix.
-  if (typeof data.session_id === 'string' && data.session_id.length > 0) {
+  const engine = detectStampPlatform();
+  const writer = breadcrumbWriter(engine);
+  if (writer === null) {
+    process.stderr.write(
+      `[preflight-collector] Warning: MCP_CLIENT/NEW_RELIC_AI_PLATFORM ${JSON.stringify(engine)} names no engine Preflight knows; no session breadcrumb written\n`,
+    );
+  } else if (typeof data.session_id === 'string' && data.session_id.length > 0) {
     const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
     // The writer's copy goes first: a server skips an untagged breadcrumb
     // only once it finds that copy.
-    for (const root of [
-      breadcrumbRoot(storageDir, breadcrumbWriter(detectStampPlatform())),
-      storageDir,
-    ]) {
+    for (const root of [breadcrumbRoot(storageDir, writer), storageDir]) {
       writePpidBreadcrumb(data.session_id, root);
       writeCwdBreadcrumb(data.session_id, data.cwd, root);
     }

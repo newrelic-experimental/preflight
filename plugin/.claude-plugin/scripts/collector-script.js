@@ -81,12 +81,35 @@ var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
 
 // src/hooks/session-breadcrumbs.ts
 var BREADCRUMBS_DIR = "breadcrumbs";
-var WRITER_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+var PLATFORM_NAMES = [
+  "claude-code",
+  "cursor",
+  "windsurf",
+  "copilot",
+  "copilot-app",
+  "copilot-sdk",
+  "zed",
+  "continue",
+  "amazon-q",
+  "kiro",
+  "droid",
+  "gemini-cli",
+  "cline",
+  "codex",
+  "opencode",
+  "kilocode",
+  "pi",
+  "antigravity",
+  "generic-mcp"
+];
+var aliasKey = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+var WRITER_BY_ALIAS = new Map(PLATFORM_NAMES.map((n) => [aliasKey(n), n]));
 function breadcrumbRoot(storagePath, writer) {
   return resolve(storagePath, BREADCRUMBS_DIR, writer);
 }
 function breadcrumbWriter(engine) {
-  return engine !== void 0 && WRITER_RE.test(engine) ? engine : UNATTRIBUTED_BREADCRUMB_WRITER;
+  if (engine === void 0) return UNATTRIBUTED_BREADCRUMB_WRITER;
+  return WRITER_BY_ALIAS.get(aliasKey(engine)) ?? null;
 }
 
 // src/hooks/collector-script.ts
@@ -494,12 +517,16 @@ function processHook(raw, cliEvent) {
     return;
   }
   const sessionId = data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
-  if (typeof data.session_id === "string" && data.session_id.length > 0) {
+  const engine = detectStampPlatform();
+  const writer = breadcrumbWriter(engine);
+  if (writer === null) {
+    process.stderr.write(
+      `[preflight-collector] Warning: MCP_CLIENT/NEW_RELIC_AI_PLATFORM ${JSON.stringify(engine)} names no engine Preflight knows; no session breadcrumb written
+`
+    );
+  } else if (typeof data.session_id === "string" && data.session_id.length > 0) {
     const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    for (const root of [
-      breadcrumbRoot(storageDir, breadcrumbWriter(detectStampPlatform())),
-      storageDir
-    ]) {
+    for (const root of [breadcrumbRoot(storageDir, writer), storageDir]) {
       writePpidBreadcrumb(data.session_id, root);
       writeCwdBreadcrumb(data.session_id, data.cwd, root);
     }
