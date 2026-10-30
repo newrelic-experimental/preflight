@@ -1171,12 +1171,19 @@ function SpendTodayPanel({
 
 // --- Activity Today Panel ---
 
+function nextLocalMidnight(dayStart: number): number {
+  const next = new Date(dayStart);
+  next.setDate(next.getDate() + 1);
+  return next.getTime();
+}
+
 /**
  * Re-buckets a raw timestamped series into 24 hourly buckets (0..23) for
  * the local day containing `nowMs`. Lets Spend by hour (already hourly),
  * Tool calls (15-minute heatmap buckets) and Concurrent sessions (its own
  * bucket size) share one granularity so their charts scale identically.
- * Points outside the local day are dropped. `mode: 'max'` is for gauges
+ * Points outside the local day are dropped, and slots are local clock
+ * hours, so on a DST day the repeated hour shares one slot. `mode: 'max'` is for gauges
  * like concurrency, where summing sub-hour samples would double-count;
  * `'sum'` (the default) is for counts and costs.
  */
@@ -1186,11 +1193,11 @@ export function bucketByHour(
   mode: 'sum' | 'max' = 'sum',
 ): number[] {
   const dayStart = localStartOfDay(nowMs);
-  const dayEnd = dayStart + 86_400_000;
+  const dayEnd = nextLocalMidnight(dayStart);
   const buckets = new Array<number>(24).fill(0);
   for (const { ts, value } of points) {
     if (ts < dayStart || ts >= dayEnd) continue;
-    const hour = Math.min(23, Math.floor((ts - dayStart) / 3_600_000));
+    const hour = new Date(ts).getHours();
     buckets[hour] = mode === 'max' ? Math.max(buckets[hour]!, value) : buckets[hour]! + value;
   }
   return buckets;
@@ -1849,7 +1856,7 @@ function buildHourlySpend(sessions: SessionSummary[]): HourlyCostEntry[] {
   // it separately caused the live session's cost to be counted twice.
   const buckets = new Array<number>(24).fill(0);
   const dayStart = localStartOfDay();
-  const dayEnd = dayStart + 86_400_000;
+  const dayEnd = nextLocalMidnight(dayStart);
 
   for (const s of sessions) {
     if (!s.startTime || s.estimatedCostUsd == null || s.estimatedCostUsd <= 0) continue;
