@@ -17,6 +17,12 @@ import { BilledTurnLedger, pruneBilledTurns, type BillableTurn } from './billed-
 const PARENT = 'c0ac675e-9be7-48e9-87b8-86394606f2dc';
 const FORK = '5634b9b2-8fa1-42c8-aff0-a4b50a704343';
 const DAY_MS = 24 * 60 * 60 * 1000;
+const CLAIMED_AT = Date.parse('2026-06-15T12:00:05.000Z');
+
+function claimFileOf(messageId: string, nowMs: number): string {
+  const shard = createHash('sha256').update(messageId).digest('hex')[0];
+  return `g${Math.floor(nowMs / (7 * DAY_MS))}-${shard}.jsonl`;
+}
 
 function turn(messageId: string, iso: string) {
   return { messageId, timestampMs: Date.parse(iso) };
@@ -94,13 +100,25 @@ describe('BilledTurnLedger', () => {
   it('ignores a torn line left by a crashed writer', () => {
     const dir = join(storagePath, 'billed-turns');
     mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, '2026-06-15.jsonl'), `{"m":"msg_A","s":"${FORK}`);
+    appendFileSync(join(dir, claimFileOf('msg_A', CLAIMED_AT)), `{"m":"msg_A","s":"${FORK}`);
     const a = turn('msg_A', '2026-06-15T12:00:00.000Z');
-    expect(deliver(makeLedger(), PARENT, [a])).toEqual([a]);
-    expect(deliver(makeLedger(), FORK, [a])).toEqual([]);
+    expect(
+      deliver(
+        makeLedger(() => CLAIMED_AT),
+        PARENT,
+        [a],
+      ),
+    ).toEqual([a]);
+    expect(
+      deliver(
+        makeLedger(() => CLAIMED_AT),
+        FORK,
+        [a],
+      ),
+    ).toEqual([]);
   });
 
-  it('refuses turns beyond the retention horizon and never re-bills a pruned day', () => {
+  it('refuses turns beyond the retention horizon and never re-bills a pruned generation', () => {
     const t = turn('msg_A', '2026-06-15T12:00:00.000Z');
     const soon = t.timestampMs + DAY_MS;
     const later = t.timestampMs + 100 * DAY_MS;
@@ -240,17 +258,20 @@ describe('BilledTurnLedger', () => {
     expect(deliver(makeLedger(), PARENT, [a])).toEqual([]);
   });
 
-  it('reads a day file that was deleted and regrown past its cached length from the top', () => {
-    const watcher = makeLedger();
-    const a = turn('msg_A', '2026-06-15T12:00:00.000Z');
+  it('reads a ledger file that was deleted and regrown past its cached length from the top', () => {
+    const ts = '2026-06-15T12:00:00.000Z';
+    const [a, x, ...others] = idsInOneShard('msg_', 22).map((id) => turn(id, ts));
+    const watcher = makeLedger(() => CLAIMED_AT);
     expect(deliver(watcher, PARENT, [a])).toEqual([a]);
 
-    rmSync(join(storagePath, 'billed-turns', '2026-06-15.jsonl'));
-    const others = Array.from({ length: 20 }, (_, i) =>
-      turn(`msg_other_${i}`, '2026-06-15T12:00:00.000Z'),
-    );
-    const x = turn('msg_X', '2026-06-15T12:00:00.000Z');
-    expect(deliver(makeLedger(), FORK, [x, ...others])).toEqual([x, ...others]);
+    rmSync(join(storagePath, 'billed-turns', claimFileOf(a.messageId, CLAIMED_AT)));
+    expect(
+      deliver(
+        makeLedger(() => CLAIMED_AT),
+        FORK,
+        [x, ...others],
+      ),
+    ).toEqual([x, ...others]);
 
     expect(deliver(watcher, PARENT, [x])).toEqual([]);
   });
@@ -305,14 +326,15 @@ describe('BilledTurnLedger', () => {
     ).toEqual([]);
   });
 
-  it('prunes the day files it can and keeps going past one it cannot delete', () => {
+  it('prunes the ledger files it can and keeps going past one it cannot delete', () => {
     const dir = join(storagePath, 'billed-turns');
-    mkdirSync(join(dir, '2026-01-01.jsonl'), { recursive: true });
-    writeFileSync(join(dir, '2026-01-02.jsonl'), '');
+    mkdirSync(join(dir, 'g0-0.jsonl'), { recursive: true });
+    writeFileSync(join(dir, 'g1-a.jsonl'), '');
+    writeFileSync(join(dir, 'notes.txt'), '');
     const later = Date.parse('2026-06-15T12:00:00.000Z');
 
     expect(pruneBilledTurns(storagePath, 90, later)).toBe(1);
-    expect(readdirSync(dir)).toEqual(['2026-01-01.jsonl']);
+    expect(readdirSync(dir).sort()).toEqual(['g0-0.jsonl', 'notes.txt']);
   });
 
   it('bills a message once when a dated line is re-read undated days later', () => {
@@ -410,5 +432,27 @@ describe('BilledTurnLedger', () => {
     rmSync(join(dir, file));
     expect(deliver(ledger, PARENT, [turn(id, ts)])).toEqual([turn(id, ts)]);
     expect(deliver(ledger, PARENT, [turn(id, ts)])).toEqual([]);
+  });
+
+  it('owes a message whose claim vanished to whichever session next wins it', () => {
+    const ts = '2026-06-15T12:00:00.000Z';
+    const dir = join(storagePath, 'billed-turns');
+    const [seed, id] = idsInOneShard('msg_', 2).map((m) => turn(m, ts));
+    expect(
+      deliver(
+        makeLedger(() => CLAIMED_AT),
+        FORK,
+        [seed],
+      ),
+    ).toEqual([seed]);
+    const file = join(dir, claimFileOf(id.messageId, CLAIMED_AT));
+    rmSync(file);
+    symlinkSync('/dev/null', file);
+
+    const ledger = makeLedger(() => CLAIMED_AT);
+    expect(deliver(ledger, PARENT, [id])).toEqual([]);
+    rmSync(file);
+    expect(deliver(ledger, FORK, [id])).toEqual([id]);
+    expect(deliver(ledger, PARENT, [id])).toEqual([]);
   });
 });
