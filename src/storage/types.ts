@@ -42,6 +42,8 @@ export interface PostHookEvent extends HookEventBase {
   readonly sessionId?: string;
   readonly toolInput?: unknown;
   readonly toolOutput?: unknown;
+  /** Set only by a post-only event (Cursor's beforeReadFile and afterFileEdit), with no pre event to carry it. */
+  readonly inputSize?: number;
   readonly outputSize?: number;
   readonly success?: boolean;
   readonly error?: string;

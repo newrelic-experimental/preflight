@@ -8,10 +8,11 @@ import {
   closeSync,
   mkdirSync,
   existsSync,
+  statSync,
   utimesSync,
   constants as fsConstants
 } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 
@@ -149,6 +150,15 @@ function sizeOf(value) {
   if (typeof value === "string") return value.length;
   try {
     return JSON.stringify(value).length;
+  } catch {
+    return 0;
+  }
+}
+function fileSizeOf(path) {
+  if (typeof path !== "string" || !isAbsolute(path)) return 0;
+  try {
+    const stats = statSync(path, { throwIfNoEntry: false });
+    return stats?.isFile() ? stats.size : 0;
   } catch {
     return 0;
   }
@@ -612,7 +622,8 @@ function processHook(raw, cliEvent) {
       mode: "post",
       tool: "Bash",
       timestamp,
-      success: true
+      success: true,
+      outputSize: sizeOf(data.output)
     };
   } else if (eventName === "beforemcpexecution") {
     const mcpTool = data.tool_name ?? "unknown";
@@ -629,7 +640,8 @@ function processHook(raw, cliEvent) {
       mode: "post",
       tool: mcpTool,
       timestamp,
-      success: true
+      success: true,
+      outputSize: sizeOf(data.result_json)
     };
   } else if (eventName === "beforereadfile") {
     event = {
@@ -637,6 +649,8 @@ function processHook(raw, cliEvent) {
       tool: "Read",
       timestamp,
       success: true,
+      inputSize: sizeOf(data.file_path),
+      outputSize: sizeOf(data.content),
       ...data.file_path !== void 0 && { toolInput: { file_path: data.file_path } }
     };
     if (recordContent && data.content !== void 0) {
@@ -648,6 +662,7 @@ function processHook(raw, cliEvent) {
       tool: "Edit",
       timestamp,
       success: true,
+      inputSize: sizeOf(data.edits),
       ...data.file_path !== void 0 && { toolInput: { file_path: data.file_path } }
     };
   } else if (eventName === "pre_read_code") {
@@ -667,15 +682,17 @@ function processHook(raw, cliEvent) {
       tool: "Read",
       timestamp,
       success: true,
+      outputSize: fileSizeOf(filePath),
       ...typeof filePath === "string" && { toolInput: { file_path: filePath } }
     };
   } else if (eventName === "pre_write_code") {
-    const filePath = getWindsurfToolInfo(data).file_path;
+    const toolInfo = getWindsurfToolInfo(data);
+    const filePath = toolInfo.file_path;
     event = {
       mode: "pre",
       tool: "Edit",
       timestamp,
-      inputSize: sizeOf(filePath),
+      inputSize: sizeOf(toolInfo.edits),
       inputHash: hashInput(filePath),
       ...typeof filePath === "string" && { toolInput: { file_path: filePath } }
     };
@@ -723,7 +740,8 @@ function processHook(raw, cliEvent) {
       mode: "post",
       tool: mcpTool,
       timestamp,
-      success: true
+      success: true,
+      outputSize: sizeOf(toolInfo.mcp_result)
     };
   } else if (isAntigravityPre) {
     const agyToolName = data.toolCall?.name ?? "unknown";
