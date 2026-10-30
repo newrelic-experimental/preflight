@@ -1550,6 +1550,19 @@ describe('LocalStore', () => {
       }
     });
 
+    it('skips a stray file among the writer directories without warning', () => {
+      const dir = resolve(tmpDir, 'breadcrumbs', 'kiro', 'session-by-ppid');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(resolve(dir, '9999999.txt'), 'sess-dead-id');
+      writeFileSync(resolve(tmpDir, 'breadcrumbs', '.DS_Store'), '');
+
+      expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(1);
+      const warnCalls = (stderrSpy.mock.calls as unknown[][]).filter((args) =>
+        String(args[0]).includes('gcStaleBreadcrumbs'),
+      );
+      expect(warnCalls).toHaveLength(0);
+    });
+
     it('returns 0 when breadcrumb dir does not exist', () => {
       mkdirSync(tmpDir, { recursive: true });
       const store = new LocalStore(tmpDir);
