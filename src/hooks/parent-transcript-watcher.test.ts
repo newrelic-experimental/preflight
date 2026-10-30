@@ -720,14 +720,15 @@ describe('ParentTranscriptWatcher', () => {
       expect(readTokenEvents()).toHaveLength(0);
     });
 
-    // Creation order comes from birthtime, which some filesystems (the Linux CI
-    // runner's among them) do not record; there the order falls back to mtime.
+    // Creation order comes from birthtime, which some filesystems do not
+    // record; there the order falls back to mtime.
     (filesystemRecordsCreationOrder() ? it : it.skip)(
       'bills turns shared with a fork to the transcript created first, even when the parent was written last',
       () => {
         const forkId = '00000000-1111-2222-3333-444444444444';
         const shared = makeAssistantLine({ messageId: 'msg_shared' }) + '\n';
         writeFileSync(join(projectsDir, 'project-slug', `${SESSION_ID}.jsonl`), shared);
+        waitPastTimestampGranularity();
         mkdirSync(join(projectsDir, 'a-fork-slug'));
         const forkPath = join(projectsDir, 'a-fork-slug', `${forkId}.jsonl`);
         writeFileSync(forkPath, shared);
@@ -749,12 +750,18 @@ function filesystemRecordsCreationOrder(): boolean {
     const first = join(dir, 'first');
     const second = join(dir, 'second');
     writeFileSync(first, '');
-    const until = Date.now() + 5;
-    while (Date.now() < until);
+    waitPastTimestampGranularity();
     writeFileSync(second, '');
     const a = statSync(first).birthtimeMs;
     return a > 0 && a < statSync(second).birthtimeMs;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// Linux stamps files from a coarse clock (a few ms per tick), so two files
+// created within one tick share a birthtime and tie.
+function waitPastTimestampGranularity(): void {
+  const until = Date.now() + 20;
+  while (Date.now() < until);
 }
