@@ -131,6 +131,7 @@ describe('runDiagnostics', () => {
     configPath?: string;
     storagePath?: string;
     platform?: string;
+    resolveSecrets?: boolean;
   }) => Promise<DiagnosticCheck[]>;
 
   beforeEach(async () => {
@@ -1151,6 +1152,26 @@ describe('runDiagnostics', () => {
       const c = checks.find((x) => x.check === 'Preflight version')!;
       expect(c.status).toBe('skip');
     });
+  });
+
+  it('loads the config with secret helpers by default, as `doctor` does', async () => {
+    await runDiagnostics(makeOpts());
+
+    expect(mockedLoadMcpConfig).toHaveBeenCalledTimes(1);
+    expect(mockedLoadMcpConfig).toHaveBeenCalledWith(
+      { config: makeOpts().configPath },
+      { resolveSecrets: true },
+    );
+  });
+
+  it('loads the config without running secret helpers when resolveSecrets is false', async () => {
+    await runDiagnostics({ ...makeOpts(), resolveSecrets: false });
+
+    expect(mockedLoadMcpConfig).toHaveBeenCalledTimes(1);
+    expect(mockedLoadMcpConfig).toHaveBeenCalledWith(
+      { config: makeOpts().configPath },
+      { resolveSecrets: false },
+    );
   });
 
   it('returns every check on macOS', async () => {

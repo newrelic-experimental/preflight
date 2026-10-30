@@ -5625,6 +5625,25 @@ describe('GET /api/diagnostics', () => {
   });
 });
 
+describe('GET /api/diagnostics secret helpers', () => {
+  it('never lets diagnostics run secret helpers, on every request', async () => {
+    mockedRunDiagnostics.mockClear();
+    mockedRunDiagnostics.mockResolvedValue([]);
+    const handler = createApiHandler({});
+
+    for (let i = 0; i < 3; i++) {
+      const req = { method: 'GET', url: '/api/diagnostics' } as IncomingMessage;
+      const { res } = fakeRes();
+      await handler(req, res);
+    }
+
+    expect(mockedRunDiagnostics).toHaveBeenCalledTimes(3);
+    for (const [opts] of mockedRunDiagnostics.mock.calls) {
+      expect(opts).toMatchObject({ resolveSecrets: false });
+    }
+  });
+});
+
 describe('GET /api/diagnostics platform forwarding', () => {
   it("forwards getActivePlatform()'s return value as the platform option to runDiagnostics", async () => {
     mockedRunDiagnostics.mockResolvedValue([]);
