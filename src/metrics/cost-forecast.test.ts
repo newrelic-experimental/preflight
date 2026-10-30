@@ -104,6 +104,63 @@ describe('buildCostForecast', () => {
     });
   });
 
+  describe('minimum forecast window', () => {
+    const nowMs = new Date(2024, 0, 3, 14).getTime();
+    const SPEND_USD = 0.01;
+
+    it('holds EoD and EoW when the session window is under 10 minutes', () => {
+      const f = buildCostForecastFromInputs(
+        { sessionSpentUsd: SPEND_USD, sessionStartMs: nowMs - 15_000 },
+        nowMs,
+      );
+      expect(f.forecastEndOfDayUsd).toBeNull();
+      expect(f.forecastEndOfWeekUsd).toBeNull();
+    });
+
+    it('holds EoD and EoW when the daily window is under 10 minutes', () => {
+      const f = buildCostForecastFromInputs(
+        {
+          sessionSpentUsd: SPEND_USD,
+          sessionStartMs: nowMs - 15_000,
+          dailySpentUsd: SPEND_USD,
+          dailyFirstActivityMs: nowMs - 15_000,
+        },
+        nowMs,
+      );
+      expect(f.forecastEndOfDayUsd).toBeNull();
+      expect(f.forecastEndOfWeekUsd).toBeNull();
+    });
+
+    it('projects EoD and EoW once the daily window reaches 30 minutes', () => {
+      const f = buildCostForecastFromInputs(
+        {
+          sessionSpentUsd: SPEND_USD,
+          sessionStartMs: nowMs - 30 * 60_000,
+          dailySpentUsd: SPEND_USD,
+          dailyFirstActivityMs: nowMs - 30 * 60_000,
+        },
+        nowMs,
+      );
+      expect(f.forecastEndOfDayUsd).not.toBeNull();
+      expect(f.forecastEndOfWeekUsd).not.toBeNull();
+      expect(f.forecastEndOfDayUsd!).toBeLessThanOrEqual(f.forecastEndOfWeekUsd!);
+    });
+
+    it('grades confidence on the daily window, not the session, after a midnight crossing', () => {
+      const f = buildCostForecastFromInputs(
+        {
+          sessionSpentUsd: 10,
+          sessionStartMs: nowMs - 2 * 60 * 60_000,
+          dailySpentUsd: SPEND_USD,
+          dailyFirstActivityMs: nowMs - 2 * 60_000,
+        },
+        nowMs,
+      );
+      expect(f.forecastEndOfDayUsd).toBeNull();
+      expect(f.confidenceNote).toMatch(/Low confidence/i);
+    });
+  });
+
   // ISO week (Mon–Sun) end-of-week math — one test per weekday.
   // Pinned to local noon on 2024-01-01 (Mon) through 2024-01-07 (Sun).
   //

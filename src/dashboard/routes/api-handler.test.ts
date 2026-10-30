@@ -4199,7 +4199,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costTracker: {
         getMetrics: () => ({ sessionTotalCostUsd: 0 }),
         getCostForDay: () => 9,
-        getFirstActivityMsForDay: () => Date.now() - 60_000,
+        getFirstActivityMsForDay: () => Date.now() - 30 * 60_000,
       } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
     });
     const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
