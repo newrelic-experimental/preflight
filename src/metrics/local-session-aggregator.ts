@@ -593,6 +593,22 @@ export class LocalSessionAggregator {
     }
     return written;
   }
+
+  /**
+   * Persists every rollup, then returns `sessionId`'s file. A provisional
+   * process calls this when it adopts `sessionId` as its own: from then on it
+   * persists its own trackers and never this aggregator, so the trackers must
+   * seed from a file that already holds the cost drained since the last
+   * checkpoint.
+   */
+  handOff(
+    sessionId: string,
+    store: SessionFileStore,
+    context: SummaryContext,
+  ): FullSessionSummary | null {
+    this.persist(store, context);
+    return store.loadSession(sessionId);
+  }
 }
 
 function hasUsage(rollup: LocalSessionRollup): boolean {

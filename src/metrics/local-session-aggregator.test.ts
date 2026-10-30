@@ -20,6 +20,9 @@ import {
   type SummaryContext,
 } from './local-session-aggregator.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from './quality-proxy-tracker.js';
+import { CostTracker } from './cost-tracker.js';
+import { buildCostTrackerSeed } from './cost-tracker-seed.js';
+import { makeUsage } from '../__test-utils__/token-usage.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
 
 // git sets GIT_DIR/GIT_WORK_TREE for hook subprocesses, which override `-C
@@ -82,7 +85,7 @@ function makeEngineSummary(overrides: Partial<FullSessionSummary>): FullSessionS
     durationMs: 60_000,
     toolCallCount: 3,
     developer: 'alice',
-    model: 'claude-sonnet-4-20250514',
+    model: MODEL,
     toolBreakdown: {},
     skillBreakdown: {},
     filesRead: [],
@@ -864,6 +867,26 @@ describe('LocalSessionAggregator persist', () => {
     agg.persist(store, makeContext('completed'));
 
     expect(store.loadSession(REAL_ID)?.outcome).toBe('completed');
+  });
+
+  it('hands an adopting process a file that holds the cost drained since the last save', () => {
+    store.saveSession(makeEngineSummary({ estimatedCostUsd: 5 }));
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.02, timestamp: DAY });
+
+    const costTracker = new CostTracker();
+    costTracker.seedFromPersisted(
+      buildCostTrackerSeed(agg.handOff(REAL_ID, store, makeContext())!),
+    );
+    const turn = costTracker.recordTokenUsage(makeUsage({ inputTokens: 3_333 }), MODEL, {
+      timestampMs: Date.now(),
+    });
+    store.saveSession(
+      makeEngineSummary({ estimatedCostUsd: costTracker.getMetrics().sessionTotalCostUsd }),
+    );
+
+    expect(store.loadSession(REAL_ID)?.estimatedCostUsd).toBeCloseTo(5 + 0.02 + turn.totalUsd, 6);
   });
 
   it('adds a saved byte-estimate ledger to the total once', () => {

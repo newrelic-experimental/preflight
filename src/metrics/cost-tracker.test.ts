@@ -1586,6 +1586,17 @@ function makeSeed(overrides?: Partial<CostTrackerSeed>): CostTrackerSeed {
 }
 
 describe('seedFromPersisted()', () => {
+  it('holds only the seeded total after a reset to another session', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(makeUsage({ inputTokens: 3_333 }), 'claude-sonnet-4-20250514');
+    expect(tracker.getMetrics().sessionTotalCostUsd ?? 0).toBeGreaterThan(0);
+
+    tracker.reset('real-session-b');
+    tracker.seedFromPersisted(makeSeed({ totalCostUsd: 2, parentCostUsd: 2 }));
+
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(2, 6);
+  });
+
   it('restores a fresh tracker from a persisted checkpoint at realistic multi-day scale', () => {
     const tracker = new CostTracker();
 

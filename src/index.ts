@@ -90,6 +90,7 @@ import {
   LocalSessionAggregator,
   RepoNameResolver,
   resolveAuthorEmail,
+  type SummaryContext,
 } from './metrics/local-session-aggregator.js';
 import { ModelUsageTracker } from './metrics/model-usage-tracker.js';
 import { PersonalCoach } from './metrics/personal-coach.js';
@@ -122,6 +123,7 @@ import {
   buildSessionSummary,
   SessionStore,
   sessionSummaryToDriftRecord,
+  type FullSessionSummary,
 } from './storage/session-store.js';
 import type { ToolCallRecord } from './storage/types.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
@@ -1398,12 +1400,15 @@ async function main(): Promise<void> {
     // below can call this again for a *different* id after a pending->real
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
-    const rehydrateTrackersIfResumed = (sessionId: string): void => {
+    const rehydrateTrackersIfResumed = (
+      sessionId: string,
+      adoptedFile?: FullSessionSummary | null,
+    ): void => {
       if (isSyntheticSessionId(sessionId)) return;
       if (rehydratedTrackerSessionIds.has(sessionId)) return;
       rehydratedTrackerSessionIds.add(sessionId);
       try {
-        const persisted = sessionStore!.loadSession(sessionId);
+        const persisted = adoptedFile ?? sessionStore!.loadSession(sessionId);
         if (!persisted) return;
         costTracker.seedFromPersisted(buildCostTrackerSeed(persisted));
         sessionTracker!.seedFromPersisted({
@@ -2628,6 +2633,14 @@ async function main(): Promise<void> {
       },
     });
 
+    const observedSessionContext = (outcome: string): SummaryContext => ({
+      developer: config?.developer ?? 'unknown',
+      platform: eventProcessor?.activePlatform,
+      outcome,
+      toolSelectionScorer,
+      repoResolver: repoNameResolver,
+    });
+
     persistSession = (opts?: { periodic?: boolean }) => {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
       try {
@@ -2677,13 +2690,10 @@ async function main(): Promise<void> {
           // draining other sessions' buffers destructively — so if it returns
           // here without writing them, those events are simply lost. Persist
           // each real session it observed instead.
-          const persistedSessions = localSessionAggregator.persist(sessionStore, {
-            developer: config.developer ?? 'unknown',
-            platform: eventProcessor?.activePlatform,
-            outcome: opts?.periodic ? 'in progress' : 'completed',
-            toolSelectionScorer,
-            repoResolver: repoNameResolver,
-          });
+          const persistedSessions = localSessionAggregator.persist(
+            sessionStore,
+            observedSessionContext(opts?.periodic ? 'in progress' : 'completed'),
+          );
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
@@ -2960,6 +2970,15 @@ async function main(): Promise<void> {
         contextCompositionTracker.reset(realId);
         turnCostAttributor.reset(realId);
       }
+      // persistSession saves the aggregator only while this process's own id
+      // is synthetic, so leaving the provisional id is its last save.
+      const adoptedFile = isSyntheticSessionId(sessionTraceId)
+        ? localSessionAggregator.handOff(
+            realId,
+            sessionStore!,
+            observedSessionContext('in progress'),
+          )
+        : undefined;
       sessionTraceId = realId;
       sessionTracker!.adoptSessionId(realId);
       // Now that the real id (and thus its transcript path) is known, resolve
@@ -2975,7 +2994,7 @@ async function main(): Promise<void> {
       // startPpidCorrectionWatch right after this returns, whose
       // confirmation branch (ppidId === staleId) calls
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
-      if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
+      if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId, adoptedFile);
 
       // Replace the current LocalStore with one scoped to the real id.
       const realLocalStore = new LocalStore(config!.storagePath, realId);
