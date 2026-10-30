@@ -1,16 +1,20 @@
-import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncOptions,
   type SpawnSyncReturns,
 } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { TokenUsage } from '../shared/index.js';
+import { HookEventProcessor } from '../hooks/event-processor.js';
+import { processHook } from '../hooks/collector-script.js';
 import { localDateKey } from '../lib/date.js';
+import { LocalStore } from '../storage/local-store.js';
+import type { HookEvent } from '../storage/types.js';
 import { SessionStore, type FullSessionSummary } from '../storage/session-store.js';
 import {
   collectCommitsAcrossRepos,
@@ -1178,6 +1182,193 @@ describe('LocalSessionAggregator byte estimates for platforms that cannot self-r
     expect(saved?.estimatedCostUsd).toBe(0.5);
     expect(saved?.tokensInput).toBe(100);
     expect(saved?.byteEstimates?.costUsd ?? 0).toBe(0);
+  });
+});
+
+describe('LocalSessionAggregator byte estimates from real hook payloads', () => {
+  const USD_PER_INPUT_TOKEN = 3e-6;
+  const USD_PER_OUTPUT_TOKEN = 15e-6;
+  const originalEnv = { ...process.env };
+  let dir: string;
+  let bufferPath: string;
+  let store: SessionStore;
+  let stdoutSpy: ReturnType<typeof jest.spyOn>;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'agg-hook-estimates-'));
+    bufferPath = join(dir, 'buffer.jsonl');
+    store = new SessionStore({ storagePath: join(dir, 'store') });
+    process.env.NEW_RELIC_AI_MCP_BUFFER_PATH = bufferPath;
+    delete process.env.MCP_CLIENT;
+    delete process.env.NEW_RELIC_AI_PLATFORM;
+    stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    process.env = { ...originalEnv };
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Runs each payload through the hook collector, then drains the buffer into a fresh aggregator. */
+  function estimateFrom(...hooks: Array<[payload: Record<string, unknown>, cliEvent?: string]>) {
+    for (const [payload, cliEvent] of hooks) processHook(JSON.stringify(payload), cliEvent);
+    const events = readFileSync(bufferPath, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as HookEvent);
+    const agg = new LocalSessionAggregator({
+      priceByteEstimate: (usage: TokenUsage) => ({
+        model: 'default-model',
+        costUsd:
+          usage.inputTokens * USD_PER_INPUT_TOKEN + usage.outputTokens * USD_PER_OUTPUT_TOKEN,
+      }),
+    });
+    const processor = new HookEventProcessor({
+      store: new LocalStore(join(dir, 'local')),
+      onRecord: (record) => agg.recordToolCall(record),
+    });
+    processor.processEvents(events);
+    agg.persist(store, makeContext());
+    return agg;
+  }
+
+  /** Tokens for one call's input or output, at 4 characters per token. */
+  const tokensOf = (...texts: string[]): number =>
+    texts.reduce((sum, text) => sum + Math.round(text.length / 4), 0);
+
+  it('counts a Cursor conversation’s shell output, file reads, edits and MCP results', () => {
+    const conv = '668320d2-2fd8-4888-b33c-2a466fec86e7';
+    const envelope = { conversation_id: conv, generation_id: 'gen-1', model: 'claude-sonnet-4-6' };
+    const command = 'npm test -- --runInBand';
+    const output = 'PASS src/a.test.ts\n'.repeat(120);
+    const filePath = '/Users/dev/project/src/index.ts';
+    const content = 'export const answer = 42;\n'.repeat(160);
+    const edits = [{ old_string: 'const a = 1;', new_string: 'const a = 2;\nconst b = 3;' }];
+    const toolInput = '{"query":"open issues assigned to me"}';
+    const resultJson = JSON.stringify({ issues: Array.from({ length: 20 }, (_, i) => `#${i}`) });
+
+    estimateFrom(
+      [
+        {
+          ...envelope,
+          hook_event_name: 'beforeShellExecution',
+          command,
+          cwd: '/p',
+          sandbox: false,
+        },
+      ],
+      [
+        {
+          ...envelope,
+          hook_event_name: 'afterShellExecution',
+          command,
+          output,
+          duration: 1234,
+          sandbox: false,
+        },
+      ],
+      [
+        {
+          ...envelope,
+          hook_event_name: 'beforeReadFile',
+          file_path: filePath,
+          content,
+          attachments: [],
+        },
+      ],
+      [{ ...envelope, hook_event_name: 'afterFileEdit', file_path: filePath, edits }],
+      [
+        {
+          ...envelope,
+          hook_event_name: 'beforeMCPExecution',
+          tool_name: 'search_issues',
+          tool_input: toolInput,
+          mcp_server_name: 'github',
+        },
+      ],
+      [
+        {
+          ...envelope,
+          hook_event_name: 'afterMCPExecution',
+          tool_name: 'search_issues',
+          tool_input: toolInput,
+          mcp_server_name: 'github',
+          result_json: resultJson,
+          duration: 300,
+        },
+      ],
+    );
+
+    const saved = store.loadSession(conv);
+    expect(saved?.platform).toBe('cursor');
+    expect(saved?.toolCallCount).toBe(4);
+    expect(saved?.tokensInput).toBe(
+      tokensOf(command) +
+        tokensOf(filePath) +
+        tokensOf(JSON.stringify(edits)) +
+        tokensOf(toolInput),
+    );
+    expect(saved?.tokensOutput).toBe(tokensOf(output) + tokensOf(content) + tokensOf(resultJson));
+  });
+
+  it('counts a Windsurf trajectory’s file reads from disk, edits and MCP results', () => {
+    const traj = 'traj-abc123';
+    const filePath = join(dir, 'module.py');
+    const fileText = 'def handler(event):\n    return event\n'.repeat(100);
+    writeFileSync(filePath, fileText);
+    const edits = [{ old_string: 'import os', new_string: 'import os\nimport sys' }];
+    const commandLine = 'pytest -q tests/test_module.py';
+    const mcpArguments = { owner: 'code-owner', repo: 'my-repo', title: 'Bug report' };
+    const mcpResult = 'Created issue #42: Bug report\n'.repeat(10);
+    const windsurf = (action: string, toolInfo: Record<string, unknown>) =>
+      [
+        {
+          agent_action_name: action,
+          trajectory_id: traj,
+          execution_id: 'exec-1',
+          tool_info: toolInfo,
+        },
+      ] as [Record<string, unknown>];
+    const mcp = {
+      mcp_server_name: 'github',
+      mcp_tool_name: 'create_issue',
+      mcp_tool_arguments: mcpArguments,
+    };
+
+    estimateFrom(
+      windsurf('pre_read_code', { file_path: filePath }),
+      windsurf('post_read_code', { file_path: filePath }),
+      windsurf('pre_write_code', { file_path: filePath, edits }),
+      windsurf('post_write_code', { file_path: filePath, edits }),
+      windsurf('pre_run_command', { command_line: commandLine, cwd: dir }),
+      windsurf('post_run_command', { command_line: commandLine, cwd: dir }),
+      windsurf('pre_mcp_tool_use', mcp),
+      windsurf('post_mcp_tool_use', { ...mcp, mcp_result: mcpResult }),
+    );
+
+    const saved = store.loadSession(traj);
+    expect(saved?.platform).toBe('windsurf');
+    expect(saved?.toolCallCount).toBe(4);
+    expect(saved?.tokensInput).toBe(
+      tokensOf(filePath) +
+        tokensOf(JSON.stringify(edits)) +
+        tokensOf(commandLine) +
+        tokensOf(JSON.stringify(mcpArguments)),
+    );
+    expect(saved?.tokensOutput).toBe(tokensOf(fileText) + tokensOf(mcpResult));
+  });
+
+  it('counts an Antigravity conversation’s tool arguments', () => {
+    const args = { CommandLine: 'npm test', Cwd: '/workspace/project' };
+    const call = { toolCall: { name: 'run_command', args }, stepIdx: 3, conversationId: 'agy-1' };
+
+    estimateFrom([call, 'PreToolUse'], [{ ...call, error: '' }, 'PostToolUse']);
+
+    const saved = store.loadSession('agy-1');
+    expect(saved?.platform).toBe('antigravity');
+    expect(saved?.tokensInput).toBe(tokensOf(JSON.stringify(args)));
+    expect(saved?.tokensOutput).toBe(0);
   });
 });
 
