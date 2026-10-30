@@ -17,10 +17,12 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { join, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
@@ -810,8 +812,22 @@ export class SessionStore {
       throw new Error(`Session path escaped storage directory: ${filepath}`);
     }
 
+    // Write-then-rename so two processes saving the same session id can never
+    // interleave bytes in the target file (the temp name does not end in .json,
+    // so loaders never see it).
+    const tmpPath = `${filepath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     try {
-      writeFileSync(filepath, JSON.stringify(toWrite, null, 2) + '\n', { mode: 0o600 });
+      try {
+        writeFileSync(tmpPath, JSON.stringify(toWrite, null, 2) + '\n', { mode: 0o600 });
+        renameSync(tmpPath, filepath);
+      } catch (err) {
+        try {
+          unlinkSync(tmpPath);
+        } catch {
+          // temp file may not have been created
+        }
+        throw err;
+      }
       // The merge landed on a different filename than where the existing
       // record lived (a date-rollover case) — remove the now-superseded
       // file so the session isn't left duplicated across two files.
@@ -841,23 +857,37 @@ export class SessionStore {
     return this.loadSessionWithPath(sessionId)?.summary ?? null;
   }
 
-  /** Like loadSession(), but also returns the file path it was loaded from — used by saveSession() to detect and clean up a stale file after a merge relocates a session to a different filename. */
+  /**
+   * Like loadSession(), but also returns the file path it was loaded from — used by saveSession() to detect and clean up a stale file after a merge relocates a session to a different filename.
+   *
+   * An unreadable file is skipped rather than ending the search: returning null
+   * there made saveSession() treat the session as new and start a fresh file
+   * on every later save (#997). It is also renamed to `*.corrupt` so a later
+   * save that lands on the same filename can't overwrite the only copy of its
+   * bytes. Sibling files for one id are not merged here, because files split
+   * that way hold disjoint activity that mergeSummaries' per-counter max would
+   * drop (#908).
+   */
   private loadSessionWithPath(
     sessionId: string,
   ): { summary: FullSessionSummary; filepath: string } | null {
     if (!existsSync(this.sessionsDir)) return null;
 
-    for (const file of readdirSync(this.sessionsDir)) {
+    for (const file of readdirSync(this.sessionsDir).sort()) {
       if (!file.endsWith('.json')) continue;
       if (parseSessionFilename(file)?.sessionId !== sessionId) continue;
 
       const filepath = join(this.sessionsDir, file);
       try {
-        const raw = readFileSync(filepath, 'utf-8');
-        const session = deserializeSession(raw);
+        const session = deserializeSession(readFileSync(filepath, 'utf-8'), file);
         if (session === null) {
-          logger.warn('Failed to deserialize session file', { file });
-          return null;
+          logger.warn('Failed to deserialize session file; moving it aside', { file });
+          try {
+            renameSync(filepath, `${filepath}.${Date.now()}.corrupt`);
+          } catch {
+            // Left in place; the next load retries.
+          }
+          continue;
         }
         return { summary: session, filepath };
       } catch {
@@ -885,7 +915,7 @@ export class SessionStore {
       if (options?.developer) {
         try {
           const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
-          const session = deserializeSession(raw);
+          const session = deserializeSession(raw, file);
           if (session?.developer !== options.developer) continue;
         } catch {
           continue;
@@ -924,7 +954,7 @@ export class SessionStore {
 
       try {
         const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
-        const session = deserializeSession(raw);
+        const session = deserializeSession(raw, file);
         if (!session) continue;
 
         // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
@@ -1850,15 +1880,46 @@ export function deserializeFullSessionSummary(
  * Parse a raw session JSON string and extract known fields. Delegates field
  * extraction to `deserializeFullSessionSummary` to avoid duplication.
  */
-function deserializeSession(raw: string): FullSessionSummary | null {
+function deserializeSession(raw: string, file?: string): FullSessionSummary | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return null;
+    // Overlapping writes from two processes left a full document followed by
+    // the tail of a longer one; the first document is the intact data.
+    const first = firstTopLevelJsonDocument(raw);
+    if (first === null) return null;
+    try {
+      parsed = JSON.parse(first);
+    } catch {
+      return null;
+    }
+    logger.warn('Recovered first JSON document from corrupt session file', { file });
   }
   if (typeof parsed !== 'object' || parsed === null) return null;
   return deserializeFullSessionSummary(parsed as SerializedFullSessionSummary);
+}
+
+/** Returns the leading `{...}` of `raw` (string- and escape-aware), or null if it never closes. */
+function firstTopLevelJsonDocument(raw: string): string | null {
+  const start = raw.search(/\S/);
+  if (start === -1 || raw[start] !== '{') return null;
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inString) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}' && --depth === 0) {
+      return raw.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
 function parseSessionFilename(filename: string): SessionFileInfo | null {
