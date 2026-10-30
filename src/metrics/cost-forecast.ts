@@ -1,5 +1,9 @@
 import { localStartOfDay } from '../lib/date.js';
 
+// Matches the "Low confidence" tier in confidenceNote. Shorter windows project
+// a rate too noisy to show as an end-of-day figure.
+const MIN_FORECAST_WINDOW_MS = 10 * 60_000;
+
 export interface CostForecast {
   readonly elapsedMs: number;
   readonly spentUsd: number;
@@ -89,6 +93,7 @@ export function buildCostForecastFromInputs(
   // effective rate and base so they are internally consistent: the week
   // forecast is simply the day forecast extended to the full remaining week.
   // Falls back to session rate/base when the daily anchor is absent.
+  let effectiveElapsedMs: number;
   let effectiveRateUsdPerMs: number;
   let effectiveBaseUsd: number;
   if (
@@ -97,14 +102,18 @@ export function buildCostForecastFromInputs(
     typeof dailyFirstActivityMs === 'number' &&
     dailyFirstActivityMs > 0
   ) {
-    const dailyElapsedMs = Math.max(1, nowMs - dailyFirstActivityMs);
-    effectiveRateUsdPerMs = dailySpentUsd / dailyElapsedMs;
+    effectiveElapsedMs = Math.max(1, nowMs - dailyFirstActivityMs);
+    effectiveRateUsdPerMs = dailySpentUsd / effectiveElapsedMs;
     effectiveBaseUsd = dailySpentUsd;
   } else {
+    effectiveElapsedMs = elapsedMs;
     effectiveRateUsdPerMs = sessionRateUsdPerMs;
     effectiveBaseUsd = sessionSpentUsd;
   }
-  const forecastEndOfDayUsd = effectiveBaseUsd + effectiveRateUsdPerMs * msUntilEndOfDay;
+  const forecastHeld = effectiveElapsedMs < MIN_FORECAST_WINDOW_MS;
+  const forecastEndOfDayUsd = forecastHeld
+    ? null
+    : effectiveBaseUsd + effectiveRateUsdPerMs * msUntilEndOfDay;
 
   // ISO week ends on Sunday. Convert local getDay() (0=Sun…6=Sat) to ISO day (1=Mon…7=Sun)
   // then compute remaining days: Sunday → 0 remaining, Monday → 6, …, Saturday → 1.
@@ -113,7 +122,9 @@ export function buildCostForecastFromInputs(
   const dayOfWeek = now.getDay();
   const isoDay = dayOfWeek === 0 ? 7 : dayOfWeek;
   const msUntilEndOfWeek = ((7 - isoDay) % 7) * 86_400_000 + msUntilEndOfDay;
-  const forecastEndOfWeekUsd = effectiveBaseUsd + effectiveRateUsdPerMs * msUntilEndOfWeek;
+  const forecastEndOfWeekUsd = forecastHeld
+    ? null
+    : effectiveBaseUsd + effectiveRateUsdPerMs * msUntilEndOfWeek;
 
   // Assumes a full 8-hour workday as the session-end horizon — there's no
   // real "end of session" signal to anchor this forecast to otherwise.
@@ -121,7 +132,7 @@ export function buildCostForecastFromInputs(
   const msUntilSessionEnd = Math.max(0, SESSION_TARGET_MS - elapsedMs);
   const forecastSessionEndUsd = sessionSpentUsd + sessionRateUsdPerMs * msUntilSessionEnd;
 
-  const elapsedMinutes = elapsedMs / 60_000;
+  const elapsedMinutes = effectiveElapsedMs / 60_000;
   const confidenceNote =
     elapsedMinutes < 10
       ? 'Low confidence — less than 10 minutes of data.'

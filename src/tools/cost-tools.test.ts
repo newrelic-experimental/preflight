@@ -497,12 +497,11 @@ describe('handleGetBudgetStatus()', () => {
 
 describe('handleGetCostForecast()', () => {
   it('anchors the end-of-day forecast to getCostForDay()/getFirstActivityMsForDay(), not the full session spend', () => {
-    // Freeze the clock. The handler and the `expected` computation below each
-    // read Date.now() independently, and today's day-bucket anchor is only
-    // milliseconds old here, so the projected rate is dailySpend / (a few ms):
-    // even single-digit ms of drift between the two reads moves a five-figure
-    // end-of-day forecast past toBeCloseTo(…, 2). Seen failing on CI runners.
-    jest.useFakeTimers({ now: Date.now() });
+    // Freeze the clock at a fixed local noon. The handler and the `expected`
+    // computation below each read Date.now() independently, so the clock must
+    // not move between them. Noon keeps today's anchor an hour old, past the
+    // 10-minute forecast minimum, at any wall-clock time the suite runs.
+    jest.useFakeTimers({ now: new Date(2024, 0, 3, 12).getTime() });
     try {
       runAnchoredForecastCase();
     } finally {
@@ -529,7 +528,8 @@ describe('handleGetCostForecast()', () => {
       { timestampMs: yesterday },
     );
 
-    // "Today's" spend — small, and reported with no ctx so it lands in today's bucket.
+    // "Today's" spend — small, backdated an hour so it lands in today's bucket
+    // with a daily window past the forecast minimum.
     tracker.recordTokenUsage(
       {
         inputTokens: 1_000,
@@ -540,6 +540,7 @@ describe('handleGetCostForecast()', () => {
         totalTokens: 1_200,
       },
       'claude-sonnet-4',
+      { timestampMs: Date.now() - 60 * 60_000 },
     );
 
     const sessionStartMs = yesterday;
@@ -559,7 +560,8 @@ describe('handleGetCostForecast()', () => {
     // session spend instead of today's day-bucket, `expected` (computed here
     // from the correct daily-anchored inputs) would diverge sharply from
     // `body` given the huge backdated "yesterday" spend above.
-    expect(body.forecastEndOfDayUsd).toBeCloseTo(expected.forecastEndOfDayUsd ?? 0, 2);
+    expect(expected.forecastEndOfDayUsd).not.toBeNull();
+    expect(body.forecastEndOfDayUsd).toBeCloseTo(expected.forecastEndOfDayUsd as number, 2);
     expect(sessionTotalCostUsd).toBeGreaterThan(tracker.getCostForDay(todayKey));
   }
 

@@ -1104,6 +1104,7 @@ describe('MCP protocol integration — direct registerTools() dispatch', () => {
         totalTokens: 1_200,
       },
       'claude-sonnet-4',
+      { timestampMs: Date.now() - 20 * 60 * 1000 },
     );
     await connectDirect({ costTracker, sessionStartMs: Date.now() - 20 * 60 * 1000 });
 
