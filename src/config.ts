@@ -727,9 +727,18 @@ export class CloudSecretCommandError extends SecretCommandError {
 export function digestWebhookUrlOverride(
   config: Pick<McpServerConfig, 'digestWebhookUrl' | 'secretSources'>,
 ): string | undefined {
+  return digestWebhookUrlOverrideSource(config)
+    ? (config.digestWebhookUrl ?? undefined)
+    : undefined;
+}
+
+/** Which source is overriding the file's `digestWebhookUrl`, if any. */
+export function digestWebhookUrlOverrideSource(
+  config: Pick<McpServerConfig, 'digestWebhookUrl' | 'secretSources'>,
+): 'env' | 'command' | undefined {
   const source = config.secretSources.digestWebhookUrl;
   return (source === 'env' || source === 'command') && config.digestWebhookUrl !== null
-    ? config.digestWebhookUrl
+    ? source
     : undefined;
 }
 
