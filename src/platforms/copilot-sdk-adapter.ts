@@ -1,8 +1,9 @@
-import type {
-  NormalizedToolCall,
-  PlatformAdapter,
-  PlatformConfig,
-  PlatformSessionMetadata,
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformConfig,
+  type PlatformSessionMetadata,
 } from './types.js';
 
 /**
@@ -130,8 +131,9 @@ export class CopilotSdkAdapter implements PlatformAdapter {
       'GEMINI.md',
       '.github/copilot-instructions.md',
     ] as const,
-    // The documented hook command stamps NEW_RELIC_AI_PLATFORM=copilot.
-    sessionBreadcrumbWriters: ['copilot-sdk', 'copilot'] as const,
+    // The documented hook command stamps NEW_RELIC_AI_PLATFORM=copilot, which
+    // commands documented before #557 (2026-09-04) lack.
+    sessionBreadcrumbWriters: ['copilot-sdk', 'copilot', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {

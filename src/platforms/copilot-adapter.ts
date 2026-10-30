@@ -1,8 +1,9 @@
-import type {
-  NormalizedToolCall,
-  PlatformAdapter,
-  PlatformConfig,
-  PlatformSessionMetadata,
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformConfig,
+  type PlatformSessionMetadata,
 } from './types.js';
 
 /**
@@ -112,7 +113,9 @@ export class CopilotAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'full-hooks' as const;
   readonly capabilities = {
     instructionFilePaths: [] as const,
-    sessionBreadcrumbWriters: ['copilot'] as const,
+    // Hook commands documented before #557 (2026-09-04) lack the
+    // NEW_RELIC_AI_PLATFORM=copilot stamp.
+    sessionBreadcrumbWriters: ['copilot', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {

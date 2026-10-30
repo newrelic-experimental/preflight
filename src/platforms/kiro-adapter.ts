@@ -1,8 +1,9 @@
-import type {
-  PlatformAdapter,
-  PlatformConfig,
-  PlatformSessionMetadata,
-  NormalizedToolCall,
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  type PlatformAdapter,
+  type PlatformConfig,
+  type PlatformSessionMetadata,
+  type NormalizedToolCall,
 } from './types.js';
 
 /**
@@ -97,7 +98,8 @@ export class KiroAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'full-hooks' as const;
   readonly capabilities = {
     instructionFilePaths: [] as const,
-    sessionBreadcrumbWriters: ['kiro'] as const,
+    // Hook commands documented before #634 (2026-09-10) lack the MCP_CLIENT=kiro stamp.
+    sessionBreadcrumbWriters: ['kiro', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {

@@ -592,13 +592,13 @@ describe('capabilities', () => {
       'claude-code': ['claude-code'],
       cursor: [],
       windsurf: [],
-      copilot: ['copilot'],
+      copilot: ['copilot', UNATTRIBUTED_BREADCRUMB_WRITER],
       'copilot-app': ['copilot-app'],
-      'copilot-sdk': ['copilot-sdk', 'copilot'],
+      'copilot-sdk': ['copilot-sdk', 'copilot', UNATTRIBUTED_BREADCRUMB_WRITER],
       zed: [],
       continue: [],
       'amazon-q': [],
-      kiro: ['kiro'],
+      kiro: ['kiro', UNATTRIBUTED_BREADCRUMB_WRITER],
       droid: ['droid', UNATTRIBUTED_BREADCRUMB_WRITER],
       'gemini-cli': ['gemini-cli', UNATTRIBUTED_BREADCRUMB_WRITER],
       cline: [],
@@ -607,7 +607,7 @@ describe('capabilities', () => {
       kilocode: ['kilocode', UNATTRIBUTED_BREADCRUMB_WRITER],
       pi: [],
       antigravity: [],
-      'generic-mcp': [],
+      'generic-mcp': [UNATTRIBUTED_BREADCRUMB_WRITER],
     });
   });
 
