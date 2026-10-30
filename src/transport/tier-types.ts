@@ -108,7 +108,39 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function validateDestination(raw: unknown, tierName: string): TierDestination {
+/**
+ * Runs one tier's `licenseKeyCommand`. Returns undefined when the caller
+ * chose not to run helpers; the tier then carries an empty key and the caller
+ * must not use it.
+ */
+export type TierLicenseKeyResolver = (
+  tierName: string,
+  argv: readonly string[],
+) => string | undefined;
+
+export interface ValidateTiersOptions {
+  readonly knownEventTypes?: readonly string[];
+  readonly resolveLicenseKey?: TierLicenseKeyResolver;
+}
+
+function validateLicenseKeyCommand(raw: unknown, tierName: string): readonly string[] {
+  if (
+    !Array.isArray(raw) ||
+    raw.length === 0 ||
+    raw.some((a) => typeof a !== 'string' || a === '')
+  ) {
+    throw new Error(
+      `Tier "${tierName}" destination.licenseKeyCommand must be a non-empty array of non-empty strings (the command's argv).`,
+    );
+  }
+  return raw as string[];
+}
+
+function validateDestination(
+  raw: unknown,
+  tierName: string,
+  resolveLicenseKey: TierLicenseKeyResolver | undefined,
+): TierDestination {
   if (!isRecord(raw)) {
     throw new Error(
       `Tier "${tierName}" is missing a destination object. ` +
@@ -119,15 +151,31 @@ function validateDestination(raw: unknown, tierName: string): TierDestination {
   if (raw.type === 'nr') {
     // Deliberately never interpolate the licenseKey value into the message —
     // config-load errors surface on stderr and in support pastes.
-    if (typeof raw.licenseKey !== 'string' || raw.licenseKey.trim() === '') {
-      throw new Error(`Tier "${tierName}" destination.type='nr' requires a non-empty licenseKey.`);
+    let licenseKey: string;
+    if (raw.licenseKeyCommand !== undefined) {
+      const argv = validateLicenseKeyCommand(raw.licenseKeyCommand, tierName);
+      if (raw.licenseKey !== undefined) {
+        logger.warn(
+          'Both licenseKey and licenseKeyCommand are set on a tier; using licenseKeyCommand',
+          {
+            tier: tierName,
+          },
+        );
+      }
+      licenseKey = resolveLicenseKey?.(tierName, argv) ?? '';
+    } else if (typeof raw.licenseKey !== 'string' || raw.licenseKey.trim() === '') {
+      throw new Error(
+        `Tier "${tierName}" destination.type='nr' requires a non-empty licenseKey or a licenseKeyCommand.`,
+      );
+    } else {
+      licenseKey = raw.licenseKey;
     }
     if (typeof raw.accountId !== 'string' || !/^\d{1,12}$/.test(raw.accountId)) {
       throw new Error(
         `Tier "${tierName}" destination.accountId must be 1–12 decimal digits (as a JSON string).`,
       );
     }
-    return { type: 'nr', licenseKey: raw.licenseKey, accountId: raw.accountId };
+    return { type: 'nr', licenseKey, accountId: raw.accountId };
   }
 
   if (raw.type === 'local') {
@@ -187,8 +235,9 @@ function validateEventTypes(
  */
 export function validateTiers(
   tiers: readonly unknown[],
-  knownEventTypes: readonly string[] = KNOWN_EVENT_TYPES,
+  options: ValidateTiersOptions = {},
 ): ResolvedTier[] {
+  const { knownEventTypes = KNOWN_EVENT_TYPES, resolveLicenseKey } = options;
   if (tiers.length === 0) {
     throw new Error(
       'tiers must contain at least one tier. Remove the "tiers" key entirely to use the ' +
@@ -222,7 +271,7 @@ export function validateTiers(
     }
     seenNames.add(name);
 
-    const destination = validateDestination(raw.destination, name);
+    const destination = validateDestination(raw.destination, name, resolveLicenseKey);
     const eventTypes = validateEventTypes(raw.eventTypes, name, known);
 
     const isPrimaryTier = destination.type === 'nr' && primaryTierName === undefined;

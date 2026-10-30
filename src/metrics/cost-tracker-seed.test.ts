@@ -1,6 +1,7 @@
-import { describe, it, expect } from '@jest/globals';
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { buildCostTrackerSeed } from './cost-tracker-seed.js';
-import { localDateKey } from '../lib/date.js';
+import { CostTracker } from './cost-tracker.js';
+import { localDateKey, localStartOfDay } from '../lib/date.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from './quality-proxy-tracker.js';
 
@@ -120,5 +121,117 @@ describe('buildCostTrackerSeed', () => {
     expect(seed.unpricedByModel).toEqual(unpricedByModel);
     expect(seed.estimatedByModel).toEqual(estimatedByModel);
     expect(buildCostTrackerSeed(makeSummary()).estimatedByModel).toBeUndefined();
+  });
+});
+
+describe('buildCostTrackerSeed today attribution', () => {
+  const NOON = new Date(2026, 9, 29, 12, 0, 0).getTime();
+  const TODAY_KEY = localDateKey(NOON);
+  const YESTERDAY_KEY = localDateKey(NOON - 86_400_000);
+  const DAY_START = localStartOfDay(NOON);
+  const HOUR = 3_600_000;
+
+  beforeEach(() => {
+    jest.useFakeTimers({
+      now: NOON,
+      doNotFake: ['setTimeout', 'setInterval', 'setImmediate', 'nextTick', 'queueMicrotask'],
+    });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  function makeEntries(count: number, fromMs: number): NonNullable<FullSessionSummary['timeline']> {
+    return Array.from({ length: count }, (_, i) => ({
+      timestamp: fromMs + i * 1000,
+      durationMs: null,
+      toolName: 'Read',
+      success: true,
+    }));
+  }
+
+  function makeCrossMidnight(overrides?: Partial<FullSessionSummary>): FullSessionSummary {
+    return makeSummary({
+      startTime: DAY_START - 2 * HOUR,
+      endTime: DAY_START + 2 * HOUR,
+      estimatedCostUsd: 10,
+      subagentCostUsd: 0,
+      timeline: [
+        ...makeEntries(9, DAY_START - 90 * 60_000),
+        ...makeEntries(1, DAY_START + 60 * 60_000),
+      ],
+      ...overrides,
+    });
+  }
+
+  function seedTracker(persisted: FullSessionSummary): CostTracker {
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted(buildCostTrackerSeed(persisted));
+    return tracker;
+  }
+
+  it('books nothing to today for a session whose activity was all yesterday', () => {
+    const tracker = seedTracker(
+      makeSummary({
+        startTime: DAY_START - 26 * HOUR,
+        endTime: DAY_START - 2 * HOUR,
+        estimatedCostUsd: 7,
+        subagentCostUsd: 0,
+        timeline: makeEntries(5, DAY_START - 10 * HOUR),
+      }),
+    );
+    expect(tracker.getCostForDay(TODAY_KEY)).toBe(0);
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(7, 6);
+  });
+
+  it('seeds today cost from the exact persisted day bucket, not a timeline pro-rate', () => {
+    const tracker = seedTracker(
+      makeCrossMidnight({ costByDayUsd: { [YESTERDAY_KEY]: 8, [TODAY_KEY]: 2 } }),
+    );
+    expect(tracker.getCostForDay(TODAY_KEY)).toBeCloseTo(2, 6);
+  });
+
+  it('seeds today subagent cost from the exact persisted day bucket, not a ratio', () => {
+    const tracker = seedTracker(
+      makeCrossMidnight({
+        subagentCostUsd: 4,
+        costByDayUsd: { [YESTERDAY_KEY]: 8, [TODAY_KEY]: 2 },
+        subagentCostByDayUsd: { [YESTERDAY_KEY]: 3.5, [TODAY_KEY]: 0.5 },
+      }),
+    );
+    expect(tracker.getSubagentCostForDay(TODAY_KEY)).toBeCloseTo(0.5, 6);
+  });
+
+  it('books nothing to today for a legacy phantom session with no attributable activity', () => {
+    const seed = buildCostTrackerSeed(
+      makeSummary({
+        startTime: DAY_START + HOUR,
+        endTime: DAY_START + 2 * HOUR,
+        estimatedCostUsd: 248,
+        subagentCostUsd: 0,
+        toolCallCount: 0,
+        timeline: [],
+        costByDayUsd: undefined,
+      }),
+    );
+    expect(seed.totalCostUsd).toBe(248);
+    expect(seed.dayCostUsd).toBe(0);
+    expect(seed.daySubagentCostUsd).toBe(0);
+  });
+
+  it('never seeds a today subagent share above today total cost', () => {
+    const seed = buildCostTrackerSeed(
+      makeCrossMidnight({
+        subagentCostUsd: 10,
+        costByDayUsd: { [YESTERDAY_KEY]: 8, [TODAY_KEY]: 2 },
+        subagentCostByDayUsd: undefined,
+        timeline: [
+          ...makeEntries(5, DAY_START - 90 * 60_000),
+          ...makeEntries(5, DAY_START + 60 * 60_000),
+        ],
+      }),
+    );
+    expect(seed.dayCostUsd).toBeCloseTo(2, 6);
+    expect(seed.daySubagentCostUsd).toBeLessThanOrEqual(seed.dayCostUsd);
   });
 });
