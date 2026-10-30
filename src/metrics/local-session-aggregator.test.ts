@@ -829,6 +829,43 @@ describe('LocalSessionAggregator persist', () => {
     expect(store.loadSession(REAL_ID)?.estimatedCostUsd).toBeCloseTo(11, 6);
   });
 
+  it('skips a session unchanged since its last save, then folds what changed meanwhile', () => {
+    const calls = { loadSession: 0, saveSession: 0 };
+    const countingStore: SessionFileStore = {
+      loadSession: (id) => {
+        calls.loadSession += 1;
+        return store.loadSession(id);
+      },
+      saveSession: (summary) => {
+        calls.saveSession += 1;
+        return store.saveSession(summary);
+      },
+    };
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 2, timestamp: DAY });
+    agg.persist(countingStore, makeContext());
+
+    store.saveSession(makeEngineSummary({ estimatedCostUsd: 5 }));
+    agg.persist(countingStore, makeContext());
+    expect(calls).toEqual({ loadSession: 1, saveSession: 1 });
+
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000 });
+    agg.persist(countingStore, makeContext());
+    expect(calls).toEqual({ loadSession: 2, saveSession: 2 });
+    expect(store.loadSession(REAL_ID)?.estimatedCostUsd).toBeCloseTo(6, 6);
+  });
+
+  it('marks an unchanged session completed on the terminal save', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.persist(store, makeContext('in progress'));
+
+    agg.persist(store, makeContext('completed'));
+
+    expect(store.loadSession(REAL_ID)?.outcome).toBe('completed');
+  });
+
   it('adds a saved byte-estimate ledger to the total once', () => {
     store.saveSession(
       makeEngineSummary({
