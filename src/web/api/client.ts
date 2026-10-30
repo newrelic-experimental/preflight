@@ -817,6 +817,7 @@ export interface AgentSpan {
 export interface SessionSubagentsResponse {
   readonly window: { readonly startMs: number; readonly endMs: number };
   readonly agents: ReadonlyArray<AgentSpan>;
+  readonly peak: { readonly count: number; readonly atMs: number | null };
 }
 
 // Subagent fan-out timeline for a session, sorted by startMs ASC. Consumed
