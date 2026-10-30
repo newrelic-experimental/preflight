@@ -124,8 +124,10 @@ export interface EstimatedModelUsage extends UnpricedModelUsage {
 /**
  * The part of the session total that came from byte-size estimates
  * (`recordEstimatedTokens`) rather than a real token report. Kept as its own
- * ledger so the first real report can take it back out: the same turns arrive
- * again as exact usage once the transcript watcher reads from byte 0.
+ * ledger so a transcript replay can take it back out: the same turns arrive
+ * again as exact usage once the transcript watcher reads from byte 0. A
+ * self-report (`nr_observe_report_tokens`) describes one response and leaves
+ * the ledger in place.
  */
 export interface ByteEstimateLedger {
   readonly costUsd: number;
@@ -259,8 +261,14 @@ export interface CostTrackerSeed {
   readonly costByWorkflowRunId: Readonly<Record<string, Readonly<Record<string, number>>>>;
   readonly unpricedByModel?: Readonly<Record<string, UnpricedModelUsage>>;
   readonly estimatedByModel?: Readonly<Record<string, EstimatedModelUsage>>;
-  /** Restored separately because `seedFromPersisted` counts as a report. See `ByteEstimateLedger`. */
+  /** Restored separately so the seed can tell exact tokens from estimated ones. See `ByteEstimateLedger`. */
   readonly byteEstimates?: ByteEstimateLedger;
+  /**
+   * False when the persisted exact share (`exactTotals`) is empty, so the
+   * session held byte estimates only. Absent means an exact report happened:
+   * summaries written before the exact/estimate split counted as reported.
+   */
+  readonly hadExactReport?: boolean;
 }
 
 export interface SubagentMetrics {
@@ -633,7 +641,8 @@ export class CostTracker implements Resettable {
     this.totalCacheReadTokens += seed.totalCacheReadTokens;
     this.totalCacheCreationTokens += seed.totalCacheCreationTokens;
     this.totalCacheSavingsUsd += seed.totalCacheSavingsUsd;
-    this.reportCount += 1;
+    if (seed.hadExactReport === false) this.estimationCount += 1;
+    else this.reportCount += 1;
     if (seed.byteEstimates !== undefined) {
       this.hasByteEstimateHistory = true;
       this.byteEstimateCostUsd += seed.byteEstimates.costUsd;

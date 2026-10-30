@@ -444,7 +444,7 @@ export interface ExactTotals {
  * predates the field. A merged total cannot be split afterwards (the file does
  * not record which writer's figure won the max), so writers persist the split.
  */
-function exactTotalsOf(s: FullSessionSummary): ExactTotals {
+export function exactTotalsOf(s: FullSessionSummary): ExactTotals {
   if (s.exactTotals) return s.exactTotals;
   const ledger = s.byteEstimates;
   return {
