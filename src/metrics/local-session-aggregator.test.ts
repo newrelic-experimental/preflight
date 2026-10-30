@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import {
   spawnSync as nodeSpawnSync,
@@ -6,9 +6,11 @@ import {
   type SpawnSyncReturns,
 } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { localDateKey } from '../lib/date.js';
+import { SessionStore, type FullSessionSummary } from '../storage/session-store.js';
 import {
   collectCommitsAcrossRepos,
   LocalSessionAggregator,
@@ -740,6 +742,61 @@ describe('LocalSessionAggregator baseline fold after its own checkpoint', () => 
     const [summary] = summariesOf(agg);
     expect(summary?.estimatedCostUsd).toBe(9);
     expect(summary?.costByDayUsd).toEqual({ '2026-09-10': 9 });
+  });
+});
+
+describe('LocalSessionAggregator saves across a restart', () => {
+  const DAY = new Date(2026, 8, 10, 12).getTime();
+  const MODEL = 'claude-sonnet-4-5-20250929';
+  let storagePath: string;
+  let store: SessionStore;
+
+  beforeEach(() => {
+    storagePath = mkdtempSync(join(tmpdir(), 'agg-restart-'));
+    store = new SessionStore({ storagePath });
+  });
+
+  afterEach(() => {
+    rmSync(storagePath, { recursive: true, force: true });
+  });
+
+  function makeAggregator(): LocalSessionAggregator {
+    return new LocalSessionAggregator({ persistedCostBaseline: (id) => store.loadSession(id) });
+  }
+
+  function saveSummaries(agg: LocalSessionAggregator): void {
+    for (const summary of summariesOf(agg, 'completed')) {
+      store.saveSession(summary as unknown as FullSessionSummary);
+    }
+  }
+
+  it('keeps the saved session cost across a process restart', () => {
+    const before = makeAggregator();
+    before.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    before.recordTokenUsage(REAL_ID, { costUsd: 10, timestamp: DAY });
+    saveSummaries(before);
+
+    const after = makeAggregator();
+    after.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    after.recordTokenUsage(REAL_ID, { costUsd: 2, timestamp: DAY });
+    saveSummaries(after);
+
+    expect(store.loadSession(REAL_ID)?.estimatedCostUsd).toBeCloseTo(12, 6);
+  });
+
+  it('adds a parent-only turn after a --local restart to the session saved before it', () => {
+    const before = makeAggregator();
+    before.recordToolCall({ sessionId: REAL_ID, toolName: 'Bash', timestamp: DAY });
+    before.recordTokenUsage(REAL_ID, { costUsd: 0.0096, model: MODEL, timestamp: DAY + 1 });
+    before.recordTokenUsage(REAL_ID, { costUsd: 0.0096, model: MODEL, timestamp: DAY + 2 });
+    saveSummaries(before);
+    expect(store.loadSession(REAL_ID)?.estimatedCostUsd).toBeCloseTo(0.0192, 6);
+
+    const after = makeAggregator();
+    after.recordTokenUsage(REAL_ID, { costUsd: 0.0096, model: MODEL, timestamp: DAY + 3 });
+    saveSummaries(after);
+
+    expect(store.loadSession(REAL_ID)?.estimatedCostUsd).toBeCloseTo(0.0288, 6);
   });
 });
 
