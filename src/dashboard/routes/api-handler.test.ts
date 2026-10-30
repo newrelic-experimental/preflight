@@ -8634,3 +8634,90 @@ describe('api-handler — session_intent is never exposed on the HTTP surface', 
     expect(parsed.sessionName).toBe('my session');
   });
 });
+
+describe('api-handler Today aggregate git identity reuse', () => {
+  const originalPath = process.env.PATH;
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pr-964-')));
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const installGitCounter = (): string => {
+    const realGit = spawnSync('which', ['git'], { encoding: 'utf-8' }).stdout.trim();
+    const binDir = path.join(root, 'bin');
+    const logFile = path.join(root, 'git-calls.log');
+    fs.mkdirSync(binDir);
+    fs.writeFileSync(
+      path.join(binDir, 'git'),
+      `#!/bin/sh\necho call >> "${logFile}"\nexec "${realGit}" "$@"\n`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath}`;
+    return logFile;
+  };
+
+  const gitCallCount = (logFile: string): number =>
+    fs.existsSync(logFile)
+      ? fs.readFileSync(logFile, 'utf-8').split('\n').filter(Boolean).length
+      : 0;
+
+  it('does not re-spawn git for a known repo on the next recompute', async () => {
+    const repo = path.join(root, 'repo');
+    fs.mkdirSync(repo);
+    const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+    spawnSync('git', ['init', '-q'], { cwd: repo, env, stdio: 'ignore' });
+
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'in-progress',
+            timeline: [
+              {
+                timestamp: startOfDay.getTime() + 60_000,
+                durationMs: 100,
+                toolName: 'Bash',
+                success: true,
+                command: 'ls',
+                cwd: repo,
+              },
+            ],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const logFile = installGitCounter();
+    const request = async (): Promise<number> => {
+      const { res, status } = fakeRes();
+      await handler(
+        { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage,
+        res,
+      );
+      return status();
+    };
+
+    expect(await request()).toBe(200);
+    const afterFirst = gitCallCount(logFile);
+    expect(afterFirst).toBeGreaterThan(0);
+
+    const realNow = Date.now;
+    Date.now = () => realNow() + 5_001;
+    try {
+      expect(await request()).toBe(200);
+    } finally {
+      Date.now = realNow;
+    }
+    expect(gitCallCount(logFile)).toBe(afterFirst);
+  });
+});
