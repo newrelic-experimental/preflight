@@ -97,15 +97,20 @@ interface ByteEstimateTally {
 }
 
 /**
- * A session's byte-size cost estimate as this process holds it. `unseeded`
- * holds the estimates made before `persist()` first read the session file;
- * `estimating` holds the saved ledger plus every estimate since, because the
- * store keeps only the latest ledger; `retracted` saw exact usage, so it
- * writes a zero ledger and estimates no more.
+ * A session's byte-size cost estimate as this process holds it. While
+ * `estimating`, `total` is every estimate the rollup counts and `accounted` is
+ * how much of the file's ledger it already counts, the ledger's counterpart
+ * to `accountedCost`. The store keeps only the latest writer's ledger, so each
+ * save folds in what the file's ledger holds beyond `accounted`: another
+ * writer's calls are kept and this rollup's own are never added twice.
+ * `retracted` saw exact usage, so it writes a zero ledger and estimates no more.
  */
 type ByteEstimateState =
-  | { readonly kind: 'unseeded'; readonly tally: ByteEstimateTally }
-  | { readonly kind: 'estimating'; readonly tally: ByteEstimateTally }
+  | {
+      readonly kind: 'estimating';
+      readonly total: ByteEstimateTally;
+      accounted: ByteEstimateTally;
+    }
   | { readonly kind: 'retracted' };
 
 const RETRACTED: ByteEstimateState = { kind: 'retracted' };
@@ -422,7 +427,7 @@ export class LocalSessionAggregator {
         unpricedByModel: new Map(),
         estimatedByModel: new Map(),
         successCount: 0,
-        byteEstimate: { kind: 'unseeded', tally: emptyTally() },
+        byteEstimate: { kind: 'estimating', total: emptyTally(), accounted: emptyTally() },
       };
       this.sessions.set(sessionId, rollup);
     }
@@ -612,7 +617,7 @@ export class LocalSessionAggregator {
 
     const usage = estimatedUsageFromBytes(inputBytes, outputBytes);
     const { model, costUsd } = this.priceByteEstimate(usage);
-    const tally = rollup.byteEstimate.tally;
+    const tally = rollup.byteEstimate.total;
     tally.costUsd += costUsd;
     tally.inputTokens += usage.inputTokens;
     tally.outputTokens += usage.outputTokens;
@@ -663,11 +668,12 @@ export class LocalSessionAggregator {
       if (rollup.savedOutcome === context.outcome || !hasUsage(rollup)) continue;
       const file = store.loadSession(rollup.sessionId);
       foldSessionFile(rollup, file);
-      if (rollup.byteEstimate.kind === 'unseeded') {
-        rollup.byteEstimate = seededByteEstimate(file, rollup.byteEstimate.tally);
-      }
+      foldByteEstimates(rollup, file);
       if (!store.saveSession(summaryOf(rollup, context) as unknown as FullSessionSummary)) continue;
       rollup.accountedCost = costTotalsOf(rollup);
+      if (rollup.byteEstimate.kind === 'estimating') {
+        rollup.byteEstimate.accounted = copyOfTally(rollup.byteEstimate.total);
+      }
       rollup.savedOutcome = context.outcome;
       written += 1;
     }
@@ -788,31 +794,37 @@ function emptyTally(): ByteEstimateTally {
   };
 }
 
-/**
- * A session's estimate state once its saved file has been read. Exact usage
- * on file means a report already replaced the estimate, as `CostTracker`'s
- * seed decides for an engine's own session; otherwise the saved ledger
- * carries on beneath the estimates made before the read.
- */
-function seededByteEstimate(
-  file: FullSessionSummary | null,
-  unseeded: ByteEstimateTally,
-): ByteEstimateState {
-  if (file === null) return { kind: 'estimating', tally: unseeded };
-  const exact = exactTotalsOf(file);
-  if (exact.costUsd > 0 || exact.inputTokens + exact.outputTokens > 0) return RETRACTED;
-  const ledger = file.byteEstimates;
-  if (ledger === undefined) return { kind: 'estimating', tally: unseeded };
+function copyOfTally(tally: ByteEstimateTally): ByteEstimateTally {
   return {
-    kind: 'estimating',
-    tally: {
-      costUsd: ledger.costUsd + unseeded.costUsd,
-      inputTokens: ledger.inputTokens + unseeded.inputTokens,
-      outputTokens: ledger.outputTokens + unseeded.outputTokens,
-      costByModel: new Map(Object.entries(sumByKey(unseeded.costByModel, ledger.costByModel))),
-      costByDayUsd: new Map(Object.entries(sumByKey(unseeded.costByDayUsd, ledger.costByDayUsd))),
-    },
+    ...tally,
+    costByModel: new Map(tally.costByModel),
+    costByDayUsd: new Map(tally.costByDayUsd),
   };
+}
+
+/**
+ * `foldSessionFile` for the byte-estimate ledger. Exact usage on file means a
+ * report already replaced the estimate, as `CostTracker`'s seed decides for an
+ * engine's own session.
+ */
+function foldByteEstimates(rollup: LocalSessionRollup, file: FullSessionSummary | null): void {
+  const state = rollup.byteEstimate;
+  if (file === null || state.kind === 'retracted') return;
+  const exact = exactTotalsOf(file);
+  if (exact.costUsd > 0 || exact.inputTokens + exact.outputTokens > 0) {
+    rollup.byteEstimate = RETRACTED;
+    return;
+  }
+  const ledger = file.byteEstimates;
+  if (ledger === undefined) return;
+  const { total, accounted } = state;
+  for (const key of ['costUsd', 'inputTokens', 'outputTokens'] as const) {
+    const extra = excessOver(ledger[key], accounted[key]);
+    total[key] += extra;
+    accounted[key] += extra;
+  }
+  foldByKey(total.costByModel, accounted.costByModel, ledger.costByModel);
+  foldByKey(total.costByDayUsd, accounted.costByDayUsd, ledger.costByDayUsd);
 }
 
 /** The ledger to save, or undefined to leave the saved one as it is. */
@@ -822,7 +834,7 @@ function emittedByteEstimates(rollup: LocalSessionRollup): ByteEstimateLedger | 
   if (state.kind === 'retracted') {
     return { costUsd: 0, inputTokens: 0, outputTokens: 0, costByModel: {}, costByDayUsd: {} };
   }
-  const { tally } = state;
+  const tally = state.total;
   if (tally.costUsd === 0 && tally.inputTokens + tally.outputTokens === 0) return undefined;
   return {
     costUsd: tally.costUsd,
@@ -858,9 +870,8 @@ function costTotalsOf(rollup: LocalSessionRollup): CostTotals {
  * window, and SessionStore merges by max, so a rollup that ignored the file
  * would lose to it. The whole quadruple (not just the subagent pair) is
  * folded so the persisted invariant `estimatedCostUsd >= subagentCostUsd`
- * survives the fold. Only the file's exact totals are folded: the rollup
- * writes no byte-estimate ledger, so the store reads all of it as exact and
- * adds the file's ledger back on top.
+ * survives the fold. Only the file's exact totals are folded here, since the
+ * rollup's cost fields are exact; `foldByteEstimates` folds the ledger.
  */
 function foldSessionFile(rollup: LocalSessionRollup, file: FullSessionSummary | null): void {
   if (file === null) return;
@@ -872,8 +883,8 @@ function foldSessionFile(rollup: LocalSessionRollup, file: FullSessionSummary | 
   const subagentCostUsd = excessOver(file.subagentCostUsd, accounted.subagentCostUsd);
   rollup.subagentCostUsd += subagentCostUsd;
   accounted.subagentCostUsd += subagentCostUsd;
-  foldDays(rollup.costByDayUsd, accounted.costByDayUsd, exact.costByDayUsd);
-  foldDays(rollup.subagentCostByDayUsd, accounted.subagentCostByDayUsd, file.subagentCostByDayUsd);
+  foldByKey(rollup.costByDayUsd, accounted.costByDayUsd, exact.costByDayUsd);
+  foldByKey(rollup.subagentCostByDayUsd, accounted.subagentCostByDayUsd, file.subagentCostByDayUsd);
 }
 
 /**
@@ -886,16 +897,16 @@ function excessOver(persisted: number, accounted: number | undefined): number {
   return Math.max(0, persisted - (accounted ?? 0));
 }
 
-/** `foldSessionFile` for one per-day map. */
-function foldDays(
-  rollupDays: Map<string, number>,
-  accountedDays: Map<string, number>,
-  persistedDays: Readonly<Record<string, number>> | undefined,
+/** `foldSessionFile` for one keyed map, such as cost by day. */
+function foldByKey(
+  rollupMap: Map<string, number>,
+  accountedMap: Map<string, number>,
+  persisted: Readonly<Record<string, number>> | undefined,
 ): void {
-  for (const [day, usd] of Object.entries(persistedDays ?? {})) {
-    const extra = excessOver(usd, accountedDays.get(day));
-    rollupDays.set(day, (rollupDays.get(day) ?? 0) + extra);
-    accountedDays.set(day, (accountedDays.get(day) ?? 0) + extra);
+  for (const [key, usd] of Object.entries(persisted ?? {})) {
+    const extra = excessOver(usd, accountedMap.get(key));
+    rollupMap.set(key, (rollupMap.get(key) ?? 0) + extra);
+    accountedMap.set(key, (accountedMap.get(key) ?? 0) + extra);
   }
 }
 
