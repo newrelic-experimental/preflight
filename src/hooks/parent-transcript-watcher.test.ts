@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
   existsSync,
   appendFileSync,
@@ -15,6 +16,7 @@ import {
   ParentTranscriptWatcher,
   buildParentTranscriptCursorPath,
 } from './parent-transcript-watcher.js';
+import { BilledTurnLedger } from './billed-turn-ledger.js';
 import { LocalStore } from '../storage/local-store.js';
 
 const STDERR_WRITE = process.stderr.write;
@@ -126,6 +128,212 @@ describe('ParentTranscriptWatcher', () => {
     watcher.poll();
     watcher.poll();
     expect(readTokenEvents()).toHaveLength(1);
+  });
+
+  it('keeps its cursor and emits nothing while the billed-turn ledger fails, then catches up', () => {
+    writeFileSync(transcriptPath, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+    const blocker = join(storagePath, 'billed-turns');
+    writeFileSync(blocker, '');
+    const watcher = new ParentTranscriptWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: SESSION_ID,
+    });
+    watcher.poll();
+    expect(readTokenEvents()).toHaveLength(0);
+    expect(existsSync(buildParentTranscriptCursorPath(storagePath, SESSION_ID))).toBe(false);
+
+    rmSync(blocker);
+    watcher.poll();
+    watcher.poll();
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual(['msg_1']);
+  });
+
+  it('keeps a turn whose buffer append failed and emits it once the buffer is writable', () => {
+    writeFileSync(transcriptPath, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+    const bufferPath = join(storagePath, `buffer-${SESSION_ID}.jsonl`);
+    mkdirSync(bufferPath);
+    const watcher = new ParentTranscriptWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: SESSION_ID,
+    });
+    watcher.poll();
+
+    rmSync(bufferPath, { recursive: true });
+    watcher.poll();
+    watcher.poll();
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual(['msg_1']);
+  });
+
+  it('warns once a minute, with a count, while the buffer stays unwritable', () => {
+    writeFileSync(transcriptPath, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+    mkdirSync(join(storagePath, `buffer-${SESSION_ID}.jsonl`));
+    const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const warnings = () =>
+      logged.mock.calls
+        .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+        .filter((l) => l.level === 'warn' && l.component === 'parent-transcript-watcher');
+    const watcher = new ParentTranscriptWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: SESSION_ID,
+    });
+    const start = Date.now();
+    const now = jest.spyOn(Date, 'now');
+    try {
+      now.mockReturnValue(start);
+      for (let i = 0; i < 5; i++) watcher.poll();
+      expect(warnings()).toHaveLength(1);
+
+      now.mockReturnValue(start + 61_000);
+      watcher.poll();
+      expect(warnings()).toHaveLength(2);
+      expect(warnings()[1]).toMatchObject({ suppressed: 4 });
+    } finally {
+      now.mockRestore();
+      logged.mockRestore();
+    }
+  });
+
+  it('warns again at once when the buffer fails again after a successful read', () => {
+    writeFileSync(transcriptPath, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+    const bufferPath = join(storagePath, `buffer-${SESSION_ID}.jsonl`);
+    mkdirSync(bufferPath);
+    const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const warnings = () =>
+      logged.mock.calls
+        .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+        .filter((l) => l.level === 'warn' && l.component === 'parent-transcript-watcher');
+    const watcher = new ParentTranscriptWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: SESSION_ID,
+    });
+    const now = jest.spyOn(Date, 'now').mockReturnValue(Date.now());
+    try {
+      watcher.poll();
+      rmSync(bufferPath, { recursive: true });
+      watcher.poll();
+      expect(readTokenEvents().map((e) => e.messageId)).toEqual(['msg_1']);
+
+      appendFileSync(transcriptPath, makeAssistantLine({ messageId: 'msg_2' }) + '\n');
+      rmSync(bufferPath);
+      mkdirSync(bufferPath);
+      watcher.poll();
+      expect(warnings()).toHaveLength(2);
+    } finally {
+      now.mockRestore();
+      logged.mockRestore();
+    }
+  });
+
+  it('warns once a minute while the cursor file stays unwritable, and buffers each turn once', () => {
+    writeFileSync(transcriptPath, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+    mkdirSync(buildParentTranscriptCursorPath(storagePath, SESSION_ID));
+    const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const warnings = () =>
+      logged.mock.calls
+        .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+        .filter((l) => l.level === 'warn' && l.component === 'parent-transcript-watcher');
+    const watcher = new ParentTranscriptWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: SESSION_ID,
+    });
+    const now = jest.spyOn(Date, 'now').mockReturnValue(Date.now());
+    try {
+      for (let i = 0; i < 5; i++) watcher.poll();
+      expect(warnings()).toHaveLength(1);
+      expect(readTokenEvents().map((e) => e.messageId)).toEqual(['msg_1']);
+    } finally {
+      now.mockRestore();
+      logged.mockRestore();
+    }
+  });
+
+  it('bills a turn shared with a fork to the session whose append failed, once it recovers', () => {
+    const forkId = '00000000-1111-2222-3333-444444444444';
+    const shared = makeAssistantLine({ messageId: 'msg_shared' }) + '\n';
+    writeFileSync(transcriptPath, shared);
+    const bufferPath = join(storagePath, `buffer-${SESSION_ID}.jsonl`);
+    mkdirSync(bufferPath);
+    const watcher = new ParentTranscriptWatcher({ storagePath, projectsDir });
+
+    watcher.poll();
+    writeFileSync(join(projectsDir, 'project-slug', `${forkId}.jsonl`), shared);
+    watcher.poll();
+    rmSync(bufferPath, { recursive: true });
+    watcher.poll();
+
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual(['msg_shared']);
+    expect(existsSync(join(storagePath, `buffer-${forkId}.jsonl`))).toBe(false);
+  });
+
+  it('bills through the ledger it is given', () => {
+    writeFileSync(
+      transcriptPath,
+      makeAssistantLine({
+        messageId: 'msg_old',
+        timestamp: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
+      }) + '\n',
+    );
+    const ledger = new BilledTurnLedger({ storagePath, retainDays: 1 });
+    new ParentTranscriptWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: SESSION_ID,
+      ledger,
+    }).poll();
+
+    expect(readTokenEvents()).toEqual([]);
+  });
+
+  it('emits every turn of a read whose ledger write failed, once the ledger recovers', () => {
+    writeFileSync(
+      transcriptPath,
+      makeAssistantLine({ messageId: 'msg_day1', timestamp: '2026-06-15T23:59:00.000Z' }) +
+        '\n' +
+        makeAssistantLine({ messageId: 'msg_day2', timestamp: '2026-06-16T00:01:00.000Z' }) +
+        '\n',
+    );
+    const ledgerDir = join(storagePath, 'billed-turns');
+    writeFileSync(ledgerDir, '');
+    const watcher = new ParentTranscriptWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: SESSION_ID,
+    });
+    watcher.poll();
+    expect(readTokenEvents()).toHaveLength(0);
+
+    rmSync(ledgerDir);
+    watcher.poll();
+    watcher.poll();
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual(['msg_day1', 'msg_day2']);
+  });
+
+  it('bills a turn with no timestamp once, when it is read again on a later day', () => {
+    const { timestamp: _dropped, ...undated } = JSON.parse(
+      makeAssistantLine({ messageId: 'msg_undated' }),
+    ) as Record<string, unknown>;
+    writeFileSync(transcriptPath, JSON.stringify(undated) + '\n');
+    const forkId = '00000000-1111-2222-3333-444444444444';
+    const forkPath = join(projectsDir, 'project-slug', `${forkId}.jsonl`);
+    writeFileSync(forkPath, JSON.stringify(undated) + '\n');
+    const realNow = Date.now();
+    const now = jest.spyOn(Date, 'now');
+    try {
+      now.mockReturnValue(realNow);
+      new ParentTranscriptWatcher({ storagePath, projectsDir, parentSessionId: SESSION_ID }).poll();
+      now.mockReturnValue(realNow + 5 * 24 * 60 * 60 * 1000);
+      new ParentTranscriptWatcher({ storagePath, projectsDir, parentSessionId: forkId }).poll();
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual(['msg_undated']);
+    expect(existsSync(join(storagePath, `buffer-${forkId}.jsonl`))).toBe(false);
   });
 
   it('emits new lines that arrive after the cursor', () => {
@@ -432,7 +640,7 @@ describe('ParentTranscriptWatcher', () => {
       expect(events[0]!.responseMs).toBe(4_000);
     });
 
-    it('omits responseMs on the second line of the same message', () => {
+    it('emits one event per multi-line message, timed from its first line', () => {
       const lines =
         makeUserLine({ timestamp: '2026-06-15T12:00:00.000Z' }) +
         '\n' +
@@ -448,9 +656,8 @@ describe('ParentTranscriptWatcher', () => {
       });
       watcher.poll();
       const events = readTokenEvents();
-      expect(events).toHaveLength(2);
+      expect(events).toHaveLength(1);
       expect(events[0]!.responseMs).toBe(4_000);
-      expect(events[1]!.responseMs).toBeUndefined();
     });
 
     it('omits responseMs when the gap exceeds 30 minutes', () => {
@@ -509,5 +716,49 @@ describe('ParentTranscriptWatcher', () => {
 
       expect(readTokenEvents()).toHaveLength(0);
     });
+
+    // Creation order comes from birthtime, which some filesystems do not
+    // record; there the order falls back to mtime.
+    (filesystemRecordsCreationOrder() ? it : it.skip)(
+      'bills turns shared with a fork to the transcript created first, even when the parent was written last',
+      () => {
+        const forkId = '00000000-1111-2222-3333-444444444444';
+        const shared = makeAssistantLine({ messageId: 'msg_shared' }) + '\n';
+        writeFileSync(join(projectsDir, 'project-slug', `${SESSION_ID}.jsonl`), shared);
+        waitPastTimestampGranularity();
+        mkdirSync(join(projectsDir, 'a-fork-slug'));
+        const forkPath = join(projectsDir, 'a-fork-slug', `${forkId}.jsonl`);
+        writeFileSync(forkPath, shared);
+        const later = new Date(Date.now() + 60_000);
+        utimesSync(transcriptPath, later, later);
+
+        new ParentTranscriptWatcher({ storagePath, projectsDir }).poll();
+
+        expect(readTokenEvents().map((e) => e.messageId)).toEqual(['msg_shared']);
+        expect(existsSync(join(storagePath, `buffer-${forkId}.jsonl`))).toBe(false);
+      },
+    );
   });
 });
+
+function filesystemRecordsCreationOrder(): boolean {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-birthtime-'));
+  try {
+    const first = join(dir, 'first');
+    const second = join(dir, 'second');
+    writeFileSync(first, '');
+    waitPastTimestampGranularity();
+    writeFileSync(second, '');
+    const a = statSync(first).birthtimeMs;
+    return a > 0 && a < statSync(second).birthtimeMs;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// Linux stamps files from a coarse clock (a few ms per tick), so two files
+// created within one tick share a birthtime and tie.
+function waitPastTimestampGranularity(): void {
+  const until = Date.now() + 20;
+  while (Date.now() < until);
+}

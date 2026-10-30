@@ -21,9 +21,7 @@
  *
  * Cursor durability: byte cursor persisted to
  * `~/.newrelic-preflight/.parent-transcript-pos-<sessionId>` survives
- * restart. On crash mid-emit the next poll re-reads from the previous cursor
- * → potential duplicates, which downstream dedupes by (sessionId, messageId)
- * in `HookEventProcessor.handleTokenEvent()`.
+ * restart.
  */
 
 import {
@@ -43,6 +41,8 @@ import { dirname, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 import { createLogger } from '../shared/index.js';
+import { BilledTurnLedger } from './billed-turn-ledger.js';
+import { ThrottledWarning } from './throttled-warning.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
 import type { LocalStore } from '../storage/local-store.js';
 
@@ -81,10 +81,13 @@ export interface ParentTranscriptWatcherOptions {
    * unscoped semantics).
    */
   readonly parentSessionId?: string;
+  /** The process's one billed-turn ledger; tests may omit it to get a private one. */
+  readonly ledger?: BilledTurnLedger;
 }
 
 interface ParsedParentTurn {
   readonly timestampMs: number;
+  readonly undated: boolean;
   readonly messageId: string;
   readonly model: string;
   readonly inputTokens: number;
@@ -94,9 +97,6 @@ interface ParsedParentTurn {
   /**
    * Gap (ms) between this line's timestamp and the previous raw transcript
    * line's timestamp — an estimate of time spent waiting on the model API.
-   * Set only on the first line seen for `messageId`, and only when a
-   * previous line exists with a positive gap of at most 30 minutes; absent
-   * otherwise, including on every later line of the same message.
    */
   readonly responseMs?: number;
 }
@@ -147,6 +147,11 @@ export class ParentTranscriptWatcher {
   private readonly discoveryHours: number;
   private readonly parentSessionFilter: string | null;
   private readonly localStore: LocalStore | undefined;
+  private readonly ledger: BilledTurnLedger;
+  private readonly retryWarning = new ThrottledWarning(
+    logger,
+    'ParentTranscriptWatcher read deferred to the next poll',
+  );
 
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -161,8 +166,6 @@ export class ParentTranscriptWatcher {
   private readonly decoderByPath = new Map<string, StringDecoder>();
   /** Timestamp (ms) of the last parseable raw line seen for each file, any role — see `ParsedParentTurn.responseMs`. */
   private readonly previousLineTimestampByPath = new Map<string, number>();
-  /** Message ids already seen for each file, so only the first line of a message computes `responseMs`. */
-  private readonly seenMessageIdsByPath = new Map<string, Set<string>>();
 
   private filesWatched = 0;
   private linesRead = 0;
@@ -179,6 +182,7 @@ export class ParentTranscriptWatcher {
       (Number.isFinite(envHours) && envHours > 0 ? envHours : DEFAULT_DISCOVERY_HOURS);
     this.parentSessionFilter = options.parentSessionId ?? null;
     this.localStore = options.localStore;
+    this.ledger = options.ledger ?? new BilledTurnLedger({ storagePath: this.storagePath });
   }
 
   start(): void {
@@ -330,7 +334,10 @@ export class ParentTranscriptWatcher {
     // totals (observed: a resumed session double-counted across two project
     // dirs). Keep only the newest-mtime copy per sessionId: after a rename the
     // stale dir stops being written, so newest === the active, canonical file.
-    const canonicalBySession = new Map<string, { path: string; mtimeMs: number }>();
+    const canonicalBySession = new Map<
+      string,
+      { path: string; mtimeMs: number; birthtimeMs: number }
+    >();
     for (const project of projectEntries) {
       const projectPath = join(this.projectsDir, project);
       let entries: string[];
@@ -362,15 +369,17 @@ export class ParentTranscriptWatcher {
           st.mtimeMs > existing.mtimeMs ||
           (st.mtimeMs === existing.mtimeMs && path < existing.path)
         ) {
-          canonicalBySession.set(sessionId, { path, mtimeMs: st.mtimeMs });
+          canonicalBySession.set(sessionId, {
+            path,
+            mtimeMs: st.mtimeMs,
+            birthtimeMs: st.birthtimeMs,
+          });
         }
       }
     }
-    const out: Array<{ path: string; sessionId: string }> = [];
-    for (const [sessionId, { path }] of canonicalBySession) {
-      out.push({ path, sessionId });
-    }
-    return out;
+    return [...canonicalBySession]
+      .sort(([, a], [, b]) => byCreationOrder(a, b))
+      .map(([sessionId, { path }]) => ({ path, sessionId }));
   }
 
   // -------------------------------------------------------------------------
@@ -391,10 +400,7 @@ export class ParentTranscriptWatcher {
     // If the canonical copy for this sessionId switched project dirs since the
     // last poll (repo rename → newest-mtime copy now wins in discovery), the
     // persisted byte offset belongs to the OLD file and is meaningless against
-    // this one. Start fresh so the new file is read from the top; the
-    // event-processor dedupes any shared-history turns by (sessionId,
-    // messageId), and day-bucketing attributes each re-read turn to its real
-    // transcript-timestamp day, so "spend today" is unaffected.
+    // this one. Start fresh so the new file is read from the top.
     const switchedFile = persisted.path !== undefined && persisted.path !== path;
     const startCursor: CursorState = switchedFile
       ? { bytePos: 0, partialLine: '', path }
@@ -402,7 +408,6 @@ export class ParentTranscriptWatcher {
     if (switchedFile) {
       this.partialByPath.delete(path);
       this.previousLineTimestampByPath.delete(path);
-      this.seenMessageIdsByPath.delete(path);
     }
     if (startCursor.bytePos >= size) return;
 
@@ -466,29 +471,42 @@ export class ParentTranscriptWatcher {
       this.parseErrors += 1;
     }
 
+    const parsedTurns: ParsedParentTurn[] = [];
     for (const line of lines) {
       if (!line) continue;
       this.linesRead += 1;
       const parsed = this.tryParseLine(line, path);
-      if (parsed === null) continue;
-
-      const event: Record<string, unknown> = {
-        mode: 'token',
-        tool: 'transcript',
-        timestamp: parsed.timestampMs,
-        sessionId,
-        messageId: parsed.messageId,
-        model: parsed.model,
-        inputTokens: parsed.inputTokens,
-        outputTokens: parsed.outputTokens,
-        cacheReadTokens: parsed.cacheReadTokens,
-        cacheCreationTokens: parsed.cacheCreationTokens,
-        ...(parsed.responseMs !== undefined && { responseMs: parsed.responseMs }),
-      };
-      this.appendToParentBuffer(sessionId, event);
+      if (parsed !== null) parsedTurns.push(parsed);
     }
 
-    this.writeCursor(cursorPath, nextBytePos, newPartial, path);
+    // If the claim, an append or the cursor write fails, the cursor stays put
+    // and the next poll redoes the read: the ledger hands back the turns still
+    // owed and refuses the ones already appended.
+    try {
+      this.ledger.deliver(sessionId, parsedTurns, (parsed) =>
+        this.appendToParentBuffer(sessionId, {
+          mode: 'token',
+          tool: 'transcript',
+          timestamp: parsed.timestampMs,
+          sessionId,
+          messageId: parsed.messageId,
+          model: parsed.model,
+          inputTokens: parsed.inputTokens,
+          outputTokens: parsed.outputTokens,
+          cacheReadTokens: parsed.cacheReadTokens,
+          cacheCreationTokens: parsed.cacheCreationTokens,
+          ...(parsed.responseMs !== undefined && { responseMs: parsed.responseMs }),
+        }),
+      );
+      this.writeCursor(cursorPath, nextBytePos, newPartial, path);
+    } catch (err) {
+      this.retryWarning.warn(err);
+      this.partialByPath.delete(path);
+      this.decoderByPath.delete(path);
+      this.previousLineTimestampByPath.delete(path);
+      return;
+    }
+    this.retryWarning.succeeded();
     if (newPartial.length > 0) {
       this.partialByPath.set(path, newPartial);
     } else {
@@ -505,8 +523,7 @@ export class ParentTranscriptWatcher {
     if (
       this.partialByPath.size === 0 &&
       this.decoderByPath.size === 0 &&
-      this.previousLineTimestampByPath.size === 0 &&
-      this.seenMessageIdsByPath.size === 0
+      this.previousLineTimestampByPath.size === 0
     ) {
       return;
     }
@@ -520,9 +537,6 @@ export class ParentTranscriptWatcher {
     }
     for (const path of this.previousLineTimestampByPath.keys()) {
       if (!live.has(path)) this.previousLineTimestampByPath.delete(path);
-    }
-    for (const path of this.seenMessageIdsByPath.keys()) {
-      if (!live.has(path)) this.seenMessageIdsByPath.delete(path);
     }
   }
 
@@ -560,24 +574,15 @@ export class ParentTranscriptWatcher {
     const timestampMs = fields.rawTimestamp ? Date.parse(fields.rawTimestamp) : Date.now();
     if (!Number.isFinite(timestampMs)) return null;
 
-    let seen = this.seenMessageIdsByPath.get(path);
-    if (seen === undefined) {
-      seen = new Set<string>();
-      this.seenMessageIdsByPath.set(path, seen);
-    }
     let responseMs: number | undefined;
-    if (!seen.has(messageId)) {
-      seen.add(messageId);
-      if (previousLineTimestampMs !== undefined) {
-        const gap = timestampMs - previousLineTimestampMs;
-        if (gap > 0 && gap <= MAX_RESPONSE_GAP_MS) {
-          responseMs = gap;
-        }
-      }
+    if (previousLineTimestampMs !== undefined) {
+      const gap = timestampMs - previousLineTimestampMs;
+      if (gap > 0 && gap <= MAX_RESPONSE_GAP_MS) responseMs = gap;
     }
 
     return {
       timestampMs,
+      undated: !fields.rawTimestamp,
       messageId,
       model,
       inputTokens: fields.inputTokens,
@@ -617,18 +622,14 @@ export class ParentTranscriptWatcher {
     partialLine: string,
     sourcePath: string,
   ): void {
-    try {
-      if (!existsSync(this.storagePath)) {
-        mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
-      }
-      const dir = dirname(cursorPath);
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-      writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine, path: sourcePath }), {
-        mode: 0o600,
-      });
-    } catch (err) {
-      this.recordError(err);
+    if (!existsSync(this.storagePath)) {
+      mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
     }
+    const dir = dirname(cursorPath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine, path: sourcePath }), {
+      mode: 0o600,
+    });
   }
 
   /**
@@ -637,14 +638,10 @@ export class ParentTranscriptWatcher {
    */
   private appendToParentBuffer(sessionId: string, event: object): void {
     const path = join(this.storagePath, `buffer-${sessionId}.jsonl`);
-    try {
-      if (!existsSync(this.storagePath)) {
-        mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
-      }
-      appendFileSync(path, JSON.stringify(event) + '\n', { mode: 0o600 });
-    } catch (err) {
-      this.recordError(err);
+    if (!existsSync(this.storagePath)) {
+      mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
     }
+    appendFileSync(path, JSON.stringify(event) + '\n', { mode: 0o600 });
   }
 
   private recordError(err: unknown): void {
@@ -656,6 +653,17 @@ export class ParentTranscriptWatcher {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function byCreationOrder(
+  a: { path: string; mtimeMs: number; birthtimeMs: number },
+  b: { path: string; mtimeMs: number; birthtimeMs: number },
+): number {
+  return (
+    a.birthtimeMs - b.birthtimeMs ||
+    a.mtimeMs - b.mtimeMs ||
+    (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
+  );
+}
 
 /**
  * Stable cursor file path computation, exported for tests that want to
