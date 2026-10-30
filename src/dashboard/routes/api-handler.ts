@@ -1856,6 +1856,10 @@ export function createApiHandler(
     const todayKey = localDateKey(now);
     let liveCheckpointTodayUsd = 0;
     let liveCheckpointSubagentUsd = 0;
+    let liveCheckpointCacheSavingsUsd = 0;
+    let liveCheckpointCacheReadTokens = 0;
+    let liveCheckpointCacheCreationTokens = 0;
+    let liveCheckpointInputTokens = 0;
     for (const raw of overlappingTodaySessions) {
       const s = raw as {
         sessionId?: string;
@@ -1902,6 +1906,11 @@ export function createApiHandler(
       if (s.sessionId === liveSid) {
         liveCheckpointTodayUsd = todayCost.costUsd;
         liveCheckpointSubagentUsd = todayCost.subagentCostUsd;
+        const liveRatio = todayPortionRatio(s, now);
+        liveCheckpointCacheSavingsUsd = (s.cacheSavingsUsd ?? 0) * liveRatio;
+        liveCheckpointCacheReadTokens = (s.tokensCacheRead ?? 0) * liveRatio;
+        liveCheckpointCacheCreationTokens = (s.tokensCacheCreation ?? 0) * liveRatio;
+        liveCheckpointInputTokens = (s.tokensInput ?? 0) * liveRatio;
         continue;
       }
       sumCallUsageInto(unpricedByModel, s.unpricedByModel);
@@ -2037,10 +2046,22 @@ export function createApiHandler(
       const liveStartedTs = deps.sessionTracker?.getMetrics().sessionStartTime ?? null;
       if (typeof liveStartedTs === 'number' && localDateKey(liveStartedTs) === todayKey) {
         const liveCostMetrics = deps.costTracker?.getMetrics();
-        cacheSavingsUsdSum += liveCostMetrics?.totalCacheSavingsUsd ?? 0;
-        cacheReadTokensSum += liveCostMetrics?.totalCacheReadTokens ?? 0;
-        cacheCreationTokensSum += liveCostMetrics?.totalCacheCreationTokens ?? 0;
-        cacheInputTokensSum += liveCostMetrics?.totalInputTokens ?? 0;
+        cacheSavingsUsdSum += Math.max(
+          liveCostMetrics?.totalCacheSavingsUsd ?? 0,
+          liveCheckpointCacheSavingsUsd,
+        );
+        cacheReadTokensSum += Math.max(
+          liveCostMetrics?.totalCacheReadTokens ?? 0,
+          liveCheckpointCacheReadTokens,
+        );
+        cacheCreationTokensSum += Math.max(
+          liveCostMetrics?.totalCacheCreationTokens ?? 0,
+          liveCheckpointCacheCreationTokens,
+        );
+        cacheInputTokensSum += Math.max(
+          liveCostMetrics?.totalInputTokens ?? 0,
+          liveCheckpointInputTokens,
+        );
       }
     }
 

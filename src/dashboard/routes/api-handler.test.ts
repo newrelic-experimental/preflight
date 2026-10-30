@@ -8838,6 +8838,12 @@ describe('api-handler Spend Today for the live session', () => {
     expect(parsed.cacheHealth.totalCacheReadTokens).toBe(1500);
   });
 
+  it('keeps the checkpoint cache totals when the live tracker was never seeded', async () => {
+    const checkpoint = makeCheckpoint({ tokensCacheRead: 1000, tokensCacheCreation: 400 });
+    const parsed = await getAggregate(checkpoint, makeLiveTracker(null));
+    expect(parsed.cacheHealth.totalCacheReadTokens).toBe(1000);
+  });
+
   it('anchors the forecast at the checkpoint first activity today for a cross-midnight live session', async () => {
     const checkpoint = makeCheckpoint({
       startTime: DAY_START - 2 * HOUR,
