@@ -12,8 +12,9 @@ import {
   normalizeDeveloperName,
   validateConfigFile,
   resolveCompanionMode,
+  findReceiverDoubleCount,
 } from './config.js';
-import type { CompanionModeSource } from './config.js';
+import type { CompanionModeSource, McpServerConfig } from './config.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let savedEnv: NodeJS.ProcessEnv;
@@ -723,6 +724,66 @@ describe('companionMode', () => {
     const configPath = writeConfigFile({ companionMode: true });
     const config = loadMcpConfig({ config: configPath });
     expect(config.companionMode).toBe(false);
+  });
+});
+
+describe('findReceiverDoubleCount()', () => {
+  const makeReceiverConfig = (
+    otlp: Partial<McpServerConfig['otlp']> = {},
+    companionMode = false,
+  ): Pick<McpServerConfig, 'otlp' | 'companionMode'> => ({
+    companionMode,
+    otlp: {
+      receiverEnabled: true,
+      receiverPort: 4318,
+      receiverBindAddress: '127.0.0.1',
+      forwardEndpoint: 'https://otlp.nr-data.net',
+      ...otlp,
+    } as McpServerConfig['otlp'],
+  });
+  const makeClaudeEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
+    CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+    OTEL_METRICS_EXPORTER: 'otlp',
+    OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318',
+    ...extra,
+  });
+
+  it('warns for receiver + New Relic forward + Claude export to the receiver', () => {
+    expect(findReceiverDoubleCount(makeClaudeEnv(), makeReceiverConfig())).toEqual({ grpc: false });
+  });
+
+  it('treats a missing endpoint with the otlp exporter as the SDK default', () => {
+    const env = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: undefined });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toEqual({ grpc: false });
+  });
+
+  it('flags the grpc protocol', () => {
+    const env = makeClaudeEnv({ OTEL_EXPORTER_OTLP_PROTOCOL: 'grpc' });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toEqual({ grpc: true });
+  });
+
+  it('does not warn for a non-New Relic forward', () => {
+    const cfg = makeReceiverConfig({ forwardEndpoint: 'https://api.honeycomb.io' });
+    expect(findReceiverDoubleCount(makeClaudeEnv(), cfg)).toBeNull();
+  });
+
+  it('does not warn when the receiver is disabled', () => {
+    const cfg = makeReceiverConfig({ receiverEnabled: false });
+    expect(findReceiverDoubleCount(makeClaudeEnv(), cfg)).toBeNull();
+  });
+
+  it('does not warn when companion mode is already on', () => {
+    expect(findReceiverDoubleCount(makeClaudeEnv(), makeReceiverConfig({}, true))).toBeNull();
+  });
+
+  it('does not warn when Claude Code exports to a different port', () => {
+    const env = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4400' });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toBeNull();
+  });
+
+  it('does not warn when Claude Code telemetry is off', () => {
+    const env = makeClaudeEnv({ CLAUDE_CODE_ENABLE_TELEMETRY: undefined });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toBeNull();
   });
 });
 

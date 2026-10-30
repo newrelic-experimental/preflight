@@ -165,6 +165,8 @@ Claude Code has its own built-in OTel export for cost, tokens, lines-of-code, an
 
 Companion mode turns on by itself when Preflight sees Claude Code's OTel metrics export going to New Relic. It checks the environment Claude Code passes to the MCP server: `CLAUDE_CODE_ENABLE_TELEMETRY` is on, `OTEL_METRICS_EXPORTER` includes `otlp`, and the OTLP endpoint (`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT`) is an `nr-data.net` host. An export to any other backend, or through a collector on another host, is not detected. Set companion mode explicitly in those cases.
 
+Detection does not follow Claude Code through Preflight's own OTLP receiver, because the receiver runs only in proxy mode and may not be forwarding. When the config enables the receiver with a New Relic forward endpoint and your shell's Claude Code OTel export points at it, `preflight doctor` warns; set `companionMode: true` (or `NR_AI_COMPANION_MODE=true`) when that proxy actually forwards Claude Code's metrics, or New Relic counts the cost twice.
+
 An explicit setting always wins over detection. In `~/.newrelic-preflight/config.json`:
 
 ```json
