@@ -26,6 +26,11 @@ const config: Config = {
   // (the transform regex above also matches .js so ts-jest will rewrite it).
   transformIgnorePatterns: ['/node_modules/(?!commander/)'],
   testTimeout: 15_000,
+  // Redirects HOME to a temp dir so default-path code (~/.newrelic-preflight) never touches
+  // the developer's real home; the setup file fails any test file that sees the real one.
+  globalSetup: '<rootDir>/test/support/isolated-home.global-setup.ts',
+  globalTeardown: '<rootDir>/test/support/isolated-home.global-teardown.ts',
+  setupFiles: ['<rootDir>/test/support/isolated-home.setup.ts'],
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.test.ts', '!src/**/index.ts'],
   coverageReporters: ['text', 'lcov'],
   coverageDirectory: 'coverage',
