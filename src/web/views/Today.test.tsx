@@ -2658,6 +2658,44 @@ describe('Today view — Activity today panel', () => {
   });
 });
 
+describe('Today view — concurrency chart block counts', () => {
+  beforeEach(() => {
+    resetStore();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('draws one block per concurrent session, not a fixed six-level scale', async () => {
+    const now = Date.now();
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/concurrency')) {
+        return new Response(
+          JSON.stringify({
+            current: 4,
+            peak: 4,
+            allTimePeak: 4,
+            bucketSizeMs: 900_000,
+            startTimestamp: now,
+            buckets: [{ timestamp: now, count: 4 }],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    const chart = await screen.findByRole('img', { name: 'Concurrency over time, peak 4' });
+    expect(chart.querySelectorAll('rect.heatmap-cell').length).toBe(4);
+  });
+});
+
 describe('bucketByHour()', () => {
   it('sums multiple points landing in the same hour by default', () => {
     const dayStart = localStartOfDay();

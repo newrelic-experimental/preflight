@@ -5057,6 +5057,35 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     expect(maxBucket).toBe(1);
   });
 
+  it('counts a session resumed from an older start date via loadSessionsWithActivityToday, clamped to today', async () => {
+    const dayMs = 86_400_000;
+    const resumed = {
+      sessionId: 'resumed',
+      timeline: [{ timestamp: midnightToday() - 10 * dayMs + 60_000 }, ...makeTimeline(60, 70)],
+    };
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadSessionsOverlappingToday: () => [],
+        loadSessionsWithActivityToday: () => [resumed],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // Active 01:00-01:13 → buckets 4 (01:00) through 4 (01:13 fits in 01:00-01:15).
+    expect(result.buckets[4].count).toBe(1);
+    expect(result.buckets[0].count).toBe(0);
+    expect(result.peak).toBe(1);
+  });
+
   it("counts a live session's buffered activity as discrete 3-minute windows, not a continuous span to now", async () => {
     // A live session's not-yet-persisted activity comes from the tool-call
     // buffer. Each cluster of activity is a 3-minute window — an idle gap

@@ -1,5 +1,13 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { chmodSync, existsSync, mkdirSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  readdirSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -968,6 +976,30 @@ describe('SessionStore', () => {
 
     expect(store.loadSessionsOverlappingToday()).toEqual([]);
     expect(store.loadSessionsWithActivityToday().map((s) => s.sessionId)).toEqual(['resumed']);
+  });
+
+  it('loadSessionsWithActivityToday skips an old file whose mtime predates today even if its timeline reaches today', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startOfToday = today.getTime();
+    const oldStart = startOfToday - 10 * 86_400_000;
+
+    store.saveSession(
+      makeSummary({
+        sessionId: 'stale-file',
+        startTime: oldStart,
+        endTime: oldStart + 5000,
+        timeline: [
+          { timestamp: startOfToday + 60_000, toolName: 'Read' },
+        ] as unknown as FullSessionSummary['timeline'],
+      }),
+    );
+    const file = store.listSessions().find((f) => f.sessionId === 'stale-file')!;
+    const yesterday = new Date(startOfToday - 3_600_000);
+    utimesSync(resolve(tmpDir, 'sessions', file.filename), yesterday, yesterday);
+
+    expect(store.loadSessionsWithActivityToday()).toEqual([]);
   });
 });
 
