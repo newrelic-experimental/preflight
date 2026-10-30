@@ -19,6 +19,9 @@ import { writeJsonFile } from './json-utils.js';
 import { installSchedule, installDashboardDaemon, resolveBinaryPath } from './schedule.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { validateLicenseKey, validateApiKey } from './key-validator.js';
+import { isKeychainSupported, storeInKeychain } from './keychain.js';
+import type { KeychainField } from './keychain.js';
+import { resolveSecretCommand } from '../secret-command.js';
 import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
 import {
   REGIONS,
@@ -109,6 +112,35 @@ function print(msg = ''): void {
   process.stdout.write(msg + '\n');
 }
 
+async function offerKeychain(
+  rl: { question(prompt: string): Promise<string> },
+  label: string,
+): Promise<boolean> {
+  const answer = (
+    await rl.question(
+      `Store the ${label} in the macOS Keychain instead of config.json? Preflight reads it back at startup [y/N]: `,
+    )
+  )
+    .trim()
+    .toLowerCase();
+  return answer === 'y' || answer === 'yes';
+}
+
+// Falls back to a plaintext value (the caller keeps it) when the Keychain write fails.
+function storeOrWarn(field: KeychainField, secret: string, label: string): string[] | null {
+  try {
+    const argv = storeInKeychain(field, secret);
+    print(`  ✓ ${label} stored in the macOS Keychain`);
+    return argv;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    print(
+      `  ⚠ Could not store the ${label} in the Keychain (${reason}). It will be written to config.json instead.`,
+    );
+    return null;
+  }
+}
+
 function loadExisting(): Partial<z.infer<typeof ConfigFileSchema>> {
   let parsed: unknown;
   try {
@@ -162,11 +194,15 @@ export function buildConfig(
     dashboardPort?: number | null;
     nrApiKey?: string | null;
     collectorHost?: string | null;
+    /** Written instead of the plaintext `licenseKey`, which is then dropped from the file. */
+    licenseKeyCommand?: readonly string[] | null;
+    /** Written instead of the plaintext `nrApiKey`, which is then dropped from the file. */
+    nrApiKeyCommand?: readonly string[] | null;
   },
 ): Partial<z.infer<typeof ConfigFileSchema>> {
   const mode = inputs.mode ?? 'cloud';
   const includeNrCreds = mode !== 'local';
-  return {
+  const config: Partial<z.infer<typeof ConfigFileSchema>> = {
     ...existing,
     mode,
     ...(includeNrCreds ? { accountId: inputs.accountId, licenseKey: inputs.licenseKey } : {}),
@@ -181,6 +217,24 @@ export function buildConfig(
     ...(inputs.nrApiKey ? { nrApiKey: inputs.nrApiKey } : {}),
     ...(inputs.collectorHost ? { collectorHost: inputs.collectorHost } : {}),
   };
+  // The command always outranks the file value at load, so exactly one of the
+  // pair is written: a new plaintext key replaces a stale command, and a
+  // command replaces any plaintext key.
+  if (includeNrCreds) {
+    if (inputs.licenseKeyCommand) {
+      config.licenseKeyCommand = [...inputs.licenseKeyCommand];
+      delete config.licenseKey;
+    } else {
+      delete config.licenseKeyCommand;
+    }
+  }
+  if (inputs.nrApiKeyCommand) {
+    config.nrApiKeyCommand = [...inputs.nrApiKeyCommand];
+    delete config.nrApiKey;
+  } else if (inputs.nrApiKey) {
+    delete config.nrApiKeyCommand;
+  }
+  return config;
 }
 
 function parseModeAnswer(raw: string, fallback: WizardMode): WizardMode {
@@ -241,6 +295,10 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
     let licenseKey = '';
     let collectorHost: string | null = null;
     let nrApiKey: string | null = null;
+    let licenseKeyCommand: readonly string[] | null = null;
+    let keychainLicenseKey = false;
+    let keychainNrApiKey = false;
+    let nrApiKeyCommand: readonly string[] | null = null;
     let validatedEmail: string | null = null;
     if (mode !== 'local') {
       const envAccountId = process.env.NEW_RELIC_ACCOUNT_ID?.trim() ?? '';
@@ -269,18 +327,34 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
       const envLicenseKey = process.env.NEW_RELIC_LICENSE_KEY?.trim() ?? '';
       const existingKey = typeof existing.licenseKey === 'string' ? existing.licenseKey : '';
       const defaultKey = existingKey || envLicenseKey;
+      const existingKeyCommand = existing.licenseKeyCommand ?? null;
       const keyHint = existingKey
         ? '(already set)'
-        : envLicenseKey
-          ? '$NEW_RELIC_LICENSE_KEY'
-          : 'required';
+        : existingKeyCommand
+          ? '(set by licenseKeyCommand)'
+          : envLicenseKey
+            ? '$NEW_RELIC_LICENSE_KEY'
+            : 'required';
       const keyPrompt = `License Key — authenticates telemetry ingest to your NR account [${keyHint}]: `;
       licenseKey = (await rl.question(keyPrompt)).trim();
+      if (!licenseKey && existingKeyCommand) {
+        try {
+          licenseKey = resolveSecretCommand('licenseKey', existingKeyCommand);
+          licenseKeyCommand = existingKeyCommand;
+        } catch (err) {
+          console.error(err instanceof Error ? err.message : String(err));
+          rl.close();
+          process.exit(1);
+        }
+      }
       if (!licenseKey) licenseKey = defaultKey;
       if (!licenseKey) {
         console.error('License key is required. Set NEW_RELIC_LICENSE_KEY or enter a value above.');
         rl.close();
         process.exit(1);
+      }
+      if (!licenseKeyCommand && isKeychainSupported()) {
+        keychainLicenseKey = await offerKeychain(rl, 'license key');
       }
 
       // Step 2b: Environment / region. --staging pre-selects the region and
@@ -319,11 +393,14 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
       const envApiKey = process.env.NEW_RELIC_API_KEY?.trim() ?? '';
       const existingApiKey = typeof existing.nrApiKey === 'string' ? existing.nrApiKey : null;
       const defaultApiKey = existingApiKey ?? (envApiKey || null);
-      const apiKeyHint = existingApiKey
-        ? '(already set)'
-        : envApiKey
-          ? '$NEW_RELIC_API_KEY'
-          : 'optional';
+      const existingApiKeyCommand = existing.nrApiKeyCommand ?? null;
+      const apiKeyHint = existingApiKeyCommand
+        ? '(set by nrApiKeyCommand)'
+        : existingApiKey
+          ? '(already set)'
+          : envApiKey
+            ? '$NEW_RELIC_API_KEY'
+            : 'optional';
       const apiKeyRaw = (
         await rl.question(
           `API Key (NRAK-...) — for team queries and deploying dashboards/alerts [${apiKeyHint}]: `,
@@ -331,8 +408,20 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
       ).trim();
       if (apiKeyRaw) {
         nrApiKey = apiKeyRaw;
+      } else if (existingApiKeyCommand) {
+        nrApiKeyCommand = existingApiKeyCommand;
+        try {
+          nrApiKey = resolveSecretCommand('nrApiKey', existingApiKeyCommand);
+        } catch (err) {
+          print(
+            `  ⚠ ${err instanceof Error ? err.message : String(err)} — keeping nrApiKeyCommand without validating it`,
+          );
+        }
       } else if (defaultApiKey) {
         nrApiKey = defaultApiKey;
+      }
+      if (nrApiKey && !nrApiKeyCommand && isKeychainSupported()) {
+        keychainNrApiKey = await offerKeychain(rl, 'API key');
       }
 
       // Step 2d: Validate credentials
@@ -481,6 +570,12 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
     // (runInstallCli) should own this field. Preserving a stale value here would silently
     // drive the next bare install toward the wrong platform if the user declines hooks.
     const { platformTarget: _platformTarget, ...existingForWizard } = existing;
+    if (keychainLicenseKey) {
+      licenseKeyCommand = storeOrWarn('licenseKey', licenseKey, 'license key');
+    }
+    if (keychainNrApiKey && nrApiKey) {
+      nrApiKeyCommand = storeOrWarn('nrApiKey', nrApiKey, 'API key');
+    }
     const config = buildConfig(existingForWizard, {
       accountId,
       licenseKey,
@@ -493,6 +588,8 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
       dashboardPort,
       nrApiKey,
       collectorHost,
+      licenseKeyCommand,
+      nrApiKeyCommand,
     });
 
     writeJsonFile(CONFIG_PATH, config, DEFAULT_STORAGE_PATH);
