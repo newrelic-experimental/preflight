@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getLogOutput } from '../__test-utils__/log-output.js';
@@ -88,12 +96,42 @@ describe('CopilotUsageWatcher', () => {
       .filter((l) => l.mode === 'token');
   }
 
-  function makeWatcher(overrides?: { parentSessionId?: string }): CopilotUsageWatcher {
+  /** `parentSessionId: null` builds an unscoped (--local) watcher. */
+  function makeWatcher(overrides?: { parentSessionId?: string | null }): CopilotUsageWatcher {
+    const parentSessionId =
+      overrides?.parentSessionId === null ? undefined : (overrides?.parentSessionId ?? SESSION_ID);
     return new CopilotUsageWatcher({
       storagePath,
       workspaceStorageRoots: [workspaceStorageRoot],
-      parentSessionId: overrides?.parentSessionId ?? SESSION_ID,
+      parentSessionId,
     });
+  }
+
+  function makeOversizeLine(
+    responseId: string,
+    layout: 'tokens-at-end' | 'tokens-in-middle',
+  ): string {
+    const pad = 'x'.repeat(3 * 1024 * 1024);
+    const attrs =
+      layout === 'tokens-at-end'
+        ? {
+            model: 'claude-opus-4-7',
+            responseId,
+            inputMessages: pad + pad,
+            inputTokens: 1000,
+            outputTokens: 100,
+            cachedTokens: 0,
+          }
+        : {
+            model: 'claude-opus-4-7',
+            responseId,
+            padBefore: pad,
+            inputTokens: 1000,
+            outputTokens: 100,
+            cachedTokens: 0,
+            padAfter: pad,
+          };
+    return JSON.stringify({ ts: 1786151170779, sid: SESSION_ID, type: 'llm_request', attrs });
   }
 
   it('emits a token line for each llm_request record', () => {
@@ -298,6 +336,58 @@ describe('CopilotUsageWatcher', () => {
     const events = readTokenEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ messageId: 'resp_big', inputTokens: 10 });
+  });
+
+  it('counts an llm_request whose single line exceeds the 4 MiB partial-line cap', () => {
+    writeFileSync(logPath, makeOversizeLine('resp_big', 'tokens-at-end') + '\n');
+    const watcher = makeWatcher();
+    for (let i = 0; i < 12; i++) watcher.poll();
+    expect(readTokenEvents()).toHaveLength(1);
+    expect(readTokenEvents()[0]).toMatchObject({
+      messageId: 'resp_big',
+      inputTokens: 1000,
+      outputTokens: 100,
+    });
+  });
+
+  it('emits no record, and counts a parse error, when an oversize line hides its token fields', () => {
+    writeFileSync(logPath, makeOversizeLine('resp_hidden', 'tokens-in-middle') + '\n');
+    const watcher = makeWatcher();
+    for (let i = 0; i < 12; i++) watcher.poll();
+    expect(readTokenEvents()).toEqual([]);
+    expect(watcher.getHealth().parseErrors).toBe(1);
+  });
+
+  it('reads a session log untouched for longer than discoveryHours when it has unread bytes', () => {
+    writeFileSync(logPath, makeLlmRequestLine({ responseId: 'resp_1' }) + '\n');
+    makeWatcher().poll();
+
+    writeFileSync(
+      logPath,
+      makeLlmRequestLine({ responseId: 'resp_1' }) +
+        '\n' +
+        makeLlmRequestLine({ responseId: 'resp_2' }) +
+        '\n',
+    );
+    const twoDaysAgo = (Date.now() - 48 * 3_600_000) / 1000;
+    utimesSync(logPath, twoDaysAgo, twoDaysAgo);
+
+    makeWatcher({ parentSessionId: null }).poll();
+
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual(['resp_1', 'resp_2']);
+  });
+
+  it('does not corrupt the first line of a truncated log with a carried partial line', () => {
+    const line1 = makeLlmRequestLine({ responseId: 'resp_1' });
+    const line2 = makeLlmRequestLine({ responseId: 'resp_2' });
+    writeFileSync(logPath, line1 + '\n' + line2.slice(0, line2.length - 20));
+    const watcher = makeWatcher();
+    watcher.poll();
+
+    writeFileSync(logPath, makeLlmRequestLine({ responseId: 'resp_3' }) + '\n');
+    watcher.poll();
+
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual(['resp_1', 'resp_3']);
   });
 
   it('includes VS Code Remote server roots so WSL/SSH/dev-container sessions are found', () => {
