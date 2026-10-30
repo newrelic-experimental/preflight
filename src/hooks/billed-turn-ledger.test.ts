@@ -49,15 +49,15 @@ function deliver<T extends BillableTurn>(
 
 describe('BilledTurnLedger', () => {
   let storagePath: string;
-  let stderrSpy: ReturnType<typeof jest.spyOn>;
+  let logSpy: ReturnType<typeof jest.spyOn>;
 
   beforeEach(() => {
     storagePath = mkdtempSync(join(tmpdir(), 'billed-turn-ledger-'));
-    stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    logSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
   });
 
   afterEach(() => {
-    stderrSpy.mockRestore();
+    logSpy.mockRestore();
     rmSync(storagePath, { recursive: true, force: true });
   });
 
