@@ -768,12 +768,16 @@ function processHook(raw: string, cliEvent?: string): void {
   // ancestry-based session-resolution model, so extending this to
   // conversation_id would be a guess, not a fix.
   if (typeof data.session_id === 'string' && data.session_id.length > 0) {
-    const root = breadcrumbRoot(
-      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR,
-      breadcrumbWriter(detectStampPlatform()),
-    );
-    writePpidBreadcrumb(data.session_id, root);
-    writeCwdBreadcrumb(data.session_id, data.cwd, root);
+    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    // The writer's copy goes first: a server skips an untagged breadcrumb
+    // only once it finds that copy.
+    for (const root of [
+      breadcrumbRoot(storageDir, breadcrumbWriter(detectStampPlatform())),
+      storageDir,
+    ]) {
+      writePpidBreadcrumb(data.session_id, root);
+      writeCwdBreadcrumb(data.session_id, data.cwd, root);
+    }
   }
 
   // Claude Code sends PascalCase hook names ('PreToolUse'); Kiro sends

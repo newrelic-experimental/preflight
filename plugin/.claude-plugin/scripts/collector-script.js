@@ -495,12 +495,14 @@ function processHook(raw, cliEvent) {
   }
   const sessionId = data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
   if (typeof data.session_id === "string" && data.session_id.length > 0) {
-    const root = breadcrumbRoot(
-      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR,
-      breadcrumbWriter(detectStampPlatform())
-    );
-    writePpidBreadcrumb(data.session_id, root);
-    writeCwdBreadcrumb(data.session_id, data.cwd, root);
+    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    for (const root of [
+      breadcrumbRoot(storageDir, breadcrumbWriter(detectStampPlatform())),
+      storageDir
+    ]) {
+      writePpidBreadcrumb(data.session_id, root);
+      writeCwdBreadcrumb(data.session_id, data.cwd, root);
+    }
   }
   const eventName = (data.hook_event_name ?? data.agent_action_name)?.toLowerCase();
   const toolName = data.tool_name ?? "unknown";

@@ -7,7 +7,8 @@ import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
  * directory per engine whose hooks wrote them, each laid out as
  * `session-by-ppid/<pid>.txt` and `session-by-cwd/<sanitized-cwd>.txt`.
  * Collectors before #979 wrote that layout at the storage root itself, with
- * no writer.
+ * no writer, and collectors since write it there too for servers that read
+ * only that layout.
  */
 export const BREADCRUMBS_DIR = 'breadcrumbs';
 

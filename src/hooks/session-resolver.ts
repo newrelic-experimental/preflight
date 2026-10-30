@@ -46,6 +46,7 @@ import {
   readSync,
   closeSync,
   constants as fsConstants,
+  type Dirent,
 } from 'node:fs';
 import { resolve, basename } from 'node:path';
 import { homedir } from 'node:os';
@@ -56,7 +57,7 @@ import {
   readParentAndCommand,
   type AncestorPidsOptions,
 } from './process-ancestry.js';
-import { breadcrumbRoot } from './session-breadcrumbs.js';
+import { BREADCRUMBS_DIR, breadcrumbRoot } from './session-breadcrumbs.js';
 
 import { redactSensitive } from '../config.js';
 import { CLAUDE_CODE_PLATFORM_NAME } from '../platforms/claude-code-adapter.js';
@@ -316,12 +317,22 @@ export interface SessionBreadcrumbs {
   readonly cwd: (cwd: string | undefined) => string | null;
 }
 
+function readSessionId(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf-8').trim();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Each breadcrumb source tries the writers' own directories first, then the
- * untagged layout collectors wrote before #979. An untagged breadcrumb names
- * no engine, so it counts only when written since this process started:
- * an older collector still running keeps rewriting its own, while one left
- * from before an upgrade never counts again.
+ * untagged layout at the storage root. An untagged breadcrumb names no
+ * engine, so it counts only when written since this process started: an
+ * older collector still running keeps rewriting its own, while one left from
+ * before an upgrade never counts again. Current collectors also write the
+ * untagged layout for older servers, so an untagged breadcrumb whose session
+ * a writer's directory holds for the same key is that copy, and is skipped.
  */
 export function sessionBreadcrumbs(
   storagePath: string,
@@ -335,20 +346,54 @@ export function sessionBreadcrumbs(
           ...writers.map((w) => ({ dir: breadcrumbRoot(storagePath, w) })),
           { dir: storagePath, writtenSinceMs: processStartMs },
         ];
-  const first = <T>(read: (root: { dir: string; writtenSinceMs?: number }) => T | null) => {
+  const hasTaggedCopy = (crumb: string, sessionId: string) => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(resolve(storagePath, BREADCRUMBS_DIR), { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    return entries.some(
+      (e) =>
+        e.isDirectory() &&
+        readSessionId(resolve(breadcrumbRoot(storagePath, e.name), crumb)) === sessionId,
+    );
+  };
+  const first = <T>(
+    read: (root: { dir: string; writtenSinceMs?: number }) => T | null,
+    crumbOf: (hit: T) => string,
+    sessionIdOf: (hit: T) => string,
+  ) => {
     for (const root of roots) {
       const hit = read(root);
-      if (hit) return hit;
+      if (!hit) continue;
+      if (root.dir === storagePath && hasTaggedCopy(crumbOf(hit), sessionIdOf(hit))) continue;
+      return hit;
     }
     return null;
   };
+  const self = (sessionId: string) => sessionId;
   return {
     jobDir: (claudeJobDir) =>
       writers.includes(CLAUDE_CODE_PLATFORM_NAME) ? resolveFromJobDir(claudeJobDir) : null,
-    ppid: (ppid) => first(({ dir }) => resolveFromBreadcrumb(dir, ppid, processStartMs)),
+    ppid: (ppid) =>
+      first(
+        ({ dir }) => resolveFromBreadcrumb(dir, ppid, processStartMs),
+        () => `session-by-ppid/${ppid}.txt`,
+        self,
+      ),
     ancestors: (ancestorPids) =>
-      first(({ dir }) => resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs)),
-    cwd: (cwd) => first(({ dir, writtenSinceMs }) => resolveFromCwd(dir, cwd, writtenSinceMs)),
+      first(
+        ({ dir }) => resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs),
+        (hit) => `session-by-ppid/${hit.pid}.txt`,
+        (hit) => hit.sessionId,
+      ),
+    cwd: (cwd) =>
+      first(
+        ({ dir, writtenSinceMs }) => resolveFromCwd(dir, cwd, writtenSinceMs),
+        () => `session-by-cwd/${sanitizeCwdForFilename(cwd!)}.txt`,
+        self,
+      ),
   };
 }
 
