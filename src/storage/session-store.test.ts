@@ -4138,6 +4138,20 @@ describe('SessionStore split and corrupt session files', () => {
     expect(store.loadAllSessions()).toHaveLength(1);
   });
 
+  it('recovers a first document whose strings hold braces, quotes and backslashes', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const developer = 'a } b { c \\" d \\\\';
+    writeSessionFile(
+      '2026-03-01',
+      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 7, developer }),
+      '"tail": 1\n}\n',
+    );
+
+    const loaded = store.loadSession(id);
+    expect(loaded?.toolCallCount).toBe(7);
+    expect(loaded?.developer).toBe(developer);
+  });
+
   it('skips a corrupt file and finds the good one', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     writeFileSync(join(tmpDir, 'sessions', `2026-03-01_${id}.json`), '{ "sessionId": ');
@@ -4149,10 +4163,13 @@ describe('SessionStore split and corrupt session files', () => {
     expect(store.loadSession(id)?.toolCallCount).toBe(4);
   });
 
-  it('merges a save past a corrupt sibling into the readable file and leaves the corrupt one alone', () => {
+  function corruptFiles(): string[] {
+    return readdirSync(join(tmpDir, 'sessions')).filter((f) => f.endsWith('.corrupt'));
+  }
+
+  it('merges a save past a corrupt sibling into the readable file and keeps the corrupt bytes', () => {
     const store = new SessionStore({ storagePath: tmpDir });
-    const corrupt = join(tmpDir, 'sessions', `2026-03-01_${id}.json`);
-    writeFileSync(corrupt, '{ "sessionId": ');
+    writeFileSync(join(tmpDir, 'sessions', `2026-03-01_${id}.json`), '{ "sessionId": ');
     writeSessionFile(
       '2026-03-02',
       makeSummary({ sessionId: id, startTime: day2, toolCallCount: 9 }),
@@ -4160,12 +4177,26 @@ describe('SessionStore split and corrupt session files', () => {
 
     store.saveSession(makeSummary({ sessionId: id, startTime: day2, toolCallCount: 5 }));
 
-    expect(readdirSync(join(tmpDir, 'sessions')).sort()).toEqual([
-      `2026-03-01_${id}.json`,
-      `2026-03-02_${id}.json`,
-    ]);
-    expect(readFileSync(corrupt, 'utf-8')).toBe('{ "sessionId": ');
+    const jsonFiles = readdirSync(join(tmpDir, 'sessions')).filter((f) => f.endsWith('.json'));
+    expect(jsonFiles).toEqual([`2026-03-02_${id}.json`]);
+    expect(corruptFiles()).toHaveLength(1);
+    expect(readFileSync(join(tmpDir, 'sessions', corruptFiles()[0]), 'utf-8')).toBe(
+      '{ "sessionId": ',
+    );
     expect(store.loadSession(id)?.toolCallCount).toBe(9);
+  });
+
+  it('never overwrites an unrecoverable file that a save would land on', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeFileSync(join(tmpDir, 'sessions', `2026-03-01_${id}.json`), '{ "sessionId": ');
+
+    store.saveSession(makeSummary({ sessionId: id, startTime: day1, toolCallCount: 5 }));
+
+    expect(corruptFiles()).toHaveLength(1);
+    expect(readFileSync(join(tmpDir, 'sessions', corruptFiles()[0]), 'utf-8')).toBe(
+      '{ "sessionId": ',
+    );
+    expect(store.loadSession(id)?.toolCallCount).toBe(5);
   });
 
   it('keeps disjoint split files for one id as separate records', () => {

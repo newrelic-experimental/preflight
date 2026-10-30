@@ -862,9 +862,11 @@ export class SessionStore {
    *
    * An unreadable file is skipped rather than ending the search: returning null
    * there made saveSession() treat the session as new and start a fresh file
-   * on every later save (#997). Sibling files for one id are not merged here,
-   * because files split that way hold disjoint activity that mergeSummaries'
-   * per-counter max would drop (#908).
+   * on every later save (#997). It is also renamed to `*.corrupt` so a later
+   * save that lands on the same filename can't overwrite the only copy of its
+   * bytes. Sibling files for one id are not merged here, because files split
+   * that way hold disjoint activity that mergeSummaries' per-counter max would
+   * drop (#908).
    */
   private loadSessionWithPath(
     sessionId: string,
@@ -879,7 +881,12 @@ export class SessionStore {
       try {
         const session = deserializeSession(readFileSync(filepath, 'utf-8'), file);
         if (session === null) {
-          logger.warn('Failed to deserialize session file', { file });
+          logger.warn('Failed to deserialize session file; moving it aside', { file });
+          try {
+            renameSync(filepath, `${filepath}.${Date.now()}.corrupt`);
+          } catch {
+            // Left in place; the next load retries.
+          }
           continue;
         }
         return { summary: session, filepath };
