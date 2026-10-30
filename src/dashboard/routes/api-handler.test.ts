@@ -4884,16 +4884,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     return d.getTime();
   }
 
-  function makeConcurrencyTracker(): NonNullable<
-    Parameters<typeof createApiHandler>[0]['concurrencyTracker']
-  > {
-    return {
-      getConcurrentCount: () => 0,
-      getPeakConcurrent: () => 0,
-      getConcurrencyTimeSeries: () => [],
-    };
-  }
-
   function makeLiveRegistry(): NonNullable<
     Parameters<typeof createApiHandler>[0]['liveSessionRegistry']
   > {
@@ -4931,7 +4921,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
 
   it('returns the new bucket shape with exactly 96 buckets at 15-minute spacing', async () => {
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => [],
@@ -4973,7 +4962,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
       { sessionId: 's-c', timeline: makeTimeline(50, 55) },
     ];
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => todaySessions,
@@ -5012,7 +5000,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
       timeline: makeTimeline(i, i + 5),
     }));
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => todaySessions,
@@ -5040,7 +5027,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     // still counts toward concurrency.
     const crossMidnightSessions = [{ sessionId: 'cross-midnight', timeline: makeTimeline(-10, 5) }];
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => [],
@@ -5068,7 +5054,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
       timeline: [{ timestamp: midnightToday() - 10 * dayMs + 60_000 }, ...makeTimeline(60, 70)],
     };
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => [],
@@ -5096,7 +5081,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     // between clusters is NOT filled (the old span model extended the session
     // to `now`, which over-counted every idle-but-live session).
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: {
         getLiveSessions: () => ['live-1'],
         getTodaySessionIds: () => ['live-1'],
@@ -5133,7 +5117,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     // tool calls for >3 min), but it's still open today — its buffered
     // (not-yet-persisted) activity must still show up in the chart.
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: {
         getLiveSessions: () => [],
         getTodaySessionIds: () => ['idle-but-open-1'],
@@ -5163,7 +5146,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     // record. Their timestamps are unioned per id and merged into one window
     // set, so the session can never overlap itself.
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: {
         getLiveSessions: () => ['dup-1'],
         getTodaySessionIds: () => ['dup-1'],
@@ -5203,7 +5185,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
       { sessionId: 's-b', timeline: makeTimeline(10, 17) },
     ];
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => todaySessions,
@@ -5231,7 +5212,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     // (neither is dropped), but they do NOT merge into one continuous span —
     // the gap reads 0, unlike the old model which extended the session to now.
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: {
         getLiveSessions: () => ['sess-x'],
         getTodaySessionIds: () => ['sess-x'],
@@ -5275,7 +5255,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     // the 15-min bucket boundary.
     const todaySessions = [{ sessionId: 's-boundary', timeline: makeTimeline(0, 12) }];
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => todaySessions,
@@ -5310,7 +5289,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
       { sessionId: 's-b', timeline: makeTimeline(15, 22) },
     ];
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => todaySessions,
@@ -5335,23 +5313,18 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     expect(result.peak).toBe(2);
   });
 
-  it('does not fold livePeak into the headline peak (avoids reintroducing chart/headline disagreement)', async () => {
-    // Chart's tallest bucket is 1 (one session, briefly active). If a stale
-    // or synthetic-inflated livePeak (e.g. 5, from LiveSessionRegistry's
-    // never-reset, unfiltered lifetime max) were folded into `peak` via
-    // Math.max, the headline would read 5 while the tallest visible bar
-    // reads 1 — reproducing the exact class of bug this route exists to
-    // eliminate.
-    const todaySessions = [{ sessionId: 's-a', timeline: makeTimeline(0, 5) }];
+  it('does not raise allTimePeak when synthetic sessions are live', async () => {
+    const synthetic = ['local-1', 'proxy-2', 'pending-3'];
     const handler = createApiHandler({
-      concurrencyTracker: {
-        getConcurrentCount: () => 0,
-        getPeakConcurrent: () => 5,
-        getConcurrencyTimeSeries: () => [],
+      liveSessionRegistry: {
+        ...makeLiveRegistry(),
+        getLiveSessions: (options?: { includeSynthetic?: boolean }) =>
+          options?.includeSynthetic ? synthetic : [],
+        getTodaySessionIds: (options?: { includeSynthetic?: boolean }) =>
+          options?.includeSynthetic ? synthetic : [],
       },
-      liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
-        loadTodaySessions: () => todaySessions,
+        loadTodaySessions: () => [],
         loadAllSessions: () => [],
         listSessions: () => [],
         loadSession: () => null,
@@ -5362,14 +5335,20 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     await handler(req, res);
     expect(status()).toBe(200);
     const result = JSON.parse(body());
-    const maxBucket = Math.max(...result.buckets.map((b: { count: number }) => b.count));
-    expect(maxBucket).toBe(1);
-    expect(result.peak).toBe(1);
+    expect(result.current).toBe(0);
+    expect(result.allTimePeak).toBe(0);
+  });
+
+  it('returns 503 when liveSessionRegistry is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
   });
 
   it('preserves view=history branch unchanged', async () => {
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => [],
@@ -5407,7 +5386,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
       { sessionId: 'a-5', timeline: [{ timestamp: allTimeTs }] },
     ];
     const handler = createApiHandler({
-      concurrencyTracker: { ...makeConcurrencyTracker(), getPeakConcurrent: () => 1 },
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => historicalSessions,
@@ -5421,19 +5399,18 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     await handler(req, res);
     expect(status()).toBe(200);
     const result = JSON.parse(body());
-    // livePeak=1, historicalPeak=3 (3 sessions overlapping at the same instant) → peak = max(1,3) = 3.
+    // historicalPeak=3 (3 sessions overlapping at the same instant).
     expect(result.peak).toBe(3);
-    // allTimePeak = max(livePeak=1, historicalPeak=3, allTimePeak=5) = 5.
+    // allTimePeak = max(historicalPeak=3, allTimePeak=5) = 5.
     expect(result.allTimePeak).toBe(5);
   });
 
-  it("view=history's today value equals the Today view's peak and ignores a large getPeakConcurrent()", async () => {
+  it("view=history's today value equals the Today view's peak", async () => {
     const sessions = [
       { sessionId: 'd-1', timeline: makeTimeline(5, 10) },
       { sessionId: 'd-2', timeline: makeTimeline(5, 10) },
     ];
     const handler = createApiHandler({
-      concurrencyTracker: { ...makeConcurrencyTracker(), getPeakConcurrent: () => 9 },
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => sessions,
@@ -5458,7 +5435,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
 
   it("view=history's today value counts a live session's buffered activity that is not on disk", async () => {
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: {
         ...makeLiveRegistry(),
         getTodaySessionIds: () => ['live-1', 'live-2'],
@@ -5491,7 +5467,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
       opts?.includeModifiedSince ? [resumed] : [],
     );
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => [],
@@ -5519,7 +5494,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
       { sessionId: 'split', timeline: [{ timestamp: yesterday + 6 * 60_000 }] },
     ];
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => [],
@@ -5538,7 +5512,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
 
   it("view=history keys each day's dailyPeaks entry by local date, not UTC", async () => {
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => [],
@@ -5632,7 +5605,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
         ];
 
         const handler = createApiHandler({
-          concurrencyTracker: makeConcurrencyTracker(),
           liveSessionRegistry: makeLiveRegistry(),
           sessionStore: {
             loadTodaySessions: () => sessions,
@@ -5668,7 +5640,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
   it('counts a session seen only via peekAllBuffers in the current field', async () => {
     const now = Date.now();
     const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: {
         getLiveSessions: () => ['owned-by-this-process'],
         getSessionName: () => null,
