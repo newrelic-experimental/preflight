@@ -116,8 +116,8 @@ export interface LocalSessionRollup {
   /** Subagent-attributed portion of costByDayUsd, same key space. */
   subagentCostByDayUsd: Map<string, number>;
   /**
-   * How much of the session file this rollup already counts: the cost it last
-   * offered to the file in `persist()`, raised by each fold to what the file
+   * How much of the session file this rollup already counts: the cost of its
+   * last confirmed save in `persist()`, raised by each fold to what the file
    * held. A fold adds only what the file holds beyond this, so the
    * aggregator's own checkpoint, or a file a writer seeded from it, is never
    * added twice, and folding the same file again adds nothing.
@@ -577,10 +577,9 @@ export class LocalSessionAggregator {
     for (const rollup of this.sessions.values()) {
       if (!hasUsage(rollup)) continue;
       foldSessionFile(rollup, store.loadSession(rollup.sessionId));
+      if (!store.saveSession(summaryOf(rollup, context) as unknown as FullSessionSummary)) continue;
       rollup.accountedCost = costTotalsOf(rollup);
-      if (store.saveSession(summaryOf(rollup, context) as unknown as FullSessionSummary)) {
-        written += 1;
-      }
+      written += 1;
     }
     return written;
   }
