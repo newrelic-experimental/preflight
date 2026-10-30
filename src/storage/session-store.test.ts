@@ -4149,25 +4149,26 @@ describe('SessionStore split and corrupt session files', () => {
     expect(store.loadSession(id)?.toolCallCount).toBe(4);
   });
 
-  it('collapses three files, one corrupt, into one merged file on save', () => {
+  it('merges a save past a corrupt sibling into the readable file and leaves the corrupt one alone', () => {
     const store = new SessionStore({ storagePath: tmpDir });
-    writeFileSync(join(tmpDir, 'sessions', `2026-03-01_${id}.json`), '{ "sessionId": ');
+    const corrupt = join(tmpDir, 'sessions', `2026-03-01_${id}.json`);
+    writeFileSync(corrupt, '{ "sessionId": ');
     writeSessionFile(
       '2026-03-02',
-      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 4 }),
-    );
-    writeSessionFile(
-      '2026-03-03',
-      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 6 }),
+      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 9 }),
     );
 
     store.saveSession(makeSummary({ sessionId: id, startTime: day2, toolCallCount: 5 }));
 
-    expect(readdirSync(join(tmpDir, 'sessions'))).toHaveLength(1);
-    expect(store.loadSession(id)?.toolCallCount).toBe(6);
+    expect(readdirSync(join(tmpDir, 'sessions')).sort()).toEqual([
+      `2026-03-01_${id}.json`,
+      `2026-03-02_${id}.json`,
+    ]);
+    expect(readFileSync(corrupt, 'utf-8')).toBe('{ "sessionId": ');
+    expect(store.loadSession(id)?.toolCallCount).toBe(9);
   });
 
-  it('loadAllSessions returns one merged record for two files with the same id', () => {
+  it('keeps disjoint split files for one id as separate records', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     writeSessionFile(
       '2026-03-01',
@@ -4177,11 +4178,9 @@ describe('SessionStore split and corrupt session files', () => {
       '2026-03-02',
       makeSummary({ sessionId: id, startTime: day2, toolCallCount: 8 }),
     );
-    writeSessionFile('2026-03-02', makeSummary({ sessionId: 'other', startTime: day2 }));
 
-    const all = store.loadAllSessions();
-    expect(all).toHaveLength(2);
-    expect(all.find((s) => s.sessionId === id)?.toolCallCount).toBe(8);
+    const counts = store.loadAllSessions().map((s) => s.toolCallCount);
+    expect(counts.reduce((x, y) => x + y, 0)).toBe(11);
   });
 
   it('writes atomically and leaves no temp files behind', () => {

@@ -828,16 +828,16 @@ export class SessionStore {
         }
         throw err;
       }
-      // Remove every other file for this id (a date-rollover relocation, or
-      // duplicates left by earlier corrupt writes) so the session lives in one file.
-      for (const stalePath of existingWithPath?.filepaths ?? []) {
-        if (stalePath === filepath) continue;
+      // The merge landed on a different filename than where the existing
+      // record lived (a date-rollover case) — remove the now-superseded
+      // file so the session isn't left duplicated across two files.
+      if (existingWithPath && existingWithPath.filepath !== filepath) {
         try {
-          unlinkSync(stalePath);
+          unlinkSync(existingWithPath.filepath);
         } catch (err) {
           logger.warn('Failed to remove superseded session file after merge', {
             sessionId: toWrite.sessionId,
-            stalePath,
+            stalePath: existingWithPath.filepath,
             error: err instanceof Error ? err.message : String(err),
           });
         }
@@ -858,19 +858,19 @@ export class SessionStore {
   }
 
   /**
-   * Like loadSession(), but also returns every file path found for the id.
-   * A session can span several files (a date-rollover write, or duplicates
-   * from earlier corrupted writes); readable ones are merged and unreadable
-   * ones skipped (but still listed, so saveSession() can remove them along with
-   * the superseded files).
+   * Like loadSession(), but also returns the file path it was loaded from — used by saveSession() to detect and clean up a stale file after a merge relocates a session to a different filename.
+   *
+   * An unreadable file is skipped rather than ending the search: returning null
+   * there made saveSession() treat the session as new and start a fresh file
+   * on every later save (#997). Sibling files for one id are not merged here,
+   * because files split that way hold disjoint activity that mergeSummaries'
+   * per-counter max would drop (#908).
    */
   private loadSessionWithPath(
     sessionId: string,
-  ): { summary: FullSessionSummary; filepaths: string[] } | null {
+  ): { summary: FullSessionSummary; filepath: string } | null {
     if (!existsSync(this.sessionsDir)) return null;
 
-    let summary: FullSessionSummary | null = null;
-    const filepaths: string[] = [];
     for (const file of readdirSync(this.sessionsDir).sort()) {
       if (!file.endsWith('.json')) continue;
       if (parseSessionFilename(file)?.sessionId !== sessionId) continue;
@@ -878,18 +878,17 @@ export class SessionStore {
       const filepath = join(this.sessionsDir, file);
       try {
         const session = deserializeSession(readFileSync(filepath, 'utf-8'), file);
-        filepaths.push(filepath);
         if (session === null) {
           logger.warn('Failed to deserialize session file', { file });
           continue;
         }
-        summary = summary ? mergeSummaries(summary, session) : session;
+        return { summary: session, filepath };
       } catch {
         logger.warn('Failed to read session file', { file });
       }
     }
 
-    return summary ? { summary, filepaths } : null;
+    return null;
   }
 
   listSessions(options?: ListSessionsOptions): SessionFileInfo[] {
@@ -929,9 +928,9 @@ export class SessionStore {
 
     const sinceDate = options?.since ? formatDate(options.since) : null;
     const modifiedSinceMs = options?.includeModifiedSince?.getTime() ?? null;
-    const byId = new Map<string, FullSessionSummary>();
+    const results: FullSessionSummary[] = [];
 
-    for (const file of readdirSync(this.sessionsDir).sort()) {
+    for (const file of readdirSync(this.sessionsDir)) {
       if (!file.endsWith('.json')) continue;
 
       const parsed = parseSessionFilename(file);
@@ -963,15 +962,13 @@ export class SessionStore {
 
         if (options?.developer && session.developer !== options.developer) continue;
 
-        // One session can have several files (see loadSessionWithPath).
-        const prior = byId.get(session.sessionId);
-        byId.set(session.sessionId, prior ? mergeSummaries(prior, session) : session);
+        results.push(session);
       } catch {
         logger.warn('Failed to read session file', { file });
       }
     }
 
-    return [...byId.values()].sort((a, b) => a.startTime - b.startTime);
+    return results.sort((a, b) => a.startTime - b.startTime);
   }
 
   loadTodaySessions(): FullSessionSummary[] {
