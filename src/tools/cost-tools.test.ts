@@ -497,7 +497,6 @@ describe('handleGetBudgetStatus()', () => {
 
 describe('handleGetCostForecast()', () => {
   it('anchors the end-of-day forecast to getCostForDay()/getFirstActivityMsForDay(), not the full session spend', () => {
-    // Fixed local noon: the day anchor must be older than the forecast minimum.
     jest.useFakeTimers({ now: new Date(2024, 0, 3, 12).getTime() });
     try {
       runAnchoredForecastCase();
@@ -525,8 +524,6 @@ describe('handleGetCostForecast()', () => {
       { timestampMs: yesterday },
     );
 
-    // "Today's" spend — small, backdated an hour so it lands in today's bucket
-    // with a daily window past the forecast minimum.
     tracker.recordTokenUsage(
       {
         inputTokens: 1_000,

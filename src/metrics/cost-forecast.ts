@@ -1,7 +1,5 @@
 import { localStartOfDay } from '../lib/date.js';
 
-// Matches the "Low confidence" tier in confidenceNote. Shorter windows project
-// a rate too noisy to show as an end-of-day figure.
 const MIN_FORECAST_WINDOW_MS = 10 * 60_000;
 
 export interface CostForecast {
@@ -81,18 +79,13 @@ export function buildCostForecastFromInputs(
 
   const sessionRateUsdPerMs = sessionSpentUsd / elapsedMs;
 
-  // End-of-day boundary in **local** time, matching the rest of the dashboard
-  // (lib/date.ts localStartOfDay). Previously this used UTC, which drifted
-  // a forecast across the day boundary for non-UTC users.
+  // Local-time day boundary, matching the dashboard's day bucketing.
   const dayStartMs = localStartOfDay(nowMs);
   const dayEndMs = dayStartMs + 86_400_000;
   const msUntilEndOfDay = Math.max(0, dayEndMs - nowMs);
 
-  // Daily-anchored EoD/EoW forecast when caller supplies today's spend +
-  // first-activity-of-day. Both the day and week projections use the same
-  // effective rate and base so they are internally consistent: the week
-  // forecast is simply the day forecast extended to the full remaining week.
-  // Falls back to session rate/base when the daily anchor is absent.
+  // Day and week projections share one effective rate and base.
+  // Falls back to the session rate and base when the daily anchor is absent.
   let effectiveElapsedMs: number;
   let effectiveRateUsdPerMs: number;
   let effectiveBaseUsd: number;
@@ -115,9 +108,7 @@ export function buildCostForecastFromInputs(
     forecastHeld ? null : effectiveBaseUsd + effectiveRateUsdPerMs * msRemaining;
   const forecastEndOfDayUsd = project(msUntilEndOfDay);
 
-  // ISO week ends on Sunday. Convert local getDay() (0=Sun…6=Sat) to ISO day (1=Mon…7=Sun)
-  // then compute remaining days: Sunday → 0 remaining, Monday → 6, …, Saturday → 1.
-  // Use getDay() (local) not getUTCDay() — the week boundary must match the local EoD boundary.
+  // Local weekday, so the week boundary matches the local day boundary.
   const now = new Date(nowMs);
   const dayOfWeek = now.getDay();
   const isoDay = dayOfWeek === 0 ? 7 : dayOfWeek;
