@@ -185,6 +185,64 @@ describe('SubagentTimelineStore', () => {
     expect(agent.totalTokens).toBe(100 + 1 + 100_000);
   });
 
+  it('bounds the span by the first and last line of any role, not first-seen assistant turns', () => {
+    const snapshot = (timestamp: string, output: number) =>
+      JSON.stringify({
+        type: 'assistant',
+        timestamp,
+        uuid: 'u-' + timestamp,
+        message: {
+          id: 'msg_last',
+          model: KNOWN_MODEL,
+          usage: { input_tokens: 10, output_tokens: output },
+        },
+      });
+    const user = (timestamp: string) =>
+      JSON.stringify({ type: 'user', timestamp, message: { role: 'user', content: 'go' } });
+    writeFileSync(
+      join(subDir, `agent-${AGENT_A}.jsonl`),
+      [
+        user('2026-06-16T12:00:00.000Z'),
+        assistantLine({ timestamp: '2026-06-16T12:00:05.000Z', input: 100, output: 50 }),
+        snapshot('2026-06-16T12:00:10.000Z', 1),
+        snapshot('2026-06-16T12:00:40.000Z', 1),
+        snapshot('2026-06-16T12:01:10.000Z', 900),
+      ].join('\n') + '\n',
+    );
+
+    const agent = new SubagentTimelineStore({ projectsDir }).getSubagentsForSession(SESSION)
+      .agents[0]!;
+
+    expect(agent.startMs).toBe(Date.parse('2026-06-16T12:00:00.000Z'));
+    expect(agent.endMs).toBe(Date.parse('2026-06-16T12:01:10.000Z'));
+    expect(agent.durationMs).toBe(70_000);
+    expect(agent.turnCount).toBe(2);
+    expect(agent.totalTokens).toBe(100 + 50 + 10 + 1);
+  });
+
+  it('gives a single-turn agent a non-zero span from its user line and streaming snapshots', () => {
+    const snapshot = (timestamp: string) =>
+      JSON.stringify({
+        type: 'assistant',
+        timestamp,
+        message: { id: 'msg_only', model: KNOWN_MODEL, usage: { input_tokens: 5 } },
+      });
+    writeFileSync(
+      join(subDir, `agent-${AGENT_A}.jsonl`),
+      [
+        JSON.stringify({ type: 'user', timestamp: '2026-06-16T12:00:00.000Z' }),
+        snapshot('2026-06-16T12:00:02.000Z'),
+        snapshot('2026-06-16T12:01:00.000Z'),
+      ].join('\n') + '\n',
+    );
+
+    const agent = new SubagentTimelineStore({ projectsDir }).getSubagentsForSession(SESSION)
+      .agents[0]!;
+
+    expect(agent.durationMs).toBe(60_000);
+    expect(agent.turnCount).toBe(1);
+  });
+
   it('skips assistant lines without a message.id (matches the CostTracker feed)', () => {
     const noId = JSON.stringify({
       type: 'assistant',

@@ -9,8 +9,9 @@
  *   - workflow-spawned:  `<projectsDir>/<slug>/<sessionId>/subagents/workflows/wf_<id>/agent-*.jsonl`
  *
  * Each `agent-<id>.jsonl` file is parsed line-by-line; the assistant turns
- * (`type:'assistant'` with `message.model` + `message.usage`) supply the start/
- * end timestamps, the model, the turn count, and the summed token usage. Per-
+ * (`type:'assistant'` with `message.model` + `message.usage`) supply the model,
+ * the turn count, and the summed token usage; the span start/end are the
+ * earliest and latest timestamp of any line in the file. Per-
  * agent USD is computed via the shared `calculateCost` pricing table; when the
  * model is unknown (pricing resolves to an all-zero breakdown) `usd` is `null`
  * — mirroring how `CostTracker` treats unknown models.
@@ -85,9 +86,9 @@ export interface AgentSpan {
   readonly label: string;
   /** Model of the agent's turns (last non-empty observed). */
   readonly model: string;
-  /** Epoch ms of the first assistant turn. */
+  /** Epoch ms of the first timestamped transcript line, of any role. */
   readonly startMs: number;
-  /** Epoch ms of the last assistant turn. */
+  /** Epoch ms of the last timestamped transcript line, of any role. */
   readonly endMs: number;
   /** `endMs - startMs`. */
   readonly durationMs: number;
@@ -733,8 +734,8 @@ export class SubagentTimelineStore {
    * with usage are found.
    */
   private parseTranscript(raw: string): ParsedAgentFile | null {
-    let startMs = Infinity;
-    let endMs = -Infinity;
+    let spanStartMs = Infinity;
+    let spanEndMs = -Infinity;
     let turnCount = 0;
     let inputTokens = 0;
     let outputTokens = 0;
@@ -769,6 +770,9 @@ export class SubagentTimelineStore {
       }
 
       const turn = parseAssistantTurn(line);
+      const lineMs = turn === null ? lineTimestampMs(line) : turn.timestampMs;
+      if (lineMs < spanStartMs) spanStartMs = lineMs;
+      if (lineMs > spanEndMs) spanEndMs = lineMs;
       if (turn === null) {
         if (nl === len) break;
         continue;
@@ -780,8 +784,6 @@ export class SubagentTimelineStore {
       seenMessageIds.add(turn.messageId);
 
       turnCount += 1;
-      if (turn.timestampMs < startMs) startMs = turn.timestampMs;
-      if (turn.timestampMs > endMs) endMs = turn.timestampMs;
       inputTokens += turn.inputTokens;
       outputTokens += turn.outputTokens;
       cacheReadTokens += turn.cacheReadTokens;
@@ -804,13 +806,20 @@ export class SubagentTimelineStore {
       if (nl === len) break;
     }
 
-    if (turnCount === 0 || !Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    if (turnCount === 0 || !Number.isFinite(spanStartMs) || !Number.isFinite(spanEndMs)) {
       return null;
     }
 
     const totalTokens = inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens;
 
-    return { startMs, endMs, turnCount, totalTokens, usd, model: lastModel };
+    return {
+      startMs: spanStartMs,
+      endMs: spanEndMs,
+      turnCount,
+      totalTokens,
+      usd,
+      model: lastModel,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -975,6 +984,21 @@ function parseAssistantTurn(line: string): AssistantTurn | null {
     cacheReadTokens: fields.cacheReadTokens,
     cacheCreationTokens: fields.cacheCreationTokens,
   };
+}
+
+const TIMESTAMP_KEY = '"timestamp":"';
+
+/**
+ * Timestamp of any transcript line without a full JSON parse: the first
+ * top-level-looking `"timestamp":"..."` value. NaN when absent or unparseable,
+ * which the span comparisons ignore.
+ */
+function lineTimestampMs(line: string): number {
+  const at = line.indexOf(TIMESTAMP_KEY);
+  if (at === -1) return NaN;
+  const from = at + TIMESTAMP_KEY.length;
+  const to = line.indexOf('"', from);
+  return to === -1 ? NaN : Date.parse(line.slice(from, to));
 }
 
 /**
