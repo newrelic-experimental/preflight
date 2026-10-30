@@ -15,10 +15,13 @@
  *
  * Cursor durability: byte cursors persisted to
  * `~/.newrelic-preflight/.subagent-pos-<parentSessionId>-<agentId>` survive restart.
- * A read takes effect only once its advanced cursor is written: a read whose
- * cursor write fails emits nothing and is redone from the old cursor, the same
- * as a failed read. A crash between the cursor write and the buffer appends
- * loses those turns instead.
+ * A read takes effect once its turns are delivered through the
+ * BilledTurnLedger to the parent buffer and its advanced cursor is written. If
+ * either fails, the read is redone from the old cursor: the ledger hands back
+ * the turns it claimed but did not append and refuses the ones already
+ * appended. The ledger buffers each message id once, so a re-read after a
+ * restart, a torn cursor or a moved transcript emits nothing it already
+ * emitted.
  *
  * Startup-discovery budget: only files with mtime in the last 24h are eligible
  * for cold scan (configurable via `NR_AI_WATCHER_DISCOVERY_HOURS`); older
@@ -49,6 +52,8 @@ import { StringDecoder } from 'node:string_decoder';
 
 import { createLogger } from '../shared/index.js';
 import { AGENT_ID_RE, normalizeAgentType } from '../lib/agent-id.js';
+import { BilledTurnLedger } from './billed-turn-ledger.js';
+import { ThrottledWarning } from './throttled-warning.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
 import type { LocalStore } from '../storage/local-store.js';
 
@@ -184,13 +189,15 @@ interface SubagentWatcherBaseOptions {
   readonly discoveryHours?: number;
   /** LocalStore (used to peek the parent buffer path naming convention). */
   readonly localStore?: LocalStore;
+  /** The process's one billed-turn ledger; tests may omit it to get a private one. */
+  readonly ledger?: BilledTurnLedger;
   /**
    * Called with every turn the watcher reads, by `poll()` or `readLiveTails()`,
-   * right after it is appended to the parent buffer. Claude Code writes a
-   * message one content block per line, each repeating the message id, and the
-   * buffer drain counts each message once, so the later lines, which usually
-   * hold the tool_use blocks, never reach the drain's consumers. This sees
-   * every line as soon as it is read. Errors are caught and recorded.
+   * once the read's appends and cursor write succeed. Claude Code writes a
+   * message one content block per line, each repeating the message id, and
+   * only a message's first line reaches the buffer, so the later lines, which
+   * usually hold the tool_use blocks, never reach the drain's consumers. This
+   * sees every line. Errors are caught and recorded.
    */
   readonly onTurnRead?: (turn: SubagentTokenEvent) => void;
 }
@@ -230,6 +237,7 @@ export type SubagentWatcherOptions = SubagentWatcherBaseOptions &
 /** Result row from the JSONL parse (private to the module). */
 interface ParsedAssistantTurn {
   readonly timestampMs: number;
+  readonly undated: boolean;
   readonly messageId: string;
   readonly turnUuid: string;
   readonly model: string;
@@ -291,6 +299,11 @@ export class SubagentWatcher {
   private readonly costSelfCheck: SubagentWatcherOptions['costSelfCheck'];
   private readonly localStore: LocalStore | undefined;
   private readonly onTurnRead: ((turn: SubagentTokenEvent) => void) | undefined;
+  private readonly ledger: BilledTurnLedger;
+  private readonly retryWarning = new ThrottledWarning(
+    logger,
+    'SubagentWatcher read deferred to the next poll',
+  );
 
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private healthIntervalId: ReturnType<typeof setInterval> | null = null;
@@ -379,6 +392,7 @@ export class SubagentWatcher {
     this.costSelfCheck = options.costSelfCheck;
     this.localStore = options.localStore;
     this.onTurnRead = options.onTurnRead;
+    this.ledger = options.ledger ?? new BilledTurnLedger({ storagePath: this.storagePath });
     this.loadFingerprints();
   }
 
@@ -855,8 +869,7 @@ export class SubagentWatcher {
     // If the canonical copy for this (parentSessionId, agentId) switched project
     // dirs since the last poll (repo rename → newest-mtime copy now wins in
     // dedupeByCursorKey), the persisted byte offset belongs to the OLD file and
-    // is meaningless here. Start fresh; the event-processor dedupes shared turns
-    // by (agentId, messageId) and day-bucketing keeps "spend today" correct.
+    // is meaningless here. Start fresh from the top of the new file.
     const switchedFile = persisted.path !== undefined && persisted.path !== file.path;
     const startCursor: CursorState = switchedFile
       ? { bytePos: 0, partialLine: '', path: file.path }
@@ -908,7 +921,6 @@ export class SubagentWatcher {
       this.decoderByPath.set(file.path, decoder);
     }
     const chunk = decoder.write(buf.subarray(0, actuallyRead));
-    this.bytesRead += actuallyRead;
 
     // Carry over any partial-line content from the previous poll. The in-memory
     // map is the fast path; on a cold start (e.g. after restart) we fall back to
@@ -940,26 +952,24 @@ export class SubagentWatcher {
     // cursor has already advanced past these bytes, so we make forward progress
     // and never revisit them.
     let droppedOversized = false;
+    let parseErrors = 0;
     if (newPartial.length > MAX_PARTIAL_LINE_BYTES) {
       droppedOversized = true;
       newPartial = '';
-      this.parseErrors += 1;
+      parseErrors += 1;
     }
 
-    // Token events for each parsed assistant turn, emitted once the cursor is written.
+    // Health counters and schema-drift events wait until the read is committed,
+    // so a read that is redone counts once.
     const agentType = lines.length > 0 ? this.readAgentType(file.path) : undefined;
-    const events: SubagentTokenEvent[] = [];
+    const turns: Array<ParsedAssistantTurn & { readonly event: SubagentTokenEvent }> = [];
+    let linesRead = 0;
     for (const line of lines) {
       if (!line) continue;
-      this.linesRead += 1;
-      const parsed = this.tryParseLine(line, file);
+      linesRead += 1;
+      const { parsed, invalidJson } = this.tryParseLine(line);
+      if (invalidJson) parseErrors += 1;
       if (parsed === null) continue;
-      this.handleSchemaFingerprint('usage_keys', parsed.usageKeysFingerprint, file.workflowRunId);
-      this.handleSchemaFingerprint(
-        'content_block_types',
-        parsed.contentBlockTypesFingerprint,
-        file.workflowRunId,
-      );
 
       const event: SubagentTokenEvent = {
         mode: 'subagent_token',
@@ -981,24 +991,40 @@ export class SubagentWatcher {
         toolUseIds: parsed.toolUseIds,
         ...(agentType !== undefined ? { agentType } : {}),
       };
-      events.push(event);
+      turns.push({ ...parsed, event });
     }
 
-    // Persist the advanced cursor plus the (bounded) trailing partial so a
-    // restart resumes exactly where we left off. If that fails, the next read
-    // starts from this read's start again, so nothing this read found takes
-    // effect: emitting now would repeat these turns, and keeping its partial
-    // would prepend it to the same bytes. The decoder, which holds this read's
-    // trailing bytes, is reset as on a restart, and the mirror is dropped as on
-    // a failed read, leaving the file to the next poll.
-    if (!this.writeCursor(cursorPath, nextBytePos, newPartial, file.path)) {
+    // Deliver the turns, then persist the advanced cursor plus the (bounded)
+    // trailing partial so a restart resumes exactly where we left off. If
+    // either fails, the next read starts from this read's start again: the
+    // ledger refuses the turns already buffered, and onTurnRead hears of them
+    // only from the redo. Keeping this read's partial would prepend it to the
+    // same bytes. The decoder, which holds this read's trailing bytes, is reset
+    // as on a restart, and the mirror is dropped as on a failed read, leaving
+    // the file to the next poll.
+    try {
+      this.ledger.deliver(file.parentSessionId, turns, ({ event }) =>
+        this.appendToParentBuffer(file.parentSessionId, event),
+      );
+      this.writeCursor(cursorPath, nextBytePos, newPartial, file.path);
+    } catch (err) {
+      this.recordError(err, this.retryWarning);
       this.decoderByPath.delete(file.path);
       this.consumedBytesByPath.delete(file.path);
       return nothingRead;
     }
-    for (const event of events) {
-      this.appendToParentBuffer(file.parentSessionId, event);
-      this.notifyTurnRead(event);
+    this.retryWarning.succeeded();
+    this.bytesRead += actuallyRead;
+    this.linesRead += linesRead;
+    this.parseErrors += parseErrors;
+    for (const turn of turns) {
+      this.handleSchemaFingerprint('usage_keys', turn.usageKeysFingerprint, file.workflowRunId);
+      this.handleSchemaFingerprint(
+        'content_block_types',
+        turn.contentBlockTypesFingerprint,
+        file.workflowRunId,
+      );
+      this.notifyTurnRead(turn.event);
     }
     // Keep the in-memory mirror in sync; when the partial is empty, drop the
     // key entirely so a fully-consumed file leaves no residual entry in the map.
@@ -1024,7 +1050,7 @@ export class SubagentWatcher {
         event: 'oversized_line_dropped',
       });
     }
-    return { bytes: actuallyRead, turns: events.length };
+    return { bytes: actuallyRead, turns: turns.length };
   }
 
   private notifyTurnRead(event: SubagentTokenEvent): void {
@@ -1108,28 +1134,26 @@ export class SubagentWatcher {
     return agentType;
   }
 
-  /**
-   * Parse a JSONL line, return non-null only when it's a valid assistant turn
-   * with usage. Sets parseErrors counter on JSON parse failures.
-   */
-  private tryParseLine(line: string, _file: DiscoveredFile): ParsedAssistantTurn | null {
+  /** Parse a JSONL line; `parsed` is non-null only for a valid assistant turn with usage. */
+  private tryParseLine(line: string): {
+    parsed: ParsedAssistantTurn | null;
+    invalidJson: boolean;
+  } {
     const { fields, invalidJson } = parseAssistantTurnLine(line);
-    if (invalidJson) {
-      this.parseErrors += 1;
-      return null;
-    }
-    if (!fields) return null;
+    const none = { parsed: null, invalidJson };
+    if (!fields) return none;
 
     const model = fields.model;
-    if (!model || model === '<synthetic>') return null;
+    if (!model || model === '<synthetic>') return none;
     const messageId = fields.messageId;
-    if (!messageId) return null;
+    if (!messageId) return none;
 
     const timestampMs = fields.rawTimestamp ? Date.parse(fields.rawTimestamp) : Date.now();
-    if (!Number.isFinite(timestampMs)) return null;
+    if (!Number.isFinite(timestampMs)) return none;
 
-    return {
+    const parsed: ParsedAssistantTurn = {
       timestampMs,
+      undated: !fields.rawTimestamp,
       messageId,
       turnUuid: fields.turnUuid,
       model,
@@ -1143,6 +1167,7 @@ export class SubagentWatcher {
       contentBlockTypesFingerprint: fields.contentBlockTypesFingerprint,
       toolUseIds: fields.toolUseIds,
     };
+    return { parsed, invalidJson: false };
   }
 
   // -------------------------------------------------------------------------
@@ -1168,27 +1193,20 @@ export class SubagentWatcher {
     }
   }
 
-  /** Returns whether the cursor was written; a failure is recorded, not thrown. */
   private writeCursor(
     cursorPath: string,
     bytePos: number,
     partialLine: string,
     sourcePath: string,
-  ): boolean {
-    try {
-      if (!existsSync(this.storagePath)) {
-        mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
-      }
-      const dir = dirname(cursorPath);
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-      writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine, path: sourcePath }), {
-        mode: 0o600,
-      });
-      return true;
-    } catch (err) {
-      this.recordError(err);
-      return false;
+  ): void {
+    if (!existsSync(this.storagePath)) {
+      mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
     }
+    const dir = dirname(cursorPath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine, path: sourcePath }), {
+      mode: 0o600,
+    });
   }
 
   /**
@@ -1197,14 +1215,10 @@ export class SubagentWatcher {
    */
   private appendToParentBuffer(parentSessionId: string, event: object): void {
     const path = join(this.storagePath, `buffer-${parentSessionId}.jsonl`);
-    try {
-      if (!existsSync(this.storagePath)) {
-        mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
-      }
-      appendFileSync(path, JSON.stringify(event) + '\n', { mode: 0o600 });
-    } catch (err) {
-      this.recordError(err);
+    if (!existsSync(this.storagePath)) {
+      mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
     }
+    appendFileSync(path, JSON.stringify(event) + '\n', { mode: 0o600 });
   }
 
   private appendHealth(event: ObservabilityHealthEvent): void {
@@ -1213,8 +1227,14 @@ export class SubagentWatcher {
     // is in scope we fan out to a shared bucket (`buffer-health.jsonl`) which
     // `drainAllBuffers()` covers via its `buffer-*.jsonl` glob; we use a
     // sessionless name when the watcher is unfiltered.
+    // A health event is not retried, so a failure is recorded on its own
+    // rather than through the read-retry warning.
     const sessionId = this.parentSessionFilter ?? 'health';
-    this.appendToParentBuffer(sessionId, event);
+    try {
+      this.appendToParentBuffer(sessionId, event);
+    } catch (err) {
+      this.recordError(err);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1338,12 +1358,13 @@ export class SubagentWatcher {
     });
   }
 
-  private recordError(err: unknown): void {
+  private recordError(err: unknown, throttle?: ThrottledWarning): void {
     const message = err instanceof Error ? err.message : String(err);
     const code = (err as { code?: string }).code ?? 'UNKNOWN';
     const cls = err instanceof Error ? err.constructor.name : 'Error';
     this.lastError = { code: String(code).slice(0, 80), class: String(cls).slice(0, 80) };
-    logger.warn('SubagentWatcher error', { code, message: message.slice(0, 200) });
+    if (throttle) throttle.warn(err);
+    else logger.warn('SubagentWatcher error', { code, message: message.slice(0, 200) });
   }
 }
 

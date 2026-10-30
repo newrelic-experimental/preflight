@@ -387,11 +387,9 @@ export class HookEventProcessor {
   private static readonly MAX_STAMPED_SESSIONS = 100;
   private registeredAdaptersByName: Map<string, PlatformAdapter> | null = null;
   /**
-   * Per-agent dedup rings for recent subagent turns (scoped by agentId, one
-   * DedupRing per agent, LRU-bounded across agents). Cursor recovery may
-   * re-read a line after a crash mid-write; double-counting would be silent,
-   * so we drop on the seen-set. Was previously one global ring shared across
-   * every agent — see DedupRingRegistry's doc comment for why that's wrong.
+   * In-memory, per-agent dedup of subagent turns by messageId (one DedupRing
+   * per agent, LRU-bounded across agents). It cannot stop a double count
+   * across a restart; SubagentWatcher gets that from the BilledTurnLedger.
    */
   private readonly subagentDedupRegistry = new DedupRingRegistry(50, 4096);
   /**

@@ -22,7 +22,11 @@ import {
   buildSubagentCursorPath,
   type SubagentTokenEvent,
 } from './subagent-watcher.js';
+import { HookEventProcessor, type SubagentTurnEvent } from './event-processor.js';
 import { LocalStore } from '../storage/local-store.js';
+import { CostTracker } from '../metrics/cost-tracker.js';
+import { buildCostTrackerSeed } from '../metrics/cost-tracker-seed.js';
+import type { FullSessionSummary } from '../storage/session-store.js';
 
 // Only statSync, openSync, readdirSync and writeFileSync are wrapped as spies
 // (everything else delegates to the real implementation) — needed to prove the
@@ -1522,7 +1526,10 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
     mockReaddirSync.mockClear();
 
     expect(watcher.readLiveTails(PARENT_SESSION)).toBe(1);
-    expect(mockReaddirSync).toHaveBeenCalledTimes(1);
+    const listedOutsideLedger = mockReaddirSync.mock.calls
+      .map(([dir]) => String(dir))
+      .filter((dir) => !dir.endsWith('billed-turns'));
+    expect(listedOutsideLedger).toEqual([subagentsDir]);
     expect(turnsRead[0]).toMatchObject({ agentId: spawnedId, toolUseIds: ['toolu_spawned'] });
     // Tracked from then on: the next record and the next poll do not repeat it.
     expect(watcher.readLiveTails(PARENT_SESSION)).toBe(0);
@@ -1670,7 +1677,7 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
     expect(turnsRead).toHaveLength(1);
   });
 
-  it('emits nothing from a read whose cursor write fails, and the poll then emits each turn once', () => {
+  it('buffers each turn and reports each line once when a read whose cursor write failed is redone', () => {
     const watcher = makeWatcher();
     watcher.poll();
     appendFileSync(
@@ -1680,13 +1687,139 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
     failCursorWrites();
 
     watcher.poll();
+    restoreCursorWrites();
+    watcher.poll();
+
+    expect(bufferedTurns().map((t) => t.messageId)).toEqual(['msg_1', 'msg_2']);
+    expect(turnsRead.map((t) => t.messageId)).toEqual(['msg_1', 'msg_2']);
+  });
+
+  it('emits nothing from a read whose ledger claim fails, and the poll then emits each turn once', () => {
+    const watcher = makeWatcher();
+    watcher.poll();
+    appendFileSync(
+      agentJsonl,
+      toolUseLine('msg_1', 'toolu_sub_1') + '\n' + toolUseLine('msg_2', 'toolu_sub_2') + '\n',
+    );
+    const ledgerDir = join(storagePath, 'billed-turns');
+    writeFileSync(ledgerDir, '');
+
+    watcher.poll();
 
     expect(bufferedTurns()).toEqual([]);
     expect(turnsRead).toEqual([]);
-    restoreCursorWrites();
+    rmSync(ledgerDir);
     watcher.poll();
     expect(bufferedTurns().map((t) => t.messageId)).toEqual(['msg_1', 'msg_2']);
     expect(turnsRead.map((t) => t.messageId)).toEqual(['msg_1', 'msg_2']);
+  });
+
+  function captureWarnings() {
+    const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const now = jest.spyOn(Date, 'now').mockReturnValue(Date.now());
+    return {
+      messages: () =>
+        logged.mock.calls
+          .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+          .filter((l) => l.level === 'warn' && l.component === 'subagent-watcher')
+          .map((l) => l.message),
+      clear: () => logged.mockClear(),
+      restore: () => {
+        now.mockRestore();
+        logged.mockRestore();
+      },
+    };
+  }
+
+  it('keeps every turn when a buffer append fails and the cursor file then turns unwritable', () => {
+    const watcher = makeWatcher();
+    watcher.poll();
+    appendFileSync(
+      agentJsonl,
+      toolUseLine('msg_1', 'toolu_sub_1') + '\n' + toolUseLine('msg_2', 'toolu_sub_2') + '\n',
+    );
+    const bufferPath = join(storagePath, `buffer-${PARENT_SESSION}.jsonl`);
+    rmSync(bufferPath, { force: true });
+    mkdirSync(bufferPath);
+    let cursorWrites = 0;
+    mockWriteFileSync.mockImplementation((...args: unknown[]) => {
+      if (String(args[0]).includes('.subagent-pos-') && ++cursorWrites > 1) {
+        throw Object.assign(new Error('EIO: i/o error, write'), { code: 'EIO' });
+      }
+      realWriteFileSync(...args);
+    });
+
+    watcher.poll();
+    restoreCursorWrites();
+    rmSync(bufferPath, { recursive: true });
+    watcher.poll();
+
+    expect(bufferedTurns().map((t) => t.messageId)).toEqual(['msg_1', 'msg_2']);
+    expect(turnsRead.map((t) => t.messageId)).toEqual(['msg_1', 'msg_2']);
+  });
+
+  it('warns once a minute while the cursor file stays unwritable, and buffers each turn once', () => {
+    const watcher = makeWatcher();
+    watcher.poll();
+    appendFileSync(agentJsonl, toolUseLine('msg_1', 'toolu_sub_1') + '\n');
+    failCursorWrites();
+    const warnings = captureWarnings();
+    try {
+      for (let i = 0; i < 5; i++) watcher.poll();
+      expect(warnings.messages()).toHaveLength(1);
+    } finally {
+      warnings.restore();
+    }
+    restoreCursorWrites();
+    watcher.poll();
+    expect(bufferedTurns().map((t) => t.messageId)).toEqual(['msg_1']);
+    expect(turnsRead.map((t) => t.messageId)).toEqual(['msg_1']);
+  });
+
+  it('warns that a read was deferred even after a health event failed to append', () => {
+    const watcher = makeWatcher();
+    watcher.poll();
+    const bufferPath = join(storagePath, `buffer-${PARENT_SESSION}.jsonl`);
+    rmSync(bufferPath, { force: true });
+    mkdirSync(bufferPath);
+    writeFileSync(join(subagentsDir, 'agent-not-a-valid-id.jsonl'), '');
+    const warnings = captureWarnings();
+    try {
+      watcher.poll();
+      warnings.clear();
+      appendFileSync(agentJsonl, toolUseLine('msg_1', 'toolu_sub_1') + '\n');
+      watcher.poll();
+      expect(warnings.messages()).toEqual(['SubagentWatcher read deferred to the next poll']);
+    } finally {
+      warnings.restore();
+    }
+  });
+
+  it('counts the lines, bytes and schema drift of a redone read once', () => {
+    const watcher = makeWatcher();
+    watcher.poll();
+    const before = watcher.getHealthStats();
+    const appended =
+      toolUseLine('msg_1', 'toolu_sub_1') + '\n' + toolUseLine('msg_2', 'toolu_sub_2') + '\n';
+    appendFileSync(agentJsonl, appended);
+    const bufferPath = join(storagePath, `buffer-${PARENT_SESSION}.jsonl`);
+    rmSync(bufferPath, { force: true });
+    mkdirSync(bufferPath);
+
+    watcher.poll();
+    rmSync(bufferPath, { recursive: true });
+    watcher.poll();
+
+    const after = watcher.getHealthStats();
+    expect(after.linesRead - before.linesRead).toBe(2);
+    expect(after.bytesRead - before.bytesRead).toBe(Buffer.byteLength(appended));
+    const drifts = readFileSync(bufferPath, 'utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((l) => l.event === 'schema_drift')
+      .map((l) => l.dimension);
+    expect(drifts.sort()).toEqual(['content_block_types', 'usage_keys']);
   });
 
   it('neither repeats nor corrupts a line when the cursor write fails during an on-demand read', () => {
@@ -1710,7 +1843,6 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
     mockOpenSync.mockClear();
     expect(watcher.readLiveTails(PARENT_SESSION)).toBe(0);
     expect(mockOpenSync).not.toHaveBeenCalled();
-    expect(bufferedTurns()).toEqual([]);
 
     restoreCursorWrites();
     watcher.poll();
@@ -1755,5 +1887,295 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
 
     expect(watcher.readLiveTails(PARENT_SESSION)).toBe(0);
     expect(mockStatSync).not.toHaveBeenCalled();
+  });
+});
+
+function makeSubagentLine(messageId: string, contentType = 'text'): string {
+  return makeAssistantLine({
+    messageId,
+    uuid: `uuid-${messageId}-${contentType}`,
+    timestamp: new Date().toISOString(),
+    contentTypes: [contentType],
+  });
+}
+
+function setMtime(path: string, secondsAgo: number): void {
+  const t = new Date(Date.now() - secondsAgo * 1000);
+  utimesSync(path, t, t);
+}
+
+describe('SubagentWatcher billing across restarts', () => {
+  let storagePath: string;
+  let projectsDir: string;
+  let oldAgentPath: string;
+  let newAgentPath: string;
+
+  beforeEach(() => {
+    process.stderr.write = jest.fn(() => true) as unknown as typeof process.stderr.write;
+    storagePath = mkdtempSync(join(tmpdir(), 'sac-storage-'));
+    projectsDir = mkdtempSync(join(tmpdir(), 'sac-projects-'));
+    const oldSub = join(projectsDir, 'old-slug', PARENT_SESSION, 'subagents');
+    const newSub = join(projectsDir, 'new-slug', PARENT_SESSION, 'subagents');
+    mkdirSync(oldSub, { recursive: true });
+    mkdirSync(newSub, { recursive: true });
+    oldAgentPath = join(oldSub, `agent-${AGENT_ID}.jsonl`);
+    newAgentPath = join(newSub, `agent-${AGENT_ID}.jsonl`);
+  });
+
+  afterEach(() => {
+    process.stderr.write = STDERR_WRITE;
+    rmSync(storagePath, { recursive: true, force: true });
+    rmSync(projectsDir, { recursive: true, force: true });
+  });
+
+  function makeProcess(costTracker: CostTracker) {
+    const turns: SubagentTurnEvent[] = [];
+    const processor = new HookEventProcessor({
+      store: new LocalStore(storagePath, PARENT_SESSION),
+      pollIntervalMs: 10,
+      onRecord: () => {},
+      onSubagentTurn: (turn) => {
+        turns.push(turn);
+        costTracker.recordTokenUsage(
+          {
+            inputTokens: turn.inputTokens,
+            outputTokens: turn.outputTokens,
+            thinkingTokens: turn.reasoningTokens,
+            cacheReadTokens: turn.cacheReadTokens,
+            cacheCreationTokens: turn.cacheCreationTokens,
+            totalTokens:
+              turn.inputTokens +
+              turn.outputTokens +
+              turn.reasoningTokens +
+              turn.cacheReadTokens +
+              turn.cacheCreationTokens,
+          },
+          turn.model,
+          { timestampMs: turn.timestampMs, agentId: turn.agentId, workflowRunId: null },
+        );
+      },
+    });
+    const watcher = new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+      pollIntervalMs: 10,
+    });
+    return { processor, watcher, turns };
+  }
+
+  /** One watcher poll, then one processor drain (start + synchronous final drain in stop). */
+  function pump(p: ReturnType<typeof makeProcess>): void {
+    p.watcher.poll();
+    p.processor.start();
+    p.processor.stop();
+  }
+
+  function makePersistedSummary(ct: CostTracker): FullSessionSummary {
+    const m = ct.getMetrics();
+    const now = Date.now();
+    const modelBreakdown: Record<string, unknown> = {};
+    for (const [model, usd] of Object.entries(m.costByModel)) {
+      modelBreakdown[model] = { totalCostUsd: usd };
+    }
+    return {
+      startTime: now - 60_000,
+      endTime: now,
+      estimatedCostUsd: m.sessionTotalCostUsd,
+      subagentCostUsd: m.subagentCostUsd,
+      tokensInput: m.totalInputTokens,
+      tokensOutput: m.totalOutputTokens,
+      tokensThinking: m.totalThinkingTokens,
+      tokensCacheRead: m.totalCacheReadTokens,
+      tokensCacheCreation: m.totalCacheCreationTokens,
+      cacheSavingsUsd: m.totalCacheSavingsUsd,
+      modelBreakdown,
+      costByWorkflowRunId: {},
+    } as unknown as FullSessionSummary;
+  }
+
+  function makeSeededTracker(persisted: FullSessionSummary): CostTracker {
+    const ct = new CostTracker();
+    ct.seedFromPersisted(buildCostTrackerSeed(persisted));
+    return ct;
+  }
+
+  it('control, no restart: a message whose second line lands after the first was counted is counted once', () => {
+    writeFileSync(oldAgentPath, makeSubagentLine('msg_M', 'text') + '\n');
+    setMtime(oldAgentPath, 100);
+    const cost = new CostTracker();
+    const p = makeProcess(cost);
+    pump(p);
+    const oneMessageUsd = cost.getMetrics().subagentCostUsd;
+    expect(oneMessageUsd).toBeGreaterThan(0);
+
+    appendFileSync(oldAgentPath, makeSubagentLine('msg_M', 'tool_use') + '\n');
+    pump(p);
+
+    expect(p.turns.length).toBe(1);
+    expect(cost.getMetrics().subagentCostUsd).toBeCloseTo(oneMessageUsd, 10);
+  });
+
+  it('restart between line 1 and line 2 of one message: the message is not counted twice', () => {
+    writeFileSync(oldAgentPath, makeSubagentLine('msg_M', 'text') + '\n');
+    setMtime(oldAgentPath, 100);
+    const costA = new CostTracker();
+    const a = makeProcess(costA);
+    pump(a);
+    const oneMessageUsd = costA.getMetrics().subagentCostUsd;
+    expect(a.turns.length).toBe(1);
+    const persisted = makePersistedSummary(costA);
+
+    // Process A dies after reading line 1. Claude Code then writes line 2 of the same message.
+    appendFileSync(oldAgentPath, makeSubagentLine('msg_M', 'tool_use') + '\n');
+
+    const costB = makeSeededTracker(persisted);
+    const b = makeProcess(costB);
+    pump(b);
+
+    expect(b.turns.length).toBe(0);
+    expect(costB.getMetrics().subagentCostUsd).toBeCloseTo(oneMessageUsd, 10);
+  });
+
+  it('restart after the canonical transcript moved to a new project dir: turns are not re-counted', () => {
+    writeFileSync(
+      oldAgentPath,
+      makeSubagentLine('msg_1') + '\n' + makeSubagentLine('msg_2') + '\n',
+    );
+    setMtime(oldAgentPath, 100);
+    const costA = new CostTracker();
+    const a = makeProcess(costA);
+    pump(a);
+    const countedUsd = costA.getMetrics().subagentCostUsd;
+    expect(a.turns.length).toBe(2);
+    const persisted = makePersistedSummary(costA);
+
+    // Repo rename: the new project dir holds the same history, newer mtime.
+    writeFileSync(
+      newAgentPath,
+      makeSubagentLine('msg_1') + '\n' + makeSubagentLine('msg_2') + '\n',
+    );
+    setMtime(newAgentPath, 1);
+
+    const costB = makeSeededTracker(persisted);
+    const b = makeProcess(costB);
+    pump(b);
+
+    expect(costB.getMetrics().subagentCostUsd).toBeCloseTo(countedUsd, 10);
+  });
+
+  it('in-process canonical switch with more than 4096 messages: no message is counted twice', () => {
+    const N = 4097;
+    const body = Array.from({ length: N }, (_, i) => makeSubagentLine(`msg_${i}`) + '\n').join('');
+    writeFileSync(oldAgentPath, body);
+    setMtime(oldAgentPath, 100);
+    const cost = new CostTracker();
+    const p = makeProcess(cost);
+    for (let i = 0; i < 200 && p.turns.length < N; i++) pump(p);
+    expect(p.turns.length).toBe(N);
+    const countedUsd = cost.getMetrics().subagentCostUsd;
+
+    writeFileSync(newAgentPath, body);
+    setMtime(newAgentPath, 1);
+    for (let i = 0; i < 200; i++) pump(p);
+
+    expect(cost.getMetrics().subagentCostUsd).toBeCloseTo(countedUsd, 10);
+  });
+
+  it('restart with a truncated (torn) cursor file: turns are not re-counted', () => {
+    writeFileSync(
+      oldAgentPath,
+      makeSubagentLine('msg_1') + '\n' + makeSubagentLine('msg_2') + '\n',
+    );
+    setMtime(oldAgentPath, 100);
+    const costA = new CostTracker();
+    const a = makeProcess(costA);
+    pump(a);
+    const countedUsd = costA.getMetrics().subagentCostUsd;
+    expect(a.turns.length).toBe(2);
+    const persisted = makePersistedSummary(costA);
+
+    const cursorFiles = readdirSync(storagePath).filter((n) => n.startsWith('.subagent-pos-'));
+    expect(cursorFiles).toHaveLength(1);
+    // A SIGKILL between truncate and write of the cursor leaves an empty file.
+    writeFileSync(join(storagePath, cursorFiles[0]!), '');
+
+    const costB = makeSeededTracker(persisted);
+    const b = makeProcess(costB);
+    pump(b);
+
+    expect(costB.getMetrics().subagentCostUsd).toBeCloseTo(countedUsd, 10);
+  });
+
+  function bufferedMessageIds(): string[] {
+    try {
+      return readFileSync(join(storagePath, `buffer-${PARENT_SESSION}.jsonl`), 'utf-8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => (JSON.parse(l) as { messageId?: string }).messageId)
+        .filter((id): id is string => id !== undefined);
+    } catch {
+      return [];
+    }
+  }
+
+  function makeBareWatcher(): SubagentWatcher {
+    return new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+      pollIntervalMs: 10,
+    });
+  }
+
+  it('warns once a minute, with a count, while the buffer stays unwritable', () => {
+    writeFileSync(oldAgentPath, makeSubagentLine('msg_1') + '\n');
+    setMtime(oldAgentPath, 100);
+    mkdirSync(join(storagePath, `buffer-${PARENT_SESSION}.jsonl`));
+    const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const warnings = () =>
+      logged.mock.calls
+        .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+        .filter((l) => l.level === 'warn' && l.component === 'subagent-watcher');
+    const watcher = makeBareWatcher();
+    const start = Date.now();
+    const now = jest.spyOn(Date, 'now');
+    try {
+      now.mockReturnValue(start);
+      for (let i = 0; i < 5; i++) watcher.poll();
+      expect(warnings()).toHaveLength(1);
+
+      now.mockReturnValue(start + 61_000);
+      watcher.poll();
+      expect(warnings()).toHaveLength(2);
+      expect(warnings()[1]!.suppressed).toBeGreaterThanOrEqual(4);
+    } finally {
+      now.mockRestore();
+      logged.mockRestore();
+    }
+  });
+
+  it('a turn with no timestamp is billed once when it is read again on a later day', () => {
+    const { timestamp: _dropped, ...undated } = JSON.parse(makeSubagentLine('msg_1')) as Record<
+      string,
+      unknown
+    >;
+    writeFileSync(oldAgentPath, JSON.stringify(undated) + '\n');
+    const realNow = Date.now();
+    const later = realNow + 5 * 24 * 60 * 60 * 1000;
+    const now = jest.spyOn(Date, 'now');
+    try {
+      now.mockReturnValue(realNow);
+      makeBareWatcher().poll();
+      const cursorFiles = readdirSync(storagePath).filter((n) => n.startsWith('.subagent-pos-'));
+      writeFileSync(join(storagePath, cursorFiles[0]!), '');
+      utimesSync(oldAgentPath, new Date(later), new Date(later));
+      now.mockReturnValue(later);
+      makeBareWatcher().poll();
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(bufferedMessageIds()).toEqual(['msg_1']);
   });
 });
