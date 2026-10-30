@@ -809,6 +809,39 @@ describe('LocalSessionAggregator persist', () => {
     expect(file?.estimatedCostUsd).toBeCloseTo(6, 6);
     expect(file?.costByDayUsd?.[DAY_KEY]).toBeCloseTo(6, 6);
   });
+
+  it('adds a saved byte-estimate ledger to the total once', () => {
+    store.saveSession(
+      makeEngineSummary({
+        estimatedCostUsd: 6,
+        costByDayUsd: { [DAY_KEY]: 6 },
+        exactTotals: {
+          costUsd: 5,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByDayUsd: { [DAY_KEY]: 5 },
+        },
+        byteEstimates: {
+          costUsd: 1,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByModel: {},
+          costByDayUsd: { [DAY_KEY]: 1 },
+        },
+      }),
+    );
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.5, timestamp: DAY });
+
+    agg.persist(store, makeContext());
+    agg.persist(store, makeContext());
+    agg.persist(store, makeContext());
+
+    const file = store.loadSession(REAL_ID);
+    expect(file?.estimatedCostUsd).toBeCloseTo(6.5, 6);
+    expect(file?.costByDayUsd?.[DAY_KEY]).toBeCloseTo(6.5, 6);
+  });
 });
 
 describe('stripHeredocs', () => {
