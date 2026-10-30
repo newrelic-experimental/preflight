@@ -1533,6 +1533,23 @@ describe('LocalStore', () => {
       expect(existsSync(deadPath)).toBe(false);
     });
 
+    it("deletes dead-PID breadcrumbs under every writer's directory", () => {
+      const writerDirs = ['claude-code', 'kiro'].map((writer) =>
+        resolve(tmpDir, 'breadcrumbs', writer, 'session-by-ppid'),
+      );
+      for (const dir of writerDirs) {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(resolve(dir, `${process.pid}.txt`), 'sess-live-id');
+        writeFileSync(resolve(dir, '9999999.txt'), 'sess-dead-id');
+      }
+
+      expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(2);
+      for (const dir of writerDirs) {
+        expect(existsSync(resolve(dir, `${process.pid}.txt`))).toBe(true);
+        expect(existsSync(resolve(dir, '9999999.txt'))).toBe(false);
+      }
+    });
+
     it('returns 0 when breadcrumb dir does not exist', () => {
       mkdirSync(tmpDir, { recursive: true });
       const store = new LocalStore(tmpDir);

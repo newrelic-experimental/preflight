@@ -262,7 +262,12 @@ describe('session-resolver', () => {
         resolve(jobDir, 'state.json'),
         JSON.stringify({ linkScanPath: '/whatever/job-uuid.jsonl' }),
       );
-      const sid = await resolveSessionId({ claudeJobDir: jobDir, ppid: 1, storagePath: tmpDir });
+      const sid = await resolveSessionId({
+        writers: ['claude-code'],
+        claudeJobDir: jobDir,
+        ppid: 1,
+        storagePath: tmpDir,
+      });
       expect(sid).toBe('job-uuid');
     });
 
@@ -271,6 +276,7 @@ describe('session-resolver', () => {
       mkdirSync(resolve(tmpDir, 'session-by-ppid'), { recursive: true });
       writeFileSync(resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`), 'sess-immediate');
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: null,
         ppid,
         storagePath: tmpDir,
@@ -285,6 +291,7 @@ describe('session-resolver', () => {
         'sess-cwd-fallback',
       );
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: null,
         ppid: 424242, // never has a matching breadcrumb
         cwd: '/projects/winrepo',
@@ -312,6 +319,7 @@ describe('session-resolver', () => {
       }, 10);
 
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: null,
         ppid,
         cwd: '/projects/race',
@@ -328,6 +336,7 @@ describe('session-resolver', () => {
       writeFileSync(resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`), 'sess-from-ppid');
       writeFileSync(resolve(tmpDir, 'session-by-cwd', '-projects-both.txt'), 'sess-from-cwd');
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: null,
         ppid,
         cwd: '/projects/both',
@@ -345,6 +354,7 @@ describe('session-resolver', () => {
       );
       const onResolutionSource = jest.fn();
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: jobDir,
         ppid: 1,
         storagePath: tmpDir,
@@ -363,6 +373,7 @@ describe('session-resolver', () => {
       writeFileSync(resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`), 'sess-ppid-source');
       const onResolutionSource = jest.fn();
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: null,
         ppid,
         storagePath: tmpDir,
@@ -383,6 +394,7 @@ describe('session-resolver', () => {
       );
       const onResolutionSource = jest.fn();
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: null,
         ppid: 424243, // never has a matching breadcrumb
         cwd: '/projects/cwd-source',
@@ -411,6 +423,7 @@ describe('session-resolver', () => {
       const onResolutionSource = jest.fn();
 
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: null,
         ppid: 88101,
         ancestorPids: [88101, 88102, 88103],
@@ -432,6 +445,7 @@ describe('session-resolver', () => {
       const onResolutionSource = jest.fn();
 
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: null,
         ppid: 88201,
         ancestorPids: [88201, 88202],
@@ -454,6 +468,7 @@ describe('session-resolver', () => {
       const onResolutionSource = jest.fn();
 
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: null,
         ppid: 88301,
         ancestorPids: [88301, 88302],
@@ -476,6 +491,7 @@ describe('session-resolver', () => {
       const onResolutionSource = jest.fn();
 
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: null,
         ppid: 88401,
         ancestorPids: [88401, 88402, 88403],
@@ -498,6 +514,7 @@ describe('session-resolver', () => {
       }, 150);
 
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: null,
         ppid: 88501,
         ancestorPids: [88501, 88502],
@@ -520,6 +537,7 @@ describe('session-resolver', () => {
       }, 150);
 
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: null,
         ppid,
         storagePath: tmpDir,
@@ -535,6 +553,7 @@ describe('session-resolver', () => {
       setTimeout(() => ac.abort(), 50);
       await expect(
         resolveSessionId({
+          writers: ['claude-code'],
           claudeJobDir: null,
           ppid,
           storagePath: tmpDir,
@@ -558,6 +577,7 @@ describe('session-resolver', () => {
       }, 150);
 
       const sid = await resolveSessionId({
+        writers: ['claude-code'],
         claudeJobDir: null,
         ppid: 333444, // never resolves
         cwd: '/projects/native-win',
@@ -578,7 +598,12 @@ describe('session-resolver', () => {
         writeFileSync(resolve(breadcrumbDir, `${ppid}.txt`), 'sess-ppid-correction');
       }, 150);
 
-      const sid = await watchPpidBreadcrumb({ ppid, storagePath: tmpDir, suppressWarn: true });
+      const sid = await watchPpidBreadcrumb({
+        writers: ['claude-code'],
+        ppid,
+        storagePath: tmpDir,
+        suppressWarn: true,
+      });
       expect(sid).toBe('sess-ppid-correction');
     });
 
@@ -597,6 +622,7 @@ describe('session-resolver', () => {
       }, 150);
 
       const sid = await watchPpidBreadcrumb({
+        writers: ['claude-code'],
         ppid,
         cwd: '/projects/watch-cwd',
         storagePath: tmpDir,
@@ -642,6 +668,7 @@ describe('session-resolver', () => {
         );
         try {
           return await watchPpidBreadcrumb({
+            writers: ['claude-code'],
             ppid: options.ppid,
             storagePath: tmpDir,
             includeParentOfPpid: true,
@@ -673,6 +700,7 @@ describe('session-resolver', () => {
         setTimeout(() => ac.abort(), 400);
         await expect(
           watchPpidBreadcrumb({
+            writers: ['claude-code'],
             ppid,
             ancestry: { platform: 'darwin', execFileSync: ps.fn },
             storagePath: tmpDir,
@@ -1042,6 +1070,7 @@ describe('session-resolver', () => {
       setTimeout(() => ac.abort(), 50);
       await expect(
         watchPpidBreadcrumb({
+          writers: ['claude-code'],
           ppid,
           storagePath: tmpDir,
           suppressWarn: true,
@@ -1066,6 +1095,7 @@ describe('session-resolver', () => {
       }, 150);
 
       const sid = await watchCwdBreadcrumbForCorrection({
+        writers: ['claude-code'],
         staleId: 'stale-short-lived-id',
         cwd: '/projects/win686',
         storagePath: tmpDir,
@@ -1087,6 +1117,7 @@ describe('session-resolver', () => {
 
       const ac = new AbortController();
       const watch = watchCwdBreadcrumbForCorrection({
+        writers: ['claude-code'],
         staleId: 'stale-id',
         cwd: '/projects/unconfirmed',
         storagePath: tmpDir,
@@ -1106,6 +1137,7 @@ describe('session-resolver', () => {
 
       const ac = new AbortController();
       const watch = watchCwdBreadcrumbForCorrection({
+        writers: ['claude-code'],
         staleId: 'same-id',
         cwd: '/projects/samevalue',
         storagePath: tmpDir,
@@ -1120,6 +1152,7 @@ describe('session-resolver', () => {
       setTimeout(() => ac.abort(), 50);
       await expect(
         watchCwdBreadcrumbForCorrection({
+          writers: ['claude-code'],
           staleId: 'whatever',
           cwd: '/projects/abort-test',
           storagePath: tmpDir,

@@ -12,6 +12,7 @@ import {
 import { resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
+import { BREADCRUMBS_DIR } from '../hooks/session-breadcrumbs.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -988,38 +989,49 @@ export class LocalStore {
 
   /**
    * Garbage-collect stale per-PPID breadcrumb files at
-   * `<storage>/session-by-ppid/<pid>.txt`. A breadcrumb is stale when its
-   * PID names a process that no longer exists (Claude Code session ended).
+   * `<storage>/breadcrumbs/<writer>/session-by-ppid/<pid>.txt`, and at
+   * `<storage>/session-by-ppid/<pid>.txt` where collectors before #979 wrote
+   * them. A breadcrumb is stale when its PID names a process that no longer
+   * exists (its engine's session ended).
    *
    * @returns the number of breadcrumb files deleted
    */
   gcStaleBreadcrumbs(): number {
-    const breadcrumbDir = resolve(this.storagePath, 'session-by-ppid');
-    if (!existsSync(breadcrumbDir)) return 0;
-
-    let entries: string[];
+    const writersDir = resolve(this.storagePath, BREADCRUMBS_DIR);
+    let writers: string[] = [];
     try {
-      entries = readdirSync(breadcrumbDir);
-    } catch (err) {
-      logger.warn('Failed to enumerate breadcrumb dir for gcStaleBreadcrumbs', {
-        error: String(err),
-      });
-      return 0;
+      writers = readdirSync(writersDir);
+    } catch {
+      // No collector has written a breadcrumb since #979.
     }
+    const breadcrumbDirs = [
+      resolve(this.storagePath, 'session-by-ppid'),
+      ...writers.map((writer) => resolve(writersDir, writer, 'session-by-ppid')),
+    ];
 
     let deleted = 0;
-    for (const name of entries) {
-      if (!name.endsWith('.txt')) continue;
-      const pidStr = name.slice(0, -'.txt'.length);
-      const pid = Number.parseInt(pidStr, 10);
-      if (!Number.isFinite(pid) || pid <= 0) continue;
-      if (isPidAlive(pid)) continue;
-      const path = resolve(breadcrumbDir, name);
+    for (const breadcrumbDir of breadcrumbDirs) {
+      if (!existsSync(breadcrumbDir)) continue;
+      let entries: string[];
       try {
-        unlinkSync(path);
-        deleted++;
+        entries = readdirSync(breadcrumbDir);
       } catch (err) {
-        logger.debug('Failed to delete stale breadcrumb', { pid, error: String(err) });
+        logger.warn('Failed to enumerate breadcrumb dir for gcStaleBreadcrumbs', {
+          error: String(err),
+        });
+        continue;
+      }
+      for (const name of entries) {
+        if (!name.endsWith('.txt')) continue;
+        const pid = Number.parseInt(name.slice(0, -'.txt'.length), 10);
+        if (!Number.isFinite(pid) || pid <= 0) continue;
+        if (isPidAlive(pid)) continue;
+        try {
+          unlinkSync(resolve(breadcrumbDir, name));
+          deleted++;
+        } catch (err) {
+          logger.debug('Failed to delete stale breadcrumb', { pid, error: String(err) });
+        }
       }
     }
     if (deleted > 0) {
