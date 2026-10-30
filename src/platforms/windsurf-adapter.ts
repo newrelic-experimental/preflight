@@ -43,7 +43,11 @@ export class WindsurfAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'full-hooks' as const;
   // https://docs.windsurf.com/windsurf/cascade/memories#rules — project rules
   // live in `.windsurfrules`.
-  readonly capabilities = { instructionFilePaths: ['.windsurfrules'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['.windsurfrules'] as const,
+    // Windsurf's hooks send trajectory_id, never session_id, so they write no breadcrumb.
+    sessionBreadcrumbWriters: [] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Windsurf supports MCP natively via its own mcp_config.json. Built-in

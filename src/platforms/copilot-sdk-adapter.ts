@@ -130,6 +130,8 @@ export class CopilotSdkAdapter implements PlatformAdapter {
       'GEMINI.md',
       '.github/copilot-instructions.md',
     ] as const,
+    // The documented hook command stamps NEW_RELIC_AI_PLATFORM=copilot.
+    sessionBreadcrumbWriters: ['copilot-sdk', 'copilot'] as const,
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {

@@ -110,7 +110,10 @@ export class CopilotAdapter implements PlatformAdapter {
   // every built-in tool call and are parsed by collector-script.ts's uniform
   // branch. The HTTP-push extension path below remains as a legacy fallback.
   readonly visibilityLevel = 'full-hooks' as const;
-  readonly capabilities = { instructionFilePaths: [] as const };
+  readonly capabilities = {
+    instructionFilePaths: [] as const,
+    sessionBreadcrumbWriters: ['copilot'] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Tool calls arrive via VS Code agent hooks (collector script), or

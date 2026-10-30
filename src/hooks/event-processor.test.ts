@@ -2516,7 +2516,7 @@ describe('HookEventProcessor', () => {
       const fakeAdapter = {
         platformName: 'fake',
         visibilityLevel: 'full-hooks' as const,
-        capabilities: { instructionFilePaths: [] },
+        capabilities: { instructionFilePaths: [], sessionBreadcrumbWriters: [] },
         initialize: async () => {},
         normalizeToolCall: () => {
           throw new Error('not used by this test');
@@ -2554,7 +2554,7 @@ describe('HookEventProcessor', () => {
       const fakeAdapter = {
         platformName: 'fake',
         visibilityLevel: 'full-hooks' as const,
-        capabilities: { instructionFilePaths: [] },
+        capabilities: { instructionFilePaths: [], sessionBreadcrumbWriters: [] },
         initialize: async () => {},
         normalizeToolCall: () => {
           throw new Error('not used by this test');
@@ -2661,7 +2661,7 @@ describe('HookEventProcessor', () => {
       const fakeAdapter = {
         platformName: 'fake',
         visibilityLevel: 'full-hooks' as const,
-        capabilities: { instructionFilePaths: [] },
+        capabilities: { instructionFilePaths: [], sessionBreadcrumbWriters: [] },
         initialize: async () => {},
         normalizeToolCall: () => {
           throw new Error('not used by this test');
@@ -2694,7 +2694,7 @@ describe('HookEventProcessor', () => {
       const fakeAdapter = {
         platformName: 'fake',
         visibilityLevel: 'full-hooks' as const,
-        capabilities: { instructionFilePaths: [] },
+        capabilities: { instructionFilePaths: [], sessionBreadcrumbWriters: [] },
         initialize: async () => {},
         normalizeToolCall: () => {
           throw new Error('not used by this test');
@@ -2719,7 +2719,7 @@ describe('HookEventProcessor', () => {
       const fakeAdapter = {
         platformName: 'fake',
         visibilityLevel: 'full-hooks' as const,
-        capabilities: { instructionFilePaths: [] },
+        capabilities: { instructionFilePaths: [], sessionBreadcrumbWriters: [] },
         initialize: async () => {},
         normalizeToolCall: () => {
           throw new Error('not used by this test');

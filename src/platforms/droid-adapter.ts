@@ -1,8 +1,9 @@
-import type {
-  NormalizedToolCall,
-  PlatformAdapter,
-  PlatformConfig,
-  PlatformSessionMetadata,
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformConfig,
+  type PlatformSessionMetadata,
 } from './types.js';
 
 /**
@@ -49,7 +50,11 @@ function isDroidToolCallEvent(x: unknown): x is DroidToolCallEvent {
 export class DroidAdapter implements PlatformAdapter {
   readonly platformName = 'droid';
   readonly visibilityLevel = 'full-hooks' as const;
-  readonly capabilities = { instructionFilePaths: ['AGENTS.md'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['AGENTS.md'] as const,
+    // The documented hook command names no engine.
+    sessionBreadcrumbWriters: ['droid', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Droid hooks are configured externally (hooks.json).

@@ -160,7 +160,10 @@ export const GENERIC_MCP_PLATFORM_NAME = 'generic-mcp';
 export class GenericMcpAdapter implements PlatformAdapter {
   readonly platformName = GENERIC_MCP_PLATFORM_NAME;
   readonly visibilityLevel = 'self-reported' as const;
-  readonly capabilities = { instructionFilePaths: [] as const };
+  readonly capabilities = {
+    instructionFilePaths: [] as const,
+    sessionBreadcrumbWriters: [] as const,
+  };
 
   private sessionMetadata: PlatformSessionMetadata = { platform: 'generic-mcp' };
 
