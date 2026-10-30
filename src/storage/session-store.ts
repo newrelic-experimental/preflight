@@ -323,6 +323,9 @@ export interface SessionFileInfo {
 export interface ListSessionsOptions {
   since?: Date;
   developer?: string;
+}
+
+export interface LoadSessionsOptions extends ListSessionsOptions {
   /**
    * Also load files whose filename date is older than `since` when the file
    * was modified at or after this time. A resumed session keeps its original
@@ -897,7 +900,7 @@ export class SessionStore {
     );
   }
 
-  loadAllSessions(options?: ListSessionsOptions): FullSessionSummary[] {
+  loadAllSessions(options?: LoadSessionsOptions): FullSessionSummary[] {
     if (!existsSync(this.sessionsDir)) return [];
 
     const sinceDate = options?.since ? formatDate(options.since) : null;

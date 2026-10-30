@@ -2844,17 +2844,16 @@ export function createApiHandler(
         allSessions as readonly SessionActivityLike[],
       );
 
-      // Prefer loadSessionsOverlappingToday() so a session that started
-      // yesterday and is still running isn't invisible to the chart —
-      // loadTodaySessions() filters by filename date (= start date) and
-      // would otherwise silently drop it. Downstream window-building already
-      // clamps each session's activity to [startTimestamp, dayEnd], so widening
-      // the input set here can't leak yesterday's activity into today's buckets.
+      // Prefer loadSessionsWithActivityToday() so a session that started
+      // earlier and is still running, or was resumed from an older start date
+      // (keeping its original filename), isn't invisible to the chart —
+      // loadTodaySessions() filters by filename date (= start date) and would
+      // silently drop it. Downstream window-building clamps each session's
+      // activity to [startTimestamp, dayEnd], so widening the input set here
+      // can't leak earlier days' activity into today's buckets.
       // loadAllSessions()/loadTodaySessions() already exclude synthetic session
       // ids, so the chart buckets below agree with the session list shown
       // alongside the chart without re-filtering here.
-      // loadSessionsWithActivityToday() additionally finds sessions resumed from
-      // an older start date, which keep their original filename.
       const todaySessions =
         deps.sessionStore?.loadSessionsWithActivityToday?.() ??
         deps.sessionStore?.loadSessionsOverlappingToday?.() ??
