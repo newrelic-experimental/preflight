@@ -964,6 +964,54 @@ describe('stdio integration', () => {
     }
   }, 30000);
 
+  it('does not adopt a Claude Code cwd breadcrumb when the engine is Cursor', async () => {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-cursor-cwd-storage-'));
+    const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-cursor-cwd-project-'));
+    const realProjectCwd = realpathSync(tmpProjectCwd);
+
+    const breadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    mkdirSync(breadcrumbDir, { recursive: true });
+    const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
+    writeFileSync(resolve(breadcrumbDir, `${sanitizedCwd}.txt`), 'claude-code-session-id');
+
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [binPath, '--stdio'],
+      cwd: tmpProjectCwd,
+      env: {
+        ...env,
+        NR_AI_DASHBOARD_PORT: '0',
+        MCP_CLIENT: 'cursor',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+      },
+    });
+
+    const client = new Client({ name: 'cursor', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+
+      const result = await client.callTool({
+        name: 'nr_observe_report_tokens',
+        arguments: { input_tokens: 1000, output_tokens: 200, model: 'claude-sonnet-4-6' },
+      });
+      const text = JSON.stringify(result.content);
+      expect(text).toContain('session_id not yet resolved');
+
+      await client.close();
+    } finally {
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+      rmSync(tmpProjectCwd, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it('self-corrects a synchronously-resolved cwd session id once the real PPID breadcrumb appears', async () => {
     // A stale cwd breadcrumb (leftover from an unrelated prior session in
     // the same directory) can win the synchronous resolution race at
