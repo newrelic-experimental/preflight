@@ -16,6 +16,7 @@ import {
   LocalSessionAggregator,
   RepoNameResolver,
   stripHeredocs,
+  type SessionFileStore,
   type SummaryContext,
 } from './local-session-aggregator.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from './quality-proxy-tracker.js';
@@ -808,6 +809,24 @@ describe('LocalSessionAggregator persist', () => {
     const file = store.loadSession(REAL_ID);
     expect(file?.estimatedCostUsd).toBeCloseTo(6, 6);
     expect(file?.costByDayUsd?.[DAY_KEY]).toBeCloseTo(6, 6);
+  });
+
+  it('still counts its unsaved cost after a save fails', () => {
+    store.saveSession(makeEngineSummary({ estimatedCostUsd: 5 }));
+    const failingStore: SessionFileStore = {
+      loadSession: (id) => store.loadSession(id),
+      saveSession: () => false,
+    };
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 2, timestamp: DAY });
+    agg.persist(failingStore, makeContext());
+
+    store.saveSession(makeEngineSummary({ estimatedCostUsd: 8 }));
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000 });
+    agg.persist(store, makeContext());
+
+    expect(store.loadSession(REAL_ID)?.estimatedCostUsd).toBeCloseTo(11, 6);
   });
 
   it('adds a saved byte-estimate ledger to the total once', () => {
