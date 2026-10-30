@@ -798,6 +798,28 @@ describe('LocalSessionAggregator saves across a restart', () => {
 
     expect(store.loadSession(REAL_ID)?.estimatedCostUsd).toBeCloseTo(0.0288, 6);
   });
+  it('does not count twice the cost a writer seeded from its own save', () => {
+    const dayKey = localDateKey(DAY);
+    const agg = makeAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 2, timestamp: DAY });
+    saveSummaries(agg);
+
+    const seeded = store.loadSession(REAL_ID)!;
+    store.saveSession({
+      ...seeded,
+      estimatedCostUsd: (seeded.estimatedCostUsd ?? 0) + 3,
+      costByDayUsd: { [dayKey]: (seeded.costByDayUsd?.[dayKey] ?? 0) + 3 },
+    });
+
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000 });
+    saveSummaries(agg);
+    saveSummaries(agg);
+
+    const file = store.loadSession(REAL_ID);
+    expect(file?.estimatedCostUsd).toBeCloseTo(6, 6);
+    expect(file?.costByDayUsd?.[dayKey]).toBeCloseTo(6, 6);
+  });
 });
 
 describe('stripHeredocs', () => {

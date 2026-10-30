@@ -68,21 +68,21 @@ export type PersistedCostBaseline = Pick<
   'estimatedCostUsd' | 'subagentCostUsd' | 'costByDayUsd' | 'subagentCostByDayUsd'
 >;
 
-interface EmittedCost {
-  readonly costUsd: number;
-  readonly subagentCostUsd: number;
-  readonly costByDayUsd: ReadonlyMap<string, number>;
-  readonly subagentCostByDayUsd: ReadonlyMap<string, number>;
+interface CostTotals {
+  costUsd: number;
+  subagentCostUsd: number;
+  costByDayUsd: Map<string, number>;
+  subagentCostByDayUsd: Map<string, number>;
 }
 
 export interface LocalSessionAggregatorOptions {
   /**
-   * Called at most once per session, on that session's first subagent
-   * (`agentId`-tagged) usage — not at rollup creation, because an unscoped
-   * process creates a rollup from a session's first drained hook event,
-   * before that session's engine has written anything to disk (see
-   * `recordTokenUsage`'s doc comment). Returning null means "nothing on
-   * disk yet"; the rollup then starts at 0 as before.
+   * Read before every `toSummaries()` checkpoint of a session, and on its
+   * first subagent (`agentId`-tagged) usage. Never at rollup creation,
+   * because an unscoped process creates a rollup from a session's first
+   * drained hook event, before that session's engine has written anything to
+   * disk. Returning null means "nothing on disk yet"; the next checkpoint
+   * reads again.
    */
   readonly persistedCostBaseline?: (sessionId: string) => PersistedCostBaseline | null;
 }
@@ -121,14 +121,16 @@ export interface LocalSessionRollup {
   subagentCostUsd: number;
   /** Subagent-attributed portion of costByDayUsd, same key space. */
   subagentCostByDayUsd: Map<string, number>;
-  /** Set once the persisted baseline has been folded in — see recordTokenUsage. */
+  /** Set once this session's first subagent usage has folded the baseline. */
   costBaselineApplied: boolean;
   /**
-   * The cost quadruple as of the last `toSummaries()` call, i.e. what this
-   * aggregator has already offered to the session file. A later baseline fold
-   * subtracts it, because the file may be this aggregator's own checkpoint.
+   * How much of the session file this rollup already counts: the cost it last
+   * offered to the file in `toSummaries()`, raised by each fold to what the
+   * file held. A fold adds only what the file holds beyond this, so the
+   * aggregator's own checkpoint, or a file a writer seeded from it, is never
+   * added twice, and folding the same file again adds nothing.
    */
-  lastEmittedCost: EmittedCost | null;
+  accountedCost: CostTotals;
   tokensInput: number;
   tokensOutput: number;
   tokensCacheRead: number;
@@ -366,7 +368,12 @@ export class LocalSessionAggregator {
         subagentCostUsd: 0,
         subagentCostByDayUsd: new Map(),
         costBaselineApplied: false,
-        lastEmittedCost: null,
+        accountedCost: {
+          costUsd: 0,
+          subagentCostUsd: 0,
+          costByDayUsd: new Map(),
+          subagentCostByDayUsd: new Map(),
+        },
         tokensInput: 0,
         tokensOutput: 0,
         tokensCacheRead: 0,
@@ -492,14 +499,13 @@ export class LocalSessionAggregator {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
     const timestamp = usage.timestamp ?? Date.now();
     const rollup = this.ensure(sessionId, timestamp);
-    // Seed from disk on this session's first subagent-attributed usage, not at
-    // rollup creation: an unscoped process creates a rollup from a session's
-    // first drained hook event, which happens before that session's own
-    // engine has written anything to sessions/*.json — seeding at creation
-    // would read nothing and lose the engine's eventual total on restart
-    // under the max-based merge in mergeSummaries.
+    // Never at rollup creation: an unscoped process creates a rollup from a
+    // session's first drained hook event, before that session's own engine
+    // has written anything to sessions/*.json. Each toSummaries() checkpoint
+    // folds the file again, so an engine total written later still counts.
     if (usage.agentId !== undefined && !rollup.costBaselineApplied) {
-      this.applyPersistedBaseline(sessionId, rollup);
+      rollup.costBaselineApplied = true;
+      this.applyPersistedBaseline(rollup);
     }
     const dayKey = localDateKey(timestamp);
     const usd = usage.costUsd ?? 0;
@@ -555,35 +561,30 @@ export class LocalSessionAggregator {
   }
 
   /**
-   * Folds a session's on-disk cost quadruple into the rollup, additively,
-   * once. Additive (not assigned) because the rollup may already hold parent
-   * cost this process drained during the engine's pending-session window,
-   * which no other process saw — assigning would discard it. The whole
-   * quadruple (not just the subagent pair) is seeded so the persisted
-   * invariant `estimatedCostUsd >= subagentCostUsd` survives the fold; seeding
-   * only the subagent pair could leave a merged file whose subagent figure
-   * exceeds its all-in figure.
+   * Folds what a session's file holds beyond `accountedCost` into the rollup.
+   * Additive (not assigned) because the rollup may hold cost no other writer
+   * saw, such as parent cost drained during an engine's pending-session
+   * window, and SessionStore merges by max, so a rollup that ignored the file
+   * would lose to it. The whole quadruple (not just the subagent pair) is
+   * folded so the persisted invariant `estimatedCostUsd >= subagentCostUsd`
+   * survives the fold.
    */
-  private applyPersistedBaseline(sessionId: string, rollup: LocalSessionRollup): void {
-    rollup.costBaselineApplied = true;
-    const baseline = this.persistedCostBaseline?.(sessionId) ?? null;
+  private applyPersistedBaseline(rollup: LocalSessionRollup): void {
+    const baseline = this.persistedCostBaseline?.(rollup.sessionId) ?? null;
     if (baseline === null) return;
-    const emitted = rollup.lastEmittedCost;
-    rollup.costUsd += excessOver(baseline.estimatedCostUsd ?? 0, emitted?.costUsd);
-    rollup.subagentCostUsd += excessOver(baseline.subagentCostUsd, emitted?.subagentCostUsd);
-    for (const [day, usd] of Object.entries(baseline.costByDayUsd ?? {})) {
-      rollup.costByDayUsd.set(
-        day,
-        (rollup.costByDayUsd.get(day) ?? 0) + excessOver(usd, emitted?.costByDayUsd.get(day)),
-      );
-    }
-    for (const [day, usd] of Object.entries(baseline.subagentCostByDayUsd ?? {})) {
-      rollup.subagentCostByDayUsd.set(
-        day,
-        (rollup.subagentCostByDayUsd.get(day) ?? 0) +
-          excessOver(usd, emitted?.subagentCostByDayUsd.get(day)),
-      );
-    }
+    const accounted = rollup.accountedCost;
+    const costUsd = excessOver(baseline.estimatedCostUsd ?? 0, accounted.costUsd);
+    rollup.costUsd += costUsd;
+    accounted.costUsd += costUsd;
+    const subagentCostUsd = excessOver(baseline.subagentCostUsd, accounted.subagentCostUsd);
+    rollup.subagentCostUsd += subagentCostUsd;
+    accounted.subagentCostUsd += subagentCostUsd;
+    foldDays(rollup.costByDayUsd, accounted.costByDayUsd, baseline.costByDayUsd);
+    foldDays(
+      rollup.subagentCostByDayUsd,
+      accounted.subagentCostByDayUsd,
+      baseline.subagentCostByDayUsd,
+    );
   }
 
   /** Distinct working directories seen across all sessions. */
@@ -618,8 +619,9 @@ export class LocalSessionAggregator {
     const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
       if (!hasRecordedUsage({ ...rollup, estimatedCostUsd: rollup.costUsd })) continue;
+      this.applyPersistedBaseline(rollup);
       const models = [...rollup.models];
-      rollup.lastEmittedCost = {
+      rollup.accountedCost = {
         costUsd: rollup.costUsd,
         subagentCostUsd: rollup.subagentCostUsd,
         costByDayUsd: new Map(rollup.costByDayUsd),
@@ -701,13 +703,26 @@ export class LocalSessionAggregator {
 }
 
 /**
- * What `persisted` holds beyond `emitted`. A session file only ever grows
+ * What `persisted` holds beyond `accounted`. A session file only ever grows
  * relative to what this aggregator last wrote (the store merges by max), so
- * the difference is what another writer added; with nothing emitted yet the
+ * the difference is what another writer added; with nothing accounted yet the
  * whole persisted figure is foreign.
  */
-function excessOver(persisted: number, emitted: number | undefined): number {
-  return Math.max(0, persisted - (emitted ?? 0));
+function excessOver(persisted: number, accounted: number | undefined): number {
+  return Math.max(0, persisted - (accounted ?? 0));
+}
+
+/** `applyPersistedBaseline` for one per-day map. */
+function foldDays(
+  rollupDays: Map<string, number>,
+  accountedDays: Map<string, number>,
+  persistedDays: Record<string, number> | undefined,
+): void {
+  for (const [day, usd] of Object.entries(persistedDays ?? {})) {
+    const extra = excessOver(usd, accountedDays.get(day));
+    rollupDays.set(day, (rollupDays.get(day) ?? 0) + extra);
+    accountedDays.set(day, (accountedDays.get(day) ?? 0) + extra);
+  }
 }
 
 /**

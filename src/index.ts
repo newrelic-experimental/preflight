@@ -1384,10 +1384,10 @@ async function main(): Promise<void> {
     // sessions it observes are never written to disk at all. See
     // local-session-aggregator.ts for why that hits Copilot but not Claude Code.
     const localSessionAggregator = new LocalSessionAggregator({
-      // Restart survival: the first subagent turn this process sees for a
-      // session folds in whatever that session's file already says (a
-      // --stdio engine's final write, or this daemon's own last checkpoint)
-      // before adding the tail — see applyPersistedBaseline's doc comment.
+      // Restart survival: each checkpoint folds in whatever that session's
+      // file holds beyond what this rollup already counts (a --stdio
+      // engine's write, or a previous daemon's checkpoint), so the max-based
+      // merge cannot drop this process's tail. See applyPersistedBaseline.
       persistedCostBaseline: (id) => sessionStoreForAggregator.loadSession(id),
     });
     const repoNameResolver = new RepoNameResolver();
