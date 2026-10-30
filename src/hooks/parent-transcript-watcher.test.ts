@@ -9,7 +9,6 @@ import {
   existsSync,
   appendFileSync,
   utimesSync,
-  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -290,7 +289,7 @@ describe('ParentTranscriptWatcher', () => {
     expect(readTokenEvents()).toEqual([]);
   });
 
-  it('emits both days of a read whose ledger write failed on the second day', () => {
+  it('emits every turn of a read whose ledger write failed, once the ledger recovers', () => {
     writeFileSync(
       transcriptPath,
       makeAssistantLine({ messageId: 'msg_day1', timestamp: '2026-06-15T23:59:00.000Z' }) +
@@ -299,9 +298,7 @@ describe('ParentTranscriptWatcher', () => {
         '\n',
     );
     const ledgerDir = join(storagePath, 'billed-turns');
-    mkdirSync(ledgerDir);
-    const unwritableDay = join(ledgerDir, '2026-06-16.jsonl');
-    symlinkSync(join(storagePath, 'missing-dir', 'day.jsonl'), unwritableDay);
+    writeFileSync(ledgerDir, '');
     const watcher = new ParentTranscriptWatcher({
       storagePath,
       projectsDir,
@@ -310,7 +307,7 @@ describe('ParentTranscriptWatcher', () => {
     watcher.poll();
     expect(readTokenEvents()).toHaveLength(0);
 
-    rmSync(unwritableDay);
+    rmSync(ledgerDir);
     watcher.poll();
     watcher.poll();
     expect(readTokenEvents().map((e) => e.messageId)).toEqual(['msg_day1', 'msg_day2']);
