@@ -323,15 +323,17 @@ function readSessionId(path: string): string | null {
 }
 
 /**
- * Each breadcrumb source tries the writers' own directories first, then the
- * untagged layout at the storage root. An untagged breadcrumb names no
- * engine, so it counts only when its session was active since this process
- * started: an older collector still running rewrites its ppid breadcrumb and
- * appends to the session's buffer on every event, though it leaves an
- * unchanged cwd breadcrumb alone, while a session left from before an
- * upgrade never counts again. Current collectors also write the
- * untagged layout for older servers, so an untagged breadcrumb whose session
- * a writer's directory holds for the same key is that copy, and is skipped.
+ * Each breadcrumb source reads the writers' own directories and the untagged
+ * layout at the storage root, and returns the hit whose session was active
+ * most recently: the later of its breadcrumb's mtime and its session
+ * buffer's. Collectors before #979 append every event to the buffer but leave
+ * an unchanged cwd breadcrumb's mtime alone.
+ *
+ * An untagged breadcrumb names no engine, so it counts only when its session
+ * was active since this process started. A session that ended before an
+ * upgrade never counts again. Current collectors also write the untagged
+ * layout for older servers, so an untagged breadcrumb whose session a
+ * writer's directory holds for the same key is that copy, and is skipped.
  */
 export function sessionBreadcrumbs(
   storagePath: string,
@@ -342,9 +344,9 @@ export function sessionBreadcrumbs(
     writers.length === 0
       ? []
       : [...writers.map((w) => breadcrumbRoot(storagePath, w)), storagePath];
-  const lastActiveMs = (crumb: string, sessionId: string) =>
+  const lastActiveMs = (root: string, crumb: string, sessionId: string) =>
     Math.max(
-      mtimeMs(resolve(storagePath, crumb)),
+      mtimeMs(resolve(root, crumb)),
       mtimeMs(resolve(storagePath, `buffer-${sessionId}.jsonl`)),
     );
   const hasTaggedCopy = (crumb: string, sessionId: string) => {
@@ -360,43 +362,47 @@ export function sessionBreadcrumbs(
         readSessionId(resolve(breadcrumbRoot(storagePath, e.name), crumb)) === sessionId,
     );
   };
-  const first = <T>(
+  const newest = <T>(
     read: (root: string) => T | null,
     crumbOf: (hit: T) => string,
     sessionIdOf: (hit: T) => string,
   ) => {
+    let best: T | null = null;
+    let bestMs = -Infinity;
     for (const root of roots) {
       const hit = read(root);
       if (!hit) continue;
-      if (root === storagePath) {
-        const crumb = crumbOf(hit);
-        const sessionId = sessionIdOf(hit);
-        if (lastActiveMs(crumb, sessionId) < processStartMs || hasTaggedCopy(crumb, sessionId)) {
-          continue;
-        }
+      const crumb = crumbOf(hit);
+      const sessionId = sessionIdOf(hit);
+      const activeMs = lastActiveMs(root, crumb, sessionId);
+      if (root === storagePath && (activeMs < processStartMs || hasTaggedCopy(crumb, sessionId))) {
+        continue;
       }
-      return hit;
+      if (activeMs > bestMs) {
+        best = hit;
+        bestMs = activeMs;
+      }
     }
-    return null;
+    return best;
   };
   const self = (sessionId: string) => sessionId;
   return {
     jobDir: (claudeJobDir) =>
       writers.includes(CLAUDE_CODE_PLATFORM_NAME) ? resolveFromJobDir(claudeJobDir) : null,
     ppid: (ppid) =>
-      first(
+      newest(
         (dir) => resolveFromBreadcrumb(dir, ppid, processStartMs),
         () => `session-by-ppid/${ppid}.txt`,
         self,
       ),
     ancestors: (ancestorPids) =>
-      first(
+      newest(
         (dir) => resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs),
         (hit) => `session-by-ppid/${hit.pid}.txt`,
         (hit) => hit.sessionId,
       ),
     cwd: (cwd) =>
-      first(
+      newest(
         (dir) => resolveFromCwd(dir, cwd),
         () => `session-by-cwd/${sanitizeCwdForFilename(cwd!)}.txt`,
         self,
