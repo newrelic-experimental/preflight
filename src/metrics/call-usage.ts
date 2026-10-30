@@ -53,6 +53,17 @@ export function mergeCallUsageMax<T extends CallUsage>(
   return out;
 }
 
+/** Sums two records holding disjoint calls; extra fields come from `b`. */
+export function mergeCallUsageSum<T extends CallUsage>(
+  a: Record<string, T> | undefined,
+  b: Record<string, T> | undefined,
+): Record<string, T> | undefined {
+  if (a === undefined && b === undefined) return undefined;
+  const out: Record<string, T> = { ...a };
+  sumCallUsageInto(out, b);
+  return out;
+}
+
 function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
