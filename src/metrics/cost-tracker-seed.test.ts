@@ -135,6 +135,70 @@ describe('buildCostTrackerSeed', () => {
   });
 });
 
+describe('buildCostTrackerSeed hadExactReport', () => {
+  const LEDGER = {
+    costUsd: 1.5,
+    inputTokens: 400_000,
+    outputTokens: 100_000,
+    costByModel: { 'claude-sonnet-5': 1.5 },
+    costByDayUsd: { [localDateKey()]: 1.5 },
+  };
+  const EMPTY_EXACT = { costUsd: 0, inputTokens: 0, outputTokens: 0, costByDayUsd: {} };
+  const estimateOnly = (overrides?: Partial<FullSessionSummary>): FullSessionSummary =>
+    makeSummary({
+      estimatedCostUsd: LEDGER.costUsd,
+      tokensInput: LEDGER.inputTokens,
+      tokensOutput: LEDGER.outputTokens,
+      tokensThinking: 0,
+      tokensCacheRead: 0,
+      tokensCacheCreation: 0,
+      byteEstimates: LEDGER,
+      exactTotals: EMPTY_EXACT,
+      ...overrides,
+    });
+
+  it('marks a session whose saved exact share is empty as estimate-only', () => {
+    expect(buildCostTrackerSeed(estimateOnly()).hadExactReport).toBe(false);
+  });
+
+  it('derives the exact share from the ledger when exactTotals was not saved', () => {
+    expect(buildCostTrackerSeed(estimateOnly({ exactTotals: undefined })).hadExactReport).toBe(
+      false,
+    );
+    expect(
+      buildCostTrackerSeed(
+        estimateOnly({
+          exactTotals: undefined,
+          estimatedCostUsd: LEDGER.costUsd + 2,
+          tokensInput: LEDGER.inputTokens + 10,
+        }),
+      ).hadExactReport,
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ['exact cost', { exactTotals: { ...EMPTY_EXACT, costUsd: 0.5 } }],
+    ['exact input tokens', { exactTotals: { ...EMPTY_EXACT, inputTokens: 10 } }],
+    ['exact output tokens', { exactTotals: { ...EMPTY_EXACT, outputTokens: 10 } }],
+    ['thinking tokens', { tokensThinking: 5 }],
+    ['cache-read tokens', { tokensCacheRead: 5 }],
+    ['cache-creation tokens', { tokensCacheCreation: 5 }],
+  ] as const)('treats %s as an exact report', (_label, overrides) => {
+    expect(buildCostTrackerSeed(estimateOnly(overrides)).hadExactReport).toBeUndefined();
+  });
+
+  it('ignores floating-point dust in the exact cost', () => {
+    const seed = buildCostTrackerSeed(
+      estimateOnly({ exactTotals: { ...EMPTY_EXACT, costUsd: 1e-12 } }),
+    );
+    expect(seed.hadExactReport).toBe(false);
+  });
+
+  it('treats a summary with no byte-estimate ledger as reported', () => {
+    expect(buildCostTrackerSeed(makeSummary()).hadExactReport).toBeUndefined();
+  });
+});
+
 describe('byte-estimate sessions across a real restart', () => {
   const MODEL = 'claude-sonnet-4-6';
   const SESSION_ID = 'sess-restart';
