@@ -4396,7 +4396,7 @@ describe('combining a session split across files', () => {
     expect(store.loadAllSessions({ since: new Date(day2) })).toEqual([]);
   });
 
-  it('saves into one file, removes the other split files, and keeps quarantined ones', () => {
+  it('saves into one file, sets the other split files aside, and keeps quarantined ones', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     writeFileSync(join(sessionsDir(), `2026-02-28_${id}.json`), '{ "sessionId": ');
     writeSessionFile(first());
@@ -4411,6 +4411,9 @@ describe('combining a session split across files', () => {
     });
 
     expect(jsonFiles()).toEqual([`2026-03-01_${id}.json`]);
+    const merged = readdirSync(sessionsDir()).filter((f) => f.endsWith('.merged'));
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatch(new RegExp(`^2026-03-02_${id}\\.json\\.\\d+\\.merged$`));
     const corrupt = readdirSync(sessionsDir()).filter((f) => f.endsWith('.corrupt'));
     expect(corrupt).toHaveLength(1);
     expect(readFileSync(join(sessionsDir(), corrupt[0]), 'utf-8')).toBe('{ "sessionId": ');

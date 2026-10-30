@@ -1069,14 +1069,16 @@ export class SessionStore {
       }
       // Every other file the record was combined from is now superseded. A
       // file rewritten since it was read holds data this write lacks, so it
-      // stays for the next save to fold in.
+      // stays for the next save to fold in. Superseded files are renamed, not
+      // deleted: the add-vs-max choice is a heuristic, and a `*.merged` copy
+      // (which loaders ignore) keeps a wrong combine recoverable by hand.
       for (const file of existingWithPath?.files ?? []) {
         if (file.path === filepath) continue;
         try {
           if (fileVersion(file.path) !== file.version) continue;
-          unlinkSync(file.path);
+          renameSync(file.path, `${file.path}.${Date.now()}.merged`);
         } catch (err) {
-          logger.warn('Failed to remove superseded session file after merge', {
+          logger.warn('Failed to set aside superseded session file after merge', {
             sessionId: toWrite.sessionId,
             stalePath: file.path,
             error: err instanceof Error ? err.message : String(err),
