@@ -135,6 +135,20 @@ export interface ByteEstimateLedger {
   readonly costByDayUsd: Readonly<Record<string, number>>;
 }
 
+/** Token usage for a tool call's payload sizes, at tokens ≈ characters / 4. */
+export function estimatedUsageFromBytes(inputChars: number, outputChars: number): TokenUsage {
+  const inputTokens = Math.round(inputChars / 4);
+  const outputTokens = Math.round(outputChars / 4);
+  return {
+    inputTokens,
+    outputTokens,
+    thinkingTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    totalTokens: inputTokens + outputTokens,
+  };
+}
+
 export interface CostMetrics {
   readonly sessionTotalCostUsd: number | null;
   readonly costByModel: Record<string, number>;
@@ -389,16 +403,8 @@ export class CostTracker implements Resettable {
    * Uses the heuristic: tokens ≈ characters / 4.
    */
   recordEstimatedTokens(inputChars: number, outputChars: number, model: string): CostBreakdown {
-    const inputTokens = Math.round(inputChars / 4);
-    const outputTokens = Math.round(outputChars / 4);
-    const usage: TokenUsage = {
-      inputTokens,
-      outputTokens,
-      thinkingTokens: 0,
-      cacheReadTokens: 0,
-      cacheCreationTokens: 0,
-      totalTokens: inputTokens + outputTokens,
-    };
+    const usage = estimatedUsageFromBytes(inputChars, outputChars);
+    const { inputTokens, outputTokens } = usage;
 
     this.estimationCount++;
     const nowMs = Date.now();
