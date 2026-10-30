@@ -2738,7 +2738,9 @@ describe('bucketByHour()', () => {
   it('drops a point at or after local midnight + 24h', () => {
     const dayStart = localStartOfDay();
     const nowMs = dayStart + 12 * 60 * 60 * 1000;
-    const buckets = bucketByHour([{ ts: dayStart + 86_400_000, value: 9 }], nowMs);
+    const nextMidnight = new Date(dayStart);
+    nextMidnight.setDate(nextMidnight.getDate() + 1);
+    const buckets = bucketByHour([{ ts: nextMidnight.getTime(), value: 9 }], nowMs);
     expect(buckets.every((v) => v === 0)).toBe(true);
   });
 
@@ -2746,6 +2748,78 @@ describe('bucketByHour()', () => {
     const buckets = bucketByHour([], Date.now());
     expect(buckets.length).toBe(24);
     expect(buckets.every((v) => v === 0)).toBe(true);
+  });
+
+  describe('on DST days (America/New_York)', () => {
+    const originalTZ = process.env.TZ;
+
+    beforeEach(() => {
+      process.env.TZ = 'America/New_York';
+    });
+
+    afterEach(() => {
+      if (originalTZ === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTZ;
+    });
+
+    it('puts 15:30 local on the spring-forward day in slot 15', () => {
+      const nowMs = new Date(2026, 2, 8, 12, 0).getTime();
+      const buckets = bucketByHour(
+        [
+          { ts: new Date(2026, 2, 8, 1, 30).getTime(), value: 1 },
+          { ts: new Date(2026, 2, 8, 15, 30).getTime(), value: 4 },
+        ],
+        nowMs,
+      );
+      expect(buckets[1]).toBe(1);
+      expect(buckets[14]).toBe(0);
+      expect(buckets[15]).toBe(4);
+    });
+
+    it('drops the next day 00:30 on the spring-forward day', () => {
+      const nowMs = new Date(2026, 2, 8, 12, 0).getTime();
+      const buckets = bucketByHour(
+        [{ ts: new Date(2026, 2, 9, 0, 30).getTime(), value: 9 }],
+        nowMs,
+      );
+      expect(buckets.every((v) => v === 0)).toBe(true);
+    });
+
+    it('keeps 23:30 local on the fall-back day in slot 23, apart from 22:30', () => {
+      const nowMs = new Date(2026, 10, 1, 12, 0).getTime();
+      const buckets = bucketByHour(
+        [
+          { ts: new Date(2026, 10, 1, 22, 30).getTime(), value: 2 },
+          { ts: new Date(2026, 10, 1, 23, 30).getTime(), value: 5 },
+        ],
+        nowMs,
+      );
+      expect(buckets[22]).toBe(2);
+      expect(buckets[23]).toBe(5);
+    });
+
+    it('drops the next day 00:30 on the fall-back day', () => {
+      const nowMs = new Date(2026, 10, 1, 12, 0).getTime();
+      const buckets = bucketByHour(
+        [{ ts: new Date(2026, 10, 2, 0, 30).getTime(), value: 9 }],
+        nowMs,
+      );
+      expect(buckets.every((v) => v === 0)).toBe(true);
+    });
+
+    it('shares one slot between the two 01:00 hours on the fall-back day', () => {
+      const nowMs = new Date(2026, 10, 1, 12, 0).getTime();
+      const firstOne = Date.UTC(2026, 10, 1, 5, 30);
+      const secondOne = Date.UTC(2026, 10, 1, 6, 30);
+      expect(new Date(firstOne).getHours()).toBe(1);
+      expect(new Date(secondOne).getHours()).toBe(1);
+      const points = [
+        { ts: firstOne, value: 2 },
+        { ts: secondOne, value: 3 },
+      ];
+      expect(bucketByHour(points, nowMs)[1]).toBe(5);
+      expect(bucketByHour(points, nowMs, 'max')[1]).toBe(3);
+    });
   });
 });
 
