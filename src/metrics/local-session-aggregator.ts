@@ -617,7 +617,17 @@ export class LocalSessionAggregator {
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
-      if (!hasRecordedUsage({ ...rollup, estimatedCostUsd: rollup.costUsd })) continue;
+      if (
+        !hasRecordedUsage({
+          toolCallCount: rollup.toolCallCount,
+          subagentCostUsd: rollup.subagentCostUsd,
+          timeline: rollup.timeline,
+          estimatedCostUsd: rollup.costUsd,
+          tokensInput: rollup.tokensInput,
+          tokensOutput: rollup.tokensOutput,
+        })
+      )
+        continue;
       const models = [...rollup.models];
       rollup.lastEmittedCost = {
         costUsd: rollup.costUsd,
