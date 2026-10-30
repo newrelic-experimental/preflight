@@ -123,6 +123,11 @@ export interface LocalSessionRollup {
    * added twice, and folding the same file again adds nothing.
    */
   accountedCost: CostTotals;
+  /**
+   * The outcome of the last confirmed save, or null once a record has changed
+   * the rollup since. `persist()` skips a rollup whose save would repeat it.
+   */
+  savedOutcome: string | null;
   tokensInput: number;
   tokensOutput: number;
   tokensCacheRead: number;
@@ -360,6 +365,7 @@ export class LocalSessionAggregator {
           costByDayUsd: new Map(),
           subagentCostByDayUsd: new Map(),
         },
+        savedOutcome: null,
         tokensInput: 0,
         tokensOutput: 0,
         tokensCacheRead: 0,
@@ -371,6 +377,7 @@ export class LocalSessionAggregator {
       };
       this.sessions.set(sessionId, rollup);
     }
+    rollup.savedOutcome = null;
     if (timestamp < rollup.startTime) rollup.startTime = timestamp;
     if (timestamp > rollup.endTime) rollup.endTime = timestamp;
     return rollup;
@@ -571,14 +578,17 @@ export class LocalSessionAggregator {
   /**
    * Saves each session `toSummaries()` would return, after folding in what its
    * file holds beyond `accountedCost`. Returns how many files were written.
+   * An unchanged rollup is skipped: what another writer adds meanwhile is
+   * already in the file, and the next save after a change folds it.
    */
   persist(store: SessionFileStore, context: SummaryContext): number {
     let written = 0;
     for (const rollup of this.sessions.values()) {
-      if (!hasUsage(rollup)) continue;
+      if (rollup.savedOutcome === context.outcome || !hasUsage(rollup)) continue;
       foldSessionFile(rollup, store.loadSession(rollup.sessionId));
       if (!store.saveSession(summaryOf(rollup, context) as unknown as FullSessionSummary)) continue;
       rollup.accountedCost = costTotalsOf(rollup);
+      rollup.savedOutcome = context.outcome;
       written += 1;
     }
     return written;
