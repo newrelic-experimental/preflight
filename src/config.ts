@@ -14,7 +14,12 @@ import { resolveRecordContent } from './record-content-gate.js';
 import { projectIdFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
 import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
 import type { ResolvedTier } from './transport/tier-types.js';
-import { SecretCommandError, isSecretConfigured, resolveSecret } from './secret-command.js';
+import {
+  SecretCommandError,
+  isSecretConfigured,
+  resolveSecret,
+  resolveSecretCommand,
+} from './secret-command.js';
 import type { ResolvedSecret, SecretSources } from './secret-command.js';
 
 const logger = createLogger('mcp-config');
@@ -38,6 +43,63 @@ function otlpEndpointIsNewRelic(endpoint: string | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+const SDK_DEFAULT_OTLP_HTTP_ENDPOINT = 'http://localhost:4318';
+const SDK_DEFAULT_OTLP_GRPC_ENDPOINT = 'http://localhost:4317';
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+const WILDCARD_HOSTS = new Set(['0.0.0.0', '::']);
+
+function bareHost(host: string): string {
+  return host.replace(/^\[|\]$/g, '');
+}
+
+function reachesReceiverHost(clientHost: string, bindAddress: string): boolean {
+  const client = bareHost(clientHost);
+  const bind = bareHost(bindAddress);
+  if (client === bind) return true;
+  return LOOPBACK_HOSTS.has(client) && (LOOPBACK_HOSTS.has(bind) || WILDCARD_HOSTS.has(bind));
+}
+
+/**
+ * Detects the setup where companion mode is off yet Claude Code's cost metrics
+ * reach New Relic through Preflight's receiver, so New Relic counts cost twice.
+ * Deliberately imprecise, and used only for a `preflight doctor` warning:
+ * auto-enabling companion mode on this signal would drop cost from New Relic
+ * whenever the proxy is not actually forwarding.
+ */
+export function findReceiverDoubleCount(
+  env: NodeJS.ProcessEnv,
+  config: Pick<McpServerConfig, 'otlp' | 'companionMode'>,
+): { readonly grpc: boolean } | null {
+  const { receiverEnabled, receiverPort, receiverBindAddress, forwardEndpoint } = config.otlp;
+  if (
+    config.companionMode ||
+    !receiverEnabled ||
+    !otlpEndpointIsNewRelic(forwardEndpoint ?? undefined)
+  ) {
+    return null;
+  }
+  const exporters = (env.OTEL_METRICS_EXPORTER ?? '').split(',').map((e) => e.trim());
+  if (parseEnvBool(env.CLAUDE_CODE_ENABLE_TELEMETRY) !== true || !exporters.includes('otlp')) {
+    return null;
+  }
+  const protocol = env.OTEL_EXPORTER_OTLP_METRICS_PROTOCOL || env.OTEL_EXPORTER_OTLP_PROTOCOL;
+  const grpc = protocol === 'grpc';
+  const endpoint =
+    env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT ||
+    env.OTEL_EXPORTER_OTLP_ENDPOINT ||
+    (grpc ? SDK_DEFAULT_OTLP_GRPC_ENDPOINT : SDK_DEFAULT_OTLP_HTTP_ENDPOINT);
+  try {
+    const url = new URL(endpoint.includes('://') ? endpoint : `http://${endpoint}`);
+    const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+    if (port !== receiverPort || !reachesReceiverHost(url.hostname, receiverBindAddress)) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return { grpc };
 }
 
 /**
@@ -736,6 +798,12 @@ export interface LoadMcpConfigOptions {
    * undefined/null and `tiers` stays empty unless explicit.
    */
   readonly resolveSecrets?: boolean;
+  /**
+   * Skip the `tiers` array entirely. The `--local` fallback sets this after a
+   * cloud credential failure: it reloads with `NR_AI_MODE=local`, and a
+   * `tiers` array under local mode is otherwise a config error.
+   */
+  readonly ignoreTiers?: boolean;
 }
 
 export function loadMcpConfig(
@@ -916,9 +984,8 @@ export function loadMcpConfig(
   // --- tiers: config file only (no env var / CLI flag equivalent exists) ---
   // Fail closed on tiers-under-local BEFORE validating tier shape, so the
   // mode conflict is always the reported error even for a malformed array.
-  const rawTiers: readonly unknown[] | undefined = Array.isArray(file.tiers)
-    ? file.tiers
-    : undefined;
+  const rawTiers: readonly unknown[] | undefined =
+    Array.isArray(file.tiers) && !loadOptions.ignoreTiers ? file.tiers : undefined;
   let resolvedTiers: readonly ResolvedTier[];
   if (rawTiers !== undefined) {
     if (mode === 'local') {
@@ -928,7 +995,24 @@ export function loadMcpConfig(
           "mode='cloud' or mode='both'. Remove the tiers array for local-only use, or set the mode.",
       );
     }
-    resolvedTiers = validateTiers(rawTiers);
+    try {
+      resolvedTiers = validateTiers(rawTiers, {
+        resolveLicenseKey: skipCommand
+          ? undefined
+          : (tier, argv) => resolveSecretCommand('licenseKey', argv, undefined, tier),
+      });
+    } catch (err) {
+      if (err instanceof SecretCommandError) throw new CloudSecretCommandError(err, mode);
+      throw err;
+    }
+    // A tier whose key was never read has no usable destination, so none are
+    // reported; the caller asked not to run helpers.
+    if (
+      skipCommand &&
+      resolvedTiers.some((t) => t.destination.type === 'nr' && t.destination.licenseKey === '')
+    ) {
+      resolvedTiers = [];
+    }
   } else if (mode !== 'local' && licenseKey !== undefined && accountId !== undefined) {
     // Implicit single tier — byte-identical to the existing single-tier default.
     resolvedTiers = [

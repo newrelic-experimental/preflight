@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 
 type EmptyIcon = 'radar' | 'code' | 'timeline' | 'checkmark' | 'clock';
 
-type EmptyStateVariant = 'empty' | 'loading' | 'inline';
+type EmptyStateVariant = 'empty' | 'loading' | 'inline' | 'inline-loading';
 
 interface EmptyStateProps {
   readonly icon?: EmptyIcon;
@@ -204,6 +204,17 @@ export function EmptyState({
   subtitle,
   variant = 'empty',
 }: EmptyStateProps): JSX.Element {
+  if (variant === 'inline-loading') {
+    return (
+      <div className="flex items-center gap-2 text-[11px] text-ink-muted">
+        <span
+          aria-hidden="true"
+          className="inline-block h-2 w-2 shrink-0 rounded-full animate-pulse bg-accent-green"
+        />
+        {title}
+      </div>
+    );
+  }
   if (variant === 'inline') {
     return (
       <div className="text-[11px] text-ink-muted">

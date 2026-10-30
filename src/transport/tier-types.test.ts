@@ -329,7 +329,9 @@ describe('validateTiers()', () => {
 
   it('honors an explicit knownEventTypes override', () => {
     expect(() =>
-      validateTiers([makeNrTier({ eventTypes: ['AiToolCall'] })], ['AiCodingTask']),
+      validateTiers([makeNrTier({ eventTypes: ['AiToolCall'] })], {
+        knownEventTypes: ['AiCodingTask'],
+      }),
     ).toThrow(/lists unknown event type "AiToolCall"/);
   });
 });

@@ -12,8 +12,9 @@ import {
   normalizeDeveloperName,
   validateConfigFile,
   resolveCompanionMode,
+  findReceiverDoubleCount,
 } from './config.js';
-import type { CompanionModeSource } from './config.js';
+import type { CompanionModeSource, McpServerConfig } from './config.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let savedEnv: NodeJS.ProcessEnv;
@@ -723,6 +724,139 @@ describe('companionMode', () => {
     const configPath = writeConfigFile({ companionMode: true });
     const config = loadMcpConfig({ config: configPath });
     expect(config.companionMode).toBe(false);
+  });
+});
+
+describe('findReceiverDoubleCount()', () => {
+  const makeReceiverConfig = (
+    otlp: Partial<McpServerConfig['otlp']> = {},
+    companionMode = false,
+  ): Pick<McpServerConfig, 'otlp' | 'companionMode'> => ({
+    companionMode,
+    otlp: {
+      receiverEnabled: true,
+      receiverPort: 4318,
+      receiverBindAddress: '127.0.0.1',
+      forwardEndpoint: 'https://otlp.nr-data.net',
+      ...otlp,
+    } as McpServerConfig['otlp'],
+  });
+  const makeClaudeEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
+    CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+    OTEL_METRICS_EXPORTER: 'otlp',
+    OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318',
+    ...extra,
+  });
+
+  it('warns for receiver + New Relic forward + Claude export to the receiver', () => {
+    expect(findReceiverDoubleCount(makeClaudeEnv(), makeReceiverConfig())).toEqual({ grpc: false });
+  });
+
+  it('treats a missing endpoint with the otlp exporter as the SDK default', () => {
+    const env = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: undefined });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toEqual({ grpc: false });
+  });
+
+  it('flags the grpc protocol', () => {
+    const env = makeClaudeEnv({ OTEL_EXPORTER_OTLP_PROTOCOL: 'grpc' });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toEqual({ grpc: true });
+  });
+
+  it('uses the gRPC default port when no endpoint is set', () => {
+    const env = makeClaudeEnv({
+      OTEL_EXPORTER_OTLP_ENDPOINT: undefined,
+      OTEL_EXPORTER_OTLP_PROTOCOL: 'grpc',
+    });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toBeNull();
+    expect(findReceiverDoubleCount(env, makeReceiverConfig({ receiverPort: 4317 }))).toEqual({
+      grpc: true,
+    });
+  });
+
+  it('prefers the metrics-specific endpoint and protocol over the general ones', () => {
+    const env = makeClaudeEnv({
+      OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4400',
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'http://localhost:4318/v1/metrics',
+      OTEL_EXPORTER_OTLP_PROTOCOL: 'grpc',
+      OTEL_EXPORTER_OTLP_METRICS_PROTOCOL: 'http/protobuf',
+    });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toEqual({ grpc: false });
+  });
+
+  it('accepts an endpoint without a scheme and a multi-exporter list', () => {
+    const env = makeClaudeEnv({
+      OTEL_EXPORTER_OTLP_ENDPOINT: '127.0.0.1:4318',
+      OTEL_METRICS_EXPORTER: 'console, otlp',
+    });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toEqual({ grpc: false });
+  });
+
+  it('matches bracketed IPv6 loopback and the default https port', () => {
+    const v6 = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://[::1]:4318' });
+    expect(findReceiverDoubleCount(v6, makeReceiverConfig({ receiverBindAddress: '::1' }))).toEqual(
+      { grpc: false },
+    );
+    const https = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'https://localhost' });
+    expect(findReceiverDoubleCount(https, makeReceiverConfig({ receiverPort: 443 }))).toEqual({
+      grpc: false,
+    });
+  });
+
+  it('matches a loopback client against a wildcard bind and the bind address itself', () => {
+    expect(
+      findReceiverDoubleCount(
+        makeClaudeEnv(),
+        makeReceiverConfig({ receiverBindAddress: '0.0.0.0' }),
+      ),
+    ).toEqual({ grpc: false });
+    const lan = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://10.0.0.5:4318' });
+    expect(
+      findReceiverDoubleCount(lan, makeReceiverConfig({ receiverBindAddress: '10.0.0.5' })),
+    ).toEqual({ grpc: false });
+  });
+
+  it('does not warn for a loopback client when the receiver binds a non-loopback address', () => {
+    const cfg = makeReceiverConfig({ receiverBindAddress: '10.0.0.5' });
+    expect(findReceiverDoubleCount(makeClaudeEnv(), cfg)).toBeNull();
+  });
+
+  it('does not warn for a remote host on the receiver port', () => {
+    const env = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector.example.com:4318' });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toBeNull();
+  });
+
+  it('does not warn when the metrics exporter is not otlp', () => {
+    const env = makeClaudeEnv({ OTEL_METRICS_EXPORTER: 'prometheus' });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toBeNull();
+  });
+
+  it('does not warn when the endpoint is not a parseable URL', () => {
+    const env = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://' });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toBeNull();
+  });
+
+  it('does not warn for a non-New Relic forward', () => {
+    const cfg = makeReceiverConfig({ forwardEndpoint: 'https://api.honeycomb.io' });
+    expect(findReceiverDoubleCount(makeClaudeEnv(), cfg)).toBeNull();
+  });
+
+  it('does not warn when the receiver is disabled', () => {
+    const cfg = makeReceiverConfig({ receiverEnabled: false });
+    expect(findReceiverDoubleCount(makeClaudeEnv(), cfg)).toBeNull();
+  });
+
+  it('does not warn when companion mode is already on', () => {
+    expect(findReceiverDoubleCount(makeClaudeEnv(), makeReceiverConfig({}, true))).toBeNull();
+  });
+
+  it('does not warn when Claude Code exports to a different port', () => {
+    const env = makeClaudeEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4400' });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toBeNull();
+  });
+
+  it('does not warn when Claude Code telemetry is off', () => {
+    const env = makeClaudeEnv({ CLAUDE_CODE_ENABLE_TELEMETRY: undefined });
+    expect(findReceiverDoubleCount(env, makeReceiverConfig())).toBeNull();
   });
 });
 

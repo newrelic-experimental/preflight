@@ -51,6 +51,7 @@ jest.mock('../config.js', () => ({
   })),
   loadMcpConfig: jest.fn(() => ({ mode: 'local', companionMode: false })),
   resolveCompanionMode: jest.fn(() => ({ value: false, source: 'default' })),
+  findReceiverDoubleCount: jest.fn(() => null),
   DEFAULT_STORAGE_PATH: '/test-home/.newrelic-preflight',
 }));
 
@@ -107,6 +108,7 @@ const mockedGetScheduleStatus = schedule.getScheduleStatus as jest.Mock;
 const mockedDetectUpdateSupport = updateSupport.detectUpdateSupport as jest.Mock;
 const mockedValidateConfig = config.validateConfigFile as jest.Mock;
 const mockedLoadMcpConfig = config.loadMcpConfig as jest.Mock;
+const mockedFindReceiverDoubleCount = config.findReceiverDoubleCount as jest.Mock;
 const mockedDetectSettingsPath = installHelper.detectSettingsPath as jest.Mock;
 const mockedIsWsl = platform.isWsl as jest.Mock;
 
@@ -336,6 +338,37 @@ describe('runDiagnostics', () => {
       const checks = await runDiagnostics(makeOpts());
       const c = checks.find((x) => x.check === 'Companion mode')!;
       expect(c.detail).toBe('Running MCP server resolved false (source: default, PID 12345).');
+    });
+
+    it('warns when the receiver forwards Claude Code metrics to New Relic with companion mode off', async () => {
+      mockedFindReceiverDoubleCount.mockReturnValueOnce({ grpc: false });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Companion mode')!;
+      expect(c.status).toBe('warn');
+      expect(c.detail).toContain('companionMode: true');
+      expect(c.detail).not.toContain('gRPC');
+    });
+
+    it('evaluates the receiver check against the loaded config and keeps the base detail', async () => {
+      const loadedConfig = { mode: 'local', companionMode: false, secretSources: {} };
+      mockedLoadMcpConfig.mockReturnValueOnce(loadedConfig);
+      mockedFindReceiverDoubleCount.mockReturnValueOnce({ grpc: false });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Companion mode')!;
+      expect(mockedFindReceiverDoubleCount).toHaveBeenCalledWith(process.env, loadedConfig);
+      expect(c.detail).toMatch(/^Running MCP server resolved false/);
+    });
+
+    it('stays ok when the receiver check finds nothing', async () => {
+      const checks = await runDiagnostics(makeOpts());
+      expect(checks.find((x) => x.check === 'Companion mode')!.status).toBe('ok');
+    });
+
+    it('adds the gRPC note when Claude Code exports over gRPC', async () => {
+      mockedFindReceiverDoubleCount.mockReturnValueOnce({ grpc: true });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Companion mode')!;
+      expect(c.detail).toContain('gRPC');
     });
 
     it('ignores dead instances and pre-upgrade sidecars without a companion mode', async () => {

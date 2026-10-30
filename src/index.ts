@@ -10,7 +10,7 @@ import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
 import { LocalAlertEngine } from './alerts/local-alert-engine.js';
 import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
 import { OsNotifier } from './alerts/os-notifier.js';
-import type { McpServerConfig } from './config.js';
+import type { LoadMcpConfigOptions, McpServerConfig } from './config.js';
 import {
   DEFAULT_STORAGE_PATH,
   digestWebhookUrlOverride,
@@ -193,9 +193,12 @@ export function maskCredential(key: string): string {
  * Helps users troubleshoot configuration issues without requiring
  * manual diagnosis steps.
  */
-function loadConfigOrDie(options: Partial<CliOptions>): Readonly<McpServerConfig> {
+function loadConfigOrDie(
+  options: Partial<CliOptions>,
+  loadOptions?: LoadMcpConfigOptions,
+): Readonly<McpServerConfig> {
   try {
-    return loadMcpConfig(options);
+    return loadMcpConfig(options, loadOptions);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`${msg}\n\nRun 'preflight doctor' to diagnose.`, { cause: err });
@@ -1125,7 +1128,7 @@ async function main(): Promise<void> {
         const gap = detectCloudForwardingGap(err);
         if (!gap) throw err;
         process.env.NR_AI_MODE = 'local';
-        config = loadConfigOrDie(options);
+        config = loadConfigOrDie(options, { ignoreTiers: true });
         unforwardedSessionMonitor = new UnforwardedSessionMonitor({ gap });
         const problem =
           gap.reason === 'secret-helper-failed'
