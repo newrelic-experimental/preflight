@@ -19,6 +19,7 @@ import {
   writePpidBreadcrumb,
 } from './collector-script.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
+import { createDefaultRegistry } from '../platforms/platform-registry.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -2277,6 +2278,16 @@ describe('collector-script', () => {
       expect(readFileSync(legacyCwd, 'utf-8')).toBe('sess-claude');
     });
 
+    it.each(
+      createDefaultRegistry()
+        .getRegistered()
+        .map((a) => a.platformName),
+    )('files a hook naming %s in any case or separator under that platform', (platformName) => {
+      process.env.MCP_CLIENT = platformName.toUpperCase().replace(/-/g, '_');
+      processHook(makePreToolUse({ session_id: 'sess-alias', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs(platformName).cwd, 'utf-8')).toBe('sess-alias');
+    });
+
     it('files a hook under the engine its command names, over an inherited Claude Code env', () => {
       process.env.CLAUDECODE = '1';
       process.env.MCP_CLIENT = 'kiro';
@@ -2290,12 +2301,22 @@ describe('collector-script', () => {
       expect(readFileSync(crumbs('unattributed').ppid, 'utf-8')).toBe('sess-codex');
     });
 
-    it('files an engine name unsafe as a path segment as unattributed', () => {
-      process.env.MCP_CLIENT = '../escape';
-      processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
-      expect(readFileSync(crumbs('unattributed').cwd, 'utf-8')).toBe('sess-x');
-      expect(existsSync(resolve(tmpDir, 'escape'))).toBe(false);
-    });
+    it.each(['../escape', 'not-an-engine'])(
+      'writes no breadcrumb and warns when the hook names an unknown engine %s',
+      (engine) => {
+        const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        process.env.MCP_CLIENT = engine;
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        expect(existsSync(resolve(tmpDir, 'breadcrumbs'))).toBe(false);
+        expect(existsSync(resolve(tmpDir, 'session-by-ppid'))).toBe(false);
+        expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
+        const warnings = stderrWriteSpy.mock.calls.filter((args) =>
+          String(args[0]).includes('names no engine Preflight knows'),
+        );
+        expect(warnings).toHaveLength(1);
+        stderrWriteSpy.mockRestore();
+      },
+    );
   });
 
   // ---------------------------------------------------------------------------
