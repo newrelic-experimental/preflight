@@ -31,7 +31,7 @@ One managed settings document does three jobs.
       "source": {
         "source": "github",
         "repo": "newrelic-experimental/preflight",
-        "ref": "v2.0.0"
+        "ref": "v<version>"
       },
       "autoUpdate": false
     }
@@ -49,6 +49,11 @@ One managed settings document does three jobs.
 }
 ```
 
+> **Warning:** a `ref` tag from before the plugin pinned its server, whose
+> `plugin/.mcp.json` launches `@newrelic/preflight@${NEW_RELIC_AI_PREFLIGHT_VERSION:-latest}`,
+> gets a server that follows npm's `latest`. See
+> [PLUGIN.md](./PLUGIN.md#pinning-the-version-for-managed-deployments).
+
 | `env` key               | Purpose                                                                  |
 | ----------------------- | ------------------------------------------------------------------------ |
 | `NR_AI_MODE`            | `cloud` or `both`. Required, or a license key stops the server starting. |
@@ -57,11 +62,10 @@ One managed settings document does three jobs.
 | `NEW_RELIC_AI_ORG_ID`   | Organization identifier stamped on every event.                          |
 | `NEW_RELIC_AI_TEAM_ID`  | Team identifier stamped on every event.                                  |
 
-`ref` holds the plugin on one release tag, and with it the hook collector
-bundled with the plugin and the MCP server, which the plugin launches at its
-own version. Omit `ref` and the plugin tracks `main`, which can carry
-unreleased changes. A `ref` older than `v2.0.0` holds only the collector; see
-[PLUGIN.md](./PLUGIN.md#pinning-the-version-for-managed-deployments).
+Set `<version>` in `ref` to the release you want. `ref` holds the plugin on
+that release tag, and with it the hook collector bundled with the plugin and
+the MCP server, which the plugin launches at its own version. Omit `ref` and
+the plugin tracks `main`, which can carry unreleased changes.
 
 The license key sits in a file readable by every local user. Use an ingest
 license key scoped to this purpose, never a user API key (`NRAK-…`).

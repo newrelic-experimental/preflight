@@ -761,6 +761,24 @@ describe('release-pr.yml', () => {
       expect([path, viaJq]).toEqual([path, viaSync]);
     }
   });
+
+  it('fails the plugin/.mcp.json check when no launcher runs the package at a version', () => {
+    // With no pin to set, the filter would hand back its input unchanged, so a release patch
+    // that dropped the pin would match it. sync throws in the same case.
+    const [, filter] = workflowSpecs().find(([path]) => path === 'plugin/.mcp.json') ?? [];
+    expect(filter).toBeDefined();
+    let stderr = '';
+    try {
+      execFileSync('jq', ['--arg', 'v', '9.9.9', filter ?? ''], {
+        input: makeMcpConfig('@newrelic/preflight'),
+        encoding: 'utf8',
+        stdio: 'pipe',
+      });
+    } catch (err: unknown) {
+      stderr = String((err as { stderr?: unknown }).stderr ?? '');
+    }
+    expect(stderr).toMatch(/^jq: error .*has no server that runs @newrelic\/preflight@<version>/m);
+  });
 });
 
 describe('the files in this repo', () => {

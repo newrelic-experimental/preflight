@@ -160,7 +160,7 @@ jobs:
             'package-lock.json|.version = $v | .packages[""].version = $v' \
             'server.json|.version = $v | (.packages[] | select(.registryType == "npm" and .identifier == "@newrelic/preflight") | .version) = $v' \
             'plugin/.claude-plugin/plugin.json|.version = $v' \
-            'plugin/.mcp.json|(.mcpServers[].args[]? | select(type == "string" and startswith("@newrelic/preflight@"))) = "@newrelic/preflight@" + $v' \
+            'plugin/.mcp.json|def pins: .mcpServers[].args[]? | select(type == "string" and startswith("@newrelic/preflight@")); if [pins] == [] then error("plugin/.mcp.json has no server that runs @newrelic/preflight@<version>") else (pins) = "@newrelic/preflight@" + $v end' \
             'kiro-power/plugin.json|.version = $v'; do
             file="${spec%%|*}"
             filter="${spec#*|}"

@@ -166,7 +166,8 @@ same version of the MCP server, so the one key holds the bundled hook
 collector and the server together.
 
 A managed settings file that registers the marketplace, requires the plugin,
-and holds it on `2.0.0`:
+and holds it on one release, with `<version>` replaced by the release you
+want:
 
 ```json
 {
@@ -175,7 +176,7 @@ and holds it on `2.0.0`:
       "source": {
         "source": "github",
         "repo": "newrelic-experimental/preflight",
-        "ref": "v2.0.0"
+        "ref": "v<version>"
       },
       "autoUpdate": false
     }
@@ -198,13 +199,13 @@ To stage a rollout, deliver a different `ref` to each device group (separate
 managed settings files or MDM profiles). To roll back, point `ref` at an
 earlier tag.
 
-`ref` holds the server only from plugin 2.0.0 on. Plugin versions 1.61.0
-through 1.68.0 launch
-`@newrelic/preflight@${NEW_RELIC_AI_PREFLIGHT_VERSION:-latest}`, so with a
-`ref` in that range the server follows npm's `latest` unless the managed
-settings `env` sets `NEW_RELIC_AI_PREFLIGHT_VERSION` to the same version.
-From 2.0.0 on, the plugin ignores that variable. Versions before 1.61.0
-always launch `@latest`.
+Only a tag whose `plugin/.mcp.json` names an exact version holds the
+server. Plugins that predate the pin launch
+`@newrelic/preflight@${NEW_RELIC_AI_PREFLIGHT_VERSION:-latest}`, or plain
+`@latest` before 1.61.0, so with a `ref` from before the pin the server
+follows npm's `latest`. From 1.61.0 until the pin, setting
+`NEW_RELIC_AI_PREFLIGHT_VERSION` in the managed settings `env` to the same
+version holds it too. Plugins with the pin ignore that variable.
 
 A plugin tracking `main` can update in the minutes between a release merging
 and its npm publish. Until npm has that version, the server fails to start
