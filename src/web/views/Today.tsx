@@ -399,6 +399,9 @@ export function Today(): JSX.Element {
           ? 'mixed signals'
           : 'needs attention';
 
+  const flagsLoading = aggregatePending && sessionsPending && flagsCount === 0;
+  const attentionLoading = antiPatternsPending || sessionsPending;
+
   const noActivityToday =
     !spendLoading &&
     !aggregatePending &&
@@ -443,6 +446,7 @@ export function Today(): JSX.Element {
               apiAntiPatterns={apiAntiPatterns}
               persistedAntiPatterns={persistedAntiPatterns}
               flagsCount={flagsCount}
+              loading={attentionLoading}
             />
           </AnimatedCard>
         </>
@@ -454,9 +458,9 @@ export function Today(): JSX.Element {
                 <Kpi
                   label="efficiency"
                   hero
-                  value={effDisplay}
-                  sub={effSub}
-                  {...(effScore !== null
+                  value={aggregatePending ? '…' : effDisplay}
+                  sub={aggregatePending ? 'loading…' : effSub}
+                  {...(effScore !== null && !aggregatePending
                     ? { animate: true, numericValue: Math.round(effScore * 100), suffix: '%' }
                     : {})}
                 />
@@ -477,24 +481,29 @@ export function Today(): JSX.Element {
                 />
                 <Kpi
                   label="avg cost / session"
-                  value={formatUsdOrDash(
-                    aggregate && aggregate.sessionCount > 0
-                      ? todayTotal / aggregate.sessionCount
-                      : null,
-                  )}
+                  value={
+                    aggregatePending
+                      ? '…'
+                      : formatUsdOrDash(
+                          aggregate && aggregate.sessionCount > 0
+                            ? todayTotal / aggregate.sessionCount
+                            : null,
+                        )
+                  }
                 />
                 <Kpi
                   label="sessions today"
-                  value={!aggregate ? '—' : String(aggregate.sessionCount)}
-                  sub={buildSessionStatusSub(aggregate?.sessionStatus)}
+                  value={aggregatePending ? '…' : !aggregate ? '—' : String(aggregate.sessionCount)}
+                  sub={
+                    aggregatePending ? 'loading…' : buildSessionStatusSub(aggregate?.sessionStatus)
+                  }
                   {...(aggregate ? { animate: true, numericValue: aggregate.sessionCount } : {})}
                 />
                 <Kpi
                   label="flags"
                   tone={flagsCount > 0 ? 'warn' : 'neutral'}
-                  value={String(flagsCount)}
-                  animate
-                  numericValue={flagsCount}
+                  value={flagsLoading ? '…' : String(flagsCount)}
+                  {...(flagsLoading ? {} : { animate: true, numericValue: flagsCount })}
                 />
               </div>
             </Card>
@@ -513,9 +522,15 @@ export function Today(): JSX.Element {
                 hourlySpend={hourlySpend}
                 forecastEod={forecastKpiUsd}
                 weekForecast={weekForecast}
+                loading={sessionsPending}
               />
             </div>
-            <ActivityTodayPanel todayHeatmap={todayHeatmap} concurrency={concurrency} />
+            <ActivityTodayPanel
+              todayHeatmap={todayHeatmap}
+              concurrency={concurrency}
+              heatmapLoading={todayHeatmapPending}
+              concurrencyLoading={concurrencyPending}
+            />
           </AnimatedCard>
 
           <AnimatedCard index={2} className="mb-3">
@@ -524,6 +539,7 @@ export function Today(): JSX.Element {
               apiAntiPatterns={apiAntiPatterns}
               persistedAntiPatterns={persistedAntiPatterns}
               flagsCount={flagsCount}
+              loading={attentionLoading}
             />
           </AnimatedCard>
 
@@ -638,17 +654,23 @@ function NeedsAttentionPanel({
   apiAntiPatterns,
   persistedAntiPatterns,
   flagsCount,
+  loading,
 }: {
   antiPatterns: readonly AntiPatternEvent[];
   apiAntiPatterns: SessionAntiPattern[] | undefined;
   persistedAntiPatterns: SessionAntiPattern[];
   flagsCount: number;
+  loading: boolean;
 }): JSX.Element {
   // The query returns `null` when the endpoint is 404 (cloud mode — no
   // alert engine), so the panel can fall back to flags-only instead of a
   // permanent red error banner. retry: false avoids the 4× request
   // multiplier React Query would otherwise produce on every refetch.
-  const { data, error } = useQuery<readonly AlertEvent[] | null>({
+  const {
+    data,
+    error,
+    isPending: alertsPending,
+  } = useQuery<readonly AlertEvent[] | null>({
     queryKey: qk.alertsRecent,
     queryFn: async ({ signal }) => {
       try {
@@ -697,7 +719,12 @@ function NeedsAttentionPanel({
       {error && (
         <div className="text-accent-red text-[11px] mb-2">Error loading recent alerts.</div>
       )}
-      <AttentionList rows={flags} firingCount={firingCount} alertsHref="/alerts" />
+      <AttentionList
+        rows={flags}
+        firingCount={firingCount}
+        alertsHref="/alerts"
+        loading={loading || (alertsPending && !error)}
+      />
       {sortedEntries.length > 0 && (
         <table className="w-full text-xs mt-3">
           <thead className="text-ink-muted">
@@ -1105,10 +1132,12 @@ function SpendTodayPanel({
   hourlySpend,
   forecastEod,
   weekForecast,
+  loading,
 }: {
   hourlySpend: readonly HourlyCostEntry[];
   forecastEod: number | null;
   weekForecast: number | null;
+  loading: boolean;
 }): JSX.Element {
   const hasSpend = hourlySpend.some((h) => h.cost > 0);
   const series = useMemo(
@@ -1131,6 +1160,8 @@ function SpendTodayPanel({
             </p>
           )}
         </>
+      ) : loading ? (
+        <EmptyState variant="inline-loading" title="Loading spend data…" />
       ) : (
         <EmptyState variant="inline" title="No spend data yet" />
       )}
@@ -1183,9 +1214,13 @@ function hourlyCountsCaption(counts: readonly number[], unit: string): string {
 function ActivityTodayPanel({
   todayHeatmap,
   concurrency,
+  heatmapLoading,
+  concurrencyLoading,
 }: {
   todayHeatmap: ActivityHeatmapTodayResponse | undefined;
   concurrency: ConcurrencyData | undefined;
+  heatmapLoading: boolean;
+  concurrencyLoading: boolean;
 }): JSX.Element {
   const now = Date.now();
   const hasHeatmapData = (todayHeatmap?.buckets?.length ?? 0) > 0;
@@ -1229,12 +1264,14 @@ function ActivityTodayPanel({
                 levels={6}
                 ariaLabel="Today's activity density by hour"
               />
+            ) : heatmapLoading ? (
+              <EmptyState variant="inline-loading" title="Loading activity…" />
             ) : (
               <EmptyState variant="inline" title="No heatmap data yet" />
             )}
           </div>
           <p className="mt-1.5 text-[10px] text-ink-muted">
-            {hourlyCountsCaption(heatmapHourly, 'calls')}
+            {heatmapLoading ? 'Loading…' : hourlyCountsCaption(heatmapHourly, 'calls')}
           </p>
         </div>
         <div>
@@ -1246,12 +1283,16 @@ function ActivityTodayPanel({
                 levels={6}
                 ariaLabel={`Concurrency over time, peak ${concurrency?.peak ?? 0}`}
               />
+            ) : concurrencyLoading ? (
+              <EmptyState variant="inline-loading" title="Loading sessions…" />
             ) : (
               <EmptyState variant="inline" title="No session data yet" />
             )}
           </div>
           <p className="mt-1.5 text-[10px] text-ink-muted">
-            now {concurrency?.current ?? 0} · peak {concurrency?.peak ?? 0}
+            {concurrencyLoading
+              ? 'Loading…'
+              : `now ${concurrency?.current ?? 0} · peak ${concurrency?.peak ?? 0}`}
           </p>
         </div>
       </div>

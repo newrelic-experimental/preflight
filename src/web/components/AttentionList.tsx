@@ -15,6 +15,8 @@ export interface AttentionListProps {
   readonly rows: ReadonlyArray<AttentionRow>;
   readonly firingCount: number;
   readonly alertsHref: string;
+  /** True while the data feeding `rows` is still being fetched. */
+  readonly loading?: boolean;
 }
 
 const FLAG_LABELS: Record<string, string> = {
@@ -53,8 +55,14 @@ function basename(target: string): string {
   return target.split('/').pop() || target;
 }
 
-export function AttentionList({ rows, firingCount, alertsHref }: AttentionListProps): JSX.Element {
+export function AttentionList({
+  rows,
+  firingCount,
+  alertsHref,
+  loading = false,
+}: AttentionListProps): JSX.Element {
   if (rows.length === 0 && firingCount === 0) {
+    if (loading) return <EmptyState variant="inline-loading" title="Loading…" />;
     return <EmptyState variant="inline" title="Nothing needs attention." />;
   }
 

@@ -2768,3 +2768,65 @@ describe('buildSpendTodaySeries()', () => {
     expect(series.every((d) => d.projectedUsd === null)).toBe(true);
   });
 });
+
+describe('Today view — loading states', () => {
+  beforeEach(() => {
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: null,
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows loading indicators, not empty-state copy, while queries are pending', () => {
+    globalThis.fetch = vi.fn(() => new Promise<Response>(() => {})) as typeof fetch;
+    renderToday();
+    expect(screen.getByText('Loading spend data…')).toBeInTheDocument();
+    expect(screen.getByText('Loading activity…')).toBeInTheDocument();
+    expect(screen.getByText('Loading sessions…')).toBeInTheDocument();
+    expect(screen.getByText('Loading…', { selector: 'div' })).toBeInTheDocument();
+    expect(screen.queryByText('No spend data yet')).toBeNull();
+    expect(screen.queryByText('No heatmap data yet')).toBeNull();
+    expect(screen.queryByText('No session data yet')).toBeNull();
+    expect(screen.queryByText('Nothing needs attention.')).toBeNull();
+  });
+
+  it('shows placeholder KPI values while the aggregate is pending', () => {
+    globalThis.fetch = vi.fn(() => new Promise<Response>(() => {})) as typeof fetch;
+    renderToday();
+    expect(screen.getAllByText('loading…')).toHaveLength(2);
+    expect(screen.getAllByText('…')).toHaveLength(5);
+  });
+
+  it('keeps a nonzero flags count visible while the aggregate is pending', () => {
+    useLiveStore.setState({ antiPatterns: [{ type: 'thrashing', target: 'auth.ts', count: 4 }] });
+    globalThis.fetch = vi.fn(() => new Promise<Response>(() => {})) as typeof fetch;
+    renderToday();
+    expect(screen.getAllByText('…')).toHaveLength(4);
+    expect(screen.getByText('1')).toBeInTheDocument();
+  });
+
+  it('shows empty-state copy once the queries resolve empty', async () => {
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: 1, todayTotalUsd: 1, forecastEodUsd: null },
+    });
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
+    renderToday();
+    expect(await screen.findByText('No spend data yet')).toBeInTheDocument();
+    expect(await screen.findByText('Nothing needs attention.')).toBeInTheDocument();
+    expect(screen.queryByText('Loading spend data…')).toBeNull();
+    expect(screen.queryByText('Loading…', { selector: 'div' })).toBeNull();
+  });
+});
