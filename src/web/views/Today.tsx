@@ -1280,7 +1280,6 @@ function ActivityTodayPanel({
             {hasConcurrencyData ? (
               <DiscreteBlockChart
                 data={concurrencyItems}
-                levels={6}
                 ariaLabel={`Concurrency over time, peak ${concurrency?.peak ?? 0}`}
               />
             ) : concurrencyLoading ? (
