@@ -832,11 +832,11 @@ function mergeActivityWindows(
   return windows;
 }
 
-// 96 × 15-minute buckets covering today (00:00 → 24:00 local). Each bucket
-// holds the peak concurrent session count observed within its window — see
+// 15-minute buckets covering today (00:00 → 24:00 local): 96 on a normal day,
+// 92 or 100 on the DST-transition days. Each bucket holds the peak concurrent
+// session count observed within its window — see
 // computeTodayConcurrencyBuckets() below.
 const CONCURRENCY_BUCKET_SIZE_MS = 15 * 60 * 1000;
-const CONCURRENCY_BUCKET_COUNT = 96;
 
 interface ConcurrencyBucket {
   readonly timestamp: number;
@@ -981,12 +981,17 @@ function computeTodayConcurrencyBuckets(
   startTimestamp: number,
 ): ConcurrencyBucket[] {
   // Single pass O(N log N) — build delta events from every activity window,
-  // clamped to today's window, then sort once and sweep across the 96
+  // clamped to today's window, then sort once and sweep across the day's
   // buckets in lockstep with the event cursor. Buckets containing no
   // events still need a count: the value carried over from the previous
   // bucket's tail (a window that spans many buckets without a delta in
   // between must propagate as count=1+ in those buckets).
-  const dayEnd = startTimestamp + CONCURRENCY_BUCKET_COUNT * CONCURRENCY_BUCKET_SIZE_MS;
+  // The day end uses local-date arithmetic, not a fixed 24h offset, so the
+  // grid is 23h or 25h long on DST-transition days (see computeDailyPeakConcurrency).
+  const dayEndDate = new Date(startTimestamp);
+  dayEndDate.setDate(dayEndDate.getDate() + 1);
+  const dayEnd = dayEndDate.getTime();
+  const bucketCount = Math.ceil((dayEnd - startTimestamp) / CONCURRENCY_BUCKET_SIZE_MS);
   const events: Array<{ ts: number; delta: number }> = [];
   for (const window of windows) {
     const start = Math.max(window.startTime, startTimestamp);
@@ -1002,10 +1007,10 @@ function computeTodayConcurrencyBuckets(
   // can fall 1 below the day peak at boundary conditions.
   events.sort((a, b) => a.ts - b.ts || b.delta - a.delta);
 
-  const buckets: ConcurrencyBucket[] = new Array(CONCURRENCY_BUCKET_COUNT);
+  const buckets: ConcurrencyBucket[] = new Array(bucketCount);
   let current = 0;
   let cursor = 0;
-  for (let b = 0; b < CONCURRENCY_BUCKET_COUNT; b++) {
+  for (let b = 0; b < bucketCount; b++) {
     const bucketStart = startTimestamp + b * CONCURRENCY_BUCKET_SIZE_MS;
     const bucketEnd = bucketStart + CONCURRENCY_BUCKET_SIZE_MS;
     // Peak defaults to the carried-over level so a session spanning many
@@ -1081,7 +1086,7 @@ function rawQualityCountsFromEvents(events: readonly QualityEvent[]): QualityPro
 }
 
 /**
- * Today's 96 x 15-minute concurrency grid and its peak. Shared by the Today and
+ * Today's 15-minute concurrency grid (96 buckets, 92 or 100 on DST days) and its peak. Shared by the Today and
  * History views of GET /api/concurrency so today's History bar cannot drift
  * from the Today headline.
  */

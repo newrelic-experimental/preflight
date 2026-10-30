@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom';
  * `width="100%"` + `viewBox` + `xMidYMax meet`. Tooltip placement uses
  * `getBoundingClientRect` against the actually-rendered column group rather
  * than a viewBox-derived percentage, so it survives BOTH the horizontal scale
- * (Today's 96-bucket case where the chart fills width) AND the centering
+ * (Today's 92-100 bucket case where the chart fills width) AND the centering
  * offset (History's narrow-data case where the chart is height-limited and
  * centered with empty side margins). The tooltip itself is portaled to
  * `document.body` and positioned `fixed` from those same viewport
