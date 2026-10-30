@@ -980,35 +980,6 @@ describe('LocalSessionAggregator byte estimates for platforms that cannot self-r
     };
   }
 
-  it('saves a Cursor tool call’s byte estimate to its own conversation', () => {
-    const agg = makeAggregator();
-    agg.recordToolCall(makeToolCall(CONV_A));
-    agg.recordToolCall(makeToolCall(CONV_B, { inputSizeBytes: 800, outputSizeBytes: 0 }));
-
-    agg.persist(store, makeContext());
-
-    const a = store.loadSession(CONV_A);
-    const b = store.loadSession(CONV_B);
-    expect(a?.estimatedCostUsd).toBeCloseTo(ONE_CALL_USD, 12);
-    expect(a?.tokensInput).toBe(1000);
-    expect(a?.tokensOutput).toBe(500);
-    expect(a?.costByDayUsd).toEqual({ [DAY_KEY]: expect.closeTo(ONE_CALL_USD, 12) });
-    expect(b?.estimatedCostUsd).toBeCloseTo(200 * USD_PER_INPUT_TOKEN, 12);
-    expect(b?.tokensInput).toBe(200);
-  });
-
-  it.each([['windsurf'], ['antigravity']])(
-    'saves %s tool calls’ byte estimates too',
-    (platform) => {
-      const agg = makeAggregator();
-      agg.recordToolCall(makeToolCall(CONV_A, { platform }));
-
-      agg.persist(store, makeContext());
-
-      expect(store.loadSession(CONV_A)?.estimatedCostUsd).toBeCloseTo(ONE_CALL_USD, 12);
-    },
-  );
-
   it.each([['claude-code'], ['kiro'], ['amazon-q'], ['copilot'], [null]])(
     'does not estimate a %s record drained by the same aggregator',
     (platform) => {
@@ -1236,6 +1207,44 @@ describe('LocalSessionAggregator byte estimates from real hook payloads', () => 
   /** Tokens for one call's input or output, at 4 characters per token. */
   const tokensOf = (...texts: string[]): number =>
     texts.reduce((sum, text) => sum + Math.round(text.length / 4), 0);
+
+  it('books each Cursor conversation’s calls to that conversation alone', () => {
+    const shell = (
+      conv: string,
+      command: string,
+      output: string,
+    ): Array<[Record<string, unknown>]> => [
+      [{ hook_event_name: 'beforeShellExecution', conversation_id: conv, command, sandbox: false }],
+      [
+        {
+          hook_event_name: 'afterShellExecution',
+          conversation_id: conv,
+          command,
+          output,
+          duration: 10,
+          sandbox: false,
+        },
+      ],
+    ];
+    const calls = [
+      { conv: 'conv-a', command: 'ls', output: 'a.ts\n'.repeat(400) },
+      { conv: 'conv-b', command: 'git log --oneline', output: 'abc1234 Fix\n'.repeat(900) },
+    ];
+
+    estimateFrom(...calls.flatMap(({ conv, command, output }) => shell(conv, command, output)));
+
+    for (const { conv, command, output } of calls) {
+      const usd = tokensOf(command) * USD_PER_INPUT_TOKEN + tokensOf(output) * USD_PER_OUTPUT_TOKEN;
+      const saved = store.loadSession(conv);
+      expect(saved?.toolCallCount).toBe(1);
+      expect(saved?.estimatedCostUsd).toBeCloseTo(usd, 12);
+      expect(saved?.byteEstimates?.costByModel).toEqual({
+        'default-model': expect.closeTo(usd, 12),
+      });
+      const days = Object.values(saved?.costByDayUsd ?? {});
+      expect(days.reduce((sum, day) => sum + day, 0)).toBeCloseTo(usd, 12);
+    }
+  });
 
   it('counts a Cursor conversation’s shell output, file reads, edits and MCP results', () => {
     const conv = '668320d2-2fd8-4888-b33c-2a466fec86e7';
