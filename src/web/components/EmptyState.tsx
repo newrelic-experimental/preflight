@@ -206,7 +206,7 @@ export function EmptyState({
 }: EmptyStateProps): JSX.Element {
   if (variant === 'inline-loading') {
     return (
-      <div role="status" className="flex items-center gap-2 text-[11px] text-ink-muted">
+      <div className="flex items-center gap-2 text-[11px] text-ink-muted">
         <span
           aria-hidden="true"
           className="inline-block h-2 w-2 shrink-0 rounded-full animate-pulse bg-accent-green"

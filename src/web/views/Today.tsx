@@ -400,6 +400,7 @@ export function Today(): JSX.Element {
           : 'needs attention';
 
   const flagsLoading = aggregatePending && sessionsPending && flagsCount === 0;
+  const attentionLoading = antiPatternsPending || sessionsPending;
 
   const noActivityToday =
     !spendLoading &&
@@ -445,7 +446,7 @@ export function Today(): JSX.Element {
               apiAntiPatterns={apiAntiPatterns}
               persistedAntiPatterns={persistedAntiPatterns}
               flagsCount={flagsCount}
-              loading={antiPatternsPending && sessionsPending}
+              loading={attentionLoading}
             />
           </AnimatedCard>
         </>
@@ -538,7 +539,7 @@ export function Today(): JSX.Element {
               apiAntiPatterns={apiAntiPatterns}
               persistedAntiPatterns={persistedAntiPatterns}
               flagsCount={flagsCount}
-              loading={antiPatternsPending && sessionsPending}
+              loading={attentionLoading}
             />
           </AnimatedCard>
 

@@ -27,7 +27,7 @@ describe('EmptyState', () => {
 
   it('inline-loading variant renders a status line with a pulsing dot', () => {
     const { container } = render(<EmptyState variant="inline-loading" title="Loading spend…" />);
-    expect(screen.getByRole('status')).toHaveTextContent('Loading spend…');
+    expect(screen.getByText('Loading spend…')).toBeInTheDocument();
     expect(container.querySelector('.animate-pulse')).toBeInTheDocument();
   });
 });
