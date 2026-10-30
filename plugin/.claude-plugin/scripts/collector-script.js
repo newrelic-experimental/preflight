@@ -113,9 +113,18 @@ function getMaxContentLength() {
   const parsed = parseInt(val, 10);
   return Number.isNaN(parsed) ? 10240 : parsed;
 }
-function detectStampPlatform() {
+var PAYLOAD_SESSION_FIELDS = [
+  ["conversation_id", "cursor"],
+  ["trajectory_id", "windsurf"],
+  ["conversationId", "antigravity"]
+];
+function detectStampPlatform(data) {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
+  if (data.session_id == null) {
+    const match = PAYLOAD_SESSION_FIELDS.find(([field]) => data[field] != null);
+    if (match) return match[1];
+  }
   return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0) ? "claude-code" : void 0;
 }
 var MAX_REDACT_BYTES = 1048576;
@@ -808,7 +817,7 @@ function processHook(raw, cliEvent) {
   if (data.transcript_path) event.transcriptPath = data.transcript_path;
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = detectStampPlatform(data);
   if (stampedPlatform) event.platform = stampedPlatform;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;

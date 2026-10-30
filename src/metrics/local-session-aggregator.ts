@@ -83,10 +83,16 @@ export interface SummaryContext {
 
 /**
  * Platforms whose engine never resolves a session id, so it can neither take a
- * token self-report nor persist its own byte estimate. Their sessions are only
- * ever written by this aggregator, which therefore estimates them itself.
+ * token self-report nor persist its own byte estimate: their hooks send no
+ * `session_id`, so the collector leaves no breadcrumb to resolve. Their
+ * sessions are only ever written by this aggregator, which therefore
+ * estimates them itself.
  */
-const BYTE_ESTIMATED_PLATFORMS: ReadonlySet<string> = new Set(['cursor', 'windsurf']);
+const BYTE_ESTIMATED_PLATFORMS: ReadonlySet<string> = new Set([
+  'cursor',
+  'windsurf',
+  'antigravity',
+]);
 
 interface ByteEstimateTally {
   costUsd: number;

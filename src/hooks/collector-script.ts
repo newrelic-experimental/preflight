@@ -98,19 +98,28 @@ function getMaxContentLength(): number {
 }
 
 /**
+ * The field each platform's hook payload sends in place of `session_id`. No
+ * other platform sends any of these instead of `session_id`.
+ */
+const PAYLOAD_SESSION_FIELDS = [
+  ['conversation_id', 'cursor'],
+  ['trajectory_id', 'windsurf'],
+  ['conversationId', 'antigravity'],
+] as const;
+
+/**
  * Ambient stamping is deliberately limited to Claude Code, the only platform
  * whose hook-process env signal is verified; other platforms stamp via
- * explicit MCP_CLIENT in their generated hook commands. Cursor's and
- * Windsurf's documented hook commands are a bare `preflight-collector`, so
- * their payload's own session field names them instead: no other platform
- * sends `conversation_id` or `trajectory_id` in place of `session_id`.
+ * explicit MCP_CLIENT in their generated hook commands. Cursor's, Windsurf's
+ * and Antigravity's documented hook commands set no MCP_CLIENT, so their
+ * payload's own session field names them instead.
  */
 function detectStampPlatform(data: HookInput): string | undefined {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
-  if (data.session_id === undefined) {
-    if (data.conversation_id !== undefined) return 'cursor';
-    if (data.trajectory_id !== undefined) return 'windsurf';
+  if (data.session_id == null) {
+    const match = PAYLOAD_SESSION_FIELDS.find(([field]) => data[field] != null);
+    if (match) return match[1];
   }
   return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)
     ? 'claude-code'
