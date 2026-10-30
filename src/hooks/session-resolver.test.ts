@@ -1633,6 +1633,20 @@ describe('breadcrumbs filed by writer', () => {
     );
   });
 
+  it('ignores an untagged breadcrumb a current collector also filed under its writer', () => {
+    writeCrumb('claude-code', 'ppid', '424242', 'sess-claude');
+    writeCrumb('claude-code', 'cwd', '-projects-shared', 'sess-claude');
+    writeCrumb(null, 'ppid', '424242', 'sess-claude');
+    writeCrumb(null, 'cwd', '-projects-shared', 'sess-claude');
+    const startedAt = Date.now() - 60_000;
+    const kiro = sessionBreadcrumbs(tmpDir, KIRO, startedAt);
+    expect(kiro.ppid(424242)).toBeNull();
+    expect(kiro.cwd('/projects/shared')).toBeNull();
+    expect(sessionBreadcrumbs(tmpDir, CLAUDE, startedAt).cwd('/projects/shared')).toBe(
+      'sess-claude',
+    );
+  });
+
   it.each(['generic-mcp', 'kiro', 'copilot', 'copilot-sdk'])(
     'hands a %s engine the breadcrumbs of hooks that stamp no engine',
     (platformName) => {

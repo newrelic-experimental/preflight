@@ -2266,13 +2266,15 @@ describe('collector-script', () => {
       cwd: resolve(tmpDir, 'breadcrumbs', writer, 'session-by-cwd', '-projects-test.txt'),
     });
 
-    it('files a Claude Code hook under claude-code, never the untagged layout', () => {
+    it('files a Claude Code hook under claude-code and in the untagged layout older servers read', () => {
       process.env.CLAUDECODE = '1';
       processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
       expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
       expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
-      expect(existsSync(resolve(tmpDir, 'session-by-ppid'))).toBe(false);
-      expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
+      const legacyPpid = resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`);
+      expect(readFileSync(legacyPpid, 'utf-8')).toBe('sess-claude');
+      const legacyCwd = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
+      expect(readFileSync(legacyCwd, 'utf-8')).toBe('sess-claude');
     });
 
     it('files a hook under the engine its command names, over an inherited Claude Code env', () => {
