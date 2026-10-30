@@ -1076,6 +1076,33 @@ describe('LocalSessionAggregator byte estimates for platforms that cannot self-r
     expect(store.loadSession(CONV_A)?.byteEstimates?.costUsd).toBeCloseTo(2 * ONE_CALL_USD, 12);
   });
 
+  it('keeps every call when two aggregators save the same conversation in turn', () => {
+    const windowOne = makeAggregator();
+    const windowTwo = makeAggregator();
+    windowOne.recordToolCall(makeToolCall(CONV_A));
+    windowOne.persist(store, makeContext());
+    windowTwo.recordToolCall(makeToolCall(CONV_A, { timestamp: DAY + 1000 }));
+    windowTwo.persist(store, makeContext());
+    windowOne.recordToolCall(makeToolCall(CONV_A, { timestamp: DAY + 2000 }));
+    windowOne.persist(store, makeContext());
+
+    expect(store.loadSession(CONV_A)?.estimatedCostUsd).toBeCloseTo(3 * ONE_CALL_USD, 12);
+    expect(store.loadSession(CONV_A)?.tokensInput).toBe(3000);
+
+    windowTwo.recordToolCall(makeToolCall(CONV_A, { timestamp: DAY + 3000 }));
+    windowTwo.persist(store, makeContext());
+    windowOne.persist(store, makeContext('completed'));
+
+    const saved = store.loadSession(CONV_A);
+    expect(saved?.estimatedCostUsd).toBeCloseTo(4 * ONE_CALL_USD, 12);
+    expect(saved?.tokensInput).toBe(4000);
+    expect(saved?.tokensOutput).toBe(2000);
+    expect(saved?.costByDayUsd).toEqual({ [DAY_KEY]: expect.closeTo(4 * ONE_CALL_USD, 12) });
+    expect(saved?.byteEstimates?.costByModel).toEqual({
+      'default-model': expect.closeTo(4 * ONE_CALL_USD, 12),
+    });
+  });
+
   it('does not bring a retracted estimate back after a restart', () => {
     const before = makeAggregator();
     before.recordToolCall(makeToolCall(CONV_A));
