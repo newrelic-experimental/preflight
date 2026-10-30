@@ -1650,14 +1650,13 @@ describe('breadcrumbs filed by writer', () => {
   it("counts an older collector's unchanged cwd breadcrumb once its session logs an event after a restart", () => {
     const startedAt = Date.now();
     const before = new Date(startedAt - 60_000);
-    const crumb = writeCrumb(null, 'cwd', '-projects-shared', 'sess-old-collector');
-    utimesSync(crumb, before, before);
-    const buffer = resolve(tmpDir, 'buffer-sess-old-collector.jsonl');
-    writeFileSync(buffer, '{}\n');
-    utimesSync(buffer, before, before);
+    const cwdCrumb = writeCrumb(null, 'cwd', '-projects-shared', 'sess-old-collector');
+    utimesSync(cwdCrumb, before, before);
+    const ppidCrumb = writeCrumb(null, 'ppid', '424250', 'sess-old-collector');
+    utimesSync(ppidCrumb, before, before);
     expect(sessionBreadcrumbs(tmpDir, KIRO, startedAt).cwd('/projects/shared')).toBeNull();
     const after = new Date(startedAt + 1_000);
-    utimesSync(buffer, after, after);
+    utimesSync(ppidCrumb, after, after);
     expect(sessionBreadcrumbs(tmpDir, KIRO, startedAt).cwd('/projects/shared')).toBe(
       'sess-old-collector',
     );
