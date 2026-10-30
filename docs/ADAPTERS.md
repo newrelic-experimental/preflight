@@ -67,6 +67,8 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Known gaps:** Cursor has no `afterReadFile` event (`beforeReadFile` is emitted as a completed read directly) and no `beforeFileEdit` event (`afterFileEdit` is post-only). `afterShellExecution`/`afterMCPExecution` have no documented failure-outcome field, so success is reported unconditionally `true`.
 
+**Platform stamp:** the hook command sets no `MCP_CLIENT`, so the collector stamps `cursor` on any payload that carries `conversation_id` and no `session_id`.
+
 **Setup:**
 
 1. Register the Preflight MCP server for `nr_observe_*` tools: Cursor Settings → MCP → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
@@ -98,6 +100,8 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 **Event vocabulary handled by `collector-script.ts`:** `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`. Windsurf sends the event name as `agent_action_name`, not `hook_event_name` — the collector checks both.
 
 **Known gaps:** `post_read_code`/`post_run_command` report success `true` unconditionally, the same gap as Cursor's `afterShellExecution`. `pre_write_code` maps to `'Edit'` (it's typically a partial edit, not a full-file write).
+
+**Platform stamp:** the hook command sets no `MCP_CLIENT`, so the collector stamps `windsurf` on any payload that carries `trajectory_id` and no `session_id`.
 
 **Setup:**
 

@@ -100,11 +100,18 @@ function getMaxContentLength(): number {
 /**
  * Ambient stamping is deliberately limited to Claude Code, the only platform
  * whose hook-process env signal is verified; other platforms stamp via
- * explicit MCP_CLIENT in their generated hook commands.
+ * explicit MCP_CLIENT in their generated hook commands. Cursor's and
+ * Windsurf's documented hook commands are a bare `preflight-collector`, so
+ * their payload's own session field names them instead: no other platform
+ * sends `conversation_id` or `trajectory_id` in place of `session_id`.
  */
-function detectStampPlatform(): string | undefined {
+function detectStampPlatform(data: HookInput): string | undefined {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
+  if (data.session_id === undefined) {
+    if (data.conversation_id !== undefined) return 'cursor';
+    if (data.trajectory_id !== undefined) return 'windsurf';
+  }
   return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)
     ? 'claude-code'
     : undefined;
@@ -1330,7 +1337,7 @@ function processHook(raw: string, cliEvent?: string): void {
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
   // Stamp the true originating platform at write time, using this hook
-  // invocation's own environment — this is the only point in the pipeline
+  // invocation's own environment and payload — this is the only point in the pipeline
   // that reliably reflects the real host, since whichever process later
   // drains the buffer (e.g. --local's unscoped drain of an unowned session,
   // see LocalSessionAggregator) may have detected a completely different
@@ -1338,7 +1345,7 @@ function processHook(raw: string, cliEvent?: string): void {
   // only the light claude-code-adapter const, not the full registry) instead
   // of going through PlatformRegistry — registry-based detection adds
   // measurable overhead on this hot, pre+post-per-tool-call path.
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = detectStampPlatform(data);
   if (stampedPlatform) event.platform = stampedPlatform;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
