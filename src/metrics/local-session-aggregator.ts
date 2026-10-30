@@ -25,7 +25,7 @@ import { spawnSync } from 'node:child_process';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
-import { hasAttributableActivity, type FullSessionSummary } from '../storage/session-store.js';
+import { hasRecordedUsage, type FullSessionSummary } from '../storage/session-store.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
 import { addCallUsage } from './call-usage.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
@@ -601,12 +601,12 @@ export class LocalSessionAggregator {
 
   /**
    * Session summaries ready for `SessionStore.saveSession()`. Only sessions
-   * with attributable activity are returned (see `hasAttributableActivity`) —
-   * a rollup with neither tool calls nor subagent spend would be filtered out
-   * of `/api/sessions` anyway, and writing it would burn a file that the
+   * with recorded usage (see `hasRecordedUsage`) are returned. A rollup with
+   * none is an idle process, and writing it would burn a file that the
    * empty-summary guard then has to defend. A subagent-only rollup (dead
    * parent, tail still being read) DOES qualify: it has real dollars even
-   * though its parent timeline and toolCallCount are both zero.
+   * though its parent timeline and toolCallCount are both zero. So does a
+   * chat-only rollup, with no tool calls but real cost or tokens.
    */
   toSummaries(context: {
     developer: string;
@@ -617,7 +617,7 @@ export class LocalSessionAggregator {
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
-      if (!hasAttributableActivity(rollup)) continue;
+      if (!hasRecordedUsage({ ...rollup, estimatedCostUsd: rollup.costUsd })) continue;
       const models = [...rollup.models];
       rollup.lastEmittedCost = {
         costUsd: rollup.costUsd,

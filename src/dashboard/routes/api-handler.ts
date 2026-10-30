@@ -81,7 +81,12 @@ import type {
   PersistedAntiPattern,
   SessionFileInfo,
 } from '../../storage/session-store.js';
-import { hasAttributableActivity, toPersistedAntiPatterns } from '../../storage/session-store.js';
+import {
+  hasAttributableActivity,
+  hasRecordedUsage,
+  toPersistedAntiPatterns,
+  type RecordedUsage,
+} from '../../storage/session-store.js';
 import type {
   AttributionBucket,
   HookEvent,
@@ -854,9 +859,8 @@ interface SessionActivityLike {
   readonly timeline?: readonly { readonly timestamp: number }[];
 }
 
-interface SessionIdentityLike {
+interface SessionIdentityLike extends RecordedUsage {
   readonly sessionId?: string;
-  readonly toolCallCount?: number;
 }
 
 interface ReplaySessionResponse {
@@ -1508,10 +1512,7 @@ export function createApiHandler(
     // MCP-internal bookkeeping from --local / proxy modes that would
     // otherwise appear as confusing "duplicate" rows next to real Claude
     // Code sessions.
-    const withActivity = (allSessions as readonly SessionIdentityLike[]).filter((s) => {
-      const calls = s.toolCallCount ?? 0;
-      return calls > 0;
-    });
+    const withActivity = (allSessions as readonly SessionIdentityLike[]).filter(hasRecordedUsage);
     const sliced = withActivity.slice(-limit);
 
     // Append the current live session so it appears in the list before

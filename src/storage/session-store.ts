@@ -272,15 +272,22 @@ export interface AttributableActivity {
   readonly timeline?: ReadonlyArray<unknown>;
 }
 
+export interface RecordedUsage extends AttributableActivity {
+  readonly estimatedCostUsd?: number | null;
+  readonly tokensInput?: number;
+  readonly tokensOutput?: number;
+  readonly tokensThinking?: number;
+}
+
 /**
  * Does this summary represent work we can attribute to a real session?
  *
- * THE single definition of "not empty" for session persistence. Three call
- * sites derive from it and must never re-implement it:
- *   1. `LocalSessionAggregator.toSummaries()` — which rollups get written.
- *   2. `SessionStore.saveSession()` — which incoming writes may overwrite.
- *   3. the `/api/sessions/today/aggregate` route — which persisted rows may
- *      contribute a pro-rated cost when they carry no per-day buckets.
+ * The narrower of the two definitions of "not empty" for session
+ * persistence; `hasRecordedUsage` is the wider. Its call sites must never
+ * re-implement it. `SessionStore.saveSession()` uses it to decide whether an
+ * existing file holds recorded work that an empty write must not clobber.
+ * The `/api/sessions/today/aggregate` route uses it to decide which persisted
+ * rows may contribute a pro-rated cost when they carry no per-day buckets.
  *
  * Subagent spend counts as activity on purpose. A session whose parent process
  * died while its subagent transcripts were still being tailed has an empty
@@ -303,9 +310,11 @@ export function hasAttributableActivity(s: AttributableActivity): boolean {
  * Did this session record anything worth a file on disk? Wider than
  * `hasAttributableActivity`: a chat-only session has no tool calls but real
  * cost and tokens, and must still be kept. A session with none of these is an
- * idle MCP process (a window that was opened and never used).
+ * idle MCP process (a window that was opened and never used). It gates the
+ * aggregator's summaries, every write `SessionStore.saveSession()` accepts,
+ * and the History list in `/api/sessions`.
  */
-function hasRecordedUsage(s: FullSessionSummary): boolean {
+export function hasRecordedUsage(s: RecordedUsage): boolean {
   return (
     hasAttributableActivity(s) ||
     (s.estimatedCostUsd ?? 0) > 0 ||
@@ -760,12 +769,12 @@ export class SessionStore {
     // never observed any hook activity would replace a fully recorded session
     // with an all-zero summary, erasing tool calls, tokens and cost from the
     // dashboard on the next refresh. Never let an empty summary clobber a
-    // non-empty one; other collisions keep the previous last-write-wins
-    // behaviour with a warning.
+    // non-empty one. A summary with cost or tokens but no tool calls, such as
+    // a restarted dashboard's parent-only rollup, is not empty: it merges.
     let toWrite: FullSessionSummary = summary;
     if (existingWithPath) {
       const { summary: existing } = existingWithPath;
-      if (hasAttributableActivity(existing) && !hasAttributableActivity(summary)) {
+      if (hasAttributableActivity(existing) && !hasRecordedUsage(summary)) {
         logger.warn('Refusing to overwrite recorded session with an empty summary', {
           sessionId: summary.sessionId,
         });
