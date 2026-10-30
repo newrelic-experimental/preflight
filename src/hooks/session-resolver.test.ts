@@ -1663,6 +1663,15 @@ describe('breadcrumbs filed by writer', () => {
     );
   });
 
+  it('prefers the most recently active session across tagged and untagged breadcrumbs', () => {
+    const startedAt = Date.now();
+    const before = new Date(startedAt - 60_000);
+    const after = new Date(startedAt + 1_000);
+    utimesSync(writeCrumb('kiro', 'cwd', '-projects-shared', 'sess-ended'), before, before);
+    utimesSync(writeCrumb(null, 'cwd', '-projects-shared', 'sess-live'), after, after);
+    expect(sessionBreadcrumbs(tmpDir, KIRO, startedAt).cwd('/projects/shared')).toBe('sess-live');
+  });
+
   it.each(['generic-mcp', 'kiro', 'copilot', 'copilot-sdk'])(
     'hands a %s engine the breadcrumbs of hooks that stamp no engine',
     (platformName) => {
