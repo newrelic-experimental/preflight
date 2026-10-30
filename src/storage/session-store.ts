@@ -453,7 +453,7 @@ export interface ExactTotals {
  * predates the field. A merged total cannot be split afterwards (the file does
  * not record which writer's figure won the max), so writers persist the split.
  */
-function exactTotalsOf(s: FullSessionSummary): ExactTotals {
+export function exactTotalsOf(s: FullSessionSummary): ExactTotals {
   if (s.exactTotals) return s.exactTotals;
   const ledger = s.byteEstimates;
   return {
@@ -726,10 +726,11 @@ export class SessionStore {
     return this.sessionsDir;
   }
 
-  saveSession(summary: FullSessionSummary): void {
+  /** Returns whether the session file was written. */
+  saveSession(summary: FullSessionSummary): boolean {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(summary.sessionId) || summary.sessionId === 'unknown') {
       logger.warn('Rejecting invalid sessionId for file path', { sessionId: summary.sessionId });
-      return;
+      return false;
     }
 
     if (!existsSync(this.sessionsDir)) {
@@ -757,7 +758,7 @@ export class SessionStore {
       logger.debug('Skipping first write of a session with no recorded usage', {
         sessionId: summary.sessionId,
       });
-      return;
+      return false;
     }
 
     // A second process saving under the same sessionId (e.g. two MCP
@@ -778,7 +779,7 @@ export class SessionStore {
         logger.warn('Refusing to overwrite recorded session with an empty summary', {
           sessionId: summary.sessionId,
         });
-        return;
+        return false;
       }
       // Two processes legitimately share one session id: the CLI/editor
       // spawns an MCP engine that owns the session natively, while a
@@ -825,6 +826,7 @@ export class SessionStore {
         }
       }
       logger.debug('Session saved', { sessionId: toWrite.sessionId, filename });
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn('Failed to save session file', {
@@ -832,6 +834,7 @@ export class SessionStore {
         filename,
         error: message,
       });
+      return false;
     }
   }
 

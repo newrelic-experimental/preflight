@@ -16,7 +16,9 @@ import {
   LocalSessionAggregator,
   RepoNameResolver,
   stripHeredocs,
+  type SummaryContext,
 } from './local-session-aggregator.js';
+import { ZERO_QUALITY_PROXY_COUNTS } from './quality-proxy-tracker.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
 
 // git sets GIT_DIR/GIT_WORK_TREE for hook subprocesses, which override `-C
@@ -42,6 +44,7 @@ function farBackSince(): string {
 }
 
 const REAL_ID = 'a143754c-f742-40b7-bf1a-7dc01ad1932f';
+const MODEL = 'claude-sonnet-4-20250514';
 
 /** Stub resolver so tests never shell out to git. */
 class StubRepoResolver extends RepoNameResolver {
@@ -50,14 +53,71 @@ class StubRepoResolver extends RepoNameResolver {
   }
 }
 
-function summariesOf(agg: LocalSessionAggregator, outcome = 'in progress') {
-  return agg.toSummaries({
+function makeContext(outcome = 'in progress'): SummaryContext {
+  return {
     developer: 'tester',
     platform: 'copilot',
     outcome,
     repoResolver: new StubRepoResolver(),
     toolSelectionScorer: new ToolSelectionScorer(),
-  });
+  };
+}
+
+function summariesOf(agg: LocalSessionAggregator, outcome = 'in progress') {
+  return agg.toSummaries(makeContext(outcome));
+}
+
+/** A session file as a `--stdio` engine writes it. */
+function makeEngineSummary(overrides: Partial<FullSessionSummary>): FullSessionSummary {
+  const now = Date.now();
+  return {
+    sessionId: REAL_ID,
+    sessionName: 'repo',
+    sessionNameSource: null,
+    sessionIntent: null,
+    repoName: null,
+    startTime: now - 60_000,
+    endTime: now,
+    durationMs: 60_000,
+    toolCallCount: 3,
+    developer: 'alice',
+    model: 'claude-sonnet-4-20250514',
+    toolBreakdown: {},
+    skillBreakdown: {},
+    filesRead: [],
+    filesModified: [],
+    linesAdded: 0,
+    linesRemoved: 0,
+    bashCommandCount: 0,
+    testRunCount: 0,
+    testPassCount: 0,
+    buildRunCount: 0,
+    buildPassCount: 0,
+    estimatedCostUsd: 0,
+    subagentCostUsd: 0,
+    tokensInput: 0,
+    tokensOutput: 0,
+    tokensThinking: 0,
+    tokensCacheRead: 0,
+    tokensCacheCreation: 0,
+    cacheSavingsUsd: 0,
+    efficiencyScore: null,
+    toolSelectionMetrics: null,
+    modelBreakdown: {},
+    costByWorkflowRunId: {},
+    qualityProxy: { ...ZERO_QUALITY_PROXY_COUNTS },
+    antiPatterns: [],
+    taskCount: 1,
+    taskSuccessRate: null,
+    toolSuccessRate: null,
+    contextCompressions: 0,
+    agentSpawns: 0,
+    userMessages: 0,
+    assistantMessages: 0,
+    userCorrections: 0,
+    outcome: 'in progress',
+    ...overrides,
+  } as unknown as FullSessionSummary;
 }
 
 describe('LocalSessionAggregator', () => {
@@ -611,148 +671,14 @@ describe('LocalSessionAggregator subagent cost', () => {
   });
 });
 
-describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () => {
-  it('folds the persisted baseline in additively on the session’s first agentId usage', () => {
-    const agg = new LocalSessionAggregator({
-      persistedCostBaseline: () => ({
-        estimatedCostUsd: 10,
-        subagentCostUsd: 4,
-        costByDayUsd: { '2026-09-10': 10 },
-        subagentCostByDayUsd: { '2026-09-10': 4 },
-      }),
-    });
-    agg.recordTokenUsage(REAL_ID, {
-      costUsd: 1,
-      // Local noon, so the turn's local day key is the baseline's '2026-09-10'.
-      timestamp: new Date(2026, 8, 10, 12).getTime(),
-      agentId: 'agent-1',
-    });
-
-    const [summary] = summariesOf(agg);
-    // Additive: the persisted baseline (10 all-in / 4 subagent) plus this
-    // turn's own $1 (also subagent-tagged), not a replacement of either.
-    expect(summary?.estimatedCostUsd).toBe(11);
-    expect(summary?.subagentCostUsd).toBe(5);
-    expect(summary?.costByDayUsd).toEqual({ '2026-09-10': 11 });
-    expect(summary?.subagentCostByDayUsd).toEqual({ '2026-09-10': 5 });
-  });
-
-  it('applies the baseline only once, not on every subsequent agentId usage', () => {
-    let calls = 0;
-    const agg = new LocalSessionAggregator({
-      persistedCostBaseline: () => {
-        calls += 1;
-        return {
-          estimatedCostUsd: 10,
-          subagentCostUsd: 10,
-          costByDayUsd: {},
-          subagentCostByDayUsd: {},
-        };
-      },
-    });
-    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 1000, agentId: 'agent-1' });
-    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 2000, agentId: 'agent-1' });
-    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 3000, agentId: 'agent-2' });
-
-    expect(calls).toBe(1);
-    const [summary] = summariesOf(agg);
-    expect(summary?.subagentCostUsd).toBe(13);
-  });
-
-  it('does not seed on rollup creation — an earlier agentId-less (parent) turn must not trigger it', () => {
-    let calls = 0;
-    const agg = new LocalSessionAggregator({
-      persistedCostBaseline: () => {
-        calls += 1;
-        return null;
-      },
-    });
-    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 1000 });
-    expect(calls).toBe(0);
-
-    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 2000, agentId: 'agent-1' });
-    expect(calls).toBe(1);
-  });
-
-  it('leaves the rollup at its own accumulated total when persistedCostBaseline returns null', () => {
-    const agg = new LocalSessionAggregator({ persistedCostBaseline: () => null });
-    agg.recordTokenUsage(REAL_ID, { costUsd: 2, timestamp: 1000, agentId: 'agent-1' });
-
-    const [summary] = summariesOf(agg);
-    expect(summary?.estimatedCostUsd).toBe(2);
-    expect(summary?.subagentCostUsd).toBe(2);
-  });
-
-  it('never seeds when no persistedCostBaseline option was given', () => {
-    const agg = new LocalSessionAggregator();
-    agg.recordTokenUsage(REAL_ID, { costUsd: 2, timestamp: 1000, agentId: 'agent-1' });
-
-    const [summary] = summariesOf(agg);
-    expect(summary?.estimatedCostUsd).toBe(2);
-    expect(summary?.subagentCostUsd).toBe(2);
-  });
-});
-
-describe('LocalSessionAggregator baseline fold after its own checkpoint', () => {
+describe('LocalSessionAggregator persist', () => {
   const DAY = new Date(2026, 8, 10, 12).getTime();
-
-  it('does not re-add parent cost the aggregator already checkpointed', () => {
-    let file: ReturnType<typeof summariesOf>[number] | undefined;
-    const agg = new LocalSessionAggregator({
-      persistedCostBaseline: () =>
-        file === undefined
-          ? null
-          : {
-              estimatedCostUsd: file.estimatedCostUsd as number,
-              subagentCostUsd: file.subagentCostUsd as number,
-              costByDayUsd: file.costByDayUsd as Record<string, number>,
-              subagentCostByDayUsd: file.subagentCostByDayUsd as Record<string, number>,
-            },
-    });
-    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
-    agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
-    [file] = summariesOf(agg);
-
-    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
-
-    const [summary] = summariesOf(agg);
-    expect(summary?.estimatedCostUsd).toBe(6);
-    expect(summary?.subagentCostUsd).toBe(1);
-    expect(summary?.costByDayUsd).toEqual({ '2026-09-10': 6 });
-    expect(summary?.subagentCostByDayUsd).toEqual({ '2026-09-10': 1 });
-  });
-
-  it('still folds the part of the file another writer added beyond the checkpoint', () => {
-    let fileCost = 0;
-    const agg = new LocalSessionAggregator({
-      persistedCostBaseline: () => ({
-        estimatedCostUsd: fileCost,
-        subagentCostUsd: 0,
-        costByDayUsd: { '2026-09-10': fileCost },
-        subagentCostByDayUsd: {},
-      }),
-    });
-    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
-    agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
-    summariesOf(agg);
-    fileCost = 8;
-
-    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
-
-    const [summary] = summariesOf(agg);
-    expect(summary?.estimatedCostUsd).toBe(9);
-    expect(summary?.costByDayUsd).toEqual({ '2026-09-10': 9 });
-  });
-});
-
-describe('LocalSessionAggregator saves across a restart', () => {
-  const DAY = new Date(2026, 8, 10, 12).getTime();
-  const MODEL = 'claude-sonnet-4-5-20250929';
+  const DAY_KEY = localDateKey(DAY);
   let storagePath: string;
   let store: SessionStore;
 
   beforeEach(() => {
-    storagePath = mkdtempSync(join(tmpdir(), 'agg-restart-'));
+    storagePath = mkdtempSync(join(tmpdir(), 'agg-persist-'));
     store = new SessionStore({ storagePath });
   });
 
@@ -760,65 +686,128 @@ describe('LocalSessionAggregator saves across a restart', () => {
     rmSync(storagePath, { recursive: true, force: true });
   });
 
-  function makeAggregator(): LocalSessionAggregator {
-    return new LocalSessionAggregator({ persistedCostBaseline: (id) => store.loadSession(id) });
-  }
+  it('adds its own cost to the file another writer saved', () => {
+    store.saveSession(
+      makeEngineSummary({
+        estimatedCostUsd: 10,
+        subagentCostUsd: 4,
+        costByDayUsd: { [DAY_KEY]: 10 },
+        subagentCostByDayUsd: { [DAY_KEY]: 4 },
+      }),
+    );
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY, agentId: 'agent-1' });
 
-  function saveSummaries(agg: LocalSessionAggregator): void {
-    for (const summary of summariesOf(agg, 'completed')) {
-      store.saveSession(summary as unknown as FullSessionSummary);
+    agg.persist(store, makeContext());
+
+    const file = store.loadSession(REAL_ID);
+    expect(file?.estimatedCostUsd).toBe(11);
+    expect(file?.subagentCostUsd).toBe(5);
+    expect(file?.costByDayUsd).toEqual({ [DAY_KEY]: 11 });
+    expect(file?.subagentCostByDayUsd).toEqual({ [DAY_KEY]: 5 });
+  });
+
+  it('adds nothing more when it saves the same session again', () => {
+    store.saveSession(makeEngineSummary({ estimatedCostUsd: 10, subagentCostUsd: 10 }));
+    const agg = new LocalSessionAggregator();
+    for (const [i, agentId] of ['agent-1', 'agent-1', 'agent-2'].entries()) {
+      agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + i, agentId });
+      agg.persist(store, makeContext());
     }
-  }
+    agg.persist(store, makeContext());
+
+    const file = store.loadSession(REAL_ID);
+    expect(file?.estimatedCostUsd).toBe(13);
+    expect(file?.subagentCostUsd).toBe(13);
+  });
+
+  it('counts a file another writer saved after this session’s rollup started', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY });
+    store.saveSession(makeEngineSummary({ estimatedCostUsd: 5 }));
+
+    agg.persist(store, makeContext());
+
+    expect(store.loadSession(REAL_ID)?.estimatedCostUsd).toBe(6);
+  });
+
+  it('writes its own total when no file exists yet', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { costUsd: 2, timestamp: DAY, agentId: 'agent-1' });
+
+    agg.persist(store, makeContext());
+
+    const file = store.loadSession(REAL_ID);
+    expect(file?.estimatedCostUsd).toBe(2);
+    expect(file?.subagentCostUsd).toBe(2);
+  });
+
+  it('does not re-add cost it already saved', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
+    agg.persist(store, makeContext());
+
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
+    agg.persist(store, makeContext());
+
+    const file = store.loadSession(REAL_ID);
+    expect(file?.estimatedCostUsd).toBe(6);
+    expect(file?.subagentCostUsd).toBe(1);
+    expect(file?.costByDayUsd).toEqual({ [DAY_KEY]: 6 });
+    expect(file?.subagentCostByDayUsd).toEqual({ [DAY_KEY]: 1 });
+  });
 
   it('keeps the saved session cost across a process restart', () => {
-    const before = makeAggregator();
+    const before = new LocalSessionAggregator();
     before.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
     before.recordTokenUsage(REAL_ID, { costUsd: 10, timestamp: DAY });
-    saveSummaries(before);
+    before.persist(store, makeContext());
 
-    const after = makeAggregator();
+    const after = new LocalSessionAggregator();
     after.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
     after.recordTokenUsage(REAL_ID, { costUsd: 2, timestamp: DAY });
-    saveSummaries(after);
+    after.persist(store, makeContext());
 
     expect(store.loadSession(REAL_ID)?.estimatedCostUsd).toBeCloseTo(12, 6);
   });
 
   it('adds a parent-only turn after a --local restart to the session saved before it', () => {
-    const before = makeAggregator();
+    const before = new LocalSessionAggregator();
     before.recordToolCall({ sessionId: REAL_ID, toolName: 'Bash', timestamp: DAY });
     before.recordTokenUsage(REAL_ID, { costUsd: 0.0096, model: MODEL, timestamp: DAY + 1 });
     before.recordTokenUsage(REAL_ID, { costUsd: 0.0096, model: MODEL, timestamp: DAY + 2 });
-    saveSummaries(before);
+    before.persist(store, makeContext('completed'));
     expect(store.loadSession(REAL_ID)?.estimatedCostUsd).toBeCloseTo(0.0192, 6);
 
-    const after = makeAggregator();
+    const after = new LocalSessionAggregator();
     after.recordTokenUsage(REAL_ID, { costUsd: 0.0096, model: MODEL, timestamp: DAY + 3 });
-    saveSummaries(after);
+    after.persist(store, makeContext('completed'));
 
     expect(store.loadSession(REAL_ID)?.estimatedCostUsd).toBeCloseTo(0.0288, 6);
   });
+
   it('does not count twice the cost a writer seeded from its own save', () => {
-    const dayKey = localDateKey(DAY);
-    const agg = makeAggregator();
+    const agg = new LocalSessionAggregator();
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
     agg.recordTokenUsage(REAL_ID, { costUsd: 2, timestamp: DAY });
-    saveSummaries(agg);
+    agg.persist(store, makeContext());
 
     const seeded = store.loadSession(REAL_ID)!;
     store.saveSession({
       ...seeded,
       estimatedCostUsd: (seeded.estimatedCostUsd ?? 0) + 3,
-      costByDayUsd: { [dayKey]: (seeded.costByDayUsd?.[dayKey] ?? 0) + 3 },
+      costByDayUsd: { [DAY_KEY]: (seeded.costByDayUsd?.[DAY_KEY] ?? 0) + 3 },
     });
 
     agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000 });
-    saveSummaries(agg);
-    saveSummaries(agg);
+    agg.persist(store, makeContext());
+    agg.persist(store, makeContext());
 
     const file = store.loadSession(REAL_ID);
     expect(file?.estimatedCostUsd).toBeCloseTo(6, 6);
-    expect(file?.costByDayUsd?.[dayKey]).toBeCloseTo(6, 6);
+    expect(file?.costByDayUsd?.[DAY_KEY]).toBeCloseTo(6, 6);
   });
 });
 

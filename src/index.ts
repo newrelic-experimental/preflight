@@ -1371,10 +1371,6 @@ async function main(): Promise<void> {
     };
 
     sessionStore = new SessionStore({ storagePath: config.storagePath });
-    // Non-null capture so the aggregator's callback (invoked lazily, long
-    // after this point) doesn't have to re-narrow `sessionStore: SessionStore
-    // | undefined` — same pattern as sessionStoreForCostBaseline below.
-    const sessionStoreForAggregator = sessionStore;
     const currentSessionId = sessionTracker.getMetrics().sessionId;
     let currentRepoName: string | null = null;
 
@@ -1383,13 +1379,7 @@ async function main(): Promise<void> {
     // synthetic id, which persistSession() skips — so without this rollup the
     // sessions it observes are never written to disk at all. See
     // local-session-aggregator.ts for why that hits Copilot but not Claude Code.
-    const localSessionAggregator = new LocalSessionAggregator({
-      // Restart survival: each checkpoint folds in whatever that session's
-      // file holds beyond what this rollup already counts (a --stdio
-      // engine's write, or a previous daemon's checkpoint), so the max-based
-      // merge cannot drop this process's tail. See applyPersistedBaseline.
-      persistedCostBaseline: (id) => sessionStoreForAggregator.loadSession(id),
-    });
+    const localSessionAggregator = new LocalSessionAggregator();
     const repoNameResolver = new RepoNameResolver();
 
     const budgetTracker = new BudgetTracker({
@@ -2687,22 +2677,17 @@ async function main(): Promise<void> {
           // draining other sessions' buffers destructively — so if it returns
           // here without writing them, those events are simply lost. Persist
           // each real session it observed instead.
-          const rollups = localSessionAggregator.toSummaries({
+          const persistedSessions = localSessionAggregator.persist(sessionStore, {
             developer: config.developer ?? 'unknown',
             platform: eventProcessor?.activePlatform,
             outcome: opts?.periodic ? 'in progress' : 'completed',
             toolSelectionScorer,
             repoResolver: repoNameResolver,
           });
-          for (const rollup of rollups) {
-            sessionStore.saveSession(
-              rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
-            );
-          }
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
-              persistedSessions: rollups.length,
+              persistedSessions,
             });
           }
           return;
