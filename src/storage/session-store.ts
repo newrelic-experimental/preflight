@@ -17,6 +17,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -322,6 +323,16 @@ export interface SessionFileInfo {
 export interface ListSessionsOptions {
   since?: Date;
   developer?: string;
+}
+
+export interface LoadSessionsOptions extends ListSessionsOptions {
+  /**
+   * Also load files whose filename date is older than `since` when the file
+   * was modified at or after this time. A resumed session keeps its original
+   * start-date filename but is rewritten on every checkpoint, so mtime is the
+   * cheap way to find it without parsing every file on disk.
+   */
+  includeModifiedSince?: Date;
 }
 
 // ---------------------------------------------------------------------------
@@ -889,10 +900,11 @@ export class SessionStore {
     );
   }
 
-  loadAllSessions(options?: ListSessionsOptions): FullSessionSummary[] {
+  loadAllSessions(options?: LoadSessionsOptions): FullSessionSummary[] {
     if (!existsSync(this.sessionsDir)) return [];
 
     const sinceDate = options?.since ? formatDate(options.since) : null;
+    const modifiedSinceMs = options?.includeModifiedSince?.getTime() ?? null;
     const results: FullSessionSummary[] = [];
 
     for (const file of readdirSync(this.sessionsDir)) {
@@ -901,7 +913,14 @@ export class SessionStore {
       const parsed = parseSessionFilename(file);
       if (!parsed) continue;
 
-      if (sinceDate && parsed.date < sinceDate) continue;
+      if (sinceDate && parsed.date < sinceDate) {
+        if (modifiedSinceMs === null) continue;
+        try {
+          if (statSync(join(this.sessionsDir, file)).mtimeMs < modifiedSinceMs) continue;
+        } catch {
+          continue;
+        }
+      }
 
       try {
         const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
@@ -956,6 +975,29 @@ export class SessionStore {
     // "unknown end" and include them — they are already bounded to the 2-day
     // window by loadAllSessions({ since: yesterday }).
     return all.filter((s) => s.endTime === 0 || s.endTime >= startOfToday);
+  }
+
+  /**
+   * `loadSessionsOverlappingToday()` plus resumed sessions that keep an older
+   * start-date filename but have tool-call activity today. Files outside the
+   * 2-day window are found by mtime (a checkpoint rewrites them) and kept only
+   * when their timeline has an entry today. Callers must clamp each session's
+   * activity to today, since a returned session can carry earlier days too.
+   */
+  loadSessionsWithActivityToday(): FullSessionSummary[] {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startOfToday = today.getTime();
+    const windowStart = startOfToday - 86_400_000;
+    const all = this.loadAllSessions({
+      since: new Date(windowStart),
+      includeModifiedSince: today,
+    });
+    return all.filter((s) =>
+      s.startTime >= windowStart
+        ? s.endTime === 0 || s.endTime >= startOfToday
+        : (s.timeline?.some((t) => t.timestamp >= startOfToday) ?? false),
+    );
   }
 }
 

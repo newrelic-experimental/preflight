@@ -223,15 +223,15 @@ The full key list lives in `DANGEROUS_ENV_KEYS` (`src/lib/child-env.ts`). If you
 
 ### Secret helper commands — `src/secret-command.ts`
 
-`licenseKeyCommand`, `nrApiKeyCommand` and `digestWebhookUrlCommand` run a configured program at startup to read a secret from stdout. See [ADVANCED.md](./docs/ADVANCED.md#secret-helper-commands) for user-facing behavior. Invariants:
+`licenseKeyCommand`, `nrApiKeyCommand`, `digestWebhookUrlCommand` and `tiers[].destination.licenseKeyCommand` run a configured program at startup to read a secret from stdout. See [ADVANCED.md](./docs/ADVANCED.md#secret-helper-commands) for user-facing behavior. Invariants:
 
 1. **argv only, no shell** — the config value is a JSON array passed to `spawnSync` with `shell: false`. A string form is rejected by the schema.
 2. **Absolute executable path** — same rule as `StdioUpstream`.
 3. **Dangerous env keys stripped** — the child gets `process.env` through `stripDangerousEnv()`. Everything else is inherited, so a helper can read `NEW_RELIC_LICENSE_KEY` and any other secret in Preflight's environment. Only point these fields at programs you trust with that environment.
 4. **Bounded** — 20-second timeout, 64 KiB stdout cap, stdin closed, stderr discarded.
-5. **Errors never carry output or argv** — `SecretCommandError` names only the field and the failure class. stdout is the secret, and stderr or arguments can contain parts of it.
+5. **Errors never carry output or argv** — `SecretCommandError` names only the field, the tier (for a tier command) and the failure class. stdout is the secret, and stderr or arguments can contain parts of it.
 6. **Never logged** — the resolved value lands in the same config field as the plaintext value and is handled the same way. Source reporting (`secretSources`) carries `env | command | file | unset`, never the value.
-7. **Not run when outranked** — an env var for the same field skips the command, `licenseKeyCommand` and `nrApiKeyCommand` never run in `mode: 'local'`, and the dashboard's polled `/api/diagnostics` route and `getDashboardAddress()` load config with `resolveSecrets: false` so they never run a helper.
+7. **Not run when outranked** — an env var for the same field skips the command, `licenseKeyCommand`, `nrApiKeyCommand` and tier commands never run in `mode: 'local'`, and the dashboard's polled `/api/diagnostics` route and `getDashboardAddress()` load config with `resolveSecrets: false` so they never run a helper (tier commands included).
 
 ---
 
