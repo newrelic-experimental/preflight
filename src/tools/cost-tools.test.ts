@@ -497,10 +497,7 @@ describe('handleGetBudgetStatus()', () => {
 
 describe('handleGetCostForecast()', () => {
   it('anchors the end-of-day forecast to getCostForDay()/getFirstActivityMsForDay(), not the full session spend', () => {
-    // Freeze the clock at a fixed local noon. The handler and the `expected`
-    // computation below each read Date.now() independently, so the clock must
-    // not move between them. Noon keeps today's anchor an hour old, past the
-    // 10-minute forecast minimum, at any wall-clock time the suite runs.
+    // Fixed local noon: the day anchor must be older than the forecast minimum.
     jest.useFakeTimers({ now: new Date(2024, 0, 3, 12).getTime() });
     try {
       runAnchoredForecastCase();

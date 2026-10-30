@@ -111,9 +111,9 @@ export function buildCostForecastFromInputs(
     effectiveBaseUsd = sessionSpentUsd;
   }
   const forecastHeld = effectiveElapsedMs < MIN_FORECAST_WINDOW_MS;
-  const forecastEndOfDayUsd = forecastHeld
-    ? null
-    : effectiveBaseUsd + effectiveRateUsdPerMs * msUntilEndOfDay;
+  const project = (msRemaining: number): number | null =>
+    forecastHeld ? null : effectiveBaseUsd + effectiveRateUsdPerMs * msRemaining;
+  const forecastEndOfDayUsd = project(msUntilEndOfDay);
 
   // ISO week ends on Sunday. Convert local getDay() (0=Sun…6=Sat) to ISO day (1=Mon…7=Sun)
   // then compute remaining days: Sunday → 0 remaining, Monday → 6, …, Saturday → 1.
@@ -122,9 +122,7 @@ export function buildCostForecastFromInputs(
   const dayOfWeek = now.getDay();
   const isoDay = dayOfWeek === 0 ? 7 : dayOfWeek;
   const msUntilEndOfWeek = ((7 - isoDay) % 7) * 86_400_000 + msUntilEndOfDay;
-  const forecastEndOfWeekUsd = forecastHeld
-    ? null
-    : effectiveBaseUsd + effectiveRateUsdPerMs * msUntilEndOfWeek;
+  const forecastEndOfWeekUsd = project(msUntilEndOfWeek);
 
   // Assumes a full 8-hour workday as the session-end horizon — there's no
   // real "end of session" signal to anchor this forecast to otherwise.
@@ -132,13 +130,11 @@ export function buildCostForecastFromInputs(
   const msUntilSessionEnd = Math.max(0, SESSION_TARGET_MS - elapsedMs);
   const forecastSessionEndUsd = sessionSpentUsd + sessionRateUsdPerMs * msUntilSessionEnd;
 
-  const elapsedMinutes = effectiveElapsedMs / 60_000;
-  const confidenceNote =
-    elapsedMinutes < 10
-      ? 'Low confidence — less than 10 minutes of data.'
-      : elapsedMinutes < 30
-        ? 'Moderate confidence — based on less than 30 minutes of data.'
-        : 'Reasonable confidence — based on 30+ minutes of data.';
+  const confidenceNote = forecastHeld
+    ? 'Low confidence — less than 10 minutes of data.'
+    : effectiveElapsedMs < 30 * 60_000
+      ? 'Moderate confidence — based on less than 30 minutes of data.'
+      : 'Reasonable confidence — based on 30+ minutes of data.';
 
   return {
     elapsedMs,
