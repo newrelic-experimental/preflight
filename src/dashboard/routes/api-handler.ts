@@ -610,11 +610,6 @@ export interface ApiHandlerDeps {
     // set for older fakes/mocks.
     getTodaySessionIds?: (options?: { includeSynthetic?: boolean }) => string[];
   };
-  readonly concurrencyTracker?: {
-    getConcurrentCount: () => number;
-    getPeakConcurrent: () => number;
-    getConcurrencyTimeSeries: () => readonly { timestamp: number; count: number }[];
-  };
   readonly contextTracker?: { getMetrics: (sessionId?: string) => ContextTrackerMetrics };
   readonly contextCompositionTracker?: { getMetrics: () => ContextCompositionMetrics };
   readonly contextEfficiencyTracker?: { getMetrics: () => ContextWindowMetrics };
@@ -2874,10 +2869,8 @@ export function createApiHandler(
   });
 
   routes.set('GET /api/concurrency', (req, res) => {
-    if (!deps.concurrencyTracker) return unavailable(res, 'concurrencyTracker');
+    if (!deps.liveSessionRegistry) return unavailable(res, 'liveSessionRegistry');
     try {
-      const livePeak = deps.concurrencyTracker.getPeakConcurrent();
-
       const url = new URL(req.url ?? '/', 'http://localhost');
       const view = url.searchParams.get('view');
       if (view === 'history') {
@@ -2915,15 +2908,14 @@ export function createApiHandler(
       );
 
       // The headline peak is derived from the same buckets as the chart so they
-      // cannot disagree. Not folded with `livePeak` (unlike allTimePeak below):
-      // it is a synthetic-id-unfiltered, never-reset lifetime max, and the
-      // buckets already include live sessions' buffered activity.
+      // cannot disagree, and the buckets already include live sessions'
+      // buffered activity.
       const { startTimestamp, buckets, peak: historicalPeak } = computeTodayConcurrency(deps);
 
       jsonOk(res, {
         current: computeCrossProcessLiveSessionIds(deps).length,
         peak: historicalPeak,
-        allTimePeak: Math.max(livePeak, historicalPeak, allTimePeak),
+        allTimePeak: Math.max(historicalPeak, allTimePeak),
         bucketSizeMs: CONCURRENCY_BUCKET_SIZE_MS,
         startTimestamp,
         buckets,
