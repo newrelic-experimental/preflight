@@ -16,6 +16,14 @@ export interface TokenUsage {
   readonly audioInputTokens?: number;
   /** Subset of `cacheReadTokens` that is audio (Gemini). Omitted when zero. */
   readonly audioCacheReadTokens?: number;
+  /** Subset of `outputTokens` that is audio (Gemini). Omitted when zero. */
+  readonly audioOutputTokens?: number;
+  /**
+   * Subset of `cacheCreationTokens` written to the 1-hour cache (Anthropic
+   * `cache_creation.ephemeral_1h_input_tokens`). The remainder is 5m. Omitted
+   * when zero.
+   */
+  readonly cacheCreation1hTokens?: number;
 }
 
 // Internal mutable snapshot — TokenAccumulator mutates fields in-place across
@@ -68,10 +76,27 @@ const EMPTY_USAGE: Readonly<TokenUsage> = Object.freeze({
 // Anthropic extraction
 // ---------------------------------------------------------------------------
 
+interface AnthropicCacheCreation {
+  ephemeral_1h_input_tokens?: number;
+  ephemeral_5m_input_tokens?: number;
+}
+
+function anthropicCacheCreation1h(
+  usage: { cache_creation?: AnthropicCacheCreation },
+  cacheCreationTokens: number,
+): Pick<TokenUsage, 'cacheCreation1hTokens'> {
+  const tokens = Math.min(
+    safeInt(usage.cache_creation?.ephemeral_1h_input_tokens),
+    cacheCreationTokens,
+  );
+  return tokens > 0 ? { cacheCreation1hTokens: tokens } : {};
+}
+
 interface AnthropicUsage {
   input_tokens?: number;
   output_tokens?: number;
   cache_creation_input_tokens?: number;
+  cache_creation?: AnthropicCacheCreation;
   cache_read_input_tokens?: number;
   // Future-proofing: Anthropic currently folds extended-thinking output into
   // output_tokens. If a future SDK exposes a dedicated thinking_tokens field
@@ -102,6 +127,7 @@ export function extractAnthropicTokens(response: AnthropicResponse): TokenUsage 
     cacheCreationTokens,
     totalTokens:
       inputTokens + outputTokens + thinkingTokens + cacheReadTokens + cacheCreationTokens,
+    ...anthropicCacheCreation1h(usage, cacheCreationTokens),
   };
 }
 
@@ -116,6 +142,9 @@ interface GeminiUsageMetadata {
   cachedContentTokenCount?: number;
   totalTokenCount?: number;
   promptTokensDetails?: GeminiModalityTokenCount[];
+  candidatesTokensDetails?: GeminiModalityTokenCount[];
+  // Live API name for candidatesTokensDetails.
+  responseTokensDetails?: GeminiModalityTokenCount[];
   cacheTokensDetails?: GeminiModalityTokenCount[];
 }
 
@@ -135,16 +164,20 @@ function sumAudioTokens(details: GeminiModalityTokenCount[] | undefined): number
 
 function geminiAudioUsage(
   meta: GeminiUsageMetadata,
-): Pick<TokenUsage, 'audioInputTokens' | 'audioCacheReadTokens'> {
+): Pick<TokenUsage, 'audioInputTokens' | 'audioCacheReadTokens' | 'audioOutputTokens'> {
   const audioCacheReadTokens = sumAudioTokens(meta.cacheTokensDetails);
   // promptTokensDetails covers the whole prompt, cached audio included.
   const audioInputTokens = Math.max(
     0,
     sumAudioTokens(meta.promptTokensDetails) - audioCacheReadTokens,
   );
+  const audioOutputTokens = sumAudioTokens(
+    meta.candidatesTokensDetails ?? meta.responseTokensDetails,
+  );
   return {
     ...(audioInputTokens > 0 && { audioInputTokens }),
     ...(audioCacheReadTokens > 0 && { audioCacheReadTokens }),
+    ...(audioOutputTokens > 0 && { audioOutputTokens }),
   };
 }
 
@@ -525,6 +558,7 @@ interface AnthropicStreamEvent {
     output_tokens?: number;
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
+    cache_creation?: AnthropicCacheCreation;
     // Extended-thinking field — add when Anthropic surfaces it on streaming
     // events. Present on the non-streaming AnthropicUsage but absent here
     // until confirmed in the streaming spec. Adding it now so addAnthropicChunk
@@ -644,12 +678,22 @@ export class TokenAccumulator {
     this.finalized = false;
   }
 
+  private setCacheCreation1h(usage: { cache_creation?: AnthropicCacheCreation }): void {
+    const { cacheCreation1hTokens } = anthropicCacheCreation1h(
+      usage,
+      this.latestUsage.cacheCreationTokens,
+    );
+    if (cacheCreation1hTokens === undefined) delete this.latestUsage.cacheCreation1hTokens;
+    else this.latestUsage.cacheCreation1hTokens = cacheCreation1hTokens;
+  }
+
   private addAnthropicChunk(event: AnthropicStreamEvent): void {
     if (event.type === 'message_start' && event.message?.usage) {
       const usage = event.message.usage;
       this.latestUsage.inputTokens = safeInt(usage.input_tokens);
       this.latestUsage.cacheReadTokens = safeInt(usage.cache_read_input_tokens);
       this.latestUsage.cacheCreationTokens = safeInt(usage.cache_creation_input_tokens);
+      this.setCacheCreation1h(usage);
       this.latestUsage.totalTokens =
         this.latestUsage.inputTokens +
         this.latestUsage.outputTokens +
@@ -676,6 +720,9 @@ export class TokenAccumulator {
       }
       if (u.cache_creation_input_tokens !== undefined) {
         this.latestUsage.cacheCreationTokens = safeInt(u.cache_creation_input_tokens);
+      }
+      if (u.cache_creation_input_tokens !== undefined || u.cache_creation !== undefined) {
+        this.setCacheCreation1h(u);
       }
       if (u.thinking_tokens !== undefined) {
         this.latestUsage.thinkingTokens = safeInt(u.thinking_tokens);

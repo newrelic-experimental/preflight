@@ -1,6 +1,7 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import {
   toolCallToNrEvent,
+  turnCostToNrEvents,
   codingTaskToNrEvent,
   antiPatternToNrEvent,
   retryAlertToNrEvent,
@@ -34,6 +35,7 @@ import { EfficiencyScorer } from '../metrics/efficiency-score.js';
 import { GitEfficiencyTracker } from '../metrics/git-efficiency-tracker.js';
 import { FeedbackCollector } from '../tools/workflow-tools.js';
 import { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
+import { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 import type { TokenUsage } from '../shared/index.js';
 import type { ResolvedTier } from './tier-types.js';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
@@ -159,7 +161,7 @@ function makeClosedTurn(overrides?: Partial<ClosedTurn>): ClosedTurn {
   return {
     id: 'closed-turn-uuid-001',
     attribution,
-    calls: [{ toolUseId: 'toolu_001', toolName: 'Read', skillName: null }],
+    calls: [{ toolUseId: 'toolu_001', toolName: 'Read', skill: null }],
     platform: 'claude-code',
     ...overrides,
   };
@@ -475,16 +477,76 @@ describe('toolCallToNrEvent()', () => {
       expect(event.agentTeamName as string).not.toContain(SECRET_TOKEN);
     });
 
-    it('redacts secrets in skillName', () => {
+    it('redacts secrets in skill_name', () => {
       const record = makeRecord({
         toolName: 'Skill',
-        skillName: `api-key-${SECRET_TOKEN}`,
-      } as unknown as Partial<ToolCallRecord>);
+        activeSkill: {
+          name: `api-key-${SECRET_TOKEN}`,
+          source: 'tool',
+          runId: 'run-1',
+        },
+      });
 
       const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
 
-      expect(event.skillName as string).not.toContain(SECRET_TOKEN);
-      expect(event.skillName as string).toContain('[REDACTED]');
+      expect(event.skill_name as string).not.toContain(SECRET_TOKEN);
+      expect(event.skill_name as string).toContain('[REDACTED]');
+    });
+
+    it('emits the skill run as snake_case attributes and drops camelCase skillName', () => {
+      const record = makeRecord({
+        toolName: 'Skill',
+        skillName: 'code-review',
+        activeSkill: { name: 'code-review', source: 'slash', runId: 'run-7' },
+      });
+
+      const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event).toMatchObject({
+        skill_name: 'code-review',
+        skill_source: 'slash',
+        skill_run_id: 'run-7',
+      });
+      expect(event).not.toHaveProperty('skillName');
+      expect(event).not.toHaveProperty('activeSkill');
+      expect(event).not.toHaveProperty('skill_parent_run_id');
+    });
+
+    it('names the attempted skill on a failed Skill call outside any run', () => {
+      const record = makeRecord({ toolName: 'Skill', skillName: 'deploy', success: false });
+
+      const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event).toMatchObject({ skill_name: 'deploy', skill_source: 'tool' });
+      expect(event).not.toHaveProperty('skill_run_id');
+    });
+
+    it('keeps the surrounding run intact on a failed Skill call inside it', () => {
+      const record = makeRecord({
+        toolName: 'Skill',
+        skillName: 'deploy',
+        success: false,
+        activeSkill: { name: 'review', source: 'slash', runId: 'run-1' },
+      });
+
+      const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event).toMatchObject({
+        skill_name: 'review',
+        skill_source: 'slash',
+        skill_run_id: 'run-1',
+      });
+    });
+
+    it('emits skill_parent_run_id for a nested skill run', () => {
+      const record = makeRecord({
+        toolName: 'Read',
+        activeSkill: { name: 'unslop', source: 'tool', runId: 'run-2', parentRunId: 'run-1' },
+      });
+
+      const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event.skill_parent_run_id).toBe('run-1');
     });
 
     it('does not redact non-sensitive string fields', () => {
@@ -2077,8 +2139,12 @@ describe('NrIngestManager.ingestTurnCost()', () => {
 
     const turn = makeClosedTurn({
       calls: [
-        { toolUseId: 'toolu_001', toolName: 'Read', skillName: null },
-        { toolUseId: 'toolu_002', toolName: 'Skill', skillName: 'code-review' },
+        { toolUseId: 'toolu_001', toolName: 'Read', skill: null },
+        {
+          toolUseId: 'toolu_002',
+          toolName: 'Skill',
+          skill: { name: 'code-review', source: 'tool', runId: 'run-1' } as const,
+        },
       ],
       attribution: {
         turnId: 'turn-001',
@@ -2113,7 +2179,7 @@ describe('NrIngestManager.ingestTurnCost()', () => {
 
     const turn = makeClosedTurn({
       id: 'turn-id-123',
-      calls: [{ toolUseId: 'toolu_001', toolName: 'Read', skillName: null }],
+      calls: [{ toolUseId: 'toolu_001', toolName: 'Read', skill: null }],
       attribution: {
         turnId: 'turn-001',
         startTime: 1_700_000_000_000,
@@ -2154,15 +2220,19 @@ describe('NrIngestManager.ingestTurnCost()', () => {
     expect(event!.platform).toBe('claude-code');
   });
 
-  it('skillName appears only on Skill rows and is redacted when secret-shaped', async () => {
+  it('skill_name appears only on Skill rows and is redacted when secret-shaped', async () => {
     const manager = new NrIngestManager(makeIngestOptions());
 
     const secretSkillName = 'sk_test_' + 'a'.repeat(30);
 
     const turn = makeClosedTurn({
       calls: [
-        { toolUseId: 'toolu_001', toolName: 'Read', skillName: null },
-        { toolUseId: 'toolu_002', toolName: 'Skill', skillName: secretSkillName },
+        { toolUseId: 'toolu_001', toolName: 'Read', skill: null },
+        {
+          toolUseId: 'toolu_002',
+          toolName: 'Skill',
+          skill: { name: secretSkillName, source: 'tool', runId: 'run-1' } as const,
+        },
       ],
       attribution: {
         turnId: 'turn-001',
@@ -2191,9 +2261,9 @@ describe('NrIngestManager.ingestTurnCost()', () => {
     const readEvent = sentEvents.find((e) => e.eventType === 'AiTurnCost' && e.tool === 'Read');
     const skillEvent = sentEvents.find((e) => e.eventType === 'AiTurnCost' && e.tool === 'Skill');
 
-    expect(readEvent).not.toHaveProperty('skillName');
-    expect(skillEvent!.skillName).not.toBe(secretSkillName);
-    expect(skillEvent!.skillName).toBeDefined();
+    expect(readEvent).not.toHaveProperty('skill_name');
+    expect(skillEvent!.skill_name).not.toBe(secretSkillName);
+    expect(skillEvent!.skill_name).toBeDefined();
   });
 
   it('sum(cost_usd) equals turn_cost_usd and token fields sum correctly', async () => {
@@ -2201,8 +2271,12 @@ describe('NrIngestManager.ingestTurnCost()', () => {
 
     const turn = makeClosedTurn({
       calls: [
-        { toolUseId: 'toolu_001', toolName: 'Read', skillName: null },
-        { toolUseId: 'toolu_002', toolName: 'Skill', skillName: 'code-review' },
+        { toolUseId: 'toolu_001', toolName: 'Read', skill: null },
+        {
+          toolUseId: 'toolu_002',
+          toolName: 'Skill',
+          skill: { name: 'code-review', source: 'tool', runId: 'run-1' } as const,
+        },
       ],
       attribution: {
         turnId: 'turn-001',
@@ -3930,5 +4004,82 @@ describe('NrIngestManager — routeEvent fan-out', () => {
     manager.start();
     await manager.stop();
     expect(eventsSentWithKey('lk-team')).toEqual([]);
+  });
+});
+
+describe('AiTurnCost coverage of token reports', () => {
+  const attrs = { developer: 'dev', appName: 'app' };
+  const tokens = (timestamp: number) => ({
+    mode: 'token' as const,
+    timestamp,
+    inputTokens: 10_000,
+    outputTokens: 2_000,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    model: 'claude-sonnet-4-20250514',
+    sessionId: 'sess-1',
+  });
+  const read = (timestamp: number): ToolCallRecord => ({
+    id: `r${timestamp}`,
+    sessionId: 'sess-1',
+    toolName: 'Read',
+    toolUseId: `tu${timestamp}`,
+    timestamp,
+    durationMs: 100,
+    success: true,
+    platform: 'github-copilot',
+  });
+
+  it('every token report lands in AiTurnCost exactly once, and local tool totals are unchanged', () => {
+    const attributor = new TurnCostAttributor();
+    const rows: ReturnType<typeof turnCostToNrEvents> = [];
+    const report = (timestamp: number) => {
+      rows.push(...turnCostToNrEvents(attributor.recordTokenEvent(tokens(timestamp)), attrs));
+    };
+
+    report(1_000);
+    attributor.recordToolCall(read(2_000));
+    report(1_500);
+    report(3_000);
+    report(5_000);
+
+    const readRow = rows.find((r) => r.tool === 'Read')!;
+    const perReport = readRow.turn_cost_usd as number;
+    const responseRows = rows.filter((r) => !('tool' in r));
+
+    expect(rows).toHaveLength(4);
+    expect(responseRows).toHaveLength(3);
+    expect(rows.reduce((sum, r) => sum + (r.cost_usd as number), 0)).toBeCloseTo(4 * perReport, 10);
+    for (const row of responseRows) {
+      expect(row).toMatchObject({
+        eventType: 'AiTurnCost',
+        cost_usd: perReport,
+        turn_cost_usd: perReport,
+        input_tokens: 10_000,
+        output_tokens: 2_000,
+        turn_tool_call_count: 0,
+        session_id: 'sess-1',
+      });
+      expect(row).not.toHaveProperty('tool_use_id');
+    }
+    expect(responseRows.map((r) => r.platform)).toEqual([
+      'claude-code',
+      'github-copilot',
+      'github-copilot',
+    ]);
+
+    const metrics = attributor.getMetrics();
+    expect(metrics.totalAttributedCost).toBeCloseTo(perReport, 10);
+    expect(metrics.turns).toHaveLength(1);
+    expect(metrics.costByToolType.Read.totalCost).toBeCloseTo(perReport, 10);
+  });
+
+  it('tags a Claude Code response row cost_authority=external in companion mode before any tool call', () => {
+    const attributor = new TurnCostAttributor();
+    const turn = attributor.recordTokenEvent({ ...tokens(1_000), platform: 'claude-code' });
+
+    const [row] = turnCostToNrEvents(turn, { ...attrs, companionMode: true });
+
+    expect(row).toMatchObject({ platform: 'claude-code', cost_authority: 'external' });
   });
 });

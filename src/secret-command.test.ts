@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 import { __resetLogLevelCache } from './shared/logger.js';
-import { digestWebhookUrlOverride, loadMcpConfig } from './config.js';
+import { CloudSecretCommandError, digestWebhookUrlOverride, loadMcpConfig } from './config.js';
 import { resolveSecretCommand, SecretCommandError } from './secret-command.js';
 import { detectCloudForwardingGap } from './transport/unforwarded-session-monitor.js';
 
@@ -414,5 +414,166 @@ describe('loadMcpConfig() with *Command fields', () => {
       expect(config.secretSources.digestWebhookUrl).toBe('file');
       expect(digestWebhookUrlOverride(config)).toBeUndefined();
     });
+  });
+});
+
+describe('licenseKeyCommand on tiers', () => {
+  const nrTier = (name: string, destination: Record<string, unknown>) => ({
+    name,
+    destination: { type: 'nr', accountId: '12345', ...destination },
+    eventTypes: ['*'],
+  });
+
+  it('reads each tier key from its own command', () => {
+    const path = writeConfig({
+      mode: 'cloud',
+      accountId: '12345',
+      licenseKey: 'flat-key',
+      tiers: [
+        nrTier('personal', { licenseKeyCommand: printArg('key-personal') }),
+        nrTier('team', { accountId: '67890', licenseKeyCommand: printArg('key-team') }),
+      ],
+    });
+
+    const config = loadMcpConfig({ config: path });
+
+    expect(config.tiers.map((t) => t.destination)).toEqual([
+      { type: 'nr', licenseKey: 'key-personal', accountId: '12345' },
+      { type: 'nr', licenseKey: 'key-team', accountId: '67890' },
+    ]);
+  });
+
+  it('prefers the command over a plaintext key on the same tier and warns', () => {
+    const path = writeConfig({
+      mode: 'cloud',
+      accountId: '12345',
+      licenseKey: 'flat-key',
+      tiers: [
+        nrTier('personal', { licenseKey: 'file-key', licenseKeyCommand: printArg('cmd-key') }),
+      ],
+    });
+
+    const config = loadMcpConfig({ config: path });
+
+    expect(config.tiers[0].destination).toMatchObject({ licenseKey: 'cmd-key' });
+    expect(logged.join('\n')).toContain('Both licenseKey and licenseKeyCommand are set on a tier');
+    expect(logged.join('\n')).not.toContain('file-key');
+  });
+
+  it('names the tier and field on failure, never the output', () => {
+    const path = writeConfig({
+      mode: 'cloud',
+      accountId: '12345',
+      licenseKey: 'flat-key',
+      tiers: [
+        nrTier('personal', { licenseKey: 'file-key' }),
+        nrTier('team', {
+          licenseKeyCommand: script(
+            'fail',
+            `process.stdout.write(${JSON.stringify(SECRET)}); process.exit(1);`,
+          ),
+        }),
+      ],
+    });
+
+    expect(() => loadMcpConfig({ config: path })).toThrow(
+      'Could not read licenseKey for tier "team" from licenseKeyCommand: the command exited with a non-zero status (1).',
+    );
+    expect(() => loadMcpConfig({ config: path })).not.toThrow(SECRET);
+  });
+
+  it('rejects a string command, naming the tier', () => {
+    const path = writeConfig({
+      mode: 'cloud',
+      accountId: '12345',
+      licenseKey: 'flat-key',
+      tiers: [nrTier('team', { licenseKeyCommand: '/usr/bin/security -w' })],
+    });
+
+    expect(() => loadMcpConfig({ config: path })).toThrow(
+      'Tier "team" destination.licenseKeyCommand must be a non-empty array',
+    );
+  });
+
+  it('does not run tier commands when resolveSecrets is false', () => {
+    const { argv, ranMarker } = trackedPrint(SECRET);
+    const path = writeConfig({
+      mode: 'cloud',
+      accountId: '12345',
+      licenseKey: 'flat-key',
+      tiers: [nrTier('personal', { licenseKeyCommand: argv })],
+    });
+
+    const config = loadMcpConfig({ config: path }, { resolveSecrets: false });
+
+    expect(config.tiers).toEqual([]);
+    expect(() => writeFileSync(ranMarker, '', { flag: 'wx' })).not.toThrow();
+  });
+
+  it('reports a failing tier command as a cloud forwarding gap', () => {
+    const path = writeConfig({
+      mode: 'both',
+      accountId: '12345',
+      licenseKey: 'flat-key',
+      tiers: [nrTier('team', { licenseKeyCommand: script('fail', 'process.exit(1);') })],
+    });
+
+    let thrown: unknown;
+    try {
+      loadMcpConfig({ config: path });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(CloudSecretCommandError);
+    expect(detectCloudForwardingGap(thrown)).toEqual({
+      reason: 'secret-helper-failed',
+      missingField: 'licenseKey',
+      requestedMode: 'both',
+    });
+  });
+
+  it('loads in local mode without the tiers array when ignoreTiers is set', () => {
+    const { argv, ranMarker } = trackedPrint(SECRET);
+    const path = writeConfig({
+      mode: 'cloud',
+      accountId: '12345',
+      licenseKey: 'flat-key',
+      tiers: [nrTier('team', { licenseKeyCommand: argv })],
+    });
+    process.env.NR_AI_MODE = 'local';
+
+    const config = loadMcpConfig({ config: path }, { ignoreTiers: true });
+
+    expect(config.mode).toBe('local');
+    expect(config.tiers).toEqual([]);
+    expect(() => writeFileSync(ranMarker, '', { flag: 'wx' })).not.toThrow();
+  });
+
+  it.each([
+    ['an empty array', []],
+    ['an empty argument', ['/bin/x', '']],
+  ])('rejects a tier command that is %s', (_label, licenseKeyCommand) => {
+    const path = writeConfig({
+      mode: 'cloud',
+      accountId: '12345',
+      licenseKey: 'flat-key',
+      tiers: [nrTier('team', { licenseKeyCommand })],
+    });
+
+    expect(() => loadMcpConfig({ config: path })).toThrow(
+      'Tier "team" destination.licenseKeyCommand must be a non-empty array of non-empty strings',
+    );
+  });
+
+  it('does not run tier commands in local mode', () => {
+    const { argv, ranMarker } = trackedPrint(SECRET);
+    const path = writeConfig({
+      mode: 'local',
+      tiers: [nrTier('personal', { licenseKeyCommand: argv })],
+    });
+
+    expect(() => loadMcpConfig({ config: path })).toThrow(/mode='local'/);
+    expect(() => writeFileSync(ranMarker, '', { flag: 'wx' })).not.toThrow();
   });
 });

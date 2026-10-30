@@ -14,7 +14,12 @@ import { resolveRecordContent } from './record-content-gate.js';
 import { projectIdFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
 import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
 import type { ResolvedTier } from './transport/tier-types.js';
-import { SecretCommandError, isSecretConfigured, resolveSecret } from './secret-command.js';
+import {
+  SecretCommandError,
+  isSecretConfigured,
+  resolveSecret,
+  resolveSecretCommand,
+} from './secret-command.js';
 import type { ResolvedSecret, SecretSources } from './secret-command.js';
 
 const logger = createLogger('mcp-config');
@@ -736,6 +741,12 @@ export interface LoadMcpConfigOptions {
    * undefined/null and `tiers` stays empty unless explicit.
    */
   readonly resolveSecrets?: boolean;
+  /**
+   * Skip the `tiers` array entirely. The `--local` fallback sets this after a
+   * cloud credential failure: it reloads with `NR_AI_MODE=local`, and a
+   * `tiers` array under local mode is otherwise a config error.
+   */
+  readonly ignoreTiers?: boolean;
 }
 
 export function loadMcpConfig(
@@ -916,9 +927,8 @@ export function loadMcpConfig(
   // --- tiers: config file only (no env var / CLI flag equivalent exists) ---
   // Fail closed on tiers-under-local BEFORE validating tier shape, so the
   // mode conflict is always the reported error even for a malformed array.
-  const rawTiers: readonly unknown[] | undefined = Array.isArray(file.tiers)
-    ? file.tiers
-    : undefined;
+  const rawTiers: readonly unknown[] | undefined =
+    Array.isArray(file.tiers) && !loadOptions.ignoreTiers ? file.tiers : undefined;
   let resolvedTiers: readonly ResolvedTier[];
   if (rawTiers !== undefined) {
     if (mode === 'local') {
@@ -928,7 +938,24 @@ export function loadMcpConfig(
           "mode='cloud' or mode='both'. Remove the tiers array for local-only use, or set the mode.",
       );
     }
-    resolvedTiers = validateTiers(rawTiers);
+    try {
+      resolvedTiers = validateTiers(rawTiers, {
+        resolveLicenseKey: skipCommand
+          ? undefined
+          : (tier, argv) => resolveSecretCommand('licenseKey', argv, undefined, tier),
+      });
+    } catch (err) {
+      if (err instanceof SecretCommandError) throw new CloudSecretCommandError(err, mode);
+      throw err;
+    }
+    // A tier whose key was never read has no usable destination, so none are
+    // reported; the caller asked not to run helpers.
+    if (
+      skipCommand &&
+      resolvedTiers.some((t) => t.destination.type === 'nr' && t.destination.licenseKey === '')
+    ) {
+      resolvedTiers = [];
+    }
   } else if (mode !== 'local' && licenseKey !== undefined && accountId !== undefined) {
     // Implicit single tier — byte-identical to the existing single-tier default.
     resolvedTiers = [
