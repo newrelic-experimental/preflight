@@ -366,6 +366,43 @@ describe('api-handler GET /api/sessions', () => {
     expect(live?.model).toBe('claude-sonnet-4-20250514');
   });
 
+  it('lists a live chat-only session with cost but no tool calls, and hides an idle one', async () => {
+    const makeHandler = (sessionId: string, cost: number) =>
+      createApiHandler({
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => [],
+          loadAllSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+        sessionTracker: {
+          getMetrics: () => ({
+            sessionId,
+            sessionName: null,
+            sessionStartTime: 1000,
+            sessionDurationMs: 500,
+            toolCallCount: 0,
+            toolCallCountByTool: {},
+            uniqueFilesRead: 0,
+            uniqueFilesWritten: 0,
+            toolCallTimeline: [],
+          }),
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+        costTracker: {
+          getMetrics: () => ({ sessionTotalCostUsd: cost, model: 'claude-sonnet-4-20250514' }),
+        } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+      });
+    const listIds = async (sessionId: string, cost: number): Promise<string[]> => {
+      const req = { method: 'GET', url: '/api/sessions' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler(sessionId, cost)(req, res);
+      return (JSON.parse(body()) as Array<{ sessionId: string }>).map((s) => s.sessionId);
+    };
+
+    expect(await listIds('live-chat-only', 0.3)).toEqual(['live-chat-only']);
+    expect(await listIds('live-idle', 0)).toEqual([]);
+  });
+
   it('defaults model to null on the live-session stub when costTracker has none', async () => {
     const handler = createApiHandler({
       sessionStore: {

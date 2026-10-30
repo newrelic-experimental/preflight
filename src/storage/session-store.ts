@@ -285,9 +285,7 @@ export interface RecordedUsage extends AttributableActivity {
  *
  * The narrower of the two definitions of "not empty" for session
  * persistence; `hasRecordedUsage` is the wider. Its call sites must never
- * re-implement it. `SessionStore.saveSession()` uses it to decide whether an
- * existing file holds recorded work that an empty write must not clobber.
- * The `/api/sessions/today/aggregate` route uses it to decide which persisted
+ * re-implement it. The `/api/sessions/today/aggregate` route uses it to decide which persisted
  * rows may contribute a pro-rated cost when they carry no per-day buckets.
  *
  * Subagent spend counts as activity on purpose. A session whose parent process
@@ -313,7 +311,8 @@ export function hasAttributableActivity(s: AttributableActivity): boolean {
  * cost and tokens, and must still be kept. A session with none of these is an
  * idle MCP process (a window that was opened and never used). It gates the
  * aggregator's summaries, every write `SessionStore.saveSession()` accepts,
- * and the History list in `/api/sessions`.
+ * the existing file an empty write must not clobber, and the History list in
+ * `/api/sessions`.
  */
 export function hasRecordedUsage(s: RecordedUsage): boolean {
   return (
@@ -785,7 +784,7 @@ export class SessionStore {
     let toWrite: FullSessionSummary = summary;
     if (existingWithPath) {
       const { summary: existing } = existingWithPath;
-      if (hasAttributableActivity(existing) && !hasRecordedUsage(summary)) {
+      if (hasRecordedUsage(existing) && !hasRecordedUsage(summary)) {
         logger.warn('Refusing to overwrite recorded session with an empty summary', {
           sessionId: summary.sessionId,
         });

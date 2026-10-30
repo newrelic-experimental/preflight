@@ -1529,7 +1529,12 @@ export function createApiHandler(
       const alreadyPersisted = sliced.some(
         (s) => (s as { sessionId?: string }).sessionId === live.sessionId,
       );
-      if (!alreadyPersisted && live.toolCallCount > 0 && !isSyntheticSessionId(live.sessionId)) {
+      const liveCostUsd = deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null;
+      const liveHasUsage = hasRecordedUsage({
+        toolCallCount: live.toolCallCount,
+        estimatedCostUsd: liveCostUsd,
+      });
+      if (!alreadyPersisted && liveHasUsage && !isSyntheticSessionId(live.sessionId)) {
         sliced.push({
           sessionId: live.sessionId,
           sessionName: live.sessionName ?? null,
@@ -1537,7 +1542,7 @@ export function createApiHandler(
           startTime: live.sessionStartTime,
           durationMs: live.sessionDurationMs,
           toolCallCount: live.toolCallCount,
-          estimatedCostUsd: deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null,
+          estimatedCostUsd: liveCostUsd,
           // costTracker.getMetrics() also exposes the model this live
           // session is actually using; without it, aggregateModelPerformance
           // (History.tsx) buckets this session's real-time cost/count under
