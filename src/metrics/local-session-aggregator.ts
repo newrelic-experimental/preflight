@@ -26,6 +26,7 @@ import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
 import {
+  exactTotalsOf,
   hasRecordedUsage,
   type FullSessionSummary,
   type SessionStore,
@@ -678,18 +679,21 @@ function costTotalsOf(rollup: LocalSessionRollup): CostTotals {
  * window, and SessionStore merges by max, so a rollup that ignored the file
  * would lose to it. The whole quadruple (not just the subagent pair) is
  * folded so the persisted invariant `estimatedCostUsd >= subagentCostUsd`
- * survives the fold.
+ * survives the fold. Only the file's exact totals are folded: the rollup
+ * writes no byte-estimate ledger, so the store reads all of it as exact and
+ * adds the file's ledger back on top.
  */
 function foldSessionFile(rollup: LocalSessionRollup, file: FullSessionSummary | null): void {
   if (file === null) return;
+  const exact = exactTotalsOf(file);
   const accounted = rollup.accountedCost;
-  const costUsd = excessOver(file.estimatedCostUsd ?? 0, accounted.costUsd);
+  const costUsd = excessOver(exact.costUsd, accounted.costUsd);
   rollup.costUsd += costUsd;
   accounted.costUsd += costUsd;
   const subagentCostUsd = excessOver(file.subagentCostUsd, accounted.subagentCostUsd);
   rollup.subagentCostUsd += subagentCostUsd;
   accounted.subagentCostUsd += subagentCostUsd;
-  foldDays(rollup.costByDayUsd, accounted.costByDayUsd, file.costByDayUsd);
+  foldDays(rollup.costByDayUsd, accounted.costByDayUsd, exact.costByDayUsd);
   foldDays(rollup.subagentCostByDayUsd, accounted.subagentCostByDayUsd, file.subagentCostByDayUsd);
 }
 
@@ -707,7 +711,7 @@ function excessOver(persisted: number, accounted: number | undefined): number {
 function foldDays(
   rollupDays: Map<string, number>,
   accountedDays: Map<string, number>,
-  persistedDays: Record<string, number> | undefined,
+  persistedDays: Readonly<Record<string, number>> | undefined,
 ): void {
   for (const [day, usd] of Object.entries(persistedDays ?? {})) {
     const extra = excessOver(usd, accountedDays.get(day));
