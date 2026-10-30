@@ -1103,6 +1103,63 @@ describe('LocalSessionAggregator byte estimates for platforms that cannot self-r
     });
   });
 
+  it('retracts the estimate on the next save once another writer saves exact cost', () => {
+    const estimator = makeAggregator();
+    const reporter = makeAggregator();
+    estimator.recordToolCall(makeToolCall(CONV_A));
+    estimator.persist(store, makeContext());
+    reporter.recordTokenUsage(CONV_A, { costUsd: 0.5, inputTokens: 100, timestamp: DAY });
+    reporter.persist(store, makeContext());
+
+    estimator.recordToolCall(makeToolCall(CONV_A, { timestamp: DAY + 1000 }));
+    estimator.persist(store, makeContext());
+
+    const saved = store.loadSession(CONV_A);
+    expect(saved?.estimatedCostUsd).toBe(0.5);
+    expect(saved?.tokensInput).toBe(100);
+    expect(saved?.byteEstimates?.costUsd ?? 0).toBe(0);
+  });
+
+  it('keeps the estimate beside subagent-only exact cost, before and after a restart', () => {
+    const before = makeAggregator();
+    before.recordToolCall(makeToolCall(CONV_A));
+    before.recordTokenUsage(CONV_A, {
+      costUsd: 0.2,
+      inputTokens: 50,
+      timestamp: DAY,
+      agentId: 'subagent-1',
+    });
+    before.persist(store, makeContext());
+
+    expect(store.loadSession(CONV_A)?.estimatedCostUsd).toBeCloseTo(ONE_CALL_USD + 0.2, 12);
+
+    const after = makeAggregator();
+    after.recordToolCall(makeToolCall(CONV_A, { timestamp: DAY + 1000 }));
+    after.persist(store, makeContext());
+
+    const saved = store.loadSession(CONV_A);
+    expect(saved?.estimatedCostUsd).toBeCloseTo(2 * ONE_CALL_USD + 0.2, 12);
+    expect(saved?.byteEstimates?.costUsd).toBeCloseTo(2 * ONE_CALL_USD, 12);
+    expect(saved?.subagentCostUsd).toBe(0.2);
+  });
+
+  it('keeps the estimate after a parent token event that carries no tokens or cost', () => {
+    const agg = makeAggregator();
+    agg.recordToolCall(makeToolCall(CONV_A));
+    agg.recordTokenUsage(CONV_A, {
+      costUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      model: 'gpt-4o',
+      timestamp: DAY,
+    });
+    agg.recordToolCall(makeToolCall(CONV_A, { timestamp: DAY + 1000 }));
+
+    agg.persist(store, makeContext());
+
+    expect(store.loadSession(CONV_A)?.byteEstimates?.costUsd).toBeCloseTo(2 * ONE_CALL_USD, 12);
+  });
+
   it('does not bring a retracted estimate back after a restart', () => {
     const before = makeAggregator();
     before.recordToolCall(makeToolCall(CONV_A));
