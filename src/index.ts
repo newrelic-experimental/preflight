@@ -1041,8 +1041,6 @@ async function main(): Promise<void> {
     // synchronous setup completes, to decide whether to arm a background
     // correction watch (see `startPpidCorrectionWatch` below).
     let resolvedViaCwdOnly = false;
-    // Detected once: detection reads ambient env and files (Copilot app's
-    // data.db mtime), so detecting again later could name another engine.
     const activePlatform = createDefaultRegistry().getActive();
     const breadcrumbWriters = activePlatform.capabilities.sessionBreadcrumbWriters;
     // --local only: set when the config asked for cloud export but this

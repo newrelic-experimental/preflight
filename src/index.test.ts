@@ -846,18 +846,12 @@ describe('startDashboardRepoll()', () => {
   });
 });
 
-/** Every env var a platform adapter detects its platform by, plus explicit platform overrides. */
-const PLATFORM_ENV =
+const PLATFORM_SIGNAL_ENV_RE =
   /^(CLAUDE|CURSOR_|WINDSURF_|ZED_|CONTINUE_|KIRO_|AMAZON_Q_|Q_DEVELOPER_|AWS_CODEWHISPERER_|PI_CODING_AGENT$|MCP_CLIENT|NEW_RELIC_AI_PLATFORM$)/;
 
-/**
- * This process's env without the platform signals the developer's terminal
- * leaked into it, plus `platformEnv`, so a spawned engine detects only the
- * platform a test names.
- */
-function engineEnv(platformEnv: Record<string, string>): NodeJS.ProcessEnv {
+function envWithoutTerminalPlatform(platformEnv: Record<string, string>): NodeJS.ProcessEnv {
   const env = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => !PLATFORM_ENV.test(name)),
+    Object.entries(process.env).filter(([name]) => !PLATFORM_SIGNAL_ENV_RE.test(name)),
   );
   return { ...env, NEW_RELIC_AI_COPILOT_DIR: join(tmpdir(), 'nr-no-copilot-app'), ...platformEnv };
 }
@@ -952,7 +946,7 @@ describe('stdio integration', () => {
       'resolved-via-cwd-session-id',
     );
 
-    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
+    const env = envWithoutTerminalPlatform({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1003,7 +997,7 @@ describe('stdio integration', () => {
         cwd: projectCwd,
         stderr: 'pipe',
         env: {
-          ...engineEnv(platformEnv),
+          ...envWithoutTerminalPlatform(platformEnv),
           NR_AI_DASHBOARD_PORT: '0',
           NR_AI_MODE: 'local',
           NEW_RELIC_AI_MCP_STORAGE_PATH: storagePath,
@@ -1120,7 +1114,7 @@ describe('stdio integration', () => {
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'stale-cwd-session-id');
 
-    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
+    const env = envWithoutTerminalPlatform({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1194,7 +1188,7 @@ describe('stdio integration', () => {
     // resolveFromJobDir() nor resolveFromBreadcrumb() can resolve synchronously
     // at startup — main() falls back to the provisional `pending-<ts>` session
     // id and registers the pending tool set (registerPendingTools) immediately.
-    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
+    const env = envWithoutTerminalPlatform({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1354,7 +1348,7 @@ describe('stdio integration', () => {
     const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-pending-cwd-correction-project-'));
     const realProjectCwd = realpathSync(tmpProjectCwd);
 
-    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
+    const env = envWithoutTerminalPlatform({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1455,7 +1449,7 @@ describe('stdio integration', () => {
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'unconfirmed-cwd-session-id');
 
-    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
+    const env = envWithoutTerminalPlatform({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1506,7 +1500,7 @@ describe('stdio integration', () => {
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'cap-timeout-session-id');
 
-    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
+    const env = envWithoutTerminalPlatform({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1573,7 +1567,7 @@ describe('stdio integration', () => {
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'confirmed-same-session-id');
 
-    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
+    const env = envWithoutTerminalPlatform({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -1688,7 +1682,7 @@ describe('stdio integration', () => {
     );
     mkdirSync(ppidBreadcrumbDir, { recursive: true });
 
-    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
+    const env = envWithoutTerminalPlatform({ MCP_CLIENT: 'claude-code' });
     const engineArgs = [...(options.nodeArgs ?? []), binPath, '--stdio'];
     const transport = new StdioClientTransport({
       command: 'node',
@@ -2007,7 +2001,7 @@ describe('stdio integration', () => {
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'stale-cost-session-id');
 
-    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
+    const env = envWithoutTerminalPlatform({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -2099,7 +2093,7 @@ describe('stdio integration', () => {
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'stale-resume-session-id');
 
-    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
+    const env = envWithoutTerminalPlatform({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',
@@ -2191,7 +2185,7 @@ describe('stdio integration', () => {
     const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
     writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'shutdown-pending-session-id');
 
-    const env = engineEnv({ MCP_CLIENT: 'claude-code' });
+    const env = envWithoutTerminalPlatform({ MCP_CLIENT: 'claude-code' });
 
     const transport = new StdioClientTransport({
       command: 'node',

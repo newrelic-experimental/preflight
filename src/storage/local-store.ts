@@ -1000,8 +1000,12 @@ export class LocalStore {
     let writers: string[] = [];
     try {
       writers = readdirSync(resolve(this.storagePath, BREADCRUMBS_DIR));
-    } catch {
-      // No collector has written a breadcrumb since #979.
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn('Failed to enumerate breadcrumb writers for gcStaleBreadcrumbs', {
+          error: String(err),
+        });
+      }
     }
     const breadcrumbDirs = [
       resolve(this.storagePath, 'session-by-ppid'),

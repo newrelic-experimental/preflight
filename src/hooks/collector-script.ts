@@ -174,9 +174,6 @@ function hasStringText(block: unknown): block is { text: string } {
 // ---------------------------------------------------------------------------
 // PPID + cwd breadcrumbs — let the MCP server learn its engine's session_id
 //
-// Each is filed under the engine this hook's environment names (see
-// session-breadcrumbs.ts), so an MCP server adopts only its own engine's.
-//
 // Claude Code spawns its MCP server and hook collector scripts as children of
 // the same process; they share a PPID. The MCP can read its own process.ppid
 // (= Claude Code's PID) and look up the matching session_id here.

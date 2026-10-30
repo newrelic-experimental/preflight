@@ -1,20 +1,15 @@
 /**
  * Resolve the session_id of the engine (Claude Code, Kiro, Codex, ...) that
  * launched the running MCP process, from what that engine's own hooks left.
- *
- * Every breadcrumb records its writer: the hook collector files it under
- * `<storage>/breadcrumbs/<writer>/` (see session-breadcrumbs.ts), and an
- * engine reads only the writers its adapter lists in
- * `capabilities.sessionBreadcrumbWriters` (see sessionBreadcrumbs()). An
- * engine with no writers reads nothing and its caller never polls. Paths
- * below are relative to a writer's directory.
+ * An engine reads only the writers its adapter lists in
+ * `capabilities.sessionBreadcrumbWriters`, so it never adopts another
+ * engine's session.
  *
  * Four sources, in order:
  *   1. `CLAUDE_JOB_DIR` env var → read `<dir>/state.json`, regex-extract the
  *      session UUID from the `linkScanPath` field's filename. Instant; used
- *      by background-job MCPs. Claude Code's own, so only a Claude Code
- *      engine reads it.
- *   2. PPID breadcrumb at `session-by-ppid/<process.ppid>.txt` —
+ *      by background-job MCPs.
+ *   2. PPID breadcrumb at `<storage>/breadcrumbs/<writer>/session-by-ppid/<process.ppid>.txt` —
  *      written by the hook collector on every tool call. Precise as long as
  *      the OS hasn't recycled the PPID to an unrelated process since the
  *      breadcrumb was written — resolveFromBreadcrumb() guards against that
@@ -26,16 +21,13 @@
  *      server (`npx`, which execs an `npm exec` wrapper), where our own
  *      `process.ppid` is that wrapper and the breadcrumb sits a level above it.
  *      See process-ancestry.ts. Only consulted when #2 misses.
- *   4. cwd breadcrumb at `session-by-cwd/<sanitized-cwd>.txt` —
+ *   4. cwd breadcrumb at `<storage>/breadcrumbs/<writer>/session-by-cwd/<sanitized-cwd>.txt` —
  *      also written by the hook collector on every tool call, keyed by the
  *      project directory instead of a PID. Fallback for platforms where the
  *      PPID bridge never reaches the MCP's own `process.ppid` (e.g. native
  *      Windows, where Claude Code interposes Git Bash between itself and the
  *      hook collector but launches the MCP server directly). Consulted last,
  *      only when #2 and #3 both miss.
- *   Each of #2–#4 tries the engine's writers in order, then the untagged
- *   layout at `<storage>/` that collectors wrote before #979, which counts
- *   only while an older collector is still writing it.
  *   Sources #2–#4 are polled together at exponential backoff: 100ms, 200ms,
  *   500ms, 1s, 2s, then steady at 2s. No hard timeout; logs a single WARN at
  *   60s if still unresolved.
@@ -90,7 +82,6 @@ const READ_ANCESTOR_MAX_DEPTH = 4;
 export type SessionIdSource = 'jobdir' | 'ppid' | 'ppid-ancestor' | 'cwd';
 
 export interface SessionResolverOptions {
-  /** The engine's `capabilities.sessionBreadcrumbWriters`: whose breadcrumbs it may adopt. */
   readonly writers: readonly string[];
   /** Override the storage path used to find the breadcrumb directory. */
   readonly storagePath?: string;
@@ -288,8 +279,7 @@ export function sanitizeCwdForFilename(cwd: string): string {
 /**
  * Try to resolve the session_id synchronously from the cwd breadcrumb file.
  * Fallback for platforms where the PPID breadcrumb never matches (see the
- * module doc comment above). Returns the validated session_id or null, and
- * null for a breadcrumb last written before `writtenSinceMs` when given.
+ * module doc comment above). Returns the validated session_id or null.
  */
 export function resolveFromCwd(
   storagePath: string,
@@ -319,7 +309,6 @@ export function resolveFromCwd(
   return sid;
 }
 
-/** One engine's view of the session-id sources it may adopt from. */
 export interface SessionBreadcrumbs {
   readonly jobDir: (claudeJobDir: string | null | undefined) => string | null;
   readonly ppid: (ppid: number | undefined) => string | null;
@@ -328,13 +317,11 @@ export interface SessionBreadcrumbs {
 }
 
 /**
- * The session-id sources an engine that adopts from `writers` may read. Each
- * breadcrumb source tries the writers' own directories first, then the
+ * Each breadcrumb source tries the writers' own directories first, then the
  * untagged layout collectors wrote before #979. An untagged breadcrumb names
  * no engine, so it counts only when written since this process started:
  * an older collector still running keeps rewriting its own, while one left
- * from before an upgrade never counts again. `CLAUDE_JOB_DIR` is Claude
- * Code's own, so only an engine adopting Claude Code's breadcrumbs reads it.
+ * from before an upgrade never counts again.
  */
 export function sessionBreadcrumbs(
   storagePath: string,

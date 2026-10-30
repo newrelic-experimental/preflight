@@ -17,10 +17,6 @@ export function breadcrumbRoot(storagePath: string, writer: string): string {
   return resolve(storagePath, BREADCRUMBS_DIR, writer);
 }
 
-/**
- * The writer a hook files its breadcrumbs under: the engine its environment
- * names, when that name is safe as a path segment, else unattributed.
- */
 export function breadcrumbWriter(engine: string | undefined): string {
   return engine !== undefined && WRITER_RE.test(engine) ? engine : UNATTRIBUTED_BREADCRUMB_WRITER;
 }
