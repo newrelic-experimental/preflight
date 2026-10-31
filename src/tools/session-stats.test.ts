@@ -1022,7 +1022,7 @@ describe('registerPendingTools()', () => {
     });
 
     it("records to the conversation Antigravity stamps in the call's _meta without waiting on hooks", async () => {
-      await connect({ matches: [] });
+      await connect({ matches: [], seen: ['agy-1'] });
       const { body } = await report(tokens, AGY_META);
       expect(body.conversation_id).toBe('agy-1');
       expect(recorded.map((r) => r.conversationId)).toEqual(['agy-1']);
@@ -1044,7 +1044,13 @@ describe('registerPendingTools()', () => {
         withId('B'),
         'id_mismatch',
       ],
-      ['an id unlike the _meta one', { seen: ['B'], meta: AGY_META }, withId('B'), 'id_mismatch'],
+      [
+        'an id unlike the _meta one',
+        { seen: ['B', 'agy-1'], meta: AGY_META },
+        withId('B'),
+        'id_mismatch',
+      ],
+      ['a _meta conversation no hook event backs', { meta: AGY_META }, tokens, 'unknown'],
       ['a call two conversations made', { matches: ['A', 'B'] }, tokens, 'ambiguous'],
       ['an unplaced report before its bad tokens', {}, { input_tokens: -1, model: '' }, 'unknown'],
     ])('rejects %s and records nothing', async (_case, evidence, args, error) => {
