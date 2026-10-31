@@ -1394,30 +1394,30 @@ describe('HookEventProcessor', () => {
       expect(tokenEvents[0].platform).toBe(expected);
     });
 
-    it("passes a self-report's thinking tokens to onTokenEvent", () => {
-      const tokenEvents: Array<{ thinkingTokens?: number }> = [];
-      const processor = new HookEventProcessor({
-        store,
-        onRecord,
-        onTokenEvent: (event) => {
-          tokenEvents.push(event);
-        },
-      });
+    it('hands a self-report to onSelfReport once and never to onTokenEvent', () => {
+      const onTokenEvent = jest.fn();
+      const onSelfReport = jest.fn();
+      const processor = new HookEventProcessor({ store, onRecord, onTokenEvent, onSelfReport });
+      const selfReport = {
+        mode: 'self_report',
+        tool: 'nr_observe_report_tokens',
+        timestamp: 5000,
+        sessionId: 'conv-1',
+        reportId: 'r-12345678',
+        model: 'claude-sonnet-4-6',
+        inputTokens: 10,
+        outputTokens: 20,
+        thinkingTokens: 30,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        platform: 'cursor',
+      } as const;
 
-      processor.processEvents([
-        {
-          mode: 'token',
-          tool: 'self-report',
-          timestamp: 5000,
-          inputTokens: 10,
-          outputTokens: 20,
-          thinkingTokens: 30,
-          sessionId: 'conv-1',
-          messageId: 'r-12345678',
-        },
-      ]);
+      processor.processEvents([selfReport, selfReport]);
 
-      expect(tokenEvents[0].thinkingTokens).toBe(30);
+      expect(onTokenEvent).not.toHaveBeenCalled();
+      expect(onSelfReport).toHaveBeenCalledTimes(1);
+      expect(onSelfReport).toHaveBeenCalledWith(selfReport);
     });
 
     it('does not error when onTokenEvent is not provided', () => {

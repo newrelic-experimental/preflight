@@ -2,7 +2,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHeadlessInstaller } from '../install/headless-install.js';
@@ -15,6 +15,8 @@ import { TaskDetector } from '../metrics/task-detector.js';
 import { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 import { SessionStore } from '../storage/session-store.js';
 import { GenericMcpAdapter } from '../platforms/generic-mcp-adapter.js';
+import { CursorAdapter } from '../platforms/cursor-adapter.js';
+import { WindsurfAdapter } from '../platforms/windsurf-adapter.js';
 import { FeedbackCollector } from './workflow-tools.js';
 import {
   handleGetSessionStats,
@@ -931,20 +933,34 @@ describe('registerPendingTools()', () => {
       thinking_tokens: 100,
       model: 'claude-sonnet-4-6',
     };
+    const cursorHook = new CursorAdapter().capabilities.tokenReportHook!;
+    const windsurfHook = new WindsurfAdapter().capabilities.tokenReportHook!;
+    let homeDir: string;
+    let projectDir: string;
     let server: NrMcpServer;
     let client: Client;
+
+    beforeEach(() => {
+      homeDir = mkdtempSync(resolve(tmpdir(), 'nr-pending-report-home-'));
+      projectDir = mkdtempSync(resolve(tmpdir(), 'nr-pending-report-project-'));
+    });
 
     afterEach(async () => {
       await client.close();
       await server.close();
+      rmSync(homeDir, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
     });
 
-    async function connect(): Promise<void> {
+    async function connect(hook = cursorHook): Promise<void> {
       const { registerPendingTools } = await import('./session-stats.js');
       server = createServer({ name: 'pending-report', version: '0.0.1' });
       const [ct, st] = InMemoryTransport.createLinkedPair();
       client = new Client({ name: 'test', version: '1.0.0' });
-      registerPendingTools(server.server, { sessionStartMs: Date.now(), listReportTokens: true });
+      registerPendingTools(server.server, {
+        sessionStartMs: Date.now(),
+        reportTokens: { hook, homeDir, projectDir },
+      });
       await Promise.all([server.server.connect(st), client.connect(ct)]);
     }
 
@@ -955,6 +971,11 @@ describe('registerPendingTools()', () => {
       const text = (result.content as Array<{ text: string }>)[0].text;
       return { isError: result.isError, body: JSON.parse(text) };
     }
+
+    const writeHooks = (path: string, hooks: Record<string, unknown>): void => {
+      mkdirSync(resolve(path, '..'), { recursive: true });
+      writeFileSync(path, JSON.stringify({ version: 1, hooks }));
+    };
 
     it('accepts the report for the hook to record and never claims it saved', async () => {
       await connect();
@@ -981,6 +1002,47 @@ describe('registerPendingTools()', () => {
 
       expect(isError).toBe(true);
       expect(body.error).toBe('invalid_token_report');
+    });
+
+    it('warns that the report will not be saved when no hooks file runs the collector', async () => {
+      writeHooks(resolve(homeDir, '.cursor', 'hooks.json'), {
+        beforeShellExecution: [{ command: 'preflight-collector' }],
+        afterMCPExecution: [{ command: 'some-other-tool' }],
+      });
+      await connect();
+
+      const { isError, body } = await call(report);
+
+      expect(isError).toBeUndefined();
+      expect(body).toMatchObject({ accepted: true, hooks_detected: false });
+      expect(body.message).toContain('afterMCPExecution');
+      expect(body.message).toContain('~/.cursor/hooks.json');
+    });
+
+    it.each([
+      ['Cursor user', cursorHook, (h: string) => resolve(h, '.cursor', 'hooks.json'), 'home'],
+      ['Cursor project', cursorHook, (p: string) => resolve(p, '.cursor', 'hooks.json'), 'project'],
+      [
+        'Windsurf user',
+        windsurfHook,
+        (h: string) => resolve(h, '.codeium', 'windsurf', 'hooks.json'),
+        'home',
+      ],
+      [
+        'Windsurf project',
+        windsurfHook,
+        (p: string) => resolve(p, '.windsurf', 'hooks.json'),
+        'project',
+      ],
+    ])('detects the collector in the %s hooks file', async (_label, hook, pathIn, root) => {
+      writeHooks(pathIn(root === 'home' ? homeDir : projectDir), {
+        [hook.event]: [{ command: 'MCP_CLIENT=x /usr/local/bin/preflight-collector' }],
+      });
+      await connect(hook);
+
+      const { body } = await call(report);
+
+      expect(body).toMatchObject({ accepted: true, hooks_detected: true });
     });
   });
 

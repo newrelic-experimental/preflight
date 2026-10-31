@@ -1264,6 +1264,7 @@ describe('stdio integration', () => {
           new StdioClientTransport({
             command: 'node',
             args: [resolve(distDir, 'index.js'), '--stdio'],
+            cwd: tmpStoragePath,
             env: {
               ...env,
               HOME: tmpHome,
@@ -1316,6 +1317,132 @@ describe('stdio integration', () => {
         expect(silent?.estimatedCostUsd).toBeNull();
       });
     }, 30000);
+
+    it('a --local process saves a drained report to its conversation and keeps its own estimates', async () => {
+      const { spawn, spawnSync } = await import('node:child_process');
+      const { createServer: createNetServer } = await import('node:net');
+      const distDir = resolve(__dirname, '..', 'dist');
+      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-local-report-storage-'));
+      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-local-report-home-'));
+      const port = await new Promise<number>((resolvePort, reject) => {
+        const srv = createNetServer();
+        srv.listen(0, '127.0.0.1', () => {
+          const p = (srv.address() as { port: number }).port;
+          srv.close((err) => (err ? reject(err) : resolvePort(p)));
+        });
+        srv.on('error', reject);
+      });
+      const env: NodeJS.ProcessEnv = { ...process.env };
+      for (const name of Object.keys(env)) {
+        if (name.startsWith('CLAUDE') || name.startsWith('CURSOR')) delete env[name];
+      }
+      delete env.MCP_CLIENT;
+      delete env.NEW_RELIC_AI_PLATFORM;
+      delete env.NR_AI_MODE;
+      Object.assign(env, {
+        HOME: tmpHome,
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        NR_AI_DASHBOARD_PORT: String(port),
+        NR_AI_ALERTS_ENABLED: 'false',
+        NEW_RELIC_LICENSE_KEY: '',
+        NEW_RELIC_ACCOUNT_ID: '',
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+      });
+      const hook = (payload: Record<string, unknown>, args: string[] = []) =>
+        spawnSync('node', [resolve(distDir, 'hooks', 'collector-script.js'), ...args], {
+          input: JSON.stringify(payload),
+          env,
+          cwd: tmpStoragePath,
+        });
+      const api = async (path: string): Promise<Record<string, unknown>> =>
+        (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as Record<string, unknown>;
+      const until = async <T>(read: () => Promise<T>, done: (v: T) => boolean): Promise<T> => {
+        let value = await read();
+        for (let i = 0; i < 40 && !done(value); i++) {
+          await new Promise((r) => setTimeout(r, 250));
+          value = await read();
+        }
+        return value;
+      };
+      type Cost = { reportCount: number; byteEstimates?: { costUsd: number } };
+      const cost = async (): Promise<Cost> => (await api('/api/cost')).cost as Cost;
+      const savedReport = async (): Promise<Record<string, unknown> | null> => {
+        const dir = resolve(tmpStoragePath, 'sessions');
+        const name = existsSync(dir)
+          ? readdirSync(dir).find((f) => f.includes('conv-local'))
+          : undefined;
+        return name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
+      };
+
+      const child = spawn(process.execPath, [resolve(distDir, 'index.js'), '--local'], {
+        env,
+        cwd: tmpStoragePath,
+        stdio: 'ignore',
+      });
+      try {
+        await until(
+          () => api('/api/health').catch(() => null),
+          (v) => v !== null,
+        );
+        const read = { file_path: '/repo/big.txt' };
+        hook(
+          {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Read',
+            tool_use_id: 'tu-1',
+            tool_input: read,
+          },
+          ['pre-tool'],
+        );
+        hook(
+          {
+            hook_event_name: 'PostToolUse',
+            tool_name: 'Read',
+            tool_use_id: 'tu-1',
+            tool_input: read,
+            tool_response: { content: 'y'.repeat(40_000) },
+          },
+          ['post-tool'],
+        );
+        const estimated = await until(cost, (c) => (c.byteEstimates?.costUsd ?? 0) > 0);
+        expect(estimated.byteEstimates?.costUsd).toBeGreaterThan(0);
+
+        const localReport = { ...report, report_id: 'r-local-0001' };
+        hook({
+          hook_event_name: 'afterMCPExecution',
+          conversation_id: 'conv-local',
+          tool_name: 'nr_observe_report_tokens',
+          tool_input: JSON.stringify(localReport),
+          result_json: JSON.stringify({
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  accepted: true,
+                  recorded_by: 'hook',
+                  report_id: localReport.report_id,
+                }),
+              },
+            ],
+          }),
+        });
+
+        const saved = await until(
+          savedReport,
+          (v) => typeof v?.tokensInput === 'number' && v.tokensInput > 0,
+        );
+        const after = await cost();
+        expect(after.byteEstimates?.costUsd).toBe(estimated.byteEstimates?.costUsd);
+        expect(after.reportCount).toBe(0);
+        expect((await api('/api/context?sessionId=conv-local')).turnCount).toBe(0);
+        expect(saved).toMatchObject({ tokensInput: 1000, tokensThinking: 100, platform: 'cursor' });
+        expect(saved?.estimatedCostUsd).toBeGreaterThan(0);
+      } finally {
+        child.kill('SIGKILL');
+        rmSync(tmpStoragePath, { recursive: true, force: true });
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    }, 40000);
 
     it.each([
       ['cursor', true],

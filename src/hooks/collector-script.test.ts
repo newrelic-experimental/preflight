@@ -1923,10 +1923,10 @@ describe('collector-script', () => {
     });
 
     const expectedLine = (conversationId: string, platform: string) => ({
-      mode: 'token',
-      tool: 'self-report',
+      mode: 'self_report',
+      tool: 'nr_observe_report_tokens',
       sessionId: conversationId,
-      messageId: report.report_id,
+      reportId: report.report_id,
       model: report.model,
       inputTokens: report.input_tokens,
       outputTokens: report.output_tokens,
@@ -1950,7 +1950,7 @@ describe('collector-script', () => {
         );
 
         const events = readBufferLines('conv-reporting');
-        expect(events.map((e) => e.mode)).toEqual(['post', 'token']);
+        expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
         expect(events[1]).toMatchObject(expectedLine('conv-reporting', 'cursor'));
         expect(readBufferLines('conv-other')).toEqual([]);
       },
@@ -1972,7 +1972,7 @@ describe('collector-script', () => {
       );
 
       const events = readBufferLines('traj-reporting');
-      expect(events.map((e) => e.mode)).toEqual(['post', 'token']);
+      expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
       expect(events[1]).toMatchObject(expectedLine('traj-reporting', 'windsurf'));
     });
 
@@ -1990,6 +1990,18 @@ describe('collector-script', () => {
       ],
       ['a lookalike tool name', 'xnr_observe_report_tokens', hookReply],
       ['no result at all', 'nr_observe_report_tokens', undefined],
+      [
+        'an error result that quotes the reply',
+        'nr_observe_report_tokens',
+        JSON.stringify({ isError: true, content: [{ type: 'text', text: hookReply }] }),
+      ],
+      [
+        'an error message that quotes the reply',
+        'nr_observe_report_tokens',
+        JSON.stringify({
+          content: [{ type: 'text', text: JSON.stringify({ error: 'x', message: hookReply }) }],
+        }),
+      ],
     ])('adds no usage line for %s', (_label, toolName, result) => {
       processHook(
         JSON.stringify({
@@ -2003,6 +2015,65 @@ describe('collector-script', () => {
 
       expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post']);
     });
+
+    const cursorReportHook = (conversationId: string) =>
+      JSON.stringify({
+        hook_event_name: 'afterMCPExecution',
+        conversation_id: conversationId,
+        tool_name: 'nr_observe_report_tokens',
+        tool_input: JSON.stringify(report),
+        result_json: JSON.stringify({ content: [{ type: 'text', text: hookReply }] }),
+      });
+
+    it.each(['pending-1', 'local-x', 'proxy-7', 'unknown'])(
+      'adds no usage line for the synthetic conversation id %s',
+      (conversationId) => {
+        processHook(cursorReportHook(conversationId));
+
+        expect(readBufferLines(conversationId).map((e) => e.mode)).toEqual(['post']);
+      },
+    );
+
+    it('writes a retried report_id once, even after the buffer was drained', () => {
+      processHook(cursorReportHook('conv-reporting'));
+      rmSync(resolve(tmpDir, 'buffer-conv-reporting.jsonl'));
+      processHook(cursorReportHook('conv-reporting'));
+
+      expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post']);
+      const seen = resolve(tmpDir, 'self-reports', 'conv-reporting.ids');
+      expect(readFileSync(seen, 'utf-8')).toBe(`${report.report_id}\n`);
+      expect(statSync(seen).mode & 0o777).toBe(0o600);
+    });
+
+    it.each([
+      ['Cursor', 'cursor', cursorReportHook('conv-unstamped')],
+      [
+        'Windsurf',
+        'windsurf',
+        JSON.stringify({
+          agent_action_name: 'post_mcp_tool_use',
+          trajectory_id: 'conv-unstamped',
+          tool_info: {
+            mcp_tool_name: 'nr_observe_report_tokens',
+            mcp_tool_arguments: report,
+            mcp_result: hookReply,
+          },
+        }),
+      ],
+    ])(
+      'stamps a %s usage line with its platform when the hook command names none',
+      (_label, platform, payload) => {
+        delete process.env.MCP_CLIENT;
+        delete process.env.NEW_RELIC_AI_PLATFORM;
+        for (const key of CLAUDE_CODE_ENV_SIGNALS) delete process.env[key];
+
+        processHook(payload);
+
+        const events = readBufferLines('conv-unstamped');
+        expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
+        expect(events[1].platform).toBe(platform);
+      },
+    );
   });
 
   describe('helper functions', () => {
