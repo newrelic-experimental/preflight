@@ -1338,6 +1338,141 @@ describe('stdio integration', () => {
     }, 40000);
   });
 
+  describe('nr_observe_report_tokens while the engine is pending', () => {
+    type Client = import('@modelcontextprotocol/sdk/client/index.js').Client;
+    const report = {
+      report_id: 'r-5f0c2a9e',
+      input_tokens: 1000,
+      output_tokens: 200,
+      thinking_tokens: 100,
+      model: 'claude-sonnet-4-6',
+    };
+
+    async function withPendingEngine(
+      mcpClient: string,
+      run: (
+        client: Client,
+        hook: (payload: Record<string, unknown>) => void,
+        sessionFile: (conversationId: string) => Promise<Record<string, unknown> | null>,
+      ) => Promise<void>,
+    ): Promise<void> {
+      const { spawnSync } = await import('node:child_process');
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+      const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+      const distDir = resolve(__dirname, '..', 'dist');
+      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-pending-report-storage-'));
+      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-pending-report-home-'));
+      const env = { ...process.env };
+      for (const name of Object.keys(env)) {
+        if (name.startsWith('CLAUDE') || name.startsWith('CURSOR')) delete env[name];
+      }
+      const hook = (payload: Record<string, unknown>) => {
+        spawnSync('node', [resolve(distDir, 'hooks', 'collector-script.js')], {
+          input: JSON.stringify(payload),
+          env: {
+            ...env,
+            HOME: tmpHome,
+            MCP_CLIENT: mcpClient,
+            NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+          },
+          cwd: tmpStoragePath,
+        });
+      };
+      const sessionFile = async (
+        conversationId: string,
+      ): Promise<Record<string, unknown> | null> => {
+        const dir = resolve(tmpStoragePath, 'sessions');
+        for (let i = 0; i < 40; i++) {
+          const name = existsSync(dir)
+            ? readdirSync(dir).find((f) => f.includes(conversationId))
+            : undefined;
+          const saved = name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
+          if (saved?.estimatedCostUsd || saved?.toolCallCount) return saved;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        return null;
+      };
+
+      const client = new Client({ name: mcpClient, version: '1.0.0' });
+      try {
+        await client.connect(
+          new StdioClientTransport({
+            command: 'node',
+            args: [resolve(distDir, 'index.js'), '--stdio'],
+            cwd: tmpStoragePath,
+            env: {
+              ...env,
+              HOME: tmpHome,
+              MCP_CLIENT: mcpClient,
+              NR_AI_DASHBOARD_PORT: '0',
+              NR_AI_MODE: 'local',
+              NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+              NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+            } as Record<string, string>,
+          }),
+        );
+        await run(client, hook, sessionFile);
+      } finally {
+        await client.close();
+        rmSync(tmpStoragePath, { recursive: true, force: true });
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    }
+
+    it('saves a Cursor report once, to the conversation whose hook carried it', async () => {
+      await withPendingEngine('cursor', async (client, hook, sessionFile) => {
+        hook({
+          hook_event_name: 'beforeShellExecution',
+          conversation_id: 'conv-silent',
+          command: 'ls',
+        });
+        hook({ hook_event_name: 'afterShellExecution', conversation_id: 'conv-silent' });
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const result = await client.callTool({
+            name: 'nr_observe_report_tokens',
+            arguments: report,
+          });
+          hook({
+            hook_event_name: 'afterMCPExecution',
+            conversation_id: 'conv-reported',
+            tool_name: 'nr_observe_report_tokens',
+            tool_input: JSON.stringify(report),
+            result_json: JSON.stringify(result),
+          });
+        }
+
+        const reported = await sessionFile('conv-reported');
+        expect(reported?.tokensInput).toBe(1000);
+        expect(reported?.tokensOutput).toBe(200);
+        expect(reported?.tokensThinking).toBe(100);
+        expect(reported?.estimatedCostUsd).toBeGreaterThan(0);
+        const silent = await sessionFile('conv-silent');
+        expect(silent?.toolCallCount).toBe(1);
+        expect(silent?.tokensInput).toBe(0);
+        expect(silent?.estimatedCostUsd).toBeNull();
+      });
+    }, 30000);
+
+    it.each([
+      ['cursor', true],
+      ['windsurf', true],
+      ['antigravity', false],
+      ['kiro', false],
+      ['zed', false],
+      ['claude-code', false],
+    ])(
+      'a pending %s engine lists the tool: %s',
+      async (mcpClient, listed) => {
+        await withPendingEngine(mcpClient, async (client) => {
+          const names = (await client.listTools()).tools.map((t) => t.name);
+          expect(names.includes('nr_observe_report_tokens')).toBe(listed);
+        });
+      },
+      30000,
+    );
+  });
+
   it('self-corrects when the pending path resolves via the cwd fallback and a differing PPID breadcrumb appears later', async () => {
     // The pending -> async poller flow (not the eager synchronous one) can
     // also resolve via cwd instead of ppid. Mirrors the provisional-path

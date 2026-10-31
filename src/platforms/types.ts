@@ -75,6 +75,13 @@ export interface PlatformCapabilities {
    * produces it.
    */
   readonly sessionBreadcrumbWriters: readonly string[];
+  readonly tokenReportHook?: TokenReportHook;
+}
+
+export interface TokenReportHook {
+  readonly postMcpEvent: string;
+  readonly homeHooksFile: string;
+  readonly projectHooksFile: string;
 }
 
 /**
