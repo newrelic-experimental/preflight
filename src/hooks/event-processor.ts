@@ -659,6 +659,7 @@ export class HookEventProcessor {
   }
 
   poll(): void {
+    if (!this.running) return;
     try {
       const events = this.drainOnce();
       if (events.length > 0) {

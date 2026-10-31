@@ -731,6 +731,22 @@ describe('HookEventProcessor', () => {
       expect(records).toHaveLength(0);
     });
 
+    it('leaves buffered events for the next processor when polled after stop()', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+      processor.start();
+      processor.stop();
+      store.appendToBuffer(makePreEvent({ timestamp: Date.now() }));
+      store.appendToBuffer(makePostEvent({ timestamp: Date.now() + 50 }));
+      processor.poll();
+      expect(records).toHaveLength(0);
+
+      const next = new HookEventProcessor({ store, onRecord });
+      next.start();
+      next.poll();
+      next.stop();
+      expect(records.map((r) => r.toolName)).toEqual(['Read']);
+    });
+
     it('start() guards against double-start', () => {
       jest.useFakeTimers();
       try {
