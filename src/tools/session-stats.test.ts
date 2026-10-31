@@ -937,8 +937,8 @@ describe('registerPendingTools()', () => {
     const windsurfHook = new WindsurfAdapter().capabilities.tokenReportHook!;
     let homeDir: string;
     let projectDir: string;
-    let server: NrMcpServer;
     let client: Client;
+    const opened: Array<{ close: () => Promise<void> }> = [];
 
     beforeEach(() => {
       homeDir = mkdtempSync(resolve(tmpdir(), 'nr-pending-report-home-'));
@@ -946,17 +946,17 @@ describe('registerPendingTools()', () => {
     });
 
     afterEach(async () => {
-      await client.close();
-      await server.close();
+      for (const closable of opened.splice(0)) await closable.close();
       rmSync(homeDir, { recursive: true, force: true });
       rmSync(projectDir, { recursive: true, force: true });
     });
 
     async function connect(hook = cursorHook): Promise<void> {
       const { registerPendingTools } = await import('./session-stats.js');
-      server = createServer({ name: 'pending-report', version: '0.0.1' });
+      const server = createServer({ name: 'pending-report', version: '0.0.1' });
       const [ct, st] = InMemoryTransport.createLinkedPair();
       client = new Client({ name: 'test', version: '1.0.0' });
+      opened.push(client, server);
       registerPendingTools(server.server, {
         sessionStartMs: Date.now(),
         reportTokens: { hook, homeDir, projectDir },
@@ -979,9 +979,11 @@ describe('registerPendingTools()', () => {
 
     it('accepts the report for the hook to record and never claims it saved', async () => {
       await connect();
-      expect((await client.listTools()).tools.map((t) => t.name)).toContain(
-        'nr_observe_report_tokens',
+      const listed = (await client.listTools()).tools.find(
+        (t) => t.name === 'nr_observe_report_tokens',
       );
+      expect(listed?.description).toContain('should record');
+      expect(listed?.description).toContain('same counts');
 
       const { isError, body } = await call(report);
 
@@ -1015,6 +1017,9 @@ describe('registerPendingTools()', () => {
 
       expect(isError).toBeUndefined();
       expect(body).toMatchObject({ accepted: true, hooks_detected: false });
+      expect(body.message).toContain(
+        "Preflight's hook was not detected, so this report may not be saved",
+      );
       expect(body.message).toContain('afterMCPExecution');
       expect(body.message).toContain('~/.cursor/hooks.json');
     });
@@ -1043,6 +1048,20 @@ describe('registerPendingTools()', () => {
       const { body } = await call(report);
 
       expect(body).toMatchObject({ accepted: true, hooks_detected: true });
+      expect(body.message).toContain('the hook should record it');
+    });
+
+    it.each([
+      ['Cursor', cursorHook],
+      ['Windsurf', windsurfHook],
+    ])('tells a %s chat why other tools are unavailable', async (clientName, hook) => {
+      await connect(hook);
+
+      const result = await client.callTool({ name: 'nr_observe_get_session_stats', arguments: {} });
+
+      const { hint } = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(hint).toContain(clientName);
+      expect(hint).not.toContain('Claude Code');
     });
   });
 

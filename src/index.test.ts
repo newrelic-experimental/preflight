@@ -1452,6 +1452,7 @@ describe('stdio integration', () => {
         client: Client,
         hook: (payload: Record<string, unknown>) => void,
         sessionFile: (conversationId: string) => Promise<Record<string, unknown> | null>,
+        storagePath: string,
       ) => Promise<void>,
     ): Promise<void> {
       const { spawnSync } = await import('node:child_process');
@@ -1466,7 +1467,7 @@ describe('stdio integration', () => {
         if (name.startsWith('CLAUDE') || name.startsWith('CURSOR')) delete env[name];
       }
       const hook = (payload: Record<string, unknown>) => {
-        spawnSync('node', [resolve(distDir, 'hooks', 'collector-script.js')], {
+        const run = spawnSync('node', [resolve(distDir, 'hooks', 'collector-script.js')], {
           input: JSON.stringify(payload),
           env: {
             ...env,
@@ -1476,6 +1477,7 @@ describe('stdio integration', () => {
           },
           cwd: tmpStoragePath,
         });
+        expect(run.status).toBe(0);
       };
       const sessionFile = async (
         conversationId: string,
@@ -1510,7 +1512,7 @@ describe('stdio integration', () => {
             } as Record<string, string>,
           }),
         );
-        await run(client, hook, sessionFile);
+        await run(client, hook, sessionFile, tmpStoragePath);
       } finally {
         await client.close();
         rmSync(tmpStoragePath, { recursive: true, force: true });
@@ -1534,6 +1536,7 @@ describe('stdio integration', () => {
           hook({
             hook_event_name: 'afterMCPExecution',
             conversation_id: 'conv-reported',
+            mcp_server_name: 'newrelic-preflight',
             tool_name: 'nr_observe_report_tokens',
             tool_input: JSON.stringify(report),
             result_json: JSON.stringify(result),
@@ -1549,6 +1552,41 @@ describe('stdio integration', () => {
         expect(silent?.toolCallCount).toBe(1);
         expect(silent?.tokensInput).toBe(0);
         expect(silent?.estimatedCostUsd).toBeNull();
+      });
+    }, 30000);
+
+    it('leaves the report to the hook after a Cursor engine adopts a real session id', async () => {
+      await withPendingEngine('cursor', async (client, hook, sessionFile, storagePath) => {
+        const breadcrumbDir = resolve(storagePath, 'session-by-ppid');
+        mkdirSync(breadcrumbDir, { recursive: true });
+        writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), 'real-owner-session');
+        const adopted = async () =>
+          (await client.listTools()).tools.some((t) => t.name === 'nr_observe_get_session_stats');
+        for (let i = 0; i < 40 && !(await adopted()); i++) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        expect(await adopted()).toBe(true);
+
+        const result = await client.callTool({
+          name: 'nr_observe_report_tokens',
+          arguments: report,
+        });
+        const reply = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+        expect(reply).toMatchObject({
+          accepted: true,
+          recorded_by: 'hook',
+          report_id: report.report_id,
+        });
+        hook({
+          hook_event_name: 'afterMCPExecution',
+          conversation_id: 'conv-reported',
+          mcp_server_name: 'newrelic-preflight',
+          tool_name: 'nr_observe_report_tokens',
+          tool_input: JSON.stringify(report),
+          result_json: JSON.stringify(result),
+        });
+
+        expect((await sessionFile('conv-reported'))?.tokensInput).toBe(1000);
       });
     }, 30000);
 
