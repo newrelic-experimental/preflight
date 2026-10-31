@@ -25,7 +25,12 @@ import { spawnSync } from 'node:child_process';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
-import { hasAttributableActivity, type FullSessionSummary } from '../storage/session-store.js';
+import {
+  exactTotalsOf,
+  hasAttributableActivity,
+  type ExactTotalsSource,
+  type FullSessionSummary,
+} from '../storage/session-store.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
 import { addCallUsage } from './call-usage.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
@@ -63,10 +68,8 @@ export interface ModelBreakdownTally {
  * `FullSessionSummary` structurally satisfies this, so `SessionStore.loadSession`
  * can be passed as `persistedCostBaseline` unchanged.
  */
-export type PersistedCostBaseline = Pick<
-  FullSessionSummary,
-  'estimatedCostUsd' | 'subagentCostUsd' | 'costByDayUsd' | 'subagentCostByDayUsd'
-> &
+export type PersistedCostBaseline = ExactTotalsSource &
+  Pick<FullSessionSummary, 'subagentCostUsd' | 'subagentCostByDayUsd'> &
   Partial<Pick<FullSessionSummary, TokenTotalKey>>;
 
 type TokenTotalKey =
@@ -587,19 +590,27 @@ export class LocalSessionAggregator {
    * quadruple (not just the subagent pair) is seeded so the persisted
    * invariant `estimatedCostUsd >= subagentCostUsd` survives the fold; seeding
    * only the subagent pair could leave a merged file whose subagent figure
-   * exceeds its all-in figure.
+   * exceeds its all-in figure. Cost, days and tokens are seeded from the
+   * file's exact share: mergeSummaries adds the byte-estimate ledger back on
+   * top of the merged exact totals, so seeding the ledger too counts it twice.
    */
   private applyPersistedBaseline(sessionId: string, rollup: LocalSessionRollup): void {
     rollup.costBaselineApplied = true;
     const baseline = this.persistedCostBaseline?.(sessionId) ?? null;
     if (baseline === null) return;
     const emitted = rollup.lastEmittedCost;
-    rollup.costUsd += excessOver(baseline.estimatedCostUsd ?? 0, emitted?.costUsd);
+    const exact = exactTotalsOf(baseline);
+    const savedTokens = {
+      ...baseline,
+      tokensInput: exact.inputTokens,
+      tokensOutput: exact.outputTokens,
+    };
+    rollup.costUsd += excessOver(exact.costUsd, emitted?.costUsd);
     rollup.subagentCostUsd += excessOver(baseline.subagentCostUsd, emitted?.subagentCostUsd);
     for (const key of TOKEN_TOTAL_KEYS) {
-      rollup[key] += excessOver(baseline[key] ?? 0, emitted?.tokens[key]);
+      rollup[key] += excessOver(savedTokens[key] ?? 0, emitted?.tokens[key]);
     }
-    for (const [day, usd] of Object.entries(baseline.costByDayUsd ?? {})) {
+    for (const [day, usd] of Object.entries(exact.costByDayUsd)) {
       rollup.costByDayUsd.set(
         day,
         (rollup.costByDayUsd.get(day) ?? 0) + excessOver(usd, emitted?.costByDayUsd.get(day)),

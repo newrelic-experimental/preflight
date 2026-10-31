@@ -455,7 +455,13 @@ export interface ExactTotals {
  * predates the field. A merged total cannot be split afterwards (the file does
  * not record which writer's figure won the max), so writers persist the split.
  */
-export function exactTotalsOf(s: FullSessionSummary): ExactTotals {
+export type ExactTotalsSource = Pick<
+  FullSessionSummary,
+  'exactTotals' | 'byteEstimates' | 'estimatedCostUsd' | 'costByDayUsd'
+> &
+  Partial<Pick<FullSessionSummary, 'tokensInput' | 'tokensOutput'>>;
+
+export function exactTotalsOf(s: ExactTotalsSource): ExactTotals {
   if (s.exactTotals) return s.exactTotals;
   const ledger = s.byteEstimates;
   return {
