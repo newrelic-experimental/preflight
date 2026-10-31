@@ -583,6 +583,25 @@ describe('SessionStore', () => {
     expect(store.loadSession('clobber-me')!.toolCallCount).toBe(12);
   });
 
+  it('merges a self-reported summary with no tool calls into a recorded session', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'reported', startTime, toolCallCount: 12 }));
+
+    store.saveSession(
+      makeSummary({
+        sessionId: 'reported',
+        startTime,
+        toolCallCount: 0,
+        toolBreakdown: {},
+        tokensInput: 99_000,
+        selfReportCount: 1,
+      }),
+    );
+
+    expect(store.loadSession('reported')).toMatchObject({ toolCallCount: 12, tokensInput: 99_000 });
+  });
+
   it('does not create a file for a session that recorded no usage', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     store.saveSession(
