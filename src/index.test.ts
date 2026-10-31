@@ -1317,25 +1317,10 @@ describe('stdio integration', () => {
       });
     }, 30000);
 
-    it('saves an Antigravity report to the conversation its _meta names', async () => {
-      await withPendingEngine('antigravity', async (client, _hook, sessionFile) => {
-        const result = await client.callTool({
-          name: 'nr_observe_report_tokens',
-          arguments: report,
-          _meta: { 'antigravity.google/conversation_id': 'conv-agy' },
-        });
-        expect(result.isError).toBeUndefined();
-
-        const saved = await sessionFile('conv-agy');
-        expect(saved?.tokensInput).toBe(1000);
-        expect(saved?.estimatedCostUsd).toBeGreaterThan(0);
-      });
-    }, 30000);
-
     it.each([
       ['cursor', true],
       ['windsurf', true],
-      ['antigravity', true],
+      ['antigravity', false],
       ['kiro', false],
       ['zed', false],
       ['claude-code', false],

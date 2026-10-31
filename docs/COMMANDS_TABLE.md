@@ -219,12 +219,12 @@ Self-report token usage for cost tracking. Called by Claude Code to report its o
 }
 ```
 
-**While a Cursor, Windsurf or Antigravity engine is pending.** One engine serves every chat in the window, so it saves a report to the conversation that made it instead. The tool also takes a required `report_id`, a new random value (such as a UUID) per call. A retried call keeps its `report_id` and counts once.
+**While a Cursor or Windsurf engine is pending.** One engine serves every chat in the window, so it saves a report to the conversation that made it instead. The tool also takes a required `report_id`, a new random value (such as a UUID) per call. A retried call keeps its `report_id` and counts once.
 
-- Cursor and Windsurf reply `{"accepted": true, "recorded_by": "hook", ...}`. Preflight's `afterMCPExecution` or `post_mcp_tool_use` hook then sees this reply and the call's arguments, and writes the report into that conversation's hook buffer. Without Preflight's hooks installed, the report is not saved.
-- Antigravity takes the conversation from the call's `_meta["antigravity.google/conversation_id"]`, writes the report into that conversation's hook buffer, and replies `{"accepted": true, "recorded_by": "server", "conversation_id": ...}`. A call without that `_meta` returns `conversation_unknown` and records nothing.
-- Whichever Preflight process drains the buffer prices the report and saves it with that conversation's session at its next checkpoint. Neither reply claims the cost is saved yet.
-- A malformed report returns `invalid_token_report`, and a malformed or synthetic conversation id returns `invalid_conversation_id`.
+- The tool replies `{"accepted": true, "recorded_by": "hook", ...}`. Preflight's `afterMCPExecution` (Cursor) or `post_mcp_tool_use` (Windsurf) hook then sees this reply and the call's arguments, and writes the report into that conversation's hook buffer. Without Preflight's hooks installed, the report is not saved.
+- Whichever Preflight process drains the buffer prices the report and saves it with that conversation's session at its next checkpoint. The reply does not claim the cost is saved yet.
+- A malformed report returns `invalid_token_report`.
+- Antigravity does not list the tool while pending yet (#1027).
 
 **Data source:** `CostTracker`
 

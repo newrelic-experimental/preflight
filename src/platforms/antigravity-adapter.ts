@@ -61,9 +61,6 @@ export class AntigravityAdapter implements PlatformAdapter {
     instructionFilePaths: ['GEMINI.md', '.agents/rules/'] as const,
     // Antigravity's hooks send conversationId, never session_id, so they write no breadcrumb.
     sessionBreadcrumbWriters: [] as const,
-    // Each tools/call carries _meta["antigravity.google/conversation_id"]
-    // (third-party evidence: https://github.com/joaquinbejar/ai-crew-sync/pull/233).
-    tokenReportRecorder: 'mcp-meta' as const,
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {

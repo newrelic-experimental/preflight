@@ -3234,7 +3234,6 @@ async function main(): Promise<void> {
         const pendingConfigFilePath =
           options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
         const pendingAdapter = createDefaultRegistry().getActive();
-        const tokenReportRecorder = pendingAdapter.capabilities.tokenReportRecorder;
         registerPendingTools(mcpServer!.server, {
           sessionStartMs: Date.now(),
           developer: config.developer,
@@ -3260,13 +3259,7 @@ async function main(): Promise<void> {
             hooksInstalledFn: () => areHooksInstalledAtAnyScope(),
             headlessInstaller: buildHeadlessInstaller(),
           }),
-          ...(tokenReportRecorder && {
-            reportTokens: {
-              recorder: tokenReportRecorder,
-              platform: pendingAdapter.platformName,
-              storagePath: config.storagePath,
-            },
-          }),
+          listReportTokens: pendingAdapter.capabilities.tokenReportRecorder === 'hook',
         });
         logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
 

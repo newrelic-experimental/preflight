@@ -2,7 +2,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHeadlessInstaller } from '../install/headless-install.js';
@@ -931,57 +931,33 @@ describe('registerPendingTools()', () => {
       thinking_tokens: 100,
       model: 'claude-sonnet-4-6',
     };
-    let storagePath: string;
     let server: NrMcpServer;
     let client: Client;
-
-    beforeEach(() => {
-      storagePath = mkdtempSync(resolve(tmpdir(), 'nr-pending-report-'));
-    });
 
     afterEach(async () => {
       await client.close();
       await server.close();
-      rmSync(storagePath, { recursive: true, force: true });
     });
 
-    async function connect(recorder: 'hook' | 'mcp-meta', platform: string): Promise<void> {
+    async function connect(): Promise<void> {
       const { registerPendingTools } = await import('./session-stats.js');
       server = createServer({ name: 'pending-report', version: '0.0.1' });
       const [ct, st] = InMemoryTransport.createLinkedPair();
       client = new Client({ name: 'test', version: '1.0.0' });
-      registerPendingTools(server.server, {
-        sessionStartMs: Date.now(),
-        reportTokens: { recorder, platform, storagePath },
-      });
+      registerPendingTools(server.server, { sessionStartMs: Date.now(), listReportTokens: true });
       await Promise.all([server.server.connect(st), client.connect(ct)]);
     }
 
     async function call(
       args: Record<string, unknown>,
-      meta?: Record<string, unknown>,
     ): Promise<{ isError: unknown; body: Record<string, unknown> }> {
-      const result = await client.callTool({
-        name: 'nr_observe_report_tokens',
-        arguments: args,
-        ...(meta && { _meta: meta }),
-      });
+      const result = await client.callTool({ name: 'nr_observe_report_tokens', arguments: args });
       const text = (result.content as Array<{ text: string }>)[0].text;
       return { isError: result.isError, body: JSON.parse(text) };
     }
 
-    const bufferLines = (conversationId: string): Array<Record<string, unknown>> => {
-      const path = resolve(storagePath, `buffer-${conversationId}.jsonl`);
-      return existsSync(path)
-        ? readFileSync(path, 'utf-8')
-            .trim()
-            .split('\n')
-            .map((l) => JSON.parse(l) as Record<string, unknown>)
-        : [];
-    };
-
-    it('on Cursor, accepts the report for the hook to record and never claims it saved', async () => {
-      await connect('hook', 'cursor');
+    it('accepts the report for the hook to record and never claims it saved', async () => {
+      await connect();
       expect((await client.listTools()).tools.map((t) => t.name)).toContain(
         'nr_observe_report_tokens',
       );
@@ -991,7 +967,6 @@ describe('registerPendingTools()', () => {
       expect(isError).toBeUndefined();
       expect(body).toMatchObject({ accepted: true, recorded_by: 'hook', report_id: 'r-3b8f61c0' });
       expect(body.recorded).toBeUndefined();
-      expect(readdirSync(storagePath)).toEqual([]);
     });
 
     it.each([
@@ -1000,55 +975,12 @@ describe('registerPendingTools()', () => {
       ['a negative count', { ...report, input_tokens: -1 }],
       ['a bad model name', { ...report, model: 'bad model!' }],
     ])('rejects a report with %s', async (_label, args) => {
-      await connect('hook', 'cursor');
+      await connect();
 
       const { isError, body } = await call(args);
 
       expect(isError).toBe(true);
       expect(body.error).toBe('invalid_token_report');
-    });
-
-    it('on Antigravity, queues the report on disk for the _meta conversation', async () => {
-      await connect('mcp-meta', 'antigravity');
-
-      const { isError, body } = await call(report, {
-        'antigravity.google/conversation_id': 'conv-agy',
-      });
-
-      expect(isError).toBeUndefined();
-      expect(body).toMatchObject({
-        accepted: true,
-        recorded_by: 'server',
-        conversation_id: 'conv-agy',
-      });
-      expect(body.recorded).toBeUndefined();
-      const lines = bufferLines('conv-agy');
-      expect(lines.map((l) => l.mode)).toEqual(['post', 'token']);
-      expect(lines[0]).toMatchObject({ tool: 'nr_observe_report_tokens', sessionId: 'conv-agy' });
-      expect(lines[1]).toMatchObject({
-        sessionId: 'conv-agy',
-        messageId: 'r-3b8f61c0',
-        outputTokens: 200,
-        platform: 'antigravity',
-      });
-    });
-
-    it.each([
-      ['no _meta', undefined, 'conversation_unknown'],
-      [
-        'a synthetic id',
-        { 'antigravity.google/conversation_id': 'pending-1' },
-        'invalid_conversation_id',
-      ],
-      ['a path', { 'antigravity.google/conversation_id': '../x' }, 'invalid_conversation_id'],
-    ])('on Antigravity, records nothing for a call with %s', async (_label, meta, error) => {
-      await connect('mcp-meta', 'antigravity');
-
-      const { isError, body } = await call(report, meta);
-
-      expect(isError).toBe(true);
-      expect(body.error).toBe(error);
-      expect(readdirSync(storagePath)).toEqual([]);
     });
   });
 

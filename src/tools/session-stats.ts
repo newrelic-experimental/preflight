@@ -34,11 +34,7 @@ import type { CollaborationProfiler } from '../metrics/collaboration-profile.js'
 import type { ClaudeMdTracker } from '../metrics/claudemd-tracker.js';
 import type { CostPerOutcomeAnalyzer } from '../metrics/cost-per-outcome.js';
 import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
-import {
-  pendingReportTokensTool,
-  registerCostTools,
-  type PendingReportTokensOptions,
-} from './cost-tools.js';
+import { pendingReportTokensTool, registerCostTools } from './cost-tools.js';
 import { registerWorkflowTools } from './workflow-tools.js';
 import type { FeedbackCollector } from './workflow-tools.js';
 import { registerCrossSessionTools } from './cross-session-tools.js';
@@ -610,10 +606,11 @@ function registerCoreTools(deps: ToolRegistrationOptions): RegisteredToolSet {
 // ---------------------------------------------------------------------------
 
 /**
- * Pre-resolution stand-in: registers `tools/list` with just the health and
- * config tools, and a `tools/call` handler that returns a structured "session
- * not yet resolved" error for everything else. Replaced by `registerTools()`
- * once the Claude Code session_id is known.
+ * Pre-resolution stand-in: registers `tools/list` with the health and
+ * install-hooks tools, the config tool when a config summary is given, and
+ * `nr_observe_report_tokens` on platforms whose post-MCP hook records it. A
+ * `tools/call` for anything else returns a structured "session not yet
+ * resolved" error. Replaced by `registerTools()` once the session id is known.
  */
 export function registerPendingTools(
   server: Server,
@@ -623,10 +620,10 @@ export function registerPendingTools(
     configSummary?: ConfigSummary;
     hooksInstalledFn?: () => boolean;
     headlessInstaller?: () => import('../install/headless-install.js').HeadlessInstallResult;
-    reportTokens?: PendingReportTokensOptions;
+    listReportTokens?: boolean;
   },
 ): void {
-  const reportTokens = options.reportTokens && pendingReportTokensTool(options.reportTokens);
+  const reportTokens = options.listReportTokens ? pendingReportTokensTool() : undefined;
   const tools: ToolDefinition[] = [HEALTH_TOOL, INSTALL_HOOKS_TOOL];
   if (options.configSummary) tools.push(CONFIG_TOOL);
   if (reportTokens) tools.push(reportTokens.definition);
@@ -649,7 +646,7 @@ export function registerPendingTools(
       return handleInstallHooks(options.headlessInstaller);
     }
     if (reportTokens && name === reportTokens.definition.name) {
-      return reportTokens.handle(request.params.arguments, request.params._meta);
+      return reportTokens.handle(request.params.arguments);
     }
     return {
       content: [

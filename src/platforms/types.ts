@@ -80,13 +80,10 @@ export interface PlatformCapabilities {
    * saves an agent's `nr_observe_report_tokens` call to the conversation
    * that made it. `hook`: the platform's post-MCP hook carries the
    * conversation id and the call's arguments, and the collector records the
-   * report. `mcp-meta`: the call's own `_meta` names the conversation.
-   * Absent: the provisional engine does not list the tool.
+   * report. Absent: the provisional engine does not list the tool.
    */
-  readonly tokenReportRecorder?: TokenReportRecorder;
+  readonly tokenReportRecorder?: 'hook';
 }
-
-export type TokenReportRecorder = 'hook' | 'mcp-meta';
 
 /**
  * The writer the hook collector files a session breadcrumb under when its

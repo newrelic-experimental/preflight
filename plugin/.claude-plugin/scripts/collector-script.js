@@ -80,6 +80,8 @@ var REPORT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
 var MODEL_RE = /^[a-zA-Z0-9._:-]{1,256}$/;
 var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 var PREFIXED_TOOL_RE = new RegExp(`(?:^|[_:./-])${REPORT_TOKENS_TOOL_NAME}$`);
+var REQUIRED_COUNTS = ["input_tokens", "output_tokens"];
+var OPTIONAL_COUNTS = ["thinking_tokens", "cache_read_tokens", "cache_creation_tokens"];
 var HOOK_RECORDED_RE = /\\*"recorded_by\\*"\s*:\s*\\*"hook\\*"/;
 function clampToken(v) {
   if (!Number.isFinite(v)) return 0;
@@ -112,28 +114,27 @@ function parseSelfReport(args) {
   if (typeof a.model !== "string" || !MODEL_RE.test(a.model)) {
     return fail("model must be 1 to 256 characters of [a-zA-Z0-9._:-]");
   }
-  const bad = [
-    "input_tokens",
-    "output_tokens",
-    "thinking_tokens",
-    "cache_read_tokens",
-    "cache_creation_tokens"
-  ].find((field) => {
-    const n = a[field] ?? (field === "input_tokens" || field === "output_tokens" ? void 0 : 0);
-    return typeof n !== "number" || !Number.isFinite(n) || n < 0;
-  });
+  const counts = {};
+  const readCounts = (fields, fallback) => {
+    for (const field of fields) {
+      const n = a[field] ?? fallback;
+      if (typeof n !== "number" || !Number.isFinite(n) || n < 0) return field;
+      counts[field] = clampToken(n);
+    }
+    return void 0;
+  };
+  const bad = readCounts(REQUIRED_COUNTS) ?? readCounts(OPTIONAL_COUNTS, 0);
   if (bad) return fail(`${bad} must be a non-negative number`);
-  const count = (field) => clampToken(a[field] ?? 0);
   return {
     ok: true,
     report: {
       reportId: a.report_id,
       model: a.model,
-      inputTokens: count("input_tokens"),
-      outputTokens: count("output_tokens"),
-      thinkingTokens: count("thinking_tokens"),
-      cacheReadTokens: count("cache_read_tokens"),
-      cacheCreationTokens: count("cache_creation_tokens")
+      inputTokens: counts.input_tokens,
+      outputTokens: counts.output_tokens,
+      thinkingTokens: counts.thinking_tokens,
+      cacheReadTokens: counts.cache_read_tokens,
+      cacheCreationTokens: counts.cache_creation_tokens
     }
   };
 }

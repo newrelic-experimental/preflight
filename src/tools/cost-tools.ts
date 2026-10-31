@@ -9,8 +9,6 @@
  *   - `nr_observe_get_prompt_cache_health` — cache hit rate and recommendation
  */
 
-import { appendFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { z } from 'zod';
 
 import type { CostTracker } from '../metrics/cost-tracker.js';
@@ -22,16 +20,7 @@ import { buildCostForecastFromInputs } from '../metrics/cost-forecast.js';
 import { localDateKey } from '../lib/date.js';
 import { resolvePricing } from '../metrics/pricing-overlay.js';
 import type { TokenUsage } from '../shared/index.js';
-import { isSyntheticSessionId } from '../hooks/session-resolver.js';
-import {
-  clampToken,
-  isConversationId,
-  parseSelfReport,
-  REPORT_TOKENS_TOOL_NAME,
-  selfReportTokenLine,
-} from '../hooks/self-report.js';
-import type { PostHookEvent } from '../storage/types.js';
-import type { TokenReportRecorder } from '../platforms/types.js';
+import { clampToken, parseSelfReport, REPORT_TOKENS_TOOL_NAME } from '../hooks/self-report.js';
 import {
   errorResult,
   requireTracker,
@@ -84,31 +73,19 @@ export const REPORT_TOKENS_TOOL = {
   annotations: { readOnlyHint: false },
 };
 
-const ANTIGRAVITY_CONVERSATION_META = 'antigravity.google/conversation_id';
-
-export interface PendingReportTokensOptions {
-  readonly recorder: TokenReportRecorder;
-  readonly platform: string;
-  readonly storagePath: string;
-}
-
 const RECORDED_BY_HOOK =
   "Preflight records this report from its post-MCP hook event for this call, in the conversation that made it, after the call returns. Without Preflight's hooks installed for this client it is not saved.";
-const QUEUED_BY_SERVER =
-  "Queued on disk for this conversation. It is saved to the conversation's session at the next checkpoint.";
 
-export function pendingReportTokensTool(options: PendingReportTokensOptions): {
+export function pendingReportTokensTool(): {
   readonly definition: typeof REPORT_TOKENS_TOOL;
-  readonly handle: (args: unknown, meta: Record<string, unknown> | undefined) => ToolCallResult;
+  readonly handle: (args: unknown) => ToolCallResult;
 } {
   const definition = {
     ...REPORT_TOKENS_TOOL,
     description:
       REPORT_TOKENS_TOOL.description +
       ' Set report_id to a new random value (such as a UUID) on every call; a retried call keeps its report_id and counts once.' +
-      (options.recorder === 'hook'
-        ? " Preflight's hook for this call records the report in this conversation."
-        : ' The conversation comes from the call metadata your client sends.'),
+      " Preflight's hook for this call records the report in this conversation.",
     inputSchema: {
       ...REPORT_TOKENS_TOOL.inputSchema,
       properties: {
@@ -125,52 +102,16 @@ export function pendingReportTokensTool(options: PendingReportTokensOptions): {
     content: [{ type: 'text', text: JSON.stringify(body) }],
     ...(isError && { isError }),
   });
-  const fail = (error: string, message: string): ToolCallResult => reply({ error, message }, true);
-  const handle = (args: unknown, meta: Record<string, unknown> | undefined): ToolCallResult => {
+  const handle = (args: unknown): ToolCallResult => {
     const parsed = parseSelfReport(args);
-    if (!parsed.ok) return fail('invalid_token_report', parsed.reason);
+    if (!parsed.ok) return reply({ error: 'invalid_token_report', message: parsed.reason }, true);
     const { report } = parsed;
-    const accepted = { accepted: true, report_id: report.reportId, model: report.model };
-    if (options.recorder === 'hook') {
-      return reply({ ...accepted, recorded_by: 'hook', message: RECORDED_BY_HOOK });
-    }
-    const conversationId = meta?.[ANTIGRAVITY_CONVERSATION_META];
-    if (conversationId === undefined) {
-      return fail(
-        'conversation_unknown',
-        `The call carried no _meta["${ANTIGRAVITY_CONVERSATION_META}"], so Preflight cannot tell which conversation made it. Nothing was recorded.`,
-      );
-    }
-    if (!isConversationId(conversationId) || isSyntheticSessionId(conversationId)) {
-      return fail(
-        'invalid_conversation_id',
-        'The conversation id must be 1 to 128 of [A-Za-z0-9_-], not "unknown" and not a synthetic pending-, local- or proxy- id. Nothing was recorded.',
-      );
-    }
-    const timestamp = Date.now();
-    const call: PostHookEvent = {
-      mode: 'post',
-      tool: REPORT_TOKENS_TOOL_NAME,
-      timestamp,
-      success: true,
-      sessionId: conversationId,
-      platform: options.platform,
-    };
-    const usage = selfReportTokenLine(report, conversationId, timestamp, options.platform);
-    try {
-      appendFileSync(
-        resolve(options.storagePath, `buffer-${conversationId}.jsonl`),
-        JSON.stringify(call) + '\n' + JSON.stringify(usage) + '\n',
-        { mode: 0o600 },
-      );
-    } catch (err) {
-      return fail('not_queued', `Nothing was recorded: ${String(err)}`);
-    }
     return reply({
-      ...accepted,
-      recorded_by: 'server',
-      conversation_id: conversationId,
-      message: QUEUED_BY_SERVER,
+      accepted: true,
+      report_id: report.reportId,
+      model: report.model,
+      recorded_by: 'hook',
+      message: RECORDED_BY_HOOK,
     });
   };
   return { definition, handle };
