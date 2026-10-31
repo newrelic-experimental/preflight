@@ -35,9 +35,9 @@ import type { ClaudeMdTracker } from '../metrics/claudemd-tracker.js';
 import type { CostPerOutcomeAnalyzer } from '../metrics/cost-per-outcome.js';
 import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
 import {
-  pendingReportTokensTool,
+  hookRecordedReportTokensTool,
   registerCostTools,
-  type PendingReportTokensOptions,
+  type HookRecordedReportOptions,
 } from './cost-tools.js';
 import { registerWorkflowTools } from './workflow-tools.js';
 import type { FeedbackCollector } from './workflow-tools.js';
@@ -491,6 +491,7 @@ export interface ToolRegistrationOptions {
   configSummary?: ConfigSummary;
   hooksInstalledFn?: () => boolean;
   headlessInstaller?: () => import('../install/headless-install.js').HeadlessInstallResult;
+  reportTokens?: HookRecordedReportOptions;
 }
 
 // ---------------------------------------------------------------------------
@@ -617,10 +618,10 @@ export function registerPendingTools(
     configSummary?: ConfigSummary;
     hooksInstalledFn?: () => boolean;
     headlessInstaller?: () => import('../install/headless-install.js').HeadlessInstallResult;
-    reportTokens?: PendingReportTokensOptions;
+    reportTokens?: HookRecordedReportOptions;
   },
 ): void {
-  const reportTokens = options.reportTokens && pendingReportTokensTool(options.reportTokens);
+  const reportTokens = options.reportTokens && hookRecordedReportTokensTool(options.reportTokens);
   const tools: ToolDefinition[] = [HEALTH_TOOL, INSTALL_HOOKS_TOOL];
   if (options.configSummary) tools.push(CONFIG_TOOL);
   if (reportTokens) tools.push(reportTokens.definition);
@@ -645,13 +646,16 @@ export function registerPendingTools(
     if (reportTokens && name === reportTokens.definition.name) {
       return reportTokens.handle(request.params.arguments);
     }
+    const clientName = options.reportTokens?.hook.clientName;
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify({
             error: 'session_id not yet resolved',
-            hint: 'Make any tool call (Bash, Read, etc.) to write the session breadcrumb. If only nr_observe_health and nr_observe_get_config are still visible after a tool call, exit and start a new Claude Code session — hooks installed during a running session do not take effect until a fresh start.',
+            hint: clientName
+              ? `Preflight has not resolved a session for this ${clientName} window, so only the tools listed now work here. Preflight's ${clientName} hooks, once installed, still capture this chat's tool calls for the dashboard.`
+              : 'Make any tool call (Bash, Read, etc.) to write the session breadcrumb. If only nr_observe_health and nr_observe_get_config are still visible after a tool call, exit and start a new Claude Code session — hooks installed during a running session do not take effect until a fresh start.',
           }),
         },
       ],

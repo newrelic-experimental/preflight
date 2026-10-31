@@ -79,6 +79,7 @@ export interface PlatformCapabilities {
 }
 
 export interface TokenReportHook {
+  readonly clientName: string;
   readonly postMcpEvent: string;
   readonly homeHooksFile: string;
   readonly projectHooksFile: string;

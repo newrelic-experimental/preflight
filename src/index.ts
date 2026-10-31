@@ -128,6 +128,7 @@ import type { ToolCallRecord } from './storage/types.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import type { ConfigSummary } from './tools/session-stats.js';
 import { registerPendingTools, registerTools } from './tools/session-stats.js';
+import type { HookRecordedReportOptions } from './tools/cost-tools.js';
 import { FeedbackCollector } from './tools/workflow-tools.js';
 import { initMcpTracer } from './tracing/mcp-tracer.js';
 import { SessionSpan } from './tracing/session-span.js';
@@ -792,6 +793,13 @@ export function parseArgs(argv: string[]): CliOptions {
     local,
     validate,
   };
+}
+
+// Cursor and Windsurf run one engine for every chat in a window, so a report
+// is recorded by the hook in the chat that made it, before and after adoption.
+function hookRecordedReports(): HookRecordedReportOptions | undefined {
+  const hook = createDefaultRegistry().getActive().capabilities.tokenReportHook;
+  return hook && { hook, homeDir: homedir(), projectDir: process.cwd() };
 }
 
 async function main(): Promise<void> {
@@ -3112,6 +3120,7 @@ async function main(): Promise<void> {
       };
       registerTools(mcpServer!.server, {
         headlessInstaller: buildHeadlessInstaller(),
+        reportTokens: hookRecordedReports(),
         sessionTracker: sessionTracker!,
         costTracker,
         budgetTracker,
@@ -3263,7 +3272,6 @@ async function main(): Promise<void> {
         // respond to health/config requests while the real session ID resolves.
         const pendingConfigFilePath =
           options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
-        const pendingAdapter = createDefaultRegistry().getActive();
         registerPendingTools(mcpServer!.server, {
           sessionStartMs: Date.now(),
           developer: config.developer,
@@ -3285,17 +3293,11 @@ async function main(): Promise<void> {
           // A Claude Code session with no hooks never resolves, so this is
           // where the opt-in install has to work. Other stdio clients have no
           // Claude Code hooks to install or report missing.
-          ...(pendingAdapter instanceof ClaudeCodeAdapter && {
+          ...(createDefaultRegistry().getActive() instanceof ClaudeCodeAdapter && {
             hooksInstalledFn: () => areHooksInstalledAtAnyScope(),
             headlessInstaller: buildHeadlessInstaller(),
           }),
-          ...(pendingAdapter.capabilities.tokenReportHook && {
-            reportTokens: {
-              hook: pendingAdapter.capabilities.tokenReportHook,
-              homeDir: homedir(),
-              projectDir: process.cwd(),
-            },
-          }),
+          reportTokens: hookRecordedReports(),
         });
         logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
 
@@ -3368,6 +3370,7 @@ async function main(): Promise<void> {
         };
         registerTools(mcpServer!.server, {
           headlessInstaller: buildHeadlessInstaller(),
+          reportTokens: hookRecordedReports(),
           sessionTracker,
           costTracker,
           budgetTracker,

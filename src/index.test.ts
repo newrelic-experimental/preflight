@@ -1556,7 +1556,7 @@ describe('stdio integration', () => {
     }, 30000);
 
     it('leaves the report to the hook after a Cursor engine adopts a real session id', async () => {
-      await withPendingEngine('cursor', async (client, hook, sessionFile, storagePath) => {
+      await withPendingEngine('cursor', async (client, hook, _sessionFile, storagePath) => {
         const breadcrumbDir = resolve(storagePath, 'session-by-ppid');
         mkdirSync(breadcrumbDir, { recursive: true });
         writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), 'real-owner-session');
@@ -1586,7 +1586,14 @@ describe('stdio integration', () => {
           result_json: JSON.stringify(result),
         });
 
-        expect((await sessionFile('conv-reported'))?.tokensInput).toBe(1000);
+        const buffer = readFileSync(resolve(storagePath, 'buffer-conv-reported.jsonl'), 'utf-8');
+        const lines = buffer
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        expect(lines.filter((l) => l.mode === 'self_report')).toMatchObject([
+          { inputTokens: 1000 },
+        ]);
       });
     }, 30000);
 

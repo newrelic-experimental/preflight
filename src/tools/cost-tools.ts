@@ -36,6 +36,7 @@ import {
   buildToolSet,
   type RegisteredToolSet,
   type ToolCallResult,
+  type ToolSpec,
 } from './tool-registry.js';
 
 // ---------------------------------------------------------------------------
@@ -81,14 +82,12 @@ export const REPORT_TOKENS_TOOL = {
   annotations: { readOnlyHint: false },
 };
 
-export interface PendingReportTokensOptions {
+export interface HookRecordedReportOptions {
   readonly hook: TokenReportHook;
   readonly homeDir: string;
   readonly projectDir: string;
 }
 
-const RECORDED_BY_HOOK =
-  "Preflight records this report from its post-MCP hook event for this call, in the conversation that made it, after the call returns. Without Preflight's hooks installed for this client it is not saved.";
 const COLLECTOR_COMMAND_RE = /preflight-collector|collector-script\.js/;
 
 function runsCollector(path: string, event: string): boolean {
@@ -106,20 +105,18 @@ function runsCollector(path: string, event: string): boolean {
   }
 }
 
-export function pendingReportTokensTool(options: PendingReportTokensOptions): {
-  readonly definition: typeof REPORT_TOKENS_TOOL;
-  readonly handle: (args: unknown) => ToolCallResult;
-} {
+export function hookRecordedReportTokensTool(options: HookRecordedReportOptions): ToolSpec {
   const { hook } = options;
   const notDetected =
-    `No ${hook.postMcpEvent} hook running preflight-collector was found in ~/${hook.homeHooksFile} or ${hook.projectHooksFile}, ` +
-    `so this report will not be saved. Add {"command": "preflight-collector"} under hooks.${hook.postMcpEvent} in one of those files, then restart the client.`;
+    "Preflight's hook was not detected, so this report may not be saved. " +
+    `To install it, add {"command": "preflight-collector"} under hooks.${hook.postMcpEvent} in ~/${hook.homeHooksFile} or in ${hook.projectHooksFile} at the workspace root, then restart ${hook.clientName}.`;
+  const detected = `Preflight's ${hook.postMcpEvent} hook was found, so the hook should record it in this conversation after the call returns.`;
   const definition = {
     ...REPORT_TOKENS_TOOL,
     description:
       REPORT_TOKENS_TOOL.description +
-      ' Set report_id to a new random value (such as a UUID) on every call, and keep it when retrying: Preflight saves each report_id once per conversation.' +
-      " Preflight's hook for this call records the report in this conversation.",
+      ' Set report_id to a new random value (such as a UUID) on every call, and keep it when retrying: Preflight saves a retry with the same report_id and the same counts once per conversation.' +
+      " Preflight's hook for this call should record the report in this conversation.",
     inputSchema: {
       ...REPORT_TOKENS_TOOL.inputSchema,
       properties: {
@@ -149,10 +146,10 @@ export function pendingReportTokensTool(options: PendingReportTokensOptions): {
       model: report.model,
       recorded_by: 'hook',
       hooks_detected: hooksDetected,
-      message: hooksDetected ? RECORDED_BY_HOOK : notDetected,
+      message: hooksDetected ? detected : notDetected,
     });
   };
-  return { definition, handle };
+  return { definition, available: true, handle };
 }
 
 // ---------------------------------------------------------------------------
@@ -440,28 +437,32 @@ export interface CostToolsDeps {
   modelUsageTracker?: ModelUsageTracker;
   sessionResumeTracker?: SessionResumeTracker;
   sessionStartMs?: number;
+  /** Set for clients whose hook records each report in its own conversation. */
+  reportTokens?: HookRecordedReportOptions;
 }
 
 export function registerCostTools(deps: CostToolsDeps): RegisteredToolSet {
   return buildToolSet([
-    {
-      definition: REPORT_TOKENS_TOOL,
-      available: !!deps.costTracker,
-      handle: (args) => {
-        const check = requireTracker(deps.costTracker, 'CostTracker');
-        if (!check.ok) return check.result;
-        try {
-          const tokenReport = TokenReportSchema.parse(args);
-          return handleReportTokens(check.value, tokenReport, deps.modelUsageTracker);
-        } catch (err) {
-          const message =
-            err instanceof z.ZodError
-              ? err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
-              : String(err);
-          return errorResult(`Invalid token report: ${message}`);
-        }
-      },
-    },
+    deps.reportTokens
+      ? hookRecordedReportTokensTool(deps.reportTokens)
+      : {
+          definition: REPORT_TOKENS_TOOL,
+          available: !!deps.costTracker,
+          handle: (args) => {
+            const check = requireTracker(deps.costTracker, 'CostTracker');
+            if (!check.ok) return check.result;
+            try {
+              const tokenReport = TokenReportSchema.parse(args);
+              return handleReportTokens(check.value, tokenReport, deps.modelUsageTracker);
+            } catch (err) {
+              const message =
+                err instanceof z.ZodError
+                  ? err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
+                  : String(err);
+              return errorResult(`Invalid token report: ${message}`);
+            }
+          },
+        },
     {
       definition: COST_BREAKDOWN_TOOL,
       available: !!deps.costTracker,

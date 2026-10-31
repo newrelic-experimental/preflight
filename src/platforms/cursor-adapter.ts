@@ -72,6 +72,7 @@ export class CursorAdapter implements PlatformAdapter {
     // afterMCPExecution carries conversation_id, tool_input and result_json
     // (https://cursor.com/docs/agent/hooks).
     tokenReportHook: {
+      clientName: 'Cursor',
       postMcpEvent: 'afterMCPExecution',
       homeHooksFile: '.cursor/hooks.json',
       projectHooksFile: '.cursor/hooks.json',
