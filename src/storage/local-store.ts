@@ -94,9 +94,11 @@ let warnedUnlistableWriters = false;
 
 export function breadcrumbWriters(storagePath: string): string[] {
   try {
-    return readdirSync(resolve(storagePath, BREADCRUMBS_DIR), { withFileTypes: true })
+    const writers = readdirSync(resolve(storagePath, BREADCRUMBS_DIR), { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name);
+    warnedUnlistableWriters = false;
+    return writers;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT' && !warnedUnlistableWriters) {
       warnedUnlistableWriters = true;

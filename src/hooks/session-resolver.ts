@@ -348,14 +348,22 @@ export function sessionBreadcrumbs(
     listFiles(resolve(storagePath, 'session-by-ppid')).some(
       (path) => mtimeMs(path) >= processStartMs && readSessionId(path) === sessionId,
     );
-  const isTagged = (sessionId: string) =>
-    breadcrumbWriters(storagePath).some((writer) =>
-      ['session-by-ppid', 'session-by-cwd'].some((kind) =>
-        listFiles(resolve(breadcrumbRoot(storagePath, writer), kind)).some(
-          (path) => readSessionId(path) === sessionId,
-        ),
-      ),
-    );
+  const everTaggedIds = new Set<string>();
+  const scanTaggedIds = () => {
+    for (const writer of breadcrumbWriters(storagePath)) {
+      for (const kind of ['session-by-ppid', 'session-by-cwd']) {
+        for (const path of listFiles(resolve(breadcrumbRoot(storagePath, writer), kind))) {
+          const id = readSessionId(path);
+          if (id) everTaggedIds.add(id);
+        }
+      }
+    }
+  };
+  const rootHitCounts = (crumb: string, sessionId: string) => {
+    if (everTaggedIds.has(sessionId) || !writtenSinceStart(crumb, sessionId)) return false;
+    scanTaggedIds();
+    return !everTaggedIds.has(sessionId);
+  };
   const pick = <T>(
     read: (root: string) => T | null,
     crumbOf: (hit: T) => string,
@@ -378,8 +386,7 @@ export function sessionBreadcrumbs(
     }
     const hit = read(storagePath);
     if (!hit) return null;
-    const sessionId = sessionIdOf(hit);
-    return writtenSinceStart(crumbOf(hit), sessionId) && !isTagged(sessionId) ? hit : null;
+    return rootHitCounts(crumbOf(hit), sessionIdOf(hit)) ? hit : null;
   };
   const self = (sessionId: string) => sessionId;
   return {

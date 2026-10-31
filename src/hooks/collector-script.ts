@@ -30,6 +30,8 @@ import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
+import { canonicalPlatformName, ENGINE_ENV_KEYS } from '../platforms/platform-names.js';
+import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
 import { breadcrumbRoot, breadcrumbWriter } from './session-breadcrumbs.js';
 
 // ---------------------------------------------------------------------------
@@ -105,7 +107,7 @@ function getMaxContentLength(): number {
  */
 function detectStampPlatform(): string | undefined {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
-  if (explicit) return explicit;
+  if (explicit) return canonicalPlatformName(explicit) ?? explicit;
   return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)
     ? 'claude-code'
     : undefined;
@@ -248,15 +250,12 @@ function touch(path: string): void {
 
 let _unknownEngineWarned = false;
 
-function writePpidBreadcrumb(sessionId: string, root: string): boolean {
-  if (!SESSION_ID_RE.test(sessionId)) return false;
+function writePpidBreadcrumb(sessionId: string, root: string, legacyRoot?: string): void {
+  if (!SESSION_ID_RE.test(sessionId)) return;
   const ppid = process.ppid;
-  if (typeof ppid !== 'number' || ppid <= 0) return false;
+  if (typeof ppid !== 'number' || ppid <= 0) return;
 
   try {
-    const breadcrumbDir = resolve(root, 'session-by-ppid');
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
-
     // Walk ancestor PIDs. On Linux this includes any intermediate shell
     // processes interposed by the hook runner. On macOS/Windows the array
     // has exactly one element (process.ppid) — identical to before.
@@ -265,36 +264,36 @@ function writePpidBreadcrumb(sessionId: string, root: string): boolean {
     // sessions sharing a common ancestor PID may overwrite each other there.
     const pids = getLinuxAncestorPids(ppid);
 
-    let wroteAny = false;
-    for (const pid of pids) {
-      const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
-      // Short-circuit: no content rewrite needed if it already matches, but
-      // still touch mtime — resolveFromBreadcrumb() (session-resolver.ts)
-      // rejects a breadcrumb older than the reading process's own start
-      // time, so an actively-hooked session's breadcrumb must keep looking
-      // fresh across an MCP server restart (same ppid, same session_id,
-      // content genuinely unchanged) or that restart would permanently lose
-      // ppid-based resolution for the rest of the session. A breadcrumb from
-      // a session that's actually over stops getting touched here (nothing
-      // calls this with its old ppid+session_id again), so it still goes
-      // stale and gets rejected exactly as intended.
-      if (existsSync(breadcrumbPath)) {
-        try {
-          if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
-            touch(breadcrumbPath);
-            wroteAny = true;
-            continue;
+    for (const dir of legacyRoot === undefined ? [root] : [root, legacyRoot]) {
+      const breadcrumbDir = resolve(dir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
+      for (const pid of pids) {
+        const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
+        // Short-circuit: no content rewrite needed if it already matches, but
+        // still touch mtime — resolveFromBreadcrumb() (session-resolver.ts)
+        // rejects a breadcrumb older than the reading process's own start
+        // time, so an actively-hooked session's breadcrumb must keep looking
+        // fresh across an MCP server restart (same ppid, same session_id,
+        // content genuinely unchanged) or that restart would permanently lose
+        // ppid-based resolution for the rest of the session. A breadcrumb from
+        // a session that's actually over stops getting touched here (nothing
+        // calls this with its old ppid+session_id again), so it still goes
+        // stale and gets rejected exactly as intended.
+        if (existsSync(breadcrumbPath)) {
+          try {
+            if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
+              touch(breadcrumbPath);
+              continue;
+            }
+          } catch {
+            // Fall through to rewrite if the read failed.
           }
-        } catch {
-          // Fall through to rewrite if the read failed.
         }
+        writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
       }
-      writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
-      wroteAny = true;
     }
 
-    if (wroteAny) _breadcrumbWriteFailed = false;
-    return wroteAny;
+    _breadcrumbWriteFailed = false;
   } catch (err) {
     if (!_breadcrumbWriteFailed) {
       process.stderr.write(
@@ -302,44 +301,47 @@ function writePpidBreadcrumb(sessionId: string, root: string): boolean {
       );
       _breadcrumbWriteFailed = true;
     }
-    return false;
   }
 }
 
 let _cwdBreadcrumbWriteFailed = false;
 
-function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined, root: string): boolean {
-  if (!SESSION_ID_RE.test(sessionId)) return false;
-  if (typeof cwd !== 'string' || cwd.length === 0) return false;
+function writeCwdBreadcrumb(
+  sessionId: string,
+  cwd: string | undefined,
+  root: string,
+  legacyRoot?: string,
+): void {
+  if (!SESSION_ID_RE.test(sessionId)) return;
+  if (typeof cwd !== 'string' || cwd.length === 0) return;
+
+  // Same sanitization scheme as getTranscriptPath() above, so the MCP
+  // server's resolveFromCwd() can derive an identical filename from its
+  // own process.cwd() without any shared state beyond this convention.
+  // Colons are also stripped (unlike getTranscriptPath) — a Windows drive
+  // letter like "C:" left in the filename gets misinterpreted by
+  // path.resolve() on win32 as a drive-relative path component rather than
+  // a literal character, which can write/read outside this storage dir.
+  const sanitizedCwd = cwd.replace(/[\\/:]/g, '-');
 
   try {
-    const breadcrumbDir = resolve(root, 'session-by-cwd');
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
-
-    // Same sanitization scheme as getTranscriptPath() above, so the MCP
-    // server's resolveFromCwd() can derive an identical filename from its
-    // own process.cwd() without any shared state beyond this convention.
-    // Colons are also stripped (unlike getTranscriptPath) — a Windows drive
-    // letter like "C:" left in the filename gets misinterpreted by
-    // path.resolve() on win32 as a drive-relative path component rather than
-    // a literal character, which can write/read outside this storage dir.
-    const sanitizedCwd = cwd.replace(/[\\/:]/g, '-');
-    const breadcrumbPath = resolve(breadcrumbDir, `${sanitizedCwd}.txt`);
-
-    if (existsSync(breadcrumbPath)) {
-      try {
-        if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
-          touch(breadcrumbPath);
-          _cwdBreadcrumbWriteFailed = false;
-          return true;
+    for (const dir of legacyRoot === undefined ? [root] : [root, legacyRoot]) {
+      const breadcrumbDir = resolve(dir, 'session-by-cwd');
+      mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
+      const breadcrumbPath = resolve(breadcrumbDir, `${sanitizedCwd}.txt`);
+      if (existsSync(breadcrumbPath)) {
+        try {
+          if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
+            touch(breadcrumbPath);
+            continue;
+          }
+        } catch {
+          // Fall through to rewrite if the read failed.
         }
-      } catch {
-        // Fall through to rewrite if the read failed.
       }
+      writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
     }
-    writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
     _cwdBreadcrumbWriteFailed = false;
-    return true;
   } catch (err) {
     if (!_cwdBreadcrumbWriteFailed) {
       process.stderr.write(
@@ -347,7 +349,6 @@ function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined, root: st
       );
       _cwdBreadcrumbWriteFailed = true;
     }
-    return false;
   }
 }
 
@@ -778,24 +779,21 @@ function processHook(raw: string, cliEvent?: string): void {
   // conversation_id would be a guess, not a fix.
   if (typeof data.session_id === 'string' && data.session_id.length > 0) {
     const writer = breadcrumbWriter(process.env);
-    if (writer === null) {
-      if (!_unknownEngineWarned) {
+    if (writer === UNATTRIBUTED_BREADCRUMB_WRITER && !_unknownEngineWarned) {
+      const unknownNames = ENGINE_ENV_KEYS.filter(
+        (key) => process.env[key] && canonicalPlatformName(process.env[key]) === undefined,
+      ).map((key) => `${key}=${JSON.stringify(process.env[key])}`);
+      if (unknownNames.length > 0) {
         process.stderr.write(
-          `[preflight-collector] Warning: MCP_CLIENT/NEW_RELIC_AI_PLATFORM ${JSON.stringify(detectStampPlatform())} names no engine Preflight knows; no session breadcrumb written\n`,
+          `[preflight-collector] Warning: ${unknownNames.join(', ')} names no engine Preflight knows; filing the session breadcrumb as unattributed\n`,
         );
         _unknownEngineWarned = true;
       }
-    } else {
-      // Servers before #979 read this untagged layout.
-      const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-      const tagged = breadcrumbRoot(storageDir, writer);
-      if (writePpidBreadcrumb(data.session_id, tagged)) {
-        writePpidBreadcrumb(data.session_id, storageDir);
-      }
-      if (writeCwdBreadcrumb(data.session_id, data.cwd, tagged)) {
-        writeCwdBreadcrumb(data.session_id, data.cwd, storageDir);
-      }
     }
+    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    const tagged = breadcrumbRoot(storageDir, writer);
+    writePpidBreadcrumb(data.session_id, tagged, storageDir);
+    writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);
   }
 
   // Claude Code sends PascalCase hook names ('PreToolUse'); Kiro sends
@@ -819,8 +817,9 @@ function processHook(raw: string, cliEvent?: string): void {
   // valid JSON — every one of its own example hooks prints "{}" even for
   // pure side-effect hooks. No other platform reads this collector's
   // stdout, so this check is scoped to Gemini CLI only.
-  const isGeminiCli =
-    process.env.MCP_CLIENT === 'gemini-cli' || process.env.NEW_RELIC_AI_PLATFORM === 'gemini-cli';
+  const isGeminiCli = ENGINE_ENV_KEYS.some(
+    (key) => canonicalPlatformName(process.env[key]) === 'gemini-cli',
+  );
 
   // Antigravity (https://antigravity.google/docs/hooks#inputoutput-contract)
   // sends no field naming which event fired, and both PreToolUse and

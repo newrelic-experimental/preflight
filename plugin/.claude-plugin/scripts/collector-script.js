@@ -74,9 +74,6 @@ function hookEventFromArg(arg) {
   );
 }
 
-// src/hooks/session-breadcrumbs.ts
-import { resolve } from "node:path";
-
 // src/platforms/platform-names.ts
 var PLATFORM_NAMES = [
   "claude-code",
@@ -99,27 +96,31 @@ var PLATFORM_NAMES = [
   "antigravity",
   "generic-mcp"
 ];
+var ENGINE_ENV_KEYS = ["MCP_CLIENT", "NEW_RELIC_AI_PLATFORM"];
+var aliasKey = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+var PLATFORM_BY_ALIAS = new Map(
+  PLATFORM_NAMES.map((n) => [aliasKey(n), n])
+);
+function canonicalPlatformName(name) {
+  return name ? PLATFORM_BY_ALIAS.get(aliasKey(name)) : void 0;
+}
 
 // src/platforms/types.ts
 var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
 
 // src/hooks/session-breadcrumbs.ts
+import { resolve } from "node:path";
 var BREADCRUMBS_DIR = "breadcrumbs";
-var aliasKey = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
-var WRITER_BY_ALIAS = new Map(PLATFORM_NAMES.map((n) => [aliasKey(n), n]));
 function breadcrumbRoot(storagePath, writer) {
   return resolve(storagePath, BREADCRUMBS_DIR, writer);
 }
 function breadcrumbWriter(env) {
-  const named = [env.MCP_CLIENT, env.NEW_RELIC_AI_PLATFORM].filter((n) => !!n);
-  for (const name of named) {
-    const writer = WRITER_BY_ALIAS.get(aliasKey(name));
-    if (writer !== void 0) return writer;
+  for (const key of ENGINE_ENV_KEYS) {
+    const name = canonicalPlatformName(env[key]);
+    if (name === "generic-mcp") return UNATTRIBUTED_BREADCRUMB_WRITER;
+    if (name !== void 0) return name;
   }
-  if (CLAUDE_CODE_ENV_SIGNALS.some((key) => env[key] !== void 0)) {
-    return CLAUDE_CODE_PLATFORM_NAME;
-  }
-  return named.length === 0 ? UNATTRIBUTED_BREADCRUMB_WRITER : null;
+  return CLAUDE_CODE_ENV_SIGNALS.some((key) => env[key] !== void 0) ? CLAUDE_CODE_PLATFORM_NAME : UNATTRIBUTED_BREADCRUMB_WRITER;
 }
 
 // src/hooks/collector-script.ts
@@ -164,7 +165,7 @@ function getMaxContentLength() {
 }
 function detectStampPlatform() {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
-  if (explicit) return explicit;
+  if (explicit) return canonicalPlatformName(explicit) ?? explicit;
   return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0) ? "claude-code" : void 0;
 }
 var MAX_REDACT_BYTES = 1048576;
@@ -235,32 +236,30 @@ function touch(path) {
   }
 }
 var _unknownEngineWarned = false;
-function writePpidBreadcrumb(sessionId, root) {
-  if (!SESSION_ID_RE.test(sessionId)) return false;
+function writePpidBreadcrumb(sessionId, root, legacyRoot) {
+  if (!SESSION_ID_RE.test(sessionId)) return;
   const ppid = process.ppid;
-  if (typeof ppid !== "number" || ppid <= 0) return false;
+  if (typeof ppid !== "number" || ppid <= 0) return;
   try {
-    const breadcrumbDir = resolve2(root, "session-by-ppid");
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
     const pids = getLinuxAncestorPids(ppid);
-    let wroteAny = false;
-    for (const pid of pids) {
-      const breadcrumbPath = resolve2(breadcrumbDir, `${pid}.txt`);
-      if (existsSync(breadcrumbPath)) {
-        try {
-          if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
-            touch(breadcrumbPath);
-            wroteAny = true;
-            continue;
+    for (const dir of legacyRoot === void 0 ? [root] : [root, legacyRoot]) {
+      const breadcrumbDir = resolve2(dir, "session-by-ppid");
+      mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
+      for (const pid of pids) {
+        const breadcrumbPath = resolve2(breadcrumbDir, `${pid}.txt`);
+        if (existsSync(breadcrumbPath)) {
+          try {
+            if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
+              touch(breadcrumbPath);
+              continue;
+            }
+          } catch {
           }
-        } catch {
         }
+        writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
       }
-      writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
-      wroteAny = true;
     }
-    if (wroteAny) _breadcrumbWriteFailed = false;
-    return wroteAny;
+    _breadcrumbWriteFailed = false;
   } catch (err) {
     if (!_breadcrumbWriteFailed) {
       process.stderr.write(
@@ -269,31 +268,30 @@ function writePpidBreadcrumb(sessionId, root) {
       );
       _breadcrumbWriteFailed = true;
     }
-    return false;
   }
 }
 var _cwdBreadcrumbWriteFailed = false;
-function writeCwdBreadcrumb(sessionId, cwd, root) {
-  if (!SESSION_ID_RE.test(sessionId)) return false;
-  if (typeof cwd !== "string" || cwd.length === 0) return false;
+function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
+  if (!SESSION_ID_RE.test(sessionId)) return;
+  if (typeof cwd !== "string" || cwd.length === 0) return;
+  const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
   try {
-    const breadcrumbDir = resolve2(root, "session-by-cwd");
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
-    const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
-    const breadcrumbPath = resolve2(breadcrumbDir, `${sanitizedCwd}.txt`);
-    if (existsSync(breadcrumbPath)) {
-      try {
-        if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
-          touch(breadcrumbPath);
-          _cwdBreadcrumbWriteFailed = false;
-          return true;
+    for (const dir of legacyRoot === void 0 ? [root] : [root, legacyRoot]) {
+      const breadcrumbDir = resolve2(dir, "session-by-cwd");
+      mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
+      const breadcrumbPath = resolve2(breadcrumbDir, `${sanitizedCwd}.txt`);
+      if (existsSync(breadcrumbPath)) {
+        try {
+          if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
+            touch(breadcrumbPath);
+            continue;
+          }
+        } catch {
         }
-      } catch {
       }
+      writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
     }
-    writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
     _cwdBreadcrumbWriteFailed = false;
-    return true;
   } catch (err) {
     if (!_cwdBreadcrumbWriteFailed) {
       process.stderr.write(
@@ -302,7 +300,6 @@ function writeCwdBreadcrumb(sessionId, cwd, root) {
       );
       _cwdBreadcrumbWriteFailed = true;
     }
-    return false;
   }
 }
 function extractInputMeta(toolName, input) {
@@ -538,31 +535,31 @@ function processHook(raw, cliEvent) {
   const sessionId = data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
   if (typeof data.session_id === "string" && data.session_id.length > 0) {
     const writer = breadcrumbWriter(process.env);
-    if (writer === null) {
-      if (!_unknownEngineWarned) {
+    if (writer === UNATTRIBUTED_BREADCRUMB_WRITER && !_unknownEngineWarned) {
+      const unknownNames = ENGINE_ENV_KEYS.filter(
+        (key) => process.env[key] && canonicalPlatformName(process.env[key]) === void 0
+      ).map((key) => `${key}=${JSON.stringify(process.env[key])}`);
+      if (unknownNames.length > 0) {
         process.stderr.write(
-          `[preflight-collector] Warning: MCP_CLIENT/NEW_RELIC_AI_PLATFORM ${JSON.stringify(detectStampPlatform())} names no engine Preflight knows; no session breadcrumb written
+          `[preflight-collector] Warning: ${unknownNames.join(", ")} names no engine Preflight knows; filing the session breadcrumb as unattributed
 `
         );
         _unknownEngineWarned = true;
       }
-    } else {
-      const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-      const tagged = breadcrumbRoot(storageDir, writer);
-      if (writePpidBreadcrumb(data.session_id, tagged)) {
-        writePpidBreadcrumb(data.session_id, storageDir);
-      }
-      if (writeCwdBreadcrumb(data.session_id, data.cwd, tagged)) {
-        writeCwdBreadcrumb(data.session_id, data.cwd, storageDir);
-      }
     }
+    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    const tagged = breadcrumbRoot(storageDir, writer);
+    writePpidBreadcrumb(data.session_id, tagged, storageDir);
+    writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);
   }
   const eventName = (data.hook_event_name ?? data.agent_action_name)?.toLowerCase();
   const toolName = data.tool_name ?? "unknown";
   const timestamp = Date.now();
   const recordContent = getRecordContent();
   const maxContentLen = getMaxContentLength();
-  const isGeminiCli = process.env.MCP_CLIENT === "gemini-cli" || process.env.NEW_RELIC_AI_PLATFORM === "gemini-cli";
+  const isGeminiCli = ENGINE_ENV_KEYS.some(
+    (key) => canonicalPlatformName(process.env[key]) === "gemini-cli"
+  );
   const isAntigravityShape = data.hook_event_name === void 0 && data.agent_action_name === void 0 && (data.toolCall !== void 0 || typeof data.stepIdx === "number");
   const agyCliEvent = hookEventFromArg(cliEvent);
   const isAntigravityPost = isAntigravityShape && (agyCliEvent === "PostToolUse" || agyCliEvent !== "PreToolUse" && (data.error !== void 0 || data.toolCall === void 0));
