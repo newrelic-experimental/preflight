@@ -1670,6 +1670,15 @@ describe('breadcrumbs filed by writer', () => {
     expect(sessionBreadcrumbs(tmpDir, KIRO, startedAt).cwd('/projects/shared')).toBeNull();
   });
 
+  it('keeps skipping an untagged breadcrumb once its session was seen under a writer', () => {
+    writeCrumb('claude-code', 'cwd', '-projects-shared', 'sess-claude');
+    writeCrumb(null, 'cwd', '-projects-shared', 'sess-claude');
+    const kiro = sessionBreadcrumbs(tmpDir, KIRO, Date.now() - 60_000);
+    expect(kiro.cwd('/projects/shared')).toBeNull();
+    rmSync(resolve(tmpDir, 'breadcrumbs'), { recursive: true, force: true });
+    expect(kiro.cwd('/projects/shared')).toBeNull();
+  });
+
   it("prefers the engine's own writer over a fresher unattributed or untagged breadcrumb", () => {
     const startedAt = Date.now();
     const before = new Date(startedAt - 60_000);

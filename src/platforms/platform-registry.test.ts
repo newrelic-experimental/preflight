@@ -264,6 +264,15 @@ describe('PlatformRegistry', () => {
       expect(detected!.platformName).toBe('copilot');
     });
 
+    it.each([
+      ['MCP_CLIENT', 'Kiro', 'kiro'],
+      ['MCP_CLIENT', 'Gemini_CLI', 'gemini-cli'],
+      ['NEW_RELIC_AI_PLATFORM', 'COPILOT_SDK', 'copilot-sdk'],
+    ])('detects the engine %s=%s names in another spelling', (key, value, platformName) => {
+      process.env[key] = value;
+      expect(createDefaultRegistry().detect()?.platformName).toBe(platformName);
+    });
+
     it('falls back to ambient-signal registration order when no explicit MCP_CLIENT/NEW_RELIC_AI_PLATFORM is set', () => {
       process.env.CLAUDE_CODE_VERSION = '1.2.3';
       const registry = createDefaultRegistry();
