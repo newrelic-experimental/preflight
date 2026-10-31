@@ -239,10 +239,19 @@ export function getLinuxAncestorPids(startPpid: number, maxDepth = 5): number[] 
 
 let _breadcrumbWriteFailed = false;
 
-function writePpidBreadcrumb(sessionId: string, root: string): void {
-  if (!SESSION_ID_RE.test(sessionId)) return;
+function touch(path: string): void {
+  const now = new Date();
+  try {
+    utimesSync(path, now, now);
+  } catch {}
+}
+
+let _unknownEngineWarned = false;
+
+function writePpidBreadcrumb(sessionId: string, root: string): boolean {
+  if (!SESSION_ID_RE.test(sessionId)) return false;
   const ppid = process.ppid;
-  if (typeof ppid !== 'number' || ppid <= 0) return;
+  if (typeof ppid !== 'number' || ppid <= 0) return false;
 
   try {
     const breadcrumbDir = resolve(root, 'session-by-ppid');
@@ -272,12 +281,7 @@ function writePpidBreadcrumb(sessionId: string, root: string): void {
       if (existsSync(breadcrumbPath)) {
         try {
           if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
-            const now = new Date();
-            try {
-              utimesSync(breadcrumbPath, now, now);
-            } catch {
-              // Best-effort — an unwritable mtime doesn't block the session.
-            }
+            touch(breadcrumbPath);
             wroteAny = true;
             continue;
           }
@@ -290,6 +294,7 @@ function writePpidBreadcrumb(sessionId: string, root: string): void {
     }
 
     if (wroteAny) _breadcrumbWriteFailed = false;
+    return wroteAny;
   } catch (err) {
     if (!_breadcrumbWriteFailed) {
       process.stderr.write(
@@ -297,14 +302,15 @@ function writePpidBreadcrumb(sessionId: string, root: string): void {
       );
       _breadcrumbWriteFailed = true;
     }
+    return false;
   }
 }
 
 let _cwdBreadcrumbWriteFailed = false;
 
-function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined, root: string): void {
-  if (!SESSION_ID_RE.test(sessionId)) return;
-  if (typeof cwd !== 'string' || cwd.length === 0) return;
+function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined, root: string): boolean {
+  if (!SESSION_ID_RE.test(sessionId)) return false;
+  if (typeof cwd !== 'string' || cwd.length === 0) return false;
 
   try {
     const breadcrumbDir = resolve(root, 'session-by-cwd');
@@ -323,8 +329,9 @@ function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined, root: st
     if (existsSync(breadcrumbPath)) {
       try {
         if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
+          touch(breadcrumbPath);
           _cwdBreadcrumbWriteFailed = false;
-          return;
+          return true;
         }
       } catch {
         // Fall through to rewrite if the read failed.
@@ -332,6 +339,7 @@ function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined, root: st
     }
     writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
     _cwdBreadcrumbWriteFailed = false;
+    return true;
   } catch (err) {
     if (!_cwdBreadcrumbWriteFailed) {
       process.stderr.write(
@@ -339,6 +347,7 @@ function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined, root: st
       );
       _cwdBreadcrumbWriteFailed = true;
     }
+    return false;
   }
 }
 
@@ -767,17 +776,25 @@ function processHook(raw: string, cliEvent?: string): void {
   // evidence that Cursor's own MCP-server child process shares Claude Code's
   // ancestry-based session-resolution model, so extending this to
   // conversation_id would be a guess, not a fix.
-  const engine = detectStampPlatform();
-  const writer = breadcrumbWriter(engine);
-  if (writer === null) {
-    process.stderr.write(
-      `[preflight-collector] Warning: MCP_CLIENT/NEW_RELIC_AI_PLATFORM ${JSON.stringify(engine)} names no engine Preflight knows; no session breadcrumb written\n`,
-    );
-  } else if (typeof data.session_id === 'string' && data.session_id.length > 0) {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    for (const root of [breadcrumbRoot(storageDir, writer), storageDir]) {
-      writePpidBreadcrumb(data.session_id, root);
-      writeCwdBreadcrumb(data.session_id, data.cwd, root);
+  if (typeof data.session_id === 'string' && data.session_id.length > 0) {
+    const writer = breadcrumbWriter(process.env);
+    if (writer === null) {
+      if (!_unknownEngineWarned) {
+        process.stderr.write(
+          `[preflight-collector] Warning: MCP_CLIENT/NEW_RELIC_AI_PLATFORM ${JSON.stringify(detectStampPlatform())} names no engine Preflight knows; no session breadcrumb written\n`,
+        );
+        _unknownEngineWarned = true;
+      }
+    } else {
+      // Servers before #979 read this untagged layout.
+      const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+      const tagged = breadcrumbRoot(storageDir, writer);
+      if (writePpidBreadcrumb(data.session_id, tagged)) {
+        writePpidBreadcrumb(data.session_id, storageDir);
+      }
+      if (writeCwdBreadcrumb(data.session_id, data.cwd, tagged)) {
+        writeCwdBreadcrumb(data.session_id, data.cwd, storageDir);
+      }
     }
   }
 

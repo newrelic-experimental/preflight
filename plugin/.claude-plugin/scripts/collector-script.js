@@ -42,6 +42,7 @@ function resolveRecordContent(highSecurity, explicitValue) {
 }
 
 // src/platforms/claude-code-adapter.ts
+var CLAUDE_CODE_PLATFORM_NAME = "claude-code";
 var CLAUDE_CODE_ENV_SIGNALS = [
   "CLAUDECODE",
   "CLAUDE_CODE_ENTRYPOINT",
@@ -76,11 +77,7 @@ function hookEventFromArg(arg) {
 // src/hooks/session-breadcrumbs.ts
 import { resolve } from "node:path";
 
-// src/platforms/types.ts
-var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
-
-// src/hooks/session-breadcrumbs.ts
-var BREADCRUMBS_DIR = "breadcrumbs";
+// src/platforms/platform-names.ts
 var PLATFORM_NAMES = [
   "claude-code",
   "cursor",
@@ -102,14 +99,27 @@ var PLATFORM_NAMES = [
   "antigravity",
   "generic-mcp"
 ];
+
+// src/platforms/types.ts
+var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
+
+// src/hooks/session-breadcrumbs.ts
+var BREADCRUMBS_DIR = "breadcrumbs";
 var aliasKey = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
 var WRITER_BY_ALIAS = new Map(PLATFORM_NAMES.map((n) => [aliasKey(n), n]));
 function breadcrumbRoot(storagePath, writer) {
   return resolve(storagePath, BREADCRUMBS_DIR, writer);
 }
-function breadcrumbWriter(engine) {
-  if (engine === void 0) return UNATTRIBUTED_BREADCRUMB_WRITER;
-  return WRITER_BY_ALIAS.get(aliasKey(engine)) ?? null;
+function breadcrumbWriter(env) {
+  const named = [env.MCP_CLIENT, env.NEW_RELIC_AI_PLATFORM].filter((n) => !!n);
+  for (const name of named) {
+    const writer = WRITER_BY_ALIAS.get(aliasKey(name));
+    if (writer !== void 0) return writer;
+  }
+  if (CLAUDE_CODE_ENV_SIGNALS.some((key) => env[key] !== void 0)) {
+    return CLAUDE_CODE_PLATFORM_NAME;
+  }
+  return named.length === 0 ? UNATTRIBUTED_BREADCRUMB_WRITER : null;
 }
 
 // src/hooks/collector-script.ts
@@ -217,10 +227,18 @@ function getLinuxAncestorPids(startPpid, maxDepth = 5) {
   return pids;
 }
 var _breadcrumbWriteFailed = false;
+function touch(path) {
+  const now = /* @__PURE__ */ new Date();
+  try {
+    utimesSync(path, now, now);
+  } catch {
+  }
+}
+var _unknownEngineWarned = false;
 function writePpidBreadcrumb(sessionId, root) {
-  if (!SESSION_ID_RE.test(sessionId)) return;
+  if (!SESSION_ID_RE.test(sessionId)) return false;
   const ppid = process.ppid;
-  if (typeof ppid !== "number" || ppid <= 0) return;
+  if (typeof ppid !== "number" || ppid <= 0) return false;
   try {
     const breadcrumbDir = resolve2(root, "session-by-ppid");
     mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
@@ -231,11 +249,7 @@ function writePpidBreadcrumb(sessionId, root) {
       if (existsSync(breadcrumbPath)) {
         try {
           if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
-            const now = /* @__PURE__ */ new Date();
-            try {
-              utimesSync(breadcrumbPath, now, now);
-            } catch {
-            }
+            touch(breadcrumbPath);
             wroteAny = true;
             continue;
           }
@@ -246,6 +260,7 @@ function writePpidBreadcrumb(sessionId, root) {
       wroteAny = true;
     }
     if (wroteAny) _breadcrumbWriteFailed = false;
+    return wroteAny;
   } catch (err) {
     if (!_breadcrumbWriteFailed) {
       process.stderr.write(
@@ -254,12 +269,13 @@ function writePpidBreadcrumb(sessionId, root) {
       );
       _breadcrumbWriteFailed = true;
     }
+    return false;
   }
 }
 var _cwdBreadcrumbWriteFailed = false;
 function writeCwdBreadcrumb(sessionId, cwd, root) {
-  if (!SESSION_ID_RE.test(sessionId)) return;
-  if (typeof cwd !== "string" || cwd.length === 0) return;
+  if (!SESSION_ID_RE.test(sessionId)) return false;
+  if (typeof cwd !== "string" || cwd.length === 0) return false;
   try {
     const breadcrumbDir = resolve2(root, "session-by-cwd");
     mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
@@ -268,14 +284,16 @@ function writeCwdBreadcrumb(sessionId, cwd, root) {
     if (existsSync(breadcrumbPath)) {
       try {
         if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
+          touch(breadcrumbPath);
           _cwdBreadcrumbWriteFailed = false;
-          return;
+          return true;
         }
       } catch {
       }
     }
     writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
     _cwdBreadcrumbWriteFailed = false;
+    return true;
   } catch (err) {
     if (!_cwdBreadcrumbWriteFailed) {
       process.stderr.write(
@@ -284,6 +302,7 @@ function writeCwdBreadcrumb(sessionId, cwd, root) {
       );
       _cwdBreadcrumbWriteFailed = true;
     }
+    return false;
   }
 }
 function extractInputMeta(toolName, input) {
@@ -517,18 +536,25 @@ function processHook(raw, cliEvent) {
     return;
   }
   const sessionId = data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
-  const engine = detectStampPlatform();
-  const writer = breadcrumbWriter(engine);
-  if (writer === null) {
-    process.stderr.write(
-      `[preflight-collector] Warning: MCP_CLIENT/NEW_RELIC_AI_PLATFORM ${JSON.stringify(engine)} names no engine Preflight knows; no session breadcrumb written
+  if (typeof data.session_id === "string" && data.session_id.length > 0) {
+    const writer = breadcrumbWriter(process.env);
+    if (writer === null) {
+      if (!_unknownEngineWarned) {
+        process.stderr.write(
+          `[preflight-collector] Warning: MCP_CLIENT/NEW_RELIC_AI_PLATFORM ${JSON.stringify(detectStampPlatform())} names no engine Preflight knows; no session breadcrumb written
 `
-    );
-  } else if (typeof data.session_id === "string" && data.session_id.length > 0) {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    for (const root of [breadcrumbRoot(storageDir, writer), storageDir]) {
-      writePpidBreadcrumb(data.session_id, root);
-      writeCwdBreadcrumb(data.session_id, data.cwd, root);
+        );
+        _unknownEngineWarned = true;
+      }
+    } else {
+      const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+      const tagged = breadcrumbRoot(storageDir, writer);
+      if (writePpidBreadcrumb(data.session_id, tagged)) {
+        writePpidBreadcrumb(data.session_id, storageDir);
+      }
+      if (writeCwdBreadcrumb(data.session_id, data.cwd, tagged)) {
+        writeCwdBreadcrumb(data.session_id, data.cwd, storageDir);
+      }
     }
   }
   const eventName = (data.hook_event_name ?? data.agent_action_name)?.toLowerCase();

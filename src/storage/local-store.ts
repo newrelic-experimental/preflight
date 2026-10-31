@@ -12,7 +12,7 @@ import {
 import { resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
-import { breadcrumbRoot, breadcrumbWriters } from '../hooks/session-breadcrumbs.js';
+import { BREADCRUMBS_DIR, breadcrumbRoot } from '../hooks/session-breadcrumbs.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -87,6 +87,22 @@ function isPidAlive(pid: number): boolean {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'EPERM') return true; // exists, owned by another uid
     return false;
+  }
+}
+
+let warnedUnlistableWriters = false;
+
+export function breadcrumbWriters(storagePath: string): string[] {
+  try {
+    return readdirSync(resolve(storagePath, BREADCRUMBS_DIR), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT' && !warnedUnlistableWriters) {
+      warnedUnlistableWriters = true;
+      logger.warn('Failed to list breadcrumb writers', { error: String(err) });
+    }
+    return [];
   }
 }
 
