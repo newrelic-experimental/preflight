@@ -4,14 +4,14 @@
 import {
   readFileSync,
   writeFileSync,
-  openSync,
-  closeSync,
-  mkdirSync,
+  openSync as openSync2,
+  closeSync as closeSync2,
+  mkdirSync as mkdirSync2,
   existsSync,
   utimesSync,
   constants as fsConstants
 } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve as resolve2, dirname } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 
@@ -74,6 +74,16 @@ function hookEventFromArg(arg) {
 }
 
 // src/hooks/self-report.ts
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
+import { resolve } from "node:path";
+
+// src/hooks/synthetic-session-id.ts
+function isSyntheticSessionId(id) {
+  if (!id) return false;
+  return id.startsWith("local-") || id.startsWith("proxy-") || id.startsWith("pending-");
+}
+
+// src/hooks/self-report.ts
 var REPORT_TOKENS_TOOL_NAME = "nr_observe_report_tokens";
 var MAX_TOKENS = 1e7;
 var REPORT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
@@ -82,7 +92,7 @@ var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 var PREFIXED_TOOL_RE = new RegExp(`(?:^|[_:./-])${REPORT_TOKENS_TOOL_NAME}$`);
 var REQUIRED_COUNTS = ["input_tokens", "output_tokens"];
 var OPTIONAL_COUNTS = ["thinking_tokens", "cache_read_tokens", "cache_creation_tokens"];
-var HOOK_RECORDED_RE = /\\*"recorded_by\\*"\s*:\s*\\*"hook\\*"/;
+var SEEN_TAIL_BYTES = 64 * 1024;
 function clampToken(v) {
   if (!Number.isFinite(v)) return 0;
   return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
@@ -91,10 +101,10 @@ function isReportTokensTool(name) {
   return typeof name === "string" && PREFIXED_TOOL_RE.test(name);
 }
 function isConversationId(id) {
-  return typeof id === "string" && SESSION_ID_RE.test(id) && id !== "unknown";
+  return typeof id === "string" && SESSION_ID_RE.test(id) && id !== "unknown" && !isSyntheticSessionId(id);
 }
-function decodeArguments(args) {
-  let value = args;
+function decodeObject(raw) {
+  let value = raw;
   if (typeof value === "string") {
     try {
       value = JSON.parse(value);
@@ -106,7 +116,7 @@ function decodeArguments(args) {
 }
 function parseSelfReport(args) {
   const fail = (reason) => ({ ok: false, reason });
-  const a = decodeArguments(args);
+  const a = decodeObject(args);
   if (!a) return fail("arguments are not a JSON object");
   if (typeof a.report_id !== "string" || !REPORT_ID_RE.test(a.report_id)) {
     return fail("report_id must be 8 to 128 characters of [A-Za-z0-9_-], new for every call");
@@ -138,13 +148,13 @@ function parseSelfReport(args) {
     }
   };
 }
-function selfReportTokenLine(report, conversationId, timestamp, platform) {
+function selfReportLine(report, conversationId, timestamp, platform) {
   return {
-    mode: "token",
-    tool: "self-report",
+    mode: "self_report",
+    tool: REPORT_TOKENS_TOOL_NAME,
     timestamp,
     sessionId: conversationId,
-    messageId: report.reportId,
+    reportId: report.reportId,
     model: report.model,
     inputTokens: report.inputTokens,
     outputTokens: report.outputTokens,
@@ -154,33 +164,64 @@ function selfReportTokenLine(report, conversationId, timestamp, platform) {
     ...platform !== void 0 && { platform }
   };
 }
-function repliedRecordedByHook(result, reportId) {
-  const text = typeof result === "string" ? result : JSON.stringify(result ?? null);
-  return HOOK_RECORDED_RE.test(text) && text.includes(reportId);
+function hookAcknowledged(result, reportId) {
+  const value = decodeObject(result);
+  if (!value || value.isError === true) return false;
+  const replies = Array.isArray(value.content) ? value.content.map(
+    (block) => decodeObject(block?.text)
+  ) : [value];
+  return replies.some(
+    (reply) => reply?.accepted === true && reply.recorded_by === "hook" && reply.report_id === reportId
+  );
 }
 function hookSelfReportLine(toolName, args, result, conversationId, timestamp, platform) {
   if (!isReportTokensTool(toolName) || !isConversationId(conversationId)) return void 0;
   const parsed = parseSelfReport(args);
-  if (!parsed.ok || !repliedRecordedByHook(result, parsed.report.reportId)) return void 0;
-  return selfReportTokenLine(parsed.report, conversationId, timestamp, platform);
+  if (!parsed.ok || !hookAcknowledged(result, parsed.report.reportId)) return void 0;
+  return selfReportLine(parsed.report, conversationId, timestamp, platform);
+}
+function seenReportsPath(storageDir, conversationId) {
+  return resolve(storageDir, "self-reports", `${conversationId}.ids`);
+}
+function hasSeenReport(path, reportId) {
+  let fd;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return false;
+  }
+  try {
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, SEEN_TAIL_BYTES);
+    const tail = Buffer.alloc(length);
+    readSync(fd, tail, 0, length, size - length);
+    return tail.toString("utf-8").split("\n").includes(reportId);
+  } finally {
+    closeSync(fd);
+  }
+}
+function markReportSeen(path, reportId) {
+  mkdirSync(resolve(path, ".."), { recursive: true, mode: 448 });
+  appendFileSync(path, `${reportId}
+`, { mode: 384 });
 }
 
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
 var SESSION_ID_RE2 = /^[a-zA-Z0-9_-]{1,128}$/;
-var DEFAULT_STORAGE_DIR = resolve(homedir(), ".newrelic-preflight");
+var DEFAULT_STORAGE_DIR = resolve2(homedir(), ".newrelic-preflight");
 function getBufferPath(sessionId) {
   if (process.env.NEW_RELIC_AI_MCP_BUFFER_PATH !== void 0) {
     return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   }
   const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
   const safeId = typeof sessionId === "string" && SESSION_ID_RE2.test(sessionId) ? sessionId : "unknown";
-  return resolve(storageDir, `buffer-${safeId}.jsonl`);
+  return resolve2(storageDir, `buffer-${safeId}.jsonl`);
 }
 var HIGH_SECURITY_FROM_FILE = (() => {
   for (const dir of [".newrelic-preflight", ".nr-ai-observe"]) {
     try {
-      const configPath = resolve(homedir(), dir, "config.json");
+      const configPath = resolve2(homedir(), dir, "config.json");
       if (existsSync(configPath)) {
         const config = JSON.parse(readFileSync(configPath, "utf-8"));
         return config.highSecurity === true;
@@ -276,12 +317,12 @@ function writePpidBreadcrumb(sessionId) {
   if (typeof ppid !== "number" || ppid <= 0) return;
   try {
     const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    const breadcrumbDir = resolve(storageDir, "session-by-ppid");
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
+    const breadcrumbDir = resolve2(storageDir, "session-by-ppid");
+    mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const pids = getLinuxAncestorPids(ppid);
     let wroteAny = false;
     for (const pid of pids) {
-      const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
+      const breadcrumbPath = resolve2(breadcrumbDir, `${pid}.txt`);
       if (existsSync(breadcrumbPath)) {
         try {
           if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
@@ -316,10 +357,10 @@ function writeCwdBreadcrumb(sessionId, cwd) {
   if (typeof cwd !== "string" || cwd.length === 0) return;
   try {
     const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    const breadcrumbDir = resolve(storageDir, "session-by-cwd");
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
+    const breadcrumbDir = resolve2(storageDir, "session-by-cwd");
+    mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
-    const breadcrumbPath = resolve(breadcrumbDir, `${sanitizedCwd}.txt`);
+    const breadcrumbPath = resolve2(breadcrumbDir, `${sanitizedCwd}.txt`);
     if (existsSync(breadcrumbPath)) {
       try {
         if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
@@ -715,7 +756,7 @@ function processHook(raw, cliEvent) {
       timestamp,
       success: true
     };
-    selfReportCall = { args: data.tool_input, result: data.result_json };
+    selfReportCall = { args: data.tool_input, result: data.result_json, platform: "cursor" };
   } else if (eventName === "beforereadfile") {
     event = {
       mode: "post",
@@ -810,7 +851,11 @@ function processHook(raw, cliEvent) {
       timestamp,
       success: true
     };
-    selfReportCall = { args: toolInfo.mcp_tool_arguments, result: toolInfo.mcp_result };
+    selfReportCall = {
+      args: toolInfo.mcp_tool_arguments,
+      result: toolInfo.mcp_result,
+      platform: "windsurf"
+    };
   } else if (isAntigravityPre) {
     const agyToolName = data.toolCall?.name ?? "unknown";
     event = {
@@ -911,7 +956,7 @@ function processHook(raw, cliEvent) {
     selfReportCall.result,
     sessionId,
     timestamp,
-    stampedPlatform
+    stampedPlatform ?? selfReportCall.platform
   );
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
@@ -920,10 +965,15 @@ function processHook(raw, cliEvent) {
     const bufferPath = getBufferPath(sessionId);
     const bufferDir = dirname(bufferPath);
     if (!existsSync(bufferDir)) {
-      mkdirSync(bufferDir, { recursive: true, mode: 448 });
+      mkdirSync2(bufferDir, { recursive: true, mode: 448 });
     }
-    const line = JSON.stringify(event) + "\n" + (selfReport ? JSON.stringify(selfReport) + "\n" : "");
-    const fd = openSync(
+    const seenPath = selfReport && seenReportsPath(
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR,
+      selfReport.sessionId
+    );
+    const newReport = selfReport && seenPath && !hasSeenReport(seenPath, selfReport.reportId);
+    const line = JSON.stringify(event) + "\n" + (newReport ? JSON.stringify(selfReport) + "\n" : "");
+    const fd = openSync2(
       bufferPath,
       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND,
       384
@@ -931,8 +981,9 @@ function processHook(raw, cliEvent) {
     try {
       writeFileSync(fd, line);
     } finally {
-      closeSync(fd);
+      closeSync2(fd);
     }
+    if (newReport) markReportSeen(seenPath, selfReport.reportId);
   } catch {
   }
   if (isGeminiCli) {

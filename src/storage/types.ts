@@ -80,12 +80,28 @@ export interface PermissionDeniedHookEvent extends HookEventBase {
   readonly deniedReason?: string;
 }
 
+/**
+ * An agent's own `nr_observe_report_tokens` report, written by the post-MCP
+ * hook into the buffer of the conversation that made the call. It is not a
+ * transcript turn, so it prices into that conversation's rollup only.
+ */
+export interface SelfReportHookEvent extends HookEventBase {
+  readonly mode: 'self_report';
+  readonly sessionId: string;
+  readonly reportId: string;
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly thinkingTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+}
+
 /** Emitted per LLM API turn with token usage; feeds CostTracker. */
 export interface TokenHookEvent extends HookEventBase {
   readonly mode: 'token';
   readonly inputTokens?: number;
   readonly outputTokens?: number;
-  readonly thinkingTokens?: number;
   readonly cacheReadTokens?: number;
   readonly cacheCreationTokens?: number;
   readonly model?: string;
@@ -256,6 +272,7 @@ export type HookEvent =
   | PermissionRequestHookEvent
   | PermissionDeniedHookEvent
   | TokenHookEvent
+  | SelfReportHookEvent
   | SubagentTokenHookEvent
   | WorkflowRunEvent
   | ObservabilityHealthHookEvent
@@ -271,7 +288,6 @@ export interface TokenEvent {
   readonly timestamp: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
-  readonly thinkingTokens?: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
   readonly model: string;

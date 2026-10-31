@@ -30,7 +30,12 @@ import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
-import { hookSelfReportLine } from './self-report.js';
+import {
+  hasSeenReport,
+  hookSelfReportLine,
+  markReportSeen,
+  seenReportsPath,
+} from './self-report.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -827,7 +832,7 @@ function processHook(raw: string, cliEvent?: string): void {
   const agyToolUseId = typeof data.stepIdx === 'number' ? { toolUseId: String(data.stepIdx) } : {};
 
   let event: Record<string, unknown>;
-  let selfReportCall: { args: unknown; result: unknown } | undefined;
+  let selfReportCall: { args: unknown; result: unknown; platform: string } | undefined;
 
   if (eventName === 'pretooluse') {
     event = {
@@ -1052,7 +1057,7 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       success: true,
     };
-    selfReportCall = { args: data.tool_input, result: data.result_json };
+    selfReportCall = { args: data.tool_input, result: data.result_json, platform: 'cursor' };
   } else if (eventName === 'beforereadfile') {
     // Cursor has no "afterReadFile" event — beforeReadFile is the only file-read
     // hook that exists (confirmed: https://blog.gitbutler.com/cursor-hooks-deep-dive
@@ -1171,7 +1176,11 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       success: true,
     };
-    selfReportCall = { args: toolInfo.mcp_tool_arguments, result: toolInfo.mcp_result };
+    selfReportCall = {
+      args: toolInfo.mcp_tool_arguments,
+      result: toolInfo.mcp_result,
+      platform: 'windsurf',
+    };
   } else if (isAntigravityPre) {
     // Antigravity PreToolUse — see isAntigravityPre above for how it is told
     // apart from PostToolUse.
@@ -1352,7 +1361,7 @@ function processHook(raw: string, cliEvent?: string): void {
       selfReportCall.result,
       sessionId,
       timestamp,
-      stampedPlatform,
+      stampedPlatform ?? selfReportCall.platform,
     );
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
@@ -1366,8 +1375,15 @@ function processHook(raw: string, cliEvent?: string): void {
       mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
     }
 
+    const seenPath =
+      selfReport &&
+      seenReportsPath(
+        process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR,
+        selfReport.sessionId,
+      );
+    const newReport = selfReport && seenPath && !hasSeenReport(seenPath, selfReport.reportId);
     const line =
-      JSON.stringify(event) + '\n' + (selfReport ? JSON.stringify(selfReport) + '\n' : '');
+      JSON.stringify(event) + '\n' + (newReport ? JSON.stringify(selfReport) + '\n' : '');
 
     const fd = openSync(
       bufferPath,
@@ -1379,6 +1395,7 @@ function processHook(raw: string, cliEvent?: string): void {
     } finally {
       closeSync(fd);
     }
+    if (newReport) markReportSeen(seenPath, selfReport.reportId);
   } catch {
     // Silent failure — never block Claude Code
   }

@@ -2376,14 +2376,13 @@ async function main(): Promise<void> {
         });
         const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
         if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
-        const thinkingTokens = tokenEvent.thinkingTokens ?? 0;
         const usage = {
           inputTokens: tokenEvent.inputTokens,
           outputTokens: tokenEvent.outputTokens,
-          thinkingTokens,
+          thinkingTokens: 0,
           cacheReadTokens: tokenEvent.cacheReadTokens,
           cacheCreationTokens: tokenEvent.cacheCreationTokens,
-          totalTokens: tokenEvent.inputTokens + tokenEvent.outputTokens + thinkingTokens,
+          totalTokens: tokenEvent.inputTokens + tokenEvent.outputTokens,
         };
         let breakdown: CostBreakdown;
         if (!isOwnEvent) {
@@ -2402,7 +2401,6 @@ async function main(): Promise<void> {
           model: tokenEvent.model,
           inputTokens: tokenEvent.inputTokens,
           outputTokens: tokenEvent.outputTokens,
-          thinkingTokens,
           cacheReadTokens: tokenEvent.cacheReadTokens,
           cacheCreationTokens: tokenEvent.cacheCreationTokens,
         });
@@ -2464,6 +2462,27 @@ async function main(): Promise<void> {
                 : null,
           });
         }
+      },
+      // A self-report is the agent's own count for a conversation, not a
+      // transcript turn, so it never replaces this process's estimates or opens
+      // a turn: it prices into that conversation's rollup only.
+      onSelfReport: (report) => {
+        if (!costTracker) return;
+        const usage = {
+          inputTokens: report.inputTokens,
+          outputTokens: report.outputTokens,
+          thinkingTokens: report.thinkingTokens,
+          cacheReadTokens: report.cacheReadTokens,
+          cacheCreationTokens: report.cacheCreationTokens,
+          totalTokens: report.inputTokens + report.outputTokens + report.thinkingTokens,
+        };
+        localSessionAggregator.recordTokenUsage(report.sessionId, {
+          ...usage,
+          timestamp: report.timestamp,
+          costUsd: costTracker.priceUsage(usage, report.model).totalUsd,
+          model: report.model,
+          ...(report.platform !== undefined && { platform: report.platform }),
+        });
       },
       // Feed each Agent-tool ToolCallRecord into the workflow tracker
       // so AiWorkflowRun events ship for `run_source='agent_tool'`.

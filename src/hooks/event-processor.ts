@@ -27,6 +27,7 @@ import type {
   PermissionRequestHookEvent,
   PermissionDeniedHookEvent,
   TokenHookEvent,
+  SelfReportHookEvent,
   SubagentTokenHookEvent,
   ObservabilityHealthHookEvent,
   ApiFailureHookEvent,
@@ -73,6 +74,8 @@ export interface HookEventProcessorOptions {
   drainAllSessions?: boolean;
   onRecord: (record: ToolCallRecord) => void;
   onTokenEvent?: (event: TokenEvent) => void;
+  /** Fires once per conversation and `reportId` for every `mode: 'self_report'` line. */
+  onSelfReport?: (event: SelfReportHookEvent) => void;
   /**
    * Fires for every paired ToolCallRecord whose `toolName === 'Agent'` —
    * feeds WorkflowRunTracker without altering the existing onRecord pipeline.
@@ -353,6 +356,7 @@ export class HookEventProcessor {
   private drainAllSessions: boolean;
   private readonly onRecord: (record: ToolCallRecord) => void;
   private readonly onTokenEvent: ((event: TokenEvent) => void) | null;
+  private readonly onSelfReport: ((event: SelfReportHookEvent) => void) | null;
   private readonly onWorkflowAgent: ((record: ToolCallRecord) => void) | null;
   private readonly onSubagentTurn: ((turn: SubagentTurnEvent) => void) | null;
   private readonly onObservabilityHealth: ((event: ObservabilityHealthFrame) => void) | null;
@@ -434,6 +438,7 @@ export class HookEventProcessor {
     this.maxPendingEvents = options.maxPendingEvents ?? DEFAULT_MAX_PENDING;
     this.onRecord = options.onRecord;
     this.onTokenEvent = options.onTokenEvent ?? null;
+    this.onSelfReport = options.onSelfReport ?? null;
     this.onWorkflowAgent = options.onWorkflowAgent ?? null;
     this.onSubagentTurn = options.onSubagentTurn ?? null;
     this.onObservabilityHealth = options.onObservabilityHealth ?? null;
@@ -613,6 +618,8 @@ export class HookEventProcessor {
       try {
         if (event.mode === 'token') {
           this.handleTokenEvent(event);
+        } else if (event.mode === 'self_report') {
+          this.handleSelfReportEvent(event);
         } else if (event.mode === 'pre') {
           this.handlePreEvent(event);
         } else if (event.mode === 'post') {
@@ -810,6 +817,27 @@ export class HookEventProcessor {
     }
   }
 
+  private handleSelfReportEvent(event: SelfReportHookEvent): void {
+    if (!this.onSelfReport) return;
+    if (typeof event.sessionId !== 'string' || typeof event.reportId !== 'string') return;
+    if (this.tokenDedupRegistry.hasAndAdd(event.sessionId, event.reportId)) return;
+    try {
+      this.onSelfReport({
+        ...event,
+        model: typeof event.model === 'string' ? event.model : 'unknown',
+        inputTokens: numAttr(event.inputTokens),
+        outputTokens: numAttr(event.outputTokens),
+        thinkingTokens: numAttr(event.thinkingTokens),
+        cacheReadTokens: numAttr(event.cacheReadTokens),
+        cacheCreationTokens: numAttr(event.cacheCreationTokens),
+      });
+    } catch (err) {
+      logger.warn('onSelfReport callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   private handleTokenEvent(event: TokenHookEvent): void {
     if (!this.onTokenEvent) return;
 
@@ -828,8 +856,6 @@ export class HookEventProcessor {
         typeof event.outputTokens === 'number' && !isNaN(event.outputTokens)
           ? event.outputTokens
           : 0,
-      ...(typeof event.thinkingTokens === 'number' &&
-        !isNaN(event.thinkingTokens) && { thinkingTokens: event.thinkingTokens }),
       cacheReadTokens:
         typeof event.cacheReadTokens === 'number' && !isNaN(event.cacheReadTokens)
           ? event.cacheReadTokens

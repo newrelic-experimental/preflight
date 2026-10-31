@@ -1,4 +1,7 @@
-import type { TokenHookEvent } from '../storage/types.js';
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readSync } from 'node:fs';
+import { resolve } from 'node:path';
+import type { SelfReportHookEvent } from '../storage/types.js';
+import { isSyntheticSessionId } from './synthetic-session-id.js';
 
 export const REPORT_TOKENS_TOOL_NAME = 'nr_observe_report_tokens';
 
@@ -10,7 +13,8 @@ const PREFIXED_TOOL_RE = new RegExp(`(?:^|[_:./-])${REPORT_TOKENS_TOOL_NAME}$`);
 const REQUIRED_COUNTS = ['input_tokens', 'output_tokens'] as const;
 const OPTIONAL_COUNTS = ['thinking_tokens', 'cache_read_tokens', 'cache_creation_tokens'] as const;
 type CountField = (typeof REQUIRED_COUNTS)[number] | (typeof OPTIONAL_COUNTS)[number];
-const HOOK_RECORDED_RE = /\\*"recorded_by\\*"\s*:\s*\\*"hook\\*"/;
+// Retries come seconds apart, so the newest ids are enough to dedupe them.
+const SEEN_TAIL_BYTES = 64 * 1024;
 
 export interface SelfReport {
   readonly reportId: string;
@@ -36,11 +40,16 @@ export function isReportTokensTool(name: unknown): boolean {
 }
 
 function isConversationId(id: unknown): id is string {
-  return typeof id === 'string' && SESSION_ID_RE.test(id) && id !== 'unknown';
+  return (
+    typeof id === 'string' &&
+    SESSION_ID_RE.test(id) &&
+    id !== 'unknown' &&
+    !isSyntheticSessionId(id)
+  );
 }
 
-function decodeArguments(args: unknown): Record<string, unknown> | undefined {
-  let value = args;
+function decodeObject(raw: unknown): Record<string, unknown> | undefined {
+  let value = raw;
   if (typeof value === 'string') {
     try {
       value = JSON.parse(value);
@@ -55,7 +64,7 @@ function decodeArguments(args: unknown): Record<string, unknown> | undefined {
 
 export function parseSelfReport(args: unknown): ParsedSelfReport {
   const fail = (reason: string): ParsedSelfReport => ({ ok: false, reason });
-  const a = decodeArguments(args);
+  const a = decodeObject(args);
   if (!a) return fail('arguments are not a JSON object');
   if (typeof a.report_id !== 'string' || !REPORT_ID_RE.test(a.report_id)) {
     return fail('report_id must be 8 to 128 characters of [A-Za-z0-9_-], new for every call');
@@ -88,18 +97,18 @@ export function parseSelfReport(args: unknown): ParsedSelfReport {
   };
 }
 
-function selfReportTokenLine(
+function selfReportLine(
   report: SelfReport,
   conversationId: string,
   timestamp: number,
   platform: string | undefined,
-): TokenHookEvent {
+): SelfReportHookEvent {
   return {
-    mode: 'token',
-    tool: 'self-report',
+    mode: 'self_report',
+    tool: REPORT_TOKENS_TOOL_NAME,
     timestamp,
     sessionId: conversationId,
-    messageId: report.reportId,
+    reportId: report.reportId,
     model: report.model,
     inputTokens: report.inputTokens,
     outputTokens: report.outputTokens,
@@ -110,9 +119,23 @@ function selfReportTokenLine(
   };
 }
 
-function repliedRecordedByHook(result: unknown, reportId: string): boolean {
-  const text = typeof result === 'string' ? result : JSON.stringify(result ?? null);
-  return HOOK_RECORDED_RE.test(text) && text.includes(reportId);
+/**
+ * True when the call's result is Preflight's own successful hook-recorded
+ * reply for this report: the tool's JSON text content (inside an MCP result,
+ * or bare), not an error result.
+ */
+function hookAcknowledged(result: unknown, reportId: string): boolean {
+  const value = decodeObject(result);
+  if (!value || value.isError === true) return false;
+  const replies = Array.isArray(value.content)
+    ? value.content.map((block: unknown) =>
+        decodeObject((block as { text?: unknown } | null)?.text),
+      )
+    : [value];
+  return replies.some(
+    (reply) =>
+      reply?.accepted === true && reply.recorded_by === 'hook' && reply.report_id === reportId,
+  );
 }
 
 export function hookSelfReportLine(
@@ -122,9 +145,41 @@ export function hookSelfReportLine(
   conversationId: unknown,
   timestamp: number,
   platform: string | undefined,
-): TokenHookEvent | undefined {
+): SelfReportHookEvent | undefined {
   if (!isReportTokensTool(toolName) || !isConversationId(conversationId)) return undefined;
   const parsed = parseSelfReport(args);
-  if (!parsed.ok || !repliedRecordedByHook(result, parsed.report.reportId)) return undefined;
-  return selfReportTokenLine(parsed.report, conversationId, timestamp, platform);
+  if (!parsed.ok || !hookAcknowledged(result, parsed.report.reportId)) return undefined;
+  return selfReportLine(parsed.report, conversationId, timestamp, platform);
+}
+
+/**
+ * The report ids already written for a conversation, which outlive any one
+ * process's drain so a retried call is written once. The id and conversation
+ * are validated by `hookSelfReportLine`, so neither can leave `self-reports/`.
+ */
+export function seenReportsPath(storageDir: string, conversationId: string): string {
+  return resolve(storageDir, 'self-reports', `${conversationId}.ids`);
+}
+
+export function hasSeenReport(path: string, reportId: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(path, 'r');
+  } catch {
+    return false;
+  }
+  try {
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, SEEN_TAIL_BYTES);
+    const tail = Buffer.alloc(length);
+    readSync(fd, tail, 0, length, size - length);
+    return tail.toString('utf-8').split('\n').includes(reportId);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function markReportSeen(path: string, reportId: string): void {
+  mkdirSync(resolve(path, '..'), { recursive: true, mode: 0o700 });
+  appendFileSync(path, `${reportId}\n`, { mode: 0o600 });
 }

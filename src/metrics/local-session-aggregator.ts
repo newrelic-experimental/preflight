@@ -489,11 +489,14 @@ export class LocalSessionAggregator {
        * trackers. Absent for parent-transcript token events.
        */
       agentId?: string;
+      /** The report's own platform, adopted like a tool call's when the rollup has none. */
+      platform?: string;
     },
   ): void {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
     const timestamp = usage.timestamp ?? Date.now();
     const rollup = this.ensure(sessionId, timestamp);
+    if (rollup.platform === null && usage.platform) rollup.platform = usage.platform;
     // Seed from disk on this session's first subagent-attributed usage, not at
     // rollup creation: an unscoped process creates a rollup from a session's
     // first drained hook event, which happens before that session's own
