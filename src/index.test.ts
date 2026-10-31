@@ -884,7 +884,7 @@ describe('stdio integration', () => {
       // NR_AI_MODE=local → skip licenseKey validation so the test runs
       // without a real NR config file present.
       env: {
-        ...process.env,
+        ...envWithoutTerminalPlatform({ MCP_CLIENT: 'claude-code' }),
         NR_AI_DASHBOARD_PORT: '0',
         CLAUDE_JOB_DIR: tmpJobDir,
         NR_AI_MODE: 'local',
