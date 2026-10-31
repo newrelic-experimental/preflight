@@ -42,6 +42,7 @@ import type {
   WorkflowRunEvent,
 } from '../storage/types.js';
 import { DedupRingRegistry } from './dedup-ring.js';
+import { clampToken } from './self-report.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 const logger = createLogger('event-processor');
@@ -215,6 +216,10 @@ export interface BoundaryFrame {
 
 function numAttr(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+}
+
+function tokenCount(v: unknown): number {
+  return clampToken(numAttr(v));
 }
 
 /**
@@ -819,17 +824,18 @@ export class HookEventProcessor {
   private handleSelfReportEvent(event: SelfReportHookEvent): void {
     if (!this.onSelfReport) return;
     if (typeof event.sessionId !== 'string' || typeof event.reportId !== 'string') return;
-    if (this.tokenDedupRegistry.hasAndAdd(event.sessionId, event.reportId)) return;
+    if (this.tokenDedupRegistry.has(event.sessionId, event.reportId)) return;
     try {
       this.onSelfReport({
         ...event,
         model: typeof event.model === 'string' ? event.model : 'unknown',
-        inputTokens: numAttr(event.inputTokens),
-        outputTokens: numAttr(event.outputTokens),
-        thinkingTokens: numAttr(event.thinkingTokens),
-        cacheReadTokens: numAttr(event.cacheReadTokens),
-        cacheCreationTokens: numAttr(event.cacheCreationTokens),
+        inputTokens: tokenCount(event.inputTokens),
+        outputTokens: tokenCount(event.outputTokens),
+        thinkingTokens: tokenCount(event.thinkingTokens),
+        cacheReadTokens: tokenCount(event.cacheReadTokens),
+        cacheCreationTokens: tokenCount(event.cacheCreationTokens),
       });
+      this.tokenDedupRegistry.hasAndAdd(event.sessionId, event.reportId);
     } catch (err) {
       logger.warn('onSelfReport callback failed', {
         error: err instanceof Error ? err.message : String(err),

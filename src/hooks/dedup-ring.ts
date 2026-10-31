@@ -9,6 +9,10 @@ class DedupRing {
 
   constructor(private readonly capacity: number) {}
 
+  has(key: string): boolean {
+    return this.seen.has(key);
+  }
+
   /** Returns true if `key` was already seen (and does nothing further); otherwise records it and returns false. */
   hasAndAdd(key: string): boolean {
     if (this.seen.has(key)) return true;
@@ -59,6 +63,10 @@ export class DedupRingRegistry {
       this.rings.set(scopeKey, ring);
     }
     return ring.hasAndAdd(dedupKey);
+  }
+
+  has(scopeKey: string, dedupKey: string): boolean {
+    return this.rings.get(scopeKey)?.has(dedupKey) ?? false;
   }
 
   /** Number of scopes currently tracked — test seam for eviction assertions. */

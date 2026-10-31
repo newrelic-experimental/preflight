@@ -30,14 +30,17 @@ import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
-import { hasSeenReport, hookSelfReportLine, markReportSeen } from './self-report.js';
+import { claimReport, hookSelfReportLine, releaseReport, SESSION_ID_RE } from './self-report.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
 // ---------------------------------------------------------------------------
 
-const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 const DEFAULT_STORAGE_DIR = resolve(homedir(), '.newrelic-preflight');
+
+function getStorageDir(): string {
+  return process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+}
 
 /**
  * Resolve the per-session buffer path. Validates sessionId against
@@ -53,7 +56,7 @@ function getBufferPath(sessionId?: string): string {
   if (process.env.NEW_RELIC_AI_MCP_BUFFER_PATH !== undefined) {
     return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   }
-  const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+  const storageDir = getStorageDir();
   const safeId =
     typeof sessionId === 'string' && SESSION_ID_RE.test(sessionId) ? sessionId : 'unknown';
   return resolve(storageDir, `buffer-${safeId}.jsonl`);
@@ -245,7 +248,7 @@ function writePpidBreadcrumb(sessionId: string): void {
   if (typeof ppid !== 'number' || ppid <= 0) return;
 
   try {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    const storageDir = getStorageDir();
     const breadcrumbDir = resolve(storageDir, 'session-by-ppid');
     mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
 
@@ -308,7 +311,7 @@ function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined): void {
   if (typeof cwd !== 'string' || cwd.length === 0) return;
 
   try {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    const storageDir = getStorageDir();
     const breadcrumbDir = resolve(storageDir, 'session-by-cwd');
     mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
 
@@ -1362,6 +1365,7 @@ function processHook(raw: string, cliEvent?: string): void {
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
 
+  const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : undefined;
   // Write to buffer — wrapped in try/catch for resilience.
   try {
     const bufferPath = getBufferPath(sessionId);
@@ -1370,8 +1374,6 @@ function processHook(raw: string, cliEvent?: string): void {
       mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
     }
 
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    const newReport = selfReport && !hasSeenReport(storageDir, selfReport) ? selfReport : undefined;
     const line = JSON.stringify(event) + '\n' + (newReport ? JSON.stringify(newReport) + '\n' : '');
 
     const fd = openSync(
@@ -1384,9 +1386,9 @@ function processHook(raw: string, cliEvent?: string): void {
     } finally {
       closeSync(fd);
     }
-    if (newReport) markReportSeen(storageDir, newReport);
   } catch {
     // Silent failure — never block Claude Code
+    if (newReport) releaseReport(getStorageDir(), newReport);
   }
 
   // Gemini CLI's own hook examples always print "{}" before exiting 0, even
