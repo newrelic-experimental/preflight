@@ -22,6 +22,8 @@
  */
 
 import { spawnSync } from 'node:child_process';
+
+import { createLogger } from '../shared/index.js';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
@@ -32,6 +34,8 @@ import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import { resolvePricingDetail } from './pricing-overlay.js';
 import { QualityProxyTracker } from './quality-proxy-tracker.js';
 import { ToolSelectionScorer, toToolSelectionSummary } from './tool-selection-scorer.js';
+
+const logger = createLogger('local-session-aggregator');
 
 /** Matches SessionTracker's own cap so session files stay bounded. */
 const MAX_TIMELINE_ENTRIES = 10_000;
@@ -73,6 +77,14 @@ interface EmittedCost {
   readonly subagentCostUsd: number;
   readonly costByDayUsd: ReadonlyMap<string, number>;
   readonly subagentCostByDayUsd: ReadonlyMap<string, number>;
+}
+
+export interface SummaryContext {
+  readonly developer: string;
+  readonly platform?: string | null;
+  readonly outcome?: string;
+  readonly repoResolver: RepoNameResolver;
+  readonly toolSelectionScorer: ToolSelectionScorer;
 }
 
 export interface LocalSessionAggregatorOptions {
@@ -133,6 +145,7 @@ export interface LocalSessionRollup {
   tokensOutput: number;
   tokensThinking: number;
   selfReportCount: number;
+  unsaved: boolean;
   tokensCacheRead: number;
   tokensCacheCreation: number;
   models: Set<string>;
@@ -373,6 +386,7 @@ export class LocalSessionAggregator {
         tokensOutput: 0,
         tokensThinking: 0,
         selfReportCount: 0,
+        unsaved: true,
         tokensCacheRead: 0,
         tokensCacheCreation: 0,
         models: new Set(),
@@ -382,6 +396,7 @@ export class LocalSessionAggregator {
       };
       this.sessions.set(sessionId, rollup);
     }
+    rollup.unsaved = true;
     if (timestamp < rollup.startTime) rollup.startTime = timestamp;
     if (timestamp > rollup.endTime) rollup.endTime = timestamp;
     return rollup;
@@ -617,18 +632,13 @@ export class LocalSessionAggregator {
    * parent, tail still being read) DOES qualify: it has real dollars even
    * though its parent timeline and toolCallCount are both zero.
    */
-  toSummaries(context: {
-    developer: string;
-    platform?: string | null;
-    outcome: string;
-    repoResolver: RepoNameResolver;
-    toolSelectionScorer: ToolSelectionScorer;
-    sessionIds?: ReadonlySet<string>;
-  }): Array<Record<string, unknown>> {
-    const out: Array<Record<string, unknown>> = [];
+  toSummaries(
+    context: SummaryContext,
+    include: (rollup: Readonly<LocalSessionRollup>) => boolean = () => true,
+  ): Array<{ readonly sessionId: string } & Record<string, unknown>> {
+    const out: Array<{ readonly sessionId: string } & Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
-      if (context.sessionIds && !context.sessionIds.has(rollup.sessionId)) continue;
-      if (!hasAttributableActivity(rollup)) continue;
+      if (!include(rollup) || !hasAttributableActivity(rollup)) continue;
       const models = [...rollup.models];
       rollup.lastEmittedCost = {
         costUsd: rollup.costUsd,
@@ -704,11 +714,32 @@ export class LocalSessionAggregator {
         userMessages: 0,
         assistantMessages: 0,
         userCorrections: 0,
-        outcome: context.outcome,
+        ...(context.outcome !== undefined && { outcome: context.outcome }),
         platform: rollup.platform ?? context.platform ?? null,
       });
     }
     return out;
+  }
+
+  saveSummaries(
+    store: { saveSession(summary: FullSessionSummary): boolean },
+    context: SummaryContext,
+    include?: (rollup: Readonly<LocalSessionRollup>) => boolean,
+  ): number {
+    let written = 0;
+    for (const summary of this.toSummaries(context, include)) {
+      try {
+        if (!store.saveSession(summary as unknown as FullSessionSummary)) continue;
+        this.sessions.get(summary.sessionId)!.unsaved = false;
+        written += 1;
+      } catch (err) {
+        logger.warn('Failed to save observed session', {
+          sessionId: summary.sessionId,
+          error: String(err),
+        });
+      }
+    }
+    return written;
   }
 }
 

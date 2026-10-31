@@ -14,6 +14,7 @@ import {
   LocalSessionAggregator,
   RepoNameResolver,
   stripHeredocs,
+  type LocalSessionRollup,
 } from './local-session-aggregator.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
 
@@ -621,28 +622,6 @@ describe('LocalSessionAggregator subagent cost', () => {
     expect(summariesOf(agg)).toMatchObject([{ sessionId: REAL_ID, selfReportCount: 1 }]);
   });
 
-  it('summarizes only the rollups asked for, so an unsaved one still folds its whole baseline', () => {
-    const agg = new LocalSessionAggregator({
-      persistedCostBaseline: (id) =>
-        id === 'conv-b' ? { estimatedCostUsd: 5, subagentCostUsd: 0 } : null,
-    });
-    for (const id of ['conv-a', 'conv-b']) {
-      agg.recordToolCall({ sessionId: id, toolName: 'read_file', timestamp: 1000 });
-      agg.recordTokenUsage(id, { costUsd: 1, timestamp: 1000 });
-    }
-    const saved = agg.toSummaries({
-      developer: 'tester',
-      outcome: 'in progress',
-      repoResolver: new StubRepoResolver(),
-      toolSelectionScorer: new ToolSelectionScorer(),
-      sessionIds: new Set(['conv-a']),
-    });
-    agg.recordTokenUsage('conv-b', { costUsd: 2, timestamp: 1000, agentId: 'agent-1' });
-
-    expect(saved.map((s) => s.sessionId)).toEqual(['conv-a']);
-    expect(summariesOf(agg).find((s) => s.sessionId === 'conv-b')?.estimatedCostUsd).toBe(8);
-  });
-
   it('omits costByDayUsd (undefined, not {}) for a rollup with only tool calls and no token usage', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
@@ -851,4 +830,111 @@ describe('stripHeredocs', () => {
       expect(stripHeredocs(command)).toEqual({ text, unclosed: true, readingsDiffer });
     },
   );
+});
+
+describe('LocalSessionAggregator saveSummaries', () => {
+  const context = {
+    developer: 'tester',
+    repoResolver: new StubRepoResolver(),
+    toolSelectionScorer: new ToolSelectionScorer(),
+  };
+  const unsaved = (rollup: Readonly<LocalSessionRollup>) => rollup.unsaved;
+  const makeStore = (write: (sessionId: string) => boolean = () => true) => {
+    const saved: Array<{ readonly sessionId: string }> = [];
+    return {
+      saved,
+      ids: () => saved.map((s) => s.sessionId),
+      saveSession(summary: { readonly sessionId: string }): boolean {
+        if (!write(summary.sessionId)) return false;
+        saved.push(summary);
+        return true;
+      },
+    };
+  };
+  const withToolCalls = (...ids: string[]) => {
+    const agg = new LocalSessionAggregator();
+    for (const id of ids) agg.recordToolCall({ sessionId: id, toolName: 'Read', timestamp: 1000 });
+    return agg;
+  };
+
+  it.each([
+    [
+      'a tool call',
+      (agg: LocalSessionAggregator) =>
+        agg.recordToolCall({ sessionId: 'conv-a', toolName: 'Edit', timestamp: 2000 }),
+    ],
+    [
+      'a self-report',
+      (agg: LocalSessionAggregator) =>
+        agg.recordTokenUsage('conv-a', { timestamp: 2000, inputTokens: 10, selfReported: true }),
+    ],
+    [
+      'subagent usage',
+      (agg: LocalSessionAggregator) =>
+        agg.recordTokenUsage('conv-a', { timestamp: 2000, costUsd: 1, agentId: 'agent-1' }),
+    ],
+  ])('saves an unsaved rollup again only after %s changes it', (_label, change) => {
+    const agg = withToolCalls('conv-a');
+    const stores = [makeStore(), makeStore(), makeStore()];
+
+    agg.saveSummaries(stores[0], context, unsaved);
+    agg.saveSummaries(stores[1], context, unsaved);
+    change(agg);
+    agg.saveSummaries(stores[2], context, unsaved);
+
+    expect(stores.map((s) => s.saved.length)).toEqual([1, 0, 1]);
+  });
+
+  it('keeps a rollup the store did not write unsaved, so the next call saves it', () => {
+    const agg = withToolCalls('conv-a');
+    const retry = makeStore();
+
+    agg.saveSummaries(
+      makeStore(() => false),
+      context,
+      unsaved,
+    );
+    agg.saveSummaries(retry, context, unsaved);
+
+    expect(retry.ids()).toEqual(['conv-a']);
+  });
+
+  it('saves the other rollups when one save throws, and keeps the failed one unsaved', () => {
+    const agg = withToolCalls('conv-a', 'conv-b');
+    const throwing = makeStore((id) => {
+      if (id === 'conv-a') throw new Error('disk gone');
+      return true;
+    });
+    const retry = makeStore();
+
+    expect(agg.saveSummaries(throwing, context, unsaved)).toBe(1);
+    agg.saveSummaries(retry, context, unsaved);
+
+    expect([throwing.ids(), retry.ids()]).toEqual([['conv-b'], ['conv-a']]);
+  });
+
+  it('writes no outcome when the context gives none', () => {
+    const store = makeStore();
+
+    withToolCalls('conv-a').saveSummaries(store, context);
+
+    expect(store.saved[0]).not.toHaveProperty('outcome');
+  });
+
+  it('summarizes only the rollups asked for, so an unsaved one still folds its whole baseline', () => {
+    const agg = new LocalSessionAggregator({
+      persistedCostBaseline: (id) =>
+        id === 'conv-b' ? { estimatedCostUsd: 5, subagentCostUsd: 0 } : null,
+    });
+    for (const id of ['conv-a', 'conv-b']) {
+      agg.recordToolCall({ sessionId: id, toolName: 'read_file', timestamp: 1000 });
+      agg.recordTokenUsage(id, { costUsd: 1, timestamp: 1000 });
+    }
+    const store = makeStore();
+    agg.saveSummaries(store, context, (rollup) => rollup.sessionId === 'conv-a');
+    agg.recordTokenUsage('conv-b', { costUsd: 2, timestamp: 1000, agentId: 'agent-1' });
+
+    expect(store.ids()).toEqual(['conv-a']);
+    expect(summariesOf(agg).find((s) => s.sessionId === 'conv-b')?.estimatedCostUsd).toBe(8);
+  });
 });

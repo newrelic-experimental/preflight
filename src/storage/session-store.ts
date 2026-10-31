@@ -489,6 +489,11 @@ function subtractRecord(
   return out;
 }
 
+function mergeOutcome(existing: string, incoming: unknown): string {
+  if (typeof incoming !== 'string') return existing;
+  return incoming === 'completed' || existing !== 'completed' ? incoming : existing;
+}
+
 export function mergeSummaries(
   existing: FullSessionSummary,
   incoming: FullSessionSummary,
@@ -637,6 +642,7 @@ export function mergeSummaries(
     incoming.startTime || existing.startTime,
   );
   const endTime = maxNum(existing.endTime, incoming.endTime);
+  const selfReportCount = maxNum(existing.selfReportCount, incoming.selfReportCount);
 
   return {
     ...existing,
@@ -688,6 +694,7 @@ export function mergeSummaries(
     tokensInput: exactTotals.inputTokens + (mergedLedger?.inputTokens ?? 0),
     tokensOutput: exactTotals.outputTokens + (mergedLedger?.outputTokens ?? 0),
     tokensThinking: maxNum(existing.tokensThinking, incoming.tokensThinking),
+    ...(selfReportCount > 0 && { selfReportCount }),
     tokensCacheRead: maxNum(existing.tokensCacheRead, incoming.tokensCacheRead),
     tokensCacheCreation: maxNum(existing.tokensCacheCreation, incoming.tokensCacheCreation),
     cacheSavingsUsd: maxNum(existing.cacheSavingsUsd, incoming.cacheSavingsUsd),
@@ -708,10 +715,7 @@ export function mergeSummaries(
       (incoming.antiPatterns?.length ?? 0) >= (existing.antiPatterns?.length ?? 0)
         ? incoming.antiPatterns
         : existing.antiPatterns,
-    outcome:
-      incoming.outcome === 'completed' || existing.outcome !== 'completed'
-        ? incoming.outcome
-        : existing.outcome,
+    outcome: mergeOutcome(existing.outcome, incoming.outcome),
     ...(timeline ? { timeline } : {}),
     toolSelectionMetrics,
     modelBreakdown,
@@ -731,10 +735,10 @@ export class SessionStore {
     return this.sessionsDir;
   }
 
-  saveSession(summary: FullSessionSummary): void {
+  saveSession(summary: FullSessionSummary): boolean {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(summary.sessionId) || summary.sessionId === 'unknown') {
       logger.warn('Rejecting invalid sessionId for file path', { sessionId: summary.sessionId });
-      return;
+      return false;
     }
 
     if (!existsSync(this.sessionsDir)) {
@@ -762,7 +766,7 @@ export class SessionStore {
       logger.debug('Skipping first write of a session with no recorded usage', {
         sessionId: summary.sessionId,
       });
-      return;
+      return false;
     }
 
     // A second process saving under the same sessionId (e.g. two MCP
@@ -783,7 +787,7 @@ export class SessionStore {
         logger.warn('Refusing to overwrite recorded session with an empty summary', {
           sessionId: summary.sessionId,
         });
-        return;
+        return false;
       }
       // Two processes legitimately share one session id: the CLI/editor
       // spawns an MCP engine that owns the session natively, while a
@@ -830,6 +834,7 @@ export class SessionStore {
         }
       }
       logger.debug('Session saved', { sessionId: toWrite.sessionId, filename });
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn('Failed to save session file', {
@@ -837,6 +842,7 @@ export class SessionStore {
         filename,
         error: message,
       });
+      return false;
     }
   }
 
@@ -1402,6 +1408,7 @@ interface SerializedFullSessionSummary {
   readonly tokensThinking?: unknown;
   readonly tokensCacheRead?: unknown;
   readonly tokensCacheCreation?: unknown;
+  readonly selfReportCount?: unknown;
   readonly cacheSavingsUsd?: unknown;
   readonly efficiencyScore?: unknown;
   readonly efficiencyScoreSampleCount?: unknown;
@@ -1793,6 +1800,8 @@ export function deserializeFullSessionSummary(
     tokensThinking: typeof obj.tokensThinking === 'number' ? obj.tokensThinking : 0,
     tokensCacheRead: typeof obj.tokensCacheRead === 'number' ? obj.tokensCacheRead : 0,
     tokensCacheCreation: typeof obj.tokensCacheCreation === 'number' ? obj.tokensCacheCreation : 0,
+    ...(typeof obj.selfReportCount === 'number' &&
+      obj.selfReportCount > 0 && { selfReportCount: obj.selfReportCount }),
     cacheSavingsUsd: typeof obj.cacheSavingsUsd === 'number' ? obj.cacheSavingsUsd : 0,
     efficiencyScore: typeof obj.efficiencyScore === 'number' ? obj.efficiencyScore : null,
     efficiencyScoreSampleCount:
