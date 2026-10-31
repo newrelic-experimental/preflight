@@ -85,6 +85,7 @@ export class CopilotAppAdapter implements PlatformAdapter {
       'GEMINI.md',
       '.github/copilot-instructions.md',
     ] as const,
+    sessionBreadcrumbWriters: ['copilot-app'] as const,
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {

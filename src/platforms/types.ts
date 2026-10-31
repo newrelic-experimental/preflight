@@ -63,7 +63,26 @@ export interface PlatformCapabilities {
    * array here does not lose any detection Preflight already has today.
    */
   readonly instructionFilePaths: readonly string[];
+  /**
+   * The writers whose session breadcrumbs this platform's MCP server may
+   * adopt its session id from, most trusted first. The hook collector files
+   * each breadcrumb under the engine its hook command names (`MCP_CLIENT` or
+   * `NEW_RELIC_AI_PLATFORM`, else Claude Code's own env), or under
+   * `UNATTRIBUTED_BREADCRUMB_WRITER` when it names none. Empty when this
+   * platform's hooks never write one: no hooks, or payloads without
+   * `session_id`. Any other engine's breadcrumb carries another session's
+   * cost, so leave a writer out unless this platform's documented hook setup
+   * produces it.
+   */
+  readonly sessionBreadcrumbWriters: readonly string[];
 }
+
+/**
+ * The writer the hook collector files a session breadcrumb under when its
+ * hook command names no engine, as Codex's documented `preflight-collector`
+ * command does.
+ */
+export const UNATTRIBUTED_BREADCRUMB_WRITER = 'unattributed';
 
 export interface PlatformAdapter {
   readonly platformName: string;

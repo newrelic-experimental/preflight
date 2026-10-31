@@ -54,7 +54,10 @@ function isClineToolCallEvent(x: unknown): x is ClineToolCallEvent {
 export class ClineAdapter implements PlatformAdapter {
   readonly platformName = 'cline';
   readonly visibilityLevel = 'mcp-tools-only' as const;
-  readonly capabilities = { instructionFilePaths: ['.clinerules/'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['.clinerules/'] as const,
+    sessionBreadcrumbWriters: [] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Cline's VS Code/JetBrains extension has no hook/callback mechanism for

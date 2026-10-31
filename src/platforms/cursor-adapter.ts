@@ -65,7 +65,11 @@ export class CursorAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'full-hooks' as const;
   // https://docs.cursor.com/context/rules — project rules live in `.cursorrules`
   // (legacy, still supported) or `.cursor/rules/*.mdc`.
-  readonly capabilities = { instructionFilePaths: ['.cursorrules', '.cursor/rules/'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['.cursorrules', '.cursor/rules/'] as const,
+    // Cursor's hooks send conversation_id, never session_id, so they write no breadcrumb.
+    sessionBreadcrumbWriters: [] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Cursor's built-in tool activity (shell commands, file reads/edits) is
