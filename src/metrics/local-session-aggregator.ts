@@ -136,8 +136,8 @@ export interface LocalSessionRollup {
   /** Set once the persisted baseline has been folded in — see recordTokenUsage. */
   costBaselineApplied: boolean;
   /**
-   * The cost quadruple as of the last `toSummaries()` call, i.e. what this
-   * aggregator has already offered to the session file. A later baseline fold
+   * The cost quadruple as of the last write `saveSummaries()` confirmed, i.e.
+   * what this aggregator has already put in the session file. A later baseline fold
    * subtracts it, because the file may be this aggregator's own checkpoint.
    */
   lastEmittedCost: EmittedCost | null;
@@ -639,102 +639,110 @@ export class LocalSessionAggregator {
     const out: Array<{ readonly sessionId: string } & Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
       if (!include(rollup) || !hasAttributableActivity(rollup)) continue;
-      const models = [...rollup.models];
-      rollup.lastEmittedCost = {
-        costUsd: rollup.costUsd,
-        subagentCostUsd: rollup.subagentCostUsd,
-        costByDayUsd: new Map(rollup.costByDayUsd),
-        subagentCostByDayUsd: new Map(rollup.subagentCostByDayUsd),
-      };
-      out.push({
-        sessionId: rollup.sessionId,
-        sessionName: null,
-        repoName: context.repoResolver.resolve(rollup.cwd),
-        startTime: rollup.startTime,
-        endTime: rollup.endTime,
-        durationMs: Math.max(0, rollup.endTime - rollup.startTime),
-        toolCallCount: rollup.toolCallCount,
-        toolBreakdown: { ...rollup.toolBreakdown },
-        developer: context.developer,
-        model: models.length === 1 ? models[0] : null,
-        filesRead: [...rollup.filesRead],
-        filesModified: [...rollup.filesModified],
-        timeline: rollup.timeline.length > 0 ? [...rollup.timeline] : undefined,
-        // These three fields are what let the dashboard rebuild its
-        // Model Usage / Quality / Tool Selection panels after a restart: the
-        // API combines them across today's persisted sessions. Without them a
-        // restarted process shows empty panels despite having the history.
-        modelBreakdown: modelBreakdownOf(rollup),
-        qualityProxy: rollup.quality.getRawCounts(),
-        toolSelectionMetrics:
-          rollup.records.length > 0
-            ? toToolSelectionSummary(context.toolSelectionScorer.scoreSession(rollup.records))
-            : null,
-        linesAdded: 0,
-        linesRemoved: 0,
-        bashCommandCount: 0,
-        testRunCount: 0,
-        testPassCount: 0,
-        buildRunCount: 0,
-        buildPassCount: 0,
-        estimatedCostUsd: rollup.costUsd > 0 ? rollup.costUsd : null,
-        subagentCostUsd: rollup.subagentCostUsd,
-        // Emitted ONLY when non-empty. `undefined` is the documented "this
-        // rollup has no per-day buckets, fall back to the timeline pro-rate"
-        // signal the aggregate route keys on; writing `{}` would assert
-        // "authoritatively $0 today" and silently zero a row that should have
-        // pro-rated. Absent and empty are NOT the same value here.
-        ...(rollup.costByDayUsd.size > 0
-          ? { costByDayUsd: Object.fromEntries(rollup.costByDayUsd) }
-          : {}),
-        ...(rollup.subagentCostByDayUsd.size > 0
-          ? { subagentCostByDayUsd: Object.fromEntries(rollup.subagentCostByDayUsd) }
-          : {}),
-        ...(rollup.unpricedByModel.size > 0
-          ? { unpricedByModel: Object.fromEntries(rollup.unpricedByModel) }
-          : {}),
-        ...(rollup.estimatedByModel.size > 0
-          ? { estimatedByModel: Object.fromEntries(rollup.estimatedByModel) }
-          : {}),
-        tokensInput: rollup.tokensInput,
-        tokensOutput: rollup.tokensOutput,
-        tokensThinking: rollup.tokensThinking,
-        ...(rollup.selfReportCount > 0 && { selfReportCount: rollup.selfReportCount }),
-        tokensCacheRead: rollup.tokensCacheRead,
-        tokensCacheCreation: rollup.tokensCacheCreation,
-        cacheSavingsUsd: 0,
-        efficiencyScore: null,
-        antiPatterns: [],
-        taskCount: 0,
-        taskSuccessRate: null,
-        toolSuccessRate:
-          rollup.toolCallCount > 0 ? rollup.successCount / rollup.toolCallCount : null,
-        contextCompressions: 0,
-        agentSpawns: 0,
-        userMessages: 0,
-        assistantMessages: 0,
-        userCorrections: 0,
-        ...(context.outcome !== undefined && { outcome: context.outcome }),
-        platform: rollup.platform ?? context.platform ?? null,
-      });
+      out.push(this.summaryOf(rollup, context));
     }
     return out;
+  }
+
+  private summaryOf(
+    rollup: LocalSessionRollup,
+    context: SummaryContext,
+  ): { readonly sessionId: string } & Record<string, unknown> {
+    const models = [...rollup.models];
+    return {
+      sessionId: rollup.sessionId,
+      sessionName: null,
+      repoName: context.repoResolver.resolve(rollup.cwd),
+      startTime: rollup.startTime,
+      endTime: rollup.endTime,
+      durationMs: Math.max(0, rollup.endTime - rollup.startTime),
+      toolCallCount: rollup.toolCallCount,
+      toolBreakdown: { ...rollup.toolBreakdown },
+      developer: context.developer,
+      model: models.length === 1 ? models[0] : null,
+      filesRead: [...rollup.filesRead],
+      filesModified: [...rollup.filesModified],
+      timeline: rollup.timeline.length > 0 ? [...rollup.timeline] : undefined,
+      // These three fields are what let the dashboard rebuild its
+      // Model Usage / Quality / Tool Selection panels after a restart: the
+      // API combines them across today's persisted sessions. Without them a
+      // restarted process shows empty panels despite having the history.
+      modelBreakdown: modelBreakdownOf(rollup),
+      qualityProxy: rollup.quality.getRawCounts(),
+      toolSelectionMetrics:
+        rollup.records.length > 0
+          ? toToolSelectionSummary(context.toolSelectionScorer.scoreSession(rollup.records))
+          : null,
+      linesAdded: 0,
+      linesRemoved: 0,
+      bashCommandCount: 0,
+      testRunCount: 0,
+      testPassCount: 0,
+      buildRunCount: 0,
+      buildPassCount: 0,
+      estimatedCostUsd: rollup.costUsd > 0 ? rollup.costUsd : null,
+      subagentCostUsd: rollup.subagentCostUsd,
+      // Emitted ONLY when non-empty. `undefined` is the documented "this
+      // rollup has no per-day buckets, fall back to the timeline pro-rate"
+      // signal the aggregate route keys on; writing `{}` would assert
+      // "authoritatively $0 today" and silently zero a row that should have
+      // pro-rated. Absent and empty are NOT the same value here.
+      ...(rollup.costByDayUsd.size > 0
+        ? { costByDayUsd: Object.fromEntries(rollup.costByDayUsd) }
+        : {}),
+      ...(rollup.subagentCostByDayUsd.size > 0
+        ? { subagentCostByDayUsd: Object.fromEntries(rollup.subagentCostByDayUsd) }
+        : {}),
+      ...(rollup.unpricedByModel.size > 0
+        ? { unpricedByModel: Object.fromEntries(rollup.unpricedByModel) }
+        : {}),
+      ...(rollup.estimatedByModel.size > 0
+        ? { estimatedByModel: Object.fromEntries(rollup.estimatedByModel) }
+        : {}),
+      tokensInput: rollup.tokensInput,
+      tokensOutput: rollup.tokensOutput,
+      tokensThinking: rollup.tokensThinking,
+      ...(rollup.selfReportCount > 0 && { selfReportCount: rollup.selfReportCount }),
+      tokensCacheRead: rollup.tokensCacheRead,
+      tokensCacheCreation: rollup.tokensCacheCreation,
+      cacheSavingsUsd: 0,
+      efficiencyScore: null,
+      antiPatterns: [],
+      taskCount: 0,
+      taskSuccessRate: null,
+      toolSuccessRate: rollup.toolCallCount > 0 ? rollup.successCount / rollup.toolCallCount : null,
+      contextCompressions: 0,
+      agentSpawns: 0,
+      userMessages: 0,
+      assistantMessages: 0,
+      userCorrections: 0,
+      ...(context.outcome !== undefined && { outcome: context.outcome }),
+      platform: rollup.platform ?? context.platform ?? null,
+    };
   }
 
   saveSummaries(
     store: { saveSession(summary: FullSessionSummary): boolean },
     context: SummaryContext,
-    include?: (rollup: Readonly<LocalSessionRollup>) => boolean,
+    include: (rollup: Readonly<LocalSessionRollup>) => boolean = () => true,
   ): number {
     let written = 0;
-    for (const summary of this.toSummaries(context, include)) {
+    for (const rollup of this.sessions.values()) {
+      if (!include(rollup) || !hasAttributableActivity(rollup)) continue;
       try {
+        const summary = this.summaryOf(rollup, context);
         if (!store.saveSession(summary as unknown as FullSessionSummary)) continue;
-        this.sessions.get(summary.sessionId)!.unsaved = false;
+        rollup.lastEmittedCost = {
+          costUsd: rollup.costUsd,
+          subagentCostUsd: rollup.subagentCostUsd,
+          costByDayUsd: new Map(rollup.costByDayUsd),
+          subagentCostByDayUsd: new Map(rollup.subagentCostByDayUsd),
+        };
+        rollup.unsaved = false;
         written += 1;
       } catch (err) {
         logger.warn('Failed to save observed session', {
-          sessionId: summary.sessionId,
+          sessionId: rollup.sessionId,
           error: String(err),
         });
       }
