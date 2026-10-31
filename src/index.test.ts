@@ -1383,7 +1383,9 @@ describe('stdio integration', () => {
         const transport = new StdioClientTransport({ command: 'node', args, env });
         await client.connect(transport);
         const pid = transport.pid!;
+        let closed = false;
         const close = async () => {
+          closed = true;
           await client.close();
           expect(
             await until(
@@ -1392,7 +1394,11 @@ describe('stdio integration', () => {
             ),
           ).toBe(false);
         };
-        await body(env, adopt, close);
+        try {
+          await body(env, adopt, close);
+        } finally {
+          if (!closed) await client.close().catch(() => undefined);
+        }
       } finally {
         rmSync(tmpStoragePath, { recursive: true, force: true });
         rmSync(tmpHome, { recursive: true, force: true });
@@ -1487,15 +1493,18 @@ describe('stdio integration', () => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
         const sessionsDir = resolve(storage, 'sessions');
         const savedAt = (id: string) => {
+          if (!existsSync(sessionsDir)) return 0;
           const name = readdirSync(sessionsDir).find((f) => f.includes(id));
           return name ? statSync(resolve(sessionsDir, name)).mtimeMs : 0;
         };
         runHook(env, reportHook('conv-resave', 'r-resave-001'));
         runHook(env, reportHook('conv-owner', 'r-owner-0001'));
-        await until(
-          () => savedAt('conv-resave') > 0 && savedAt('conv-owner') > 0,
-          (saved) => saved,
-        );
+        expect(
+          await until(
+            () => savedAt('conv-resave') > 0 && savedAt('conv-owner') > 0,
+            (saved) => saved,
+          ),
+        ).toBe(true);
 
         await adopt('conv-owner');
         const adoptedAt = savedAt('conv-resave');

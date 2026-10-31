@@ -716,6 +716,39 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
 
 describe('LocalSessionAggregator baseline fold after its own checkpoint', () => {
   const DAY = new Date(2026, 8, 10, 12).getTime();
+  const context = {
+    developer: 'tester',
+    repoResolver: new StubRepoResolver(),
+    toolSelectionScorer: new ToolSelectionScorer(),
+  };
+  const checkpoint = (agg: LocalSessionAggregator, write: () => boolean = () => true) =>
+    agg.saveSummaries({ saveSession: write }, context);
+  const foldedAfter = (write: () => boolean) => {
+    const agg = new LocalSessionAggregator({
+      persistedCostBaseline: () => ({ estimatedCostUsd: 5, subagentCostUsd: 0 }),
+    });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
+    checkpoint(agg, write);
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
+    return summariesOf(agg)[0]?.estimatedCostUsd;
+  };
+
+  it.each([
+    ['returns false', () => false],
+    [
+      'throws',
+      () => {
+        throw new Error('disk gone');
+      },
+    ],
+  ])('does not count a checkpoint whose save %s as written', (_label, write) => {
+    expect(foldedAfter(write)).toBe(11);
+  });
+
+  it('counts a checkpoint whose save was confirmed', () => {
+    expect(foldedAfter(() => true)).toBe(6);
+  });
 
   it('does not re-add parent cost the aggregator already checkpointed', () => {
     let file: ReturnType<typeof summariesOf>[number] | undefined;
@@ -732,6 +765,7 @@ describe('LocalSessionAggregator baseline fold after its own checkpoint', () => 
     });
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
     agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
+    checkpoint(agg);
     [file] = summariesOf(agg);
 
     agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
@@ -755,7 +789,7 @@ describe('LocalSessionAggregator baseline fold after its own checkpoint', () => 
     });
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
     agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
-    summariesOf(agg);
+    checkpoint(agg);
     fileCost = 8;
 
     agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
@@ -911,6 +945,28 @@ describe('LocalSessionAggregator saveSummaries', () => {
     agg.saveSummaries(retry, context, unsaved);
 
     expect([throwing.ids(), retry.ids()]).toEqual([['conv-b'], ['conv-a']]);
+  });
+
+  it('saves the other rollups when building one summary throws', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: 'conv-a', toolName: 'Read', timestamp: 1000, cwd: '/bad' });
+    agg.recordToolCall({ sessionId: 'conv-b', toolName: 'Read', timestamp: 1000, cwd: '/ok' });
+    const store = makeStore();
+    class ThrowingResolver extends RepoNameResolver {
+      override resolve(cwd: string | null | undefined): string | null {
+        if (cwd === '/bad') throw new Error('git gone');
+        return 'acme/widgets';
+      }
+    }
+
+    const written = agg.saveSummaries(
+      store,
+      { ...context, repoResolver: new ThrowingResolver() },
+      unsaved,
+    );
+    agg.saveSummaries(store, context, unsaved);
+
+    expect([written, store.ids()]).toEqual([1, ['conv-b', 'conv-a']]);
   });
 
   it('writes no outcome when the context gives none', () => {
