@@ -22,7 +22,12 @@ import { buildCostForecastFromInputs } from '../metrics/cost-forecast.js';
 import { localDateKey } from '../lib/date.js';
 import { resolvePricing } from '../metrics/pricing-overlay.js';
 import type { TokenUsage } from '../shared/index.js';
-import { clampToken, parseSelfReport, REPORT_TOKENS_TOOL_NAME } from '../hooks/self-report.js';
+import {
+  clampToken,
+  MODEL_RE,
+  parseSelfReport,
+  REPORT_TOKENS_TOOL_NAME,
+} from '../hooks/self-report.js';
 import type { TokenReportHook } from '../platforms/types.js';
 import {
   errorResult,
@@ -166,7 +171,7 @@ export function handleReportTokens(
   const cacheCreationTokens = clampToken(args.cache_creation_tokens ?? 0);
   const safeModel = typeof args.model === 'string' ? args.model.slice(0, 256) : 'unknown';
 
-  if (!/^[a-zA-Z0-9._:-]+$/.test(safeModel)) {
+  if (!MODEL_RE.test(safeModel)) {
     return {
       content: [
         {

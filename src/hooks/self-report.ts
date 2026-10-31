@@ -1,5 +1,5 @@
-import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { closeSync, constants, mkdirSync, openSync, unlinkSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import type { SelfReportHookEvent } from '../storage/types.js';
 import { isSyntheticSessionId } from './synthetic-session-id.js';
 
@@ -7,13 +7,12 @@ export const REPORT_TOKENS_TOOL_NAME = 'nr_observe_report_tokens';
 
 const MAX_TOKENS = 10_000_000;
 const REPORT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
-const MODEL_RE = /^[a-zA-Z0-9._:-]{1,256}$/;
-const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
+export const MODEL_RE = /^[a-zA-Z0-9._:-]{1,256}$/;
+export const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 const PREFIXED_TOOL_RE = new RegExp(`(?:^|[_:./-])${REPORT_TOKENS_TOOL_NAME}$`);
 const REQUIRED_COUNTS = ['input_tokens', 'output_tokens'] as const;
 const OPTIONAL_COUNTS = ['thinking_tokens', 'cache_read_tokens', 'cache_creation_tokens'] as const;
 type CountField = (typeof REQUIRED_COUNTS)[number] | (typeof OPTIONAL_COUNTS)[number];
-const RECENT_REPORT_IDS_BYTES = 64 * 1024;
 
 interface SelfReport {
   readonly reportId: string;
@@ -140,31 +139,25 @@ export function hookSelfReportLine(
   return selfReportLine(parsed.report, conversationId, timestamp, platform);
 }
 
-function seenReportsPath(storageDir: string, line: SelfReportHookEvent): string {
-  return resolve(storageDir, 'self-reports', `${line.sessionId}.ids`);
+function claimPath(storageDir: string, line: SelfReportHookEvent): string {
+  return resolve(storageDir, 'self-reports', line.sessionId, line.reportId);
 }
 
-export function hasSeenReport(storageDir: string, line: SelfReportHookEvent): boolean {
-  const path = seenReportsPath(storageDir, line);
-  let fd: number;
+export function claimReport(storageDir: string, line: SelfReportHookEvent): boolean {
+  const path = claimPath(storageDir, line);
   try {
-    fd = openSync(path, 'r');
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600));
+    return true;
   } catch {
     return false;
   }
-  try {
-    const size = fstatSync(fd).size;
-    const length = Math.min(size, RECENT_REPORT_IDS_BYTES);
-    const tail = Buffer.alloc(length);
-    readSync(fd, tail, 0, length, size - length);
-    return tail.toString('utf-8').split('\n').includes(line.reportId);
-  } finally {
-    closeSync(fd);
-  }
 }
 
-export function markReportSeen(storageDir: string, line: SelfReportHookEvent): void {
-  const path = seenReportsPath(storageDir, line);
-  mkdirSync(resolve(path, '..'), { recursive: true, mode: 0o700 });
-  appendFileSync(path, `${line.reportId}\n`, { mode: 0o600 });
+export function releaseReport(storageDir: string, line: SelfReportHookEvent): void {
+  try {
+    unlinkSync(claimPath(storageDir, line));
+  } catch {
+    return;
+  }
 }

@@ -515,7 +515,7 @@ export class LocalSessionAggregator {
     }
     rollup.tokensInput += usage.inputTokens ?? 0;
     rollup.tokensOutput += usage.outputTokens ?? 0;
-    rollup.tokensThinking += usage.thinkingTokens ?? 0;
+    if (usage.agentId === undefined) rollup.tokensThinking += usage.thinkingTokens ?? 0;
     rollup.tokensCacheRead += usage.cacheReadTokens ?? 0;
     rollup.tokensCacheCreation += usage.cacheCreationTokens ?? 0;
     if (usage.model) {

@@ -1394,30 +1394,44 @@ describe('HookEventProcessor', () => {
       expect(tokenEvents[0].platform).toBe(expected);
     });
 
+    const selfReport = {
+      mode: 'self_report',
+      tool: 'nr_observe_report_tokens',
+      timestamp: 5000,
+      sessionId: 'conv-1',
+      reportId: 'r-12345678',
+      model: 'claude-sonnet-4-6',
+      inputTokens: 10,
+      outputTokens: 20,
+      thinkingTokens: 30,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      platform: 'cursor',
+    } as const;
+
     it('hands a self-report to onSelfReport once and never to onTokenEvent', () => {
       const onTokenEvent = jest.fn();
       const onSelfReport = jest.fn();
       const processor = new HookEventProcessor({ store, onRecord, onTokenEvent, onSelfReport });
-      const selfReport = {
-        mode: 'self_report',
-        tool: 'nr_observe_report_tokens',
-        timestamp: 5000,
-        sessionId: 'conv-1',
-        reportId: 'r-12345678',
-        model: 'claude-sonnet-4-6',
-        inputTokens: 10,
-        outputTokens: 20,
-        thinkingTokens: 30,
-        cacheReadTokens: 0,
-        cacheCreationTokens: 0,
-        platform: 'cursor',
-      } as const;
 
       processor.processEvents([selfReport, selfReport]);
 
       expect(onTokenEvent).not.toHaveBeenCalled();
       expect(onSelfReport).toHaveBeenCalledTimes(1);
       expect(onSelfReport).toHaveBeenCalledWith(selfReport);
+    });
+
+    it('hands a self-report on again after its callback threw, with counts clamped', () => {
+      const onSelfReport = jest.fn().mockImplementationOnce(() => {
+        throw new Error('disk full');
+      });
+      const processor = new HookEventProcessor({ store, onRecord, onSelfReport });
+      const oversized = { ...selfReport, inputTokens: 1e12 };
+
+      processor.processEvents([oversized, oversized, oversized]);
+
+      expect(onSelfReport).toHaveBeenCalledTimes(2);
+      expect(onSelfReport).toHaveBeenLastCalledWith({ ...oversized, inputTokens: 10_000_000 });
     });
 
     it('does not error when onTokenEvent is not provided', () => {

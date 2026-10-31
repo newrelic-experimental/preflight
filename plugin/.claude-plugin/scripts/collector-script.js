@@ -11,7 +11,7 @@ import {
   utimesSync,
   constants as fsConstants
 } from "node:fs";
-import { resolve as resolve2, dirname } from "node:path";
+import { resolve as resolve2, dirname as dirname2 } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 
@@ -74,8 +74,8 @@ function hookEventFromArg(arg) {
 }
 
 // src/hooks/self-report.ts
-import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
-import { resolve } from "node:path";
+import { closeSync, constants, mkdirSync, openSync, unlinkSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 // src/hooks/synthetic-session-id.ts
 function isSyntheticSessionId(id) {
@@ -92,7 +92,6 @@ var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 var PREFIXED_TOOL_RE = new RegExp(`(?:^|[_:./-])${REPORT_TOKENS_TOOL_NAME}$`);
 var REQUIRED_COUNTS = ["input_tokens", "output_tokens"];
 var OPTIONAL_COUNTS = ["thinking_tokens", "cache_read_tokens", "cache_creation_tokens"];
-var RECENT_REPORT_IDS_BYTES = 64 * 1024;
 function clampToken(v) {
   if (!Number.isFinite(v)) return 0;
   return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
@@ -174,44 +173,39 @@ function hookSelfReportLine(toolName, args, result, conversationId, timestamp, p
   if (!parsed.ok || !hookAcknowledged(result, parsed.report.reportId)) return void 0;
   return selfReportLine(parsed.report, conversationId, timestamp, platform);
 }
-function seenReportsPath(storageDir, line) {
-  return resolve(storageDir, "self-reports", `${line.sessionId}.ids`);
+function claimPath(storageDir, line) {
+  return resolve(storageDir, "self-reports", line.sessionId, line.reportId);
 }
-function hasSeenReport(storageDir, line) {
-  const path = seenReportsPath(storageDir, line);
-  let fd;
+function claimReport(storageDir, line) {
+  const path = claimPath(storageDir, line);
   try {
-    fd = openSync(path, "r");
+    mkdirSync(dirname(path), { recursive: true, mode: 448 });
+    closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 384));
+    return true;
   } catch {
     return false;
   }
-  try {
-    const size = fstatSync(fd).size;
-    const length = Math.min(size, RECENT_REPORT_IDS_BYTES);
-    const tail = Buffer.alloc(length);
-    readSync(fd, tail, 0, length, size - length);
-    return tail.toString("utf-8").split("\n").includes(line.reportId);
-  } finally {
-    closeSync(fd);
-  }
 }
-function markReportSeen(storageDir, line) {
-  const path = seenReportsPath(storageDir, line);
-  mkdirSync(resolve(path, ".."), { recursive: true, mode: 448 });
-  appendFileSync(path, `${line.reportId}
-`, { mode: 384 });
+function releaseReport(storageDir, line) {
+  try {
+    unlinkSync(claimPath(storageDir, line));
+  } catch {
+    return;
+  }
 }
 
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
-var SESSION_ID_RE2 = /^[a-zA-Z0-9_-]{1,128}$/;
 var DEFAULT_STORAGE_DIR = resolve2(homedir(), ".newrelic-preflight");
+function getStorageDir() {
+  return process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+}
 function getBufferPath(sessionId) {
   if (process.env.NEW_RELIC_AI_MCP_BUFFER_PATH !== void 0) {
     return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   }
-  const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-  const safeId = typeof sessionId === "string" && SESSION_ID_RE2.test(sessionId) ? sessionId : "unknown";
+  const storageDir = getStorageDir();
+  const safeId = typeof sessionId === "string" && SESSION_ID_RE.test(sessionId) ? sessionId : "unknown";
   return resolve2(storageDir, `buffer-${safeId}.jsonl`);
 }
 var HIGH_SECURITY_FROM_FILE = (() => {
@@ -308,11 +302,11 @@ function getLinuxAncestorPids(startPpid, maxDepth = 5) {
 }
 var _breadcrumbWriteFailed = false;
 function writePpidBreadcrumb(sessionId) {
-  if (!SESSION_ID_RE2.test(sessionId)) return;
+  if (!SESSION_ID_RE.test(sessionId)) return;
   const ppid = process.ppid;
   if (typeof ppid !== "number" || ppid <= 0) return;
   try {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    const storageDir = getStorageDir();
     const breadcrumbDir = resolve2(storageDir, "session-by-ppid");
     mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const pids = getLinuxAncestorPids(ppid);
@@ -349,10 +343,10 @@ function writePpidBreadcrumb(sessionId) {
 }
 var _cwdBreadcrumbWriteFailed = false;
 function writeCwdBreadcrumb(sessionId, cwd) {
-  if (!SESSION_ID_RE2.test(sessionId)) return;
+  if (!SESSION_ID_RE.test(sessionId)) return;
   if (typeof cwd !== "string" || cwd.length === 0) return;
   try {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    const storageDir = getStorageDir();
     const breadcrumbDir = resolve2(storageDir, "session-by-cwd");
     mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
@@ -957,14 +951,13 @@ function processHook(raw, cliEvent) {
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
+  const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : void 0;
   try {
     const bufferPath = getBufferPath(sessionId);
-    const bufferDir = dirname(bufferPath);
+    const bufferDir = dirname2(bufferPath);
     if (!existsSync(bufferDir)) {
       mkdirSync2(bufferDir, { recursive: true, mode: 448 });
     }
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    const newReport = selfReport && !hasSeenReport(storageDir, selfReport) ? selfReport : void 0;
     const line = JSON.stringify(event) + "\n" + (newReport ? JSON.stringify(newReport) + "\n" : "");
     const fd = openSync2(
       bufferPath,
@@ -976,8 +969,8 @@ function processHook(raw, cliEvent) {
     } finally {
       closeSync2(fd);
     }
-    if (newReport) markReportSeen(storageDir, newReport);
   } catch {
+    if (newReport) releaseReport(getStorageDir(), newReport);
   }
   if (isGeminiCli) {
     try {
