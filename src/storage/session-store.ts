@@ -178,7 +178,6 @@ export interface FullSessionSummary extends SessionSummary {
   readonly tokensThinking: number;
   readonly tokensCacheRead: number;
   readonly tokensCacheCreation: number;
-  /** Hook-recorded self-reports folded in (#978). Absent when there are none. */
   readonly selfReportCount?: number;
   readonly cacheSavingsUsd: number;
   readonly efficiencyScore: number | null;
@@ -291,9 +290,6 @@ export interface AttributableActivity {
  * PARENT timeline and zero parent tool calls (subagent tool calls never appear
  * there) yet real dollars. Keying only on `toolCallCount` discards exactly the
  * sessions a `--local` watcher exists to rescue.
- *
- * A hook-recorded self-report counts for the same reason: its hook tied real
- * spend to this conversation, even when this process saw none of its tool calls.
  *
  * A genuinely empty summary — no tool calls, no subagent dollars, no timeline
  * — is still false, which is what keeps the empty-clobber guard intact.
