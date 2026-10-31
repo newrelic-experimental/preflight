@@ -1563,6 +1563,18 @@ describe('LocalStore', () => {
       expect(warnCalls).toHaveLength(0);
     });
 
+    it('warns once when the writer directories cannot be listed', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      writeFileSync(resolve(tmpDir, 'breadcrumbs'), '');
+      const store = new LocalStore(tmpDir);
+      store.gcStaleBreadcrumbs();
+      store.gcStaleBreadcrumbs();
+      const warnCalls = (stderrSpy.mock.calls as unknown[][]).filter((args) =>
+        String(args[0]).includes('breadcrumb writers'),
+      );
+      expect(warnCalls).toHaveLength(1);
+    });
+
     it('returns 0 when breadcrumb dir does not exist', () => {
       mkdirSync(tmpDir, { recursive: true });
       const store = new LocalStore(tmpDir);

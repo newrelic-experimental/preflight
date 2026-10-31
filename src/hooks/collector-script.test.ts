@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import {
@@ -20,6 +28,7 @@ import {
 } from './collector-script.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { createDefaultRegistry } from '../platforms/platform-registry.js';
+import { PLATFORM_NAMES } from '../platforms/platform-names.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -2301,22 +2310,56 @@ describe('collector-script', () => {
       expect(readFileSync(crumbs('unattributed').ppid, 'utf-8')).toBe('sess-codex');
     });
 
-    it.each(['../escape', 'not-an-engine'])(
-      'writes no breadcrumb and warns when the hook names an unknown engine %s',
-      (engine) => {
-        const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
-        process.env.MCP_CLIENT = engine;
-        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
-        expect(existsSync(resolve(tmpDir, 'breadcrumbs'))).toBe(false);
-        expect(existsSync(resolve(tmpDir, 'session-by-ppid'))).toBe(false);
-        expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
-        const warnings = stderrWriteSpy.mock.calls.filter((args) =>
+    it('ignores an engine name it does not know and keeps detecting Claude Code', () => {
+      process.env.MCP_CLIENT = 'vscode';
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
+    });
+
+    it('writes no breadcrumb for an unknown engine and warns once, only when it had one to write', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const warnings = () =>
+        stderrWriteSpy.mock.calls.filter((args) =>
           String(args[0]).includes('names no engine Preflight knows'),
         );
-        expect(warnings).toHaveLength(1);
-        stderrWriteSpy.mockRestore();
-      },
-    );
+      process.env.MCP_CLIENT = '../escape';
+      processHook(makePreToolUse({ session_id: undefined, cwd: '/projects/test' }));
+      expect(warnings()).toHaveLength(0);
+      processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+      process.env.MCP_CLIENT = 'not-an-engine';
+      processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+      expect(warnings()).toHaveLength(1);
+      expect(existsSync(resolve(tmpDir, 'breadcrumbs'))).toBe(false);
+      expect(existsSync(resolve(tmpDir, 'session-by-ppid'))).toBe(false);
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
+      stderrWriteSpy.mockRestore();
+    });
+
+    it('writes no untagged copy when the tagged write fails', () => {
+      process.env.CLAUDECODE = '1';
+      mkdirSync(resolve(tmpDir, 'breadcrumbs'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'breadcrumbs', 'claude-code'), '');
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(existsSync(resolve(tmpDir, 'session-by-ppid'))).toBe(false);
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
+    });
+
+    it("refreshes an unchanged cwd breadcrumb's mtime on every event", () => {
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(crumbs('claude-code').cwd, old, old);
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(statSync(crumbs('claude-code').cwd).mtimeMs).toBeGreaterThan(old.getTime() + 30_000);
+    });
+
+    it('knows exactly the registered platforms', () => {
+      const registered = createDefaultRegistry()
+        .getRegistered()
+        .map((a) => a.platformName);
+      expect([...registered].sort()).toEqual([...PLATFORM_NAMES].sort());
+    });
   });
 
   // ---------------------------------------------------------------------------
