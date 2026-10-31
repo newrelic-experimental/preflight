@@ -273,6 +273,13 @@ describe('PlatformRegistry', () => {
       expect(createDefaultRegistry().detect()?.platformName).toBe(platformName);
     });
 
+    it('skips an MCP_CLIENT it does not know for the engine NEW_RELIC_AI_PLATFORM names', () => {
+      process.env.CLAUDE_CODE_VERSION = '1.2.3';
+      process.env.MCP_CLIENT = 'vscode';
+      process.env.NEW_RELIC_AI_PLATFORM = 'kiro';
+      expect(createDefaultRegistry().detect()?.platformName).toBe('kiro');
+    });
+
     it('falls back to ambient-signal registration order when no explicit MCP_CLIENT/NEW_RELIC_AI_PLATFORM is set', () => {
       process.env.CLAUDE_CODE_VERSION = '1.2.3';
       const registry = createDefaultRegistry();

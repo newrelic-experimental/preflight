@@ -1702,20 +1702,29 @@ describe('breadcrumbs filed by writer', () => {
     ).toBe('sess-closest');
   });
 
-  it("ranks the engine's writers by each cwd breadcrumb's own mtime, which collectors refresh on every event", () => {
+  it("adopts the engine's first writer over a fresher breadcrumb from a later writer", () => {
     const writers = ['copilot-sdk', 'copilot', 'unattributed'];
     const startedAt = Date.now();
     const at = (offsetMs: number) => new Date(startedAt + offsetMs);
     utimesSync(
-      writeCrumb('copilot-sdk', 'cwd', '-projects-shared', 'sess-ended'),
+      writeCrumb('copilot-sdk', 'cwd', '-projects-shared', 'sess-sdk'),
       at(-60_000),
       at(-60_000),
     );
-    utimesSync(writeCrumb('copilot-sdk', 'ppid', '424260', 'sess-ended'), at(2_000), at(2_000));
-    utimesSync(writeCrumb('copilot', 'cwd', '-projects-shared', 'sess-live'), at(1_000), at(1_000));
-    expect(sessionBreadcrumbs(tmpDir, writers, startedAt).cwd('/projects/shared')).toBe(
-      'sess-live',
+    utimesSync(
+      writeCrumb('copilot', 'cwd', '-projects-shared', 'sess-vscode'),
+      at(1_000),
+      at(1_000),
     );
+    expect(sessionBreadcrumbs(tmpDir, writers, startedAt).cwd('/projects/shared')).toBe('sess-sdk');
+  });
+
+  it('walks past a tagged closest untagged ancestor to an acceptable farther one', () => {
+    writeCrumb('claude-code', 'cwd', '-projects-shared', 'sess-claude');
+    writeCrumb(null, 'ppid', '424280', 'sess-claude');
+    writeCrumb(null, 'ppid', '424281', 'sess-old-collector');
+    const kiro = sessionBreadcrumbs(tmpDir, KIRO, Date.now() - 60_000);
+    expect(kiro.ancestors([1, 424280, 424281])?.sessionId).toBe('sess-old-collector');
   });
 
   it.each(['generic-mcp', 'kiro', 'copilot', 'copilot-sdk'])(

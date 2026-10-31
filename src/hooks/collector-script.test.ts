@@ -309,6 +309,14 @@ describe('collector-script', () => {
       expect(readBufferEvents()[0]!.platform).toBe('claude-code');
     });
 
+    it('stamps the engine the breadcrumb is filed under when MCP_CLIENT names no known engine', () => {
+      process.env.MCP_CLIENT = 'vscode';
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('claude-code');
+    });
+
     it('leaves event.platform unset when no platform signal is present', () => {
       for (const key of CLAUDE_CODE_ENV_SIGNALS) delete process.env[key];
       delete process.env.MCP_CLIENT;
