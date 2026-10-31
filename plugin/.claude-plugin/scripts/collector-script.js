@@ -4,16 +4,16 @@
 import {
   readFileSync,
   writeFileSync,
-  openSync,
-  closeSync,
-  mkdirSync,
+  openSync as openSync2,
+  closeSync as closeSync2,
+  mkdirSync as mkdirSync2,
   existsSync,
   utimesSync,
   constants as fsConstants
 } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve as resolve2, dirname as dirname2 } from "node:path";
 import { homedir } from "node:os";
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 
 // src/redaction-patterns.ts
 var REDACTION_PATTERNS = [
@@ -73,22 +73,151 @@ function hookEventFromArg(arg) {
   );
 }
 
+// src/hooks/self-report.ts
+import { createHash } from "node:crypto";
+import { closeSync, constants, mkdirSync, openSync, unlinkSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+
+// src/hooks/synthetic-session-id.ts
+function isSyntheticSessionId(id) {
+  if (!id) return false;
+  return id.startsWith("local-") || id.startsWith("proxy-") || id.startsWith("pending-");
+}
+
+// src/hooks/self-report.ts
+var REPORT_TOKENS_TOOL_NAME = "nr_observe_report_tokens";
+var MAX_TOKENS = 1e7;
+var REPORT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
+var MODEL_RE = /^[a-zA-Z0-9._:-]{1,256}$/;
+var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
+var PREFLIGHT_SERVER_RE = /preflight|nr-ai-observability/i;
+var REQUIRED_COUNTS = ["input_tokens", "output_tokens"];
+var OPTIONAL_COUNTS = ["thinking_tokens", "cache_read_tokens", "cache_creation_tokens"];
+function clampToken(v) {
+  if (!Number.isFinite(v)) return 0;
+  return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
+}
+function isPreflightReportTool(call) {
+  return call.tool === REPORT_TOKENS_TOOL_NAME && typeof call.server === "string" && PREFLIGHT_SERVER_RE.test(call.server);
+}
+function reportKey(r) {
+  const counts = [r.model, r.inputTokens, r.outputTokens, r.thinkingTokens, r.cacheReadTokens];
+  const digest = createHash("sha256").update(JSON.stringify([...counts, r.cacheCreationTokens])).digest("hex");
+  return `${r.reportId}-${digest.slice(0, 16)}`;
+}
+function isConversationId(id) {
+  return typeof id === "string" && SESSION_ID_RE.test(id) && id !== "unknown" && !isSyntheticSessionId(id);
+}
+function decodeObject(raw) {
+  let value = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return void 0;
+    }
+  }
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function parseSelfReport(args) {
+  const fail = (reason) => ({ ok: false, reason });
+  const a = decodeObject(args);
+  if (!a) return fail("arguments are not a JSON object");
+  if (typeof a.report_id !== "string" || !REPORT_ID_RE.test(a.report_id)) {
+    return fail("report_id must be 8 to 128 characters of [A-Za-z0-9_-], new for every call");
+  }
+  if (typeof a.model !== "string" || !MODEL_RE.test(a.model)) {
+    return fail("model must be 1 to 256 characters of [a-zA-Z0-9._:-]");
+  }
+  const counts = {};
+  const readCounts = (fields, fallback) => {
+    for (const field of fields) {
+      const n = a[field] ?? fallback;
+      if (typeof n !== "number" || !Number.isFinite(n) || n < 0) return field;
+      counts[field] = clampToken(n);
+    }
+    return void 0;
+  };
+  const bad = readCounts(REQUIRED_COUNTS) ?? readCounts(OPTIONAL_COUNTS, 0);
+  if (bad) return fail(`${bad} must be a non-negative number`);
+  return {
+    ok: true,
+    report: {
+      reportId: a.report_id,
+      model: a.model,
+      inputTokens: counts.input_tokens,
+      outputTokens: counts.output_tokens,
+      thinkingTokens: counts.thinking_tokens,
+      cacheReadTokens: counts.cache_read_tokens,
+      cacheCreationTokens: counts.cache_creation_tokens
+    }
+  };
+}
+function selfReportLine(report, conversationId, timestamp, platform) {
+  return {
+    mode: "self_report",
+    tool: REPORT_TOKENS_TOOL_NAME,
+    timestamp,
+    sessionId: conversationId,
+    ...report,
+    platform
+  };
+}
+function hookAcknowledged(result, reportId) {
+  const value = decodeObject(result);
+  if (!value || value.isError === true) return false;
+  const replies = Array.isArray(value.content) ? value.content.map(
+    (block) => decodeObject(block?.text)
+  ) : [value];
+  return replies.some(
+    (reply) => reply?.accepted === true && reply.recorded_by === "hook" && reply.report_id === reportId
+  );
+}
+function hookSelfReportLine(call, conversationId, timestamp) {
+  if (!isPreflightReportTool(call) || !isConversationId(conversationId)) return void 0;
+  const parsed = parseSelfReport(call.args);
+  if (!parsed.ok || !hookAcknowledged(call.result, parsed.report.reportId)) return void 0;
+  return selfReportLine(parsed.report, conversationId, timestamp, call.platform);
+}
+function claimPath(storageDir, line) {
+  return resolve(storageDir, "self-reports", line.sessionId, reportKey(line));
+}
+function claimReport(storageDir, line) {
+  const path = claimPath(storageDir, line);
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 448 });
+    closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 384));
+    return true;
+  } catch {
+    return false;
+  }
+}
+function releaseReport(storageDir, line) {
+  try {
+    unlinkSync(claimPath(storageDir, line));
+  } catch {
+    return;
+  }
+}
+
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
-var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
-var DEFAULT_STORAGE_DIR = resolve(homedir(), ".newrelic-preflight");
+var DEFAULT_STORAGE_DIR = resolve2(homedir(), ".newrelic-preflight");
+function getStorageDir() {
+  return process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+}
 function getBufferPath(sessionId) {
   if (process.env.NEW_RELIC_AI_MCP_BUFFER_PATH !== void 0) {
     return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   }
-  const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+  const storageDir = getStorageDir();
   const safeId = typeof sessionId === "string" && SESSION_ID_RE.test(sessionId) ? sessionId : "unknown";
-  return resolve(storageDir, `buffer-${safeId}.jsonl`);
+  return resolve2(storageDir, `buffer-${safeId}.jsonl`);
 }
 var HIGH_SECURITY_FROM_FILE = (() => {
   for (const dir of [".newrelic-preflight", ".nr-ai-observe"]) {
     try {
-      const configPath = resolve(homedir(), dir, "config.json");
+      const configPath = resolve2(homedir(), dir, "config.json");
       if (existsSync(configPath)) {
         const config = JSON.parse(readFileSync(configPath, "utf-8"));
         return config.highSecurity === true;
@@ -133,7 +262,7 @@ function redact(value) {
 }
 function hashInput(input) {
   const str = JSON.stringify(input) ?? "";
-  return createHash("sha256").update(str).digest("hex").slice(0, 16);
+  return createHash2("sha256").update(str).digest("hex").slice(0, 16);
 }
 function sizeOf(value) {
   if (value === void 0 || value === null) return 0;
@@ -183,13 +312,13 @@ function writePpidBreadcrumb(sessionId) {
   const ppid = process.ppid;
   if (typeof ppid !== "number" || ppid <= 0) return;
   try {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    const breadcrumbDir = resolve(storageDir, "session-by-ppid");
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
+    const storageDir = getStorageDir();
+    const breadcrumbDir = resolve2(storageDir, "session-by-ppid");
+    mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const pids = getLinuxAncestorPids(ppid);
     let wroteAny = false;
     for (const pid of pids) {
-      const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
+      const breadcrumbPath = resolve2(breadcrumbDir, `${pid}.txt`);
       if (existsSync(breadcrumbPath)) {
         try {
           if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
@@ -223,11 +352,11 @@ function writeCwdBreadcrumb(sessionId, cwd) {
   if (!SESSION_ID_RE.test(sessionId)) return;
   if (typeof cwd !== "string" || cwd.length === 0) return;
   try {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    const breadcrumbDir = resolve(storageDir, "session-by-cwd");
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
+    const storageDir = getStorageDir();
+    const breadcrumbDir = resolve2(storageDir, "session-by-cwd");
+    mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
-    const breadcrumbPath = resolve(breadcrumbDir, `${sanitizedCwd}.txt`);
+    const breadcrumbPath = resolve2(breadcrumbDir, `${sanitizedCwd}.txt`);
     if (existsSync(breadcrumbPath)) {
       try {
         if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
@@ -496,6 +625,7 @@ function processHook(raw, cliEvent) {
   const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
   const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: String(data.stepIdx) } : {};
   let event;
+  let selfReportCall;
   if (eventName === "pretooluse") {
     event = {
       mode: "pre",
@@ -622,6 +752,13 @@ function processHook(raw, cliEvent) {
       timestamp,
       success: true
     };
+    selfReportCall = {
+      tool: mcpTool,
+      server: data.mcp_server_name,
+      args: data.tool_input,
+      result: data.result_json,
+      platform: "cursor"
+    };
   } else if (eventName === "beforereadfile") {
     event = {
       mode: "post",
@@ -715,6 +852,13 @@ function processHook(raw, cliEvent) {
       tool: mcpTool,
       timestamp,
       success: true
+    };
+    selfReportCall = {
+      tool: mcpTool,
+      server: toolInfo.mcp_server_name,
+      args: toolInfo.mcp_tool_arguments,
+      result: toolInfo.mcp_result,
+      platform: "windsurf"
     };
   } else if (isAntigravityPre) {
     const agyToolName = data.toolCall?.name ?? "unknown";
@@ -810,27 +954,32 @@ function processHook(raw, cliEvent) {
   if (sessionId) event.sessionId = sessionId;
   const stampedPlatform = detectStampPlatform();
   if (stampedPlatform) event.platform = stampedPlatform;
+  const selfReport = selfReportCall && hookSelfReportLine(selfReportCall, sessionId, timestamp);
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
+  const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : void 0;
+  let written = false;
   try {
     const bufferPath = getBufferPath(sessionId);
-    const bufferDir = dirname(bufferPath);
+    const bufferDir = dirname2(bufferPath);
     if (!existsSync(bufferDir)) {
-      mkdirSync(bufferDir, { recursive: true, mode: 448 });
+      mkdirSync2(bufferDir, { recursive: true, mode: 448 });
     }
-    const line = JSON.stringify(event) + "\n";
-    const fd = openSync(
+    const line = JSON.stringify(event) + "\n" + (newReport ? JSON.stringify(newReport) + "\n" : "");
+    const fd = openSync2(
       bufferPath,
       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND,
       384
     );
     try {
       writeFileSync(fd, line);
+      written = true;
     } finally {
-      closeSync(fd);
+      closeSync2(fd);
     }
   } catch {
+    if (newReport && !written) releaseReport(getStorageDir(), newReport);
   }
   if (isGeminiCli) {
     try {

@@ -20,6 +20,7 @@ import { buildCostForecastFromInputs } from '../metrics/cost-forecast.js';
 import { localDateKey } from '../lib/date.js';
 import { resolvePricing } from '../metrics/pricing-overlay.js';
 import type { TokenUsage } from '../shared/index.js';
+import { clampToken, MODEL_RE, REPORT_TOKENS_TOOL_NAME } from '../hooks/self-report.js';
 import {
   errorResult,
   requireTracker,
@@ -46,7 +47,7 @@ export interface TokenReport {
 // ---------------------------------------------------------------------------
 
 export const REPORT_TOKENS_TOOL = {
-  name: 'nr_observe_report_tokens',
+  name: REPORT_TOKENS_TOOL_NAME,
   description:
     'Report token usage for cost tracking. Call periodically to enable accurate cost metrics. ' +
     'Provide the model name and token counts from the most recent API response.',
@@ -75,12 +76,6 @@ export const REPORT_TOKENS_TOOL = {
 // Handlers
 // ---------------------------------------------------------------------------
 
-const MAX_TOKENS = 10_000_000;
-const clampToken = (v: number): number => {
-  if (!Number.isFinite(v)) return 0;
-  return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
-};
-
 export function handleReportTokens(
   costTracker: CostTracker,
   args: TokenReport,
@@ -93,7 +88,7 @@ export function handleReportTokens(
   const cacheCreationTokens = clampToken(args.cache_creation_tokens ?? 0);
   const safeModel = typeof args.model === 'string' ? args.model.slice(0, 256) : 'unknown';
 
-  if (!/^[a-zA-Z0-9._:-]+$/.test(safeModel)) {
+  if (!MODEL_RE.test(safeModel)) {
     return {
       content: [
         {

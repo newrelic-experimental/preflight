@@ -80,6 +80,18 @@ export interface PermissionDeniedHookEvent extends HookEventBase {
   readonly deniedReason?: string;
 }
 
+export interface SelfReportHookEvent extends HookEventBase {
+  readonly mode: 'self_report';
+  readonly sessionId: string;
+  readonly reportId: string;
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly thinkingTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+}
+
 /** Emitted per LLM API turn with token usage; feeds CostTracker. */
 export interface TokenHookEvent extends HookEventBase {
   readonly mode: 'token';
@@ -255,6 +267,7 @@ export type HookEvent =
   | PermissionRequestHookEvent
   | PermissionDeniedHookEvent
   | TokenHookEvent
+  | SelfReportHookEvent
   | SubagentTokenHookEvent
   | WorkflowRunEvent
   | ObservabilityHealthHookEvent

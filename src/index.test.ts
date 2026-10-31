@@ -11,6 +11,7 @@ import {
   readFileSync,
   appendFileSync,
 } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -1200,6 +1201,143 @@ describe('stdio integration', () => {
         expect(existsSync(path)).toBe(false);
       });
     }, 30000);
+  });
+
+  describe('self-report lines', () => {
+    const distDir = resolve(__dirname, '..', 'dist');
+    const report = {
+      input_tokens: 1000,
+      output_tokens: 200,
+      thinking_tokens: 100,
+      model: 'claude-sonnet-4-6',
+    };
+    const reportHook = (conversationId: string, reportId: string) => ({
+      hook_event_name: 'afterMCPExecution',
+      conversation_id: conversationId,
+      mcp_server_name: 'newrelic-preflight',
+      tool_name: 'nr_observe_report_tokens',
+      tool_input: JSON.stringify({ ...report, report_id: reportId }),
+      result_json: JSON.stringify({
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ accepted: true, recorded_by: 'hook', report_id: reportId }),
+          },
+        ],
+      }),
+    });
+    const isolatedEnv = (overrides: Record<string, string>): Record<string, string> => {
+      const env: Record<string, string> = {};
+      for (const [name, value] of Object.entries(process.env)) {
+        if (value === undefined || /^(CLAUDE|CURSOR)/.test(name)) continue;
+        if (['MCP_CLIENT', 'NEW_RELIC_AI_PLATFORM', 'NR_AI_MODE'].includes(name)) continue;
+        env[name] = value;
+      }
+      return { ...env, ...overrides };
+    };
+    const runHook = (
+      env: Record<string, string>,
+      payload: Record<string, unknown>,
+      args: string[] = [],
+    ) =>
+      spawnSync('node', [resolve(distDir, 'hooks', 'collector-script.js'), ...args], {
+        input: JSON.stringify(payload),
+        env,
+        cwd: env.NEW_RELIC_AI_MCP_STORAGE_PATH,
+      });
+    const savedSession = (storagePath: string, id: string): Record<string, unknown> | null => {
+      const dir = resolve(storagePath, 'sessions');
+      const name = existsSync(dir) ? readdirSync(dir).find((f) => f.includes(id)) : undefined;
+      return name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
+    };
+    const until = async <T>(read: () => T | Promise<T>, done: (v: T) => boolean): Promise<T> => {
+      let value = await read();
+      for (let i = 0; i < 40 && !done(value); i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        value = await read();
+      }
+      return value;
+    };
+
+    it('a --local process saves a drained report to its conversation and keeps its own estimates', async () => {
+      const { createServer: createNetServer } = await import('node:net');
+      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-local-report-storage-'));
+      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-local-report-home-'));
+      const port = await new Promise<number>((resolvePort, reject) => {
+        const srv = createNetServer();
+        srv.listen(0, '127.0.0.1', () => {
+          const p = (srv.address() as { port: number }).port;
+          srv.close((err) => (err ? reject(err) : resolvePort(p)));
+        });
+        srv.on('error', reject);
+      });
+      const env = isolatedEnv({
+        HOME: tmpHome,
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        NR_AI_DASHBOARD_PORT: String(port),
+        NR_AI_ALERTS_ENABLED: 'false',
+        NEW_RELIC_LICENSE_KEY: '',
+        NEW_RELIC_ACCOUNT_ID: '',
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+      });
+      const api = async (path: string): Promise<Record<string, unknown>> =>
+        (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as Record<string, unknown>;
+      type Cost = { reportCount: number; byteEstimates?: { costUsd: number } };
+      const cost = async (): Promise<Cost> => (await api('/api/cost')).cost as Cost;
+
+      const child = spawn(process.execPath, [resolve(distDir, 'index.js'), '--local'], {
+        env,
+        cwd: tmpStoragePath,
+        stdio: 'ignore',
+      });
+      try {
+        await until(
+          () => api('/api/health').catch(() => null),
+          (v) => v !== null,
+        );
+        const read = { file_path: '/repo/big.txt' };
+        runHook(
+          env,
+          {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Read',
+            tool_use_id: 'tu-1',
+            tool_input: read,
+          },
+          ['pre-tool'],
+        );
+        runHook(
+          env,
+          {
+            hook_event_name: 'PostToolUse',
+            tool_name: 'Read',
+            tool_use_id: 'tu-1',
+            tool_input: read,
+            tool_response: { content: 'y'.repeat(40_000) },
+          },
+          ['post-tool'],
+        );
+        const estimated = await until(cost, (c) => (c.byteEstimates?.costUsd ?? 0) > 0);
+        expect(estimated.byteEstimates?.costUsd).toBeGreaterThan(0);
+
+        runHook(env, reportHook('conv-local', 'r-local-0001'));
+
+        const saved = await until(
+          () => savedSession(tmpStoragePath, 'conv-local'),
+          (v) => typeof v?.tokensInput === 'number' && v.tokensInput > 0,
+        );
+        const after = await cost();
+        expect(after.byteEstimates?.costUsd).toBe(estimated.byteEstimates?.costUsd);
+        expect(after.reportCount).toBe(0);
+        expect((await api('/api/context?sessionId=conv-local')).turnCount).toBe(0);
+        expect(saved).toMatchObject({ tokensInput: 1000, tokensThinking: 100, platform: 'cursor' });
+        expect(saved?.estimatedCostUsd).toBeGreaterThan(0);
+      } finally {
+        child.kill('SIGKILL');
+        rmSync(tmpStoragePath, { recursive: true, force: true });
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    }, 40000);
   });
 
   it('self-corrects when the pending path resolves via the cwd fallback and a differing PPID breadcrumb appears later', async () => {
