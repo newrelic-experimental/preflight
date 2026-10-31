@@ -2735,7 +2735,7 @@ async function main(): Promise<void> {
         const unsaved = unsavedSelfReportIds.size > 0 ? observedRollups() : [];
         for (const rollup of unsaved) {
           const id = rollup.sessionId as string;
-          if (id === summary.sessionId || !unsavedSelfReportIds.has(id)) continue;
+          if (!unsavedSelfReportIds.has(id)) continue;
           sessionStore.saveSession(
             rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
           );
