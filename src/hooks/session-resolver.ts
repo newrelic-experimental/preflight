@@ -251,6 +251,7 @@ export function resolveFromAncestorBreadcrumb(
   storagePath: string,
   ancestorPids: readonly number[],
   processStartMs?: number,
+  accept: (hit: AncestorBreadcrumbHit) => boolean = () => true,
 ): AncestorBreadcrumbHit | null {
   for (let depth = 1; depth < ancestorPids.length; depth++) {
     const pid = ancestorPids[depth]!;
@@ -258,7 +259,8 @@ export function resolveFromAncestorBreadcrumb(
       processStartMs === undefined
         ? resolveFromBreadcrumb(storagePath, pid)
         : resolveFromBreadcrumb(storagePath, pid, processStartMs);
-    if (sessionId) return { sessionId, pid, depth };
+    const hit = sessionId ? { sessionId, pid, depth } : null;
+    if (hit && accept(hit)) return hit;
   }
   return null;
 }
@@ -365,49 +367,44 @@ export function sessionBreadcrumbs(
     return !everTaggedIds.has(sessionId);
   };
   const pick = <T>(
-    read: (root: string) => T | null,
+    read: (root: string, accept: (hit: T) => boolean) => T | null,
     crumbOf: (hit: T) => string,
     sessionIdOf: (hit: T) => string,
     depthOf: (hit: T) => number = () => 0,
   ): T | null => {
     if (writers.length === 0) return null;
     for (const tier of tiers) {
-      let best: { hit: T; depth: number; ms: number } | null = null;
+      let best: { hit: T; depth: number } | null = null;
       for (const root of tier) {
-        const hit = read(root);
-        if (!hit) continue;
-        const depth = depthOf(hit);
-        const ms = mtimeMs(resolve(root, crumbOf(hit)));
-        if (!best || depth < best.depth || (depth === best.depth && ms > best.ms)) {
-          best = { hit, depth, ms };
-        }
+        const hit = read(root, () => true);
+        if (hit && (!best || depthOf(hit) < best.depth)) best = { hit, depth: depthOf(hit) };
       }
       if (best) return best.hit;
     }
-    const hit = read(storagePath);
-    if (!hit) return null;
-    return rootHitCounts(crumbOf(hit), sessionIdOf(hit)) ? hit : null;
+    return read(storagePath, (hit) => rootHitCounts(crumbOf(hit), sessionIdOf(hit)));
   };
   const self = (sessionId: string) => sessionId;
+  const kept = (id: string | null, accept: (id: string) => boolean) =>
+    id !== null && accept(id) ? id : null;
   return {
     jobDir: (claudeJobDir) =>
       writers.includes(CLAUDE_CODE_PLATFORM_NAME) ? resolveFromJobDir(claudeJobDir) : null,
     ppid: (ppid) =>
       pick(
-        (dir) => resolveFromBreadcrumb(dir, ppid, processStartMs),
+        (dir, accept) => kept(resolveFromBreadcrumb(dir, ppid, processStartMs), accept),
         () => `session-by-ppid/${ppid}.txt`,
         self,
       ),
     ancestors: (ancestorPids) =>
       pick(
-        (dir) => resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs),
+        (dir, accept) => resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs, accept),
         (hit) => `session-by-ppid/${hit.pid}.txt`,
         (hit) => hit.sessionId,
         (hit) => hit.depth,
       ),
     cwd: (cwd) =>
       pick(
-        (dir) => resolveFromCwd(dir, cwd),
+        (dir, accept) => kept(resolveFromCwd(dir, cwd), accept),
         () => `session-by-cwd/${sanitizeCwdForFilename(cwd!)}.txt`,
         self,
       ),

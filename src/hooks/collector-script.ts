@@ -106,11 +106,12 @@ function getMaxContentLength(): number {
  * explicit MCP_CLIENT in their generated hook commands.
  */
 function detectStampPlatform(): string | undefined {
-  const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
-  if (explicit) return canonicalPlatformName(explicit) ?? explicit;
-  return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)
-    ? 'claude-code'
-    : undefined;
+  for (const key of ENGINE_ENV_KEYS) {
+    const name = canonicalPlatformName(process.env[key]);
+    if (name !== undefined) return name;
+  }
+  if (CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)) return 'claude-code';
+  return (process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM) || undefined;
 }
 
 // ---------------------------------------------------------------------------

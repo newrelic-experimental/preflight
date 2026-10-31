@@ -164,9 +164,12 @@ function getMaxContentLength() {
   return Number.isNaN(parsed) ? 10240 : parsed;
 }
 function detectStampPlatform() {
-  const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
-  if (explicit) return canonicalPlatformName(explicit) ?? explicit;
-  return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0) ? "claude-code" : void 0;
+  for (const key of ENGINE_ENV_KEYS) {
+    const name = canonicalPlatformName(process.env[key]);
+    if (name !== void 0) return name;
+  }
+  if (CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0)) return "claude-code";
+  return (process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM) || void 0;
 }
 var MAX_REDACT_BYTES = 1048576;
 function redact(value) {

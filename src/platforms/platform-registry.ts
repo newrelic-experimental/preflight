@@ -16,7 +16,7 @@ import { KiloCodeAdapter } from './kilo-code-adapter.js';
 import { KiroAdapter } from './kiro-adapter.js';
 import { OpencodeAdapter } from './opencode-adapter.js';
 import { PiAdapter } from './pi-adapter.js';
-import { normalizeEngineEnv } from './platform-names.js';
+import { canonicalPlatformName, ENGINE_ENV_KEYS, normalizeEngineEnv } from './platform-names.js';
 import type { PlatformAdapter, PlatformVisibilityLevel } from './types.js';
 import { WindsurfAdapter } from './windsurf-adapter.js';
 import { ZedAdapter } from './zed-adapter.js';
@@ -44,7 +44,9 @@ export class PlatformRegistry {
    */
   detect(): PlatformAdapter | null {
     normalizeEngineEnv(process.env);
-    const explicitPlatform = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+    const explicitPlatform = ENGINE_ENV_KEYS.map((key) =>
+      canonicalPlatformName(process.env[key]),
+    ).find((name) => name !== undefined);
     if (explicitPlatform) {
       const explicitMatch = this.adapters.find((a) => a.platformName === explicitPlatform);
       if (explicitMatch?.isSupported()) {
