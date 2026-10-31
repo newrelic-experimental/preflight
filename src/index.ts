@@ -114,7 +114,7 @@ import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 import { createServer } from './server.js';
-import type { CostBreakdown, TokenUsage } from './shared/index.js';
+import type { TokenUsage } from './shared/index.js';
 import { createLogger } from './shared/index.js';
 import { LocalStore } from './storage/index.js';
 import { computeHistoricalCosts } from './storage/historical-costs.js';
@@ -1395,6 +1395,18 @@ async function main(): Promise<void> {
       // before adding the tail — see applyPersistedBaseline's doc comment.
       persistedCostBaseline: (id) => sessionStoreForAggregator.loadSession(id),
     });
+    // Prices the usage unless the caller already did, then adds it to that
+    // session's rollup, which is what saves sessions this process does not own.
+    const recordRollupUsage = (
+      sessionId: string | undefined,
+      usage: TokenUsage,
+      model: string,
+      extra: { timestamp?: number; costUsd?: number; selfReported?: true } = {},
+    ): number => {
+      const costUsd = extra.costUsd ?? costTracker.priceUsage(usage, model).totalUsd;
+      localSessionAggregator.recordTokenUsage(sessionId, { ...usage, ...extra, costUsd, model });
+      return costUsd;
+    };
     const repoNameResolver = new RepoNameResolver();
 
     const budgetTracker = new BudgetTracker({
@@ -2386,25 +2398,18 @@ async function main(): Promise<void> {
           cacheCreationTokens: tokenEvent.cacheCreationTokens,
           totalTokens: tokenEvent.inputTokens + tokenEvent.outputTokens,
         };
-        let breakdown: CostBreakdown;
-        if (!isOwnEvent) {
-          breakdown = costTracker.priceUsage(usage, tokenEvent.model);
-        } else {
-          breakdown = costTracker.recordTokenUsage(usage, tokenEvent.model, {
+        let costUsd: number | undefined;
+        if (isOwnEvent) {
+          costUsd = costTracker.recordTokenUsage(usage, tokenEvent.model, {
             timestampMs: tokenEvent.timestamp,
             replacesEstimates: true,
             ...(tokenEvent.responseMs !== undefined && { responseMs: tokenEvent.responseMs }),
-          });
-          modelUsageTracker.recordUsage(tokenEvent.model, usage, breakdown.totalUsd);
+          }).totalUsd;
+          modelUsageTracker.recordUsage(tokenEvent.model, usage, costUsd);
         }
-        localSessionAggregator.recordTokenUsage(tokenEvent.sessionId, {
+        recordRollupUsage(tokenEvent.sessionId, usage, tokenEvent.model, {
           timestamp: tokenEvent.timestamp,
-          costUsd: breakdown.totalUsd,
-          model: tokenEvent.model,
-          inputTokens: tokenEvent.inputTokens,
-          outputTokens: tokenEvent.outputTokens,
-          cacheReadTokens: tokenEvent.cacheReadTokens,
-          cacheCreationTokens: tokenEvent.cacheCreationTokens,
+          ...(costUsd !== undefined && { costUsd }),
         });
         contextCompositionTracker.recordTokenEvent(tokenEvent);
 
@@ -3268,18 +3273,10 @@ async function main(): Promise<void> {
                 tool: conversationReportTokensTool(conversationIdField),
                 matchReportCall: reportCallMatcher(eventProcessor),
                 hasSeen: (conversationId) => localSessionAggregator.hasSession(conversationId),
-                record: (conversationId, usage, model) => {
-                  const { totalUsd } = costTracker.priceUsage(usage, model);
-                  localSessionAggregator.recordTokenUsage(conversationId, {
-                    ...usage,
-                    costUsd: totalUsd,
-                    model,
-                  });
-                  return {
-                    costUsd: totalUsd,
-                    conversationTotalCostUsd: localSessionAggregator.costUsd(conversationId),
-                  };
-                },
+                record: (conversationId, usage, model) => ({
+                  costUsd: recordRollupUsage(conversationId, usage, model, { selfReported: true }),
+                  conversationTotalCostUsd: localSessionAggregator.costUsd(conversationId),
+                }),
               },
             }),
         });

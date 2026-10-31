@@ -180,6 +180,14 @@ describe('LocalSessionAggregator', () => {
     expect(summary?.model).toBe('claude-opus-4.8');
   });
 
+  it('saves the thinking tokens it priced', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.1, inputTokens: 10, thinkingTokens: 300 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.1, inputTokens: 10, thinkingTokens: 200 });
+    expect(summariesOf(agg)[0]?.tokensThinking).toBe(500);
+  });
+
   it('counts unpriced-model calls on the session that made them', () => {
     const other = 'b0000000-0000-4000-8000-000000000000';
     const agg = new LocalSessionAggregator();
@@ -508,6 +516,12 @@ describe('LocalSessionAggregator panel rehydration', () => {
     expect(toolSelection?.totalCalls).toBe(2);
   });
 
+  it('saves a session whose only activity is a self-reported cost', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.5, inputTokens: 100, selfReported: true });
+    expect(summariesOf(agg).map((s) => s.estimatedCostUsd)).toEqual([0.5]);
+  });
+
   it('keeps a token-only session out of the summaries, as before', () => {
     const agg = new LocalSessionAggregator();
     agg.recordTokenUsage(REAL_ID, {
@@ -614,6 +628,15 @@ describe('LocalSessionAggregator subagent cost', () => {
 });
 
 describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () => {
+  it("folds the saved cost in before a fresh rollup's first self-report", () => {
+    const agg = new LocalSessionAggregator({
+      persistedCostBaseline: () => ({ estimatedCostUsd: 2, subagentCostUsd: 0 }),
+    });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.5, selfReported: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.25, selfReported: true });
+    expect(agg.costUsd(REAL_ID)).toBe(2.75);
+  });
+
   it('folds the persisted baseline in additively on the session’s first agentId usage', () => {
     const agg = new LocalSessionAggregator({
       persistedCostBaseline: () => ({

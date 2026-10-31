@@ -123,6 +123,7 @@ export interface LocalSessionRollup {
   subagentCostByDayUsd: Map<string, number>;
   /** Set once the persisted baseline has been folded in — see recordTokenUsage. */
   costBaselineApplied: boolean;
+  selfReported: boolean;
   /**
    * The cost quadruple as of the last `toSummaries()` call, i.e. what this
    * aggregator has already offered to the session file. A later baseline fold
@@ -131,6 +132,7 @@ export interface LocalSessionRollup {
   lastEmittedCost: EmittedCost | null;
   tokensInput: number;
   tokensOutput: number;
+  tokensThinking: number;
   tokensCacheRead: number;
   tokensCacheCreation: number;
   models: Set<string>;
@@ -366,9 +368,11 @@ export class LocalSessionAggregator {
         subagentCostUsd: 0,
         subagentCostByDayUsd: new Map(),
         costBaselineApplied: false,
+        selfReported: false,
         lastEmittedCost: null,
         tokensInput: 0,
         tokensOutput: 0,
+        tokensThinking: 0,
         tokensCacheRead: 0,
         tokensCacheCreation: 0,
         models: new Set(),
@@ -487,6 +491,12 @@ export class LocalSessionAggregator {
        * trackers. Absent for parent-transcript token events.
        */
       agentId?: string;
+      /**
+       * An agent's own report from a provisional engine. Nothing else saves
+       * that conversation's cost, so it is seeded from disk like subagent
+       * spend and saved even without tool calls.
+       */
+      selfReported?: true;
     },
   ): void {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
@@ -498,9 +508,10 @@ export class LocalSessionAggregator {
     // engine has written anything to sessions/*.json — seeding at creation
     // would read nothing and lose the engine's eventual total on restart
     // under the max-based merge in mergeSummaries.
-    if (usage.agentId !== undefined && !rollup.costBaselineApplied) {
+    if ((usage.agentId !== undefined || usage.selfReported) && !rollup.costBaselineApplied) {
       this.applyPersistedBaseline(sessionId, rollup);
     }
+    if (usage.selfReported) rollup.selfReported = true;
     const dayKey = localDateKey(timestamp);
     const usd = usage.costUsd ?? 0;
     rollup.costUsd += usd;
@@ -511,6 +522,7 @@ export class LocalSessionAggregator {
     }
     rollup.tokensInput += usage.inputTokens ?? 0;
     rollup.tokensOutput += usage.outputTokens ?? 0;
+    rollup.tokensThinking += usage.thinkingTokens ?? 0;
     rollup.tokensCacheRead += usage.cacheReadTokens ?? 0;
     rollup.tokensCacheCreation += usage.cacheCreationTokens ?? 0;
     if (usage.model) {
@@ -614,7 +626,8 @@ export class LocalSessionAggregator {
    * of `/api/sessions` anyway, and writing it would burn a file that the
    * empty-summary guard then has to defend. A subagent-only rollup (dead
    * parent, tail still being read) DOES qualify: it has real dollars even
-   * though its parent timeline and toolCallCount are both zero.
+   * though its parent timeline and toolCallCount are both zero. So does a
+   * rollup with a self-reported cost, for the same reason.
    */
   toSummaries(context: {
     developer: string;
@@ -625,7 +638,7 @@ export class LocalSessionAggregator {
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
-      if (!hasAttributableActivity(rollup)) continue;
+      if (!hasAttributableActivity(rollup) && !rollup.selfReported) continue;
       const models = [...rollup.models];
       rollup.lastEmittedCost = {
         costUsd: rollup.costUsd,
@@ -685,7 +698,7 @@ export class LocalSessionAggregator {
           : {}),
         tokensInput: rollup.tokensInput,
         tokensOutput: rollup.tokensOutput,
-        tokensThinking: 0,
+        tokensThinking: rollup.tokensThinking,
         tokensCacheRead: rollup.tokensCacheRead,
         tokensCacheCreation: rollup.tokensCacheCreation,
         cacheSavingsUsd: 0,
