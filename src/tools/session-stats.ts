@@ -34,7 +34,11 @@ import type { CollaborationProfiler } from '../metrics/collaboration-profile.js'
 import type { ClaudeMdTracker } from '../metrics/claudemd-tracker.js';
 import type { CostPerOutcomeAnalyzer } from '../metrics/cost-per-outcome.js';
 import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
-import { pendingReportTokensTool, registerCostTools } from './cost-tools.js';
+import {
+  pendingReportTokensTool,
+  registerCostTools,
+  type PendingReportTokensOptions,
+} from './cost-tools.js';
 import { registerWorkflowTools } from './workflow-tools.js';
 import type { FeedbackCollector } from './workflow-tools.js';
 import { registerCrossSessionTools } from './cross-session-tools.js';
@@ -620,10 +624,10 @@ export function registerPendingTools(
     configSummary?: ConfigSummary;
     hooksInstalledFn?: () => boolean;
     headlessInstaller?: () => import('../install/headless-install.js').HeadlessInstallResult;
-    listReportTokens?: boolean;
+    reportTokens?: PendingReportTokensOptions;
   },
 ): void {
-  const reportTokens = options.listReportTokens ? pendingReportTokensTool() : undefined;
+  const reportTokens = options.reportTokens && pendingReportTokensTool(options.reportTokens);
   const tools: ToolDefinition[] = [HEALTH_TOOL, INSTALL_HOOKS_TOOL];
   if (options.configSummary) tools.push(CONFIG_TOOL);
   if (reportTokens) tools.push(reportTokens.definition);

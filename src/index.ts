@@ -4,6 +4,7 @@ import 'dotenv/config';
 import { Command, Option } from 'commander';
 import { readFileSync, realpathSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { AlertLog } from './alerts/alert-log.js';
 import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
@@ -3278,7 +3279,13 @@ async function main(): Promise<void> {
             hooksInstalledFn: () => areHooksInstalledAtAnyScope(),
             headlessInstaller: buildHeadlessInstaller(),
           }),
-          listReportTokens: pendingAdapter.capabilities.tokenReportRecorder === 'hook',
+          ...(pendingAdapter.capabilities.tokenReportHook && {
+            reportTokens: {
+              hook: pendingAdapter.capabilities.tokenReportHook,
+              homeDir: homedir(),
+              projectDir: process.cwd(),
+            },
+          }),
         });
         logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
 

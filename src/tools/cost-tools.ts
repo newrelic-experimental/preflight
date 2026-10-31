@@ -9,6 +9,8 @@
  *   - `nr_observe_get_prompt_cache_health` — cache hit rate and recommendation
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { z } from 'zod';
 
 import type { CostTracker } from '../metrics/cost-tracker.js';
@@ -21,6 +23,7 @@ import { localDateKey } from '../lib/date.js';
 import { resolvePricing } from '../metrics/pricing-overlay.js';
 import type { TokenUsage } from '../shared/index.js';
 import { clampToken, parseSelfReport, REPORT_TOKENS_TOOL_NAME } from '../hooks/self-report.js';
+import type { TokenReportHook } from '../platforms/types.js';
 import {
   errorResult,
   requireTracker,
@@ -73,18 +76,44 @@ export const REPORT_TOKENS_TOOL = {
   annotations: { readOnlyHint: false },
 };
 
+export interface PendingReportTokensOptions {
+  readonly hook: TokenReportHook;
+  readonly homeDir: string;
+  readonly projectDir: string;
+}
+
 const RECORDED_BY_HOOK =
   "Preflight records this report from its post-MCP hook event for this call, in the conversation that made it, after the call returns. Without Preflight's hooks installed for this client it is not saved.";
+const COLLECTOR_COMMAND_RE = /preflight-collector|collector-script\.js/;
 
-export function pendingReportTokensTool(): {
+function runsCollector(path: string, event: string): boolean {
+  try {
+    const config = JSON.parse(readFileSync(path, 'utf-8')) as { hooks?: Record<string, unknown> };
+    const entries = config.hooks?.[event];
+    return (
+      Array.isArray(entries) &&
+      entries.some((entry: { command?: unknown } | null) =>
+        COLLECTOR_COMMAND_RE.test(String(entry?.command ?? '')),
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function pendingReportTokensTool(options: PendingReportTokensOptions): {
   readonly definition: typeof REPORT_TOKENS_TOOL;
   readonly handle: (args: unknown) => ToolCallResult;
 } {
+  const { hook } = options;
+  const notDetected =
+    `No ${hook.event} hook running preflight-collector was found in ~/${hook.userConfig} or ${hook.projectConfig}, ` +
+    `so this report will not be saved. Add {"command": "preflight-collector"} under hooks.${hook.event} in one of those files, then restart the client.`;
   const definition = {
     ...REPORT_TOKENS_TOOL,
     description:
       REPORT_TOKENS_TOOL.description +
-      ' Set report_id to a new random value (such as a UUID) on every call; a retried call keeps its report_id and counts once.' +
+      ' Set report_id to a new random value (such as a UUID) on every call, and keep it when retrying: Preflight saves each report_id once per conversation.' +
       " Preflight's hook for this call records the report in this conversation.",
     inputSchema: {
       ...REPORT_TOKENS_TOOL.inputSchema,
@@ -106,12 +135,16 @@ export function pendingReportTokensTool(): {
     const parsed = parseSelfReport(args);
     if (!parsed.ok) return reply({ error: 'invalid_token_report', message: parsed.reason }, true);
     const { report } = parsed;
+    const hooksDetected =
+      runsCollector(resolve(options.homeDir, hook.userConfig), hook.event) ||
+      runsCollector(resolve(options.projectDir, hook.projectConfig), hook.event);
     return reply({
       accepted: true,
       report_id: report.reportId,
       model: report.model,
       recorded_by: 'hook',
-      message: RECORDED_BY_HOOK,
+      hooks_detected: hooksDetected,
+      message: hooksDetected ? RECORDED_BY_HOOK : notDetected,
     });
   };
   return { definition, handle };

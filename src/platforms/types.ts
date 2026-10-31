@@ -76,13 +76,22 @@ export interface PlatformCapabilities {
    */
   readonly sessionBreadcrumbWriters: readonly string[];
   /**
-   * How a provisional engine, which serves every conversation in a window,
-   * saves an agent's `nr_observe_report_tokens` call to the conversation
-   * that made it. `hook`: the platform's post-MCP hook carries the
-   * conversation id and the call's arguments, and the collector records the
-   * report. Absent: the provisional engine does not list the tool.
+   * The post-MCP hook that saves a provisional engine's
+   * `nr_observe_report_tokens` call to the conversation that made it. A
+   * provisional engine serves every conversation in a window, so it lists
+   * the tool only where this hook carries the conversation id, the call's
+   * arguments and its reply. Absent: the provisional engine does not list it.
    */
-  readonly tokenReportRecorder?: 'hook';
+  readonly tokenReportHook?: TokenReportHook;
+}
+
+export interface TokenReportHook {
+  /** The hooks-file key of the post-MCP event the collector records from. */
+  readonly event: string;
+  /** The user-level hooks file, relative to the home directory. */
+  readonly userConfig: string;
+  /** The project-level hooks file, relative to the project root. */
+  readonly projectConfig: string;
 }
 
 /**
