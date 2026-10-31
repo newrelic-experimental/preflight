@@ -1347,6 +1347,7 @@ describe('stdio integration', () => {
         adopt: (id: string) => Promise<void>,
         close: () => Promise<void>,
       ) => Promise<void>,
+      nodeArgs: (env: Record<string, string>) => string[] = () => [],
     ): Promise<void> => {
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
       const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
@@ -1369,62 +1370,139 @@ describe('stdio integration', () => {
         const adopted = await until(toolNames, (n) => n.includes('nr_observe_get_session_stats'));
         expect(adopted).toContain('nr_observe_get_session_stats');
       };
+      const alive = (pid: number) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
       try {
-        const args = [resolve(distDir, 'index.js'), '--stdio'];
-        await client.connect(new StdioClientTransport({ command: 'node', args, env }));
-        await body(env, adopt, () => client.close());
+        const args = [...nodeArgs(env), resolve(distDir, 'index.js'), '--stdio'];
+        const transport = new StdioClientTransport({ command: 'node', args, env });
+        await client.connect(transport);
+        const pid = transport.pid!;
+        const close = async () => {
+          await client.close();
+          expect(
+            await until(
+              () => alive(pid),
+              (a) => !a,
+            ),
+          ).toBe(false);
+        };
+        await body(env, adopt, close);
       } finally {
         rmSync(tmpStoragePath, { recursive: true, force: true });
         rmSync(tmpHome, { recursive: true, force: true });
       }
     };
+    const drained = (storage: string, conversationId: string) => {
+      const bufferPath = resolve(storage, `buffer-${conversationId}.jsonl`);
+      const pending = () => (existsSync(bufferPath) ? readFileSync(bufferPath, 'utf-8') : '');
+      return until(pending, (v) => v === '');
+    };
 
     it.each([
-      ['another session', 'in progress', 'real-owner-session'],
+      ['another session', undefined, 'real-owner-session'],
       ['the reporting conversation', 'completed', 'conv-adopt'],
     ])(
       'a pending engine that drains a report and then adopts %s saves the report with outcome %s',
       async (_label, outcome, adoptedId) => {
         await withCursorEngine('600000', async (env, adopt, close) => {
           const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
-          const bufferPath = resolve(storage, 'buffer-conv-adopt.jsonl');
-          const pendingLines = () =>
-            existsSync(bufferPath) ? readFileSync(bufferPath, 'utf-8') : '';
           runHook(env, reportHook('conv-adopt', 'r-adopt-0001'));
-          expect(await until(pendingLines, (v) => v === '')).toBe('');
+          expect(await drained(storage, 'conv-adopt')).toBe('');
 
           await adopt(adoptedId);
           await close();
 
-          const saved = await until(
-            () => savedSession(storage, 'conv-adopt'),
-            (v) => v !== null,
-          );
-          expect(saved).toMatchObject({ tokensInput: 1000, tokensThinking: 100, outcome });
+          const saved = savedSession(storage, 'conv-adopt');
+          expect(saved).toMatchObject({ tokensInput: 1000, tokensThinking: 100 });
+          expect(saved?.outcome).toBe(outcome);
         });
       },
       40000,
     );
 
+    it("a pending engine that drains another conversation's tool calls and then adopts saves them", async () => {
+      await withCursorEngine('600000', async (env, adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        const edit = { conversation_id: 'conv-edits', file_path: '/repo/a.ts' };
+        runHook(env, { hook_event_name: 'afterFileEdit', ...edit });
+        expect(await drained(storage, 'conv-edits')).toBe('');
+
+        await adopt('real-owner-session');
+        await close();
+
+        expect(savedSession(storage, 'conv-edits')).toMatchObject({ toolCallCount: 1 });
+      });
+    }, 40000);
+
+    it('an observed save that throws neither stops the next one nor the owner save', async () => {
+      const preloadDir = mkdtempSync(join(tmpdir(), 'nr-throwing-save-'));
+      const saveLog = resolve(preloadDir, 'saves.log');
+      const storeUrl = pathToFileURL(resolve(distDir, 'storage', 'session-store.js')).href;
+      writeFileSync(
+        resolve(preloadDir, 'preload.mjs'),
+        [
+          "import { appendFileSync } from 'node:fs';",
+          `const { SessionStore } = await import(${JSON.stringify(storeUrl)});`,
+          'const save = SessionStore.prototype.saveSession;',
+          'SessionStore.prototype.saveSession = function (summary) {',
+          `  appendFileSync(${JSON.stringify(saveLog)}, summary.sessionId + '\\n');`,
+          "  if (summary.sessionId === 'conv-throws') throw new Error('injected save failure');",
+          '  return save.call(this, summary);',
+          '};',
+        ].join('\n'),
+      );
+      const preload = pathToFileURL(resolve(preloadDir, 'preload.mjs')).href;
+      try {
+        await withCursorEngine(
+          '600000',
+          async (env, adopt, close) => {
+            const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+            runHook(env, reportHook('conv-throws', 'r-throws-001'));
+            expect(await drained(storage, 'conv-throws')).toBe('');
+            runHook(env, reportHook('conv-saved', 'r-saved-0001'));
+            expect(await drained(storage, 'conv-saved')).toBe('');
+
+            await adopt('real-owner-session');
+            await close();
+
+            const saves = readFileSync(saveLog, 'utf-8').trim().split('\n');
+            expect(saves.slice(0, 3)).toEqual(['conv-throws', 'conv-saved', 'real-owner-session']);
+            expect(savedSession(storage, 'conv-saved')).toMatchObject({ tokensInput: 1000 });
+          },
+          () => ['--import', preload],
+        );
+      } finally {
+        rmSync(preloadDir, { recursive: true, force: true });
+      }
+    }, 40000);
+
     it('a report saved while pending is not saved again after the engine adopts another session', async () => {
       await withCursorEngine('2000', async (env, adopt, close) => {
-        const sessionsDir = resolve(env.NEW_RELIC_AI_MCP_STORAGE_PATH, 'sessions');
-        const savedAt = () => {
-          const name = readdirSync(sessionsDir).find((f) => f.includes('conv-resave'));
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        const sessionsDir = resolve(storage, 'sessions');
+        const savedAt = (id: string) => {
+          const name = readdirSync(sessionsDir).find((f) => f.includes(id));
           return name ? statSync(resolve(sessionsDir, name)).mtimeMs : 0;
         };
         runHook(env, reportHook('conv-resave', 'r-resave-001'));
+        runHook(env, reportHook('conv-owner', 'r-owner-0001'));
         await until(
-          () => savedSession(env.NEW_RELIC_AI_MCP_STORAGE_PATH, 'conv-resave'),
-          (v) => v !== null,
+          () => savedAt('conv-resave') > 0 && savedAt('conv-owner') > 0,
+          (saved) => saved,
         );
 
-        await adopt('real-owner-session');
-        const adoptedAt = savedAt();
+        await adopt('conv-owner');
+        const adoptedAt = savedAt('conv-resave');
         await close();
-        await new Promise((r) => setTimeout(r, 1500));
 
-        expect(savedAt()).toBe(adoptedAt);
+        expect(savedSession(storage, 'conv-owner')?.outcome).toBe('completed');
+        expect(savedAt('conv-resave')).toBe(adoptedAt);
       });
     }, 40000);
   });
