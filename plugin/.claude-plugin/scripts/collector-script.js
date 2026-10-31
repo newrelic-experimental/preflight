@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { resolve as resolve2, dirname as dirname2 } from "node:path";
 import { homedir } from "node:os";
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 
 // src/redaction-patterns.ts
 var REDACTION_PATTERNS = [
@@ -74,6 +74,7 @@ function hookEventFromArg(arg) {
 }
 
 // src/hooks/self-report.ts
+import { createHash } from "node:crypto";
 import { closeSync, constants, mkdirSync, openSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
@@ -89,15 +90,20 @@ var MAX_TOKENS = 1e7;
 var REPORT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
 var MODEL_RE = /^[a-zA-Z0-9._:-]{1,256}$/;
 var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
-var PREFIXED_TOOL_RE = new RegExp(`(?:^|[_:./-])${REPORT_TOKENS_TOOL_NAME}$`);
+var PREFLIGHT_SERVER_RE = /preflight|nr-ai-observability/i;
 var REQUIRED_COUNTS = ["input_tokens", "output_tokens"];
 var OPTIONAL_COUNTS = ["thinking_tokens", "cache_read_tokens", "cache_creation_tokens"];
 function clampToken(v) {
   if (!Number.isFinite(v)) return 0;
   return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
 }
-function isReportTokensTool(name) {
-  return typeof name === "string" && PREFIXED_TOOL_RE.test(name);
+function isPreflightReportTool(call) {
+  return call.tool === REPORT_TOKENS_TOOL_NAME && typeof call.server === "string" && PREFLIGHT_SERVER_RE.test(call.server);
+}
+function reportKey(r) {
+  const counts = [r.model, r.inputTokens, r.outputTokens, r.thinkingTokens, r.cacheReadTokens];
+  const digest = createHash("sha256").update(JSON.stringify([...counts, r.cacheCreationTokens])).digest("hex");
+  return `${r.reportId}-${digest.slice(0, 16)}`;
 }
 function isConversationId(id) {
   return typeof id === "string" && SESSION_ID_RE.test(id) && id !== "unknown" && !isSyntheticSessionId(id);
@@ -154,7 +160,7 @@ function selfReportLine(report, conversationId, timestamp, platform) {
     timestamp,
     sessionId: conversationId,
     ...report,
-    ...platform !== void 0 && { platform }
+    platform
   };
 }
 function hookAcknowledged(result, reportId) {
@@ -167,14 +173,14 @@ function hookAcknowledged(result, reportId) {
     (reply) => reply?.accepted === true && reply.recorded_by === "hook" && reply.report_id === reportId
   );
 }
-function hookSelfReportLine(toolName, args, result, conversationId, timestamp, platform) {
-  if (!isReportTokensTool(toolName) || !isConversationId(conversationId)) return void 0;
-  const parsed = parseSelfReport(args);
-  if (!parsed.ok || !hookAcknowledged(result, parsed.report.reportId)) return void 0;
-  return selfReportLine(parsed.report, conversationId, timestamp, platform);
+function hookSelfReportLine(call, conversationId, timestamp) {
+  if (!isPreflightReportTool(call) || !isConversationId(conversationId)) return void 0;
+  const parsed = parseSelfReport(call.args);
+  if (!parsed.ok || !hookAcknowledged(call.result, parsed.report.reportId)) return void 0;
+  return selfReportLine(parsed.report, conversationId, timestamp, call.platform);
 }
 function claimPath(storageDir, line) {
-  return resolve(storageDir, "self-reports", line.sessionId, line.reportId);
+  return resolve(storageDir, "self-reports", line.sessionId, reportKey(line));
 }
 function claimReport(storageDir, line) {
   const path = claimPath(storageDir, line);
@@ -256,7 +262,7 @@ function redact(value) {
 }
 function hashInput(input) {
   const str = JSON.stringify(input) ?? "";
-  return createHash("sha256").update(str).digest("hex").slice(0, 16);
+  return createHash2("sha256").update(str).digest("hex").slice(0, 16);
 }
 function sizeOf(value) {
   if (value === void 0 || value === null) return 0;
@@ -746,7 +752,13 @@ function processHook(raw, cliEvent) {
       timestamp,
       success: true
     };
-    selfReportCall = { args: data.tool_input, result: data.result_json, platform: "cursor" };
+    selfReportCall = {
+      tool: mcpTool,
+      server: data.mcp_server_name,
+      args: data.tool_input,
+      result: data.result_json,
+      platform: "cursor"
+    };
   } else if (eventName === "beforereadfile") {
     event = {
       mode: "post",
@@ -842,6 +854,8 @@ function processHook(raw, cliEvent) {
       success: true
     };
     selfReportCall = {
+      tool: mcpTool,
+      server: toolInfo.mcp_server_name,
       args: toolInfo.mcp_tool_arguments,
       result: toolInfo.mcp_result,
       platform: "windsurf"
@@ -940,18 +954,12 @@ function processHook(raw, cliEvent) {
   if (sessionId) event.sessionId = sessionId;
   const stampedPlatform = detectStampPlatform();
   if (stampedPlatform) event.platform = stampedPlatform;
-  const selfReport = selfReportCall && hookSelfReportLine(
-    event.tool,
-    selfReportCall.args,
-    selfReportCall.result,
-    sessionId,
-    timestamp,
-    stampedPlatform ?? selfReportCall.platform
-  );
+  const selfReport = selfReportCall && hookSelfReportLine(selfReportCall, sessionId, timestamp);
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
   const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : void 0;
+  let written = false;
   try {
     const bufferPath = getBufferPath(sessionId);
     const bufferDir = dirname2(bufferPath);
@@ -966,11 +974,12 @@ function processHook(raw, cliEvent) {
     );
     try {
       writeFileSync(fd, line);
+      written = true;
     } finally {
       closeSync2(fd);
     }
   } catch {
-    if (newReport) releaseReport(getStorageDir(), newReport);
+    if (newReport && !written) releaseReport(getStorageDir(), newReport);
   }
   if (isGeminiCli) {
     try {

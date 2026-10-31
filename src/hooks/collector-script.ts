@@ -30,7 +30,13 @@ import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
-import { claimReport, hookSelfReportLine, releaseReport, SESSION_ID_RE } from './self-report.js';
+import {
+  claimReport,
+  hookSelfReportLine,
+  releaseReport,
+  SESSION_ID_RE,
+  type HookReportCall,
+} from './self-report.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -830,7 +836,7 @@ function processHook(raw: string, cliEvent?: string): void {
   const agyToolUseId = typeof data.stepIdx === 'number' ? { toolUseId: String(data.stepIdx) } : {};
 
   let event: Record<string, unknown>;
-  let selfReportCall: { args: unknown; result: unknown; platform: string } | undefined;
+  let selfReportCall: HookReportCall | undefined;
 
   if (eventName === 'pretooluse') {
     event = {
@@ -1055,7 +1061,14 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       success: true,
     };
-    selfReportCall = { args: data.tool_input, result: data.result_json, platform: 'cursor' };
+    // afterMCPExecution names the server from mcp.json (https://cursor.com/docs/agent/hooks).
+    selfReportCall = {
+      tool: mcpTool,
+      server: data.mcp_server_name,
+      args: data.tool_input,
+      result: data.result_json,
+      platform: 'cursor',
+    };
   } else if (eventName === 'beforereadfile') {
     // Cursor has no "afterReadFile" event — beforeReadFile is the only file-read
     // hook that exists (confirmed: https://blog.gitbutler.com/cursor-hooks-deep-dive
@@ -1174,7 +1187,10 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       success: true,
     };
+    // tool_info.mcp_server_name names the server (https://docs.windsurf.com/de/windsurf/cascade/hooks).
     selfReportCall = {
+      tool: mcpTool,
+      server: toolInfo.mcp_server_name,
       args: toolInfo.mcp_tool_arguments,
       result: toolInfo.mcp_result,
       platform: 'windsurf',
@@ -1351,22 +1367,14 @@ function processHook(raw: string, cliEvent?: string): void {
   // measurable overhead on this hot, pre+post-per-tool-call path.
   const stampedPlatform = detectStampPlatform();
   if (stampedPlatform) event.platform = stampedPlatform;
-  const selfReport =
-    selfReportCall &&
-    hookSelfReportLine(
-      event.tool,
-      selfReportCall.args,
-      selfReportCall.result,
-      sessionId,
-      timestamp,
-      stampedPlatform ?? selfReportCall.platform,
-    );
+  const selfReport = selfReportCall && hookSelfReportLine(selfReportCall, sessionId, timestamp);
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
 
   const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : undefined;
   // Write to buffer — wrapped in try/catch for resilience.
+  let written = false;
   try {
     const bufferPath = getBufferPath(sessionId);
     const bufferDir = dirname(bufferPath);
@@ -1383,12 +1391,13 @@ function processHook(raw: string, cliEvent?: string): void {
     );
     try {
       writeFileSync(fd, line);
+      written = true;
     } finally {
       closeSync(fd);
     }
   } catch {
     // Silent failure — never block Claude Code
-    if (newReport) releaseReport(getStorageDir(), newReport);
+    if (newReport && !written) releaseReport(getStorageDir(), newReport);
   }
 
   // Gemini CLI's own hook examples always print "{}" before exiting 0, even

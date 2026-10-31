@@ -1214,6 +1214,7 @@ describe('stdio integration', () => {
     const reportHook = (conversationId: string, reportId: string) => ({
       hook_event_name: 'afterMCPExecution',
       conversation_id: conversationId,
+      mcp_server_name: 'newrelic-preflight',
       tool_name: 'nr_observe_report_tokens',
       tool_input: JSON.stringify({ ...report, report_id: reportId }),
       result_json: JSON.stringify({
