@@ -274,6 +274,20 @@ export async function handleReportConversationTokens(
   });
 }
 
+/**
+ * A hook event is only in the aggregator once the processor has polled it, so
+ * an unpolled read would call a conversation unseen right after its hook fired.
+ */
+export function conversationSeenCheck(
+  hooks: Pick<HookEventProcessor, 'poll'>,
+  hasSession: (conversationId: string) => boolean,
+): ConversationReports['hasSeen'] {
+  return (conversationId) => {
+    hooks.poll();
+    return hasSession(conversationId);
+  };
+}
+
 const REPORT_CALL_WAIT = { waitMs: 2000, pollMs: 50 };
 
 function isReportToolName(tool: string): boolean {

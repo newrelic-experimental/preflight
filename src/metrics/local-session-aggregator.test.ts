@@ -637,6 +637,37 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
     expect(agg.costUsd(REAL_ID)).toBe(2.75);
   });
 
+  it('seeds saved token totals with the cost, so a restart sums both', () => {
+    const agg = new LocalSessionAggregator({
+      persistedCostBaseline: () => ({
+        estimatedCostUsd: 0.006,
+        subagentCostUsd: 0,
+        tokensInput: 1000,
+        tokensOutput: 200,
+        tokensThinking: 5,
+        tokensCacheRead: 7,
+        tokensCacheCreation: 3,
+      }),
+    });
+    agg.recordTokenUsage(REAL_ID, {
+      costUsd: 0.003,
+      inputTokens: 10,
+      outputTokens: 200,
+      selfReported: true,
+    });
+    const [first] = summariesOf(agg);
+    expect(first).toMatchObject({
+      tokensInput: 1010,
+      tokensOutput: 400,
+      tokensThinking: 5,
+      tokensCacheRead: 7,
+      tokensCacheCreation: 3,
+    });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.003, inputTokens: 10, selfReported: true });
+    const [second] = summariesOf(agg);
+    expect(second).toMatchObject({ tokensInput: 1020, tokensOutput: 400 });
+  });
+
   it('folds the persisted baseline in additively on the session’s first agentId usage', () => {
     const agg = new LocalSessionAggregator({
       persistedCostBaseline: () => ({

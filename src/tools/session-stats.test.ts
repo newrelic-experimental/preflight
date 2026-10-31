@@ -1172,6 +1172,32 @@ describe('registerPendingTools()', () => {
       expect(await match(args)).toEqual([]);
     });
 
+    it('sees a conversation whose hook events are still unpolled', async () => {
+      const { conversationSeenCheck } = await import('./cost-tools.js');
+      const seen = new Set<string>();
+      const ingesting = new HookEventProcessor({
+        store: new LocalStore(storage),
+        drainAllSessions: true,
+        onRecord: (record) => {
+          if (record.sessionId) seen.add(record.sessionId);
+        },
+      });
+      const hasSeen = conversationSeenCheck(ingesting, (id) => seen.has(id));
+      for (const event of ['beforeShellExecution', 'afterShellExecution']) {
+        processHook(
+          JSON.stringify({
+            hook_event_name: event,
+            conversation_id: 'conv-fresh',
+            command: 'ls',
+          }),
+        );
+      }
+      expect(seen.has('conv-fresh')).toBe(false);
+      expect(hasSeen('conv-fresh')).toBe(true);
+      expect(hasSeen('conv-guess')).toBe(false);
+      ingesting.stop();
+    });
+
     it('lets one hook event answer one call only', async () => {
       cursorPre('conv-1', JSON.stringify(args));
       expect(await match(args)).toEqual(['conv-1']);

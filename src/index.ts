@@ -126,7 +126,11 @@ import {
 } from './storage/session-store.js';
 import type { ToolCallRecord } from './storage/types.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
-import { conversationReportTokensTool, reportCallMatcher } from './tools/cost-tools.js';
+import {
+  conversationReportTokensTool,
+  conversationSeenCheck,
+  reportCallMatcher,
+} from './tools/cost-tools.js';
 import type { ConfigSummary } from './tools/session-stats.js';
 import { registerPendingTools, registerTools } from './tools/session-stats.js';
 import { FeedbackCollector } from './tools/workflow-tools.js';
@@ -3272,7 +3276,9 @@ async function main(): Promise<void> {
               conversationReports: {
                 tool: conversationReportTokensTool(conversationIdField),
                 matchReportCall: reportCallMatcher(eventProcessor),
-                hasSeen: (conversationId) => localSessionAggregator.hasSession(conversationId),
+                hasSeen: conversationSeenCheck(eventProcessor, (id) =>
+                  localSessionAggregator.hasSession(id),
+                ),
                 record: (conversationId, usage, model) => ({
                   costUsd: recordRollupUsage(conversationId, usage, model, { selfReported: true }),
                   conversationTotalCostUsd: localSessionAggregator.costUsd(conversationId),

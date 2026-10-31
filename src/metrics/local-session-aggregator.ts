@@ -66,13 +66,26 @@ export interface ModelBreakdownTally {
 export type PersistedCostBaseline = Pick<
   FullSessionSummary,
   'estimatedCostUsd' | 'subagentCostUsd' | 'costByDayUsd' | 'subagentCostByDayUsd'
->;
+> &
+  Partial<Pick<FullSessionSummary, TokenTotalKey>>;
+
+type TokenTotalKey =
+  'tokensInput' | 'tokensOutput' | 'tokensThinking' | 'tokensCacheRead' | 'tokensCacheCreation';
+
+const TOKEN_TOTAL_KEYS: readonly TokenTotalKey[] = [
+  'tokensInput',
+  'tokensOutput',
+  'tokensThinking',
+  'tokensCacheRead',
+  'tokensCacheCreation',
+];
 
 interface EmittedCost {
   readonly costUsd: number;
   readonly subagentCostUsd: number;
   readonly costByDayUsd: ReadonlyMap<string, number>;
   readonly subagentCostByDayUsd: ReadonlyMap<string, number>;
+  readonly tokens: Readonly<Record<TokenTotalKey, number>>;
 }
 
 export interface LocalSessionAggregatorOptions {
@@ -125,7 +138,7 @@ export interface LocalSessionRollup {
   costBaselineApplied: boolean;
   selfReported: boolean;
   /**
-   * The cost quadruple as of the last `toSummaries()` call, i.e. what this
+   * The cost quadruple and token totals as of the last `toSummaries()` call, i.e. what this
    * aggregator has already offered to the session file. A later baseline fold
    * subtracts it, because the file may be this aggregator's own checkpoint.
    */
@@ -583,6 +596,9 @@ export class LocalSessionAggregator {
     const emitted = rollup.lastEmittedCost;
     rollup.costUsd += excessOver(baseline.estimatedCostUsd ?? 0, emitted?.costUsd);
     rollup.subagentCostUsd += excessOver(baseline.subagentCostUsd, emitted?.subagentCostUsd);
+    for (const key of TOKEN_TOTAL_KEYS) {
+      rollup[key] += excessOver(baseline[key] ?? 0, emitted?.tokens[key]);
+    }
     for (const [day, usd] of Object.entries(baseline.costByDayUsd ?? {})) {
       rollup.costByDayUsd.set(
         day,
@@ -645,6 +661,13 @@ export class LocalSessionAggregator {
         subagentCostUsd: rollup.subagentCostUsd,
         costByDayUsd: new Map(rollup.costByDayUsd),
         subagentCostByDayUsd: new Map(rollup.subagentCostByDayUsd),
+        tokens: {
+          tokensInput: rollup.tokensInput,
+          tokensOutput: rollup.tokensOutput,
+          tokensThinking: rollup.tokensThinking,
+          tokensCacheRead: rollup.tokensCacheRead,
+          tokensCacheCreation: rollup.tokensCacheCreation,
+        },
       };
       out.push({
         sessionId: rollup.sessionId,
