@@ -2480,6 +2480,7 @@ async function main(): Promise<void> {
           costUsd: costTracker.priceUsage(usage, report.model).totalUsd,
           model: report.model,
           ...(report.platform !== undefined && { platform: report.platform }),
+          selfReported: true,
         });
       },
       // Feed each Agent-tool ToolCallRecord into the workflow tracker
@@ -2697,15 +2698,23 @@ async function main(): Promise<void> {
         if (driftRecord) {
           instructionDriftTracker.recordSessionOutcome(driftRecord);
         }
+        const store = sessionStore;
         const developer = config.developer ?? 'unknown';
-        const observedRollups = () =>
-          localSessionAggregator.toSummaries({
+        const saveObservedRollups = (outcome: string, only?: ReadonlySet<string>): number => {
+          const rollups = localSessionAggregator.toSummaries({
             developer,
             platform: eventProcessor?.activePlatform,
-            outcome: opts?.periodic ? 'in progress' : 'completed',
+            outcome,
             toolSelectionScorer,
             repoResolver: repoNameResolver,
+            only,
           });
+          for (const rollup of rollups) {
+            store.saveSession(rollup as unknown as Parameters<typeof store.saveSession>[0]);
+            unsavedSelfReportIds.delete(rollup.sessionId as string);
+          }
+          return rollups.length;
+        };
         // Skip persisting the synthetic session JSON written by --local /
         // proxy modes and the provisional pending-<ts> id. These IDs are
         // MCP-internal bookkeeping; they don't correspond to a real Claude
@@ -2718,29 +2727,20 @@ async function main(): Promise<void> {
           // draining other sessions' buffers destructively — so if it returns
           // here without writing them, those events are simply lost. Persist
           // each real session it observed instead.
-          const rollups = observedRollups();
-          for (const rollup of rollups) {
-            sessionStore.saveSession(
-              rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
-            );
-          }
+          const persistedSessions = saveObservedRollups(
+            opts?.periodic ? 'in progress' : 'completed',
+          );
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
-              persistedSessions: rollups.length,
+              persistedSessions,
             });
           }
           return;
         }
-        const unsaved = unsavedSelfReportIds.size > 0 ? observedRollups() : [];
-        for (const rollup of unsaved) {
-          const id = rollup.sessionId as string;
-          if (!unsavedSelfReportIds.has(id)) continue;
-          sessionStore.saveSession(
-            rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
-          );
-          unsavedSelfReportIds.delete(id);
-        }
+        // Only another conversation's own engine knows when it ends, so these
+        // stay in progress; this session's own summary below sets its outcome.
+        if (unsavedSelfReportIds.size > 0) saveObservedRollups('in progress', unsavedSelfReportIds);
         sessionStore.saveSession(summary);
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
         // any real work), so calling it on every periodic checkpoint too is
