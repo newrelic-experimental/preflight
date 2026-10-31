@@ -1397,7 +1397,7 @@ describe('HookEventProcessor', () => {
     const selfReport = {
       mode: 'self_report',
       tool: 'nr_observe_report_tokens',
-      timestamp: 5000,
+      timestamp: Date.now(),
       sessionId: 'conv-1',
       reportId: 'r-12345678',
       model: 'claude-sonnet-4-6',
@@ -1413,12 +1413,28 @@ describe('HookEventProcessor', () => {
       const onTokenEvent = jest.fn();
       const onSelfReport = jest.fn();
       const processor = new HookEventProcessor({ store, onRecord, onTokenEvent, onSelfReport });
+      const reusedId = { ...selfReport, inputTokens: 11 };
 
-      processor.processEvents([selfReport, selfReport]);
+      processor.processEvents([selfReport, selfReport, reusedId]);
 
       expect(onTokenEvent).not.toHaveBeenCalled();
-      expect(onSelfReport).toHaveBeenCalledTimes(1);
-      expect(onSelfReport).toHaveBeenCalledWith(selfReport);
+      expect(onSelfReport.mock.calls).toEqual([[selfReport], [reusedId]]);
+    });
+
+    it('drops a self-report with a bad model and dates an implausible timestamp at drain time', () => {
+      const onSelfReport = jest.fn<(e: { timestamp: number }) => void>();
+      const processor = new HookEventProcessor({ store, onRecord, onSelfReport });
+      const drainedAt = Date.now();
+
+      processor.processEvents([
+        { ...selfReport, model: 'bad model!' },
+        { ...selfReport, reportId: 'r-future-1', timestamp: 1e15 },
+        { ...selfReport, reportId: 'r-not-num1', timestamp: 'soon' as unknown as number },
+      ]);
+
+      const timestamps = onSelfReport.mock.calls.map(([e]) => e.timestamp);
+      expect(timestamps).toHaveLength(2);
+      for (const t of timestamps) expect(t).toBeGreaterThanOrEqual(drainedAt);
     });
 
     it('hands a self-report on again after its callback threw, with counts clamped', () => {
