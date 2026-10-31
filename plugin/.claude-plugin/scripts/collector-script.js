@@ -92,7 +92,7 @@ var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 var PREFIXED_TOOL_RE = new RegExp(`(?:^|[_:./-])${REPORT_TOKENS_TOOL_NAME}$`);
 var REQUIRED_COUNTS = ["input_tokens", "output_tokens"];
 var OPTIONAL_COUNTS = ["thinking_tokens", "cache_read_tokens", "cache_creation_tokens"];
-var SEEN_TAIL_BYTES = 64 * 1024;
+var RECENT_REPORT_IDS_BYTES = 64 * 1024;
 function clampToken(v) {
   if (!Number.isFinite(v)) return 0;
   return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
@@ -154,13 +154,7 @@ function selfReportLine(report, conversationId, timestamp, platform) {
     tool: REPORT_TOKENS_TOOL_NAME,
     timestamp,
     sessionId: conversationId,
-    reportId: report.reportId,
-    model: report.model,
-    inputTokens: report.inputTokens,
-    outputTokens: report.outputTokens,
-    thinkingTokens: report.thinkingTokens,
-    cacheReadTokens: report.cacheReadTokens,
-    cacheCreationTokens: report.cacheCreationTokens,
+    ...report,
     ...platform !== void 0 && { platform }
   };
 }
@@ -180,10 +174,11 @@ function hookSelfReportLine(toolName, args, result, conversationId, timestamp, p
   if (!parsed.ok || !hookAcknowledged(result, parsed.report.reportId)) return void 0;
   return selfReportLine(parsed.report, conversationId, timestamp, platform);
 }
-function seenReportsPath(storageDir, conversationId) {
-  return resolve(storageDir, "self-reports", `${conversationId}.ids`);
+function seenReportsPath(storageDir, line) {
+  return resolve(storageDir, "self-reports", `${line.sessionId}.ids`);
 }
-function hasSeenReport(path, reportId) {
+function hasSeenReport(storageDir, line) {
+  const path = seenReportsPath(storageDir, line);
   let fd;
   try {
     fd = openSync(path, "r");
@@ -192,17 +187,18 @@ function hasSeenReport(path, reportId) {
   }
   try {
     const size = fstatSync(fd).size;
-    const length = Math.min(size, SEEN_TAIL_BYTES);
+    const length = Math.min(size, RECENT_REPORT_IDS_BYTES);
     const tail = Buffer.alloc(length);
     readSync(fd, tail, 0, length, size - length);
-    return tail.toString("utf-8").split("\n").includes(reportId);
+    return tail.toString("utf-8").split("\n").includes(line.reportId);
   } finally {
     closeSync(fd);
   }
 }
-function markReportSeen(path, reportId) {
+function markReportSeen(storageDir, line) {
+  const path = seenReportsPath(storageDir, line);
   mkdirSync(resolve(path, ".."), { recursive: true, mode: 448 });
-  appendFileSync(path, `${reportId}
+  appendFileSync(path, `${line.reportId}
 `, { mode: 384 });
 }
 
@@ -967,12 +963,9 @@ function processHook(raw, cliEvent) {
     if (!existsSync(bufferDir)) {
       mkdirSync2(bufferDir, { recursive: true, mode: 448 });
     }
-    const seenPath = selfReport && seenReportsPath(
-      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR,
-      selfReport.sessionId
-    );
-    const newReport = selfReport && seenPath && !hasSeenReport(seenPath, selfReport.reportId);
-    const line = JSON.stringify(event) + "\n" + (newReport ? JSON.stringify(selfReport) + "\n" : "");
+    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    const newReport = selfReport && !hasSeenReport(storageDir, selfReport) ? selfReport : void 0;
+    const line = JSON.stringify(event) + "\n" + (newReport ? JSON.stringify(newReport) + "\n" : "");
     const fd = openSync2(
       bufferPath,
       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND,
@@ -983,7 +976,7 @@ function processHook(raw, cliEvent) {
     } finally {
       closeSync2(fd);
     }
-    if (newReport) markReportSeen(seenPath, selfReport.reportId);
+    if (newReport) markReportSeen(storageDir, newReport);
   } catch {
   }
   if (isGeminiCli) {

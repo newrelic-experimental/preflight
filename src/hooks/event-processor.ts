@@ -74,7 +74,6 @@ export interface HookEventProcessorOptions {
   drainAllSessions?: boolean;
   onRecord: (record: ToolCallRecord) => void;
   onTokenEvent?: (event: TokenEvent) => void;
-  /** Fires once per conversation and `reportId` for every `mode: 'self_report'` line. */
   onSelfReport?: (event: SelfReportHookEvent) => void;
   /**
    * Fires for every paired ToolCallRecord whose `toolName === 'Agent'` —

@@ -489,7 +489,6 @@ export class LocalSessionAggregator {
        * trackers. Absent for parent-transcript token events.
        */
       agentId?: string;
-      /** The report's own platform, adopted like a tool call's when the rollup has none. */
       platform?: string;
     },
   ): void {

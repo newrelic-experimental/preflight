@@ -2464,9 +2464,6 @@ async function main(): Promise<void> {
           });
         }
       },
-      // A self-report is the agent's own count for a conversation, not a
-      // transcript turn, so it never replaces this process's estimates or opens
-      // a turn: it prices into that conversation's rollup only.
       onSelfReport: (report) => {
         if (!costTracker) return;
         const usage = {

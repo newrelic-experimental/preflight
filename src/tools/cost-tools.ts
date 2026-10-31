@@ -107,8 +107,8 @@ export function pendingReportTokensTool(options: PendingReportTokensOptions): {
 } {
   const { hook } = options;
   const notDetected =
-    `No ${hook.event} hook running preflight-collector was found in ~/${hook.userConfig} or ${hook.projectConfig}, ` +
-    `so this report will not be saved. Add {"command": "preflight-collector"} under hooks.${hook.event} in one of those files, then restart the client.`;
+    `No ${hook.postMcpEvent} hook running preflight-collector was found in ~/${hook.homeHooksFile} or ${hook.projectHooksFile}, ` +
+    `so this report will not be saved. Add {"command": "preflight-collector"} under hooks.${hook.postMcpEvent} in one of those files, then restart the client.`;
   const definition = {
     ...REPORT_TOKENS_TOOL,
     description:
@@ -136,8 +136,8 @@ export function pendingReportTokensTool(options: PendingReportTokensOptions): {
     if (!parsed.ok) return reply({ error: 'invalid_token_report', message: parsed.reason }, true);
     const { report } = parsed;
     const hooksDetected =
-      runsCollector(resolve(options.homeDir, hook.userConfig), hook.event) ||
-      runsCollector(resolve(options.projectDir, hook.projectConfig), hook.event);
+      runsCollector(resolve(options.homeDir, hook.homeHooksFile), hook.postMcpEvent) ||
+      runsCollector(resolve(options.projectDir, hook.projectHooksFile), hook.postMcpEvent);
     return reply({
       accepted: true,
       report_id: report.reportId,

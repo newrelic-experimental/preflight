@@ -1036,7 +1036,7 @@ describe('registerPendingTools()', () => {
       ],
     ])('detects the collector in the %s hooks file', async (_label, hook, pathIn, root) => {
       writeHooks(pathIn(root === 'home' ? homeDir : projectDir), {
-        [hook.event]: [{ command: 'MCP_CLIENT=x /usr/local/bin/preflight-collector' }],
+        [hook.postMcpEvent]: [{ command: 'MCP_CLIENT=x /usr/local/bin/preflight-collector' }],
       });
       await connect(hook);
 

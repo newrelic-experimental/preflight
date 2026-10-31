@@ -30,12 +30,7 @@ import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
-import {
-  hasSeenReport,
-  hookSelfReportLine,
-  markReportSeen,
-  seenReportsPath,
-} from './self-report.js';
+import { hasSeenReport, hookSelfReportLine, markReportSeen } from './self-report.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -1375,15 +1370,9 @@ function processHook(raw: string, cliEvent?: string): void {
       mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
     }
 
-    const seenPath =
-      selfReport &&
-      seenReportsPath(
-        process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR,
-        selfReport.sessionId,
-      );
-    const newReport = selfReport && seenPath && !hasSeenReport(seenPath, selfReport.reportId);
-    const line =
-      JSON.stringify(event) + '\n' + (newReport ? JSON.stringify(selfReport) + '\n' : '');
+    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    const newReport = selfReport && !hasSeenReport(storageDir, selfReport) ? selfReport : undefined;
+    const line = JSON.stringify(event) + '\n' + (newReport ? JSON.stringify(newReport) + '\n' : '');
 
     const fd = openSync(
       bufferPath,
@@ -1395,7 +1384,7 @@ function processHook(raw: string, cliEvent?: string): void {
     } finally {
       closeSync(fd);
     }
-    if (newReport) markReportSeen(seenPath, selfReport.reportId);
+    if (newReport) markReportSeen(storageDir, newReport);
   } catch {
     // Silent failure — never block Claude Code
   }

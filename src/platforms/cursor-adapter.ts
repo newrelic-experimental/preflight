@@ -70,11 +70,11 @@ export class CursorAdapter implements PlatformAdapter {
     // Cursor's hooks send conversation_id, never session_id, so they write no breadcrumb.
     sessionBreadcrumbWriters: [] as const,
     // afterMCPExecution carries conversation_id, tool_input and result_json
-    // (https://cursor.com/docs/agent/hooks). Hooks files per getHookInstallInstructions.
+    // (https://cursor.com/docs/agent/hooks).
     tokenReportHook: {
-      event: 'afterMCPExecution',
-      userConfig: '.cursor/hooks.json',
-      projectConfig: '.cursor/hooks.json',
+      postMcpEvent: 'afterMCPExecution',
+      homeHooksFile: '.cursor/hooks.json',
+      projectHooksFile: '.cursor/hooks.json',
     },
   };
 

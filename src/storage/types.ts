@@ -80,11 +80,6 @@ export interface PermissionDeniedHookEvent extends HookEventBase {
   readonly deniedReason?: string;
 }
 
-/**
- * An agent's own `nr_observe_report_tokens` report, written by the post-MCP
- * hook into the buffer of the conversation that made the call. It is not a
- * transcript turn, so it prices into that conversation's rollup only.
- */
 export interface SelfReportHookEvent extends HookEventBase {
   readonly mode: 'self_report';
   readonly sessionId: string;

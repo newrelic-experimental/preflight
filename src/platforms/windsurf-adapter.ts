@@ -52,9 +52,9 @@ export class WindsurfAdapter implements PlatformAdapter {
     // ~/.codeium/windsurf/hooks.json and .windsurf/hooks.json
     // (https://docs.windsurf.com/de/windsurf/cascade/hooks).
     tokenReportHook: {
-      event: 'post_mcp_tool_use',
-      userConfig: '.codeium/windsurf/hooks.json',
-      projectConfig: '.windsurf/hooks.json',
+      postMcpEvent: 'post_mcp_tool_use',
+      homeHooksFile: '.codeium/windsurf/hooks.json',
+      projectHooksFile: '.windsurf/hooks.json',
     },
   };
 

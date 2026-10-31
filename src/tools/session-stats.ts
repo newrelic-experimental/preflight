@@ -609,13 +609,6 @@ function registerCoreTools(deps: ToolRegistrationOptions): RegisteredToolSet {
 // Registration
 // ---------------------------------------------------------------------------
 
-/**
- * Pre-resolution stand-in: registers `tools/list` with the health and
- * install-hooks tools, the config tool when a config summary is given, and
- * `nr_observe_report_tokens` on platforms whose post-MCP hook records it. A
- * `tools/call` for anything else returns a structured "session not yet
- * resolved" error. Replaced by `registerTools()` once the session id is known.
- */
 export function registerPendingTools(
   server: Server,
   options: {
