@@ -132,6 +132,7 @@ export interface LocalSessionRollup {
   tokensInput: number;
   tokensOutput: number;
   tokensThinking: number;
+  selfReportCount: number;
   tokensCacheRead: number;
   tokensCacheCreation: number;
   models: Set<string>;
@@ -371,6 +372,7 @@ export class LocalSessionAggregator {
         tokensInput: 0,
         tokensOutput: 0,
         tokensThinking: 0,
+        selfReportCount: 0,
         tokensCacheRead: 0,
         tokensCacheCreation: 0,
         models: new Set(),
@@ -490,6 +492,7 @@ export class LocalSessionAggregator {
        */
       agentId?: string;
       platform?: string;
+      selfReported?: boolean;
     },
   ): void {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
@@ -516,6 +519,7 @@ export class LocalSessionAggregator {
     rollup.tokensInput += usage.inputTokens ?? 0;
     rollup.tokensOutput += usage.outputTokens ?? 0;
     if (usage.agentId === undefined) rollup.tokensThinking += usage.thinkingTokens ?? 0;
+    if (usage.selfReported) rollup.selfReportCount += 1;
     rollup.tokensCacheRead += usage.cacheReadTokens ?? 0;
     rollup.tokensCacheCreation += usage.cacheCreationTokens ?? 0;
     if (usage.model) {
@@ -619,9 +623,12 @@ export class LocalSessionAggregator {
     outcome: string;
     repoResolver: RepoNameResolver;
     toolSelectionScorer: ToolSelectionScorer;
+    /** Summarize only these sessions, so no other rollup's lastEmittedCost moves. */
+    only?: ReadonlySet<string>;
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
+      if (context.only && !context.only.has(rollup.sessionId)) continue;
       if (!hasAttributableActivity(rollup)) continue;
       const models = [...rollup.models];
       rollup.lastEmittedCost = {
@@ -683,6 +690,7 @@ export class LocalSessionAggregator {
         tokensInput: rollup.tokensInput,
         tokensOutput: rollup.tokensOutput,
         tokensThinking: rollup.tokensThinking,
+        ...(rollup.selfReportCount > 0 && { selfReportCount: rollup.selfReportCount }),
         tokensCacheRead: rollup.tokensCacheRead,
         tokensCacheCreation: rollup.tokensCacheCreation,
         cacheSavingsUsd: 0,

@@ -609,6 +609,40 @@ describe('LocalSessionAggregator subagent cost', () => {
     expect(summary?.tokensThinking).toBe(0);
   });
 
+  it('summarizes a rollup that holds only a self-report', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, {
+      costUsd: 1,
+      timestamp: 1000,
+      inputTokens: 10,
+      selfReported: true,
+    });
+
+    expect(summariesOf(agg)).toMatchObject([{ sessionId: REAL_ID, selfReportCount: 1 }]);
+  });
+
+  it('summarizes only the rollups asked for, so an unsaved one still folds its whole baseline', () => {
+    const agg = new LocalSessionAggregator({
+      persistedCostBaseline: (id) =>
+        id === 'conv-b' ? { estimatedCostUsd: 5, subagentCostUsd: 0 } : null,
+    });
+    for (const id of ['conv-a', 'conv-b']) {
+      agg.recordToolCall({ sessionId: id, toolName: 'read_file', timestamp: 1000 });
+      agg.recordTokenUsage(id, { costUsd: 1, timestamp: 1000 });
+    }
+    const saved = agg.toSummaries({
+      developer: 'tester',
+      outcome: 'in progress',
+      repoResolver: new StubRepoResolver(),
+      toolSelectionScorer: new ToolSelectionScorer(),
+      only: new Set(['conv-a']),
+    });
+    agg.recordTokenUsage('conv-b', { costUsd: 2, timestamp: 1000, agentId: 'agent-1' });
+
+    expect(saved.map((s) => s.sessionId)).toEqual(['conv-a']);
+    expect(summariesOf(agg).find((s) => s.sessionId === 'conv-b')?.estimatedCostUsd).toBe(8);
+  });
+
   it('omits costByDayUsd (undefined, not {}) for a rollup with only tool calls and no token usage', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });

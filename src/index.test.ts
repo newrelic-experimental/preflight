@@ -6,6 +6,7 @@ import {
   rmSync,
   existsSync,
   readdirSync,
+  statSync,
   utimesSync,
   realpathSync,
   readFileSync,
@@ -1214,6 +1215,7 @@ describe('stdio integration', () => {
     const reportHook = (conversationId: string, reportId: string) => ({
       hook_event_name: 'afterMCPExecution',
       conversation_id: conversationId,
+      mcp_server_name: 'newrelic-preflight',
       tool_name: 'nr_observe_report_tokens',
       tool_input: JSON.stringify({ ...report, report_id: reportId }),
       result_json: JSON.stringify({
@@ -1339,11 +1341,11 @@ describe('stdio integration', () => {
     }, 40000);
 
     it.each([
-      ['another session', 'real-owner-session'],
-      ['the reporting conversation', 'conv-adopt'],
+      ['another session', 'in progress', 'real-owner-session'],
+      ['the reporting conversation', 'completed', 'conv-adopt'],
     ])(
-      'a pending engine that drains a report and then adopts %s still saves the report',
-      async (_label, adoptedId) => {
+      'a pending engine that drains a report and then adopts %s saves the report with outcome %s',
+      async (_label, outcome, adoptedId) => {
         const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
         const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
         const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-adopt-report-storage-'));
@@ -1379,7 +1381,7 @@ describe('stdio integration', () => {
             () => savedSession(tmpStoragePath, 'conv-adopt'),
             (v) => v !== null,
           );
-          expect(saved).toMatchObject({ tokensInput: 1000, tokensThinking: 100 });
+          expect(saved).toMatchObject({ tokensInput: 1000, tokensThinking: 100, outcome });
         } finally {
           rmSync(tmpStoragePath, { recursive: true, force: true });
           rmSync(tmpHome, { recursive: true, force: true });
@@ -1387,6 +1389,51 @@ describe('stdio integration', () => {
       },
       40000,
     );
+
+    it('a report saved while pending is not saved again after the engine adopts another session', async () => {
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+      const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-resave-report-storage-'));
+      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-resave-report-home-'));
+      const env = isolatedEnv({
+        HOME: tmpHome,
+        MCP_CLIENT: 'cursor',
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '2000',
+      });
+      const sessionsDir = resolve(tmpStoragePath, 'sessions');
+      const savedAt = () => {
+        const name = readdirSync(sessionsDir).find((f) => f.includes('conv-resave'));
+        return name ? statSync(resolve(sessionsDir, name)).mtimeMs : 0;
+      };
+
+      const client = new Client({ name: 'test-client', version: '1.0.0' });
+      try {
+        const args = [resolve(distDir, 'index.js'), '--stdio'];
+        await client.connect(new StdioClientTransport({ command: 'node', args, env }));
+        runHook(env, reportHook('conv-resave', 'r-resave-001'));
+        await until(
+          () => savedSession(tmpStoragePath, 'conv-resave'),
+          (v) => v !== null,
+        );
+
+        const breadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+        mkdirSync(breadcrumbDir, { recursive: true });
+        writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), 'real-owner-session');
+        const toolNames = async () => (await client.listTools()).tools.map((t) => t.name);
+        await until(toolNames, (n) => n.includes('nr_observe_get_session_stats'));
+        const adoptedAt = savedAt();
+        await client.close();
+        await new Promise((r) => setTimeout(r, 1500));
+
+        expect(savedAt()).toBe(adoptedAt);
+      } finally {
+        rmSync(tmpStoragePath, { recursive: true, force: true });
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    }, 40000);
   });
 
   describe('nr_observe_report_tokens while the engine is pending', () => {

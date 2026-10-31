@@ -178,6 +178,8 @@ export interface FullSessionSummary extends SessionSummary {
   readonly tokensThinking: number;
   readonly tokensCacheRead: number;
   readonly tokensCacheCreation: number;
+  /** Hook-recorded self-reports folded in (#978). Absent when there are none. */
+  readonly selfReportCount?: number;
   readonly cacheSavingsUsd: number;
   readonly efficiencyScore: number | null;
   /**
@@ -271,6 +273,7 @@ export interface AttributableActivity {
   readonly toolCallCount?: number;
   readonly subagentCostUsd?: number;
   readonly timeline?: ReadonlyArray<unknown>;
+  readonly selfReportCount?: number;
 }
 
 /**
@@ -289,6 +292,9 @@ export interface AttributableActivity {
  * there) yet real dollars. Keying only on `toolCallCount` discards exactly the
  * sessions a `--local` watcher exists to rescue.
  *
+ * A hook-recorded self-report counts for the same reason: its hook tied real
+ * spend to this conversation, even when this process saw none of its tool calls.
+ *
  * A genuinely empty summary — no tool calls, no subagent dollars, no timeline
  * — is still false, which is what keeps the empty-clobber guard intact.
  */
@@ -296,7 +302,8 @@ export function hasAttributableActivity(s: AttributableActivity): boolean {
   return (
     (s.toolCallCount ?? 0) > 0 ||
     (s.subagentCostUsd ?? 0) > 0 ||
-    (Array.isArray(s.timeline) && s.timeline.length > 0)
+    (Array.isArray(s.timeline) && s.timeline.length > 0) ||
+    (s.selfReportCount ?? 0) > 0
   );
 }
 

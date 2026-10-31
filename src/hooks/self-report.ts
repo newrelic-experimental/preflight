@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { closeSync, constants, mkdirSync, openSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { SelfReportHookEvent } from '../storage/types.js';
@@ -9,7 +10,8 @@ const MAX_TOKENS = 10_000_000;
 const REPORT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
 export const MODEL_RE = /^[a-zA-Z0-9._:-]{1,256}$/;
 export const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
-const PREFIXED_TOOL_RE = new RegExp(`(?:^|[_:./-])${REPORT_TOKENS_TOOL_NAME}$`);
+// Server keys the installer writes ('newrelic-preflight') or replaced ('preflight', 'nr-ai-observability').
+const PREFLIGHT_SERVER_RE = /preflight|nr-ai-observability/i;
 const REQUIRED_COUNTS = ['input_tokens', 'output_tokens'] as const;
 const OPTIONAL_COUNTS = ['thinking_tokens', 'cache_read_tokens', 'cache_creation_tokens'] as const;
 type CountField = (typeof REQUIRED_COUNTS)[number] | (typeof OPTIONAL_COUNTS)[number];
@@ -24,6 +26,14 @@ interface SelfReport {
   readonly cacheCreationTokens: number;
 }
 
+export interface HookReportCall {
+  readonly tool: unknown;
+  readonly server: unknown;
+  readonly args: unknown;
+  readonly result: unknown;
+  readonly platform: 'cursor' | 'windsurf';
+}
+
 type ParsedSelfReport =
   | { readonly ok: true; readonly report: SelfReport }
   | { readonly ok: false; readonly reason: string };
@@ -33,8 +43,20 @@ export function clampToken(v: number): number {
   return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
 }
 
-function isReportTokensTool(name: unknown): boolean {
-  return typeof name === 'string' && PREFIXED_TOOL_RE.test(name);
+function isPreflightReportTool(call: HookReportCall): boolean {
+  return (
+    call.tool === REPORT_TOKENS_TOOL_NAME &&
+    typeof call.server === 'string' &&
+    PREFLIGHT_SERVER_RE.test(call.server)
+  );
+}
+
+export function reportKey(r: SelfReport): string {
+  const counts = [r.model, r.inputTokens, r.outputTokens, r.thinkingTokens, r.cacheReadTokens];
+  const digest = createHash('sha256')
+    .update(JSON.stringify([...counts, r.cacheCreationTokens]))
+    .digest('hex');
+  return `${r.reportId}-${digest.slice(0, 16)}`;
 }
 
 function isConversationId(id: unknown): id is string {
@@ -99,7 +121,7 @@ function selfReportLine(
   report: SelfReport,
   conversationId: string,
   timestamp: number,
-  platform: string | undefined,
+  platform: string,
 ): SelfReportHookEvent {
   return {
     mode: 'self_report',
@@ -107,7 +129,7 @@ function selfReportLine(
     timestamp,
     sessionId: conversationId,
     ...report,
-    ...(platform !== undefined && { platform }),
+    platform,
   };
 }
 
@@ -126,21 +148,18 @@ function hookAcknowledged(result: unknown, reportId: string): boolean {
 }
 
 export function hookSelfReportLine(
-  toolName: unknown,
-  args: unknown,
-  result: unknown,
+  call: HookReportCall,
   conversationId: unknown,
   timestamp: number,
-  platform: string | undefined,
 ): SelfReportHookEvent | undefined {
-  if (!isReportTokensTool(toolName) || !isConversationId(conversationId)) return undefined;
-  const parsed = parseSelfReport(args);
-  if (!parsed.ok || !hookAcknowledged(result, parsed.report.reportId)) return undefined;
-  return selfReportLine(parsed.report, conversationId, timestamp, platform);
+  if (!isPreflightReportTool(call) || !isConversationId(conversationId)) return undefined;
+  const parsed = parseSelfReport(call.args);
+  if (!parsed.ok || !hookAcknowledged(call.result, parsed.report.reportId)) return undefined;
+  return selfReportLine(parsed.report, conversationId, timestamp, call.platform);
 }
 
 function claimPath(storageDir: string, line: SelfReportHookEvent): string {
-  return resolve(storageDir, 'self-reports', line.sessionId, line.reportId);
+  return resolve(storageDir, 'self-reports', line.sessionId, reportKey(line));
 }
 
 export function claimReport(storageDir: string, line: SelfReportHookEvent): boolean {
