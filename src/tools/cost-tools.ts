@@ -9,8 +9,6 @@
  *   - `nr_observe_get_prompt_cache_health` — cache hit rate and recommendation
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { z } from 'zod';
 
 import type { CostTracker } from '../metrics/cost-tracker.js';
@@ -22,15 +20,13 @@ import { buildCostForecastFromInputs } from '../metrics/cost-forecast.js';
 import { localDateKey } from '../lib/date.js';
 import { resolvePricing } from '../metrics/pricing-overlay.js';
 import type { TokenUsage } from '../shared/index.js';
-import { clampToken, parseSelfReport, REPORT_TOKENS_TOOL_NAME } from '../hooks/self-report.js';
-import type { TokenReportHook } from '../platforms/types.js';
+import { clampToken, REPORT_TOKENS_TOOL_NAME } from '../hooks/self-report.js';
 import {
   errorResult,
   requireTracker,
   requireAvailable,
   buildToolSet,
   type RegisteredToolSet,
-  type ToolCallResult,
 } from './tool-registry.js';
 
 // ---------------------------------------------------------------------------
@@ -75,80 +71,6 @@ export const REPORT_TOKENS_TOOL = {
   },
   annotations: { readOnlyHint: false },
 };
-
-export interface PendingReportTokensOptions {
-  readonly hook: TokenReportHook;
-  readonly homeDir: string;
-  readonly projectDir: string;
-}
-
-const RECORDED_BY_HOOK =
-  "Preflight records this report from its post-MCP hook event for this call, in the conversation that made it, after the call returns. Without Preflight's hooks installed for this client it is not saved.";
-const COLLECTOR_COMMAND_RE = /preflight-collector|collector-script\.js/;
-
-function runsCollector(path: string, event: string): boolean {
-  try {
-    const config = JSON.parse(readFileSync(path, 'utf-8')) as { hooks?: Record<string, unknown> };
-    const entries = config.hooks?.[event];
-    return (
-      Array.isArray(entries) &&
-      entries.some((entry: { command?: unknown } | null) =>
-        COLLECTOR_COMMAND_RE.test(String(entry?.command ?? '')),
-      )
-    );
-  } catch {
-    return false;
-  }
-}
-
-export function pendingReportTokensTool(options: PendingReportTokensOptions): {
-  readonly definition: typeof REPORT_TOKENS_TOOL;
-  readonly handle: (args: unknown) => ToolCallResult;
-} {
-  const { hook } = options;
-  const notDetected =
-    `No ${hook.postMcpEvent} hook running preflight-collector was found in ~/${hook.homeHooksFile} or ${hook.projectHooksFile}, ` +
-    `so this report will not be saved. Add {"command": "preflight-collector"} under hooks.${hook.postMcpEvent} in one of those files, then restart the client.`;
-  const definition = {
-    ...REPORT_TOKENS_TOOL,
-    description:
-      REPORT_TOKENS_TOOL.description +
-      ' Set report_id to a new random value (such as a UUID) on every call, and keep it when retrying: Preflight saves each report_id once per conversation.' +
-      " Preflight's hook for this call records the report in this conversation.",
-    inputSchema: {
-      ...REPORT_TOKENS_TOOL.inputSchema,
-      properties: {
-        ...REPORT_TOKENS_TOOL.inputSchema.properties,
-        report_id: {
-          type: 'string',
-          description: 'A new random id for this report, 8 to 128 of [A-Za-z0-9_-]',
-        },
-      },
-      required: [...REPORT_TOKENS_TOOL.inputSchema.required, 'report_id'],
-    },
-  };
-  const reply = (body: Record<string, unknown>, isError?: true): ToolCallResult => ({
-    content: [{ type: 'text', text: JSON.stringify(body) }],
-    ...(isError && { isError }),
-  });
-  const handle = (args: unknown): ToolCallResult => {
-    const parsed = parseSelfReport(args);
-    if (!parsed.ok) return reply({ error: 'invalid_token_report', message: parsed.reason }, true);
-    const { report } = parsed;
-    const hooksDetected =
-      runsCollector(resolve(options.homeDir, hook.homeHooksFile), hook.postMcpEvent) ||
-      runsCollector(resolve(options.projectDir, hook.projectHooksFile), hook.postMcpEvent);
-    return reply({
-      accepted: true,
-      report_id: report.reportId,
-      model: report.model,
-      recorded_by: 'hook',
-      hooks_detected: hooksDetected,
-      message: hooksDetected ? RECORDED_BY_HOOK : notDetected,
-    });
-  };
-  return { definition, handle };
-}
 
 // ---------------------------------------------------------------------------
 // Handlers

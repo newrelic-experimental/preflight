@@ -219,14 +219,6 @@ Self-report token usage for cost tracking. Called by Claude Code to report its o
 }
 ```
 
-**While a Cursor or Windsurf engine is pending.** One engine serves every chat in the window, so it saves a report to the conversation that made it instead. The tool also takes a required `report_id`, a new random value (such as a UUID) per call. A retried call keeps its `report_id`, and Preflight saves each `report_id` once per conversation.
-
-- The tool replies `{"accepted": true, "recorded_by": "hook", "hooks_detected": ..., ...}`. Preflight's `afterMCPExecution` (Cursor) or `post_mcp_tool_use` (Windsurf) hook then sees this reply and the call's arguments, and writes the report into that conversation's hook buffer. It writes nothing for an error result, another `report_id`, or a synthetic or unknown conversation id.
-- `hooks_detected` is `false` when neither the user-level hooks file (`~/.cursor/hooks.json`, `~/.codeium/windsurf/hooks.json`) nor the project's (`.cursor/hooks.json`, `.windsurf/hooks.json`) runs `preflight-collector` for that event. The message then says the report will not be saved until the hook is added. The check is best effort, and the hook still saves the report if it runs from a file the check does not read.
-- Whichever Preflight process drains the buffer prices the report and saves it with that conversation's session at its next checkpoint. It does not count toward that process's own session cost. The reply does not claim the cost is saved yet.
-- A malformed report returns `invalid_token_report`.
-- Antigravity does not list the tool while pending yet (#1027).
-
 **Data source:** `CostTracker`
 
 **How it works:**

@@ -1991,6 +1991,16 @@ describe('collector-script', () => {
       ['a lookalike tool name', 'xnr_observe_report_tokens', hookReply],
       ['no result at all', 'nr_observe_report_tokens', undefined],
       [
+        "a pending engine's reply for a tool it does not list",
+        'nr_observe_report_tokens',
+        JSON.stringify({
+          isError: true,
+          content: [
+            { type: 'text', text: JSON.stringify({ error: 'session_id not yet resolved' }) },
+          ],
+        }),
+      ],
+      [
         'an error result that quotes the reply',
         'nr_observe_report_tokens',
         JSON.stringify({ isError: true, content: [{ type: 'text', text: hookReply }] }),

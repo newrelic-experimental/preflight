@@ -4,7 +4,6 @@ import 'dotenv/config';
 import { Command, Option } from 'commander';
 import { readFileSync, realpathSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
-import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { AlertLog } from './alerts/alert-log.js';
 import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
@@ -3250,7 +3249,6 @@ async function main(): Promise<void> {
         // respond to health/config requests while the real session ID resolves.
         const pendingConfigFilePath =
           options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
-        const pendingAdapter = createDefaultRegistry().getActive();
         registerPendingTools(mcpServer!.server, {
           sessionStartMs: Date.now(),
           developer: config.developer,
@@ -3272,16 +3270,9 @@ async function main(): Promise<void> {
           // A Claude Code session with no hooks never resolves, so this is
           // where the opt-in install has to work. Other stdio clients have no
           // Claude Code hooks to install or report missing.
-          ...(pendingAdapter instanceof ClaudeCodeAdapter && {
+          ...(createDefaultRegistry().getActive() instanceof ClaudeCodeAdapter && {
             hooksInstalledFn: () => areHooksInstalledAtAnyScope(),
             headlessInstaller: buildHeadlessInstaller(),
-          }),
-          ...(pendingAdapter.capabilities.tokenReportHook && {
-            reportTokens: {
-              hook: pendingAdapter.capabilities.tokenReportHook,
-              homeDir: homedir(),
-              projectDir: process.cwd(),
-            },
           }),
         });
         logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
