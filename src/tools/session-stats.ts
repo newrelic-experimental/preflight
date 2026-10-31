@@ -491,7 +491,7 @@ export interface ToolRegistrationOptions {
   configSummary?: ConfigSummary;
   hooksInstalledFn?: () => boolean;
   headlessInstaller?: () => import('../install/headless-install.js').HeadlessInstallResult;
-  reportTokens?: HookRecordedReportOptions;
+  hookRecordedReports?: HookRecordedReportOptions;
 }
 
 // ---------------------------------------------------------------------------
@@ -618,10 +618,11 @@ export function registerPendingTools(
     configSummary?: ConfigSummary;
     hooksInstalledFn?: () => boolean;
     headlessInstaller?: () => import('../install/headless-install.js').HeadlessInstallResult;
-    reportTokens?: HookRecordedReportOptions;
+    hookRecordedReports?: HookRecordedReportOptions;
   },
 ): void {
-  const reportTokens = options.reportTokens && hookRecordedReportTokensTool(options.reportTokens);
+  const reportTokens =
+    options.hookRecordedReports && hookRecordedReportTokensTool(options.hookRecordedReports);
   const tools: ToolDefinition[] = [HEALTH_TOOL, INSTALL_HOOKS_TOOL];
   if (options.configSummary) tools.push(CONFIG_TOOL);
   if (reportTokens) tools.push(reportTokens.definition);
@@ -646,7 +647,7 @@ export function registerPendingTools(
     if (reportTokens && name === reportTokens.definition.name) {
       return reportTokens.handle(request.params.arguments);
     }
-    const clientName = options.reportTokens?.hook.clientName;
+    const clientName = options.hookRecordedReports?.hook.clientName;
     return {
       content: [
         {

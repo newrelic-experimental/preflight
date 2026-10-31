@@ -959,7 +959,7 @@ describe('registerPendingTools()', () => {
       opened.push(client, server);
       registerPendingTools(server.server, {
         sessionStartMs: Date.now(),
-        reportTokens: { hook, homeDir, projectDir },
+        hookRecordedReports: { hook, homeDir, projectDir },
       });
       await Promise.all([server.server.connect(st), client.connect(ct)]);
     }

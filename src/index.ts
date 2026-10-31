@@ -795,8 +795,6 @@ export function parseArgs(argv: string[]): CliOptions {
   };
 }
 
-// Cursor and Windsurf run one engine for every chat in a window, so a report
-// is recorded by the hook in the chat that made it, before and after adoption.
 function hookRecordedReports(): HookRecordedReportOptions | undefined {
   const hook = createDefaultRegistry().getActive().capabilities.tokenReportHook;
   return hook && { hook, homeDir: homedir(), projectDir: process.cwd() };
@@ -3118,7 +3116,7 @@ async function main(): Promise<void> {
       };
       registerTools(mcpServer!.server, {
         headlessInstaller: buildHeadlessInstaller(),
-        reportTokens: hookRecordedReports(),
+        hookRecordedReports: hookRecordedReports(),
         sessionTracker: sessionTracker!,
         costTracker,
         budgetTracker,
@@ -3295,7 +3293,7 @@ async function main(): Promise<void> {
             hooksInstalledFn: () => areHooksInstalledAtAnyScope(),
             headlessInstaller: buildHeadlessInstaller(),
           }),
-          reportTokens: hookRecordedReports(),
+          hookRecordedReports: hookRecordedReports(),
         });
         logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
 
@@ -3368,7 +3366,7 @@ async function main(): Promise<void> {
         };
         registerTools(mcpServer!.server, {
           headlessInstaller: buildHeadlessInstaller(),
-          reportTokens: hookRecordedReports(),
+          hookRecordedReports: hookRecordedReports(),
           sessionTracker,
           costTracker,
           budgetTracker,

@@ -437,32 +437,35 @@ export interface CostToolsDeps {
   modelUsageTracker?: ModelUsageTracker;
   sessionResumeTracker?: SessionResumeTracker;
   sessionStartMs?: number;
-  /** Set for clients whose hook records each report in its own conversation. */
-  reportTokens?: HookRecordedReportOptions;
+  hookRecordedReports?: HookRecordedReportOptions;
+}
+
+function inProcessReportTokensTool(deps: CostToolsDeps): ToolSpec {
+  return {
+    definition: REPORT_TOKENS_TOOL,
+    available: !!deps.costTracker,
+    handle: (args) => {
+      const check = requireTracker(deps.costTracker, 'CostTracker');
+      if (!check.ok) return check.result;
+      try {
+        const tokenReport = TokenReportSchema.parse(args);
+        return handleReportTokens(check.value, tokenReport, deps.modelUsageTracker);
+      } catch (err) {
+        const message =
+          err instanceof z.ZodError
+            ? err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
+            : String(err);
+        return errorResult(`Invalid token report: ${message}`);
+      }
+    },
+  };
 }
 
 export function registerCostTools(deps: CostToolsDeps): RegisteredToolSet {
   return buildToolSet([
-    deps.reportTokens
-      ? hookRecordedReportTokensTool(deps.reportTokens)
-      : {
-          definition: REPORT_TOKENS_TOOL,
-          available: !!deps.costTracker,
-          handle: (args) => {
-            const check = requireTracker(deps.costTracker, 'CostTracker');
-            if (!check.ok) return check.result;
-            try {
-              const tokenReport = TokenReportSchema.parse(args);
-              return handleReportTokens(check.value, tokenReport, deps.modelUsageTracker);
-            } catch (err) {
-              const message =
-                err instanceof z.ZodError
-                  ? err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
-                  : String(err);
-              return errorResult(`Invalid token report: ${message}`);
-            }
-          },
-        },
+    deps.hookRecordedReports
+      ? hookRecordedReportTokensTool(deps.hookRecordedReports)
+      : inProcessReportTokensTool(deps),
     {
       definition: COST_BREAKDOWN_TOOL,
       available: !!deps.costTracker,
