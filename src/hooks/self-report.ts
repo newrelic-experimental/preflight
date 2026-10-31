@@ -10,7 +10,6 @@ const MAX_TOKENS = 10_000_000;
 const REPORT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
 export const MODEL_RE = /^[a-zA-Z0-9._:-]{1,256}$/;
 export const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
-// Server keys the installer writes ('newrelic-preflight') or replaced ('preflight', 'nr-ai-observability').
 const PREFLIGHT_SERVER_RE = /preflight|nr-ai-observability/i;
 const REQUIRED_COUNTS = ['input_tokens', 'output_tokens'] as const;
 const OPTIONAL_COUNTS = ['thinking_tokens', 'cache_read_tokens', 'cache_creation_tokens'] as const;
