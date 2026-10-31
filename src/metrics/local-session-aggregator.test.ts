@@ -635,7 +635,7 @@ describe('LocalSessionAggregator subagent cost', () => {
       outcome: 'in progress',
       repoResolver: new StubRepoResolver(),
       toolSelectionScorer: new ToolSelectionScorer(),
-      only: new Set(['conv-a']),
+      sessionIds: new Set(['conv-a']),
     });
     agg.recordTokenUsage('conv-b', { costUsd: 2, timestamp: 1000, agentId: 'agent-1' });
 

@@ -1340,99 +1340,92 @@ describe('stdio integration', () => {
       }
     }, 40000);
 
-    it.each([
-      ['another session', 'in progress', 'real-owner-session'],
-      ['the reporting conversation', 'completed', 'conv-adopt'],
-    ])(
-      'a pending engine that drains a report and then adopts %s saves the report with outcome %s',
-      async (_label, outcome, adoptedId) => {
-        const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
-        const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
-        const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-adopt-report-storage-'));
-        const tmpHome = mkdtempSync(join(tmpdir(), 'nr-adopt-report-home-'));
-        const env = isolatedEnv({
-          HOME: tmpHome,
-          MCP_CLIENT: 'cursor',
-          NR_AI_DASHBOARD_PORT: '0',
-          NR_AI_MODE: 'local',
-          NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
-          NR_AI_SESSION_PERSIST_INTERVAL_MS: '600000',
-        });
-        const bufferPath = resolve(tmpStoragePath, 'buffer-conv-adopt.jsonl');
-        const pendingLines = () =>
-          existsSync(bufferPath) ? readFileSync(bufferPath, 'utf-8') : '';
-
-        const client = new Client({ name: 'test-client', version: '1.0.0' });
-        try {
-          const args = [resolve(distDir, 'index.js'), '--stdio'];
-          await client.connect(new StdioClientTransport({ command: 'node', args, env }));
-          runHook(env, reportHook('conv-adopt', 'r-adopt-0001'));
-          expect(await until(pendingLines, (v) => v === '')).toBe('');
-
-          const breadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
-          mkdirSync(breadcrumbDir, { recursive: true });
-          writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), adoptedId);
-          const toolNames = async () => (await client.listTools()).tools.map((t) => t.name);
-          const adopted = await until(toolNames, (n) => n.includes('nr_observe_get_session_stats'));
-          expect(adopted).toContain('nr_observe_get_session_stats');
-          await client.close();
-
-          const saved = await until(
-            () => savedSession(tmpStoragePath, 'conv-adopt'),
-            (v) => v !== null,
-          );
-          expect(saved).toMatchObject({ tokensInput: 1000, tokensThinking: 100, outcome });
-        } finally {
-          rmSync(tmpStoragePath, { recursive: true, force: true });
-          rmSync(tmpHome, { recursive: true, force: true });
-        }
-      },
-      40000,
-    );
-
-    it('a report saved while pending is not saved again after the engine adopts another session', async () => {
+    const withCursorEngine = async (
+      persistIntervalMs: string,
+      body: (
+        env: Record<string, string>,
+        adopt: (id: string) => Promise<void>,
+        close: () => Promise<void>,
+      ) => Promise<void>,
+    ): Promise<void> => {
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
       const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
-      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-resave-report-storage-'));
-      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-resave-report-home-'));
+      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-adopt-report-storage-'));
+      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-adopt-report-home-'));
       const env = isolatedEnv({
         HOME: tmpHome,
         MCP_CLIENT: 'cursor',
         NR_AI_DASHBOARD_PORT: '0',
         NR_AI_MODE: 'local',
         NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
-        NR_AI_SESSION_PERSIST_INTERVAL_MS: '2000',
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: persistIntervalMs,
       });
-      const sessionsDir = resolve(tmpStoragePath, 'sessions');
-      const savedAt = () => {
-        const name = readdirSync(sessionsDir).find((f) => f.includes('conv-resave'));
-        return name ? statSync(resolve(sessionsDir, name)).mtimeMs : 0;
-      };
-
       const client = new Client({ name: 'test-client', version: '1.0.0' });
+      const adopt = async (id: string) => {
+        const breadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+        mkdirSync(breadcrumbDir, { recursive: true });
+        writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), id);
+        const toolNames = async () => (await client.listTools()).tools.map((t) => t.name);
+        const adopted = await until(toolNames, (n) => n.includes('nr_observe_get_session_stats'));
+        expect(adopted).toContain('nr_observe_get_session_stats');
+      };
       try {
         const args = [resolve(distDir, 'index.js'), '--stdio'];
         await client.connect(new StdioClientTransport({ command: 'node', args, env }));
-        runHook(env, reportHook('conv-resave', 'r-resave-001'));
-        await until(
-          () => savedSession(tmpStoragePath, 'conv-resave'),
-          (v) => v !== null,
-        );
-
-        const breadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
-        mkdirSync(breadcrumbDir, { recursive: true });
-        writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), 'real-owner-session');
-        const toolNames = async () => (await client.listTools()).tools.map((t) => t.name);
-        await until(toolNames, (n) => n.includes('nr_observe_get_session_stats'));
-        const adoptedAt = savedAt();
-        await client.close();
-        await new Promise((r) => setTimeout(r, 1500));
-
-        expect(savedAt()).toBe(adoptedAt);
+        await body(env, adopt, () => client.close());
       } finally {
         rmSync(tmpStoragePath, { recursive: true, force: true });
         rmSync(tmpHome, { recursive: true, force: true });
       }
+    };
+
+    it.each([
+      ['another session', 'in progress', 'real-owner-session'],
+      ['the reporting conversation', 'completed', 'conv-adopt'],
+    ])(
+      'a pending engine that drains a report and then adopts %s saves the report with outcome %s',
+      async (_label, outcome, adoptedId) => {
+        await withCursorEngine('600000', async (env, adopt, close) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          const bufferPath = resolve(storage, 'buffer-conv-adopt.jsonl');
+          const pendingLines = () =>
+            existsSync(bufferPath) ? readFileSync(bufferPath, 'utf-8') : '';
+          runHook(env, reportHook('conv-adopt', 'r-adopt-0001'));
+          expect(await until(pendingLines, (v) => v === '')).toBe('');
+
+          await adopt(adoptedId);
+          await close();
+
+          const saved = await until(
+            () => savedSession(storage, 'conv-adopt'),
+            (v) => v !== null,
+          );
+          expect(saved).toMatchObject({ tokensInput: 1000, tokensThinking: 100, outcome });
+        });
+      },
+      40000,
+    );
+
+    it('a report saved while pending is not saved again after the engine adopts another session', async () => {
+      await withCursorEngine('2000', async (env, adopt, close) => {
+        const sessionsDir = resolve(env.NEW_RELIC_AI_MCP_STORAGE_PATH, 'sessions');
+        const savedAt = () => {
+          const name = readdirSync(sessionsDir).find((f) => f.includes('conv-resave'));
+          return name ? statSync(resolve(sessionsDir, name)).mtimeMs : 0;
+        };
+        runHook(env, reportHook('conv-resave', 'r-resave-001'));
+        await until(
+          () => savedSession(env.NEW_RELIC_AI_MCP_STORAGE_PATH, 'conv-resave'),
+          (v) => v !== null,
+        );
+
+        await adopt('real-owner-session');
+        const adoptedAt = savedAt();
+        await close();
+        await new Promise((r) => setTimeout(r, 1500));
+
+        expect(savedAt()).toBe(adoptedAt);
+      });
     }, 40000);
   });
 

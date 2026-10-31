@@ -2482,7 +2482,7 @@ async function main(): Promise<void> {
           cacheCreationTokens: report.cacheCreationTokens,
           totalTokens: report.inputTokens + report.outputTokens + report.thinkingTokens,
         };
-        unsavedSelfReportIds.add(report.sessionId);
+        if (!isSyntheticSessionId(report.sessionId)) unsavedSelfReportIds.add(report.sessionId);
         localSessionAggregator.recordTokenUsage(report.sessionId, {
           ...usage,
           timestamp: report.timestamp,
@@ -2709,14 +2709,14 @@ async function main(): Promise<void> {
         }
         const store = sessionStore;
         const developer = config.developer ?? 'unknown';
-        const saveObservedRollups = (outcome: string, only?: ReadonlySet<string>): number => {
+        const saveObservedRollups = (outcome: string, sessionIds?: ReadonlySet<string>): number => {
           const rollups = localSessionAggregator.toSummaries({
             developer,
             platform: eventProcessor?.activePlatform,
             outcome,
             toolSelectionScorer,
             repoResolver: repoNameResolver,
-            only,
+            sessionIds,
           });
           for (const rollup of rollups) {
             store.saveSession(rollup as unknown as Parameters<typeof store.saveSession>[0]);
@@ -2747,8 +2747,6 @@ async function main(): Promise<void> {
           }
           return;
         }
-        // Only another conversation's own engine knows when it ends, so these
-        // stay in progress; this session's own summary below sets its outcome.
         if (unsavedSelfReportIds.size > 0) saveObservedRollups('in progress', unsavedSelfReportIds);
         sessionStore.saveSession(summary);
         // checkAndGenerateLastWeek() is idempotent (existsSync check before

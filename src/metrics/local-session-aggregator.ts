@@ -623,12 +623,11 @@ export class LocalSessionAggregator {
     outcome: string;
     repoResolver: RepoNameResolver;
     toolSelectionScorer: ToolSelectionScorer;
-    /** Summarize only these sessions, so no other rollup's lastEmittedCost moves. */
-    only?: ReadonlySet<string>;
+    sessionIds?: ReadonlySet<string>;
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
-      if (context.only && !context.only.has(rollup.sessionId)) continue;
+      if (context.sessionIds && !context.sessionIds.has(rollup.sessionId)) continue;
       if (!hasAttributableActivity(rollup)) continue;
       const models = [...rollup.models];
       rollup.lastEmittedCost = {
