@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import {
@@ -2050,9 +2060,55 @@ describe('collector-script', () => {
       processHook(cursorReportHook('conv-reporting'));
 
       expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post']);
-      const seen = resolve(tmpDir, 'self-reports', 'conv-reporting.ids');
-      expect(readFileSync(seen, 'utf-8')).toBe(`${report.report_id}\n`);
-      expect(statSync(seen).mode & 0o777).toBe(0o600);
+      const conversationDir = resolve(tmpDir, 'self-reports', 'conv-reporting');
+      expect(readdirSync(conversationDir)).toEqual([report.report_id]);
+      expect(statSync(conversationDir).mode & 0o777).toBe(0o700);
+      expect(statSync(resolve(conversationDir, report.report_id)).mode & 0o777).toBe(0o600);
+    });
+
+    it('writes no usage line for a report_id another collector already claimed', () => {
+      const conversationDir = resolve(tmpDir, 'self-reports', 'conv-reporting');
+      mkdirSync(conversationDir, { recursive: true });
+      writeFileSync(resolve(conversationDir, report.report_id), '');
+
+      processHook(cursorReportHook('conv-reporting'));
+
+      expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post']);
+    });
+
+    it('releases the claim when the buffer write fails, so a retry still records', () => {
+      const bufferPath = resolve(tmpDir, 'buffer-conv-reporting.jsonl');
+      mkdirSync(bufferPath);
+      processHook(cursorReportHook('conv-reporting'));
+      rmSync(bufferPath, { recursive: true });
+
+      processHook(cursorReportHook('conv-reporting'));
+
+      expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post', 'self_report']);
+    });
+
+    it.each([
+      ['the self-reports path is a file', () => writeFileSync(resolve(tmpDir, 'self-reports'), '')],
+      [
+        "the conversation's claim path is a file",
+        () => {
+          mkdirSync(resolve(tmpDir, 'self-reports'));
+          writeFileSync(resolve(tmpDir, 'self-reports', 'conv-reporting'), '');
+        },
+      ],
+      [
+        'the self-reports directory is unreadable',
+        () => mkdirSync(resolve(tmpDir, 'self-reports'), { mode: 0o000 }),
+      ],
+    ])('still writes the post but no usage line when %s', (_label, breakClaims) => {
+      breakClaims();
+      try {
+        processHook(cursorReportHook('conv-reporting'));
+      } finally {
+        chmodSync(resolve(tmpDir, 'self-reports'), 0o700);
+      }
+
+      expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post']);
     });
 
     it.each([

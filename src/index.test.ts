@@ -11,6 +11,7 @@ import {
   readFileSync,
   appendFileSync,
 } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -1203,18 +1204,62 @@ describe('stdio integration', () => {
   });
 
   describe('self-report lines', () => {
+    const distDir = resolve(__dirname, '..', 'dist');
     const report = {
-      report_id: 'r-5f0c2a9e',
       input_tokens: 1000,
       output_tokens: 200,
       thinking_tokens: 100,
       model: 'claude-sonnet-4-6',
     };
+    const reportHook = (conversationId: string, reportId: string) => ({
+      hook_event_name: 'afterMCPExecution',
+      conversation_id: conversationId,
+      tool_name: 'nr_observe_report_tokens',
+      tool_input: JSON.stringify({ ...report, report_id: reportId }),
+      result_json: JSON.stringify({
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ accepted: true, recorded_by: 'hook', report_id: reportId }),
+          },
+        ],
+      }),
+    });
+    const isolatedEnv = (overrides: Record<string, string>): Record<string, string> => {
+      const env: Record<string, string> = {};
+      for (const [name, value] of Object.entries(process.env)) {
+        if (value === undefined || /^(CLAUDE|CURSOR)/.test(name)) continue;
+        if (['MCP_CLIENT', 'NEW_RELIC_AI_PLATFORM', 'NR_AI_MODE'].includes(name)) continue;
+        env[name] = value;
+      }
+      return { ...env, ...overrides };
+    };
+    const runHook = (
+      env: Record<string, string>,
+      payload: Record<string, unknown>,
+      args: string[] = [],
+    ) =>
+      spawnSync('node', [resolve(distDir, 'hooks', 'collector-script.js'), ...args], {
+        input: JSON.stringify(payload),
+        env,
+        cwd: env.NEW_RELIC_AI_MCP_STORAGE_PATH,
+      });
+    const savedSession = (storagePath: string, id: string): Record<string, unknown> | null => {
+      const dir = resolve(storagePath, 'sessions');
+      const name = existsSync(dir) ? readdirSync(dir).find((f) => f.includes(id)) : undefined;
+      return name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
+    };
+    const until = async <T>(read: () => T | Promise<T>, done: (v: T) => boolean): Promise<T> => {
+      let value = await read();
+      for (let i = 0; i < 40 && !done(value); i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        value = await read();
+      }
+      return value;
+    };
 
     it('a --local process saves a drained report to its conversation and keeps its own estimates', async () => {
-      const { spawn, spawnSync } = await import('node:child_process');
       const { createServer: createNetServer } = await import('node:net');
-      const distDir = resolve(__dirname, '..', 'dist');
       const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-local-report-storage-'));
       const tmpHome = mkdtempSync(join(tmpdir(), 'nr-local-report-home-'));
       const port = await new Promise<number>((resolvePort, reject) => {
@@ -1225,14 +1270,7 @@ describe('stdio integration', () => {
         });
         srv.on('error', reject);
       });
-      const env: NodeJS.ProcessEnv = { ...process.env };
-      for (const name of Object.keys(env)) {
-        if (name.startsWith('CLAUDE') || name.startsWith('CURSOR')) delete env[name];
-      }
-      delete env.MCP_CLIENT;
-      delete env.NEW_RELIC_AI_PLATFORM;
-      delete env.NR_AI_MODE;
-      Object.assign(env, {
+      const env = isolatedEnv({
         HOME: tmpHome,
         NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
         NR_AI_DASHBOARD_PORT: String(port),
@@ -1241,31 +1279,10 @@ describe('stdio integration', () => {
         NEW_RELIC_ACCOUNT_ID: '',
         NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
       });
-      const hook = (payload: Record<string, unknown>, args: string[] = []) =>
-        spawnSync('node', [resolve(distDir, 'hooks', 'collector-script.js'), ...args], {
-          input: JSON.stringify(payload),
-          env,
-          cwd: tmpStoragePath,
-        });
       const api = async (path: string): Promise<Record<string, unknown>> =>
         (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as Record<string, unknown>;
-      const until = async <T>(read: () => Promise<T>, done: (v: T) => boolean): Promise<T> => {
-        let value = await read();
-        for (let i = 0; i < 40 && !done(value); i++) {
-          await new Promise((r) => setTimeout(r, 250));
-          value = await read();
-        }
-        return value;
-      };
       type Cost = { reportCount: number; byteEstimates?: { costUsd: number } };
       const cost = async (): Promise<Cost> => (await api('/api/cost')).cost as Cost;
-      const savedReport = async (): Promise<Record<string, unknown> | null> => {
-        const dir = resolve(tmpStoragePath, 'sessions');
-        const name = existsSync(dir)
-          ? readdirSync(dir).find((f) => f.includes('conv-local'))
-          : undefined;
-        return name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
-      };
 
       const child = spawn(process.execPath, [resolve(distDir, 'index.js'), '--local'], {
         env,
@@ -1278,7 +1295,8 @@ describe('stdio integration', () => {
           (v) => v !== null,
         );
         const read = { file_path: '/repo/big.txt' };
-        hook(
+        runHook(
+          env,
           {
             hook_event_name: 'PreToolUse',
             tool_name: 'Read',
@@ -1287,7 +1305,8 @@ describe('stdio integration', () => {
           },
           ['pre-tool'],
         );
-        hook(
+        runHook(
+          env,
           {
             hook_event_name: 'PostToolUse',
             tool_name: 'Read',
@@ -1300,28 +1319,10 @@ describe('stdio integration', () => {
         const estimated = await until(cost, (c) => (c.byteEstimates?.costUsd ?? 0) > 0);
         expect(estimated.byteEstimates?.costUsd).toBeGreaterThan(0);
 
-        const localReport = { ...report, report_id: 'r-local-0001' };
-        hook({
-          hook_event_name: 'afterMCPExecution',
-          conversation_id: 'conv-local',
-          tool_name: 'nr_observe_report_tokens',
-          tool_input: JSON.stringify(localReport),
-          result_json: JSON.stringify({
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  accepted: true,
-                  recorded_by: 'hook',
-                  report_id: localReport.report_id,
-                }),
-              },
-            ],
-          }),
-        });
+        runHook(env, reportHook('conv-local', 'r-local-0001'));
 
         const saved = await until(
-          savedReport,
+          () => savedSession(tmpStoragePath, 'conv-local'),
           (v) => typeof v?.tokensInput === 'number' && v.tokensInput > 0,
         );
         const after = await cost();
@@ -1332,6 +1333,48 @@ describe('stdio integration', () => {
         expect(saved?.estimatedCostUsd).toBeGreaterThan(0);
       } finally {
         child.kill('SIGKILL');
+        rmSync(tmpStoragePath, { recursive: true, force: true });
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    }, 40000);
+
+    it('a pending engine that drains a report and then adopts its own session still saves the report', async () => {
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+      const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-adopt-report-storage-'));
+      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-adopt-report-home-'));
+      const env = isolatedEnv({
+        HOME: tmpHome,
+        MCP_CLIENT: 'cursor',
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '600000',
+      });
+      const bufferPath = resolve(tmpStoragePath, 'buffer-conv-adopt.jsonl');
+      const pendingLines = () => (existsSync(bufferPath) ? readFileSync(bufferPath, 'utf-8') : '');
+
+      const client = new Client({ name: 'test-client', version: '1.0.0' });
+      try {
+        const args = [resolve(distDir, 'index.js'), '--stdio'];
+        await client.connect(new StdioClientTransport({ command: 'node', args, env }));
+        runHook(env, reportHook('conv-adopt', 'r-adopt-0001'));
+        expect(await until(pendingLines, (v) => v === '')).toBe('');
+
+        const breadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+        mkdirSync(breadcrumbDir, { recursive: true });
+        writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), 'real-owner-session');
+        const toolNames = async () => (await client.listTools()).tools.map((t) => t.name);
+        const adopted = await until(toolNames, (n) => n.includes('nr_observe_get_session_stats'));
+        expect(adopted).toContain('nr_observe_get_session_stats');
+        await client.close();
+
+        const saved = await until(
+          () => savedSession(tmpStoragePath, 'conv-adopt'),
+          (v) => v !== null,
+        );
+        expect(saved).toMatchObject({ tokensInput: 1000, tokensThinking: 100 });
+      } finally {
         rmSync(tmpStoragePath, { recursive: true, force: true });
         rmSync(tmpHome, { recursive: true, force: true });
       }
