@@ -219,6 +219,14 @@ Self-report token usage for cost tracking. Called by Claude Code to report its o
 }
 ```
 
+**On Cursor and Windsurf.** One engine serves every chat in the window, so the hook saves a report to the conversation that made it, whether or not the engine has resolved a session. The tool also takes a required `report_id`, a new random value (such as a UUID) per call. A retry keeps its `report_id`. Preflight saves a report with the same `report_id` and the same counts and model once per conversation, and a reused `report_id` with different counts as a new report.
+
+- The tool replies `{"accepted": true, "recorded_by": "hook", "hooks_detected": ..., ...}`. Preflight's `afterMCPExecution` (Cursor) or `post_mcp_tool_use` (Windsurf) hook then sees this reply and the call's arguments, and writes the report into that conversation's hook buffer. It writes nothing for an error result, another `report_id`, a synthetic or unknown conversation id, or a server whose `mcp_server_name` neither contains `preflight` (such as the installer's `newrelic-preflight`) nor is the older `nr-ai-observability`.
+- `hooks_detected` is `false` when neither the user-level hooks file (`~/.cursor/hooks.json`, `~/.codeium/windsurf/hooks.json`) nor the project's (`.cursor/hooks.json`, `.windsurf/hooks.json`) runs `preflight-collector` for that event. The message then says the report may not be saved and how to add the hook. When the hook is found, the message says it should record the report. The check is best effort. It reads the project file under the engine's working directory, which may not be the workspace root, and the hook still saves the report if it runs from a file the check does not read.
+- Whichever Preflight process drains the buffer prices the report and saves it with that conversation's session at its next checkpoint. It does not count toward that process's own session cost. The reply does not claim the cost is saved yet.
+- A malformed report returns `invalid_token_report`.
+- Antigravity does not list the tool while pending yet (#1027).
+
 **Data source:** `CostTracker`
 
 **How it works:**

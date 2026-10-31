@@ -9,6 +9,8 @@
  *   - `nr_observe_get_prompt_cache_health` — cache hit rate and recommendation
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { z } from 'zod';
 
 import type { CostTracker } from '../metrics/cost-tracker.js';
@@ -20,13 +22,21 @@ import { buildCostForecastFromInputs } from '../metrics/cost-forecast.js';
 import { localDateKey } from '../lib/date.js';
 import { resolvePricing } from '../metrics/pricing-overlay.js';
 import type { TokenUsage } from '../shared/index.js';
-import { clampToken, MODEL_RE, REPORT_TOKENS_TOOL_NAME } from '../hooks/self-report.js';
+import {
+  clampToken,
+  MODEL_RE,
+  parseSelfReport,
+  REPORT_TOKENS_TOOL_NAME,
+} from '../hooks/self-report.js';
+import type { TokenReportHook } from '../platforms/types.js';
 import {
   errorResult,
   requireTracker,
   requireAvailable,
   buildToolSet,
   type RegisteredToolSet,
+  type ToolCallResult,
+  type ToolSpec,
 } from './tool-registry.js';
 
 // ---------------------------------------------------------------------------
@@ -71,6 +81,76 @@ export const REPORT_TOKENS_TOOL = {
   },
   annotations: { readOnlyHint: false },
 };
+
+export interface HookRecordedReportOptions {
+  readonly hook: TokenReportHook;
+  readonly homeDir: string;
+  readonly projectDir: string;
+}
+
+const COLLECTOR_COMMAND_RE = /preflight-collector|collector-script\.js/;
+
+function runsCollector(path: string, event: string): boolean {
+  try {
+    const config = JSON.parse(readFileSync(path, 'utf-8')) as { hooks?: Record<string, unknown> };
+    const entries = config.hooks?.[event];
+    return (
+      Array.isArray(entries) &&
+      entries.some((entry: { command?: unknown } | null) =>
+        COLLECTOR_COMMAND_RE.test(String(entry?.command ?? '')),
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function hookRecordedReportTokensTool(options: HookRecordedReportOptions): ToolSpec {
+  const { hook } = options;
+  const notDetected =
+    "Preflight's hook was not detected, so this report may not be saved. " +
+    `To install it, add {"command": "preflight-collector"} under hooks.${hook.postMcpEvent} in ~/${hook.homeHooksFile} or in ${hook.projectHooksFile} at the workspace root, then restart ${hook.clientName}.`;
+  const detected = `Preflight's ${hook.postMcpEvent} hook was found, so the hook should record it in this conversation after the call returns.`;
+  const definition = {
+    ...REPORT_TOKENS_TOOL,
+    description:
+      REPORT_TOKENS_TOOL.description +
+      ' Set report_id to a new random value (such as a UUID) on every call, and keep it when retrying: Preflight saves a retry with the same report_id and the same counts once per conversation.' +
+      " Preflight's hook for this call should record the report in this conversation.",
+    inputSchema: {
+      ...REPORT_TOKENS_TOOL.inputSchema,
+      properties: {
+        ...REPORT_TOKENS_TOOL.inputSchema.properties,
+        report_id: {
+          type: 'string',
+          description: 'A new random id for this report, 8 to 128 of [A-Za-z0-9_-]',
+        },
+      },
+      required: [...REPORT_TOKENS_TOOL.inputSchema.required, 'report_id'],
+    },
+  };
+  const reply = (body: Record<string, unknown>, isError?: true): ToolCallResult => ({
+    content: [{ type: 'text', text: JSON.stringify(body) }],
+    ...(isError && { isError }),
+  });
+  const handle = (args: unknown): ToolCallResult => {
+    const parsed = parseSelfReport(args);
+    if (!parsed.ok) return reply({ error: 'invalid_token_report', message: parsed.reason }, true);
+    const { report } = parsed;
+    const hooksDetected =
+      runsCollector(resolve(options.homeDir, hook.homeHooksFile), hook.postMcpEvent) ||
+      runsCollector(resolve(options.projectDir, hook.projectHooksFile), hook.postMcpEvent);
+    return reply({
+      accepted: true,
+      report_id: report.reportId,
+      model: report.model,
+      recorded_by: 'hook',
+      hooks_detected: hooksDetected,
+      message: hooksDetected ? detected : notDetected,
+    });
+  };
+  return { definition, available: true, handle };
+}
 
 // ---------------------------------------------------------------------------
 // Handlers
@@ -357,28 +437,35 @@ export interface CostToolsDeps {
   modelUsageTracker?: ModelUsageTracker;
   sessionResumeTracker?: SessionResumeTracker;
   sessionStartMs?: number;
+  hookRecordedReports?: HookRecordedReportOptions;
+}
+
+function inProcessReportTokensTool(deps: CostToolsDeps): ToolSpec {
+  return {
+    definition: REPORT_TOKENS_TOOL,
+    available: !!deps.costTracker,
+    handle: (args) => {
+      const check = requireTracker(deps.costTracker, 'CostTracker');
+      if (!check.ok) return check.result;
+      try {
+        const tokenReport = TokenReportSchema.parse(args);
+        return handleReportTokens(check.value, tokenReport, deps.modelUsageTracker);
+      } catch (err) {
+        const message =
+          err instanceof z.ZodError
+            ? err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
+            : String(err);
+        return errorResult(`Invalid token report: ${message}`);
+      }
+    },
+  };
 }
 
 export function registerCostTools(deps: CostToolsDeps): RegisteredToolSet {
   return buildToolSet([
-    {
-      definition: REPORT_TOKENS_TOOL,
-      available: !!deps.costTracker,
-      handle: (args) => {
-        const check = requireTracker(deps.costTracker, 'CostTracker');
-        if (!check.ok) return check.result;
-        try {
-          const tokenReport = TokenReportSchema.parse(args);
-          return handleReportTokens(check.value, tokenReport, deps.modelUsageTracker);
-        } catch (err) {
-          const message =
-            err instanceof z.ZodError
-              ? err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
-              : String(err);
-          return errorResult(`Invalid token report: ${message}`);
-        }
-      },
-    },
+    deps.hookRecordedReports
+      ? hookRecordedReportTokensTool(deps.hookRecordedReports)
+      : inProcessReportTokensTool(deps),
     {
       definition: COST_BREAKDOWN_TOOL,
       available: !!deps.costTracker,
