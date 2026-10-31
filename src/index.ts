@@ -90,6 +90,7 @@ import {
   LocalSessionAggregator,
   RepoNameResolver,
   resolveAuthorEmail,
+  type LocalSessionRollup,
 } from './metrics/local-session-aggregator.js';
 import { ModelUsageTracker } from './metrics/model-usage-tracker.js';
 import { PersonalCoach } from './metrics/personal-coach.js';
@@ -2478,6 +2479,7 @@ async function main(): Promise<void> {
           costUsd: costTracker.priceUsage(usage, report.model).totalUsd,
           model: report.model,
           ...(report.platform !== undefined && { platform: report.platform }),
+          selfReported: true,
         });
       },
       // Feed each Agent-tool ToolCallRecord into the workflow tracker
@@ -2695,6 +2697,12 @@ async function main(): Promise<void> {
         if (driftRecord) {
           instructionDriftTracker.recordSessionOutcome(driftRecord);
         }
+        const observed = {
+          developer: config.developer ?? 'unknown',
+          platform: eventProcessor?.activePlatform,
+          toolSelectionScorer,
+          repoResolver: repoNameResolver,
+        };
         // Skip persisting the synthetic session JSON written by --local /
         // proxy modes and the provisional pending-<ts> id. These IDs are
         // MCP-internal bookkeeping; they don't correspond to a real Claude
@@ -2707,26 +2715,21 @@ async function main(): Promise<void> {
           // draining other sessions' buffers destructively — so if it returns
           // here without writing them, those events are simply lost. Persist
           // each real session it observed instead.
-          const rollups = localSessionAggregator.toSummaries({
-            developer: config.developer ?? 'unknown',
-            platform: eventProcessor?.activePlatform,
+          const persistedSessions = localSessionAggregator.saveSummaries(sessionStore, {
+            ...observed,
             outcome: opts?.periodic ? 'in progress' : 'completed',
-            toolSelectionScorer,
-            repoResolver: repoNameResolver,
           });
-          for (const rollup of rollups) {
-            sessionStore.saveSession(
-              rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
-            );
-          }
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
-              persistedSessions: rollups.length,
+              persistedSessions,
             });
           }
           return;
         }
+        const missingFromOwnerSummary = (rollup: Readonly<LocalSessionRollup>) =>
+          rollup.unsaved && (rollup.sessionId !== summary.sessionId || rollup.selfReportCount > 0);
+        localSessionAggregator.saveSummaries(sessionStore, observed, missingFromOwnerSummary);
         sessionStore.saveSession(summary);
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
         // any real work), so calling it on every periodic checkpoint too is
