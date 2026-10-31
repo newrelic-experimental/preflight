@@ -608,7 +608,7 @@ describe('SessionStore', () => {
     store.saveSession(makeSummary({ sessionId: 'observed', startTime, outcome: 'in progress' }));
     const { outcome: _outcome, ...observed } = makeSummary({ sessionId: 'observed', startTime });
 
-    store.saveSession(observed);
+    store.saveSession(observed as unknown as FullSessionSummary);
 
     expect(store.loadSession('observed')?.outcome).toBe('in progress');
   });
