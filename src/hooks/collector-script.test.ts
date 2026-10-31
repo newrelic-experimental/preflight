@@ -10,7 +10,6 @@ import {
   getLinuxAncestorPids,
   getRecordContent,
   hashInput,
-  mcpArgumentsHash,
   processHook,
   readStdinSync,
   redact,
@@ -19,6 +18,7 @@ import {
   writeCwdBreadcrumb,
   writePpidBreadcrumb,
 } from './collector-script.js';
+import { mcpArgumentsHash } from './mcp-arguments-hash.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { createDefaultRegistry } from '../platforms/platform-registry.js';
 import { savesConversationSelfReports } from '../platforms/types.js';
@@ -271,6 +271,7 @@ describe('collector-script', () => {
         conversation_id: 'c1',
         tool_input: '{ "b": [2, {"d": 4, "c": 3}], "a": 1 }',
       },
+      undefined,
     ],
     [
       'Windsurf pre_mcp_tool_use',
@@ -279,9 +280,19 @@ describe('collector-script', () => {
         trajectory_id: 't1',
         tool_info: { mcp_tool_arguments: { b: [2, { d: 4, c: 3 }], a: 1 } },
       },
+      undefined,
     ],
-  ])('hashes %s arguments as the MCP call carries them', (_hook, payload) => {
-    processHook(JSON.stringify(payload));
+    [
+      'Antigravity PreToolUse',
+      {
+        conversationId: 'agy-1',
+        stepIdx: 1,
+        toolCall: { name: 'nr_observe_report_tokens', args: { b: [2, { d: 4, c: 3 }], a: 1 } },
+      },
+      'PreToolUse',
+    ],
+  ])('hashes %s arguments as the MCP call carries them', (_hook, payload, cliEvent) => {
+    processHook(JSON.stringify(payload), cliEvent);
     expect(readBufferEvents()[0]?.inputHash).toBe(
       mcpArgumentsHash({ a: 1, b: [2, { c: 3, d: 4 }] }),
     );

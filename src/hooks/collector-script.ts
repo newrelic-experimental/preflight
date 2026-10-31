@@ -25,7 +25,7 @@ import {
 } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { createHash } from 'node:crypto';
+import { hashInput, mcpArgumentsHash } from './mcp-arguments-hash.js';
 import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
@@ -134,39 +134,6 @@ function redact(value: string): string {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function hashInput(input: unknown): string {
-  const str = JSON.stringify(input) ?? '';
-  return createHash('sha256').update(str).digest('hex').slice(0, 16);
-}
-
-function canonicalJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalJson);
-  if (value === null || typeof value !== 'object') return value;
-  const record = value as Record<string, unknown>;
-  return Object.fromEntries(
-    Object.keys(record)
-      .sort()
-      .map((key) => [key, canonicalJson(record[key])]),
-  );
-}
-
-/**
- * Hash of an MCP call's arguments that the engine can recompute from the
- * `tools/call` it receives. Cursor sends them as a JSON string and Windsurf
- * as an object, so a string is parsed first and keys are sorted.
- */
-function mcpArgumentsHash(input: unknown): string {
-  let value = input;
-  if (typeof input === 'string') {
-    try {
-      value = JSON.parse(input);
-    } catch {
-      value = input;
-    }
-  }
-  return hashInput(canonicalJson(value));
-}
 
 function sizeOf(value: unknown): number {
   if (value === undefined || value === null) return 0;
@@ -1205,7 +1172,7 @@ function processHook(raw: string, cliEvent?: string): void {
       tool: agyToolName,
       timestamp,
       inputSize: sizeOf(data.toolCall?.args),
-      inputHash: hashInput(data.toolCall?.args),
+      inputHash: mcpArgumentsHash(data.toolCall?.args),
       ...agyToolUseId,
     };
 
@@ -1433,7 +1400,6 @@ export {
   processHook,
   redact,
   hashInput,
-  mcpArgumentsHash,
   sizeOf,
   truncate,
   getRecordContent,

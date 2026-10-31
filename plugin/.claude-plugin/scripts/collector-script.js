@@ -13,7 +13,32 @@ import {
 } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { homedir } from "node:os";
+
+// src/hooks/mcp-arguments-hash.ts
 import { createHash } from "node:crypto";
+function hashInput(input) {
+  const str = JSON.stringify(input) ?? "";
+  return createHash("sha256").update(str).digest("hex").slice(0, 16);
+}
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value === null || typeof value !== "object") return value;
+  const record = value;
+  return Object.fromEntries(
+    Object.keys(record).sort().map((key) => [key, canonicalJson(record[key])])
+  );
+}
+function mcpArgumentsHash(input) {
+  let value = input;
+  if (typeof input === "string") {
+    try {
+      value = JSON.parse(input);
+    } catch {
+      value = input;
+    }
+  }
+  return hashInput(canonicalJson(value));
+}
 
 // src/redaction-patterns.ts
 var REDACTION_PATTERNS = [
@@ -130,29 +155,6 @@ function redact(value) {
     result = result.replace(re, "[REDACTED]");
   }
   return result;
-}
-function hashInput(input) {
-  const str = JSON.stringify(input) ?? "";
-  return createHash("sha256").update(str).digest("hex").slice(0, 16);
-}
-function canonicalJson(value) {
-  if (Array.isArray(value)) return value.map(canonicalJson);
-  if (value === null || typeof value !== "object") return value;
-  const record = value;
-  return Object.fromEntries(
-    Object.keys(record).sort().map((key) => [key, canonicalJson(record[key])])
-  );
-}
-function mcpArgumentsHash(input) {
-  let value = input;
-  if (typeof input === "string") {
-    try {
-      value = JSON.parse(input);
-    } catch {
-      value = input;
-    }
-  }
-  return hashInput(canonicalJson(value));
 }
 function sizeOf(value) {
   if (value === void 0 || value === null) return 0;
@@ -742,7 +744,7 @@ function processHook(raw, cliEvent) {
       tool: agyToolName,
       timestamp,
       inputSize: sizeOf(data.toolCall?.args),
-      inputHash: hashInput(data.toolCall?.args),
+      inputHash: mcpArgumentsHash(data.toolCall?.args),
       ...agyToolUseId
     };
     const inputMeta = extractInputMeta(agyToolName, data.toolCall?.args);
@@ -906,7 +908,6 @@ export {
   getLinuxAncestorPids,
   getRecordContent,
   hashInput,
-  mcpArgumentsHash,
   processHook,
   readStdinSync,
   redact,

@@ -29,7 +29,7 @@ import {
   type ToolCallResult,
   type ToolDefinition,
 } from './tool-registry.js';
-import { mcpArgumentsHash } from '../hooks/collector-script.js';
+import { mcpArgumentsHash } from '../hooks/mcp-arguments-hash.js';
 import type { HookEventProcessor } from '../hooks/event-processor.js';
 import { isSyntheticSessionId } from '../hooks/session-resolver.js';
 import { isSavableSessionId } from '../storage/session-store.js';
@@ -171,19 +171,26 @@ export function conversationReportTokensTool(conversationIdField: string): ToolD
   return {
     ...REPORT_TOKENS_TOOL,
     description:
-      'Report token usage for cost tracking. This server serves several chats and works out ' +
-      'which one made this call, so you do not need to pass conversation_id. If you pass it, it ' +
-      `must be this chat's ${conversationIdField}; an id Preflight cannot confirm is rejected. ` +
-      'Provide the model name and token counts from the most recent API response.',
+      'Report token usage for cost tracking. Set report_id to a new random value, such as a ' +
+      'UUID, on every call, and never reuse one. This server serves several chats and works ' +
+      'out which one made this call, so you do not need to pass conversation_id. If you pass ' +
+      `it, it must be this chat's ${conversationIdField}, and it is rejected unless it matches ` +
+      'the chat Preflight finds. Provide the model name and token counts from the most recent ' +
+      'API response.',
     inputSchema: {
       ...REPORT_TOKENS_TOOL.inputSchema,
       properties: {
+        report_id: {
+          type: 'string',
+          description: 'A new random value for every call, such as a UUID. 8 to 128 characters.',
+        },
         conversation_id: {
           type: 'string',
           description: `Optional. This chat's ${conversationIdField}.`,
         },
         ...REPORT_TOKENS_TOOL.inputSchema.properties,
       },
+      required: ['report_id', ...REPORT_TOKENS_TOOL.inputSchema.required],
     },
   };
 }
@@ -194,19 +201,31 @@ export type ConversationTokenRecorder = (
   model: string,
 ) => { readonly costUsd: number; readonly conversationTotalCostUsd: number };
 
+export type ReportCallMatch =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'ambiguous' }
+  | {
+      readonly kind: 'one';
+      readonly conversationId: string;
+      readonly consume: () => void;
+    };
+
 export interface ConversationReports {
   readonly tool: ToolDefinition;
   readonly record: ConversationTokenRecorder;
-  readonly matchReportCall: (args: Record<string, unknown>) => Promise<readonly string[]>;
-  readonly hasSeen: (conversationId: string) => boolean;
+  readonly matchReportCall: (args: Record<string, unknown>) => Promise<ReportCallMatch>;
 }
+
+const ConversationTokenReportSchema = TokenReportSchema.extend({
+  report_id: z.string().min(8).max(128),
+});
 
 const ANTIGRAVITY_CONVERSATION_META = 'antigravity.google/conversation_id';
 
 const CONVERSATION_REJECTIONS = {
   invalid_conversation_id:
-    'conversation_id must be 1-128 letters, digits, underscores or hyphens, and not "unknown". ' +
-    'Leave it out and Preflight finds the conversation itself.',
+    'conversation_id must be 1-128 letters, digits, underscores or hyphens, not "unknown", ' +
+    'and not a pending-, local- or proxy- id. Leave it out and Preflight finds the conversation itself.',
   conversation_ambiguous:
     'Several conversations made this exact report at once, so Preflight cannot tell which one ' +
     'this is. Nothing was recorded.',
@@ -225,24 +244,20 @@ function isConversationId(id: unknown): id is string {
 async function resolveReportConversation(
   reports: ConversationReports,
   args: Record<string, unknown>,
+  claimed: string | undefined,
   meta: Record<string, unknown> | undefined,
 ): Promise<{ conversationId: string } | { rejection: keyof typeof CONVERSATION_REJECTIONS }> {
-  const claimed = args.conversation_id;
-  if (claimed !== undefined && !isConversationId(claimed)) {
-    return { rejection: 'invalid_conversation_id' };
-  }
   const stamped = meta?.[ANTIGRAVITY_CONVERSATION_META];
-  const observed = isConversationId(stamped) ? [stamped] : await reports.matchReportCall(args);
-  if (observed.length > 1) return { rejection: 'conversation_ambiguous' };
-  const [conversationId] = observed;
-  if (conversationId !== undefined) {
-    return claimed === undefined || claimed === conversationId
-      ? { conversationId }
-      : { rejection: 'conversation_id_mismatch' };
+  const match: ReportCallMatch = isConversationId(stamped)
+    ? { kind: 'one', conversationId: stamped, consume: () => undefined }
+    : await reports.matchReportCall(args);
+  if (match.kind === 'none') return { rejection: 'conversation_unknown' };
+  if (match.kind === 'ambiguous') return { rejection: 'conversation_ambiguous' };
+  if (claimed !== undefined && claimed !== match.conversationId) {
+    return { rejection: 'conversation_id_mismatch' };
   }
-  return claimed !== undefined && reports.hasSeen(claimed)
-    ? { conversationId: claimed }
-    : { rejection: 'conversation_unknown' };
+  match.consume();
+  return { conversationId: match.conversationId };
 }
 
 export async function handleReportConversationTokens(
@@ -250,15 +265,20 @@ export async function handleReportConversationTokens(
   args: Record<string, unknown> | undefined,
   meta?: Record<string, unknown>,
 ): Promise<ToolCallResult> {
-  const conversation = await resolveReportConversation(reports, args ?? {}, meta);
-  if ('rejection' in conversation) {
-    return errorResult(conversation.rejection, CONVERSATION_REJECTIONS[conversation.rejection]);
+  const passed = args?.conversation_id;
+  const claimed = isConversationId(passed) ? passed : undefined;
+  if (passed !== undefined && claimed === undefined) {
+    return errorResult('invalid_conversation_id', CONVERSATION_REJECTIONS.invalid_conversation_id);
   }
-  const report = TokenReportSchema.safeParse(args);
+  const report = ConversationTokenReportSchema.safeParse(args);
   if (!report.success) return invalidTokenReport(report.error);
   const parsed = parseTokenReport(report.data);
   if (!parsed.ok) return parsed.result;
 
+  const conversation = await resolveReportConversation(reports, args ?? {}, claimed, meta);
+  if ('rejection' in conversation) {
+    return errorResult(conversation.rejection, CONVERSATION_REJECTIONS[conversation.rejection]);
+  }
   const { conversationId } = conversation;
   const { costUsd, conversationTotalCostUsd } = reports.record(
     conversationId,
@@ -274,21 +294,15 @@ export async function handleReportConversationTokens(
   });
 }
 
-/**
- * A hook event is only in the aggregator once the processor has polled it, so
- * an unpolled read would call a conversation unseen right after its hook fired.
- */
-export function conversationSeenCheck(
-  hooks: Pick<HookEventProcessor, 'poll'>,
-  hasSession: (conversationId: string) => boolean,
-): ConversationReports['hasSeen'] {
-  return (conversationId) => {
-    hooks.poll();
-    return hasSession(conversationId);
-  };
-}
-
 const REPORT_CALL_WAIT = { waitMs: 2000, pollMs: 50 };
+
+/**
+ * The client runs the blocking pre-hook just before it sends the call, so an
+ * older pre-event belongs to an earlier call. Pre-events stay pending for the
+ * processor's 60 s orphan timeout, often in another window's engine, since
+ * every pending engine drains every buffer.
+ */
+const REPORT_EVENT_MAX_AGE_MS = 10_000;
 
 function isReportToolName(tool: string): boolean {
   const name = REPORT_TOKENS_TOOL.name;
@@ -300,31 +314,42 @@ function isReportToolName(tool: string): boolean {
 /**
  * Cursor's `beforeMCPExecution` and Windsurf's `pre_mcp_tool_use` can block
  * the call, so both clients finish the hook before sending the `tools/call`.
+ * One drain on arrival takes in every pre-event written before this call, so
+ * an identical call's older event cannot match alone. After that a waiting
+ * call only reads what the processor's own poll drains.
  */
 export function reportCallMatcher(
   hooks: Pick<HookEventProcessor, 'poll' | 'pendingPreEvents'>,
   timing = REPORT_CALL_WAIT,
 ): ConversationReports['matchReportCall'] {
-  const claimed = new WeakSet<PreHookEvent>();
+  const consumed = new WeakSet<PreHookEvent>();
   return async (args) => {
+    hooks.poll();
     const inputHash = mcpArgumentsHash(args);
-    const deadline = Date.now() + timing.waitMs;
+    const arrivedAt = Date.now();
+    const deadline = arrivedAt + timing.waitMs;
     for (;;) {
-      hooks.poll();
       const matches = hooks
         .pendingPreEvents()
         .filter(
           (event) =>
-            !claimed.has(event) &&
+            !consumed.has(event) &&
             event.inputHash === inputHash &&
+            event.timestamp >= arrivedAt - REPORT_EVENT_MAX_AGE_MS &&
             isReportToolName(event.tool) &&
             isConversationId(event.sessionId),
         );
-      if (matches.length > 0 || Date.now() >= deadline) {
-        const conversations = [...new Set(matches.map((event) => event.sessionId as string))];
-        if (conversations.length === 1) claimed.add(matches[0]!);
-        return conversations;
+      const conversationIds = new Set(matches.map((event) => event.sessionId as string));
+      if (conversationIds.size > 1) return { kind: 'ambiguous' };
+      const [event] = matches;
+      if (event !== undefined) {
+        return {
+          kind: 'one',
+          conversationId: event.sessionId as string,
+          consume: () => consumed.add(event),
+        };
       }
+      if (Date.now() >= deadline) return { kind: 'none' };
       await new Promise((resolveWait) => setTimeout(resolveWait, timing.pollMs));
     }
   };

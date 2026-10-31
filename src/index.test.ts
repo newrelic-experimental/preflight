@@ -1275,6 +1275,7 @@ describe('stdio integration', () => {
           hook({ hook_event_name: 'afterShellExecution', conversation_id: conversation });
         }
         const args = {
+          report_id: 'r-5f0c2a9e',
           input_tokens: 1000,
           output_tokens: 200,
           thinking_tokens: 100,
@@ -1291,13 +1292,18 @@ describe('stdio integration', () => {
         expect(result.isError).toBeUndefined();
         const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
         expect(body.conversation_id).toBe('conv-reported');
-        const guessed = await client.callTool({
-          name: 'nr_observe_report_tokens',
-          arguments: { ...args, conversation_id: 'conv-guessed' },
-        });
-        expect(JSON.parse((guessed.content as Array<{ text: string }>)[0].text).error).toBe(
-          'conversation_unknown',
-        );
+        for (const [reportId, conversationId] of [
+          ['r-guessed-1', 'conv-guessed'],
+          ['r-hooked-1', 'conv-silent'],
+        ]) {
+          const unplaced = await client.callTool({
+            name: 'nr_observe_report_tokens',
+            arguments: { ...args, report_id: reportId, conversation_id: conversationId },
+          });
+          expect(JSON.parse((unplaced.content as Array<{ text: string }>)[0].text).error).toBe(
+            'conversation_unknown',
+          );
+        }
 
         let reported: Record<string, unknown> | null = null;
         let silent: Record<string, unknown> | null = null;

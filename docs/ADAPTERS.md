@@ -67,7 +67,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Known gaps:** Cursor has no `afterReadFile` event (`beforeReadFile` is emitted as a completed read directly) and no `beforeFileEdit` event (`afterFileEdit` is post-only). `afterShellExecution`/`afterMCPExecution` have no documented failure-outcome field, so success is reported unconditionally `true`.
 
-**Token self-report:** one Preflight engine serves every chat in a Cursor window and never resolves a session of its own, so its `nr_observe_report_tokens` matches each call to the call's own `beforeMCPExecution` hook event and adds the report to that chat's saved session. The agent passes no id, and the hooks must be installed. See [`nr_observe_report_tokens`](./COMMANDS_TABLE.md#nr_observe_report_tokens).
+**Token self-report:** one Preflight engine serves every chat in a Cursor window and never resolves a session of its own, so its `nr_observe_report_tokens` matches each call to the call's own `beforeMCPExecution` hook event and adds the report to that chat's saved session. The agent passes a new random `report_id` on every call and no conversation id, and the hooks must be installed. See [`nr_observe_report_tokens`](./COMMANDS_TABLE.md#nr_observe_report_tokens).
 
 **Setup:**
 

@@ -19,6 +19,7 @@ import { HookEventProcessor } from '../hooks/event-processor.js';
 import { processHook } from '../hooks/collector-script.js';
 import { GenericMcpAdapter } from '../platforms/generic-mcp-adapter.js';
 import { FeedbackCollector } from './workflow-tools.js';
+import type { ConversationReports } from './cost-tools.js';
 import {
   handleGetSessionStats,
   handleGetSessionTimeline,
@@ -937,23 +938,21 @@ describe('registerPendingTools()', () => {
     let server: ReturnType<typeof createServer>;
     let recorded: Array<{ conversationId: string; model: string; inputTokens: number }>;
     let matchCalls: number;
+    let consumed: number;
 
     afterEach(async () => {
       await client?.close();
       await server?.close();
     });
 
-    type Evidence = {
-      matches?: readonly string[];
-      seen?: readonly string[];
-      meta?: Record<string, unknown>;
-    };
+    type Evidence = { matches?: readonly string[]; meta?: Record<string, unknown> };
 
     async function connect(evidence: Evidence | null = {}): Promise<void> {
       const { registerPendingTools } = await import('./session-stats.js');
       const { conversationReportTokensTool } = await import('./cost-tools.js');
       recorded = [];
       matchCalls = 0;
+      consumed = 0;
       server = createServer({ name: 'pending-report', version: '0.0.1' });
       const [ct, st] = InMemoryTransport.createLinkedPair();
       client = new Client({ name: 'test', version: '1.0.0' });
@@ -965,9 +964,11 @@ describe('registerPendingTools()', () => {
             tool: conversationReportTokensTool('trajectory_id'),
             matchReportCall: async () => {
               matchCalls += 1;
-              return evidence.matches ?? [];
+              const [conversationId, ...others] = evidence.matches ?? [];
+              if (conversationId === undefined) return { kind: 'none' };
+              if (others.length > 0) return { kind: 'ambiguous' };
+              return { kind: 'one', conversationId, consume: () => (consumed += 1) };
             },
-            hasSeen: (id) => (evidence.seen ?? []).includes(id),
             record: (conversationId, usage, model) => {
               recorded.push({ conversationId, model, inputTokens: usage.inputTokens });
               return { costUsd: 0.25, conversationTotalCostUsd: 0.75 };
@@ -978,7 +979,12 @@ describe('registerPendingTools()', () => {
       await Promise.all([server.server.connect(st), client.connect(ct)]);
     }
 
-    const tokens = { input_tokens: 1000, output_tokens: 200, model: 'claude-sonnet-4-6' };
+    const tokens = {
+      report_id: 'r-5f0c2a9e',
+      input_tokens: 1000,
+      output_tokens: 200,
+      model: 'claude-sonnet-4-6',
+    };
     const AGY_META = { 'antigravity.google/conversation_id': 'agy-1' };
 
     async function report(args: Record<string, unknown>, meta?: Record<string, unknown>) {
@@ -993,14 +999,15 @@ describe('registerPendingTools()', () => {
       };
     }
 
-    it("is listed with conversation_id optional, described by the platform's own field", async () => {
+    it("is listed requiring a fresh report_id, with conversation_id optional and named by the platform's field", async () => {
       await connect();
       const tool = (await client.listTools()).tools.find(
         (t) => t.name === 'nr_observe_report_tokens',
       );
+      expect(tool?.inputSchema.required).toContain('report_id');
       expect(tool?.inputSchema.required).not.toContain('conversation_id');
       expect(tool?.inputSchema.properties).toHaveProperty('conversation_id');
-      expect(tool?.description).toContain('do not need to pass conversation_id');
+      expect(tool?.description).toContain('Set report_id to a new random value');
       expect(tool?.description).toContain('trajectory_id');
     });
 
@@ -1011,6 +1018,7 @@ describe('registerPendingTools()', () => {
       expect(recorded).toEqual([
         { conversationId: 'conv-A', model: 'claude-sonnet-4-6', inputTokens: 1000 },
       ]);
+      expect(consumed).toBe(1);
       expect(body).toEqual({
         recorded: true,
         conversation_id: 'conv-A',
@@ -1018,13 +1026,6 @@ describe('registerPendingTools()', () => {
         conversation_total_cost_usd: 0.75,
         model: 'claude-sonnet-4-6',
       });
-    });
-
-    it('accepts a conversation_id the engine has seen hook events for when the call has none', async () => {
-      await connect({ matches: [], seen: ['conv-real'] });
-      const { body } = await report({ conversation_id: 'conv-real', ...tokens });
-      expect(body.conversation_id).toBe('conv-real');
-      expect(recorded.map((r) => r.conversationId)).toEqual(['conv-real']);
     });
 
     it("records to the conversation Antigravity stamps in the call's _meta without waiting on hooks", async () => {
@@ -1037,61 +1038,56 @@ describe('registerPendingTools()', () => {
 
     const withId = (conversation_id: unknown) => ({ conversation_id, ...tokens });
     it.each([
-      [
-        'a guessed id no hook event backs',
-        { seen: ['conv-real'] },
-        withId('conv-guess'),
-        'unknown',
-      ],
+      ['a guessed id no hook event or _meta backs', {}, withId('conv-guess'), 'unknown'],
       ['a report it cannot place', {}, tokens, 'unknown'],
-      [
-        'an id unlike the hook event one',
-        { matches: ['A'], seen: ['B'] },
-        withId('B'),
-        'id_mismatch',
-      ],
-      [
-        'an id unlike the _meta one',
-        { seen: ['B', 'agy-1'], meta: AGY_META },
-        withId('B'),
-        'id_mismatch',
-      ],
+      ['an id unlike the hook event one', { matches: ['A'] }, withId('B'), 'id_mismatch'],
+      ['an id unlike the _meta one', { meta: AGY_META }, withId('B'), 'id_mismatch'],
       ['a call two conversations made', { matches: ['A', 'B'] }, tokens, 'ambiguous'],
-      ['an unplaced report before its bad tokens', {}, { input_tokens: -1, model: '' }, 'unknown'],
-    ])('rejects %s and records nothing', async (_case, evidence, args, error) => {
-      await connect(evidence);
-      const { isError, body } = await report(args, (evidence as Evidence).meta);
-      expect(isError).toBe(true);
-      expect(body.error).toBe(`conversation_${error}`);
-      expect(recorded).toEqual([]);
-    });
+    ])(
+      'rejects %s, records nothing and uses up no hook event',
+      async (_case, evidence, args, error) => {
+        await connect(evidence);
+        const { isError, body } = await report(args, (evidence as Evidence).meta);
+        expect(isError).toBe(true);
+        expect(body.error).toBe(`conversation_${error}`);
+        expect(recorded).toEqual([]);
+        expect(consumed).toBe(0);
+      },
+    );
 
     it.each(['../sessions/x', 'a'.repeat(129), 'unknown', 'pending-1700000000000', 42])(
       'rejects conversation_id %s, which names no savable conversation, before the tokens',
       async (conversationId) => {
-        await connect({ seen: [String(conversationId)] });
+        await connect({ matches: [String(conversationId)] });
         const { body } = await report({ conversation_id: conversationId, input_tokens: -1 });
         expect(body.error).toBe('invalid_conversation_id');
+        expect(body.message).toContain('pending-, local- or proxy-');
         expect(recorded).toEqual([]);
       },
     );
 
-    it('rejects a malformed token report with a stable code once the conversation is placed', async () => {
+    it.each([
+      ['a malformed token count', { ...tokens, input_tokens: -1 }, 'input_tokens'],
+      ['a missing report_id', { ...tokens, report_id: undefined }, 'report_id'],
+      ['a short report_id', { ...tokens, report_id: '1' }, 'report_id'],
+    ])('rejects %s before looking for its hook event', async (_case, args, field) => {
       await connect({ matches: ['conv-A'] });
-      const { body } = await report({ input_tokens: -1, output_tokens: 1, model: 'm' });
+      const { body } = await report(args);
       expect(body).toEqual({
         error: 'invalid_token_report',
-        message: expect.stringContaining('input_tokens'),
+        message: expect.stringContaining(field),
       });
       expect(recorded).toEqual([]);
+      expect(matchCalls).toBe(0);
     });
 
-    it('rejects an invalid model name before recording', async () => {
+    it('rejects an invalid model name before looking for its hook event', async () => {
       await connect({ matches: ['conv-A'] });
       const { isError, body } = await report({ ...tokens, model: 'bad model!' });
       expect(isError).toBe(true);
       expect(body.error).toBe('invalid_model_name');
       expect(recorded).toEqual([]);
+      expect(matchCalls).toBe(0);
     });
 
     it('stays unlisted and unresolved without conversation reports', async () => {
@@ -1105,26 +1101,43 @@ describe('registerPendingTools()', () => {
   });
 
   describe('matching a report call to its hook pre-event', () => {
-    const args = { input_tokens: 1000, output_tokens: 200, model: 'claude-sonnet-4-6' };
+    const args = {
+      report_id: 'r-5f0c2a9e',
+      input_tokens: 1000,
+      output_tokens: 200,
+      model: 'claude-sonnet-4-6',
+    };
     let storage: string;
+    let store: LocalStore;
     let processor: HookEventProcessor;
-    let match: (a: Record<string, unknown>) => Promise<readonly string[]>;
+    let match: ConversationReports['matchReportCall'];
+    let reportCallMatcherFor: typeof import('./cost-tools.js').reportCallMatcher;
     const savedEnv = { ...process.env };
+    const conversationsFor = async (a: Record<string, unknown>) => {
+      const found = await match(a);
+      return found.kind === 'one' ? [found.conversationId] : found.kind;
+    };
+    const drainingProcessor = () =>
+      new HookEventProcessor({
+        store,
+        drainAllSessions: true,
+        onRecord: () => undefined,
+        pollIntervalMs: 10,
+      });
 
     beforeEach(async () => {
-      const { reportCallMatcher } = await import('./cost-tools.js');
+      ({ reportCallMatcher: reportCallMatcherFor } = await import('./cost-tools.js'));
       storage = mkdtempSync(resolve(tmpdir(), 'nr-report-match-'));
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = storage;
-      processor = new HookEventProcessor({
-        store: new LocalStore(storage),
-        drainAllSessions: true,
-        onRecord: () => undefined,
-      });
-      match = reportCallMatcher(processor, { waitMs: 300, pollMs: 10 });
+      store = new LocalStore(storage);
+      processor = drainingProcessor();
+      processor.start();
+      match = reportCallMatcherFor(processor, { waitMs: 300, pollMs: 10 });
     });
 
     afterEach(() => {
+      jest.restoreAllMocks();
       processor.stop();
       process.env = { ...savedEnv };
       rmSync(storage, { recursive: true, force: true });
@@ -1147,67 +1160,81 @@ describe('registerPendingTools()', () => {
     it("matches Cursor's JSON-string tool_input regardless of key order and spacing", async () => {
       cursorPre(
         'conv-1',
-        '{ "model": "claude-sonnet-4-6", "output_tokens": 200, "input_tokens": 1000 }',
+        '{ "model": "claude-sonnet-4-6", "output_tokens": 200, "input_tokens": 1000, "report_id": "r-5f0c2a9e" }',
       );
-      expect(await match(args)).toEqual(['conv-1']);
+      expect(await conversationsFor(args)).toEqual(['conv-1']);
     });
 
     it('waits for a hook event that reaches the buffer after the call', async () => {
       setTimeout(() => cursorPre('conv-late', JSON.stringify(args)), 100);
-      expect(await match(args)).toEqual(['conv-late']);
+      expect(await conversationsFor(args)).toEqual(['conv-late']);
     });
 
     it.each([
       ['preflight-nr_observe_report_tokens', ['conv-1']],
       ['mcp_preflight_nr_observe_report_tokens', ['conv-1']],
-      ['xnr_observe_report_tokens', []],
-      ['nr_observe_get_cost_breakdown', []],
+      ['xnr_observe_report_tokens', 'none'],
+      ['nr_observe_get_cost_breakdown', 'none'],
     ])('treats hook tool name %s as the report tool: %j', async (tool, expected) => {
       cursorPre('conv-1', JSON.stringify(args), tool);
-      expect(await match(args)).toEqual(expected);
+      expect(await conversationsFor(args)).toEqual(expected);
     });
 
-    it('ignores a hook event for different arguments', async () => {
-      cursorPre('conv-1', JSON.stringify({ ...args, input_tokens: 999 }));
-      expect(await match(args)).toEqual([]);
+    it.each([
+      ['different tokens', { ...args, input_tokens: 999 }],
+      ['another report_id', { ...args, report_id: 'r-0d41b7c3' }],
+    ])('ignores a hook event for %s', async (_case, eventArgs) => {
+      cursorPre('conv-1', JSON.stringify(eventArgs));
+      expect(await conversationsFor(args)).toBe('none');
     });
 
-    it('sees a conversation whose hook events are still unpolled', async () => {
-      const { conversationSeenCheck } = await import('./cost-tools.js');
-      const seen = new Set<string>();
-      const ingesting = new HookEventProcessor({
-        store: new LocalStore(storage),
-        drainAllSessions: true,
-        onRecord: (record) => {
-          if (record.sessionId) seen.add(record.sessionId);
-        },
-      });
-      const hasSeen = conversationSeenCheck(ingesting, (id) => seen.has(id));
-      for (const event of ['beforeShellExecution', 'afterShellExecution']) {
-        processHook(
-          JSON.stringify({
-            hook_event_name: event,
-            conversation_id: 'conv-fresh',
-            command: 'ls',
-          }),
-        );
-      }
-      expect(seen.has('conv-fresh')).toBe(false);
-      expect(hasSeen('conv-fresh')).toBe(true);
-      expect(hasSeen('conv-guess')).toBe(false);
-      ingesting.stop();
+    it('ignores a pre-event from more than 10 seconds before the call', async () => {
+      const now = Date.now();
+      jest.spyOn(Date, 'now').mockReturnValue(now - 10_001);
+      cursorPre('conv-stale', JSON.stringify(args));
+      jest.restoreAllMocks();
+      expect(await conversationsFor(args)).toBe('none');
     });
 
-    it('lets one hook event answer one call only', async () => {
+    it('lets one consumed hook event answer one call only', async () => {
       cursorPre('conv-1', JSON.stringify(args));
-      expect(await match(args)).toEqual(['conv-1']);
-      expect(await match(args)).toEqual([]);
+      const first = await match(args);
+      expect(first).toMatchObject({ kind: 'one', conversationId: 'conv-1' });
+      if (first.kind === 'one') first.consume();
+      expect(await conversationsFor(args)).toBe('none');
     });
 
-    it('returns both conversations when two made the identical call', async () => {
+    it('leaves a hook event for the call that records it', async () => {
+      cursorPre('conv-1', JSON.stringify(args));
+      expect(await conversationsFor(args)).toEqual(['conv-1']);
+      expect(await conversationsFor(args)).toEqual(['conv-1']);
+    });
+
+    it('calls the match ambiguous when two conversations made the identical call', async () => {
       cursorPre('conv-1', JSON.stringify(args));
       cursorPre('conv-2', JSON.stringify(args));
-      expect([...(await match(args))].sort()).toEqual(['conv-1', 'conv-2']);
+      expect(await conversationsFor(args)).toBe('ambiguous');
+    });
+
+    it('does not drain hook buffers into a stopped processor', async () => {
+      processor.stop();
+      cursorPre('conv-1', JSON.stringify(args));
+      expect(await conversationsFor(args)).toBe('none');
+      const next = drainingProcessor();
+      next.start();
+      try {
+        expect(await reportCallMatcherFor(next)(args)).toMatchObject({ conversationId: 'conv-1' });
+      } finally {
+        next.stop();
+      }
+    });
+
+    it("drains the hook buffer once per call plus the processor's own pace, however long calls wait", async () => {
+      const drains = jest.spyOn(store, 'drainAllBuffers');
+      await Promise.all(
+        Array.from({ length: 5 }, (_, i) => match({ ...args, report_id: `r-wait-${i}` })),
+      );
+      expect(drains.mock.calls.length).toBeLessThanOrEqual(5 + 300 / 10 + 2);
     });
   });
 
