@@ -1987,57 +1987,6 @@ describe('collector-script', () => {
       expect(events[1]).toMatchObject(expectedLine('traj-reporting', 'windsurf'));
     });
 
-    it.each([
-      ['a reply that recorded the report itself', 'nr_observe_report_tokens', '{"recorded":true}'],
-      [
-        'a rejected call',
-        'nr_observe_report_tokens',
-        '{"error":"invalid_token_report","message":"bad"}',
-      ],
-      [
-        'a reply for another report_id',
-        'nr_observe_report_tokens',
-        hookReply.replace('7c1d', '0000'),
-      ],
-      ['a lookalike tool name', 'xnr_observe_report_tokens', hookReply],
-      ['no result at all', 'nr_observe_report_tokens', undefined],
-      [
-        "a pending engine's reply for a tool it does not list",
-        'nr_observe_report_tokens',
-        JSON.stringify({
-          isError: true,
-          content: [
-            { type: 'text', text: JSON.stringify({ error: 'session_id not yet resolved' }) },
-          ],
-        }),
-      ],
-      [
-        'an error result that quotes the reply',
-        'nr_observe_report_tokens',
-        JSON.stringify({ isError: true, content: [{ type: 'text', text: hookReply }] }),
-      ],
-      [
-        'an error message that quotes the reply',
-        'nr_observe_report_tokens',
-        JSON.stringify({
-          content: [{ type: 'text', text: JSON.stringify({ error: 'x', message: hookReply }) }],
-        }),
-      ],
-    ])('adds no usage line for %s', (_label, toolName, result) => {
-      processHook(
-        JSON.stringify({
-          hook_event_name: 'afterMCPExecution',
-          conversation_id: 'conv-reporting',
-          mcp_server_name: 'preflight',
-          tool_name: toolName,
-          tool_input: JSON.stringify(report),
-          ...(result !== undefined && { result_json: result }),
-        }),
-      );
-
-      expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post']);
-    });
-
     const cursorReportHook = (conversationId: string, overrides: Record<string, unknown> = {}) =>
       JSON.stringify({
         hook_event_name: 'afterMCPExecution',
@@ -2048,11 +1997,31 @@ describe('collector-script', () => {
         result_json: JSON.stringify({ content: [{ type: 'text', text: hookReply }] }),
         ...overrides,
       });
+    const errorReply = (text: string) =>
+      JSON.stringify({ isError: true, content: [{ type: 'text', text }] });
 
     it.each([
+      ['a reply that recorded the report itself', { result_json: '{"recorded":true}' }],
+      ['a rejected call', { result_json: '{"error":"invalid_token_report","message":"bad"}' }],
+      ['a reply for another report_id', { result_json: hookReply.replace('7c1d', '0000') }],
+      ['a lookalike tool name', { tool_name: 'xnr_observe_report_tokens' }],
       ['a prefixed tool name', { tool_name: 'preflight-nr_observe_report_tokens' }],
       ["another server's tool of the same name", { mcp_server_name: 'github' }],
       ['no server name', { mcp_server_name: undefined }],
+      ['no result at all', { result_json: undefined }],
+      [
+        "a pending engine's reply for a tool it does not list",
+        { result_json: errorReply(JSON.stringify({ error: 'session_id not yet resolved' })) },
+      ],
+      ['an error result that quotes the reply', { result_json: errorReply(hookReply) }],
+      [
+        'an error message that quotes the reply',
+        {
+          result_json: JSON.stringify({
+            content: [{ type: 'text', text: JSON.stringify({ error: 'x', message: hookReply }) }],
+          }),
+        },
+      ],
     ])('adds no usage line for %s', (_label, overrides) => {
       processHook(cursorReportHook('conv-reporting', overrides));
 
