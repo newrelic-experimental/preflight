@@ -232,10 +232,7 @@ async function resolveReportConversation(
     return { rejection: 'invalid_conversation_id' };
   }
   const stamped = meta?.[ANTIGRAVITY_CONVERSATION_META];
-  const observed =
-    isConversationId(stamped) && reports.hasSeen(stamped)
-      ? [stamped]
-      : await reports.matchReportCall(args);
+  const observed = isConversationId(stamped) ? [stamped] : await reports.matchReportCall(args);
   if (observed.length > 1) return { rejection: 'conversation_ambiguous' };
   const [conversationId] = observed;
   if (conversationId !== undefined) {
