@@ -11,7 +11,7 @@ import {
   utimesSync,
   constants as fsConstants
 } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve as resolve2, dirname } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 
@@ -73,22 +73,38 @@ function hookEventFromArg(arg) {
   );
 }
 
+// src/hooks/session-breadcrumbs.ts
+import { resolve } from "node:path";
+
+// src/platforms/types.ts
+var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
+
+// src/hooks/session-breadcrumbs.ts
+var BREADCRUMBS_DIR = "breadcrumbs";
+var WRITER_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+function breadcrumbRoot(storagePath, writer) {
+  return resolve(storagePath, BREADCRUMBS_DIR, writer);
+}
+function breadcrumbWriter(engine) {
+  return engine !== void 0 && WRITER_RE.test(engine) ? engine : UNATTRIBUTED_BREADCRUMB_WRITER;
+}
+
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
 var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
-var DEFAULT_STORAGE_DIR = resolve(homedir(), ".newrelic-preflight");
+var DEFAULT_STORAGE_DIR = resolve2(homedir(), ".newrelic-preflight");
 function getBufferPath(sessionId) {
   if (process.env.NEW_RELIC_AI_MCP_BUFFER_PATH !== void 0) {
     return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   }
   const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
   const safeId = typeof sessionId === "string" && SESSION_ID_RE.test(sessionId) ? sessionId : "unknown";
-  return resolve(storageDir, `buffer-${safeId}.jsonl`);
+  return resolve2(storageDir, `buffer-${safeId}.jsonl`);
 }
 var HIGH_SECURITY_FROM_FILE = (() => {
   for (const dir of [".newrelic-preflight", ".nr-ai-observe"]) {
     try {
-      const configPath = resolve(homedir(), dir, "config.json");
+      const configPath = resolve2(homedir(), dir, "config.json");
       if (existsSync(configPath)) {
         const config = JSON.parse(readFileSync(configPath, "utf-8"));
         return config.highSecurity === true;
@@ -178,18 +194,17 @@ function getLinuxAncestorPids(startPpid, maxDepth = 5) {
   return pids;
 }
 var _breadcrumbWriteFailed = false;
-function writePpidBreadcrumb(sessionId) {
+function writePpidBreadcrumb(sessionId, root) {
   if (!SESSION_ID_RE.test(sessionId)) return;
   const ppid = process.ppid;
   if (typeof ppid !== "number" || ppid <= 0) return;
   try {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    const breadcrumbDir = resolve(storageDir, "session-by-ppid");
+    const breadcrumbDir = resolve2(root, "session-by-ppid");
     mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
     const pids = getLinuxAncestorPids(ppid);
     let wroteAny = false;
     for (const pid of pids) {
-      const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
+      const breadcrumbPath = resolve2(breadcrumbDir, `${pid}.txt`);
       if (existsSync(breadcrumbPath)) {
         try {
           if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
@@ -219,15 +234,14 @@ function writePpidBreadcrumb(sessionId) {
   }
 }
 var _cwdBreadcrumbWriteFailed = false;
-function writeCwdBreadcrumb(sessionId, cwd) {
+function writeCwdBreadcrumb(sessionId, cwd, root) {
   if (!SESSION_ID_RE.test(sessionId)) return;
   if (typeof cwd !== "string" || cwd.length === 0) return;
   try {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    const breadcrumbDir = resolve(storageDir, "session-by-cwd");
+    const breadcrumbDir = resolve2(root, "session-by-cwd");
     mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
     const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
-    const breadcrumbPath = resolve(breadcrumbDir, `${sanitizedCwd}.txt`);
+    const breadcrumbPath = resolve2(breadcrumbDir, `${sanitizedCwd}.txt`);
     if (existsSync(breadcrumbPath)) {
       try {
         if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
@@ -481,8 +495,12 @@ function processHook(raw, cliEvent) {
   }
   const sessionId = data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
   if (typeof data.session_id === "string" && data.session_id.length > 0) {
-    writePpidBreadcrumb(data.session_id);
-    writeCwdBreadcrumb(data.session_id, data.cwd);
+    const root = breadcrumbRoot(
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR,
+      breadcrumbWriter(detectStampPlatform())
+    );
+    writePpidBreadcrumb(data.session_id, root);
+    writeCwdBreadcrumb(data.session_id, data.cwd, root);
   }
   const eventName = (data.hook_event_name ?? data.agent_action_name)?.toLowerCase();
   const toolName = data.tool_name ?? "unknown";
