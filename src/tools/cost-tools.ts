@@ -106,7 +106,7 @@ function invalidTokenReport(err: unknown): ToolCallResult {
     err instanceof z.ZodError
       ? err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
       : String(err);
-  return errorResult(`Invalid token report: ${message}`);
+  return errorResult('invalid_token_report', message);
 }
 
 type ParsedTokenReport =

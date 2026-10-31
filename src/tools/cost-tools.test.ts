@@ -656,7 +656,9 @@ describe('registerCostTools()', () => {
       model: 'claude-sonnet-4',
     });
     expect(result.isError).toBe(true);
-    const body = JSON.parse(result.content[0]!.text);
-    expect(body.error).toContain('Invalid token report');
+    expect(JSON.parse(result.content[0]!.text)).toEqual({
+      error: 'invalid_token_report',
+      message: expect.stringContaining('input_tokens'),
+    });
   });
 });

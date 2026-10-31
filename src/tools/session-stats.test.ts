@@ -699,7 +699,10 @@ describe('MCP protocol integration — cost tools', () => {
     const content = result.content as Array<{ type: string; text: string }>;
     const body = JSON.parse(content[0].text);
 
-    expect(body.error).toContain('Invalid token report');
+    expect(body).toEqual({
+      error: 'invalid_token_report',
+      message: expect.stringContaining('input_tokens'),
+    });
   });
 
   it('calling nr_observe_report_tokens with missing model returns error', async () => {
@@ -716,7 +719,10 @@ describe('MCP protocol integration — cost tools', () => {
     const content = result.content as Array<{ type: string; text: string }>;
     const body = JSON.parse(content[0].text);
 
-    expect(body.error).toContain('Invalid token report');
+    expect(body).toEqual({
+      error: 'invalid_token_report',
+      message: expect.stringContaining('model'),
+    });
   });
 
   it('calling nr_observe_report_tokens with invalid quality enum returns error', async () => {
@@ -1064,6 +1070,16 @@ describe('registerPendingTools()', () => {
         expect(recorded).toEqual([]);
       },
     );
+
+    it('rejects a malformed token report with a stable code once the conversation is placed', async () => {
+      await connect({ matches: ['conv-A'] });
+      const { body } = await report({ input_tokens: -1, output_tokens: 1, model: 'm' });
+      expect(body).toEqual({
+        error: 'invalid_token_report',
+        message: expect.stringContaining('input_tokens'),
+      });
+      expect(recorded).toEqual([]);
+    });
 
     it('rejects an invalid model name before recording', async () => {
       await connect({ matches: ['conv-A'] });
