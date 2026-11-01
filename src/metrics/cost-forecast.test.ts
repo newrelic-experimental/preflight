@@ -92,7 +92,7 @@ describe('buildCostForecast', () => {
     });
 
     it('EoD and EoW use session rate when daily anchor is absent', () => {
-      const nowMs = Date.now();
+      const nowMs = new Date(2024, 0, 3, 14).getTime();
       const sessionStartMs = nowMs - 60 * 60_000; // 1 h
       const f = buildCostForecastFromInputs({ sessionSpentUsd: 1, sessionStartMs }, nowMs);
       // Without anchor, session rate is used for both projections.
@@ -131,7 +131,7 @@ describe('buildCostForecast', () => {
       expect(f.forecastEndOfWeekUsd).toBeNull();
     });
 
-    it('projects EoD and EoW once the daily window reaches 30 minutes', () => {
+    it('projects EoD and EoW once the daily window is past the minimum', () => {
       const f = buildCostForecastFromInputs(
         {
           sessionSpentUsd: SPEND_USD,
@@ -144,6 +144,71 @@ describe('buildCostForecast', () => {
       expect(f.forecastEndOfDayUsd).not.toBeNull();
       expect(f.forecastEndOfWeekUsd).not.toBeNull();
       expect(f.forecastEndOfDayUsd!).toBeLessThanOrEqual(f.forecastEndOfWeekUsd!);
+    });
+
+    it('holds at 9m59s and projects at exactly 10m00s', () => {
+      const at = (windowMs: number) =>
+        buildCostForecastFromInputs(
+          {
+            sessionSpentUsd: SPEND_USD,
+            sessionStartMs: nowMs - windowMs,
+            dailySpentUsd: SPEND_USD,
+            dailyFirstActivityMs: nowMs - windowMs,
+          },
+          nowMs,
+        );
+      const justUnder = at(10 * 60_000 - 1_000);
+      const exactly = at(10 * 60_000);
+      expect(justUnder.forecastEndOfDayUsd).toBeNull();
+      expect(justUnder.forecastSessionEndUsd).toBeNull();
+      expect(exactly.forecastEndOfDayUsd).not.toBeNull();
+      expect(exactly.forecastSessionEndUsd).not.toBeNull();
+    });
+
+    it('holds the session-end forecast while the session is under 10 minutes', () => {
+      const f = buildCostForecastFromInputs(
+        { sessionSpentUsd: SPEND_USD, sessionStartMs: nowMs - 15_000 },
+        nowMs,
+      );
+      expect(f.forecastSessionEndUsd).toBeNull();
+    });
+
+    it('names the minimum window and the moderate window in the confidence note', () => {
+      const low = buildCostForecast(SPEND_USD, nowMs - 5 * 60_000, nowMs);
+      const moderate = buildCostForecast(SPEND_USD, nowMs - 15 * 60_000, nowMs);
+      const reasonable = buildCostForecast(SPEND_USD, nowMs - 45 * 60_000, nowMs);
+      expect(low.confidenceNote).toContain('10 minutes');
+      expect(moderate.confidenceNote).toContain('30 minutes');
+      expect(reasonable.confidenceNote).toContain('30+ minutes');
+    });
+
+    it('holds EoD and EoW for a cross-midnight session with no daily anchor', () => {
+      const justAfterMidnight = new Date(2024, 0, 3, 0, 5).getTime();
+      const f = buildCostForecastFromInputs(
+        { sessionSpentUsd: 10, sessionStartMs: justAfterMidnight - 6 * 60 * 60_000 },
+        justAfterMidnight,
+      );
+      expect(f.forecastEndOfDayUsd).toBeNull();
+      expect(f.forecastEndOfWeekUsd).toBeNull();
+      expect(f.confidenceNote).not.toMatch(/Reasonable/i);
+    });
+
+    it('uses the day-wide window when other sessions already spent today', () => {
+      const f = buildCostForecastFromInputs(
+        {
+          sessionSpentUsd: SPEND_USD,
+          sessionStartMs: nowMs - 15 * 60_000,
+          dailySpentUsd: SPEND_USD,
+          dailyFirstActivityMs: nowMs - 15_000,
+          priorDailySpentUsd: 6,
+          priorDailyFirstActivityMs: nowMs - 6 * 60 * 60_000,
+        },
+        nowMs,
+      );
+      expect(f.forecastEndOfDayUsd).not.toBeNull();
+      const dayRatePerMs = (6 + SPEND_USD) / (6 * 60 * 60_000);
+      const msUntilEod = new Date(2024, 0, 4).getTime() - nowMs;
+      expect(f.forecastEndOfDayUsd!).toBeCloseTo(SPEND_USD + dayRatePerMs * msUntilEod, 6);
     });
 
     it('grades confidence on the daily window, not the session, after a midnight crossing', () => {

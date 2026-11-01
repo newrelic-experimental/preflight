@@ -30,6 +30,14 @@ export interface CostForecastInputs {
    */
   readonly dailySpentUsd?: number;
   readonly dailyFirstActivityMs?: number | null;
+  /**
+   * Today's spend from other sessions and the earliest moment they were
+   * active today. When present, the day's burn rate and window span every
+   * session, so a session opened late in the day still has a supported
+   * forecast. The forecast stays instance-only: callers add the prior spend.
+   */
+  readonly priorDailySpentUsd?: number;
+  readonly priorDailyFirstActivityMs?: number | null;
 }
 
 /**
