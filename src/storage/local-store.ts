@@ -13,7 +13,13 @@ import { randomBytes } from 'node:crypto';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
-import { appendToHookBuffer, readSealed, takeClaimText, textBeforeSeal } from './hook-buffer.js';
+import {
+  appendToHookBuffer,
+  readSealed,
+  sealHookBuffer,
+  takeClaimText,
+  textBeforeSeal,
+} from './hook-buffer.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -294,9 +300,9 @@ export class LocalStore {
    * is read, so concurrent drainers never return an event twice, and a claim
    * left by a drainer that died mid-drain is adopted by another.
    *
-   * One window still loses events (#1045): a hook that opened the buffer
-   * before the rename and writes after the claim was read appends to a file
-   * that has already been unlinked.
+   * Reading a claim appends a seal to it first. A hook that opened the buffer
+   * before the rename and whose line lands after the seal writes the line
+   * again to the live buffer, so it is drained on a later pass (#1045).
    */
   drainBuffer(): HookEvent[] {
     const claims = this.listClaims(dirname(this.bufferPath), basename(this.bufferPath));
@@ -812,6 +818,7 @@ export class LocalStore {
       const archivedPath = `${bufferPath}.archived-${now}`;
       try {
         renameSync(bufferPath, archivedPath);
+        sealHookBuffer(archivedPath);
         archived++;
         logger.info('Archived orphan buffer', { sessionId, archivedPath });
         // Only remove the heartbeat once the archive rename has succeeded.

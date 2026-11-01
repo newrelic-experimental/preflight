@@ -3,17 +3,19 @@ import {
   constants,
   fstatSync,
   openSync,
+  readFileSync,
   readSync,
   statSync,
   unlinkSync,
   writeSync,
 } from 'node:fs';
 
-const DRAIN_SEAL = '\0preflight-drain-seal\n';
+export const DRAIN_SEAL = '\0preflight-drain-seal\n';
 const TORN_SEAL_RE = /\0[a-z-]*/g;
 
 const MAX_REDOS = 5;
 const MAX_OPENS = 100;
+const READ_ONLY_CODES: ReadonlySet<string | undefined> = new Set(['EACCES', 'EPERM', 'EROFS']);
 
 type Landing = 'kept' | 'moved' | 'redo';
 
@@ -91,14 +93,34 @@ export function appendToHookBuffer(path: string, text: string): void {
   throw new Error(`Hook buffer write raced a drain on all attempts and was not kept: ${path}`);
 }
 
+function writeSeal(fd: number, path: string): void {
+  if (writeSync(fd, DRAIN_SEAL) < Buffer.byteLength(DRAIN_SEAL)) {
+    throw new Error(`Short write while sealing ${path}`);
+  }
+}
+
+export function sealHookBuffer(path: string): void {
+  const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND);
+  try {
+    writeSeal(fd, path);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function readSealed(path: string): string {
-  const fd = openSync(path, constants.O_RDWR | constants.O_APPEND);
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDWR | constants.O_APPEND);
+  } catch (err) {
+    if (!READ_ONLY_CODES.has((err as NodeJS.ErrnoException).code)) throw err;
+    // No writer can open this file to append either, so no seal is needed.
+    return textBeforeSeal(readFileSync(path, 'utf-8'));
+  }
   try {
     const head = readRange(fd, 0, fstatSync(fd).size);
     if (head.includes(DRAIN_SEAL)) return textBeforeSeal(head.toString('utf-8'));
-    if (writeSync(fd, DRAIN_SEAL) < Buffer.byteLength(DRAIN_SEAL)) {
-      throw new Error(`Short write while sealing ${path}`);
-    }
+    writeSeal(fd, path);
     const tail = readRange(fd, head.length, fstatSync(fd).size);
     return textBeforeSeal(Buffer.concat([head, tail]).toString('utf-8'));
   } finally {

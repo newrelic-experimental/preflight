@@ -2,7 +2,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import * as fs from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { appendToHookBuffer } from './hook-buffer.js';
+import { appendToHookBuffer, DRAIN_SEAL as SEAL } from './hook-buffer.js';
 import { LocalStore } from './local-store.js';
 import type { HookEvent } from './types.js';
 
@@ -14,8 +14,6 @@ const mockHooks: {
   unlink: ((path: string) => void) | null;
   listOrder: ((dir: string, names: string[]) => string[]) | null;
 } = { rename: null, drainRead: null, opened: null, write: null, unlink: null, listOrder: null };
-
-const SEAL = '\0preflight-drain-seal\n';
 
 function textOf(data: unknown): string {
   return typeof data === 'string' ? data : Buffer.from(data as Uint8Array).toString('utf-8');
@@ -55,10 +53,6 @@ jest.mock('node:fs', () => {
         ...rest,
       );
     }) as typeof real.writeSync,
-    writeFileSync: ((file: fs.PathOrFileDescriptor, data: unknown, options?: unknown) => {
-      if (typeof file === 'number') mockHooks.write?.(textOf(data));
-      (real.writeFileSync as (f: unknown, d: unknown, o?: unknown) => void)(file, data, options);
-    }) as typeof real.writeFileSync,
     unlinkSync: (path: fs.PathLike) => {
       const hook = mockHooks.unlink;
       mockHooks.unlink = null;
@@ -429,16 +423,32 @@ describe('hook writes racing a drain', () => {
     fs.writeFileSync(bufferPath, line('A'));
     const drainer = new LocalStore(dir, SESSION);
     let duringWrite: HookEvent[] = [];
-    mockHooks.opened = (path) => {
-      if (path !== bufferPath) return;
-      mockHooks.opened = null;
+    mockHooks.write = (text) => {
+      if (text !== line('B')) return;
+      mockHooks.write = null;
       duringWrite = drainer.drainBuffer();
     };
 
     appendToHookBuffer(bufferPath, line('B'));
 
-    expect(tools([...duringWrite, ...drainer.drainBuffer()])).toEqual(['A', 'B']);
+    expect(tools(duringWrite)).toEqual(['A']);
+    expect(tools(drainer.drainBuffer())).toEqual(['B']);
     expect(leftovers()).toEqual([]);
+  });
+
+  it('keeps a write that opened an orphan buffer before GC archived it', () => {
+    fs.writeFileSync(bufferPath, line('A'));
+    fs.writeFileSync(resolve(dir, `active-${SESSION}.pid`), String(DEAD_PID));
+    const store = new LocalStore(dir, SESSION);
+    mockHooks.write = (text) => {
+      if (text !== line('B')) return;
+      mockHooks.write = null;
+      expect(store.gcOrphanBuffers(new Set()).archived).toBe(1);
+    };
+
+    appendToHookBuffer(bufferPath, line('B'));
+
+    expect(tools(store.drainBuffer())).toEqual(['B']);
   });
 
   it('returns a line written to a claim just before its seal, exactly once', () => {

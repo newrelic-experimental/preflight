@@ -2,9 +2,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import * as fs from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { appendToHookBuffer, takeClaimText } from './hook-buffer.js';
-
-const SEAL = '\0preflight-drain-seal\n';
+import { appendToHookBuffer, DRAIN_SEAL as SEAL, takeClaimText } from './hook-buffer.js';
 
 const mockHooks: {
   beforeWrite: ((text: string) => void) | null;
@@ -65,29 +63,6 @@ jest.mock('node:fs', () => {
       mockHooks.afterWrite?.(text);
       return n;
     }) as typeof real.writeSync,
-    writeFileSync: ((file: fs.PathOrFileDescriptor, data: unknown, options?: unknown) => {
-      if (typeof file !== 'number') {
-        return (real.writeFileSync as (f: unknown, d: unknown, o?: unknown) => void)(
-          file,
-          data,
-          options,
-        );
-      }
-      const text = textOf(data);
-      if (sealWrite(real, file, text) !== null) return;
-      const between = mockHooks.splitWrite?.(text);
-      if (between) {
-        mockHooks.splitWrite = null;
-        const half = Math.floor(text.length / 2);
-        real.writeSync(file, text.slice(0, half));
-        between();
-        real.writeSync(file, text.slice(half));
-        return;
-      }
-      mockHooks.beforeWrite?.(text);
-      real.writeSync(file, text);
-      mockHooks.afterWrite?.(text);
-    }) as typeof real.writeFileSync,
     readSync: ((fd: number, ...rest: unknown[]) => {
       const n = (real.readSync as (fd: number, ...rest: unknown[]) => number)(fd, ...rest);
       if (mockHooks.bytesRead !== null) mockHooks.bytesRead += n;
@@ -265,6 +240,17 @@ describe('takeClaimText', () => {
 
     expect(fs.readFileSync(claim, 'utf-8')).toBe(line('A') + SEAL);
     expect(ids(takeClaimText(claim))).toEqual(['A']);
+  });
+
+  it('reads a claim it cannot open for writing without sealing it', () => {
+    if (process.getuid?.() === 0) return;
+    fs.writeFileSync(bufferPath, line('A'));
+    const claim = `${bufferPath}.claim`;
+    fs.renameSync(bufferPath, claim);
+    fs.chmodSync(claim, 0o444);
+
+    expect(ids(takeClaimText(claim))).toEqual(['A']);
+    expect(fs.existsSync(claim)).toBe(false);
   });
 
   it('drops the fragment of a short seal write and keeps the lines after it', () => {
