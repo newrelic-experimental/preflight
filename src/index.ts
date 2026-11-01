@@ -123,6 +123,7 @@ import {
   SessionStore,
   sessionSummaryToDriftRecord,
 } from './storage/session-store.js';
+import type { FullSessionSummary } from './storage/session-store.js';
 import type { ToolCallRecord } from './storage/types.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import type { ConfigSummary } from './tools/session-stats.js';
@@ -1411,43 +1412,58 @@ async function main(): Promise<void> {
     // below can call this again for a *different* id after a pending->real
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
+    const toolCallTrackerBaselines = new Map<string, FullSessionSummary | null>();
+    const costTrackerBaselines = new Map<string, FullSessionSummary | null>();
+    const rememberBaselineBeforeSave = (
+      saves: Map<string, FullSessionSummary | null>,
+      sessionId: string,
+    ): void => {
+      if (rehydratedTrackerSessionIds.has(sessionId) || saves.has(sessionId)) return;
+      saves.set(sessionId, sessionStore!.loadSession(sessionId));
+    };
     const rehydrateTrackersIfResumed = (sessionId: string): void => {
       if (isSyntheticSessionId(sessionId)) return;
       if (rehydratedTrackerSessionIds.has(sessionId)) return;
       rehydratedTrackerSessionIds.add(sessionId);
       try {
-        const persisted = sessionStore!.loadSession(sessionId);
-        if (!persisted) return;
-        costTracker.seedFromPersisted(buildCostTrackerSeed(persisted));
-        sessionTracker!.seedFromPersisted({
-          toolCallCount: persisted.toolCallCount,
-          bashCommandCount: persisted.bashCommandCount,
-        });
-        budgetTracker.seedFiredThresholdsFromSessionTotal(
-          costTracker.getMetrics().sessionTotalCostUsd ?? 0,
-        );
-        modelUsageTracker.seedFromPersisted(persisted.modelBreakdown);
-        qualityProxyTracker.seedFromPersisted(persisted.qualityProxy);
-        // Non-null: taskDetector is assigned unconditionally earlier in this
-        // same setup path (see line ~980), before rehydrateTrackersIfResumed
-        // can be invoked — same pattern as the other `taskDetector!` use
-        // below, needed because its declared type stays `| undefined` for
-        // callers outside this path.
-        taskDetector!.seedFromPersisted(buildTaskDetectorSeed(persisted));
-        if (
-          persisted.efficiencyScore !== null &&
-          persisted.efficiencyScoreComponents &&
-          (persisted.efficiencyScoreSampleCount ?? 0) > 0
-        ) {
-          efficiencyScorer.seedFromPersisted({
-            score: persisted.efficiencyScore,
-            components: persisted.efficiencyScoreComponents,
-            sampleCount: persisted.efficiencyScoreSampleCount ?? 0,
-          });
+        const onDisk = sessionStore!.loadSession(sessionId);
+        const fileBefore = (saves: Map<string, FullSessionSummary | null>) => {
+          const baseline = saves.has(sessionId) ? (saves.get(sessionId) ?? null) : onDisk;
+          saves.delete(sessionId);
+          return baseline;
+        };
+        const costBaseline = fileBefore(costTrackerBaselines);
+        const toolCallBaseline = fileBefore(toolCallTrackerBaselines);
+        if (costBaseline) {
+          costTracker.seedFromPersisted(buildCostTrackerSeed(costBaseline));
+          budgetTracker.seedFiredThresholdsFromSessionTotal(
+            costTracker.getMetrics().sessionTotalCostUsd ?? 0,
+          );
+          modelUsageTracker.seedFromPersisted(costBaseline.modelBreakdown);
         }
+        if (toolCallBaseline) {
+          sessionTracker!.seedFromPersisted({
+            toolCallCount: toolCallBaseline.toolCallCount,
+            bashCommandCount: toolCallBaseline.bashCommandCount,
+          });
+          qualityProxyTracker.seedFromPersisted(toolCallBaseline.qualityProxy);
+          taskDetector!.seedFromPersisted(buildTaskDetectorSeed(toolCallBaseline));
+          if (
+            toolCallBaseline.efficiencyScore !== null &&
+            toolCallBaseline.efficiencyScoreComponents &&
+            (toolCallBaseline.efficiencyScoreSampleCount ?? 0) > 0
+          ) {
+            efficiencyScorer.seedFromPersisted({
+              score: toolCallBaseline.efficiencyScore,
+              components: toolCallBaseline.efficiencyScoreComponents,
+              sampleCount: toolCallBaseline.efficiencyScoreSampleCount ?? 0,
+            });
+          }
+        }
+        if (!costBaseline && !toolCallBaseline) return;
         logger.info('Rehydrated trackers from a prior checkpoint for this session', {
           sessionId,
-          estimatedCostUsd: persisted.estimatedCostUsd,
+          estimatedCostUsd: costBaseline?.estimatedCostUsd ?? null,
         });
       } catch (err) {
         logger.warn('Failed to rehydrate trackers from a prior checkpoint', {
@@ -2698,6 +2714,8 @@ async function main(): Promise<void> {
             repoResolver: repoNameResolver,
           });
           for (const rollup of rollups) {
+            if (options.stdio)
+              rememberBaselineBeforeSave(toolCallTrackerBaselines, String(rollup.sessionId));
             sessionStore.saveSession(
               rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
             );
@@ -2710,6 +2728,8 @@ async function main(): Promise<void> {
           }
           return;
         }
+        rememberBaselineBeforeSave(toolCallTrackerBaselines, summary.sessionId);
+        rememberBaselineBeforeSave(costTrackerBaselines, summary.sessionId);
         sessionStore.saveSession(summary);
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
         // any real work), so calling it on every periodic checkpoint too is
