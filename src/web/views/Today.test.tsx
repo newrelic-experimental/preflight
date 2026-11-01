@@ -586,6 +586,40 @@ describe('Today view', () => {
     await waitFor(() => expect(screen.getByText(/^→ \$8\.00 by end of day/)).toBeInTheDocument());
   });
 
+  it('shows no end-of-day projection when the resolved aggregate has a null forecast, ignoring other sources', async () => {
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 12.17, forecastEodUsd: 80.53 },
+    });
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(JSON.stringify({ totalCostUsd: 5, forecastEndOfDayUsd: null }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/cost')) {
+        return new Response(
+          JSON.stringify({
+            cost: { sessionTotalCostUsd: 5 },
+            forecast: { forecastEndOfDayUsd: 27.62 },
+            sessionTodayUsd: 5,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    await waitFor(() => expect(screen.getByText('avg cost / session')).toBeInTheDocument());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/by end of day/)).toBeNull();
+  });
+
   function stubObservabilityHealth(body: Record<string, unknown>): void {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
