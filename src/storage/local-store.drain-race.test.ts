@@ -2,16 +2,37 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import * as fs from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { appendToHookBuffer } from './hook-buffer.js';
 import { LocalStore } from './local-store.js';
 import type { HookEvent } from './types.js';
 
 const mockHooks: {
   rename: ((from: fs.PathLike, to: fs.PathLike) => void) | null;
   drainRead: ((path: string) => void) | null;
+  opened: ((path: string) => void) | null;
+  unlinked: ((path: string) => void) | null;
   listOrder: ((dir: string, names: string[]) => string[]) | null;
   reads: string[];
   listings: string[];
-} = { rename: null, drainRead: null, listOrder: null, reads: [], listings: [] };
+} = {
+  rename: null,
+  drainRead: null,
+  opened: null,
+  unlinked: null,
+  listOrder: null,
+  reads: [],
+  listings: [],
+};
+
+const DRAIN_PATH_RE = /\.drain|[\\/]drains[\\/]/;
+
+function onDrainRead(path: string): void {
+  const hook = mockHooks.drainRead;
+  if (hook && DRAIN_PATH_RE.test(path)) {
+    mockHooks.drainRead = null;
+    hook(path);
+  }
+}
 
 jest.mock('node:fs', () => {
   const real = jest.requireActual<typeof fs>('node:fs');
@@ -23,6 +44,16 @@ jest.mock('node:fs', () => {
       mockHooks.rename = null;
       hook(from, to);
     },
+    openSync: ((path: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+      onDrainRead(String(path));
+      const fd = real.openSync(path, flags, mode);
+      mockHooks.opened?.(String(path));
+      return fd;
+    }) as typeof real.openSync,
+    unlinkSync: (path: fs.PathLike) => {
+      real.unlinkSync(path);
+      if (DRAIN_PATH_RE.test(String(path))) mockHooks.unlinked?.(String(path));
+    },
     readdirSync: ((path: fs.PathLike, options?: unknown) => {
       mockHooks.listings.push(String(path));
       const names = (real.readdirSync as (p: fs.PathLike, o?: unknown) => string[])(path, options);
@@ -30,11 +61,7 @@ jest.mock('node:fs', () => {
     }) as typeof real.readdirSync,
     readFileSync: ((path: fs.PathOrFileDescriptor, options?: unknown) => {
       mockHooks.reads.push(String(path));
-      const hook = mockHooks.drainRead;
-      if (hook && /\.drain|[\\/]drains[\\/]/.test(String(path))) {
-        mockHooks.drainRead = null;
-        hook(String(path));
-      }
+      onDrainRead(String(path));
       return (real.readFileSync as (p: fs.PathOrFileDescriptor, o?: unknown) => string | Buffer)(
         path,
         options,
@@ -120,6 +147,8 @@ beforeEach(() => {
 afterEach(() => {
   mockHooks.rename = null;
   mockHooks.drainRead = null;
+  mockHooks.opened = null;
+  mockHooks.unlinked = null;
   mockHooks.listOrder = null;
   jest.restoreAllMocks();
   for (const d of [dir, resolve(dir, 'drains')]) if (fs.existsSync(d)) fs.chmodSync(d, 0o700);
@@ -325,6 +354,40 @@ describe('concurrent drainers of one buffer', () => {
     const afterRestart = new LocalStore(dir, SESSION).drainBuffer();
 
     expect(tools([...whileReadOnly, ...afterRestart])).toEqual(['A']);
+    expect(leftovers()).toEqual([]);
+  });
+});
+
+describe('hook writes racing a drain', () => {
+  it('keeps a write that opened the buffer before a drain and wrote after the drain finished', () => {
+    fs.writeFileSync(bufferPath, line('A'));
+    const drainer = new LocalStore(dir, SESSION);
+    let duringWrite: HookEvent[] = [];
+    mockHooks.opened = (path) => {
+      if (path !== bufferPath) return;
+      mockHooks.opened = null;
+      duringWrite = drainer.drainBuffer();
+    };
+
+    appendToHookBuffer(bufferPath, line('B'));
+
+    expect(tools([...duringWrite, ...drainer.drainBuffer()])).toEqual(['A', 'B']);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('returns a line written to a claim after the drain unlinked it, exactly once', () => {
+    fs.writeFileSync(bufferPath, line('A'));
+    const openBeforeDrain = fs.openSync(bufferPath, 'a');
+    mockHooks.unlinked = () => {
+      mockHooks.unlinked = null;
+      fs.writeSync(openBeforeDrain, line('B'));
+    };
+    const drainer = new LocalStore(dir, SESSION);
+
+    const got = [...drainer.drainBuffer(), ...drainer.drainBuffer()];
+    fs.closeSync(openBeforeDrain);
+
+    expect(tools(got)).toEqual(['A', 'B']);
     expect(leftovers()).toEqual([]);
   });
 });
