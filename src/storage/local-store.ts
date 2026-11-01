@@ -22,14 +22,16 @@ const logger = createLogger('local-store');
 const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 
 const DRAINS_DIR = 'drains';
-const CLAIM_NAME_RE = /^(.+\.jsonl)\.(\d+)\.[0-9a-f]+$/;
+const CLAIM_NAME_RE = /^(.+\.jsonl)\.(\d+)\.(\d+)\.[0-9a-f]+$/;
 const LEGACY_DRAIN_SUFFIX = '.drain';
 
 /**
  * An older version's drainer recovers a legacy `<buffer>.drain` on its next
  * 100 ms poll, and returns those events even when its unlink then fails, so
- * taking the file while it is mid-recovery counts it twice. A `.drain` that
- * has kept its name for 60 s (600 of those polls) has no live older drainer.
+ * taking the file while it is mid-recovery counts it twice. A `.drain` this
+ * process has watched unchanged for 60 s (600 of those polls) has no live
+ * older drainer. File times are not used: a rename does not update ctime on
+ * every filesystem.
  */
 const LEGACY_DRAIN_ADOPT_AGE_MS = 60_000;
 
@@ -37,13 +39,18 @@ const STALE_CLAIM_AGE_MS = 10 * 60_000;
 
 interface DrainClaim {
   readonly path: string;
+  readonly buffer: string;
   readonly owner: number | 'legacy';
+  readonly claimedAt: number;
 }
 
 interface BufferDrain {
   present: boolean;
   readonly claims: DrainClaim[];
 }
+
+const legacySightings = new Map<string, { readonly stamp: string; readonly since: number }>();
+const claimReadFailures = new Map<string, number>();
 
 function isBufferName(name: string): boolean {
   return name.endsWith('.jsonl') && (name === 'buffer.jsonl' || name.startsWith('buffer-'));
@@ -55,18 +62,30 @@ function legacyDrainBuffer(name: string): string | null {
   return isBufferName(buffer) ? buffer : null;
 }
 
-/** Rename keeps mtime and sets ctime, so ctime is when the file took its current name. */
-function nameAgeMs(path: string): number {
+function sightLegacy(path: string, buffer: string): DrainClaim | null {
+  let stats: ReturnType<typeof statSync> | undefined;
   try {
-    return Date.now() - statSync(path).ctimeMs;
+    stats = statSync(path, { throwIfNoEntry: false });
   } catch {
-    return 0;
+    stats = undefined;
   }
+  if (!stats) {
+    legacySightings.delete(path);
+    return null;
+  }
+  const stamp = `${stats.ino}:${stats.size}`;
+  if (legacySightings.get(path)?.stamp !== stamp) {
+    legacySightings.set(path, { stamp, since: Date.now() });
+  }
+  return { path, buffer, owner: 'legacy', claimedAt: 0 };
 }
 
 function isAdoptable(claim: DrainClaim): boolean {
-  if (claim.owner === 'legacy') return nameAgeMs(claim.path) >= LEGACY_DRAIN_ADOPT_AGE_MS;
-  return !isPidAlive(claim.owner) || nameAgeMs(claim.path) >= STALE_CLAIM_AGE_MS;
+  if (claim.owner === 'legacy') {
+    const since = legacySightings.get(claim.path)?.since ?? Number.POSITIVE_INFINITY;
+    return Date.now() - since >= LEGACY_DRAIN_ADOPT_AGE_MS;
+  }
+  return !isPidAlive(claim.owner) || Date.now() - claim.claimedAt >= STALE_CLAIM_AGE_MS;
 }
 
 function takeClaim(path: string): readonly HookEvent[] {
@@ -74,25 +93,23 @@ function takeClaim(path: string): readonly HookEvent[] {
   try {
     raw = takeClaimText(path);
   } catch (err) {
-    logger.warn('Failed to drain buffer — will retry next poll', { error: String(err) });
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      claimReadFailures.delete(path);
+      logger.debug('Drain claim was adopted by another drainer', { error: String(err) });
+      return [];
+    }
+    const failures = (claimReadFailures.get(path) ?? 0) + 1;
+    claimReadFailures.set(path, failures);
+    if ((failures & (failures - 1)) === 0) {
+      logger.warn('Failed to drain a claimed buffer — retrying each poll', {
+        error: String(err),
+        failures,
+      });
+    }
     return [];
   }
+  claimReadFailures.delete(path);
   return parseHookEvents(raw);
-}
-
-function inWriteOrder(paths: readonly string[]): readonly string[] {
-  if (paths.length < 2) return paths;
-  const mtime = (path: string): number => {
-    try {
-      return statSync(path).mtimeMs;
-    } catch {
-      return Number.POSITIVE_INFINITY;
-    }
-  };
-  return paths
-    .map((path) => ({ path, at: mtime(path) }))
-    .sort((a, b) => a.at - b.at)
-    .map(({ path }) => path);
 }
 
 /**
@@ -250,6 +267,7 @@ export class LocalStore {
       resolve(this.storagePath, 'sessions'),
       resolve(this.storagePath, 'weekly_summaries'),
       resolve(this.storagePath, 'audit'),
+      resolve(this.storagePath, DRAINS_DIR),
     ];
 
     for (const dir of dirs) {
@@ -271,15 +289,17 @@ export class LocalStore {
   }
 
   /**
-   * Atomically drain all events from the buffer file. Concurrent hook appends
-   * and concurrent drainers never lose or duplicate an event.
+   * Drain this store's buffer, plus this process's own leftover claims of any
+   * buffer. The buffer is renamed into a claim of this process's own before it
+   * is read, so concurrent drainers never return an event twice, and a claim
+   * left by a drainer that died mid-drain is adopted by another.
+   *
+   * One window still loses events (#1045): a hook that opened the buffer
+   * before the rename and writes after the claim was read appends to a file
+   * that has already been unlinked.
    */
   drainBuffer(): HookEvent[] {
-    const dir = dirname(this.bufferPath);
-    const name = basename(this.bufferPath);
-    const claims = this.listClaims(dir).get(name) ?? [];
-    const legacy = this.bufferPath + LEGACY_DRAIN_SUFFIX;
-    if (existsSync(legacy)) claims.push({ path: legacy, owner: 'legacy' });
+    const claims = this.listClaims(dirname(this.bufferPath), basename(this.bufferPath));
     return this.drainPath(this.bufferPath, { present: existsSync(this.bufferPath), claims });
   }
 
@@ -737,8 +757,7 @@ export class LocalStore {
     for (const name of entries) {
       // Match `buffer-<sessionId>.jsonl` exactly. Skip `.drain` companions and
       // already-archived files so a follow-up pass doesn't re-process them.
-      if (!name.startsWith('buffer-') || !name.endsWith('.jsonl')) continue;
-      if (name === 'buffer.jsonl') continue;
+      if (!isBufferName(name) || name === 'buffer.jsonl') continue;
 
       const sessionId = name.slice('buffer-'.length, -'.jsonl'.length);
       // Defense in depth — a malformed sessionId would mean a malformed
@@ -863,9 +882,7 @@ export class LocalStore {
     }
 
     const cutoffMs = Date.now() - discoveryHours * 60 * 60 * 1000;
-    const bufferNames = new Set(
-      entries.filter((n) => n.startsWith('buffer-') && n.endsWith('.jsonl')),
-    );
+    const bufferNames = new Set(entries.filter(isBufferName));
 
     let subagentCursors = 0;
     let transcriptCursors = 0;
@@ -1224,44 +1241,63 @@ export class LocalStore {
       if (!drain) drains.set(name, (drain = { present: false, claims: [] }));
       return drain;
     };
+    const legacies = new Set<string>();
     for (const entry of entries) {
       if (isBufferName(entry)) {
         drainOf(entry).present = true;
         continue;
       }
       const legacyOf = legacyDrainBuffer(entry);
-      if (legacyOf) {
-        drainOf(legacyOf).claims.push({ path: resolve(this.storagePath, entry), owner: 'legacy' });
+      const legacy = legacyOf && sightLegacy(resolve(this.storagePath, entry), legacyOf);
+      if (legacy) {
+        legacies.add(legacy.path);
+        drainOf(legacy.buffer).claims.push(legacy);
       }
     }
-    for (const [name, claims] of this.listClaims(this.storagePath)) {
-      if (isBufferName(name)) drainOf(name).claims.push(...claims);
+    for (const path of legacySightings.keys()) {
+      if (dirname(path) === resolve(this.storagePath) && !legacies.has(path)) {
+        legacySightings.delete(path);
+      }
+    }
+    for (const claim of this.listClaims(this.storagePath)) {
+      if (isBufferName(claim.buffer)) drainOf(claim.buffer).claims.push(claim);
     }
     return drains;
   }
 
-  private listClaims(dir: string): Map<string, DrainClaim[]> {
-    const claims = new Map<string, DrainClaim[]>();
+  private listClaims(dir: string, scopedTo?: string): DrainClaim[] {
+    const claims: DrainClaim[] = [];
+    const legacy = scopedTo && sightLegacy(resolve(dir, scopedTo + LEGACY_DRAIN_SUFFIX), scopedTo);
+    if (legacy) claims.push(legacy);
     const drainsDir = resolve(dir, DRAINS_DIR);
     let names: string[];
     try {
       names = readdirSync(drainsDir);
+      this.claimListingFailed = false;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT' && !this.claimListingFailed) {
-        this.claimListingFailed = true;
+      const failed = (err as NodeJS.ErrnoException).code !== 'ENOENT';
+      if (failed && !this.claimListingFailed) {
         logger.warn('Failed to list drain claims — leftover claims wait until it succeeds', {
           error: String(err),
         });
       }
+      this.claimListingFailed = failed;
       return claims;
     }
+    const prefix = scopedTo && `${scopedTo}.`;
+    const own = `.${process.pid}.`;
     for (const name of names) {
+      if (prefix && !name.startsWith(prefix) && !name.includes(own)) continue;
       const match = CLAIM_NAME_RE.exec(name);
       if (!match) continue;
-      const claim = { path: resolve(drainsDir, name), owner: Number(match[2]) };
-      const forBuffer = claims.get(match[1]!);
-      if (forBuffer) forBuffer.push(claim);
-      else claims.set(match[1]!, [claim]);
+      const owner = Number(match[2]);
+      if (scopedTo && match[1] !== scopedTo && owner !== process.pid) continue;
+      claims.push({
+        path: resolve(drainsDir, name),
+        buffer: match[1]!,
+        owner,
+        claimedAt: Number(match[3]),
+      });
     }
     return claims;
   }
@@ -1271,34 +1307,40 @@ export class LocalStore {
     drain: BufferDrain,
     ownerLive: () => boolean = () => false,
   ): HookEvent[] {
-    const owned: string[] = [];
+    const drainsDir = resolve(dirname(bufferPath), DRAINS_DIR);
+    const owned: { readonly path: string; readonly claimedAt: number }[] = [];
     let mayAdopt: boolean | undefined;
     for (const claim of drain.claims) {
-      if (claim.owner === process.pid) owned.push(claim.path);
+      if (claim.owner === process.pid) owned.push(claim);
       else if (isAdoptable(claim) && (mayAdopt ??= !ownerLive())) {
-        const claimed = this.claimDrain(claim.path, bufferPath);
-        if (claimed) owned.push(claimed);
+        const path = this.claimDrain(claim.path, drainsDir, claim.buffer);
+        if (path) owned.push({ path, claimedAt: claim.claimedAt });
       }
     }
+    const paths = owned.sort((a, b) => a.claimedAt - b.claimedAt).map(({ path }) => path);
     if (drain.present && !ownerLive()) {
-      const claimed = this.claimDrain(bufferPath, bufferPath);
-      if (claimed) owned.push(claimed);
+      const path = this.claimDrain(bufferPath, drainsDir, basename(bufferPath));
+      if (path) paths.push(path);
     }
 
     const events: HookEvent[] = [];
-    for (const path of inWriteOrder(owned)) {
+    for (const path of paths) {
       for (const event of takeClaim(path)) events.push(event);
     }
     return events;
   }
 
-  private claimDrain(from: string, bufferPath: string): string | null {
-    const drainsDir = resolve(dirname(bufferPath), DRAINS_DIR);
+  private claimDrain(from: string, drainsDir: string, buffer: string): string | null {
     const nonce = randomBytes(6).toString('hex');
-    const to = resolve(drainsDir, `${basename(bufferPath)}.${process.pid}.${nonce}`);
+    const to = resolve(drainsDir, `${buffer}.${process.pid}.${Date.now()}.${nonce}`);
     try {
-      mkdirSync(drainsDir, { recursive: true, mode: 0o700 });
-      renameSync(from, to);
+      try {
+        renameSync(from, to);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        mkdirSync(drainsDir, { recursive: true, mode: 0o700 });
+        renameSync(from, to);
+      }
       return to;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {

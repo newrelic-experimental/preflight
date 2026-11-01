@@ -10,19 +10,9 @@ const mockHooks: {
   rename: ((from: fs.PathLike, to: fs.PathLike) => void) | null;
   drainRead: ((path: string) => void) | null;
   opened: ((path: string) => void) | null;
-  unlinked: ((path: string) => void) | null;
+  unlink: ((path: string) => void) | null;
   listOrder: ((dir: string, names: string[]) => string[]) | null;
-  reads: string[];
-  listings: string[];
-} = {
-  rename: null,
-  drainRead: null,
-  opened: null,
-  unlinked: null,
-  listOrder: null,
-  reads: [],
-  listings: [],
-};
+} = { rename: null, drainRead: null, opened: null, unlink: null, listOrder: null };
 
 const DRAIN_PATH_RE = /\.drain|[\\/]drains[\\/]/;
 
@@ -51,16 +41,16 @@ jest.mock('node:fs', () => {
       return fd;
     }) as typeof real.openSync,
     unlinkSync: (path: fs.PathLike) => {
+      const hook = mockHooks.unlink;
+      mockHooks.unlink = null;
+      hook?.(String(path));
       real.unlinkSync(path);
-      if (DRAIN_PATH_RE.test(String(path))) mockHooks.unlinked?.(String(path));
     },
     readdirSync: ((path: fs.PathLike, options?: unknown) => {
-      mockHooks.listings.push(String(path));
       const names = (real.readdirSync as (p: fs.PathLike, o?: unknown) => string[])(path, options);
       return mockHooks.listOrder ? mockHooks.listOrder(String(path), names) : names;
     }) as typeof real.readdirSync,
     readFileSync: ((path: fs.PathOrFileDescriptor, options?: unknown) => {
-      mockHooks.reads.push(String(path));
       onDrainRead(String(path));
       return (real.readFileSync as (p: fs.PathOrFileDescriptor, o?: unknown) => string | Buffer)(
         path,
@@ -79,8 +69,19 @@ let dir: string;
 let bufferPath: string;
 let stderr: jest.SpiedFunction<typeof console.error>;
 
-function line(tool: string, mode: 'pre' | 'post' = 'post'): string {
-  return JSON.stringify({ mode, tool, input: {}, timestamp: 1, session_id: SESSION }) + '\n';
+function line(tool: string, mode: 'pre' | 'post' = 'post', sessionId = SESSION): string {
+  return JSON.stringify({ mode, tool, input: {}, timestamp: 1, sessionId }) + '\n';
+}
+
+function drainsDir(): string {
+  return resolve(dir, 'drains');
+}
+
+function writeClaim(pid: number, claimedAt: number, content: string): string {
+  fs.mkdirSync(drainsDir(), { recursive: true });
+  const path = resolve(drainsDir(), `buffer-${SESSION}.jsonl.${pid}.${claimedAt}.abc123`);
+  fs.writeFileSync(path, content);
+  return path;
 }
 
 function tools(events: HookEvent[]): string[] {
@@ -126,20 +127,18 @@ function asProcess<T>(pid: number, run: () => T): T {
   }
 }
 
-function crashMidDrain(pid: number): void {
+function crashMidDrain(pid: number, session = SESSION): void {
   const crash = (): void => {
     mockHooks.drainRead = crash;
     throw new Error('drainer died after claiming the buffer');
   };
   mockHooks.drainRead = crash;
-  asProcess(pid, () => new LocalStore(dir, SESSION).drainBuffer());
+  asProcess(pid, () => new LocalStore(dir, session).drainBuffer());
   mockHooks.drainRead = null;
 }
 
 beforeEach(() => {
   stderr = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-  mockHooks.reads = [];
-  mockHooks.listings = [];
   dir = fs.mkdtempSync(resolve(tmpdir(), 'nr-drain-race-'));
   bufferPath = resolve(dir, `buffer-${SESSION}.jsonl`);
 });
@@ -148,7 +147,7 @@ afterEach(() => {
   mockHooks.rename = null;
   mockHooks.drainRead = null;
   mockHooks.opened = null;
-  mockHooks.unlinked = null;
+  mockHooks.unlink = null;
   mockHooks.listOrder = null;
   jest.restoreAllMocks();
   for (const d of [dir, resolve(dir, 'drains')]) if (fs.existsSync(d)) fs.chmodSync(d, 0o700);
@@ -229,19 +228,21 @@ describe('concurrent drainers of one buffer', () => {
   it('recovers an abandoned legacy .drain left by an older version exactly once', () => {
     fs.writeFileSync(`${bufferPath}.drain`, line('Legacy'));
     fs.writeFileSync(bufferPath, line('Fresh'));
-    later(61_000);
 
+    expect(tools(new LocalStore(dir, SESSION).drainBuffer())).toEqual(['Fresh']);
+    later(61_000);
     const first = new LocalStore(dir, SESSION).drainBuffer();
     const second = new LocalStore(dir, SESSION).drainBuffer();
 
-    expect(tools(first)).toEqual(['Legacy', 'Fresh']);
+    expect(tools(first)).toEqual(['Legacy']);
     expect(second).toEqual([]);
     expect(leftovers()).toEqual([]);
   });
 
-  it('leaves a fresh legacy .drain to the older version that may be recovering it', () => {
+  it('adopts a legacy .drain only after watching it for a minute, whatever its file times', () => {
     const legacy = `${bufferPath}.drain`;
     fs.writeFileSync(legacy, line('Legacy'));
+    later(61_000);
 
     expect(new LocalStore(dir, SESSION).drainBuffer()).toEqual([]);
     expect(new LocalStore(dir).drainAllBuffers()).toEqual([]);
@@ -252,67 +253,108 @@ describe('concurrent drainers of one buffer', () => {
     expect(leftovers()).toEqual([]);
   });
 
-  it('adopts a claim whose pid looks alive once it is older than any drain', () => {
-    fs.writeFileSync(bufferPath, line('A'));
-    crashMidDrain(OTHER_LIVE_PID);
-    expect(new LocalStore(dir, SESSION).drainBuffer()).toEqual([]);
+  it('watches a legacy .drain again when an older version changes it', () => {
+    const legacy = `${bufferPath}.drain`;
+    fs.writeFileSync(legacy, line('L1'));
+    expect(new LocalStore(dir).drainAllBuffers()).toEqual([]);
 
-    later(11 * 60_000);
-    expect(tools(new LocalStore(dir, SESSION).drainBuffer())).toEqual(['A']);
-    expect(leftovers()).toEqual([]);
+    later(61_000);
+    fs.appendFileSync(legacy, line('L2'));
+    expect(new LocalStore(dir).drainAllBuffers()).toEqual([]);
+
+    later(61_000);
+    expect(tools(new LocalStore(dir).drainAllBuffers())).toEqual(['L1', 'L2']);
   });
 
-  it('returns recovered claims in write order, so a Post never comes before its Pre', () => {
-    fs.writeFileSync(bufferPath, line('A', 'pre'));
-    crashMidDrain(DEAD_PID);
-    fs.writeFileSync(bufferPath, line('A'));
-    crashMidDrain(DEAD_PID - 1);
-    const now = Date.now() / 1000;
-    for (const path of claimPaths()) {
-      const age = fs.readFileSync(path, 'utf-8').includes('"pre"') ? 20 : 10;
-      fs.utimesSync(path, now - age, now - age);
-    }
+  it('adopts a live pid claim once its name says it is older than any drain, whatever its file times', () => {
+    const now = Date.now();
+    writeClaim(OTHER_LIVE_PID, now, line('Fresh'));
+    writeClaim(OTHER_LIVE_PID, now - 11 * 60_000, line('Stale'));
+
+    expect(tools(new LocalStore(dir, SESSION).drainBuffer())).toEqual(['Stale']);
+    expect(fs.readdirSync(drainsDir())).toEqual([
+      `buffer-${SESSION}.jsonl.${OTHER_LIVE_PID}.${now}.abc123`,
+    ]);
+  });
+
+  it('returns claims in the order their names say they were claimed, the fresh buffer last', () => {
+    const now = Date.now();
+    writeClaim(DEAD_PID, now - 10_000, line('A'));
+    writeClaim(DEAD_PID - 1, now - 20_000, line('A', 'pre'));
     fs.writeFileSync(bufferPath, line('B'));
-    const mtime = (d: string, n: string): number => {
-      try {
-        return fs.statSync(resolve(d, n)).mtimeMs;
-      } catch {
-        return 0;
-      }
-    };
-    mockHooks.listOrder = (d, names) => [...names].sort((a, b) => mtime(d, b) - mtime(d, a));
+    mockHooks.listOrder = (_d, names) => [...names].sort().reverse();
 
     expect(tools(new LocalStore(dir, SESSION).drainBuffer())).toEqual(['A:pre', 'A', 'B']);
     expect(leftovers()).toEqual([]);
   });
 
-  it('drainBuffer polls without listing the storage directory', () => {
-    for (let i = 0; i < 50; i++) {
-      fs.writeFileSync(resolve(dir, `buffer-other-${i}.jsonl`), line('Other'));
-    }
+  it('returns an adopted claim before the fresh buffer when a late append made it newer', () => {
+    fs.writeFileSync(bufferPath, line('A', 'pre'));
+    crashMidDrain(DEAD_PID);
+    fs.writeFileSync(bufferPath, line('B'));
+    const [claim] = fs.readdirSync(drainsDir()).map((n) => resolve(drainsDir(), n));
+    fs.appendFileSync(claim!, line('A'));
+    const future = Date.now() / 1000 + 60;
+    fs.utimesSync(claim!, future, future);
+
+    expect(tools(new LocalStore(dir, SESSION).drainBuffer())).toEqual(['A:pre', 'A', 'B']);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it("takes its own leftover claims of other sessions' buffers after it switches to a scoped drain", () => {
+    fs.writeFileSync(resolve(dir, 'buffer-other.jsonl'), line('Other', 'post', 'other'));
+    crashMidDrain(REAL_PID, 'other');
+    fs.writeFileSync(bufferPath, line('A'));
+
+    const events = new LocalStore(dir, SESSION).drainBuffer();
+
+    expect(events.map((e) => `${'sessionId' in e ? e.sessionId : ''}:${e.tool}`)).toEqual([
+      'other:Other',
+      `${SESSION}:A`,
+    ]);
+    expect(fs.readdirSync(drainsDir())).toEqual([]);
+  });
+
+  it("leaves other sessions' buffers and other processes' claims of them to their drainers", () => {
+    const other = resolve(dir, 'buffer-other.jsonl');
+    fs.writeFileSync(other, line('Other', 'post', 'other'));
+    crashMidDrain(DEAD_PID, 'other');
+    fs.writeFileSync(other, line('Other2', 'post', 'other'));
+    fs.writeFileSync(bufferPath, line('A'));
+
+    expect(tools(new LocalStore(dir, SESSION).drainBuffer())).toEqual(['A']);
+    expect(fs.existsSync(other)).toBe(true);
+    expect(fs.readdirSync(drainsDir())).toHaveLength(1);
+  });
+
+  it('does not warn when another drainer adopted its claim before the unlink', () => {
+    fs.writeFileSync(bufferPath, line('A'));
+    let adopter: HookEvent[] = [];
+    mockHooks.unlink = () => {
+      adopter = asProcess(REAL_PID, () => new LocalStore(dir, SESSION).drainBuffer());
+    };
+    const dying = asProcess(DEAD_PID, () => new LocalStore(dir, SESSION).drainBuffer());
+
+    expect(tools([...dying, ...adopter])).toEqual(['A']);
+    expect(warnings()).toEqual([]);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('backs off its warnings for a claim it keeps failing to read', () => {
+    if (process.getuid?.() === 0) return;
+    fs.writeFileSync(bufferPath, line('A'));
+    fs.chmodSync(bufferPath, 0o000);
     const store = new LocalStore(dir, SESSION);
-    fs.writeFileSync(bufferPath, line('A'));
-    mockHooks.listings = [];
 
+    for (let i = 0; i < 10; i++) expect(store.drainBuffer()).toEqual([]);
+    expect(warnings()).toHaveLength(4);
+
+    const [claim] = fs.readdirSync(drainsDir()).map((n) => resolve(drainsDir(), n));
+    fs.chmodSync(claim!, 0o600);
     expect(tools(store.drainBuffer())).toEqual(['A']);
-    expect(store.drainBuffer()).toEqual([]);
-    expect(mockHooks.listings).not.toContain(dir);
-
-    new LocalStore(dir).drainAllBuffers();
-    expect(mockHooks.listings.filter((p) => p === dir)).toHaveLength(1);
   });
 
-  it('drainAllBuffers reads an owner heartbeat once per buffer when there is nothing to adopt', () => {
-    fs.writeFileSync(bufferPath, line('A'));
-    const heartbeat = resolve(dir, `active-${SESSION}.pid`);
-    fs.writeFileSync(heartbeat, String(DEAD_PID));
-    mockHooks.reads = [];
-
-    expect(tools(new LocalStore(dir).drainAllBuffers())).toEqual(['A']);
-    expect(mockHooks.reads.filter((p) => p === heartbeat)).toHaveLength(1);
-  });
-
-  it('warns once when it cannot list the drain claims, and recovers once it can', () => {
+  it('warns once per failed stretch of drain claim listings', () => {
     if (process.getuid?.() === 0) return;
     fs.writeFileSync(bufferPath, line('A'));
     crashMidDrain(DEAD_PID);
@@ -327,6 +369,10 @@ describe('concurrent drainers of one buffer', () => {
     for (const d of dirs) fs.chmodSync(d, 0o700);
     expect(tools(store.drainBuffer())).toEqual(['A']);
     expect(leftovers()).toEqual([]);
+
+    fs.chmodSync(drainsDir(), 0o300);
+    expect(store.drainBuffer()).toEqual([]);
+    expect(warnings()).toHaveLength(2);
   });
 
   it('peekAllBuffers counts lines held in drain claims', () => {
@@ -375,13 +421,10 @@ describe('hook writes racing a drain', () => {
     expect(leftovers()).toEqual([]);
   });
 
-  it('returns a line written to a claim after the drain unlinked it, exactly once', () => {
+  it('returns a line written to a claim just before its unlink, exactly once', () => {
     fs.writeFileSync(bufferPath, line('A'));
     const openBeforeDrain = fs.openSync(bufferPath, 'a');
-    mockHooks.unlinked = () => {
-      mockHooks.unlinked = null;
-      fs.writeSync(openBeforeDrain, line('B'));
-    };
+    mockHooks.unlink = () => fs.writeSync(openBeforeDrain, line('B'));
     const drainer = new LocalStore(dir, SESSION);
 
     const got = [...drainer.drainBuffer(), ...drainer.drainBuffer()];
