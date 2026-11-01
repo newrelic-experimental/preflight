@@ -1488,6 +1488,14 @@ describe('stdio integration', () => {
     const PPID_WATCH_RESOLVED = 'Resolved corrected session_id from ppid breadcrumb';
     const ADOPTED = 'Session ID resolved, full initialization complete';
 
+    const CHECKPOINTED = 'Session checkpointed';
+    const SKIPPED_EMPTY = 'Skipping first write of a session with no recorded usage';
+
+    const startedEngines: Array<{ close: () => Promise<void> }> = [];
+    afterEach(async () => {
+      await Promise.all(startedEngines.splice(0).map((engine) => engine.close().catch(() => {})));
+    });
+
     const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
     async function waitUntil(predicate: () => boolean, timeoutMs = 15_000): Promise<boolean> {
@@ -1538,14 +1546,14 @@ describe('stdio integration', () => {
       };
     }
 
-    async function startEngine(
-      storagePath: string,
-      projectCwd: string,
-    ): Promise<{
+    interface Engine {
       logged: (text: string) => Promise<boolean>;
+      settle: () => Promise<void>;
       reportInputTokens: (inputTokens: number) => Promise<unknown>;
       close: () => Promise<void>;
-    }> {
+    }
+
+    async function startEngine(storagePath: string, projectCwd: string): Promise<Engine> {
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
       const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
       const env = { ...process.env };
@@ -1571,15 +1579,22 @@ describe('stdio integration', () => {
       const client = new Client({ name: 'test-client', version: '1.0.0' });
       await client.connect(transport);
       await client.listTools();
-      return {
-        logged: (text) => waitUntil(() => stderr.includes(text)),
-        reportInputTokens: (inputTokens) =>
+      const engine: Engine = {
+        logged: (text: string) => waitUntil(() => stderr.includes(text)),
+        settle: async () => {
+          const countCheckpoints = (): number => stderr.split(CHECKPOINTED).length - 1;
+          const target = countCheckpoints() + 3;
+          expect(await waitUntil(() => countCheckpoints() >= target)).toBe(true);
+        },
+        reportInputTokens: (inputTokens: number) =>
           client.callTool({
             name: 'nr_observe_report_tokens',
             arguments: { input_tokens: inputTokens, output_tokens: 0, model: 'claude-sonnet-5' },
           }),
         close: () => client.close(),
       };
+      startedEngines.push(engine);
+      return engine;
     }
 
     async function savePriorSession(
@@ -1625,7 +1640,7 @@ describe('stdio integration', () => {
     ): Promise<void> {
       writeFileSync(ppidBreadcrumb(storagePath), sessionId);
       expect(await engine.logged(PPID_WATCH_RESOLVED)).toBe(true);
-      await sleep(1_000);
+      await engine.settle();
     }
 
     it('keeps the saved cost and tokens when the ppid breadcrumb confirms the same id', async () => {
@@ -1644,6 +1659,39 @@ describe('stdio integration', () => {
         expect(readSaved(storagePath, 'guess-confirmed-id')).toEqual(capSaved);
         await engine.close();
       } finally {
+        cleanup();
+      }
+    }, 60000);
+
+    it("keeps another writer's total saved after this engine's skipped first checkpoint", async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      const otherCwd = mkdtempSync(join(tmpdir(), 'nr-1039-other-'));
+      try {
+        writeCwdBreadcrumb(storagePath, projectCwd, 'skipped-first-id');
+        const engine = await startEngine(storagePath, projectCwd);
+        expect(await engine.logged(SKIPPED_EMPTY)).toBe(true);
+
+        writeCwdBreadcrumb(storagePath, otherCwd, 'skipped-first-id');
+        const other = await startEngine(storagePath, otherCwd);
+        await other.reportInputTokens(400);
+        expect(
+          await waitUntil(() => readSaved(storagePath, 'skipped-first-id')?.tokensInput === 400),
+        ).toBe(true);
+        await other.close();
+
+        await engine.reportInputTokens(1000);
+        expect(
+          await waitUntil(() => readSaved(storagePath, 'skipped-first-id')?.tokensInput === 1000),
+        ).toBe(true);
+        await confirmViaPpid(storagePath, engine, 'skipped-first-id');
+
+        expect(
+          await waitUntil(() => readSaved(storagePath, 'skipped-first-id')?.tokensInput === 1400),
+        ).toBe(true);
+        await engine.settle();
+        expect(readSaved(storagePath, 'skipped-first-id')?.tokensInput).toBe(1400);
+      } finally {
+        rmSync(otherCwd, { recursive: true, force: true });
         cleanup();
       }
     }, 60000);
@@ -1689,7 +1737,7 @@ describe('stdio integration', () => {
         expect(
           await waitUntil(() => readSaved(storagePath, 'corrected-real-id')?.tokensInput === 700),
         ).toBe(true);
-        await sleep(1_000);
+        await engine.settle();
 
         const saved = readSaved(storagePath, 'corrected-real-id')!;
         expect(saved.tokensInput).toBe(700);
@@ -1736,7 +1784,7 @@ describe('stdio integration', () => {
 
         writeFileSync(ppidBreadcrumb(storagePath), 'provisional-id');
         expect(await engine.logged(ADOPTED)).toBe(true);
-        await sleep(1_000);
+        await engine.settle();
 
         expect(readSaved(storagePath, 'provisional-id')?.toolCallCount).toBe(2);
         await engine.close();
