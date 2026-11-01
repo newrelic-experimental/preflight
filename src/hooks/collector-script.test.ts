@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import {
   _procFs,
@@ -249,6 +249,7 @@ describe('collector-script', () => {
     it('lands its session breadcrumbs in the test temp dir, not the default storage dir', () => {
       processHook(makePreToolUse());
       expect(existsSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'))).toBe(true);
+      expect(existsSync(resolve(homedir(), '.newrelic-preflight'))).toBe(false);
     });
 
     it('writes a valid pre event to the buffer', () => {

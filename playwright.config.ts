@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { defineConfig } from '@playwright/test';
 
 import { EMPTY_PORT, EMPTY_URL, SEEDED_PORT } from './e2e/servers.js';
-import { INHERITED_SETTINGS as INHERITED_SETTINGS_PATTERN } from './test/support/inherited-settings.js';
+import { INHERITED_SETTINGS_PATTERN } from './test/support/inherited-settings.js';
 
 const RUN_ROOT = join(tmpdir(), `nr-ai-e2e-${process.pid}`);
 

@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 // globalSetup loads without moduleNameMapper, so './x.js' would not resolve.
-import { INHERITED_SETTINGS } from './inherited-settings';
+import { INHERITED_SETTINGS_PATTERN, KEPT_CREDENTIALS } from './inherited-settings';
 
 export const ISOLATED_HOME_ENV = 'PREFLIGHT_TEST_ISOLATED_HOME';
 
@@ -23,7 +23,7 @@ export function isolateEnv(env: Env, home: string): Saved {
     if (!(key in saved)) saved[key] = env[key];
   };
   for (const key of Object.keys(env)) {
-    if (INHERITED_SETTINGS.test(key)) {
+    if (INHERITED_SETTINGS_PATTERN.test(key) && !KEPT_CREDENTIALS.has(key)) {
       remember(key);
       delete env[key];
     }
@@ -62,7 +62,8 @@ export function removeStaleHomes(root: string, now: number = Date.now()): void {
   try {
     let removed = 0;
     for (const name of readdirSync(root)) {
-      if (!name.startsWith(HOME_PREFIX) || removed >= MAX_STALE_REMOVALS) continue;
+      if (removed >= MAX_STALE_REMOVALS) break;
+      if (!name.startsWith(HOME_PREFIX)) continue;
       try {
         const dir = join(root, name);
         if (now - statSync(dir).mtimeMs < STALE_HOME_MS) continue;
