@@ -593,6 +593,35 @@ describe('SessionTracker', () => {
       expect(tracker.getMetrics().toolCallTimeline[0]?.timestamp).toBe(1);
     });
 
+    it('holds 10,000 calls at most, dropping the least recently active session first', () => {
+      const tracker = new SessionTracker('pending-1700000000000');
+      for (const sessionId of ['sess-a', 'sess-b', 'sess-c', 'sess-d', 'sess-e', 'sess-f']) {
+        for (let i = 0; i < 2_000; i++) tracker.recordToolCall(makeRecord({ sessionId }));
+      }
+
+      tracker.adoptSessionId('sess-a');
+      expect(tracker.getMetrics().toolCallCount).toBe(0);
+      tracker.correctSessionId('sess-f');
+      expect(tracker.getMetrics().toolCallCount).toBe(2_000);
+    });
+
+    it("drops the guessed session's calls when its id is corrected", () => {
+      const tracker = new SessionTracker('pending-1700000000000');
+      const guessed = makeRecord({ id: 'g1', sessionId: 'sess-guess', durationMs: null });
+      tracker.recordToolCall({ ...guessed, success: false, errorType: 'timeout' });
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-real', toolName: 'Bash' }));
+      tracker.adoptSessionId('sess-guess');
+
+      tracker.correctSessionId('sess-real');
+      tracker.amendToolCall({ ...guessed, durationMs: 90_000 });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.sessionId).toBe('sess-real');
+      expect(metrics.toolCallCountByTool).toEqual({ Bash: 1 });
+      expect(metrics.toolErrorCount).toBe(0);
+      expect(metrics.toolDurationMsByTool.Read).toBeUndefined();
+    });
+
     it('does not count a record of another session under a real id', () => {
       const tracker = new SessionTracker('sess-own');
       tracker.recordToolCall(makeRecord({ sessionId: 'sess-other' }));
