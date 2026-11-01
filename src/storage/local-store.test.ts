@@ -35,7 +35,8 @@ afterEach(() => {
   }
 });
 
-function ageLegacyDrains(): void {
+function watchLegacyDrains(store: LocalStore): void {
+  store.peekAllBuffers();
   const now = Date.now();
   jest.spyOn(Date, 'now').mockReturnValue(now + 61_000);
 }
@@ -185,7 +186,7 @@ describe('LocalStore', () => {
       const drainPath = resolve(tmpDir, 'buffer.jsonl.drain');
       const event = makeEvent({ tool: 'Orphaned' });
       writeFileSync(drainPath, JSON.stringify(event) + '\n');
-      ageLegacyDrains();
+      watchLegacyDrains(store);
 
       const drained = store.drainBuffer();
       expect(drained).toHaveLength(1);
@@ -205,7 +206,7 @@ describe('LocalStore', () => {
 
       writeFileSync(drainPath, JSON.stringify(olderEvent) + '\n');
       writeFileSync(bufferPath, JSON.stringify(newerEvent) + '\n');
-      ageLegacyDrains();
+      watchLegacyDrains(store);
 
       const drained = store.drainBuffer();
       expect(drained).toHaveLength(2);
@@ -221,7 +222,7 @@ describe('LocalStore', () => {
       const drainPath = resolve(tmpDir, 'buffer.jsonl.drain');
       const validEvent = makeEvent({ tool: 'Valid' });
       writeFileSync(drainPath, 'CORRUPT DATA\n' + JSON.stringify(validEvent) + '\n');
-      ageLegacyDrains();
+      watchLegacyDrains(store);
 
       const drained = store.drainBuffer();
       expect(drained).toHaveLength(1);
@@ -443,7 +444,7 @@ describe('LocalStore', () => {
       // readFileSync(.drain) throws EACCES.
       writeFileSync(drainPath, JSON.stringify(event) + '\n');
       chmodSync(drainPath, 0o000);
-      ageLegacyDrains();
+      watchLegacyDrains(store);
 
       const firstResult = store.drainBuffer();
       expect(firstResult).toEqual([]);
@@ -510,7 +511,7 @@ describe('LocalStore', () => {
       const claimed = readFileSync(drainPath, 'utf-8');
       expect(JSON.parse(claimed.trim())).toEqual(inFlightEvent);
 
-      ageLegacyDrains();
+      watchLegacyDrains(store);
       // The next poll's drainBuffer() recovers the still-present .drain file
       // AND the freshly-appended buffer — both events come back intact,
       // neither lost nor interleaved.
