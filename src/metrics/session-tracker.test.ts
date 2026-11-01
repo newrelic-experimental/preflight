@@ -573,7 +573,7 @@ describe('SessionTracker', () => {
         success: false,
         errorType: 'timeout',
       });
-      tracker.amendToolCall({ ...timedOut, durationMs: 180_000, success: true }, 'timeout');
+      tracker.amendToolCall({ ...timedOut, durationMs: 180_000, success: true });
 
       const metrics = tracker.getMetrics();
       expect(metrics.toolCallCount).toBe(1);
@@ -583,6 +583,25 @@ describe('SessionTracker', () => {
       expect(metrics.toolCallTimeline).toEqual([
         { timestamp: 1000, toolName: 'Agent', durationMs: 180_000, success: true },
       ]);
+    });
+    it('amends the timed-out record with its id, and counts its exit code and error', () => {
+      const tracker = new SessionTracker('sess-own');
+      const call = makeRecord({
+        toolName: 'Bash',
+        timestamp: 1000,
+        durationMs: null,
+        success: false,
+      });
+      tracker.recordToolCall({ ...call, id: 'first', errorType: 'timeout' });
+      tracker.recordToolCall({ ...call, id: 'second', errorType: 'timeout' });
+      tracker.amendToolCall({ ...call, id: 'second', durationMs: 5000, exitCode: 2 });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(2);
+      expect(metrics.toolErrorCount).toBe(2);
+      expect(metrics.toolErrorsByType).toEqual({ timeout: 1 });
+      expect(metrics.bashExitCodes).toEqual({ '2': 1 });
+      expect(metrics.toolCallTimeline.map((e) => e.durationMs)).toEqual([null, 5000]);
     });
   });
 

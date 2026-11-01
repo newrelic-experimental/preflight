@@ -1116,6 +1116,56 @@ describe('stdio integration', () => {
     }
   }, 30000);
 
+  it('saves a call still running at shutdown before it marks the call counted', async () => {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+    const storage = mkdtempSync(join(tmpdir(), 'nr-shutdown-in-flight-'));
+    const ownId = 'own-real-session';
+    const buffer = resolve(storage, `buffer-${ownId}.jsonl`);
+    const heartbeat = resolve(storage, `active-${ownId}.pid`);
+    const waitFor = async (predicate: () => boolean): Promise<void> => {
+      for (let i = 0; i < 40 && !predicate(); i++) await new Promise((r) => setTimeout(r, 250));
+      expect(predicate()).toBe(true);
+    };
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    try {
+      await client.connect(
+        new StdioClientTransport({
+          command: 'node',
+          args: [resolve(__dirname, '..', 'dist', 'index.js'), '--stdio'],
+          env: {
+            ...env,
+            NR_AI_DASHBOARD_PORT: '0',
+            NR_AI_MODE: 'local',
+            NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
+          },
+        }),
+      );
+      mkdirSync(resolve(storage, 'session-by-ppid'), { recursive: true });
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), ownId);
+      await waitFor(() => existsSync(heartbeat));
+      const pre = { mode: 'pre', tool: 'Read', timestamp: Date.now(), sessionId: ownId };
+      writeFileSync(buffer, JSON.stringify({ ...pre, toolUseId: 'toolu_running' }) + '\n');
+      await waitFor(() => !existsSync(buffer));
+      await client.close();
+      await waitFor(() => !existsSync(heartbeat));
+
+      const sessions = resolve(storage, 'sessions');
+      const saved = readdirSync(sessions).map((f) => readFileSync(resolve(sessions, f), 'utf-8'));
+      expect(
+        saved.map((json) => (JSON.parse(json) as { toolCallCount: number }).toolCallCount),
+      ).toEqual([1]);
+      const counted = resolve(storage, 'counted');
+      expect(readdirSync(counted).map((f) => readFileSync(resolve(counted, f), 'utf-8'))).toEqual([
+        '["toolu_running"]',
+      ]);
+    } finally {
+      rmSync(storage, { recursive: true, force: true });
+    }
+  }, 30000);
+
   describe('nr_observe_install_hooks while the session is still pending', () => {
     async function withPendingServer(
       opts: { mcpClient: string; allow: boolean },

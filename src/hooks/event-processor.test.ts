@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MAX_AGENT_TYPE_LENGTH } from '../lib/agent-id.js';
 import { LocalStore } from '../storage/local-store.js';
-import { HookEventProcessor } from './event-processor.js';
+import { amendRecord, HookEventProcessor } from './event-processor.js';
 import { SkillActivationTracker } from '../metrics/skill-activation-tracker.js';
 import { AntigravityAdapter } from '../platforms/antigravity-adapter.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
@@ -928,7 +928,6 @@ describe('HookEventProcessor', () => {
         expect(records).toHaveLength(1);
         expect(onRecordAmend).toHaveBeenCalledWith(
           expect.objectContaining({ id: records[0]!.id, success: true }),
-          'rejected',
         );
         processor.stop();
       } finally {
@@ -1100,7 +1099,6 @@ describe('HookEventProcessor', () => {
         expect(records).toHaveLength(1);
         expect(onRecordAmend).toHaveBeenCalledWith(
           expect.objectContaining({ id: records[0]!.id, success: true, durationMs: 61_000 }),
-          'timeout',
         );
       } finally {
         jest.useRealTimers();
@@ -1164,7 +1162,7 @@ describe('HookEventProcessor', () => {
       }
     });
 
-    it('pairs a call in flight across replaceStore() and flushes other sessions', () => {
+    it("pairs a call in flight across replaceStore() and hands other sessions' calls back", () => {
       const processor = new HookEventProcessor({ store, onRecord, drainAllSessions: true });
       processor.processEvents([
         makePreEvent({ tool: 'Bash', toolUseId: 'toolu_swap', timestamp: 1000 }),
@@ -1172,18 +1170,51 @@ describe('HookEventProcessor', () => {
       ]);
 
       processor.replaceStore(new LocalStore(tmpDir, 'sess-001'), false);
-      expect(records.map((r) => [r.toolUseId, r.errorType])).toEqual([['toolu_other', 'timeout']]);
       processor.processEvents([
         makePostEvent({ tool: 'Bash', toolUseId: 'toolu_swap', timestamp: 5000 }),
       ]);
       processor.stop();
 
-      expect(records).toHaveLength(2);
-      expect(records[1]).toMatchObject({
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
         toolUseId: 'toolu_swap',
         success: true,
         durationMs: 4000,
       });
+
+      const otherStore = new LocalStore(tmpDir, 'sess-other');
+      const owner = new HookEventProcessor({ store: otherStore, onRecord });
+      otherStore.appendToBuffer(
+        makePostEvent({ toolUseId: 'toolu_other', sessionId: 'sess-other', timestamp: 9500 }),
+      );
+      owner.processEvents(otherStore.drainBuffer());
+      owner.stop();
+
+      expect(records).toHaveLength(2);
+      expect(records[1]).toMatchObject({
+        toolUseId: 'toolu_other',
+        sessionId: 'sess-other',
+        success: true,
+        durationMs: 8000,
+      });
+      expect(otherStore.hasCountedToolUseId('sess-other', 'toolu_other')).toBe(false);
+    });
+
+    it("hands back a call awaiting the user's permission so its owner can still reject it", () => {
+      const processor = new HookEventProcessor({ store, onRecord, drainAllSessions: true });
+      processor.processEvents([
+        makePreEvent({ sessionId: 'sess-other', timestamp: 1000 }),
+        { mode: 'permission_request', tool: 'Read', timestamp: 1100, toolUseId: 'toolu_001' },
+      ]);
+      processor.replaceStore(new LocalStore(tmpDir, 'sess-001'), false);
+      processor.stop();
+
+      const otherStore = new LocalStore(tmpDir, 'sess-other');
+      const owner = new HookEventProcessor({ store: otherStore, onRecord });
+      owner.processEvents(otherStore.drainBuffer());
+      owner.stop();
+
+      expect(records.map((r) => [r.sessionId, r.errorType])).toEqual([['sess-other', 'rejected']]);
     });
 
     it('counts a call in flight across a clean exit and restart once', () => {
@@ -1191,6 +1222,8 @@ describe('HookEventProcessor', () => {
       first.processEvents([makePreEvent({ toolUseId: 'toolu_exit' })]);
       first.stop();
       expect(records.map((r) => r.errorType)).toEqual(['timeout']);
+      expect(store.hasCountedToolUseId('sess-001', 'toolu_exit')).toBe(false);
+      first.persistCountedIds(['sess-001']);
 
       const restarted = new HookEventProcessor({
         store: new LocalStore(tmpDir),
@@ -1201,6 +1234,53 @@ describe('HookEventProcessor', () => {
       restarted.stop();
 
       expect(records).toHaveLength(1);
+    });
+
+    it('marks a swept timeout counted at the next save, before any stop', () => {
+      jest.useFakeTimers();
+      try {
+        const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
+        processor.start();
+        store.appendToBuffer(makePreEvent({ toolUseId: 'toolu_slow', timestamp: Date.now() }));
+        jest.advanceTimersByTime(61_000);
+        expect(records.map((r) => r.errorType)).toEqual(['timeout']);
+
+        processor.persistCountedIds(['sess-other']);
+        expect(store.hasCountedToolUseId('sess-001', 'toolu_slow')).toBe(false);
+        processor.persistCountedIds(['sess-001']);
+        expect(store.hasCountedToolUseId('sess-001', 'toolu_slow')).toBe(true);
+        processor.stop();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('takes the outcome of a late post and keeps the fields added at intake', () => {
+      const late: ToolCallRecord = {
+        id: 'r1',
+        sessionId: 'sess-001',
+        toolName: 'Read',
+        toolUseId: 'toolu_1',
+        timestamp: 1000,
+        durationMs: 61_000,
+        success: true,
+      };
+      const activeSkill = { name: 'review', source: 'tool', runId: 'run-1' } as const;
+      const timedOut = {
+        ...late,
+        durationMs: null,
+        success: false,
+        errorType: 'timeout',
+        activeSkill,
+      };
+
+      expect(amendRecord(timedOut, late)).toEqual({ ...late, activeSkill });
+      expect(amendRecord(timedOut, { ...late, success: false, errorType: 'interrupted' })).toEqual({
+        ...late,
+        success: false,
+        errorType: 'interrupted',
+        activeSkill,
+      });
     });
 
     it('still records a post that never had a pre', () => {

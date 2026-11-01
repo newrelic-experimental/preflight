@@ -1534,15 +1534,18 @@ describe('LocalStore', () => {
       expect(store.hasCountedToolUseId('sess-1', 'toolu_0')).toBe(false);
     });
 
-    it('deletes only the day-old files of exited processes', () => {
+    it('deletes the day-old files of any process, and leftover temp files', () => {
       const store = new LocalStore(tmpDir);
       store.rememberCountedToolUseIds('sess-live', ['toolu_1']);
+      store.rememberCountedToolUseIds('sess-idle', ['toolu_2']);
       const dir = resolve(tmpDir, 'counted');
-      writeFileSync(resolve(dir, 'sess-old.999999.json'), '["toolu_2"]');
-      writeFileSync(resolve(dir, 'sess-recent.999999.json'), '["toolu_3"]');
+      writeFileSync(resolve(dir, 'sess-old.999999.json'), '["toolu_3"]');
+      writeFileSync(resolve(dir, 'sess-recent.999999.json'), '["toolu_4"]');
+      writeFileSync(resolve(dir, 'x.json.tmp'), '[]');
       const dayAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
-      utimesSync(resolve(dir, 'sess-old.999999.json'), dayAgo, dayAgo);
-      utimesSync(resolve(dir, `sess-live.${process.pid}.json`), dayAgo, dayAgo);
+      for (const name of ['sess-old.999999.json', `sess-idle.${process.pid}.json`, 'x.json.tmp']) {
+        utimesSync(resolve(dir, name), dayAgo, dayAgo);
+      }
 
       store.gcCountedToolUseIds();
 
@@ -1550,6 +1553,23 @@ describe('LocalStore', () => {
         `sess-live.${process.pid}.json`,
         'sess-recent.999999.json',
       ]);
+    });
+
+    it('finds an id another process wrote in the same mtime tick as an earlier lookup', () => {
+      const store = new LocalStore(tmpDir);
+      store.rememberCountedToolUseIds('sess-1', ['toolu_mine']);
+      const dir = resolve(tmpDir, 'counted');
+      const file = resolve(dir, 'sess-1.999999.json');
+      writeFileSync(file, '[]');
+      const tick = new Date(Math.floor(Date.now() / 1000) * 1000);
+      utimesSync(dir, tick, tick);
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_theirs')).toBe(false);
+
+      writeFileSync(`${file}.tmp`, '["toolu_theirs"]');
+      renameSync(`${file}.tmp`, file);
+      utimesSync(dir, tick, tick);
+
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_theirs')).toBe(true);
     });
   });
 
