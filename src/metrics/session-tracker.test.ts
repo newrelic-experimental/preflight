@@ -563,6 +563,36 @@ describe('SessionTracker', () => {
     });
   });
 
+  describe('records of other sessions', () => {
+    it('keeps only the adopted session of what a pending engine drained', () => {
+      const tracker = new SessionTracker('pending-1700000000000');
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-own', toolName: 'Read' }));
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-other', toolName: 'Bash' }));
+      expect(tracker.getMetrics().toolCallCount).toBe(0);
+
+      tracker.adoptSessionId('sess-own');
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(1);
+      expect(metrics.toolCallCountByTool).toEqual({ Read: 1 });
+      expect(metrics.bashCommandsRun).toBe(0);
+    });
+
+    it('does not count a record of another session under a real id', () => {
+      const tracker = new SessionTracker('sess-own');
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-other' }));
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-own' }));
+      expect(tracker.getMetrics().toolCallCount).toBe(1);
+    });
+
+    it('counts every session under a --local id', () => {
+      const tracker = new SessionTracker('local-1700000000000');
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-a' }));
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-b' }));
+      expect(tracker.getMetrics().toolCallCount).toBe(2);
+    });
+  });
+
   describe('reset()', () => {
     it('clears all counters back to initial state', () => {
       const tracker = new SessionTracker('old-session');

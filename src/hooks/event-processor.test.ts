@@ -901,7 +901,7 @@ describe('HookEventProcessor', () => {
       }
     });
 
-    it('handles an approval later than the TTL as a post-without-pre record', () => {
+    it('counts an approval later than the TTL once, as the rejected record', () => {
       jest.useFakeTimers();
       try {
         const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
@@ -915,16 +915,11 @@ describe('HookEventProcessor', () => {
         expect(records).toHaveLength(1);
         expect(records[0]!.errorType).toBe('rejected');
 
-        // The user approves after the sweep — the post arrives with no pending pre.
         processor.processEvents([
           makePostEvent({ toolUseId: 'toolu_late', timestamp: Date.now() }),
         ]);
 
-        expect(records).toHaveLength(2);
-        const lateRecord = records[1]!;
-        expect(lateRecord.toolUseId).toBe('toolu_late');
-        expect(lateRecord.durationMs).toBeNull();
-        expect(lateRecord.success).toBe(true);
+        expect(records).toHaveLength(1);
         processor.stop();
       } finally {
         jest.useRealTimers();
@@ -1054,6 +1049,104 @@ describe('HookEventProcessor', () => {
       // Both pre-events survive; each pairs with one post-event
       expect(records).toHaveLength(2);
       expect(records.every((r) => r.toolName === 'Read')).toBe(true);
+    });
+
+    it('pairs a post only with a pre of its own session', () => {
+      const processor = new HookEventProcessor({ store, onRecord, drainAllSessions: true });
+
+      processor.processEvents([
+        { mode: 'pre', tool: 'Read', timestamp: 5000, sessionId: 'sess-a' } as HookEvent,
+        { mode: 'pre', tool: 'Read', timestamp: 5010, sessionId: 'sess-b' } as HookEvent,
+        { mode: 'post', tool: 'Read', timestamp: 5100, sessionId: 'sess-b' } as HookEvent,
+      ]);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ sessionId: 'sess-b', timestamp: 5010, durationMs: 90 });
+      expect(processor.pendingCount).toBe(1);
+    });
+  });
+
+  describe('a call whose pre was already counted unpaired', () => {
+    it('counts a call longer than the orphan timeout once when its post arrives late', () => {
+      jest.useFakeTimers();
+      try {
+        const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
+        processor.start();
+        store.appendToBuffer(makePreEvent({ toolUseId: 'toolu_slow', timestamp: Date.now() }));
+
+        jest.advanceTimersByTime(61_000);
+        expect(records.map((r) => r.errorType)).toEqual(['timeout']);
+
+        store.appendToBuffer(makePostEvent({ toolUseId: 'toolu_slow', timestamp: Date.now() }));
+        jest.advanceTimersByTime(1_000);
+        processor.stop();
+
+        expect(records).toHaveLength(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('counts a timed-out call without a toolUseId once when its post arrives late', () => {
+      jest.useFakeTimers();
+      try {
+        const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
+        processor.start();
+        processor.processEvents([
+          { mode: 'pre', tool: 'Read', timestamp: Date.now(), sessionId: 'sess-001' } as HookEvent,
+        ]);
+
+        jest.advanceTimersByTime(61_000);
+        processor.processEvents([
+          { mode: 'post', tool: 'Read', timestamp: Date.now(), sessionId: 'sess-001' } as HookEvent,
+        ]);
+        processor.stop();
+
+        expect(records).toHaveLength(1);
+        expect(records[0]!.errorType).toBe('timeout');
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('counts a call in flight across replaceStore() once', () => {
+      const processor = new HookEventProcessor({ store, onRecord, drainAllSessions: true });
+      processor.processEvents([makePreEvent({ toolUseId: 'toolu_swap' })]);
+
+      processor.replaceStore(new LocalStore(tmpDir, 'sess-001'), false);
+      processor.processEvents([makePostEvent({ toolUseId: 'toolu_swap' })]);
+      processor.stop();
+
+      expect(records).toHaveLength(1);
+    });
+
+    it('counts a call in flight across a clean exit and restart once', () => {
+      const first = new HookEventProcessor({ store: new LocalStore(tmpDir, 'sess-001'), onRecord });
+      first.processEvents([makePreEvent({ toolUseId: 'toolu_exit' })]);
+      first.stop();
+      expect(records.map((r) => r.errorType)).toEqual(['timeout']);
+
+      const restarted = new HookEventProcessor({
+        store: new LocalStore(tmpDir),
+        drainAllSessions: true,
+        onRecord,
+      });
+      restarted.processEvents([makePostEvent({ toolUseId: 'toolu_exit' })]);
+      restarted.stop();
+
+      expect(records).toHaveLength(1);
+    });
+
+    it('still records a post that never had a pre', () => {
+      const first = new HookEventProcessor({ store: new LocalStore(tmpDir, 'sess-001'), onRecord });
+      first.processEvents([makePreEvent({ toolUseId: 'toolu_exit' })]);
+      first.stop();
+
+      const restarted = new HookEventProcessor({ store: new LocalStore(tmpDir), onRecord });
+      restarted.processEvents([makePostEvent({ toolUseId: 'toolu_other' })]);
+      restarted.stop();
+
+      expect(records.map((r) => r.toolUseId)).toEqual(['toolu_exit', 'toolu_other']);
     });
   });
 
