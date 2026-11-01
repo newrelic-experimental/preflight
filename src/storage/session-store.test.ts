@@ -602,6 +602,23 @@ describe('SessionStore', () => {
     expect(store.loadSession('reported')).toMatchObject({ toolCallCount: 12, tokensInput: 99_000 });
   });
 
+  it("accepts the owner's summary with usage over a file that holds only self-reports", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    const idle = { sessionId: 'reported-only', startTime, toolCallCount: 0, toolBreakdown: {} };
+    store.saveSession(makeSummary({ ...idle, tokensInput: 1000, selfReportCount: 1 }));
+
+    const saved = store.saveSession(
+      makeSummary({ ...idle, tokensInput: 1100, outcome: 'completed' }),
+    );
+
+    expect(saved).toBe(true);
+    expect(store.loadSession('reported-only')).toMatchObject({
+      tokensInput: 1100,
+      outcome: 'completed',
+    });
+  });
+
   it('keeps the existing outcome when a write carries none', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const startTime = new Date('2026-04-15T10:00:00Z').getTime();

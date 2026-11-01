@@ -1491,6 +1491,39 @@ describe('stdio integration', () => {
         expect(savedAt('conv-resave')).toBe(adoptedAt);
       });
     }, 40000);
+
+    it('a resumed engine saves a report for its own conversation once, on top of the saved total', async () => {
+      await withCursorEngine('600000', async (env, adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        const startTime = Date.now() - 60_000;
+        const prior = {
+          sessionId: 'conv-resumed',
+          startTime,
+          endTime: startTime,
+          toolCallCount: 3,
+        };
+        const day = new Date(startTime).toISOString().slice(0, 10);
+        mkdirSync(resolve(storage, 'sessions'), { recursive: true });
+        writeFileSync(
+          resolve(storage, 'sessions', `${day}_conv-resumed.json`),
+          JSON.stringify({
+            ...prior,
+            estimatedCostUsd: 10,
+            tokensInput: 100,
+            outcome: 'in progress',
+          }),
+        );
+
+        await adopt('conv-resumed');
+        runHook(env, reportHook('conv-resumed', 'r-resumed-01'));
+        expect(await drained(storage, 'conv-resumed')).toBe('');
+        await close();
+
+        const saved = savedSession(storage, 'conv-resumed');
+        expect(saved).toMatchObject({ tokensInput: 1100, outcome: 'completed' });
+        expect(saved?.estimatedCostUsd).toBeCloseTo(10.0075, 6);
+      });
+    }, 40000);
   });
 
   it('self-corrects when the pending path resolves via the cwd fallback and a differing PPID breadcrumb appears later', async () => {
