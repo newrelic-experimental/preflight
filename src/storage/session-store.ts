@@ -309,20 +309,21 @@ export function hasAttributableActivity(s: AttributableActivity): boolean {
  * cost and tokens, and must still be kept. A session with none of these is an
  * idle MCP process (a window that was opened and never used).
  */
-function wouldClobber(existing: FullSessionSummary, incoming: FullSessionSummary): boolean {
-  if (!hasAttributableActivity(existing) || hasAttributableActivity(incoming)) return false;
-  // A file that holds only self-reports takes a summary with usage, such as its owning engine's.
-  return (
-    hasAttributableActivity({ ...existing, selfReportCount: 0 }) || !hasRecordedUsage(incoming)
-  );
-}
-
 function hasRecordedUsage(s: FullSessionSummary): boolean {
   return (
     hasAttributableActivity(s) ||
     (s.estimatedCostUsd ?? 0) > 0 ||
     (s.tokensInput ?? 0) + (s.tokensOutput ?? 0) + (s.tokensThinking ?? 0) > 0
   );
+}
+
+function holdsOnlySelfReports(s: FullSessionSummary): boolean {
+  return (s.selfReportCount ?? 0) > 0 && !hasAttributableActivity({ ...s, selfReportCount: 0 });
+}
+
+function wouldClobber(existing: FullSessionSummary, incoming: FullSessionSummary): boolean {
+  if (!hasAttributableActivity(existing) || hasAttributableActivity(incoming)) return false;
+  return !(holdsOnlySelfReports(existing) && hasRecordedUsage(incoming));
 }
 
 export interface SessionFileInfo {

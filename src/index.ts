@@ -3014,6 +3014,11 @@ async function main(): Promise<void> {
       // against the corrected id's own transcript, replacing any name derived
       // for the previously-adopted (wrong) id.
       applyAuthoritativeSessionName(realId);
+      localSessionAggregator.saveSummaries(
+        sessionStore!,
+        observedContext(),
+        (rollup) => rollup.unsaved && rollup.sessionId === realId,
+      );
       // viaCwdOnly means this id came from the collision-prone cwd fallback
       // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
       // resolvedViaCwdOnly gate on the synchronous resolution path's own
@@ -3022,12 +3027,6 @@ async function main(): Promise<void> {
       // startPpidCorrectionWatch right after this returns, whose
       // confirmation branch (ppidId === staleId) calls
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
-      // From here the owner's summary carries this session, so what the rollup drained is saved first and seeded below.
-      localSessionAggregator.saveSummaries(
-        sessionStore!,
-        observedContext(),
-        (rollup) => rollup.unsaved && rollup.sessionId === realId,
-      );
       if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
 
       // Replace the current LocalStore with one scoped to the real id.
