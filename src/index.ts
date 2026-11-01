@@ -1412,7 +1412,7 @@ async function main(): Promise<void> {
     // below can call this again for a *different* id after a pending->real
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
-    const toolCallsSavedFromRollups = new Map<string, number>();
+    const toolCallsSaved = new Map<string, number>();
     const rehydrateTrackersIfResumed = (sessionId: string): void => {
       if (isSyntheticSessionId(sessionId)) return;
       if (rehydratedTrackerSessionIds.has(sessionId)) return;
@@ -1421,9 +1421,9 @@ async function main(): Promise<void> {
         const persisted = sessionStore!.loadSession(sessionId);
         if (!persisted) return;
         costTracker.seedFromPersisted(buildCostTrackerSeed(persisted));
-        // A file holding no more calls than this engine saved from its rollup
-        // holds only calls that adoptSessionId() replays.
-        if (persisted.toolCallCount > (toolCallsSavedFromRollups.get(sessionId) ?? 0)) {
+        // A file holding no more calls than this engine saved holds only calls
+        // this engine already counts.
+        if (persisted.toolCallCount > (toolCallsSaved.get(sessionId) ?? 0)) {
           sessionTracker!.seedFromPersisted({
             toolCallCount: persisted.toolCallCount,
             bashCommandCount: persisted.bashCommandCount,
@@ -2654,7 +2654,10 @@ async function main(): Promise<void> {
       },
     });
 
-    const saveObservedSessions = (outcome: string, exceptSessionId?: string): number => {
+    const saveObservedSessions = (
+      outcome: string,
+      savesSession?: (sessionId: string) => boolean,
+    ): number => {
       if (!sessionStore || !config) return 0;
       const rollups = localSessionAggregator.toSummaries({
         developer: config.developer ?? 'unknown',
@@ -2662,18 +2665,23 @@ async function main(): Promise<void> {
         outcome,
         toolSelectionScorer,
         repoResolver: repoNameResolver,
-        ...(exceptSessionId !== undefined && { exceptSessionId }),
+        ...(savesSession !== undefined && { savesSession }),
       });
+      const savedSessionIds: string[] = [];
       for (const rollup of rollups) {
-        sessionStore.saveSession(
-          rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
-        );
-        toolCallsSavedFromRollups.set(String(rollup.sessionId), Number(rollup.toolCallCount));
+        const sessionId = String(rollup.sessionId);
+        try {
+          sessionStore.saveSession(
+            rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
+          );
+          toolCallsSaved.set(sessionId, Number(rollup.toolCallCount));
+          savedSessionIds.push(sessionId);
+        } catch (err) {
+          logger.warn('Failed to save observed session', { sessionId, error: String(err) });
+        }
       }
-      eventProcessor?.persistCountedIdsOfSavedSessions(
-        rollups.map((rollup) => String(rollup.sessionId)),
-      );
-      return rollups.length;
+      eventProcessor?.persistCountedIdsOfSavedSessions(savedSessionIds);
+      return savedSessionIds.length;
     };
 
     persistSession = (opts?: { periodic?: boolean }) => {
@@ -2737,6 +2745,7 @@ async function main(): Promise<void> {
           return;
         }
         sessionStore.saveSession(summary);
+        toolCallsSaved.set(summary.sessionId, summary.toolCallCount);
         eventProcessor?.persistCountedIdsOfSavedSessions([summary.sessionId]);
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
         // any real work), so calling it on every periodic checkpoint too is
@@ -2987,7 +2996,8 @@ async function main(): Promise<void> {
       realId: string,
       opts?: { isCorrection?: boolean; viaCwdOnly?: boolean },
     ): Promise<void> => {
-      const savesOtherSessions = opts?.isCorrection || isSyntheticSessionId(sessionTraceId);
+      const staleId = sessionTraceId;
+      const savesOtherSessions = opts?.isCorrection || isSyntheticSessionId(staleId);
       if (opts?.isCorrection) {
         // A real correction means the previously-adopted id was wrong, and
         // anything these four trackers accumulated since startWatchers()
@@ -3038,7 +3048,9 @@ async function main(): Promise<void> {
       eventProcessor!.replaceStore(realLocalStore, false);
       if (savesOtherSessions) {
         try {
-          saveObservedSessions('in progress', realId);
+          saveObservedSessions('in progress', (id) =>
+            opts?.isCorrection ? id === staleId : id !== realId,
+          );
         } catch (err) {
           logger.warn('Failed to save observed sessions on adoption', { error: String(err) });
         }

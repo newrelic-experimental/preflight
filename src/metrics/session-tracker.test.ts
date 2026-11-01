@@ -20,7 +20,7 @@ afterEach(() => {
 function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
   return {
     id: 'rec-001',
-    sessionId: 'test-session',
+    sessionId: 'sess-001',
     toolName: 'Read',
     toolUseId: 'toolu_001',
     timestamp: Date.now(),
@@ -293,14 +293,14 @@ describe('SessionTracker', () => {
 
   describe('getMetrics()', () => {
     it('returns a complete snapshot with all fields', () => {
-      const tracker = new SessionTracker('test-session');
+      const tracker = new SessionTracker('snapshot-session');
 
       tracker.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 50, filePath: '/a.ts' }));
       tracker.recordToolCall(makeRecord({ toolName: 'Bash', durationMs: 200 }));
 
       const metrics = tracker.getMetrics();
 
-      expect(metrics.sessionId).toBe('test-session');
+      expect(metrics.sessionId).toBe('snapshot-session');
       expect(metrics.sessionStartTime).toBeGreaterThan(0);
       expect(metrics.sessionStartTime).toBeLessThan(Date.now() + 1000);
       expect(metrics.sessionDurationMs).toBeGreaterThanOrEqual(0);
@@ -440,9 +440,7 @@ describe('SessionTracker', () => {
       expect(metrics.sessionName).toBeNull();
       expect(metrics.sessionNameSource).toBeNull();
       // After reset the streaming fallback is active again.
-      tracker.recordToolCall(
-        makeRecord({ sessionId: 'new-session', cwd: '/Users/dev/projects/preflight' }),
-      );
+      tracker.recordToolCall(makeRecord({ cwd: '/Users/dev/projects/preflight' }));
       expect(tracker.getMetrics().sessionName).toBe('preflight');
       expect(tracker.getMetrics().sessionNameSource).toBe('cwd');
     });
@@ -544,8 +542,8 @@ describe('SessionTracker', () => {
   describe('adoptSessionId()', () => {
     it('updates the sessionId in place without clearing accumulated metrics', () => {
       const tracker = new SessionTracker('provisional-id');
-      tracker.recordToolCall(makeRecord({ sessionId: null, toolName: 'Read', durationMs: 50 }));
-      tracker.recordToolCall(makeRecord({ sessionId: null, toolName: 'Edit', durationMs: 80 }));
+      tracker.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 50 }));
+      tracker.recordToolCall(makeRecord({ toolName: 'Edit', durationMs: 80 }));
 
       // Adopt a real session ID.
       tracker.adoptSessionId('real-session-id');
@@ -597,11 +595,11 @@ describe('SessionTracker', () => {
       expect(metrics.toolDurationMsByTool.Read).toBeUndefined();
     });
 
-    it('does not count a record of another session under a real id', () => {
+    it('counts a record of another session under a real id', () => {
       const tracker = new SessionTracker('sess-own');
       tracker.recordToolCall(makeRecord({ sessionId: 'sess-other' }));
       tracker.recordToolCall(makeRecord({ sessionId: 'sess-own' }));
-      expect(tracker.getMetrics().toolCallCount).toBe(1);
+      expect(tracker.getMetrics().toolCallCount).toBe(2);
     });
 
     it('counts every session under a --local id', () => {
@@ -634,7 +632,7 @@ describe('SessionTracker', () => {
       ]);
     });
     it('amends the timed-out record with its id, and counts its exit code and error', () => {
-      const tracker = new SessionTracker('test-session', 10);
+      const tracker = new SessionTracker('sess-own', 10);
       const call = makeRecord({
         toolName: 'Bash',
         timestamp: 1000,

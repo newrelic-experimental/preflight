@@ -11,7 +11,6 @@ import type { MetricAggregator } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import {
   DEGENERATE_NAMES,
-  isUnscopedAggregatorSessionId,
   shouldReplaceSessionName,
   type SessionNameSource,
 } from '../hooks/session-resolver.js';
@@ -193,14 +192,9 @@ export class SessionTracker implements Resettable {
     this.maxAmendable = maxAmendable;
   }
 
-  private countsSession(sessionId: string | null): boolean {
-    return (
-      !sessionId || sessionId === this.sessionId || isUnscopedAggregatorSessionId(this.sessionId)
-    );
-  }
-
   recordToolCall(record: ToolCallRecord): void {
-    if (!this.countsSession(record.sessionId)) return;
+    // A pending engine drains every session; adoptSessionId() replays its own.
+    if (record.sessionId && this.sessionId.startsWith('pending-')) return;
     this.toolCallCount++;
 
     // FALLBACK naming only: an authoritative name (job-state title or
