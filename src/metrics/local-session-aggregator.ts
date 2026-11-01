@@ -133,6 +133,7 @@ export interface LocalSessionRollup {
   tokensOutput: number;
   tokensCacheRead: number;
   tokensCacheCreation: number;
+  cacheSavingsUsd: number;
   models: Set<string>;
   unpricedByModel: Map<string, UnpricedModelUsage>;
   estimatedByModel: Map<string, EstimatedModelUsage>;
@@ -370,6 +371,7 @@ export class LocalSessionAggregator {
         tokensInput: 0,
         tokensOutput: 0,
         tokensCacheRead: 0,
+        cacheSavingsUsd: 0,
         tokensCacheCreation: 0,
         models: new Set(),
         unpricedByModel: new Map(),
@@ -480,6 +482,7 @@ export class LocalSessionAggregator {
       cacheReadTokens?: number;
       cacheCreationTokens?: number;
       thinkingTokens?: number;
+      cacheSavingsUsd?: number;
       /**
        * Present iff this usage came from a subagent transcript turn — the SAME
        * discriminator `CostTracker.recordTokenUsage`'s `ctx.agentId` uses, so
@@ -513,6 +516,7 @@ export class LocalSessionAggregator {
     rollup.tokensOutput += usage.outputTokens ?? 0;
     rollup.tokensCacheRead += usage.cacheReadTokens ?? 0;
     rollup.tokensCacheCreation += usage.cacheCreationTokens ?? 0;
+    rollup.cacheSavingsUsd += usage.cacheSavingsUsd ?? 0;
     if (usage.model) {
       rollup.models.add(usage.model);
       const entry = rollup.modelBreakdown.get(usage.model) ?? {
@@ -680,7 +684,7 @@ export class LocalSessionAggregator {
         tokensThinking: 0,
         tokensCacheRead: rollup.tokensCacheRead,
         tokensCacheCreation: rollup.tokensCacheCreation,
-        cacheSavingsUsd: 0,
+        cacheSavingsUsd: rollup.cacheSavingsUsd,
         efficiencyScore: null,
         antiPatterns: [],
         taskCount: 0,

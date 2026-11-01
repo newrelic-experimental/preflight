@@ -84,6 +84,7 @@ import {
   formatTokensCompact,
   formatUsd,
   formatUsdOrDash,
+  formatSavingsUsd,
   shortToolName,
 } from '../lib/format';
 import { isSameLocalDay, localStartOfDay, todayPortionRatio } from '../../lib/date.js';
@@ -916,7 +917,7 @@ function CacheHealthCard({
       tooltip={tooltip}
       value={formatPct(data.cacheHitRatePct)}
       tone={tone}
-      detail={`${cacheBandText(data.status)} · ${formatUsd(data.totalSavingsUsd)} saved today`}
+      detail={`${cacheBandText(data.status)} · ${formatSavingsUsd(data.totalSavingsUsd)} saved today`}
       rows={rows}
     />
   );

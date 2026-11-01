@@ -154,6 +154,15 @@ export function formatUsd(value: number): string {
 }
 
 /**
+ * Cache savings in USD. A positive amount under one cent reads "<$0.01" so it
+ * never rounds to a misleading "$0.00"; an exact zero stays "$0.00".
+ */
+export function formatSavingsUsd(value: number): string {
+  if (Number.isFinite(value) && value > 0 && value < 0.01) return '<$0.01';
+  return formatUsd(value);
+}
+
+/**
  * USD cost that may be absent. `null`/`undefined`/non-finite → the em-dash
  * placeholder (`—`, meaning "no data / not computed") — kept distinct from
  * {@link formatUsd}(0)'s `$0.00` (a measured zero) so the UI never conflates
