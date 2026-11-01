@@ -173,6 +173,7 @@ export type {
   ReportSessionStartInput,
   ReportToolCallInput,
 } from './platforms/index.js';
+export { UNATTRIBUTED_BREADCRUMB_WRITER } from './platforms/types.js';
 export { ProxyManager } from './proxy/index.js';
 export type { ProxyRequestRecord, ProxyToolCallRecord, UpstreamConfig } from './proxy/index.js';
 export { createServer, NrMcpServer } from './server.js';

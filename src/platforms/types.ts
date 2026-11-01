@@ -65,24 +65,34 @@ export interface PlatformCapabilities {
   readonly instructionFilePaths: readonly string[];
   /**
    * The writers whose session breadcrumbs this platform's MCP server may
-   * adopt its session id from, most trusted first. The hook collector files
-   * each breadcrumb under the engine its hook command names (`MCP_CLIENT` or
-   * `NEW_RELIC_AI_PLATFORM`, else Claude Code's own env), or under
-   * `UNATTRIBUTED_BREADCRUMB_WRITER` when it names none. Empty when this
-   * platform's hooks never write one: no hooks, or payloads without
-   * `session_id`. Any other engine's breadcrumb carries another session's
-   * cost, so leave a writer out unless this platform's documented hook setup
-   * produces it.
+   * adopt its session id from, most trusted first. A writer is the engine a
+   * hook command names (`MCP_CLIENT` or `NEW_RELIC_AI_PLATFORM`, else Claude
+   * Code's own env), or `UNATTRIBUTED_BREADCRUMB_WRITER` for a command that
+   * names none. Empty when this platform's hooks never write one: no hooks,
+   * or payloads without `session_id`. Any other engine's breadcrumb carries
+   * another session's cost, so leave a writer out unless this platform's
+   * documented hook setup produces it. Omitted, it is this platform's own
+   * name and then `UNATTRIBUTED_BREADCRUMB_WRITER`.
    */
-  readonly sessionBreadcrumbWriters: readonly string[];
+  readonly sessionBreadcrumbWriters?: readonly string[];
 }
 
 /**
- * The writer the hook collector files a session breadcrumb under when its
- * hook command names no engine, as Codex's documented `preflight-collector`
- * command does.
+ * The writer of a session breadcrumb whose hook command names no engine, as
+ * Codex's documented `preflight-collector` command does.
  */
 export const UNATTRIBUTED_BREADCRUMB_WRITER = 'unattributed';
+
+export function sessionBreadcrumbWriters(
+  adapter: Pick<PlatformAdapter, 'platformName' | 'capabilities'>,
+): readonly string[] {
+  return (
+    adapter.capabilities.sessionBreadcrumbWriters ?? [
+      adapter.platformName,
+      UNATTRIBUTED_BREADCRUMB_WRITER,
+    ]
+  );
+}
 
 export interface PlatformAdapter {
   readonly platformName: string;
