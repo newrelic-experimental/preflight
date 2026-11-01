@@ -1199,6 +1199,25 @@ describe('HookEventProcessor', () => {
       expect(existsSync(resolve(tmpDir, 'buffer-sess-other.jsonl'))).toBe(false);
     });
 
+    it('keeps the other calls it counted unpaired when one is counted again', () => {
+      const onRecordAmend = jest.fn();
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onRecordAmend,
+        maxPendingEvents: 2,
+      });
+      processor.processEvents([makePreEvent({ toolUseId: 'toolu_a' }), makePreEvent()]);
+      processor.stop();
+      processor.processEvents([makePreEvent()]);
+      processor.stop();
+      processor.processEvents([makePostEvent({ toolUseId: 'toolu_a' })]);
+
+      expect(onRecordAmend).toHaveBeenCalledWith(
+        expect.objectContaining({ toolUseId: 'toolu_a', success: true }),
+      );
+    });
+
     it('counts a call in flight across a clean exit and restart once', () => {
       const first = new HookEventProcessor({ store: new LocalStore(tmpDir, 'sess-001'), onRecord });
       first.processEvents([makePreEvent({ toolUseId: 'toolu_exit' })]);
