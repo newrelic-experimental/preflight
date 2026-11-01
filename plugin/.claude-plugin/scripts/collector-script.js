@@ -153,16 +153,6 @@ function parseSelfReport(args) {
     }
   };
 }
-function selfReportLine(report, conversationId, timestamp, platform) {
-  return {
-    mode: "self_report",
-    tool: REPORT_TOKENS_TOOL_NAME,
-    timestamp,
-    sessionId: conversationId,
-    ...report,
-    platform
-  };
-}
 function hookAcknowledged(result, reportId) {
   const value = decodeObject(result);
   if (!value || value.isError === true) return false;
@@ -174,12 +164,19 @@ function hookAcknowledged(result, reportId) {
   );
 }
 function hookSelfReportLine(call, conversationId, timestamp, platform) {
-  if (call.tool !== REPORT_TOKENS_TOOL_NAME || !isPreflightServerName(call.server))
-    return void 0;
-  if (!isConversationId(conversationId)) return void 0;
+  const isReport = call.tool === REPORT_TOKENS_TOOL_NAME && isPreflightServerName(call.server);
+  if (!isReport || !isConversationId(conversationId)) return void 0;
   const parsed = parseSelfReport(call.args);
   if (!parsed.ok || !hookAcknowledged(call.result, parsed.report.reportId)) return void 0;
-  return selfReportLine(parsed.report, conversationId, timestamp, platform);
+  const { report } = parsed;
+  return {
+    mode: "self_report",
+    tool: REPORT_TOKENS_TOOL_NAME,
+    timestamp,
+    sessionId: conversationId,
+    ...report,
+    platform
+  };
 }
 function claimPath(storageDir, line) {
   return resolve(storageDir, "self-reports", line.sessionId, reportKey(line));
