@@ -1544,6 +1544,8 @@ describe('stdio integration', () => {
         sessionFile: (conversationId: string) => Promise<Record<string, unknown> | null>,
         storagePath: string,
       ) => Promise<void>,
+      engineEnv: Record<string, string> = { MCP_CLIENT: mcpClient },
+      homeFiles: Record<string, unknown> = {},
     ): Promise<void> {
       const { spawnSync } = await import('node:child_process');
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
@@ -1552,9 +1554,13 @@ describe('stdio integration', () => {
       const distDir = resolve(__dirname, '..', 'dist');
       const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-pending-report-storage-'));
       const tmpHome = mkdtempSync(join(tmpdir(), 'nr-pending-report-home-'));
+      for (const [path, content] of Object.entries(homeFiles)) {
+        mkdirSync(resolve(tmpHome, path, '..'), { recursive: true });
+        writeFileSync(resolve(tmpHome, path), JSON.stringify(content));
+      }
       const env = { ...process.env };
       for (const name of Object.keys(env)) {
-        if (name.startsWith('CLAUDE') || name.startsWith('CURSOR')) delete env[name];
+        if (/^(CLAUDE|CURSOR|MCP_CLIENT$|NEW_RELIC_AI_PLATFORM$)/.test(name)) delete env[name];
       }
       const hook = (payload: Record<string, unknown>) => {
         const run = spawnSync('node', [resolve(distDir, 'hooks', 'collector-script.js')], {
@@ -1594,7 +1600,7 @@ describe('stdio integration', () => {
             env: {
               ...env,
               HOME: tmpHome,
-              MCP_CLIENT: mcpClient,
+              ...engineEnv,
               NR_AI_DASHBOARD_PORT: '0',
               NR_AI_MODE: 'local',
               NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
@@ -1686,6 +1692,78 @@ describe('stdio integration', () => {
         ]);
       });
     }, 30000);
+
+    it('stops estimating a resolved Cursor engine once its own conversation reported', async () => {
+      await withPendingEngine('cursor', async (client, hook, sessionFile, storagePath) => {
+        const breadcrumbDir = resolve(storagePath, 'session-by-ppid');
+        mkdirSync(breadcrumbDir, { recursive: true });
+        writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), 'real-owner-session');
+        const adopted = async () =>
+          (await client.listTools()).tools.some((t) => t.name === 'nr_observe_get_session_stats');
+        for (let i = 0; i < 40 && !(await adopted()); i++) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        const result = await client.callTool({
+          name: 'nr_observe_report_tokens',
+          arguments: report,
+        });
+        hook({
+          hook_event_name: 'afterMCPExecution',
+          conversation_id: 'real-owner-session',
+          mcp_server_name: 'newrelic-preflight',
+          tool_name: 'nr_observe_report_tokens',
+          tool_input: JSON.stringify(report),
+          result_json: JSON.stringify(result),
+        });
+        const buffer = resolve(storagePath, 'buffer-real-owner-session.jsonl');
+        const pending = () => existsSync(buffer) && readFileSync(buffer, 'utf-8') !== '';
+        for (let i = 0; i < 40 && pending(); i++) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        const read = { session_id: 'real-owner-session', tool_name: 'Read', tool_use_id: 'tu-big' };
+        hook({
+          hook_event_name: 'PreToolUse',
+          ...read,
+          tool_input: { file_path: '/repo/big.txt' },
+        });
+        hook({ hook_event_name: 'PostToolUse', ...read, tool_response: 'y'.repeat(40_000) });
+
+        let saved = await sessionFile('real-owner-session');
+        for (let i = 0; i < 40 && Number(saved?.toolCallCount ?? 0) < 2; i++) {
+          await new Promise((r) => setTimeout(r, 250));
+          saved = await sessionFile('real-owner-session');
+        }
+        expect(saved?.toolCallCount).toBe(2);
+        expect(saved?.estimatedCostUsd).toBeCloseTo(0.0075, 6);
+      });
+    }, 40000);
+
+    it.each([
+      ['only an inherited CURSOR_TRACE_ID', false, {}],
+      [
+        'an inherited CURSOR_TRACE_ID and a hooks file that runs the collector',
+        true,
+        {
+          '.cursor/hooks.json': {
+            hooks: { afterMCPExecution: [{ command: 'preflight-collector' }] },
+          },
+        },
+      ],
+    ])(
+      'a pending engine with %s lists the tool: %s',
+      async (_label, listed, homeFiles) => {
+        await withPendingEngine(
+          'cursor',
+          async (client) => {
+            const names = (await client.listTools()).tools.map((t) => t.name);
+            expect(names.includes('nr_observe_report_tokens')).toBe(listed);
+          },
+          { CURSOR_TRACE_ID: 'inherited-from-terminal' },
+          homeFiles,
+        );
+      },
+      30000,
+    );
 
     it.each([
       ['cursor', true],

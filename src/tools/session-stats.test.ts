@@ -976,6 +976,14 @@ describe('registerPendingTools()', () => {
       mkdirSync(resolve(path, '..'), { recursive: true });
       writeFileSync(path, JSON.stringify({ version: 1, hooks }));
     };
+    const writeMcpServers = (hook: { clientName: string }, key: string): void => {
+      const path =
+        hook.clientName === 'Cursor'
+          ? resolve(homeDir, '.cursor', 'mcp.json')
+          : resolve(homeDir, '.codeium', 'windsurf', 'mcp_config.json');
+      mkdirSync(resolve(path, '..'), { recursive: true });
+      writeFileSync(path, JSON.stringify({ mcpServers: { [key]: { command: 'preflight' } } }));
+    };
 
     it('accepts the report for the hook to record and never claims it saved', async () => {
       await connect();
@@ -1043,12 +1051,30 @@ describe('registerPendingTools()', () => {
       writeHooks(pathIn(root === 'home' ? homeDir : projectDir), {
         [hook.postMcpEvent]: [{ command: 'MCP_CLIENT=x /usr/local/bin/preflight-collector' }],
       });
+      writeMcpServers(hook, 'newrelic-preflight');
       await connect(hook);
 
       const { body } = await call(report);
 
       expect(body).toMatchObject({ accepted: true, hooks_detected: true });
       expect(body.message).toContain('the hook should record it');
+    });
+
+    it.each([
+      ['Cursor', cursorHook],
+      ['Windsurf', windsurfHook],
+    ])('warns on %s when no MCP server key matches the hook', async (_label, hook) => {
+      writeHooks(resolve(homeDir, hook.homeHooksFile), {
+        [hook.postMcpEvent]: [{ command: 'preflight-collector' }],
+      });
+      writeMcpServers(hook, 'my-nr-ai-observability-proxy');
+      await connect(hook);
+
+      const { body } = await call(report);
+
+      expect(body).toMatchObject({ accepted: true, hooks_detected: true });
+      expect(body.message).not.toContain('should record');
+      expect(body.message).toContain('may not be saved');
     });
 
     it.each([
