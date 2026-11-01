@@ -128,7 +128,6 @@ export class LocalStore {
   private readonly sessionId: string | null;
   private readonly countedDir: string;
   private readonly ownCountedIds = new Map<string, Set<string>>();
-  private readonly countedIdsCache = new Map<string, { dirMtimeMs: number; ids: Set<string> }>();
 
   /**
    * @param storagePath The base storage directory (e.g. ~/.newrelic-preflight).
@@ -213,6 +212,19 @@ export class LocalStore {
     }
   }
 
+  /** Appends events to another session's buffer, for the process that drains it. */
+  appendToSessionBuffer(sessionId: string, events: readonly HookEvent[]): void {
+    if (!SESSION_ID_RE.test(sessionId) || events.length === 0) return;
+    const lines = events.map((event) => JSON.stringify(event) + '\n').join('');
+    try {
+      appendFileSync(resolve(this.storagePath, `buffer-${sessionId}.jsonl`), lines, {
+        mode: 0o600,
+      });
+    } catch (err) {
+      logger.warn('Failed to append to session buffer', { sessionId, error: String(err) });
+    }
+  }
+
   /**
    * Atomically drain all events from the buffer file.
    * Renames the file to a temp path (atomic on POSIX), reads it, then deletes.
@@ -282,7 +294,6 @@ export class LocalStore {
       window.delete(id);
     }
     this.ownCountedIds.set(sessionId, window);
-    this.countedIdsCache.delete(sessionId);
     const tmpPath = `${path}.tmp`;
     try {
       mkdirSync(this.countedDir, { recursive: true, mode: 0o700 });
@@ -293,40 +304,28 @@ export class LocalStore {
     }
   }
 
+  /** Read fresh on every call: only a post with no pre in this process gets here. */
   hasCountedToolUseId(sessionId: string, toolUseId: string): boolean {
     if (!SESSION_ID_RE.test(sessionId)) return false;
-    let dirMtimeMs: number;
-    try {
-      dirMtimeMs = statSync(this.countedDir).mtimeMs;
-    } catch {
-      return false;
-    }
-    // Every write renames a file into the directory, which moves its mtime.
-    let cached = this.countedIdsCache.get(sessionId);
-    if (cached?.dirMtimeMs !== dirMtimeMs) {
-      const ids = new Set<string>();
-      for (const name of this.countedFileNames()) {
-        if (!name.startsWith(`${sessionId}.`)) continue;
-        for (const id of readCountedToolUseIds(resolve(this.countedDir, name))) ids.add(id);
-      }
-      cached = { dirMtimeMs, ids };
-      this.countedIdsCache.set(sessionId, cached);
-    }
-    return cached.ids.has(toolUseId);
+    return this.countedFileNames().some(
+      (name) =>
+        name.startsWith(`${sessionId}.`) &&
+        name.endsWith('.json') &&
+        readCountedToolUseIds(resolve(this.countedDir, name)).includes(toolUseId),
+    );
   }
 
   /**
-   * Deletes counted-id files whose writer has exited and that have not been
-   * written for a day. A late post arrives within its call's runtime plus a
-   * restart, so a day-old file of a dead process can no longer match one.
+   * Deletes counted-id files, and temp files a crash left, not written for a
+   * day. A late post arrives within its call's runtime plus a restart, so a
+   * day-old id can no longer match one. A live writer rewrites its whole
+   * window on its next write.
    */
   gcCountedToolUseIds(now: number = Date.now()): void {
     for (const name of this.countedFileNames()) {
-      const pid = Number.parseInt(name.split('.')[1] ?? '', 10);
       const path = resolve(this.countedDir, name);
       try {
-        if (isPidAlive(pid) || now - statSync(path).mtimeMs < COUNTED_IDS_MAX_AGE_MS) continue;
-        unlinkSync(path);
+        if (now - statSync(path).mtimeMs >= COUNTED_IDS_MAX_AGE_MS) unlinkSync(path);
       } catch (err) {
         logger.debug('Failed to delete counted toolUseIds file', { name, error: String(err) });
       }
@@ -335,7 +334,7 @@ export class LocalStore {
 
   private countedFileNames(): string[] {
     try {
-      return readdirSync(this.countedDir).filter((name) => name.endsWith('.json'));
+      return readdirSync(this.countedDir);
     } catch {
       return [];
     }

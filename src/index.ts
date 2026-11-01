@@ -26,7 +26,7 @@ import { WorkflowStore } from './dashboard/workflow-store.js';
 import { isCopilotSdkExtensionMissing } from './hooks/copilot-sdk-extension-health.js';
 import { CopilotAppUsageWatcher } from './hooks/copilot-app-usage-watcher.js';
 import { CopilotUsageWatcher } from './hooks/copilot-usage-watcher.js';
-import { HookEventProcessor } from './hooks/index.js';
+import { amendRecord, HookEventProcessor } from './hooks/index.js';
 import { isPlatformDetectionFellBack } from './hooks/platform-detection-health.js';
 import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
 import {
@@ -944,6 +944,8 @@ async function main(): Promise<void> {
     ppidCorrectionAbort?.abort();
     logger.info('Shutting down...');
     try {
+      // Flushes calls still in flight as records, so the save below holds them.
+      eventProcessor?.stop();
       persistSession?.();
       if (
         config?.otlp?.transport !== 'nr-events-api' &&
@@ -982,7 +984,6 @@ async function main(): Promise<void> {
         }
         alertRulesWatcher = undefined;
       }
-      eventProcessor?.stop();
       activeSubagentWatcher?.stop();
       activeWorkflowWatcher?.stop();
       activeParentTranscriptWatcher?.stop();
@@ -2091,11 +2092,11 @@ async function main(): Promise<void> {
       // live sessions' events. After real session ID resolution the processor
       // is hot-swapped to the scoped store via replaceStore().
       drainAllSessions: !options.stdio || isProvisional,
-      onRecordAmend: (record, replacedErrorType) => {
-        sessionTracker?.amendToolCall(record, replacedErrorType);
+      onRecordAmend: (record) => {
+        sessionTracker?.amendToolCall(record);
         localSessionAggregator.amendToolCall(record);
         const index = toolCallBuffer.findIndex((r) => r.id === record.id);
-        if (index >= 0) toolCallBuffer[index] = { ...toolCallBuffer[index]!, ...record };
+        if (index >= 0) toolCallBuffer[index] = amendRecord(toolCallBuffer[index]!, record);
       },
       onRecord: (incomingRecord) => {
         // Attributed before any consumer (notably auditTrail below) sees the
@@ -2709,6 +2710,7 @@ async function main(): Promise<void> {
               rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
             );
           }
+          eventProcessor?.persistCountedIds(rollups.map((rollup) => String(rollup.sessionId)));
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
@@ -2718,6 +2720,7 @@ async function main(): Promise<void> {
           return;
         }
         sessionStore.saveSession(summary);
+        eventProcessor?.persistCountedIds([summary.sessionId]);
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
         // any real work), so calling it on every periodic checkpoint too is
         // cheap — and necessary: it otherwise only ran on the clean-shutdown

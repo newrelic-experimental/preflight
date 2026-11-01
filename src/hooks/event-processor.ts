@@ -77,9 +77,10 @@ export interface HookEventProcessorOptions {
   /**
    * Fires when a post arrives for a pre this process already emitted as a
    * 'timeout' or 'rejected' record. `record` carries that record's id with the
-   * real outcome and duration; consumers replace the earlier record, not add one.
+   * real outcome and duration; consumers replace the earlier record (see
+   * amendRecord), not add one.
    */
-  onRecordAmend?: (record: ToolCallRecord, replacedErrorType: string) => void;
+  onRecordAmend?: (record: ToolCallRecord) => void;
   onTokenEvent?: (event: TokenEvent) => void;
   /**
    * Fires for every paired ToolCallRecord whose `toolName === 'Agent'` —
@@ -367,8 +368,16 @@ interface CountedUnpaired {
   readonly event: PreHookEvent;
   readonly recordId: string;
   readonly recordToolUseId: string;
-  readonly errorType: string;
   readonly matchUntil: number;
+}
+
+/**
+ * The record that replaces `previous` once a late post completes its call:
+ * the post's outcome and duration, plus the fields consumers added at intake.
+ */
+export function amendRecord(previous: ToolCallRecord, amend: ToolCallRecord): ToolCallRecord {
+  const { errorType: _replaced, ...intake } = previous;
+  return { ...intake, ...amend };
 }
 
 function findOldestFallbackKey(
@@ -400,8 +409,7 @@ export class HookEventProcessor {
   private readonly orphanTimeoutMs: number;
   private drainAllSessions: boolean;
   private readonly onRecord: (record: ToolCallRecord) => void;
-  private readonly onRecordAmend:
-    ((record: ToolCallRecord, replacedErrorType: string) => void) | null;
+  private readonly onRecordAmend: ((record: ToolCallRecord) => void) | null;
   private readonly onTokenEvent: ((event: TokenEvent) => void) | null;
   private readonly onWorkflowAgent: ((record: ToolCallRecord) => void) | null;
   private readonly onSubagentTurn: ((turn: SubagentTurnEvent) => void) | null;
@@ -470,7 +478,8 @@ export class HookEventProcessor {
 
   private readonly pending: Map<string, PendingEntry> = new Map();
   private readonly countedUnpaired: Map<string, CountedUnpaired> = new Map();
-  // toolUseIds counted since the last persist. Fallback keys are random per
+  // toolUseIds counted but not yet persisted, because the session holding
+  // their records has not been saved since. Fallback keys are random per
   // process, so another process could never match them.
   private readonly unpersistedCountedIds = new Set<string>();
   private readonly maxPendingEvents: number;
@@ -602,7 +611,6 @@ export class HookEventProcessor {
   stop(): void {
     this.halt();
     this.flushPending();
-    this.persistCountedUnpaired();
   }
 
   private halt(): void {
@@ -636,19 +644,26 @@ export class HookEventProcessor {
    * recreating the processor or its callbacks. Used when the provisional
    * unscoped store is replaced by the real session-scoped store once the
    * Claude Code session ID is resolved asynchronously. Calls in flight stay
-   * pending so their posts still pair, except other sessions' when the new
-   * store drains only its own: their posts land in buffers it no longer reads.
+   * pending so their posts still pair. When the new store drains only its own
+   * session, other sessions' posts land in buffers it no longer reads, so
+   * their pres go back to those buffers for whichever process drains them.
    */
   replaceStore(newStore: LocalStore, drainAllSessions: boolean): void {
     this.halt();
     if (!drainAllSessions) {
-      for (const [key, entry] of this.pending) {
-        const sessionId = entry.event.sessionId;
+      const handBack = new Map<string, HookEvent[]>();
+      for (const [key, { event, phase }] of this.pending) {
+        const { sessionId, toolUseId, tool, timestamp } = event;
         if (sessionId === undefined || sessionId === newStore.getSessionId()) continue;
         this.pending.delete(key);
-        this.emitUnpairedPreRecord(key, entry);
+        const events = handBack.get(sessionId) ?? [];
+        handBack.set(sessionId, events);
+        events.push(event);
+        if (phase === 'permission_requested' && toolUseId !== undefined)
+          events.push({ mode: 'permission_request', tool, timestamp, toolUseId, sessionId });
       }
-      this.persistCountedUnpaired();
+      for (const [sessionId, events] of handBack)
+        this.store.appendToSessionBuffer(sessionId, events);
     }
     this.store = newStore;
     this.drainAllSessions = drainAllSessions;
@@ -861,7 +876,7 @@ export class HookEventProcessor {
         ...toolFields,
       };
       if (counted) {
-        this.emitAmend(record, counted.errorType);
+        this.emitAmend(record);
         return;
       }
       this.emitRecord(record);
@@ -962,8 +977,7 @@ export class HookEventProcessor {
           ? 'hook_blocked'
           : 'timeout';
     const id = randomUUID();
-    if (errorType !== 'hook_blocked')
-      this.rememberCountedUnpaired(key, entry, id, toolUseId, errorType);
+    if (errorType !== 'hook_blocked') this.rememberCountedUnpaired(key, entry, id, toolUseId);
     this.emitRecord({
       id,
       sessionId: event.sessionId ?? null,
@@ -983,7 +997,6 @@ export class HookEventProcessor {
     entry: PendingEntry,
     recordId: string,
     recordToolUseId: string,
-    errorType: string,
   ): void {
     if (this.countedUnpaired.size >= this.maxPendingEvents) {
       const oldest = this.countedUnpaired.keys().next().value;
@@ -999,7 +1012,6 @@ export class HookEventProcessor {
       event: { mode: 'pre', tool, timestamp, sessionId, toolUseId },
       recordId,
       recordToolUseId,
-      errorType,
       matchUntil: timestamp + this.pendingTtlMs(entry) + FALLBACK_LATE_POST_WINDOW_MS,
     });
   }
@@ -1053,16 +1065,21 @@ export class HookEventProcessor {
       : undefined;
   }
 
-  private persistCountedUnpaired(): void {
+  /**
+   * Persists the counted ids of `sessionIds`, so another process drops their
+   * late posts. Call it right after those sessions are saved: an id persisted
+   * before its record is saved makes a crash lose the call.
+   */
+  persistCountedIds(sessionIds: Iterable<string>): void {
     const idsBySession = new Map<string, string[]>();
+    for (const sessionId of sessionIds) idsBySession.set(sessionId, []);
     for (const key of this.unpersistedCountedIds) {
       const sessionId = this.countedUnpaired.get(key)?.event.sessionId;
-      if (sessionId === undefined) continue;
-      const ids = idsBySession.get(sessionId) ?? [];
+      const ids = sessionId === undefined ? undefined : idsBySession.get(sessionId);
+      if (!ids) continue;
       ids.push(key);
-      idsBySession.set(sessionId, ids);
+      this.unpersistedCountedIds.delete(key);
     }
-    this.unpersistedCountedIds.clear();
     for (const [sessionId, ids] of idsBySession) {
       this.store.rememberCountedToolUseIds(sessionId, ids);
     }
@@ -1303,9 +1320,9 @@ export class HookEventProcessor {
     }
   }
 
-  private emitAmend(record: ToolCallRecord, replacedErrorType: string): void {
+  private emitAmend(record: ToolCallRecord): void {
     try {
-      this.onRecordAmend?.(record, replacedErrorType);
+      this.onRecordAmend?.(record);
     } catch (err) {
       logger.warn('onRecordAmend callback failed', {
         recordId: record.id,

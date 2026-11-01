@@ -22,6 +22,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { amendRecord } from '../hooks/event-processor.js';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
@@ -391,7 +392,7 @@ export class LocalSessionAggregator {
     const previous = rollup.records[index];
     const entry = rollup.timeline[index];
     if (!previous || !entry) return;
-    rollup.records[index] = { ...previous, ...record };
+    rollup.records[index] = amendRecord(previous, record);
     const { errorType: _replaced, ...rest } = entry;
     rollup.timeline[index] = {
       ...rest,
