@@ -26,7 +26,7 @@ import { WorkflowStore } from './dashboard/workflow-store.js';
 import { isCopilotSdkExtensionMissing } from './hooks/copilot-sdk-extension-health.js';
 import { CopilotAppUsageWatcher } from './hooks/copilot-app-usage-watcher.js';
 import { CopilotUsageWatcher } from './hooks/copilot-usage-watcher.js';
-import { amendRecord, HookEventProcessor } from './hooks/index.js';
+import { DEFAULT_MAX_PENDING, HookEventProcessor } from './hooks/index.js';
 import { isPlatformDetectionFellBack } from './hooks/platform-detection-health.js';
 import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
 import {
@@ -123,7 +123,7 @@ import {
   SessionStore,
   sessionSummaryToDriftRecord,
 } from './storage/session-store.js';
-import type { ToolCallRecord } from './storage/types.js';
+import { amendRecord, type ToolCallRecord } from './storage/types.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import type { ConfigSummary } from './tools/session-stats.js';
 import { registerPendingTools, registerTools } from './tools/session-stats.js';
@@ -1203,7 +1203,7 @@ async function main(): Promise<void> {
         retainSessionsDays: config.retainSessionsDays,
       }) ?? undefined;
 
-    sessionTracker = new SessionTracker(sessionTraceId);
+    sessionTracker = new SessionTracker(sessionTraceId, DEFAULT_MAX_PENDING);
     // Combine the two independent correction factors here so CostTracker only
     // ever deals with one number (see its constructor doc comment) — the raw
     // config fields (costRateMultiplier, dataResidencyPremium) stay unmerged

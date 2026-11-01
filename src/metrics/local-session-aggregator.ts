@@ -22,10 +22,9 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { amendRecord } from '../hooks/event-processor.js';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
-import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
+import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
 import { hasAttributableActivity, type FullSessionSummary } from '../storage/session-store.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
 import { addCallUsage } from './call-usage.js';

@@ -4,18 +4,19 @@ import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MAX_AGENT_TYPE_LENGTH } from '../lib/agent-id.js';
 import { LocalStore } from '../storage/local-store.js';
-import { amendRecord, HookEventProcessor } from './event-processor.js';
+import { HookEventProcessor } from './event-processor.js';
 import { SkillActivationTracker } from '../metrics/skill-activation-tracker.js';
 import { AntigravityAdapter } from '../platforms/antigravity-adapter.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
-import type {
-  HookEvent,
-  PermissionDeniedHookEvent,
-  PermissionRequestHookEvent,
-  PreHookEvent,
-  PostHookEvent,
-  ToolCallRecord,
-  UserPromptSubmitHookEvent,
+import {
+  amendRecord,
+  type HookEvent,
+  type PermissionDeniedHookEvent,
+  type PermissionRequestHookEvent,
+  type PreHookEvent,
+  type PostHookEvent,
+  type ToolCallRecord,
+  type UserPromptSubmitHookEvent,
 } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;

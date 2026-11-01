@@ -565,7 +565,7 @@ describe('SessionTracker', () => {
 
   describe('amendToolCall()', () => {
     it('applies the outcome of a late post to the timeout record it replaces', () => {
-      const tracker = new SessionTracker('sess-own');
+      const tracker = new SessionTracker('sess-own', 10);
       const timedOut = makeRecord({ sessionId: 'sess-own', toolName: 'Agent', timestamp: 1000 });
       tracker.recordToolCall({
         ...timedOut,
@@ -585,7 +585,7 @@ describe('SessionTracker', () => {
       ]);
     });
     it('amends the timed-out record with its id, and counts its exit code and error', () => {
-      const tracker = new SessionTracker('sess-own');
+      const tracker = new SessionTracker('sess-own', 10);
       const call = makeRecord({
         toolName: 'Bash',
         timestamp: 1000,

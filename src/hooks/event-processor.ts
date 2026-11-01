@@ -358,11 +358,6 @@ interface CountedUnpaired {
   readonly matchUntil: number;
 }
 
-export function amendRecord(previous: ToolCallRecord, amend: ToolCallRecord): ToolCallRecord {
-  const { errorType: _replaced, ...intake } = previous;
-  return { ...intake, ...amend };
-}
-
 function findOldestFallbackKey(
   entries: ReadonlyMap<string, { readonly event: PreHookEvent; readonly matchUntil?: number }>,
   post: PostHookEvent,

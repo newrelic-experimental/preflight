@@ -9,7 +9,6 @@
 import { basename } from 'node:path';
 import type { MetricAggregator } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
-import { DEFAULT_MAX_PENDING } from '../hooks/event-processor.js';
 import {
   DEGENERATE_NAMES,
   shouldReplaceSessionName,
@@ -180,8 +179,9 @@ export class SessionTracker implements Resettable {
   private timeline: TimelineEntry[] = [];
   private timelineEntryCount = 0;
   private readonly amendable = new Map<string, { record: ToolCallRecord; timelineIndex: number }>();
+  private readonly maxAmendable: number;
 
-  constructor(sessionId: string) {
+  constructor(sessionId: string, maxAmendable = 0) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
       // The MCP no longer fabricates session_ids. Callers must pass the
       // resolved Claude Code session_id (or a real UUID for tests).
@@ -189,6 +189,7 @@ export class SessionTracker implements Resettable {
     }
     this.sessionId = sessionId;
     this.sessionStartTime = Date.now();
+    this.maxAmendable = maxAmendable;
   }
 
   recordToolCall(record: ToolCallRecord): void {
@@ -266,10 +267,9 @@ export class SessionTracker implements Resettable {
       });
     }
     if (record.errorType !== undefined && AMENDABLE_ERROR_TYPES.has(record.errorType)) {
-      if (this.amendable.size >= DEFAULT_MAX_PENDING) {
-        this.amendable.delete(this.amendable.keys().next().value!);
-      }
       this.amendable.set(record.id, { record, timelineIndex });
+      if (this.amendable.size > this.maxAmendable)
+        this.amendable.delete(this.amendable.keys().next().value!);
     }
   }
 
