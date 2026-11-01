@@ -457,7 +457,6 @@ export class HookEventProcessor {
   private readonly pending: Map<string, PendingEntry> = new Map();
   private readonly countedUnpaired: Map<string, CountedUnpaired> = new Map();
   private readonly unpersistedCountedIds = new Map<string, string>();
-  private readonly orphanPostIds = new Set<string>();
   private readonly maxPendingEvents: number;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -720,8 +719,6 @@ export class HookEventProcessor {
   }
 
   private handlePreEvent(event: PreHookEvent): void {
-    // A pre handed back after this process recorded its post on its own.
-    if (event.toolUseId !== undefined && this.orphanPostIds.delete(event.toolUseId)) return;
     if (this.pending.size >= this.maxPendingEvents) {
       // Prefer evicting events that are already past the orphan timeout
       const now = Date.now();
@@ -850,11 +847,6 @@ export class HookEventProcessor {
       // a native duration_ms (if the platform sent one) is still real data —
       // no reason to discard it just because pairing failed.
       logger.debug('Orphaned post event — no matching pre', { tool: event.tool, key });
-      if (event.toolUseId !== undefined) this.orphanPostIds.add(event.toolUseId);
-      for (const id of this.orphanPostIds) {
-        if (this.orphanPostIds.size <= this.maxPendingEvents) break;
-        this.orphanPostIds.delete(id);
-      }
       const toolFields = parseToolSpecificFields(event.tool, event.toolInput, event.toolOutput);
       const record: ToolCallRecord = {
         id: randomUUID(),

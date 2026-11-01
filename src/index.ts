@@ -116,6 +116,7 @@ import { createServer } from './server.js';
 import type { CostBreakdown, TokenUsage } from './shared/index.js';
 import { createLogger } from './shared/index.js';
 import { LocalStore } from './storage/index.js';
+import { hasLiveOwningEngine } from './storage/local-store.js';
 import { computeHistoricalCosts } from './storage/historical-costs.js';
 import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.js';
 import {
@@ -1181,12 +1182,17 @@ async function main(): Promise<void> {
     // dashboard owner's GC pass can tell which buffer files still have a live
     // owner. Removed in the shutdown handler below. Skipped during the
     // provisional window — the real heartbeat is written after resolution.
-    if (options.stdio && !isProvisional) {
-      localStore.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
-        value: config.companionMode,
-        source: config.companionModeSource,
+    // A cwd guess leaves a live engine's heartbeat for the guessed session in
+    // place, since a correction must not leave that engine without one.
+    const writeHeartbeat = (store: LocalStore, viaCwdOnly: boolean): void => {
+      const sessionId = store.getSessionId();
+      if (viaCwdOnly && sessionId && hasLiveOwningEngine(config!.storagePath, sessionId)) return;
+      store.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
+        value: config!.companionMode,
+        source: config!.companionModeSource,
       });
-    }
+    };
+    if (options.stdio && !isProvisional) writeHeartbeat(localStore, resolvedViaCwdOnly);
     localStoreForShutdown = localStore;
 
     // Migrate any pre-existing events from the legacy shared `buffer.jsonl` into
@@ -3011,10 +3017,9 @@ async function main(): Promise<void> {
       // Replace the current LocalStore with one scoped to the real id.
       const realLocalStore = new LocalStore(config!.storagePath, realId);
       realLocalStore.initialize();
-      realLocalStore.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
-        value: config!.companionMode,
-        source: config!.companionModeSource,
-      });
+      // A corrected guess's heartbeat would keep drain-all processes off its buffer.
+      localStoreForShutdown?.removeHeartbeat();
+      writeHeartbeat(realLocalStore, opts?.viaCwdOnly ?? false);
       localStoreForShutdown = realLocalStore;
       try {
         realLocalStore.migrateLegacyBuffer();
@@ -3217,6 +3222,7 @@ async function main(): Promise<void> {
             // first call site) precisely because it wasn't confirmed yet —
             // seed it now that it is.
             rehydrateTrackersIfResumed(staleId);
+            if (localStoreForShutdown) writeHeartbeat(localStoreForShutdown, false);
             clearPendingConfirmation();
             return;
           }

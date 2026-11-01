@@ -1334,6 +1334,121 @@ describe('stdio integration', () => {
 
       expect(savedCalls(storage, 'other-real-session')).toBe(1);
     }, 30000);
+
+    const writeHook = (storage: string, sessionId: string, mode: string, toolUseId: string) =>
+      appendFileSync(
+        resolve(storage, `buffer-${sessionId}.jsonl`),
+        JSON.stringify({ mode, tool: 'Read', timestamp: Date.now(), sessionId, toolUseId }) + '\n',
+      );
+    const drained = (storage: string, sessionId: string) => () =>
+      !existsSync(resolve(storage, `buffer-${sessionId}.jsonl`));
+    const settle = async <T>(read: () => T, want: T): Promise<T> => {
+      for (let i = 0; i < 20 && read() !== want; i++) await new Promise((r) => setTimeout(r, 250));
+      return read();
+    };
+    const startOwner = async (storage: string, id: string) => {
+      const jobDir = mkdtempSync(join(tmpdir(), 'nr-adopt-job-'));
+      storages.push(jobDir);
+      writeFileSync(
+        resolve(jobDir, 'state.json'),
+        JSON.stringify({ linkScanPath: `/x/${id}.jsonl` }),
+      );
+      const client = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: jobDir });
+      await waitFor(() => existsSync(resolve(storage, `active-${id}.pid`)));
+      return client;
+    };
+    const stopOwner = async (storage: string, client: { close(): Promise<void> }, id: string) => {
+      await client.close();
+      await waitFor(() => !existsSync(resolve(storage, `active-${id}.pid`)));
+    };
+
+    it("saves another session's call in flight at adoption once, under that session", async () => {
+      const storage = makeStorage();
+      const pending = await startEngine(storage);
+      writeHook(storage, 'other-real-session', 'pre', 'toolu_a');
+      await waitFor(drained(storage, 'other-real-session'));
+      await adoptAndStop(storage, pending, 'own-real-session');
+      const owner = await startOwner(storage, 'other-real-session');
+      writeHook(storage, 'other-real-session', 'post', 'toolu_a');
+      await waitFor(drained(storage, 'other-real-session'));
+      await stopOwner(storage, owner, 'other-real-session');
+
+      expect(savedCalls(storage, 'own-real-session') ?? 0).toBe(0);
+      expect(savedCalls(storage, 'other-real-session')).toBe(1);
+    }, 30000);
+
+    it("lets another process drain the guessed session's buffer after a correction", async () => {
+      const storage = makeStorage();
+      const cwd = makeCwd();
+      guessFromCwd(storage, cwd);
+      const guessing = await startEngine(storage, cwd);
+      const breadcrumb = resolve(storage, 'session-by-ppid', `${process.pid}.txt`);
+      writeFileSync(breadcrumb, 'corrected-session');
+      await waitFor(() => existsSync(resolve(storage, 'active-corrected-session.pid')));
+      rmSync(breadcrumb);
+      const drainer = await startEngine(storage, undefined, {
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+      });
+      writeHook(storage, 'guessed-session', 'pre', 'toolu_b');
+      writeHook(storage, 'guessed-session', 'post', 'toolu_b');
+      const saved = await settle(() => savedCalls(storage, 'guessed-session'), 1);
+      await drainer.close();
+      await stopOwner(storage, guessing, 'corrected-session');
+
+      expect(saved).toBe(1);
+    }, 30000);
+
+    it('counts a call once when its owner recorded the post and restarted before adoption', async () => {
+      const storage = makeStorage();
+      const pending = await startEngine(storage);
+      writeHook(storage, 'other-real-session', 'pre', 'toolu_c');
+      await waitFor(drained(storage, 'other-real-session'));
+      const owner = await startOwner(storage, 'other-real-session');
+      writeHook(storage, 'other-real-session', 'post', 'toolu_c');
+      await waitFor(drained(storage, 'other-real-session'));
+      await stopOwner(storage, owner, 'other-real-session');
+      const restarted = await startOwner(storage, 'other-real-session');
+      await adoptAndStop(storage, pending, 'own-real-session');
+      await waitFor(drained(storage, 'other-real-session'));
+      await stopOwner(storage, restarted, 'other-real-session');
+
+      expect(savedCalls(storage, 'other-real-session')).toBe(1);
+      expect(savedCalls(storage, 'own-real-session') ?? 0).toBe(0);
+    }, 30000);
+
+    it("keeps the heartbeat of the guessed session's own engine through the correction", async () => {
+      const storage = makeStorage();
+      const owner = await startOwner(storage, 'guessed-session');
+      const heartbeat = resolve(storage, 'active-guessed-session.pid');
+      const ownerPid = readFileSync(heartbeat, 'utf-8');
+      const cwd = makeCwd();
+      guessFromCwd(storage, cwd);
+      const guessing = await startEngine(storage, cwd);
+      const guessedPid = readFileSync(heartbeat, 'utf-8');
+      await adoptAndStop(storage, guessing, 'corrected-session');
+      const afterCorrection = existsSync(heartbeat) ? readFileSync(heartbeat, 'utf-8') : null;
+      await stopOwner(storage, owner, 'guessed-session');
+
+      expect([guessedPid, afterCorrection]).toEqual([ownerPid, ownerPid]);
+    }, 30000);
+
+    it('takes the heartbeat of its guessed session once the ppid breadcrumb confirms it', async () => {
+      const storage = makeStorage();
+      const previous = await startOwner(storage, 'guessed-session');
+      const heartbeat = resolve(storage, 'active-guessed-session.pid');
+      const previousPid = readFileSync(heartbeat, 'utf-8');
+      const cwd = makeCwd();
+      guessFromCwd(storage, cwd);
+      const guessing = await startEngine(storage, cwd);
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'guessed-session');
+      await waitFor(() => readFileSync(heartbeat, 'utf-8') !== previousPid);
+      await previous.close();
+      await new Promise((r) => setTimeout(r, 1000));
+      const afterPreviousExit = existsSync(heartbeat);
+      await stopOwner(storage, guessing, 'guessed-session');
+
+      expect(afterPreviousExit).toBe(true);
+    }, 30000);
   });
 
   describe('nr_observe_install_hooks while the session is still pending', () => {

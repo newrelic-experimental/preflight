@@ -1492,10 +1492,10 @@ describe('HookEventProcessor', () => {
       expect(records[0]!.toolUseId).toBe('toolu_early');
       expect(records[0]!.id).toMatch(/^[0-9a-f-]{36}$/);
 
-      // Pre arrives later — dropped, since the orphan record already counted the call
+      // Pre arrives later — queued in pending, NOT retroactively matched to the already-emitted orphan
       processor.processEvents([makePreEvent({ toolUseId: 'toolu_early', timestamp: 1000 })]);
       expect(records).toHaveLength(1); // no second record emitted
-      expect(processor.pendingCount).toBe(0);
+      expect(processor.pendingCount).toBe(1);
     });
 
     it('two orphan posts with same tool and timestamp but no toolUseId produce two distinct records', () => {

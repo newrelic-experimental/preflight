@@ -455,14 +455,18 @@ export class LocalStore {
    * Called from the shutdown handler so the next maintenance GC pass knows
    * the buffer is up for adoption.
    *
-   * No-op if no heartbeat was ever written or if the file is already gone.
+   * No-op if no heartbeat was ever written, if the file is already gone, or
+   * if it names a process other than `pid`, which now owns the session.
    */
-  removeHeartbeat(): void {
+  removeHeartbeat(pid: number = process.pid): void {
     if (!this.sessionId) return;
     const heartbeatPath = resolve(this.storagePath, `active-${this.sessionId}.pid`);
     const metaPath = resolve(this.storagePath, `active-${this.sessionId}.meta.json`);
     try {
-      if (existsSync(heartbeatPath)) unlinkSync(heartbeatPath);
+      if (existsSync(heartbeatPath)) {
+        if (readFileSync(heartbeatPath, 'utf-8').trim() !== String(pid)) return;
+        unlinkSync(heartbeatPath);
+      }
       if (existsSync(metaPath)) unlinkSync(metaPath);
     } catch (err) {
       logger.debug('Failed to remove heartbeat file', { error: String(err) });
