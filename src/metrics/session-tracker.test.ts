@@ -601,7 +601,7 @@ describe('SessionTracker', () => {
 
       tracker.adoptSessionId('sess-a');
       expect(tracker.getMetrics().toolCallCount).toBe(0);
-      tracker.correctSessionId('sess-f');
+      tracker.replaceGuessedSessionId('sess-f');
       expect(tracker.getMetrics().toolCallCount).toBe(2_000);
     });
 
@@ -612,7 +612,7 @@ describe('SessionTracker', () => {
       tracker.recordToolCall(makeRecord({ sessionId: 'sess-real', toolName: 'Bash' }));
       tracker.adoptSessionId('sess-guess');
 
-      tracker.correctSessionId('sess-real');
+      tracker.replaceGuessedSessionId('sess-real');
       tracker.amendToolCall({ ...guessed, durationMs: 90_000 });
 
       const metrics = tracker.getMetrics();

@@ -2976,15 +2976,12 @@ async function main(): Promise<void> {
     // tracker, (re)constructs NrIngestManager, repoints the watchers, and
     // re-registers the full tool set. Used both for the initial pending ->
     // real transition and for a later correction (see
-    // startPpidCorrectionWatch below) — safe to call more than once:
-    // a first adoption keeps accumulated tracker metrics, and any already-live
-    // NrIngestManager is stopped first so its harvest interval never leaks
-    // on a second call.
+    // startPpidCorrectionWatch below) — safe to call more than once.
     const adoptRealSessionId = async (
       realId: string,
       opts?: { isCorrection?: boolean; viaCwdOnly?: boolean },
     ): Promise<void> => {
-      const drainedEverySession = isSyntheticSessionId(sessionTraceId);
+      const othersDrainedWhilePending = isSyntheticSessionId(sessionTraceId);
       if (opts?.isCorrection) {
         // A real correction means the previously-adopted id was wrong, and
         // anything these four trackers accumulated since startWatchers()
@@ -2996,7 +2993,7 @@ async function main(): Promise<void> {
         turnCostAttributor.reset(realId);
       }
       sessionTraceId = realId;
-      if (opts?.isCorrection) sessionTracker!.correctSessionId(realId);
+      if (opts?.isCorrection) sessionTracker!.replaceGuessedSessionId(realId);
       else sessionTracker!.adoptSessionId(realId);
       // Now that the real id (and thus its transcript path) is known, resolve
       // and apply the authoritative name. On a correction this re-resolves
@@ -3030,9 +3027,7 @@ async function main(): Promise<void> {
       // Hot-swap the event processor to the scoped store so it only drains
       // this session's events going forward.
       eventProcessor!.replaceStore(realLocalStore, false);
-      // After the swap only realId is saved, so the sessions drained while
-      // pending are saved now or their calls are lost.
-      if (drainedEverySession) {
+      if (othersDrainedWhilePending) {
         try {
           saveObservedSessions('in progress', realId);
         } catch (err) {

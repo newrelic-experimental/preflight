@@ -183,9 +183,7 @@ export class SessionTracker implements Resettable {
   private timelineEntryCount = 0;
   private readonly amendable = new Map<string, { record: ToolCallRecord; timelineIndex: number }>();
   private readonly maxAmendable: number;
-  // A pending engine drains every session's buffer before it knows its own id.
-  // Ordered least recently active first, so the cap drops idle sessions.
-  private readonly heldRecords = new Map<string, ToolCallRecord[]>();
+  private readonly heldRecordsByRecency = new Map<string, ToolCallRecord[]>();
   private heldCount = 0;
 
   constructor(sessionId: string, maxAmendable = 0) {
@@ -207,7 +205,7 @@ export class SessionTracker implements Resettable {
 
   recordToolCall(record: ToolCallRecord): void {
     if (!this.countsSession(record.sessionId)) {
-      if (this.sessionId.startsWith('pending-')) this.hold(record.sessionId!, record);
+      if (this.sessionId.startsWith('pending-')) this.holdAsMostRecent(record.sessionId!, record);
       return;
     }
     this.toolCallCount++;
@@ -290,15 +288,15 @@ export class SessionTracker implements Resettable {
     }
   }
 
-  private hold(sessionId: string, record: ToolCallRecord): void {
-    const held = this.heldRecords.get(sessionId) ?? [];
-    this.heldRecords.delete(sessionId);
-    this.heldRecords.set(sessionId, held);
+  private holdAsMostRecent(sessionId: string, record: ToolCallRecord): void {
+    const held = this.heldRecordsByRecency.get(sessionId) ?? [];
+    this.heldRecordsByRecency.delete(sessionId);
+    this.heldRecordsByRecency.set(sessionId, held);
     held.push(record);
     this.heldCount++;
     if (held.length > MAX_HELD_RECORDS_PER_SESSION) this.dropHeld(sessionId, held);
     while (this.heldCount > MAX_HELD_RECORDS) {
-      const [oldestId, oldest] = this.heldRecords.entries().next().value!;
+      const [oldestId, oldest] = this.heldRecordsByRecency.entries().next().value!;
       this.dropHeld(oldestId, oldest);
     }
   }
@@ -306,12 +304,12 @@ export class SessionTracker implements Resettable {
   private dropHeld(sessionId: string, held: ToolCallRecord[]): void {
     held.shift();
     this.heldCount--;
-    if (held.length === 0) this.heldRecords.delete(sessionId);
+    if (held.length === 0) this.heldRecordsByRecency.delete(sessionId);
   }
 
   private takeHeld(sessionId: string): ToolCallRecord[] {
-    const held = this.heldRecords.get(sessionId) ?? [];
-    this.heldRecords.delete(sessionId);
+    const held = this.heldRecordsByRecency.get(sessionId) ?? [];
+    this.heldRecordsByRecency.delete(sessionId);
     this.heldCount -= held.length;
     return held;
   }
@@ -332,7 +330,7 @@ export class SessionTracker implements Resettable {
 
   amendToolCall(record: ToolCallRecord): void {
     if (!this.countsSession(record.sessionId)) {
-      const held = this.heldRecords.get(record.sessionId!);
+      const held = this.heldRecordsByRecency.get(record.sessionId!);
       const index = held?.findIndex((r) => r.id === record.id) ?? -1;
       if (held && index >= 0) held[index] = amendRecord(held[index]!, record);
       return;
@@ -497,12 +495,7 @@ export class SessionTracker implements Resettable {
     for (const record of this.takeHeld(sessionId)) this.recordToolCall(record);
   }
 
-  /**
-   * Adopts the right id after a wrong guess: drops every call counted for the
-   * guess and counts the calls held for `sessionId` instead. The other
-   * sessions' held calls stay until reset(), in case of a further correction.
-   */
-  correctSessionId(sessionId: string): void {
+  replaceGuessedSessionId(sessionId: string): void {
     const held = this.takeHeld(sessionId);
     this.clearCounts();
     this.sessionId = sessionId;
@@ -530,7 +523,7 @@ export class SessionTracker implements Resettable {
     this.sessionIntent = null;
     this.authoritativeName = false;
     this.sessionStartTime = Date.now();
-    this.heldRecords.clear();
+    this.heldRecordsByRecency.clear();
     this.heldCount = 0;
     this.clearCounts();
   }
