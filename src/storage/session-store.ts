@@ -450,25 +450,35 @@ export interface ExactTotals {
   readonly costByDayUsd: Readonly<Record<string, number>>;
 }
 
-/**
- * `exactTotals` as stored, or derived as total minus ledger for a summary that
- * predates the field. A merged total cannot be split afterwards (the file does
- * not record which writer's figure won the max), so writers persist the split.
- */
 export type ExactTotalsSource = Pick<
   FullSessionSummary,
   'exactTotals' | 'byteEstimates' | 'estimatedCostUsd' | 'costByDayUsd'
 > &
   Partial<Pick<FullSessionSummary, 'tokensInput' | 'tokensOutput'>>;
 
+/**
+ * Total minus ledger, raised to the stored `exactTotals` where that is higher.
+ * A merged total cannot be split afterwards (the file does not record which
+ * writer's figure won the max), so writers persist the split. A build that
+ * predates the split carries a stored `exactTotals` forward unchanged while it
+ * raises the total, so the stored figure can be stale-low and the derived one
+ * wins.
+ */
 export function exactTotalsOf(s: ExactTotalsSource): ExactTotals {
-  if (s.exactTotals) return s.exactTotals;
   const ledger = s.byteEstimates;
-  return {
+  const derived: ExactTotals = {
     costUsd: Math.max(0, (s.estimatedCostUsd ?? 0) - (ledger?.costUsd ?? 0)),
     inputTokens: Math.max(0, (s.tokensInput ?? 0) - (ledger?.inputTokens ?? 0)),
     outputTokens: Math.max(0, (s.tokensOutput ?? 0) - (ledger?.outputTokens ?? 0)),
     costByDayUsd: subtractRecord(s.costByDayUsd ?? {}, ledger?.costByDayUsd ?? {}),
+  };
+  const stored = s.exactTotals;
+  if (!stored) return derived;
+  return {
+    costUsd: Math.max(stored.costUsd, derived.costUsd),
+    inputTokens: Math.max(stored.inputTokens, derived.inputTokens),
+    outputTokens: Math.max(stored.outputTokens, derived.outputTokens),
+    costByDayUsd: maxRecord(stored.costByDayUsd, derived.costByDayUsd),
   };
 }
 
@@ -479,6 +489,16 @@ function addRecord(
 ): Record<string, number> {
   const out: Record<string, number> = { ...a };
   for (const [k, v] of Object.entries(b)) out[k] = (out[k] ?? 0) + v;
+  return out;
+}
+
+/** Per-key max over the union of keys. */
+function maxRecord(
+  a: Readonly<Record<string, number>>,
+  b: Readonly<Record<string, number>>,
+): Record<string, number> {
+  const out: Record<string, number> = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = Math.max(out[k] ?? 0, v);
   return out;
 }
 
