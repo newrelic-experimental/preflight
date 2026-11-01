@@ -1044,6 +1044,7 @@ describe('buildSessionSummary', () => {
         reportCount: 3,
         estimationCount: 0,
         latestCostBreakdown: null,
+        firstActivityByDayMs: {},
         unpricedByModel: { 'claude-foo-9-9': { calls: 2, tokens: 30 } },
         estimatedByModel: {
           'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
@@ -2011,6 +2012,16 @@ describe('buildSessionSummary', () => {
     expect(summary.buildPassCount).toBe(1);
     expect(summary.agentSpawns).toBe(1);
     expect(summary.taskCount).toBe(1);
+  });
+
+  it('omits firstActivityByDayMs when CostTracker has no spend, so a legacy file keeps its fallback', () => {
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      costTracker: new CostTracker(),
+      developer: 'dev',
+    });
+    expect(summary.firstActivityByDayMs).toBeUndefined();
+    expect(mergeSummaries(makeSummary(), summary).firstActivityByDayMs).toBeUndefined();
   });
 
   it('persists the earliest token event per local day from CostTracker', () => {
@@ -3870,6 +3881,7 @@ describe('attribution field', () => {
         },
         highContextCostUsd: 0.75,
         apiDurationMs: 12_000,
+        firstActivityByDayMs: {},
         unpricedByModel: {},
         estimatedByModel: {},
       }),

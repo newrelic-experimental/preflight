@@ -612,7 +612,7 @@ describe('Today view', () => {
     }) as typeof fetch;
   }
 
-  it('shows no end-of-day projection when the aggregate has today spend but a null forecast, ignoring other sources', async () => {
+  it('falls back to the SSE forecast when the aggregate has today spend but a null forecast', async () => {
     useLiveStore.setState({
       cost: { sessionTotalUsd: 3.42, todayTotalUsd: 12.17, forecastEodUsd: 80.53 },
     });
@@ -623,7 +623,46 @@ describe('Today view', () => {
       const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
       expect(within(spendTile).getByText('$20.00')).toBeInTheDocument();
     });
+    expect(screen.getByText(/^→ \$80\.53 by end of day/)).toBeInTheDocument();
+  });
+
+  it('shows no forecast anywhere when the chosen forecast is below the spend on the tile', async () => {
+    useLiveStore.setState({ cost: null });
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      const json = (body: unknown): Response =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return json({ totalCostUsd: 10, forecastEndOfDayUsd: 12, sessionCount: 4 });
+      }
+      if (url.includes('/api/sessions?limit=')) {
+        return json([
+          {
+            sessionId: 's1',
+            startTime: Date.now() - 60_000,
+            estimatedCostUsd: 10,
+            toolCallCount: 3,
+          },
+        ]);
+      }
+      if (url.includes('/api/cost')) {
+        return json({ cost: { sessionTotalCostUsd: 15 }, forecast: null, sessionTodayUsd: 15 });
+      }
+      return json([]);
+    }) as typeof fetch;
+
+    renderToday();
+    await waitFor(() => expect(screen.getByText('Spend by hour')).toBeInTheDocument());
+    await waitFor(() => {
+      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+      expect(within(spendTile).getByText('$15.00')).toBeInTheDocument();
+      expect(screen.getByText('4')).toBeInTheDocument();
+    });
     expect(screen.queryByText(/by end of day/)).toBeNull();
+    expect(screen.queryByText(/On pace for/)).toBeNull();
   });
 
   it('bridges with the SSE forecast while the aggregate has seen no spend today', async () => {
