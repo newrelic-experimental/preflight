@@ -9,23 +9,17 @@ import {
   writeSync,
 } from 'node:fs';
 
-// A drain appends this seal to a claim and keeps only what precedes it, so a
-// write after the seal is the writer's to redo. JSON.stringify escapes NUL,
-// so no event line contains the seal or a fragment of it.
 const DRAIN_SEAL = '\0preflight-drain-seal\n';
-const SEAL_FRAGMENT_RE = /\0[a-z-]*/g;
+const TORN_SEAL_RE = /\0[a-z-]*/g;
 
-// A write that lands after a seal is redone, up to MAX_REDOS times. Finding
-// the path moved before writing costs nothing, so it has its own looser cap.
 const MAX_REDOS = 5;
 const MAX_OPENS = 100;
 
 type Landing = 'kept' | 'moved' | 'redo';
 
-/** The lines of a buffer or claim file that a drain of it returns. */
 export function textBeforeSeal(raw: string): string {
   const seal = raw.indexOf(DRAIN_SEAL);
-  return (seal === -1 ? raw : raw.slice(0, seal)).replace(SEAL_FRAGMENT_RE, '');
+  return (seal === -1 ? raw : raw.slice(0, seal)).replace(TORN_SEAL_RE, '');
 }
 
 function readRange(fd: number, start: number, end: number): Buffer {
@@ -68,9 +62,8 @@ function appendOnce(path: string, data: Buffer): Landing {
   const fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_APPEND, 0o600);
   try {
     const opened = fstatSync(fd);
-    // Still at the path after this fstat means no drain had claimed the file
-    // yet, so any seal lands at or after `opened.size`.
     if (!isAt(path, opened)) return 'moved';
+    const sealFloor = opened.size;
     const written = writeSync(fd, data);
     if (written < data.length) {
       writeSync(fd, '\n');
@@ -78,14 +71,16 @@ function appendOnce(path: string, data: Buffer): Landing {
     }
     if (isAt(path, opened)) return 'kept';
     const start = offsetAfterWrite(fd) - data.length;
-    return readRange(fd, opened.size, start).includes(DRAIN_SEAL) ? 'redo' : 'kept';
+    return readRange(fd, sealFloor, start).includes(DRAIN_SEAL) ? 'redo' : 'kept';
   } finally {
     closeSync(fd);
   }
 }
 
-/** Appends `text` to a hook buffer in one write. Throws when it cannot land before a drain seal. */
 export function appendToHookBuffer(path: string, text: string): void {
+  if (text.includes('\0')) {
+    throw new Error(`Hook buffer text contains NUL, which marks a drain seal: ${path}`);
+  }
   const data = Buffer.from(text);
   let redos = 0;
   for (let opens = 0; opens < MAX_OPENS; opens++) {
@@ -96,7 +91,6 @@ export function appendToHookBuffer(path: string, text: string): void {
   throw new Error(`Hook buffer write raced a drain on all attempts and was not kept: ${path}`);
 }
 
-/** Seals a claim and returns its lines, leaving the file in place. */
 export function readSealed(path: string): string {
   const fd = openSync(path, constants.O_RDWR | constants.O_APPEND);
   try {
@@ -112,7 +106,6 @@ export function readSealed(path: string): string {
   }
 }
 
-/** Takes a claim's lines and deletes it. Throws, leaving the claim in place, when any step fails. */
 export function takeClaimText(path: string): string {
   const text = readSealed(path);
   unlinkSync(path);

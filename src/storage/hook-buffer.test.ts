@@ -158,6 +158,11 @@ describe('appendToHookBuffer', () => {
     expect(live()).toEqual(['A', 'B']);
   });
 
+  it('refuses text containing NUL, which would read as a drain seal', () => {
+    expect(() => appendToHookBuffer(bufferPath, `{"a":"\0"}\n`)).toThrow(/NUL/);
+    expect(fs.existsSync(bufferPath)).toBe(false);
+  });
+
   it('writes a line again to the live buffer when it landed after a seal', () => {
     fs.writeFileSync(bufferPath, line('A'));
     let drained: string[] = [];

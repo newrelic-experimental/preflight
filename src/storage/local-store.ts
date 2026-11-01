@@ -1128,11 +1128,11 @@ export class LocalStore {
    * `.migrating-<pid>` file is intentionally left in place. On the next boot
    * the legacy file is gone, so we no-op; the partitioned files written so
    * far hold the events that did make it across. The straggler events stuck
-   * in `.migrating-<pid>`, the lines before its seal, are recovered manually
-   * (forensics) or dropped — we accept this trade because re-migrating from
-   * `.migrating-<pid>` would re-append already-migrated partitions and
-   * produce duplicate events, which is worse than a once-only loss bounded
-   * by the size of the legacy file at upgrade time.
+   * in `.migrating-<pid>` are recovered manually (forensics) or dropped — we
+   * accept this trade because re-migrating from `.migrating-<pid>` would
+   * re-append already-migrated partitions and produce duplicate events,
+   * which is worse than a once-only loss bounded by the size of the legacy
+   * file at upgrade time.
    *
    * Returns the number of events migrated.
    */

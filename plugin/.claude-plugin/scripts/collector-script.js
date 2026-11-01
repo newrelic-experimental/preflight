@@ -112,6 +112,7 @@ function appendOnce(path, data) {
   try {
     const opened = fstatSync(fd);
     if (!isAt(path, opened)) return "moved";
+    const sealFloor = opened.size;
     const written = writeSync(fd, data);
     if (written < data.length) {
       writeSync(fd, "\n");
@@ -119,12 +120,15 @@ function appendOnce(path, data) {
     }
     if (isAt(path, opened)) return "kept";
     const start = offsetAfterWrite(fd) - data.length;
-    return readRange(fd, opened.size, start).includes(DRAIN_SEAL) ? "redo" : "kept";
+    return readRange(fd, sealFloor, start).includes(DRAIN_SEAL) ? "redo" : "kept";
   } finally {
     closeSync(fd);
   }
 }
 function appendToHookBuffer(path, text) {
+  if (text.includes("\0")) {
+    throw new Error(`Hook buffer text contains NUL, which marks a drain seal: ${path}`);
+  }
   const data = Buffer.from(text);
   let redos = 0;
   for (let opens = 0; opens < MAX_OPENS; opens++) {
