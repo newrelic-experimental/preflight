@@ -387,6 +387,7 @@ export function runMaintenanceGcPass(deps: MaintenanceGcDeps): void {
   try {
     localStore.gcStaleBreadcrumbs();
     localStore.gcDeadLocalInstances();
+    localStore.gcCountedToolUseIds();
     const live = localStore.getActiveSessionIdsFromHeartbeats();
     if (liveSessionRegistry) {
       for (const id of liveSessionRegistry.getLiveSessions({ includeSynthetic: true })) {
@@ -2090,6 +2091,12 @@ async function main(): Promise<void> {
       // live sessions' events. After real session ID resolution the processor
       // is hot-swapped to the scoped store via replaceStore().
       drainAllSessions: !options.stdio || isProvisional,
+      onRecordAmend: (record, replacedErrorType) => {
+        sessionTracker?.amendToolCall(record, replacedErrorType);
+        localSessionAggregator.amendToolCall(record);
+        const index = toolCallBuffer.findIndex((r) => r.id === record.id);
+        if (index >= 0) toolCallBuffer[index] = { ...toolCallBuffer[index]!, ...record };
+      },
       onRecord: (incomingRecord) => {
         // Attributed before any consumer (notably auditTrail below) sees the
         // record, so audit/security events carry agentId and agentType.

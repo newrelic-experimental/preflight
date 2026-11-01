@@ -78,6 +78,7 @@ export interface SessionMetrics {
 // ---------------------------------------------------------------------------
 
 const MAX_TIMELINE_ENTRIES = 10_000;
+const MAX_HELD_RECORDS_PER_SESSION = 2_000;
 
 // Bounds memory on sessions that touch an unusually large number of distinct
 // files (e.g. a repo-wide codemod or search) — head-drop the oldest-added
@@ -173,7 +174,7 @@ export class SessionTracker implements Resettable {
   private timeline: TimelineEntry[] = [];
   private timelineEntryCount = 0;
   // A pending engine drains every session's buffer before it knows its own id.
-  private heldRecords: ToolCallRecord[] = [];
+  private readonly heldRecords = new Map<string, ToolCallRecord[]>();
 
   constructor(sessionId: string) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -185,14 +186,19 @@ export class SessionTracker implements Resettable {
     this.sessionStartTime = Date.now();
   }
 
+  private countsSession(sessionId: string | null): boolean {
+    return (
+      !sessionId || sessionId === this.sessionId || isUnscopedAggregatorSessionId(this.sessionId)
+    );
+  }
+
   recordToolCall(record: ToolCallRecord): void {
-    if (
-      record.sessionId &&
-      record.sessionId !== this.sessionId &&
-      !isUnscopedAggregatorSessionId(this.sessionId)
-    ) {
-      if (this.sessionId.startsWith('pending-') && this.heldRecords.length < MAX_TIMELINE_ENTRIES) {
-        this.heldRecords.push(record);
+    if (!this.countsSession(record.sessionId)) {
+      if (this.sessionId.startsWith('pending-')) {
+        const held = this.heldRecords.get(record.sessionId!) ?? [];
+        if (held.length >= MAX_HELD_RECORDS_PER_SESSION) held.shift();
+        held.push(record);
+        this.heldRecords.set(record.sessionId!, held);
       }
       return;
     }
@@ -284,6 +290,45 @@ export class SessionTracker implements Resettable {
         success: record.success,
       });
     }
+  }
+
+  /**
+   * Replaces a 'timeout' or 'rejected' record already counted with the real
+   * outcome its late post brought, without counting the call again.
+   */
+  amendToolCall(record: ToolCallRecord, replacedErrorType: string): void {
+    if (!this.countsSession(record.sessionId)) {
+      const held = this.heldRecords.get(record.sessionId!);
+      const index = held?.findIndex((r) => r.id === record.id) ?? -1;
+      if (held && index >= 0) held[index] = record;
+      return;
+    }
+    const successEntry = this.toolSuccessByTool.get(record.toolName);
+    if (!successEntry) return;
+    const replacedCount = (this.toolErrorsByType.get(replacedErrorType) ?? 0) - 1;
+    if (replacedCount > 0) this.toolErrorsByType.set(replacedErrorType, replacedCount);
+    else this.toolErrorsByType.delete(replacedErrorType);
+    if (record.success) {
+      this.toolErrorCount--;
+      this.successCount++;
+      successEntry.success++;
+    } else if (record.errorType) {
+      this.toolErrorsByType.set(
+        record.errorType,
+        (this.toolErrorsByType.get(record.errorType) ?? 0) + 1,
+      );
+    }
+    if (record.durationMs !== null) {
+      const durations = this.toolDurationsByTool.get(record.toolName) ?? [];
+      if (durations.length < 500) durations.push(record.durationMs);
+      this.toolDurationsByTool.set(record.toolName, durations);
+    }
+    const index = this.timeline.findIndex(
+      (e) => !e.success && e.timestamp === record.timestamp && e.toolName === record.toolName,
+    );
+    const entry = this.timeline[index];
+    if (entry)
+      this.timeline[index] = { ...entry, durationMs: record.durationMs, success: record.success };
   }
 
   getMetrics(): SessionMetrics {
@@ -423,8 +468,8 @@ export class SessionTracker implements Resettable {
       throw new Error('SessionTracker.adoptSessionId() requires a non-empty sessionId');
     }
     this.sessionId = sessionId;
-    const held = this.heldRecords;
-    this.heldRecords = [];
+    const held = this.heldRecords.get(sessionId) ?? [];
+    this.heldRecords.clear();
     for (const record of held) this.recordToolCall(record);
   }
 
@@ -464,6 +509,6 @@ export class SessionTracker implements Resettable {
     this.bashCallsByCategory.clear();
     this.timeline = [];
     this.timelineEntryCount = 0;
-    this.heldRecords = [];
+    this.heldRecords.clear();
   }
 }
