@@ -10,7 +10,6 @@ const MAX_TOKENS = 10_000_000;
 const REPORT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
 export const MODEL_RE = /^[a-zA-Z0-9._:-]{1,256}$/;
 export const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
-const PREFLIGHT_SERVER_RE = /preflight|nr-ai-observability/i;
 const REQUIRED_COUNTS = ['input_tokens', 'output_tokens'] as const;
 const OPTIONAL_COUNTS = ['thinking_tokens', 'cache_read_tokens', 'cache_creation_tokens'] as const;
 type CountField = (typeof REQUIRED_COUNTS)[number] | (typeof OPTIONAL_COUNTS)[number];
@@ -30,7 +29,6 @@ export interface HookReportCall {
   readonly server: unknown;
   readonly args: unknown;
   readonly result: unknown;
-  readonly platform: 'cursor' | 'windsurf';
 }
 
 type ParsedSelfReport =
@@ -42,12 +40,8 @@ export function clampToken(v: number): number {
   return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
 }
 
-function isPreflightReportTool(call: HookReportCall): boolean {
-  return (
-    call.tool === REPORT_TOKENS_TOOL_NAME &&
-    typeof call.server === 'string' &&
-    PREFLIGHT_SERVER_RE.test(call.server)
-  );
+export function isPreflightServerName(name: unknown): boolean {
+  return typeof name === 'string' && (/preflight/i.test(name) || name === 'nr-ai-observability');
 }
 
 export function reportKey(r: SelfReport): string {
@@ -116,22 +110,6 @@ export function parseSelfReport(args: unknown): ParsedSelfReport {
   };
 }
 
-function selfReportLine(
-  report: SelfReport,
-  conversationId: string,
-  timestamp: number,
-  platform: string,
-): SelfReportHookEvent {
-  return {
-    mode: 'self_report',
-    tool: REPORT_TOKENS_TOOL_NAME,
-    timestamp,
-    sessionId: conversationId,
-    ...report,
-    platform,
-  };
-}
-
 function hookAcknowledged(result: unknown, reportId: string): boolean {
   const value = decodeObject(result);
   if (!value || value.isError === true) return false;
@@ -150,11 +128,21 @@ export function hookSelfReportLine(
   call: HookReportCall,
   conversationId: unknown,
   timestamp: number,
+  platform: string,
 ): SelfReportHookEvent | undefined {
-  if (!isPreflightReportTool(call) || !isConversationId(conversationId)) return undefined;
+  const isReport = call.tool === REPORT_TOKENS_TOOL_NAME && isPreflightServerName(call.server);
+  if (!isReport || !isConversationId(conversationId)) return undefined;
   const parsed = parseSelfReport(call.args);
   if (!parsed.ok || !hookAcknowledged(call.result, parsed.report.reportId)) return undefined;
-  return selfReportLine(parsed.report, conversationId, timestamp, call.platform);
+  const { report } = parsed;
+  return {
+    mode: 'self_report',
+    tool: REPORT_TOKENS_TOOL_NAME,
+    timestamp,
+    sessionId: conversationId,
+    ...report,
+    platform,
+  };
 }
 
 function claimPath(storageDir: string, line: SelfReportHookEvent): string {

@@ -1437,17 +1437,16 @@ describe('HookEventProcessor', () => {
       for (const t of timestamps) expect(t).toBeGreaterThanOrEqual(drainedAt);
     });
 
-    it('hands a self-report on again after its callback threw, with counts clamped', () => {
+    it('hands a self-report on once even when its callback threw partway, with counts clamped', () => {
       const onSelfReport = jest.fn().mockImplementationOnce(() => {
         throw new Error('disk full');
       });
       const processor = new HookEventProcessor({ store, onRecord, onSelfReport });
       const oversized = { ...selfReport, inputTokens: 1e12 };
 
-      processor.processEvents([oversized, oversized, oversized]);
+      processor.processEvents([oversized, oversized]);
 
-      expect(onSelfReport).toHaveBeenCalledTimes(2);
-      expect(onSelfReport).toHaveBeenLastCalledWith({ ...oversized, inputTokens: 10_000_000 });
+      expect(onSelfReport.mock.calls).toEqual([[{ ...oversized, inputTokens: 10_000_000 }]]);
     });
 
     it('does not error when onTokenEvent is not provided', () => {

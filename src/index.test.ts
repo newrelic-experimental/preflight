@@ -1212,20 +1212,15 @@ describe('stdio integration', () => {
       thinking_tokens: 100,
       model: 'claude-sonnet-4-6',
     };
+    const hookReply = (reportId: string) =>
+      JSON.stringify({ accepted: true, recorded_by: 'hook', report_id: reportId });
     const reportHook = (conversationId: string, reportId: string) => ({
       hook_event_name: 'afterMCPExecution',
       conversation_id: conversationId,
       mcp_server_name: 'newrelic-preflight',
       tool_name: 'nr_observe_report_tokens',
       tool_input: JSON.stringify({ ...report, report_id: reportId }),
-      result_json: JSON.stringify({
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({ accepted: true, recorded_by: 'hook', report_id: reportId }),
-          },
-        ],
-      }),
+      result_json: JSON.stringify({ content: [{ type: 'text', text: hookReply(reportId) }] }),
     });
     const isolatedEnv = (overrides: Record<string, string>): Record<string, string> => {
       const env: Record<string, string> = {};
@@ -1296,28 +1291,10 @@ describe('stdio integration', () => {
           () => api('/api/health').catch(() => null),
           (v) => v !== null,
         );
-        const read = { file_path: '/repo/big.txt' };
-        runHook(
-          env,
-          {
-            hook_event_name: 'PreToolUse',
-            tool_name: 'Read',
-            tool_use_id: 'tu-1',
-            tool_input: read,
-          },
-          ['pre-tool'],
-        );
-        runHook(
-          env,
-          {
-            hook_event_name: 'PostToolUse',
-            tool_name: 'Read',
-            tool_use_id: 'tu-1',
-            tool_input: read,
-            tool_response: { content: 'y'.repeat(40_000) },
-          },
-          ['post-tool'],
-        );
+        const read = { tool_name: 'Read', tool_use_id: 'tu-1', tool_input: { file_path: '/a' } };
+        runHook(env, { hook_event_name: 'PreToolUse', ...read }, ['pre-tool']);
+        const response = { tool_response: { content: 'y'.repeat(40_000) } };
+        runHook(env, { hook_event_name: 'PostToolUse', ...read, ...response }, ['post-tool']);
         const estimated = await until(cost, (c) => (c.byteEstimates?.costUsd ?? 0) > 0);
         expect(estimated.byteEstimates?.costUsd).toBeGreaterThan(0);
 
