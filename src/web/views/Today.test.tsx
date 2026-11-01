@@ -1497,7 +1497,7 @@ describe('Today view — Cache Health panel', () => {
     expect(await screen.findByText(/\$1\.50 saved today/)).toBeInTheDocument();
   });
 
-  it('shows sub-cent savings as <$0.01, not $0.00', async () => {
+  it('shows sub-cent savings as $0.004, not $0.00', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/sessions/today/aggregate')) {
@@ -1532,7 +1532,7 @@ describe('Today view — Cache Health panel', () => {
         <Today />
       </QueryClientProvider>,
     );
-    expect(await screen.findByText(/<\$0\.01 saved today/)).toBeInTheDocument();
+    expect(await screen.findByText(/\$0\.004 saved today/)).toBeInTheDocument();
   });
 
   it('renders the cache hit rate from the aggregate endpoint, not the per-process cache-health snapshot', async () => {

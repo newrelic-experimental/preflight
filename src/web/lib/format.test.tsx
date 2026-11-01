@@ -9,7 +9,6 @@ import {
   formatNumber,
   formatUsd,
   formatUsdOrDash,
-  formatSavingsUsd,
   formatTokensCompact,
   formatTokenBreakdown,
   formatRelativeTime,
@@ -330,21 +329,5 @@ describe('formatRelativeTime()', () => {
 
   it('formats days ago', () => {
     expect(formatRelativeTime(Date.now() - 2 * 86_400_000)).toBe('2d ago');
-  });
-});
-
-describe('formatSavingsUsd', () => {
-  it('renders a positive sub-cent amount as <$0.01, never $0.00', () => {
-    expect(formatSavingsUsd(0.004)).toBe('<$0.01');
-    expect(formatSavingsUsd(0.0000001)).toBe('<$0.01');
-  });
-
-  it('renders a measured zero as $0.00', () => {
-    expect(formatSavingsUsd(0)).toBe('$0.00');
-  });
-
-  it('defers to formatUsd from one cent up', () => {
-    expect(formatSavingsUsd(0.0135)).toBe(formatUsd(0.0135));
-    expect(formatSavingsUsd(1.5)).toBe('$1.50');
   });
 });
