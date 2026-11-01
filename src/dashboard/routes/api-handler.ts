@@ -1903,6 +1903,15 @@ export function createApiHandler(
       // drop the checkpoint's today cost, and a seeded one is not counted twice.
       // This is per-key max, the same rule mergeSummaries uses.
       const todayCost = todayCostOfSummary(s, todayKey, now);
+      // Spend is read from transcripts and can predate the session's first
+      // tool call. Anchoring only on tool-call timestamps would divide that
+      // spend by a much shorter window and inflate the burn rate, so a session
+      // that started today with today spend anchors at its own startTime.
+      if (s.startTime >= startMs && todayCost.costUsd > 0) {
+        if (dailyFirstActivityMs === null || s.startTime < dailyFirstActivityMs) {
+          dailyFirstActivityMs = s.startTime;
+        }
+      }
       if (s.sessionId === liveSid) {
         liveCheckpointTodayUsd = todayCost.costUsd;
         liveCheckpointSubagentUsd = todayCost.subagentCostUsd;
