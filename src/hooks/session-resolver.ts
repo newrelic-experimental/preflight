@@ -70,6 +70,7 @@ const DEFAULT_STORAGE_DIR = resolve(homedir(), '.newrelic-preflight');
 const POLL_SCHEDULE_MS = [100, 200, 500, 1000, 2000];
 const STEADY_POLL_MS = 2000;
 const WARN_AFTER_MS = 60_000;
+const TAGGED_CWD_BREADCRUMB_MAX_IDLE_MS = 12 * 60 * 60 * 1000;
 
 /**
  * How far above our own ppid to look for a breadcrumb. Deliberately shallower
@@ -384,6 +385,12 @@ export function sessionBreadcrumbs(
     return read(storagePath, (hit) => rootHitCounts(crumbOf(hit), sessionIdOf(hit)));
   };
   const self = (sessionId: string) => sessionId;
+  const cwdCrumb = (cwd: string | undefined) =>
+    `session-by-cwd/${sanitizeCwdForFilename(cwd ?? '')}.txt`;
+  const isTaggedRoot = (dir: string) => dir !== storagePath;
+  const taggedCwdCrumbIdle = (dir: string, cwd: string | undefined) =>
+    isTaggedRoot(dir) &&
+    mtimeMs(resolve(dir, cwdCrumb(cwd))) < Date.now() - TAGGED_CWD_BREADCRUMB_MAX_IDLE_MS;
   const kept = (id: string | null, accept: (id: string) => boolean) =>
     id !== null && accept(id) ? id : null;
   return {
@@ -404,8 +411,9 @@ export function sessionBreadcrumbs(
       ),
     cwd: (cwd) =>
       pick(
-        (dir, accept) => kept(resolveFromCwd(dir, cwd), accept),
-        () => `session-by-cwd/${sanitizeCwdForFilename(cwd!)}.txt`,
+        (dir, accept) =>
+          taggedCwdCrumbIdle(dir, cwd) ? null : kept(resolveFromCwd(dir, cwd), accept),
+        () => cwdCrumb(cwd),
         self,
       ),
   };
