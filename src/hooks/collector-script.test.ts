@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import {
@@ -2056,6 +2064,28 @@ describe('collector-script', () => {
       expect(events).toHaveLength(1);
       expect(events[0]!.mode).toBe('pre');
       expect(events[0]!.tool).toBe('Read');
+    });
+
+    it('exits 0 when it drops an event and its stderr is closed', async () => {
+      const scriptPath = resolve(
+        __dirname,
+        '..',
+        '..',
+        'plugin',
+        '.claude-plugin',
+        'scripts',
+        'collector-script.js',
+      );
+      writeFileSync(resolve(tmpDir, 'f'), '');
+      const child = spawn(process.execPath, [scriptPath], {
+        stdio: ['pipe', 'ignore', 'pipe'],
+        env: { ...process.env, NEW_RELIC_AI_MCP_BUFFER_PATH: resolve(tmpDir, 'f', 'b.jsonl') },
+      });
+      child.stderr.destroy();
+      child.stdin.end(makePreToolUse());
+
+      const code = await new Promise((done) => child.on('exit', done));
+      expect(code).toBe(0);
     });
   });
 

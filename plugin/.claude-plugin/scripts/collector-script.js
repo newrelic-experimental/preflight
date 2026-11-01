@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // src/hooks/collector-script.ts
-import { readFileSync, writeFileSync, mkdirSync, existsSync, utimesSync } from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync, mkdirSync, existsSync, utimesSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
@@ -70,6 +70,7 @@ import {
   constants,
   fstatSync,
   openSync,
+  readFileSync,
   readSync,
   statSync,
   unlinkSync,
@@ -156,7 +157,7 @@ var HIGH_SECURITY_FROM_FILE = (() => {
     try {
       const configPath = resolve(homedir(), dir, "config.json");
       if (existsSync(configPath)) {
-        const config = JSON.parse(readFileSync(configPath, "utf-8"));
+        const config = JSON.parse(readFileSync2(configPath, "utf-8"));
         return config.highSecurity === true;
       }
     } catch {
@@ -222,7 +223,7 @@ function hasStringText(block) {
   return typeof block === "object" && block !== null && "text" in block && typeof block.text === "string";
 }
 var _procFs = {
-  readFile: (path) => readFileSync(path, "utf-8")
+  readFile: (path) => readFileSync2(path, "utf-8")
 };
 function getLinuxAncestorPids(startPpid, maxDepth = 5) {
   const pids = [startPpid];
@@ -258,7 +259,7 @@ function writePpidBreadcrumb(sessionId) {
       const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
       if (existsSync(breadcrumbPath)) {
         try {
-          if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
+          if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
             const now = /* @__PURE__ */ new Date();
             try {
               utimesSync(breadcrumbPath, now, now);
@@ -296,7 +297,7 @@ function writeCwdBreadcrumb(sessionId, cwd) {
     const breadcrumbPath = resolve(breadcrumbDir, `${sanitizedCwd}.txt`);
     if (existsSync(breadcrumbPath)) {
       try {
-        if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
+        if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
           _cwdBreadcrumbWriteFailed = false;
           return;
         }
@@ -888,8 +889,12 @@ function processHook(raw, cliEvent) {
     const line = JSON.stringify(event) + "\n";
     appendToHookBuffer(bufferPath, line);
   } catch (err) {
-    process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}
+    process.stderr.on("error", () => void 0);
+    try {
+      process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}
 `);
+    } catch {
+    }
   }
   if (isGeminiCli) {
     try {
@@ -918,7 +923,7 @@ var _resolvedScript = (() => {
 })();
 var _isDirectExecution = _resolvedScript != null && /collector-script\.[jt]s$/.test(_resolvedScript);
 var _stdinFs = {
-  readFileSync: (pathOrFd) => readFileSync(pathOrFd, "utf-8")
+  readFileSync: (pathOrFd) => readFileSync2(pathOrFd, "utf-8")
 };
 function readStdinSync() {
   if (process.platform === "win32") {

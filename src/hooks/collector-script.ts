@@ -1348,7 +1348,13 @@ function processHook(raw: string, cliEvent?: string): void {
 
     appendToHookBuffer(bufferPath, line);
   } catch (err) {
-    process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}\n`);
+    // A closed stderr (EPIPE) must not turn a dropped event into a failed hook.
+    process.stderr.on('error', () => undefined);
+    try {
+      process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}\n`);
+    } catch {
+      // The hook still exits 0.
+    }
   }
 
   // Gemini CLI's own hook examples always print "{}" before exiting 0, even
