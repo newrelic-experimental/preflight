@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
-import { appendToHookBuffer, takeClaimText } from './hook-buffer.js';
+import { appendToHookBuffer, readSealed, takeClaimText, textBeforeSeal } from './hook-buffer.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -382,7 +382,7 @@ export class LocalStore {
       const name = basename(path);
       let raw: string;
       try {
-        raw = readFileSync(path, 'utf-8');
+        raw = textBeforeSeal(readFileSync(path, 'utf-8'));
       } catch {
         continue;
       }
@@ -1128,11 +1128,11 @@ export class LocalStore {
    * `.migrating-<pid>` file is intentionally left in place. On the next boot
    * the legacy file is gone, so we no-op; the partitioned files written so
    * far hold the events that did make it across. The straggler events stuck
-   * in `.migrating-<pid>` are recovered manually (forensics) or dropped — we
-   * accept this trade because re-migrating from `.migrating-<pid>` would
-   * re-append already-migrated partitions and produce duplicate events,
-   * which is worse than a once-only loss bounded by the size of the legacy
-   * file at upgrade time.
+   * in `.migrating-<pid>`, the lines before its seal, are recovered manually
+   * (forensics) or dropped — we accept this trade because re-migrating from
+   * `.migrating-<pid>` would re-append already-migrated partitions and
+   * produce duplicate events, which is worse than a once-only loss bounded
+   * by the size of the legacy file at upgrade time.
    *
    * Returns the number of events migrated.
    */
@@ -1167,7 +1167,7 @@ export class LocalStore {
 
     let raw: string;
     try {
-      raw = readFileSync(migratingPath, 'utf-8');
+      raw = readSealed(migratingPath);
     } catch (err) {
       logger.warn('Failed to read legacy buffer.jsonl during migration', { error: String(err) });
       // Leave the .migrating file in place for forensic recovery; we already

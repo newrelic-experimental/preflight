@@ -1347,8 +1347,8 @@ function processHook(raw: string, cliEvent?: string): void {
     const line = JSON.stringify(event) + '\n';
 
     appendToHookBuffer(bufferPath, line);
-  } catch {
-    // Silent failure — never block Claude Code
+  } catch (err) {
+    process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}\n`);
   }
 
   // Gemini CLI's own hook examples always print "{}" before exiting 0, even
