@@ -567,7 +567,9 @@ export class LocalSessionAggregator {
    * only the subagent pair could leave a merged file whose subagent figure
    * exceeds its all-in figure. Cost and day costs are seeded from the file's
    * exact share: mergeSummaries adds the byte-estimate ledger back on top of
-   * the merged exact totals, so seeding the ledger too counts it twice.
+   * the merged exact totals, so seeding the ledger too counts it twice. Never
+   * below the saved subagent figures, so a stale stored `exactTotals` cannot
+   * seed a total under them.
    */
   private applyPersistedBaseline(sessionId: string, rollup: LocalSessionRollup): void {
     rollup.costBaselineApplied = true;
@@ -575,9 +577,15 @@ export class LocalSessionAggregator {
     if (baseline === null) return;
     const emitted = rollup.lastEmittedCost;
     const exact = exactTotalsOf(baseline);
-    rollup.costUsd += excessOver(exact.costUsd, emitted?.costUsd);
+    rollup.costUsd += excessOver(
+      Math.max(exact.costUsd, baseline.subagentCostUsd),
+      emitted?.costUsd,
+    );
     rollup.subagentCostUsd += excessOver(baseline.subagentCostUsd, emitted?.subagentCostUsd);
-    for (const [day, usd] of Object.entries(exact.costByDayUsd)) {
+    const subagentByDay = baseline.subagentCostByDayUsd ?? {};
+    const seedDays = new Set([...Object.keys(exact.costByDayUsd), ...Object.keys(subagentByDay)]);
+    for (const day of seedDays) {
+      const usd = Math.max(exact.costByDayUsd[day] ?? 0, subagentByDay[day] ?? 0);
       rollup.costByDayUsd.set(
         day,
         (rollup.costByDayUsd.get(day) ?? 0) + excessOver(usd, emitted?.costByDayUsd.get(day)),

@@ -743,7 +743,7 @@ describe('LocalSessionAggregator baseline fold from a file with a byte-estimate 
   const DAY = new Date(2026, 8, 10, 12).getTime();
   const DAY_KEY = localDateKey(DAY);
 
-  function savedFileWithLedger(shape: 'legacy' | 'stored' | 'stale'): FullSessionSummary {
+  function makeSavedFileWithLedger(shape: 'legacy' | 'stored'): FullSessionSummary {
     const writer = new LocalSessionAggregator();
     writer.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
     writer.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY });
@@ -761,22 +761,16 @@ describe('LocalSessionAggregator baseline fold from a file with a byte-estimate 
       },
     };
     if (shape === 'legacy') return withLedger;
-    const stored = shape === 'stored' ? 1 : 0.25;
     return {
       ...withLedger,
-      exactTotals: {
-        costUsd: stored,
-        inputTokens: 0,
-        outputTokens: 0,
-        costByDayUsd: { [DAY_KEY]: stored },
-      },
+      exactTotals: { costUsd: 1, inputTokens: 0, outputTokens: 0, costByDayUsd: { [DAY_KEY]: 1 } },
     };
   }
 
-  it.each(['legacy', 'stored', 'stale'] as const)(
+  it.each(['legacy', 'stored'] as const)(
     'saves the exact total, the subagent usage and the ledger once (%s file)',
     (shape) => {
-      const file = savedFileWithLedger(shape);
+      const file = makeSavedFileWithLedger(shape);
       const agg = new LocalSessionAggregator({ persistedCostBaseline: () => file });
       agg.recordTokenUsage(REAL_ID, { costUsd: 0.25, timestamp: DAY, agentId: 'agent-1' });
       const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
@@ -791,6 +785,30 @@ describe('LocalSessionAggregator baseline fold from a file with a byte-estimate 
       expect(merged.estimatedCostUsd!).toBeGreaterThanOrEqual(merged.subagentCostUsd);
     },
   );
+
+  it('never seeds the total or a day under the saved subagent figures when exactTotals is stale-low', () => {
+    const file: FullSessionSummary = {
+      ...makeSavedFileWithLedger('stored'),
+      exactTotals: {
+        costUsd: 0.25,
+        inputTokens: 0,
+        outputTokens: 0,
+        costByDayUsd: { [DAY_KEY]: 0.25 },
+      },
+      subagentCostUsd: 0.5,
+      subagentCostByDayUsd: { [DAY_KEY]: 0.5 },
+    };
+    const agg = new LocalSessionAggregator({ persistedCostBaseline: () => file });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.25, timestamp: DAY, agentId: 'agent-1' });
+    const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
+    expect(incoming!.estimatedCostUsd!).toBeGreaterThanOrEqual(incoming!.subagentCostUsd);
+    expect(incoming!.costByDayUsd![DAY_KEY]!).toBeGreaterThanOrEqual(
+      incoming!.subagentCostByDayUsd![DAY_KEY]!,
+    );
+    const merged = mergeSummaries(file, incoming!);
+    expect(merged.estimatedCostUsd!).toBeGreaterThanOrEqual(merged.subagentCostUsd);
+    expect(merged.subagentCostUsd).toBe(0.75);
+  });
 });
 
 describe('stripHeredocs', () => {
