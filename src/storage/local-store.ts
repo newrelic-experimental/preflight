@@ -19,16 +19,80 @@ import type { ResolvedCompanionMode } from '../config.js';
 const logger = createLogger('local-store');
 
 const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
-const DRAIN_NAME_RE = /^(.+?)\.drain(?:\.(\d+)\.[0-9a-f]+)?$/;
 
-/** `<buffer>.drain.<pid>.<nonce>`, or the legacy ownerless `<buffer>.drain` as pid 0, which is never alive. */
-function parseDrainName(entry: string): { readonly buffer: string; readonly pid: number } | null {
-  const match = DRAIN_NAME_RE.exec(entry);
-  return match ? { buffer: match[1]!, pid: match[2] ? Number(match[2]) : 0 } : null;
+const DRAINS_DIR = 'drains';
+const CLAIM_NAME_RE = /^(.+\.jsonl)\.(\d+)\.[0-9a-f]+$/;
+const LEGACY_DRAIN_SUFFIX = '.drain';
+
+/**
+ * An older version's drainer recovers a legacy `<buffer>.drain` on its next
+ * 100 ms poll, and returns those events even when its unlink then fails, so
+ * taking the file while it is mid-recovery counts it twice. A `.drain` that
+ * has kept its name for 60 s (600 of those polls) has no live older drainer.
+ */
+const LEGACY_DRAIN_ADOPT_AGE_MS = 60_000;
+
+const STALE_CLAIM_AGE_MS = 10 * 60_000;
+
+interface DrainClaim {
+  readonly path: string;
+  readonly owner: number | 'legacy';
+}
+
+interface BufferDrain {
+  present: boolean;
+  readonly claims: DrainClaim[];
 }
 
 function isBufferName(name: string): boolean {
   return name.endsWith('.jsonl') && (name === 'buffer.jsonl' || name.startsWith('buffer-'));
+}
+
+function legacyDrainBuffer(name: string): string | null {
+  if (!name.endsWith(LEGACY_DRAIN_SUFFIX)) return null;
+  const buffer = name.slice(0, -LEGACY_DRAIN_SUFFIX.length);
+  return isBufferName(buffer) ? buffer : null;
+}
+
+/** Rename keeps mtime and sets ctime, so ctime is when the file took its current name. */
+function nameAgeMs(path: string): number {
+  try {
+    return Date.now() - statSync(path).ctimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function isAdoptable(claim: DrainClaim): boolean {
+  if (claim.owner === 'legacy') return nameAgeMs(claim.path) >= LEGACY_DRAIN_ADOPT_AGE_MS;
+  return !isPidAlive(claim.owner) || nameAgeMs(claim.path) >= STALE_CLAIM_AGE_MS;
+}
+
+function takeClaim(path: string): readonly HookEvent[] {
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf-8');
+    unlinkSync(path);
+  } catch (err) {
+    logger.warn('Failed to drain buffer — will retry next poll', { error: String(err) });
+    return [];
+  }
+  return parseHookEvents(raw);
+}
+
+function inWriteOrder(paths: readonly string[]): readonly string[] {
+  if (paths.length < 2) return paths;
+  const mtime = (path: string): number => {
+    try {
+      return statSync(path).mtimeMs;
+    } catch {
+      return Number.POSITIVE_INFINITY;
+    }
+  };
+  return paths
+    .map((path) => ({ path, at: mtime(path) }))
+    .sort((a, b) => a.at - b.at)
+    .map(({ path }) => path);
 }
 
 /**
@@ -126,6 +190,7 @@ export class LocalStore {
   private readonly storagePath: string;
   private readonly bufferPath: string;
   private readonly sessionId: string | null;
+  private claimListingFailed = false;
 
   /**
    * @param storagePath The base storage directory (e.g. ~/.newrelic-preflight).
@@ -214,7 +279,12 @@ export class LocalStore {
    * and concurrent drainers never lose or duplicate an event.
    */
   drainBuffer(): HookEvent[] {
-    return this.drainPath(this.bufferPath);
+    const dir = dirname(this.bufferPath);
+    const name = basename(this.bufferPath);
+    const claims = this.listClaims(dir).get(name) ?? [];
+    const legacy = this.bufferPath + LEGACY_DRAIN_SUFFIX;
+    if (existsSync(legacy)) claims.push({ path: legacy, owner: 'legacy' });
+    return this.drainPath(this.bufferPath, { present: existsSync(this.bufferPath), claims });
   }
 
   /**
@@ -237,14 +307,9 @@ export class LocalStore {
       logger.warn('Failed to enumerate storage path for drainAllBuffers', { error: String(err) });
       return [];
     }
-    const buffers = new Set<string>();
-    for (const entry of entries) {
-      const buffer = parseDrainName(entry)?.buffer ?? entry;
-      if (isBufferName(buffer)) buffers.add(buffer);
-    }
-    for (const name of buffers) {
+    for (const [name, drain] of this.bufferDrains(entries)) {
       const ownerLive = (): boolean => name !== 'buffer.jsonl' && this.hasLiveOwner(name);
-      for (const event of this.drainPath(resolve(this.storagePath, name), entries, ownerLive)) {
+      for (const event of this.drainPath(resolve(this.storagePath, name), drain, ownerLive)) {
         all.push(event);
       }
     }
@@ -279,7 +344,8 @@ export class LocalStore {
    *
    * The legacy shared `buffer.jsonl` is included so an upgrading user with
    * unmigrated events still appears in aggregate views before the next
-   * `migrateLegacyBuffer()` runs.
+   * `migrateLegacyBuffer()` runs. Lines held in drain claims are included
+   * too: they are still waiting for a drainer to return them.
    */
   peekAllBuffers(): HookEvent[] {
     const all: HookEvent[] = [];
@@ -291,10 +357,13 @@ export class LocalStore {
       logger.warn('Failed to enumerate storage path for peekAllBuffers', { error: String(err) });
       return [];
     }
-    for (const name of entries) {
-      if (!name.endsWith('.jsonl')) continue;
-      if (name !== 'buffer.jsonl' && !name.startsWith('buffer-')) continue;
-      const path = resolve(this.storagePath, name);
+    const paths: string[] = [];
+    for (const [name, drain] of this.bufferDrains(entries)) {
+      for (const claim of drain.claims) paths.push(claim.path);
+      if (drain.present) paths.push(resolve(this.storagePath, name));
+    }
+    for (const path of paths) {
+      const name = basename(path);
       let raw: string;
       try {
         raw = readFileSync(path, 'utf-8');
@@ -1152,52 +1221,87 @@ export class LocalStore {
     return count;
   }
 
+  private bufferDrains(entries: readonly string[]): Map<string, BufferDrain> {
+    const drains = new Map<string, BufferDrain>();
+    const drainOf = (name: string): BufferDrain => {
+      let drain = drains.get(name);
+      if (!drain) drains.set(name, (drain = { present: false, claims: [] }));
+      return drain;
+    };
+    for (const entry of entries) {
+      if (isBufferName(entry)) {
+        drainOf(entry).present = true;
+        continue;
+      }
+      const legacyOf = legacyDrainBuffer(entry);
+      if (legacyOf) {
+        drainOf(legacyOf).claims.push({ path: resolve(this.storagePath, entry), owner: 'legacy' });
+      }
+    }
+    for (const [name, claims] of this.listClaims(this.storagePath)) {
+      if (isBufferName(name)) drainOf(name).claims.push(...claims);
+    }
+    return drains;
+  }
+
+  private listClaims(dir: string): Map<string, DrainClaim[]> {
+    const claims = new Map<string, DrainClaim[]>();
+    const drainsDir = resolve(dir, DRAINS_DIR);
+    let names: string[];
+    try {
+      names = readdirSync(drainsDir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT' && !this.claimListingFailed) {
+        this.claimListingFailed = true;
+        logger.warn('Failed to list drain claims — leftover claims wait until it succeeds', {
+          error: String(err),
+        });
+      }
+      return claims;
+    }
+    for (const name of names) {
+      const match = CLAIM_NAME_RE.exec(name);
+      if (!match) continue;
+      const claim = { path: resolve(drainsDir, name), owner: Number(match[2]) };
+      const forBuffer = claims.get(match[1]!);
+      if (forBuffer) forBuffer.push(claim);
+      else claims.set(match[1]!, [claim]);
+    }
+    return claims;
+  }
+
   private drainPath(
     bufferPath: string,
-    entries?: readonly string[],
+    drain: BufferDrain,
     ownerLive: () => boolean = () => false,
   ): HookEvent[] {
-    const dir = dirname(bufferPath);
-    const bufferName = basename(bufferPath);
-    let names: readonly string[];
-    try {
-      names = entries ?? readdirSync(dir);
-    } catch {
-      return [];
-    }
-
-    const adopt = !ownerLive();
     const owned: string[] = [];
-    for (const name of names) {
-      const drain = parseDrainName(name);
-      if (drain?.buffer !== bufferName) continue;
-      if (drain.pid === process.pid) owned.push(resolve(dir, name));
-      else if (adopt && !isPidAlive(drain.pid)) {
-        const claimed = this.claimDrain(resolve(dir, name), bufferPath);
+    let mayAdopt: boolean | undefined;
+    for (const claim of drain.claims) {
+      if (claim.owner === process.pid) owned.push(claim.path);
+      else if (isAdoptable(claim) && (mayAdopt ??= !ownerLive())) {
+        const claimed = this.claimDrain(claim.path, bufferPath);
         if (claimed) owned.push(claimed);
       }
     }
-    if (names.includes(bufferName) && !ownerLive()) {
+    if (drain.present && !ownerLive()) {
       const claimed = this.claimDrain(bufferPath, bufferPath);
       if (claimed) owned.push(claimed);
     }
 
     const events: HookEvent[] = [];
-    for (const path of owned) {
-      try {
-        const raw = readFileSync(path, 'utf-8');
-        unlinkSync(path);
-        for (const event of parseHookEvents(raw)) events.push(event);
-      } catch (err) {
-        logger.warn('Failed to drain buffer — will retry next poll', { error: String(err) });
-      }
+    for (const path of inWriteOrder(owned)) {
+      for (const event of takeClaim(path)) events.push(event);
     }
     return events;
   }
 
   private claimDrain(from: string, bufferPath: string): string | null {
-    const to = `${bufferPath}.drain.${process.pid}.${randomBytes(6).toString('hex')}`;
+    const drainsDir = resolve(dirname(bufferPath), DRAINS_DIR);
+    const nonce = randomBytes(6).toString('hex');
+    const to = resolve(drainsDir, `${basename(bufferPath)}.${process.pid}.${nonce}`);
     try {
+      mkdirSync(drainsDir, { recursive: true, mode: 0o700 });
       renameSync(from, to);
       return to;
     } catch (err) {
