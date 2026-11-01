@@ -29,10 +29,16 @@ beforeEach(() => {
 
 afterEach(() => {
   stderrSpy.mockRestore();
+  jest.restoreAllMocks();
   if (existsSync(tmpDir)) {
     rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+function ageLegacyDrains(): void {
+  const now = Date.now();
+  jest.spyOn(Date, 'now').mockReturnValue(now + 61_000);
+}
 
 function makeEvent(overrides?: Partial<Omit<PostHookEvent, 'mode'>>): PostHookEvent {
   return {
@@ -179,6 +185,7 @@ describe('LocalStore', () => {
       const drainPath = resolve(tmpDir, 'buffer.jsonl.drain');
       const event = makeEvent({ tool: 'Orphaned' });
       writeFileSync(drainPath, JSON.stringify(event) + '\n');
+      ageLegacyDrains();
 
       const drained = store.drainBuffer();
       expect(drained).toHaveLength(1);
@@ -198,6 +205,7 @@ describe('LocalStore', () => {
 
       writeFileSync(drainPath, JSON.stringify(olderEvent) + '\n');
       writeFileSync(bufferPath, JSON.stringify(newerEvent) + '\n');
+      ageLegacyDrains();
 
       const drained = store.drainBuffer();
       expect(drained).toHaveLength(2);
@@ -213,6 +221,7 @@ describe('LocalStore', () => {
       const drainPath = resolve(tmpDir, 'buffer.jsonl.drain');
       const validEvent = makeEvent({ tool: 'Valid' });
       writeFileSync(drainPath, 'CORRUPT DATA\n' + JSON.stringify(validEvent) + '\n');
+      ageLegacyDrains();
 
       const drained = store.drainBuffer();
       expect(drained).toHaveLength(1);
@@ -434,14 +443,21 @@ describe('LocalStore', () => {
       // readFileSync(.drain) throws EACCES.
       writeFileSync(drainPath, JSON.stringify(event) + '\n');
       chmodSync(drainPath, 0o000);
+      ageLegacyDrains();
 
       const firstResult = store.drainBuffer();
       expect(firstResult).toEqual([]);
-      const preserved = readdirSync(tmpDir).filter((n) => n.startsWith('buffer.jsonl.drain'));
+      const preserved = [tmpDir, resolve(tmpDir, 'drains')]
+        .filter((d) => existsSync(d))
+        .flatMap((d) =>
+          readdirSync(d)
+            .filter((n) => n.startsWith('buffer.jsonl.'))
+            .map((n) => resolve(d, n)),
+        );
       expect(preserved).toHaveLength(1);
 
       // Restore readability and verify the next poll recovers the events
-      chmodSync(resolve(tmpDir, preserved[0]!), 0o644);
+      chmodSync(preserved[0]!, 0o644);
       const recovered = store.drainBuffer();
       expect(recovered).toHaveLength(1);
       expect(recovered[0]?.tool).toBe('Bash');
@@ -494,6 +510,7 @@ describe('LocalStore', () => {
       const claimed = readFileSync(drainPath, 'utf-8');
       expect(JSON.parse(claimed.trim())).toEqual(inFlightEvent);
 
+      ageLegacyDrains();
       // The next poll's drainBuffer() recovers the still-present .drain file
       // AND the freshly-appended buffer — both events come back intact,
       // neither lost nor interleaved.
