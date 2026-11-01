@@ -528,12 +528,15 @@ describe('startMaintenanceGc()', () => {
     gcOrphanBuffers: ReturnType<typeof jest.fn>;
     getActiveSessionIdsFromHeartbeats: ReturnType<typeof jest.fn>;
     gcDeadLocalInstances: ReturnType<typeof jest.fn>;
+    gcCountedToolUseIds: ReturnType<typeof jest.fn>;
   } {
     const gcStaleBreadcrumbs = jest.fn();
     const gcOrphanBuffers = jest.fn();
     const getActiveSessionIdsFromHeartbeats = jest.fn(() => new Set<string>());
     const gcDeadLocalInstances = jest.fn(() => 0);
+    const gcCountedToolUseIds = jest.fn();
     const store = {
+      gcCountedToolUseIds,
       gcStaleBreadcrumbs,
       gcOrphanBuffers,
       getActiveSessionIdsFromHeartbeats,
@@ -545,6 +548,7 @@ describe('startMaintenanceGc()', () => {
       gcOrphanBuffers,
       getActiveSessionIdsFromHeartbeats,
       gcDeadLocalInstances,
+      gcCountedToolUseIds,
     };
   }
 
@@ -619,10 +623,11 @@ describe('startMaintenanceGc()', () => {
     clearInterval(handle);
   });
 
-  it('runs gcDeadLocalInstances as part of the GC pass', () => {
-    const { store, gcDeadLocalInstances } = makeLocalStore();
+  it('runs gcDeadLocalInstances and gcCountedToolUseIds as part of the GC pass', () => {
+    const { store, gcDeadLocalInstances, gcCountedToolUseIds } = makeLocalStore();
     const handle = startMaintenanceGc({ localStore: store, liveSessionRegistry: undefined });
     expect(gcDeadLocalInstances).toHaveBeenCalledTimes(1);
+    expect(gcCountedToolUseIds).toHaveBeenCalledTimes(1);
     jest.advanceTimersByTime(5 * 60 * 1000);
     expect(gcDeadLocalInstances).toHaveBeenCalledTimes(2);
     clearInterval(handle);

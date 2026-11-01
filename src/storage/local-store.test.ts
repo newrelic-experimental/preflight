@@ -1511,6 +1511,48 @@ describe('LocalStore', () => {
     });
   });
 
+  describe('counted toolUseIds', () => {
+    it('finds an id another process saved for the session, after an earlier lookup', () => {
+      const store = new LocalStore(tmpDir);
+      store.rememberCountedToolUseIds('sess-1', ['toolu_mine']);
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_theirs')).toBe(false);
+
+      writeFileSync(resolve(tmpDir, 'counted', 'sess-1.999999.json'), '["toolu_theirs"]');
+
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_mine')).toBe(true);
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_theirs')).toBe(true);
+      expect(store.hasCountedToolUseId('sess-2', 'toolu_theirs')).toBe(false);
+    });
+
+    it('keeps an id saved again among the newest 256', () => {
+      const store = new LocalStore(tmpDir);
+      store.rememberCountedToolUseIds('sess-1', ['toolu_again']);
+      const others = Array.from({ length: 256 }, (_, i) => `toolu_${i}`);
+      store.rememberCountedToolUseIds('sess-1', [...others, 'toolu_again']);
+
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_again')).toBe(true);
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_0')).toBe(false);
+    });
+
+    it('deletes only the day-old files of exited processes', () => {
+      const store = new LocalStore(tmpDir);
+      store.rememberCountedToolUseIds('sess-live', ['toolu_1']);
+      const dir = resolve(tmpDir, 'counted');
+      writeFileSync(resolve(dir, 'sess-old.999999.json'), '["toolu_2"]');
+      writeFileSync(resolve(dir, 'sess-recent.999999.json'), '["toolu_3"]');
+      const dayAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
+      utimesSync(resolve(dir, 'sess-old.999999.json'), dayAgo, dayAgo);
+      utimesSync(resolve(dir, `sess-live.${process.pid}.json`), dayAgo, dayAgo);
+
+      store.gcCountedToolUseIds();
+
+      expect(readdirSync(dir).sort()).toEqual([
+        `sess-live.${process.pid}.json`,
+        'sess-recent.999999.json',
+      ]);
+    });
+  });
+
   describe('gcStaleBreadcrumbs()', () => {
     it('deletes breadcrumb files whose PID is dead and preserves live ones', () => {
       mkdirSync(tmpDir, { recursive: true });
