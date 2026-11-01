@@ -86,6 +86,7 @@ function addCount<K>(counts: Map<K, number>, key: K, delta: number): void {
   else counts.delete(key);
 }
 const MAX_HELD_RECORDS_PER_SESSION = 2_000;
+const MAX_HELD_RECORDS = 10_000;
 
 // Bounds memory on sessions that touch an unusually large number of distinct
 // files (e.g. a repo-wide codemod or search) — head-drop the oldest-added
@@ -183,7 +184,9 @@ export class SessionTracker implements Resettable {
   private readonly amendable = new Map<string, { record: ToolCallRecord; timelineIndex: number }>();
   private readonly maxAmendable: number;
   // A pending engine drains every session's buffer before it knows its own id.
+  // Ordered least recently active first, so the cap drops idle sessions.
   private readonly heldRecords = new Map<string, ToolCallRecord[]>();
+  private heldCount = 0;
 
   constructor(sessionId: string, maxAmendable = 0) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -204,12 +207,7 @@ export class SessionTracker implements Resettable {
 
   recordToolCall(record: ToolCallRecord): void {
     if (!this.countsSession(record.sessionId)) {
-      if (this.sessionId.startsWith('pending-')) {
-        const held = this.heldRecords.get(record.sessionId!) ?? [];
-        if (held.length >= MAX_HELD_RECORDS_PER_SESSION) held.shift();
-        held.push(record);
-        this.heldRecords.set(record.sessionId!, held);
-      }
+      if (this.sessionId.startsWith('pending-')) this.hold(record.sessionId!, record);
       return;
     }
     this.toolCallCount++;
@@ -290,6 +288,32 @@ export class SessionTracker implements Resettable {
       if (this.amendable.size > this.maxAmendable)
         this.amendable.delete(this.amendable.keys().next().value!);
     }
+  }
+
+  private hold(sessionId: string, record: ToolCallRecord): void {
+    const held = this.heldRecords.get(sessionId) ?? [];
+    this.heldRecords.delete(sessionId);
+    this.heldRecords.set(sessionId, held);
+    held.push(record);
+    this.heldCount++;
+    if (held.length > MAX_HELD_RECORDS_PER_SESSION) this.dropHeld(sessionId, held);
+    while (this.heldCount > MAX_HELD_RECORDS) {
+      const [oldestId, oldest] = this.heldRecords.entries().next().value!;
+      this.dropHeld(oldestId, oldest);
+    }
+  }
+
+  private dropHeld(sessionId: string, held: ToolCallRecord[]): void {
+    held.shift();
+    this.heldCount--;
+    if (held.length === 0) this.heldRecords.delete(sessionId);
+  }
+
+  private takeHeld(sessionId: string): ToolCallRecord[] {
+    const held = this.heldRecords.get(sessionId) ?? [];
+    this.heldRecords.delete(sessionId);
+    this.heldCount -= held.length;
+    return held;
   }
 
   private applyOutcome(record: ToolCallRecord, delta: 1 | -1): void {
@@ -470,8 +494,18 @@ export class SessionTracker implements Resettable {
       throw new Error('SessionTracker.adoptSessionId() requires a non-empty sessionId');
     }
     this.sessionId = sessionId;
-    const held = this.heldRecords.get(sessionId) ?? [];
-    this.heldRecords.clear();
+    for (const record of this.takeHeld(sessionId)) this.recordToolCall(record);
+  }
+
+  /**
+   * Adopts the right id after a wrong guess: drops every call counted for the
+   * guess and counts the calls held for `sessionId` instead. The other
+   * sessions' held calls stay until reset(), in case of a further correction.
+   */
+  correctSessionId(sessionId: string): void {
+    const held = this.takeHeld(sessionId);
+    this.clearCounts();
+    this.sessionId = sessionId;
     for (const record of held) this.recordToolCall(record);
   }
 
@@ -496,6 +530,12 @@ export class SessionTracker implements Resettable {
     this.sessionIntent = null;
     this.authoritativeName = false;
     this.sessionStartTime = Date.now();
+    this.heldRecords.clear();
+    this.heldCount = 0;
+    this.clearCounts();
+  }
+
+  private clearCounts(): void {
     this.toolCallCount = 0;
     this.toolErrorCount = 0;
     this.successCount = 0;
@@ -512,6 +552,5 @@ export class SessionTracker implements Resettable {
     this.timeline = [];
     this.timelineEntryCount = 0;
     this.amendable.clear();
-    this.heldRecords.clear();
   }
 }

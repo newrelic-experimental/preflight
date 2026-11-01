@@ -2977,7 +2977,7 @@ async function main(): Promise<void> {
     // re-registers the full tool set. Used both for the initial pending ->
     // real transition and for a later correction (see
     // startPpidCorrectionWatch below) — safe to call more than once:
-    // accumulated tracker metrics are preserved, and any already-live
+    // a first adoption keeps accumulated tracker metrics, and any already-live
     // NrIngestManager is stopped first so its harvest interval never leaks
     // on a second call.
     const adoptRealSessionId = async (
@@ -2996,7 +2996,8 @@ async function main(): Promise<void> {
         turnCostAttributor.reset(realId);
       }
       sessionTraceId = realId;
-      sessionTracker!.adoptSessionId(realId);
+      if (opts?.isCorrection) sessionTracker!.correctSessionId(realId);
+      else sessionTracker!.adoptSessionId(realId);
       // Now that the real id (and thus its transcript path) is known, resolve
       // and apply the authoritative name. On a correction this re-resolves
       // against the corrected id's own transcript, replacing any name derived
