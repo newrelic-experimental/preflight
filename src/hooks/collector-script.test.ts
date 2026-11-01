@@ -2093,6 +2093,22 @@ describe('collector-script', () => {
   // Per-session buffer paths + PPID breadcrumb
   // ---------------------------------------------------------------------------
 
+  describe('processHook() — failed buffer writes', () => {
+    it('installs one stderr error listener across repeated drops', () => {
+      mkdirSync(bufferPath);
+      const write = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        processHook(makePreToolUse());
+        const afterFirst = process.stderr.listenerCount('error');
+        for (let i = 0; i < 19; i++) processHook(makePreToolUse());
+        expect(write).toHaveBeenCalledTimes(20);
+        expect(process.stderr.listenerCount('error')).toBe(afterFirst);
+      } finally {
+        write.mockRestore();
+      }
+    });
+  });
+
   describe('getBufferPath()', () => {
     it('honours NEW_RELIC_AI_MCP_BUFFER_PATH verbatim and ignores sessionId', () => {
       const explicit = resolve(tmpDir, 'explicit.jsonl');

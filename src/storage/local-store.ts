@@ -818,7 +818,15 @@ export class LocalStore {
       const archivedPath = `${bufferPath}.archived-${now}`;
       try {
         renameSync(bufferPath, archivedPath);
-        sealHookBuffer(archivedPath);
+        try {
+          sealHookBuffer(archivedPath);
+        } catch (err) {
+          logger.warn('Failed to seal archived orphan buffer', {
+            sessionId,
+            archivedPath,
+            error: String(err),
+          });
+        }
         archived++;
         logger.info('Archived orphan buffer', { sessionId, archivedPath });
         // Only remove the heartbeat once the archive rename has succeeded.
@@ -1213,7 +1221,8 @@ export class LocalStore {
     for (const [sid, lines] of partitioned) {
       const target = resolve(this.storagePath, `buffer-${sid}.jsonl`);
       try {
-        appendToHookBuffer(target, lines.join('\n') + '\n');
+        // One append per line: a redo after a short write can repeat only one torn line.
+        for (const l of lines) appendToHookBuffer(target, l + '\n');
       } catch (err) {
         // Mid-partition failure: the .migrating file stays on disk so the
         // operator can recover forensically. We don't retry on next boot to

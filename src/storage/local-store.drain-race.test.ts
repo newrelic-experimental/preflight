@@ -11,9 +11,18 @@ const mockHooks: {
   drainRead: ((path: string) => void) | null;
   opened: ((path: string) => void) | null;
   write: ((text: string) => void) | null;
+  shortWrite: ((text: string) => number | null) | null;
   unlink: ((path: string) => void) | null;
   listOrder: ((dir: string, names: string[]) => string[]) | null;
-} = { rename: null, drainRead: null, opened: null, write: null, unlink: null, listOrder: null };
+} = {
+  rename: null,
+  drainRead: null,
+  opened: null,
+  write: null,
+  shortWrite: null,
+  unlink: null,
+  listOrder: null,
+};
 
 function textOf(data: unknown): string {
   return typeof data === 'string' ? data : Buffer.from(data as Uint8Array).toString('utf-8');
@@ -46,7 +55,13 @@ jest.mock('node:fs', () => {
       return fd;
     }) as typeof real.openSync,
     writeSync: ((fd: number, data: unknown, ...rest: unknown[]) => {
-      mockHooks.write?.(textOf(data));
+      const text = textOf(data);
+      mockHooks.write?.(text);
+      const short = mockHooks.shortWrite?.(text);
+      if (short !== null && short !== undefined) {
+        mockHooks.shortWrite = null;
+        return real.writeSync(fd, Buffer.from(text).subarray(0, short));
+      }
       return (real.writeSync as (fd: number, data: unknown, ...rest: unknown[]) => number)(
         fd,
         data,
@@ -161,6 +176,7 @@ afterEach(() => {
   mockHooks.drainRead = null;
   mockHooks.opened = null;
   mockHooks.write = null;
+  mockHooks.shortWrite = null;
   mockHooks.unlink = null;
   mockHooks.listOrder = null;
   jest.restoreAllMocks();
@@ -451,6 +467,23 @@ describe('hook writes racing a drain', () => {
     expect(tools(store.drainBuffer())).toEqual(['B']);
   });
 
+  it('still counts the archive and clears the heartbeat when the archive seal throws', () => {
+    fs.writeFileSync(bufferPath, line('A'));
+    const heartbeat = resolve(dir, `active-${SESSION}.pid`);
+    fs.writeFileSync(heartbeat, String(DEAD_PID));
+    mockHooks.write = (text) => {
+      if (!text.includes(SEAL)) return;
+      mockHooks.write = null;
+      throw new Error('ENOSPC: seal failed');
+    };
+
+    const result = new LocalStore(dir, SESSION).gcOrphanBuffers(new Set());
+
+    expect(result.archived).toBe(1);
+    expect(fs.existsSync(heartbeat)).toBe(false);
+    expect(JSON.stringify(warnings())).toContain('Failed to seal archived orphan buffer');
+  });
+
   it('returns a line written to a claim just before its seal, exactly once', () => {
     fs.writeFileSync(bufferPath, line('A'));
     const openBeforeDrain = fs.openSync(bufferPath, 'a');
@@ -491,6 +524,17 @@ describe('drain seals', () => {
     appendToHookBuffer(legacyPath, line('B'));
 
     expect(tools(store.peekAllBuffers()).sort()).toEqual(['A', 'B']);
+  });
+
+  it('migrates each legacy line once when a write comes up short', () => {
+    const legacyPath = resolve(dir, 'buffer.jsonl');
+    fs.writeFileSync(legacyPath, line('A') + line('B') + line('C'));
+    mockHooks.shortWrite = (text) => (text.includes('"A"') ? Math.floor(text.length / 2) : null);
+
+    new LocalStore(dir).migrateLegacyBuffer();
+    mockHooks.shortWrite = null;
+
+    expect(tools(new LocalStore(dir, SESSION).drainBuffer()).sort()).toEqual(['A', 'B', 'C']);
   });
 
   it('keeps the legacy migration file when an append cannot land', () => {

@@ -731,6 +731,8 @@ function getWindsurfToolInfo(data: HookInput): Record<string, unknown> {
  *   event — see isAntigravityPre below. Every other platform's payload names
  *   its event, and this argument is ignored for them.
  */
+let stderrSinkInstalled = false;
+
 function processHook(raw: string, cliEvent?: string): void {
   let data: HookInput;
   try {
@@ -1349,7 +1351,10 @@ function processHook(raw: string, cliEvent?: string): void {
     appendToHookBuffer(bufferPath, line);
   } catch (err) {
     // A closed stderr (EPIPE) must not turn a dropped event into a failed hook.
-    process.stderr.on('error', () => undefined);
+    if (!stderrSinkInstalled) {
+      stderrSinkInstalled = true;
+      process.stderr.on('error', () => undefined);
+    }
     try {
       process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}\n`);
     } catch {

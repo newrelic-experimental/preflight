@@ -539,6 +539,7 @@ function extractOutputMeta(toolName, output, input) {
 function getWindsurfToolInfo(data) {
   return data.tool_info !== null && typeof data.tool_info === "object" ? data.tool_info : {};
 }
+var stderrSinkInstalled = false;
 function processHook(raw, cliEvent) {
   let data;
   try {
@@ -889,7 +890,10 @@ function processHook(raw, cliEvent) {
     const line = JSON.stringify(event) + "\n";
     appendToHookBuffer(bufferPath, line);
   } catch (err) {
-    process.stderr.on("error", () => void 0);
+    if (!stderrSinkInstalled) {
+      stderrSinkInstalled = true;
+      process.stderr.on("error", () => void 0);
+    }
     try {
       process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}
 `);

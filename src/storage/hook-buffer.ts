@@ -114,7 +114,9 @@ export function readSealed(path: string): string {
     fd = openSync(path, constants.O_RDWR | constants.O_APPEND);
   } catch (err) {
     if (!READ_ONLY_CODES.has((err as NodeJS.ErrnoException).code)) throw err;
-    // No writer can open this file to append either, so no seal is needed.
+    // A writer running as the same user cannot open this file to append either, so no seal
+    // is needed. A writer with other credentials, or one whose fd opened before the
+    // permission change, can still append and lose that line.
     return textBeforeSeal(readFileSync(path, 'utf-8'));
   }
   try {
