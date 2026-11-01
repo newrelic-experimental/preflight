@@ -1170,7 +1170,7 @@ describe('HookEventProcessor', () => {
       expect(records[0]).toMatchObject({ success: true, durationMs: 180_000 });
     });
 
-    it("pairs a call in flight across replaceStore() and hands other sessions' calls back", () => {
+    it("pairs its own call in flight across replaceStore() and counts another session's once", () => {
       const processor = new HookEventProcessor({ store, onRecord, drainAllSessions: true });
       processor.processEvents([
         makePreEvent({ tool: 'Bash', toolUseId: 'toolu_swap', timestamp: 1000 }),
@@ -1178,61 +1178,25 @@ describe('HookEventProcessor', () => {
       ]);
 
       processor.replaceStore(new LocalStore(tmpDir, 'sess-001'), false);
+      expect(records).toMatchObject([{ sessionId: 'sess-other', errorType: 'timeout' }]);
       processor.processEvents([
         makePostEvent({ tool: 'Bash', toolUseId: 'toolu_swap', timestamp: 5000 }),
       ]);
+      processor.persistCountedIdsOfSavedSessions(['sess-other']);
       processor.stop();
-
-      expect(records).toHaveLength(1);
-      expect(records[0]).toMatchObject({
-        toolUseId: 'toolu_swap',
-        success: true,
-        durationMs: 4000,
-      });
-
       const otherStore = new LocalStore(tmpDir, 'sess-other');
       const owner = new HookEventProcessor({ store: otherStore, onRecord });
-      otherStore.appendToBuffer(
+      owner.processEvents([
         makePostEvent({ toolUseId: 'toolu_other', sessionId: 'sess-other', timestamp: 9500 }),
-      );
-      owner.processEvents(otherStore.drainBuffer());
-      owner.stop();
-
-      expect(records).toHaveLength(2);
-      expect(records[1]).toMatchObject({
-        toolUseId: 'toolu_other',
-        sessionId: 'sess-other',
-        success: true,
-        durationMs: 8000,
-      });
-      expect(otherStore.hasCountedToolUseId('sess-other', 'toolu_other')).toBe(false);
-    });
-
-    it('keeps a call whose hand-back fails, and counts it once as a timeout', () => {
-      const processor = new HookEventProcessor({ store, onRecord, drainAllSessions: true });
-      mkdirSync(resolve(tmpDir, 'buffer-sess-other.jsonl'));
-      processor.processEvents([makePreEvent({ sessionId: 'sess-other' })]);
-      processor.replaceStore(new LocalStore(tmpDir, 'sess-001'), false);
-      processor.stop();
-
-      expect(records).toMatchObject([{ sessionId: 'sess-other', errorType: 'timeout' }]);
-    });
-
-    it("hands back a call awaiting the user's permission so its owner can still reject it", () => {
-      const processor = new HookEventProcessor({ store, onRecord, drainAllSessions: true });
-      processor.processEvents([
-        makePreEvent({ sessionId: 'sess-other', timestamp: 1000 }),
-        { mode: 'permission_request', tool: 'Read', timestamp: 1100, toolUseId: 'toolu_001' },
       ]);
-      processor.replaceStore(new LocalStore(tmpDir, 'sess-001'), false);
-      processor.stop();
-
-      const otherStore = new LocalStore(tmpDir, 'sess-other');
-      const owner = new HookEventProcessor({ store: otherStore, onRecord });
-      owner.processEvents(otherStore.drainBuffer());
       owner.stop();
 
-      expect(records.map((r) => [r.sessionId, r.errorType])).toEqual([['sess-other', 'rejected']]);
+      expect(records).toMatchObject([
+        { toolUseId: 'toolu_other', sessionId: 'sess-other', errorType: 'timeout' },
+        { toolUseId: 'toolu_swap', sessionId: 'sess-001', success: true, durationMs: 4000 },
+      ]);
+      expect(records).toHaveLength(2);
+      expect(existsSync(resolve(tmpDir, 'buffer-sess-other.jsonl'))).toBe(false);
     });
 
     it('counts a call in flight across a clean exit and restart once', () => {

@@ -211,21 +211,6 @@ export class LocalStore {
     }
   }
 
-  /** Appends events to another session's buffer, for the process that drains it. */
-  appendToSessionBuffer(sessionId: string, events: readonly HookEvent[]): boolean {
-    if (!SESSION_ID_RE.test(sessionId)) return false;
-    const lines = events.map((event) => JSON.stringify(event) + '\n').join('');
-    try {
-      appendFileSync(resolve(this.storagePath, `buffer-${sessionId}.jsonl`), lines, {
-        mode: 0o600,
-      });
-      return true;
-    } catch (err) {
-      logger.warn('Failed to append to session buffer', { sessionId, error: String(err) });
-      return false;
-    }
-  }
-
   /**
    * Atomically drain all events from the buffer file.
    * Renames the file to a temp path (atomic on POSIX), reads it, then deletes.

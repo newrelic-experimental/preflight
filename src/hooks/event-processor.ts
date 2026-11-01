@@ -616,25 +616,16 @@ export class HookEventProcessor {
    * Hot-swap the underlying LocalStore and session-drain mode without
    * recreating the processor or its callbacks. Used when the provisional
    * unscoped store is replaced by the real session-scoped store once the
-   * Claude Code session ID is resolved asynchronously.
+   * Claude Code session ID is resolved asynchronously. A scoped store never
+   * drains another session's post, so that session's pending pres count once
+   * now, as timeouts, like a call in flight across a restart.
    */
   replaceStore(newStore: LocalStore, drainAllSessions: boolean): void {
     this.halt();
-    if (!drainAllSessions) this.handBackOtherSessionsPending(newStore.getSessionId());
+    if (!drainAllSessions) this.flushPending(newStore.getSessionId());
     this.store = newStore;
     this.drainAllSessions = drainAllSessions;
     this.start();
-  }
-
-  private handBackOtherSessionsPending(keptSessionId: string | null): void {
-    for (const [key, { event, phase }] of this.pending) {
-      const { sessionId, toolUseId, tool, timestamp } = event;
-      if (sessionId === undefined || sessionId === keptSessionId) continue;
-      const events: HookEvent[] = [event];
-      if (phase === 'permission_requested' && toolUseId !== undefined)
-        events.push({ mode: 'permission_request', tool, timestamp, toolUseId, sessionId });
-      if (this.store.appendToSessionBuffer(sessionId, events)) this.pending.delete(key);
-    }
   }
 
   /**
@@ -998,11 +989,14 @@ export class HookEventProcessor {
     }
   }
 
-  private flushPending(): void {
+  private flushPending(keptSessionId?: string | null): void {
     for (const [key, entry] of this.pending) {
+      const { sessionId } = entry.event;
+      if (keptSessionId !== undefined && (sessionId === undefined || sessionId === keptSessionId))
+        continue;
+      this.pending.delete(key);
       this.emitUnpairedPreRecord(key, entry);
     }
-    this.pending.clear();
   }
 
   private pairingKey(event: PreHookEvent): string {
