@@ -1166,80 +1166,118 @@ describe('stdio integration', () => {
     }
   }, 30000);
 
-  it('saves a call a pending engine drained for another session under that session, not its own', async () => {
-    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
-    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
-
-    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
-    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-pending-other-session-'));
-    const ownId = 'own-real-session';
-    const otherId = 'other-real-session';
-    const otherBuffer = resolve(tmpStoragePath, `buffer-${otherId}.jsonl`);
-    const now = Date.now();
-    writeFileSync(
-      otherBuffer,
-      [
-        { mode: 'pre', tool: 'Read', timestamp: now, sessionId: otherId, toolUseId: 'toolu_s2' },
-        {
-          mode: 'post',
-          tool: 'Read',
-          timestamp: now + 5,
-          sessionId: otherId,
-          toolUseId: 'toolu_s2',
-        },
-      ]
-        .map((e) => JSON.stringify(e) + '\n')
-        .join(''),
-    );
-    const sessionFile = (id: string): Record<string, unknown> | null => {
-      const dir = resolve(tmpStoragePath, 'sessions');
-      const name = existsSync(dir)
-        ? readdirSync(dir).find((f) => f.endsWith(`_${id}.json`))
-        : undefined;
-      return name
-        ? (JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) as Record<string, unknown>)
-        : null;
-    };
-    const waitFor = async (predicate: () => boolean): Promise<boolean> => {
-      for (let i = 0; i < 40; i++) {
-        if (predicate()) return true;
-        await new Promise((r) => setTimeout(r, 250));
-      }
-      return false;
-    };
-
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
-    const transport = new StdioClientTransport({
-      command: 'node',
-      args: [binPath, '--stdio'],
-      env: {
-        ...env,
-        NR_AI_DASHBOARD_PORT: '0',
-        NR_AI_MODE: 'local',
-        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
-      },
+  describe('an engine that adopts its session after draining others', () => {
+    const storages: string[] = [];
+    afterEach(() => {
+      for (const dir of storages.splice(0)) rmSync(dir, { recursive: true, force: true });
     });
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    try {
-      await client.connect(transport);
-      expect(await waitFor(() => !existsSync(otherBuffer))).toBe(true);
-
-      const breadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
-      mkdirSync(breadcrumbDir, { recursive: true });
-      writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), ownId);
-      const ownHeartbeat = resolve(tmpStoragePath, `active-${ownId}.pid`);
-      expect(await waitFor(() => existsSync(ownHeartbeat))).toBe(true);
-
+    const makeStorage = (): string => {
+      const dir = mkdtempSync(join(tmpdir(), 'nr-adopt-'));
+      storages.push(dir);
+      mkdirSync(resolve(dir, 'session-by-ppid'), { recursive: true });
+      return dir;
+    };
+    const startEngine = async (storage: string, cwd?: string, persistMs?: string) => {
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+      const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+      const env = { ...process.env };
+      delete env.CLAUDE_JOB_DIR;
+      const client = new Client({ name: 'test-client', version: '1.0.0' });
+      await client.connect(
+        new StdioClientTransport({
+          command: 'node',
+          args: [resolve(__dirname, '..', 'dist', 'index.js'), '--stdio'],
+          ...(cwd !== undefined && { cwd }),
+          env: {
+            ...env,
+            NR_AI_DASHBOARD_PORT: '0',
+            NR_AI_MODE: 'local',
+            NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
+            ...(persistMs !== undefined && { NR_AI_SESSION_PERSIST_INTERVAL_MS: persistMs }),
+          },
+        }),
+      );
+      return client;
+    };
+    const waitFor = async (predicate: () => boolean): Promise<void> => {
+      for (let i = 0; i < 40 && !predicate(); i++) await new Promise((r) => setTimeout(r, 250));
+      expect(predicate()).toBe(true);
+    };
+    const savedCalls = (storage: string, id: string): unknown => {
+      const dir = resolve(storage, 'sessions');
+      const name = existsSync(dir) ? readdirSync(dir).find((f) => f.endsWith(`_${id}.json`)) : '';
+      return name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')).toolCallCount : null;
+    };
+    const drainCalls = async (storage: string, sessionId: string, count: number) => {
+      const buffer = resolve(storage, `buffer-${sessionId}.jsonl`);
+      const lines = Array.from({ length: count }, (_, n) => {
+        const call = {
+          tool: 'Read',
+          timestamp: Date.now() + n,
+          sessionId,
+          toolUseId: `toolu_${n}`,
+        };
+        return [
+          { mode: 'pre', ...call },
+          { mode: 'post', ...call, success: true },
+        ];
+      });
+      writeFileSync(
+        buffer,
+        lines
+          .flat()
+          .map((e) => JSON.stringify(e) + '\n')
+          .join(''),
+      );
+      await waitFor(() => !existsSync(buffer));
+    };
+    const adoptAndStop = async (
+      storage: string,
+      client: { close(): Promise<void> },
+      id: string,
+    ) => {
+      const heartbeat = resolve(storage, `active-${id}.pid`);
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), id);
+      await waitFor(() => existsSync(heartbeat));
       await client.close();
-      expect(await waitFor(() => !existsSync(ownHeartbeat))).toBe(true);
+      await waitFor(() => !existsSync(heartbeat));
+    };
 
-      expect(sessionFile(otherId)?.toolCallCount).toBe(1);
-      expect(sessionFile(ownId)?.toolCallCount ?? 0).toBe(0);
-    } finally {
-      rmSync(tmpStoragePath, { recursive: true, force: true });
-    }
-  }, 30000);
+    it('saves a call drained for another session under that session, not its own', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      await drainCalls(storage, 'other-real-session', 1);
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedCalls(storage, 'other-real-session')).toBe(1);
+      expect(savedCalls(storage, 'own-real-session') ?? 0).toBe(0);
+    }, 30000);
+
+    it('counts its own calls once when it saved them before adopting their session', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage, undefined, '200');
+      await drainCalls(storage, 'own-real-session', 2);
+      await waitFor(() => savedCalls(storage, 'own-real-session') === 2);
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedCalls(storage, 'own-real-session')).toBe(2);
+    }, 30000);
+
+    it("saves the guessed session's calls when the ppid breadcrumb corrects the guess", async () => {
+      const storage = makeStorage();
+      const cwd = mkdtempSync(join(tmpdir(), 'nr-adopt-cwd-'));
+      storages.push(cwd);
+      mkdirSync(resolve(storage, 'session-by-cwd'));
+      const breadcrumb = `${realpathSync(cwd).replace(/[\\/:]/g, '-')}.txt`;
+      writeFileSync(resolve(storage, 'session-by-cwd', breadcrumb), 'guessed-session');
+      const client = await startEngine(storage, cwd);
+      await drainCalls(storage, 'guessed-session', 1);
+      await adoptAndStop(storage, client, 'corrected-session');
+
+      expect(savedCalls(storage, 'guessed-session')).toBe(1);
+      expect(savedCalls(storage, 'corrected-session') ?? 0).toBe(0);
+    }, 30000);
+  });
 
   describe('nr_observe_install_hooks while the session is still pending', () => {
     async function withPendingServer(
