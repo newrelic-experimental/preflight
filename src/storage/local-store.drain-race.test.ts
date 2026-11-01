@@ -10,9 +10,16 @@ const mockHooks: {
   rename: ((from: fs.PathLike, to: fs.PathLike) => void) | null;
   drainRead: ((path: string) => void) | null;
   opened: ((path: string) => void) | null;
+  write: ((text: string) => void) | null;
   unlink: ((path: string) => void) | null;
   listOrder: ((dir: string, names: string[]) => string[]) | null;
-} = { rename: null, drainRead: null, opened: null, unlink: null, listOrder: null };
+} = { rename: null, drainRead: null, opened: null, write: null, unlink: null, listOrder: null };
+
+const SEAL = '\0preflight-drain-seal\n';
+
+function textOf(data: unknown): string {
+  return typeof data === 'string' ? data : Buffer.from(data as Uint8Array).toString('utf-8');
+}
 
 const DRAIN_PATH_RE = /\.drain|[\\/]drains[\\/]/;
 
@@ -40,6 +47,18 @@ jest.mock('node:fs', () => {
       mockHooks.opened?.(String(path));
       return fd;
     }) as typeof real.openSync,
+    writeSync: ((fd: number, data: unknown, ...rest: unknown[]) => {
+      mockHooks.write?.(textOf(data));
+      return (real.writeSync as (fd: number, data: unknown, ...rest: unknown[]) => number)(
+        fd,
+        data,
+        ...rest,
+      );
+    }) as typeof real.writeSync,
+    writeFileSync: ((file: fs.PathOrFileDescriptor, data: unknown, options?: unknown) => {
+      if (typeof file === 'number') mockHooks.write?.(textOf(data));
+      (real.writeFileSync as (f: unknown, d: unknown, o?: unknown) => void)(file, data, options);
+    }) as typeof real.writeFileSync,
     unlinkSync: (path: fs.PathLike) => {
       const hook = mockHooks.unlink;
       mockHooks.unlink = null;
@@ -147,6 +166,7 @@ afterEach(() => {
   mockHooks.rename = null;
   mockHooks.drainRead = null;
   mockHooks.opened = null;
+  mockHooks.write = null;
   mockHooks.unlink = null;
   mockHooks.listOrder = null;
   jest.restoreAllMocks();
@@ -421,10 +441,14 @@ describe('hook writes racing a drain', () => {
     expect(leftovers()).toEqual([]);
   });
 
-  it('returns a line written to a claim just before its unlink, exactly once', () => {
+  it('returns a line written to a claim just before its seal, exactly once', () => {
     fs.writeFileSync(bufferPath, line('A'));
     const openBeforeDrain = fs.openSync(bufferPath, 'a');
-    mockHooks.unlink = () => fs.writeSync(openBeforeDrain, line('B'));
+    mockHooks.write = (text) => {
+      if (!text.includes(SEAL)) return;
+      mockHooks.write = null;
+      fs.writeSync(openBeforeDrain, line('B'));
+    };
     const drainer = new LocalStore(dir, SESSION);
 
     const got = [...drainer.drainBuffer(), ...drainer.drainBuffer()];
@@ -432,5 +456,47 @@ describe('hook writes racing a drain', () => {
 
     expect(tools(got)).toEqual(['A', 'B']);
     expect(leftovers()).toEqual([]);
+  });
+});
+
+describe('drain seals', () => {
+  it('peekAllBuffers counts only the lines before a claim seal', () => {
+    writeClaim(OTHER_LIVE_PID, Date.now(), line('A') + SEAL + line('B'));
+    fs.writeFileSync(bufferPath, line('B'));
+
+    expect(tools(new LocalStore(dir).peekAllBuffers()).sort()).toEqual(['A', 'B']);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('keeps a hook line written to the legacy buffer after migration read it', () => {
+    const legacyPath = resolve(dir, 'buffer.jsonl');
+    fs.writeFileSync(legacyPath, line('A'));
+    const store = new LocalStore(dir);
+    mockHooks.write = (text) => {
+      if (!text.includes('"B"')) return;
+      mockHooks.write = null;
+      store.migrateLegacyBuffer();
+    };
+
+    appendToHookBuffer(legacyPath, line('B'));
+
+    expect(tools(store.peekAllBuffers()).sort()).toEqual(['A', 'B']);
+  });
+
+  it('keeps the legacy migration file when an append cannot land', () => {
+    const legacyPath = resolve(dir, 'buffer.jsonl');
+    fs.writeFileSync(legacyPath, line('A'));
+    const drainer = new LocalStore(dir, SESSION);
+    mockHooks.write = (text) => {
+      if (text.includes('"A"')) drainer.drainBuffer();
+    };
+
+    new LocalStore(dir).migrateLegacyBuffer();
+    mockHooks.write = null;
+
+    expect(fs.readdirSync(dir).filter((n) => n.startsWith('buffer.jsonl.migrating-'))).toHaveLength(
+      1,
+    );
+    expect(warnings()).not.toEqual([]);
   });
 });
