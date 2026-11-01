@@ -1212,10 +1212,8 @@ describe('HookEventProcessor', () => {
       expect(records).toHaveLength(1);
       expect(records[0]!.errorType).toBe('timeout'); // eviction emits a timeout record
 
-      // toolu_0's post produces an orphaned-post record (no matching pre in pending)
       processor.processEvents([makePostEvent({ toolUseId: 'toolu_0', timestamp: 2000 })]);
-      expect(records).toHaveLength(2);
-      expect(records[1]!.durationMs).toBeNull(); // orphaned post — no matching pre
+      expect(records).toHaveLength(1);
 
       // toolu_1 through toolu_3 still pair normally
       records.length = 0;

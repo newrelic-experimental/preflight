@@ -10,7 +10,8 @@
  *   - Permission-requested pre events (PermissionRequest seen, then nothing —
  *     Claude Code fires no hook event for an interactive user rejection)
  *     without a post within PERMISSION_REQUESTED_TIMEOUT_MS → rejected record
- *   - Post events without a matching pre → record with durationMs: null
+ *   - Post events without a matching pre → record with durationMs: null, unless
+ *     the pre was already counted by one of the records above
  */
 
 import { randomUUID } from 'node:crypto';
@@ -330,8 +331,7 @@ const TOKEN_SOURCE_PLATFORM: ReadonlyMap<string, string> = new Map([
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_ORPHAN_TIMEOUT_MS = 60_000;
 // Permission prompts legitimately dwell — a user thinking for 90 seconds is
-// common, while an approval arriving after 5 minutes is rare enough to accept
-// as a post-without-pre record instead.
+// common, while an approval arriving after 5 minutes is rare.
 const PERMISSION_REQUESTED_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_PENDING = 2_000;
 
@@ -344,6 +344,28 @@ const DEFAULT_MAX_PENDING = 2_000;
 interface PendingEntry {
   readonly event: PreHookEvent;
   readonly phase: 'awaiting_post' | 'permission_requested';
+}
+
+function findOldestFallbackKey(
+  entries: ReadonlyMap<string, PendingEntry>,
+  post: PostHookEvent,
+): string | undefined {
+  let oldestKey: string | undefined;
+  let oldestTimestamp = Infinity;
+  for (const [k, { event: pre }] of entries) {
+    // Only fallback-keyed entries ("Tool:timestamp:uuid"), so a post without a
+    // toolUseId never steals the slot of a later post that carries one.
+    if (
+      k.startsWith(`${pre.tool}:`) &&
+      pre.tool.toLowerCase() === post.tool.toLowerCase() &&
+      pre.sessionId === post.sessionId &&
+      pre.timestamp < oldestTimestamp
+    ) {
+      oldestKey = k;
+      oldestTimestamp = pre.timestamp;
+    }
+  }
+  return oldestKey;
 }
 
 export class HookEventProcessor {
@@ -419,6 +441,7 @@ export class HookEventProcessor {
   private readonly tokenDedupRegistry = new DedupRingRegistry(50, 4096);
 
   private readonly pending: Map<string, PendingEntry> = new Map();
+  private readonly countedUnpaired: Map<string, PendingEntry> = new Map();
   private readonly maxPendingEvents: number;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -573,6 +596,7 @@ export class HookEventProcessor {
     // or when stop() is called without start(). A second call on an already-empty
     // pending map is a no-op.
     this.flushPending();
+    this.persistCountedUnpaired();
   }
 
   /**
@@ -755,10 +779,17 @@ export class HookEventProcessor {
     // collide — the counter in pairingKey() gives each pre-event a unique key.
     const key =
       toolUseId ??
-      this.findOldestPendingKey(event.tool) ??
+      findOldestFallbackKey(this.pending, event) ??
       `${event.tool}:${event.timestamp}:${randomUUID()}`;
     const preEvent = this.pending.get(key)?.event;
     this.pending.delete(key);
+    if (!preEvent && this.consumeCountedUnpaired(event)) {
+      logger.debug('Late post for a pre already counted unpaired — dropped', {
+        tool: event.tool,
+        key,
+      });
+      return;
+    }
 
     if (preEvent) {
       // Matched pair
@@ -872,6 +903,11 @@ export class HookEventProcessor {
    * back ('timeout').
    */
   private emitUnpairedPreRecord(key: string, entry: PendingEntry): void {
+    if (this.countedUnpaired.size >= this.maxPendingEvents) {
+      const oldest = this.countedUnpaired.keys().next().value;
+      if (oldest !== undefined) this.countedUnpaired.delete(oldest);
+    }
+    this.countedUnpaired.set(key, entry);
     const event = entry.event;
     const toolFields = parseToolSpecificFields(event.tool, event.toolInput, undefined);
     const toolUseId = event.toolUseId ?? key;
@@ -927,25 +963,28 @@ export class HookEventProcessor {
     return `${event.tool}:${event.timestamp}:${randomUUID()}`;
   }
 
-  private findOldestPendingKey(tool: string): string | undefined {
-    let oldestKey: string | undefined;
-    let oldestTimestamp = Infinity;
-    for (const [k, entry] of this.pending) {
-      const v = entry.event;
-      // Only match fallback-keyed entries (format: "Tool:timestamp:uuid") — skip
-      // entries keyed by their real toolUseId so a no-toolUseId post event doesn't
-      // steal a slot that belongs to a later post event that carries that toolUseId.
-      const isFallbackKey = k.startsWith(`${v.tool}:`);
-      if (
-        v.tool.toLowerCase() === tool.toLowerCase() &&
-        isFallbackKey &&
-        v.timestamp < oldestTimestamp
-      ) {
-        oldestKey = k;
-        oldestTimestamp = v.timestamp;
-      }
+  private consumeCountedUnpaired(event: PostHookEvent): boolean {
+    const key = event.toolUseId ?? findOldestFallbackKey(this.countedUnpaired, event);
+    if (key !== undefined && this.countedUnpaired.delete(key)) return true;
+    return (
+      event.toolUseId !== undefined &&
+      event.sessionId !== undefined &&
+      this.store.hasCountedToolUseId(event.sessionId, event.toolUseId)
+    );
+  }
+
+  private persistCountedUnpaired(): void {
+    const idsBySession = new Map<string, string[]>();
+    for (const [key, { event }] of this.countedUnpaired) {
+      // Fallback keys are random per process, so another process cannot match them.
+      if (event.sessionId === undefined || event.toolUseId !== key) continue;
+      const ids = idsBySession.get(event.sessionId) ?? [];
+      ids.push(key);
+      idsBySession.set(event.sessionId, ids);
     }
-    return oldestKey;
+    for (const [sessionId, ids] of idsBySession) {
+      this.store.rememberCountedToolUseIds(sessionId, ids);
+    }
   }
 
   private handleSubagentTokenEvent(event: SubagentTokenHookEvent): void {

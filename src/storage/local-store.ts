@@ -41,6 +41,18 @@ const PARENT_TRANSCRIPT_CURSOR_RE = /^\.parent-transcript-pos-(.+)$/;
  */
 const ORPHAN_BUFFER_MTIME_MS = 5 * 60 * 1000;
 
+const MAX_COUNTED_TOOL_USE_IDS = 256;
+
+function readCountedToolUseIds(path: string): string[] {
+  if (!existsSync(path)) return [];
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * The on-disk shape of `local-dashboard.pid` and `local-instances/<pid>.json`
  * — both self-written by this same class. Every field stays `unknown`; every
@@ -245,6 +257,30 @@ export class LocalStore {
       }
     }
     return all;
+  }
+
+  rememberCountedToolUseIds(sessionId: string, toolUseIds: readonly string[]): void {
+    if (!SESSION_ID_RE.test(sessionId) || toolUseIds.length === 0) return;
+    const path = this.countedToolUseIdsPath(sessionId);
+    const merged = [...new Set([...readCountedToolUseIds(path), ...toolUseIds])].slice(
+      -MAX_COUNTED_TOOL_USE_IDS,
+    );
+    const tmpPath = `${path}.${process.pid}.tmp`;
+    try {
+      writeFileSync(tmpPath, JSON.stringify(merged), { mode: 0o600 });
+      renameSync(tmpPath, path);
+    } catch (err) {
+      logger.warn('Failed to save counted toolUseIds', { sessionId, error: String(err) });
+    }
+  }
+
+  hasCountedToolUseId(sessionId: string, toolUseId: string): boolean {
+    if (!SESSION_ID_RE.test(sessionId)) return false;
+    return readCountedToolUseIds(this.countedToolUseIdsPath(sessionId)).includes(toolUseId);
+  }
+
+  private countedToolUseIdsPath(sessionId: string): string {
+    return resolve(this.storagePath, `counted-${sessionId}.json`);
   }
 
   /**

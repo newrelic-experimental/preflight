@@ -11,6 +11,7 @@ import type { MetricAggregator } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import {
   DEGENERATE_NAMES,
+  isUnscopedAggregatorSessionId,
   shouldReplaceSessionName,
   type SessionNameSource,
 } from '../hooks/session-resolver.js';
@@ -171,6 +172,8 @@ export class SessionTracker implements Resettable {
   private readonly bashCallsByCategory = new Map<string, number>();
   private timeline: TimelineEntry[] = [];
   private timelineEntryCount = 0;
+  // A pending engine drains every session's buffer before it knows its own id.
+  private heldRecords: ToolCallRecord[] = [];
 
   constructor(sessionId: string) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -183,6 +186,16 @@ export class SessionTracker implements Resettable {
   }
 
   recordToolCall(record: ToolCallRecord): void {
+    if (
+      record.sessionId &&
+      record.sessionId !== this.sessionId &&
+      !isUnscopedAggregatorSessionId(this.sessionId)
+    ) {
+      if (this.sessionId.startsWith('pending-') && this.heldRecords.length < MAX_TIMELINE_ENTRIES) {
+        this.heldRecords.push(record);
+      }
+      return;
+    }
     this.toolCallCount++;
 
     // FALLBACK naming only: an authoritative name (job-state title or
@@ -410,6 +423,9 @@ export class SessionTracker implements Resettable {
       throw new Error('SessionTracker.adoptSessionId() requires a non-empty sessionId');
     }
     this.sessionId = sessionId;
+    const held = this.heldRecords;
+    this.heldRecords = [];
+    for (const record of held) this.recordToolCall(record);
   }
 
   /**
@@ -448,5 +464,6 @@ export class SessionTracker implements Resettable {
     this.bashCallsByCategory.clear();
     this.timeline = [];
     this.timelineEntryCount = 0;
+    this.heldRecords = [];
   }
 }

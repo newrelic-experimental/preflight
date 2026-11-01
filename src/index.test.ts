@@ -1668,8 +1668,9 @@ describe('stdio integration', () => {
         const before = (await readStats()).tool_calls;
         const toolUseId = `toolu_drain_${++toolUseCount}`;
         const ts = Date.now();
+        const bufferPath = resolve(storagePath, `buffer-${bufferSessionId}.jsonl`);
         appendFileSync(
-          resolve(storagePath, `buffer-${bufferSessionId}.jsonl`),
+          bufferPath,
           [
             { mode: 'pre', tool: 'Bash', timestamp: ts, sessionId, toolUseId },
             { mode: 'post', tool: 'Bash', timestamp: ts + 1, sessionId, toolUseId, success: true },
@@ -1678,8 +1679,12 @@ describe('stdio integration', () => {
             .join('\n') + '\n',
           { mode: 0o600 },
         );
+        const drained = async (): Promise<boolean> =>
+          sessionId === bufferSessionId
+            ? (await readStats()).tool_calls > before
+            : !existsSync(bufferPath);
         for (let i = 0; i < 100; i++) {
-          if ((await readStats()).tool_calls > before) return;
+          if (await drained()) return;
           await new Promise((r) => setTimeout(r, 20));
         }
         throw new Error(`engine never drained the tool call under ${sessionId}`);

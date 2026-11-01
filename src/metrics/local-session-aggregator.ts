@@ -614,9 +614,11 @@ export class LocalSessionAggregator {
     outcome: string;
     repoResolver: RepoNameResolver;
     toolSelectionScorer: ToolSelectionScorer;
+    exceptSessionId?: string;
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
+      if (rollup.sessionId === context.exceptSessionId) continue;
       if (!hasAttributableActivity(rollup)) continue;
       const models = [...rollup.models];
       rollup.lastEmittedCost = {
