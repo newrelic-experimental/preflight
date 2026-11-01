@@ -3008,6 +3008,25 @@ async function main(): Promise<void> {
         contextCompositionTracker.reset(realId);
         turnCostAttributor.reset(realId);
       }
+      // Replace the current LocalStore with one scoped to the real id.
+      const realLocalStore = new LocalStore(config!.storagePath, realId);
+      realLocalStore.initialize();
+      realLocalStore.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
+        value: config!.companionMode,
+        source: config!.companionModeSource,
+      });
+      localStoreForShutdown = realLocalStore;
+      try {
+        realLocalStore.migrateLegacyBuffer();
+      } catch (err) {
+        logger.warn('Legacy buffer migration failed (continuing)', { error: String(err) });
+      }
+
+      // Hot-swap the event processor to the scoped store so it only drains
+      // this session's events going forward. Its final drain runs before the
+      // tracker adopts realId, so adoptSessionId() replays what it drains.
+      eventProcessor!.replaceStore(realLocalStore, false);
+
       sessionTraceId = realId;
       sessionTracker!.adoptSessionId(
         realId,
@@ -3029,23 +3048,6 @@ async function main(): Promise<void> {
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
       if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
 
-      // Replace the current LocalStore with one scoped to the real id.
-      const realLocalStore = new LocalStore(config!.storagePath, realId);
-      realLocalStore.initialize();
-      realLocalStore.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
-        value: config!.companionMode,
-        source: config!.companionModeSource,
-      });
-      localStoreForShutdown = realLocalStore;
-      try {
-        realLocalStore.migrateLegacyBuffer();
-      } catch (err) {
-        logger.warn('Legacy buffer migration failed (continuing)', { error: String(err) });
-      }
-
-      // Hot-swap the event processor to the scoped store so it only drains
-      // this session's events going forward.
-      eventProcessor!.replaceStore(realLocalStore, false);
       if (savesOtherSessions) {
         try {
           saveObservedSessions('in progress', (id) =>
