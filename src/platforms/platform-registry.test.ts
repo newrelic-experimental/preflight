@@ -99,7 +99,7 @@ afterEach(() => {
 class FakeAdapter implements PlatformAdapter {
   readonly platformName: string;
   readonly visibilityLevel = 'full-hooks' as const;
-  readonly capabilities = { instructionFilePaths: [], sessionBreadcrumbWriters: [] };
+  readonly capabilities = { instructionFilePaths: [] };
   private readonly supported: boolean;
 
   constructor(name: string, supported: boolean) {
@@ -179,7 +179,7 @@ describe('PlatformRegistry', () => {
       const mutableAdapter: PlatformAdapter = {
         platformName: 'mutable',
         visibilityLevel: 'full-hooks',
-        capabilities: { instructionFilePaths: [], sessionBreadcrumbWriters: [] },
+        capabilities: { instructionFilePaths: [] },
         async initialize() {},
         normalizeToolCall() {
           return {
