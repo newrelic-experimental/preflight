@@ -149,6 +149,7 @@ export interface FullSessionSummary extends SessionSummary {
    * path in the aggregate route.
    */
   readonly costByDayUsd?: Record<string, number>;
+  readonly firstActivityByDayMs?: Record<string, number>;
   /** Subagent-attributed cost by local-day key; today-scoped counterpart to
    * `subagentCostUsd`. Optional for the same backward-compat reason as
    * `costByDayUsd`. */
@@ -476,6 +477,15 @@ function addRecord(
   return out;
 }
 
+function minRecord(
+  a: Readonly<Record<string, number>>,
+  b: Readonly<Record<string, number>>,
+): Record<string, number> {
+  const out: Record<string, number> = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = Math.min(out[k] ?? v, v);
+  return out;
+}
+
 /** Per-key `a - b`, clamped at zero. */
 function subtractRecord(
   a: Readonly<Record<string, number>>,
@@ -570,6 +580,10 @@ export function mergeSummaries(
     existing.subagentCostByDayUsd,
     incoming.subagentCostByDayUsd,
   );
+  const firstActivityByDayMs =
+    existing.firstActivityByDayMs === undefined && incoming.firstActivityByDayMs === undefined
+      ? undefined
+      : minRecord(existing.firstActivityByDayMs ?? {}, incoming.firstActivityByDayMs ?? {});
 
   const unpricedByModel = mergeCallUsageMax(existing.unpricedByModel, incoming.unpricedByModel);
   const estimatedByModel = mergeCallUsageMax(existing.estimatedByModel, incoming.estimatedByModel);
@@ -678,6 +692,7 @@ export function mergeSummaries(
     subagentCostUsd: maxNum(existing.subagentCostUsd, incoming.subagentCostUsd),
     ...(costByDayUsd !== undefined ? { costByDayUsd } : {}),
     ...(subagentCostByDayUsd !== undefined ? { subagentCostByDayUsd } : {}),
+    ...(firstActivityByDayMs !== undefined ? { firstActivityByDayMs } : {}),
     ...(unpricedByModel !== undefined ? { unpricedByModel } : {}),
     ...(estimatedByModel !== undefined ? { estimatedByModel } : {}),
     ...(byteEstimates !== undefined ? { byteEstimates } : {}),
@@ -1258,6 +1273,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     estimatedCostUsd: costMetrics?.sessionTotalCostUsd ?? null,
     subagentCostUsd: costMetrics?.subagentCostUsd ?? 0,
     costByDayUsd: costMetrics?.costByDayUsd ?? {},
+    ...(costMetrics ? { firstActivityByDayMs: costMetrics.firstActivityByDayMs } : {}),
     subagentCostByDayUsd: costMetrics?.subagentCostByDayUsd ?? {},
     ...(costMetrics && Object.keys(costMetrics.unpricedByModel).length > 0
       ? { unpricedByModel: costMetrics.unpricedByModel }
@@ -1389,6 +1405,7 @@ interface SerializedFullSessionSummary {
   readonly estimatedCostUsd?: unknown;
   readonly subagentCostUsd?: unknown;
   readonly costByDayUsd?: unknown;
+  readonly firstActivityByDayMs?: unknown;
   readonly subagentCostByDayUsd?: unknown;
   readonly unpricedByModel?: unknown;
   readonly estimatedByModel?: unknown;
@@ -1780,6 +1797,7 @@ export function deserializeFullSessionSummary(
     estimatedCostUsd: typeof obj.estimatedCostUsd === 'number' ? obj.estimatedCostUsd : null,
     subagentCostUsd: typeof obj.subagentCostUsd === 'number' ? obj.subagentCostUsd : 0,
     costByDayUsd: parseNumberRecord(obj.costByDayUsd),
+    firstActivityByDayMs: parseNumberRecord(obj.firstActivityByDayMs),
     subagentCostByDayUsd: parseNumberRecord(obj.subagentCostByDayUsd),
     unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
     estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),

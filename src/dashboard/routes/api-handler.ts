@@ -1455,6 +1455,24 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
   return { counts, sessionIds: idsByStatus };
 }
 
+function firstActivityTodayMs(
+  s: {
+    readonly firstActivityByDayMs?: Record<string, number>;
+    readonly timeline?: ReadonlyArray<{ timestamp: number }>;
+  },
+  todayKey: string,
+  startMs: number,
+): number | null {
+  if (s.firstActivityByDayMs !== undefined) return s.firstActivityByDayMs[todayKey] ?? null;
+  let first: number | null = null;
+  for (const entry of s.timeline ?? []) {
+    if (entry.timestamp >= startMs && (first === null || entry.timestamp < first)) {
+      first = entry.timestamp;
+    }
+  }
+  return first;
+}
+
 export function createApiHandler(
   deps: ApiHandlerDeps,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
@@ -1817,9 +1835,6 @@ export function createApiHandler(
         for (const entry of session.timeline) {
           if (entry.timestamp < startMs) continue;
           if (bufferCutoff !== undefined && entry.timestamp >= bufferCutoff) continue;
-          if (dailyFirstActivityMs === null || entry.timestamp < dailyFirstActivityMs) {
-            dailyFirstActivityMs = entry.timestamp;
-          }
           toolCallCount++;
           const idx = Math.floor((entry.timestamp - startMs) / 60_000);
           if (idx >= 0 && idx < sparkline.length) sparkline[idx]++;
@@ -1877,21 +1892,15 @@ export function createApiHandler(
         tokensCacheCreation?: number;
         cacheSavingsUsd?: number;
         antiPatterns?: ReadonlyArray<unknown>;
+        firstActivityByDayMs?: Record<string, number>;
         timeline?: ReadonlyArray<{ timestamp: number }>;
       };
-      // Cross-midnight sessions that started before today aren't covered by
-      // the todaySessions timeline walk above (loadTodaySessions() filters
-      // by file-date = start date, so a session that started yesterday never
-      // appears there). Derive its first-today activity from its OWN
-      // timeline, not `s.startTime` — using startTime here would reintroduce
-      // the exact dilution bug dailyFirstActivityMs exists to avoid.
-      if (s.startTime < startMs && Array.isArray(s.timeline)) {
-        for (const entry of s.timeline) {
-          if (entry.timestamp < startMs) continue;
-          if (dailyFirstActivityMs === null || entry.timestamp < dailyFirstActivityMs) {
-            dailyFirstActivityMs = entry.timestamp;
-          }
-        }
+      const sessionFirstActivityMs = firstActivityTodayMs(s, todayKey, startMs);
+      if (
+        sessionFirstActivityMs !== null &&
+        (dailyFirstActivityMs === null || sessionFirstActivityMs < dailyFirstActivityMs)
+      ) {
+        dailyFirstActivityMs = sessionFirstActivityMs;
       }
       // Cost attributed to TODAY: the persisted per-day bucket, else a guarded
       // pro-rate (see todayCostOfSummary). The same helper seeds CostTracker, so
@@ -1903,15 +1912,6 @@ export function createApiHandler(
       // drop the checkpoint's today cost, and a seeded one is not counted twice.
       // This is per-key max, the same rule mergeSummaries uses.
       const todayCost = todayCostOfSummary(s, todayKey, now);
-      // Spend is read from transcripts and can predate the session's first
-      // tool call. Anchoring only on tool-call timestamps would divide that
-      // spend by a much shorter window and inflate the burn rate, so a session
-      // that started today with today spend anchors at its own startTime.
-      if (s.startTime >= startMs && todayCost.costUsd > 0) {
-        if (dailyFirstActivityMs === null || s.startTime < dailyFirstActivityMs) {
-          dailyFirstActivityMs = s.startTime;
-        }
-      }
       if (s.sessionId === liveSid) {
         liveCheckpointTodayUsd = todayCost.costUsd;
         liveCheckpointSubagentUsd = todayCost.subagentCostUsd;

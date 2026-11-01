@@ -2,4 +2,4 @@
 '@newrelic/preflight': patch
 ---
 
-Fix the Today page end-of-day forecast jumping to tens of dollars while `/api/cost` reported cents. The cross-session aggregate now anchors its burn rate at the start of a session that has spend today, not at its first tool call, and the page shows the aggregate forecast as its only source once it has resolved instead of falling through to the SSE or `/api/cost` figure.
+Fix the Today page end-of-day forecast disagreeing with `/api/cost`. Session summaries now persist the first token event of each day (`firstActivityByDayMs`), and the cross-session aggregate anchors its burn rate there, the same anchor `/api/cost` uses, instead of at the first tool call. The page shows the aggregate forecast once the aggregate has seen today's spend, and bridges with the live SSE or `/api/cost` figure until then.

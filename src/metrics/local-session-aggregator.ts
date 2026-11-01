@@ -117,6 +117,7 @@ export interface LocalSessionRollup {
    *  space as `CostTracker.recordTokenUsage`, so a `--stdio`-written bucket
    *  and a `--local`-written bucket for the same turn agree on the day. */
   costByDayUsd: Map<string, number>;
+  firstActivityByDayMs: Map<string, number>;
   /** Portion of costUsd from agentId-tagged (subagent) usage. */
   subagentCostUsd: number;
   /** Subagent-attributed portion of costByDayUsd, same key space. */
@@ -363,6 +364,7 @@ export class LocalSessionAggregator {
         modelBreakdown: new Map(),
         costUsd: 0,
         costByDayUsd: new Map(),
+        firstActivityByDayMs: new Map(),
         subagentCostUsd: 0,
         subagentCostByDayUsd: new Map(),
         costBaselineApplied: false,
@@ -505,6 +507,10 @@ export class LocalSessionAggregator {
     const usd = usage.costUsd ?? 0;
     rollup.costUsd += usd;
     rollup.costByDayUsd.set(dayKey, (rollup.costByDayUsd.get(dayKey) ?? 0) + usd);
+    const firstForDay = rollup.firstActivityByDayMs.get(dayKey);
+    if (firstForDay === undefined || timestamp < firstForDay) {
+      rollup.firstActivityByDayMs.set(dayKey, timestamp);
+    }
     if (usage.agentId !== undefined) {
       rollup.subagentCostUsd += usd;
       rollup.subagentCostByDayUsd.set(dayKey, (rollup.subagentCostByDayUsd.get(dayKey) ?? 0) + usd);
@@ -665,6 +671,9 @@ export class LocalSessionAggregator {
         // pro-rated. Absent and empty are NOT the same value here.
         ...(rollup.costByDayUsd.size > 0
           ? { costByDayUsd: Object.fromEntries(rollup.costByDayUsd) }
+          : {}),
+        ...(rollup.firstActivityByDayMs.size > 0
+          ? { firstActivityByDayMs: Object.fromEntries(rollup.firstActivityByDayMs) }
           : {}),
         ...(rollup.subagentCostByDayUsd.size > 0
           ? { subagentCostByDayUsd: Object.fromEntries(rollup.subagentCostByDayUsd) }

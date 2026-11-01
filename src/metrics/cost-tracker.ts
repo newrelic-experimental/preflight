@@ -186,6 +186,7 @@ export interface CostMetrics {
    * a single day when it has no timeline to pro-rate against.
    */
   readonly costByDayUsd: Record<string, number>;
+  readonly firstActivityByDayMs: Record<string, number>;
   /** Subagent-attributed cost bucketed by local-day key; today-scoped
    * counterpart to `subagentCostUsd`. Same rationale as `costByDayUsd`. */
   readonly subagentCostByDayUsd: Record<string, number>;
@@ -860,6 +861,7 @@ export class CostTracker implements Resettable {
       parentCostUsd: this.parentCostUsd,
       costByWorkflowRunId,
       costByDayUsd: Object.fromEntries(this.costByDayUsd),
+      firstActivityByDayMs: Object.fromEntries(this.firstActivityMsByDay),
       unpricedByModel: Object.fromEntries(this.unpricedByModel),
       estimatedByModel: Object.fromEntries(this.estimatedByModel),
       subagentCostByDayUsd: Object.fromEntries(this.subagentCostByDayUsd),

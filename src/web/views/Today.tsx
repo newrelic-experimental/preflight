@@ -327,16 +327,13 @@ export function Today(): JSX.Element {
     aggregate?.antiPatternCount ?? 0,
     persistedTodayFlags + currentSessionFlags,
   );
-  // One source per render: once the cross-session aggregate reports a forecast
-  // field, number or null, it is the only source. A null (no activity today)
-  // stays blank instead of falling through to the SSE or /api/cost figure,
-  // which use different windows. Those two only bridge the window before the
-  // aggregate has resolved.
   const aggregateForecastUsd = aggregate?.forecastEndOfDayUsd;
+  const aggregateOwnsForecast =
+    aggregateForecastUsd !== undefined && (aggregate?.totalCostUsd ?? 0) > 0;
   const forecastKpiUsd = spendLoading
     ? null
-    : aggregateForecastUsd !== undefined
-      ? aggregateForecastUsd
+    : aggregateOwnsForecast
+      ? (aggregateForecastUsd ?? null)
       : (cost?.forecastEodUsd ?? costApi?.forecast?.forecastEndOfDayUsd ?? null);
 
   // The subagent KPI must source from the polled aggregate
