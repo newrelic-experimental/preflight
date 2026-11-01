@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
-import { appendToHookBuffer } from './hook-buffer.js';
+import { appendToHookBuffer, takeClaimText } from './hook-buffer.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -72,8 +72,7 @@ function isAdoptable(claim: DrainClaim): boolean {
 function takeClaim(path: string): readonly HookEvent[] {
   let raw: string;
   try {
-    raw = readFileSync(path, 'utf-8');
-    unlinkSync(path);
+    raw = takeClaimText(path);
   } catch (err) {
     logger.warn('Failed to drain buffer — will retry next poll', { error: String(err) });
     return [];
@@ -262,10 +261,6 @@ export class LocalStore {
     logger.debug('Storage initialized', { path: this.storagePath });
   }
 
-  /**
-   * Append a hook event as a JSON line to the buffer file.
-   * Uses a raw append for minimal latency (<5ms budget).
-   */
   appendToBuffer(event: HookEvent): void {
     try {
       appendToHookBuffer(this.bufferPath, JSON.stringify(event) + '\n');
