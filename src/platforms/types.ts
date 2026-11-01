@@ -71,9 +71,10 @@ export interface PlatformCapabilities {
    * names none. Empty when this platform's hooks never write one: no hooks,
    * or payloads without `session_id`. Any other engine's breadcrumb carries
    * another session's cost, so leave a writer out unless this platform's
-   * documented hook setup produces it.
+   * documented hook setup produces it. Omitted, it is this platform's own
+   * name and then `UNATTRIBUTED_BREADCRUMB_WRITER`.
    */
-  readonly sessionBreadcrumbWriters: readonly string[];
+  readonly sessionBreadcrumbWriters?: readonly string[];
 }
 
 /**
@@ -81,6 +82,17 @@ export interface PlatformCapabilities {
  * Codex's documented `preflight-collector` command does.
  */
 export const UNATTRIBUTED_BREADCRUMB_WRITER = 'unattributed';
+
+export function sessionBreadcrumbWriters(
+  adapter: Pick<PlatformAdapter, 'platformName' | 'capabilities'>,
+): readonly string[] {
+  return (
+    adapter.capabilities.sessionBreadcrumbWriters ?? [
+      adapter.platformName,
+      UNATTRIBUTED_BREADCRUMB_WRITER,
+    ]
+  );
+}
 
 export interface PlatformAdapter {
   readonly platformName: string;

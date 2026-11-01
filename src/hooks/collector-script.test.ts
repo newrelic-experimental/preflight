@@ -29,6 +29,7 @@ import {
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { createDefaultRegistry } from '../platforms/platform-registry.js';
 import { PLATFORM_NAMES } from '../platforms/platform-names.js';
+import { sessionBreadcrumbWriters } from '../platforms/types.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -2310,7 +2311,7 @@ describe('collector-script', () => {
         const writer =
           adapter.platformName === 'generic-mcp' ? 'unattributed' : adapter.platformName;
         expect(readFileSync(crumbs(writer).cwd, 'utf-8')).toBe('sess-alias');
-        const reads = adapter.capabilities.sessionBreadcrumbWriters;
+        const reads = sessionBreadcrumbWriters(adapter);
         if (reads.length > 0) expect(reads).toContain(writer);
       },
     );
