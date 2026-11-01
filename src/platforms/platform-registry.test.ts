@@ -24,6 +24,7 @@ import { PiAdapter } from './pi-adapter.js';
 import { PlatformRegistry, createDefaultRegistry } from './platform-registry.js';
 import {
   UNATTRIBUTED_BREADCRUMB_WRITER,
+  sessionBreadcrumbWriters,
   type NormalizedToolCall,
   type PlatformAdapter,
   type PlatformSessionMetadata,
@@ -633,6 +634,24 @@ describe('capabilities', () => {
         expect.arrayContaining([...sharedFileStamps, UNATTRIBUTED_BREADCRUMB_WRITER]),
       );
     }
+  });
+
+  it('lets a custom adapter that names no breadcrumb writers adopt its own and unattributed ones', () => {
+    const custom: PlatformAdapter = {
+      platformName: 'my-engine',
+      visibilityLevel: 'full-hooks',
+      capabilities: { instructionFilePaths: [] },
+      async initialize() {},
+      normalizeToolCall() {
+        throw new Error('not used by this test');
+      },
+      mapToolName: (name) => name,
+      getSessionMetadata: () => ({ platform: 'my-engine' }),
+      getHookInstallInstructions: () => '',
+      isSupported: () => true,
+    };
+    expect(sessionBreadcrumbWriters(custom)).toEqual(['my-engine', UNATTRIBUTED_BREADCRUMB_WRITER]);
+    expect(sessionBreadcrumbWriters(new CursorAdapter())).toEqual([]);
   });
 
   it('claude-code declares CLAUDE.md and .claude/ as instruction file paths', () => {
