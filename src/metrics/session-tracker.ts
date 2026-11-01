@@ -8,9 +8,10 @@
 
 import { basename } from 'node:path';
 import type { MetricAggregator } from '../shared/index.js';
-import type { ToolCallRecord } from '../storage/types.js';
+import { amendRecord, type ToolCallRecord } from '../storage/types.js';
 import {
   DEGENERATE_NAMES,
+  isUnscopedAggregatorSessionId,
   shouldReplaceSessionName,
   type SessionNameSource,
 } from '../hooks/session-resolver.js';
@@ -84,6 +85,7 @@ function addCount<K>(counts: Map<K, number>, key: K, delta: number): void {
   if (next > 0) counts.set(key, next);
   else counts.delete(key);
 }
+const MAX_HELD_RECORDS_PER_SESSION = 2_000;
 
 // Bounds memory on sessions that touch an unusually large number of distinct
 // files (e.g. a repo-wide codemod or search) — head-drop the oldest-added
@@ -180,6 +182,8 @@ export class SessionTracker implements Resettable {
   private timelineEntryCount = 0;
   private readonly amendable = new Map<string, { record: ToolCallRecord; timelineIndex: number }>();
   private readonly maxAmendable: number;
+  // A pending engine drains every session's buffer before it knows its own id.
+  private readonly heldRecords = new Map<string, ToolCallRecord[]>();
 
   constructor(sessionId: string, maxAmendable = 0) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -192,7 +196,22 @@ export class SessionTracker implements Resettable {
     this.maxAmendable = maxAmendable;
   }
 
+  private countsSession(sessionId: string | null): boolean {
+    return (
+      !sessionId || sessionId === this.sessionId || isUnscopedAggregatorSessionId(this.sessionId)
+    );
+  }
+
   recordToolCall(record: ToolCallRecord): void {
+    if (!this.countsSession(record.sessionId)) {
+      if (this.sessionId.startsWith('pending-')) {
+        const held = this.heldRecords.get(record.sessionId!) ?? [];
+        if (held.length >= MAX_HELD_RECORDS_PER_SESSION) held.shift();
+        held.push(record);
+        this.heldRecords.set(record.sessionId!, held);
+      }
+      return;
+    }
     this.toolCallCount++;
 
     // FALLBACK naming only: an authoritative name (job-state title or
@@ -288,6 +307,12 @@ export class SessionTracker implements Resettable {
   }
 
   amendToolCall(record: ToolCallRecord): void {
+    if (!this.countsSession(record.sessionId)) {
+      const held = this.heldRecords.get(record.sessionId!);
+      const index = held?.findIndex((r) => r.id === record.id) ?? -1;
+      if (held && index >= 0) held[index] = amendRecord(held[index]!, record);
+      return;
+    }
     const amended = this.amendable.get(record.id);
     if (!amended) return;
     this.amendable.delete(record.id);
@@ -445,6 +470,9 @@ export class SessionTracker implements Resettable {
       throw new Error('SessionTracker.adoptSessionId() requires a non-empty sessionId');
     }
     this.sessionId = sessionId;
+    const held = this.heldRecords.get(sessionId) ?? [];
+    this.heldRecords.clear();
+    for (const record of held) this.recordToolCall(record);
   }
 
   /**
@@ -484,5 +512,6 @@ export class SessionTracker implements Resettable {
     this.timeline = [];
     this.timelineEntryCount = 0;
     this.amendable.clear();
+    this.heldRecords.clear();
   }
 }

@@ -20,7 +20,7 @@ afterEach(() => {
 function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
   return {
     id: 'rec-001',
-    sessionId: 'sess-001',
+    sessionId: null,
     toolName: 'Read',
     toolUseId: 'toolu_001',
     timestamp: Date.now(),
@@ -560,6 +560,51 @@ describe('SessionTracker', () => {
     it('throws when called with an empty string', () => {
       const tracker = new SessionTracker('valid-session');
       expect(() => tracker.adoptSessionId('')).toThrow(/requires a non-empty sessionId/);
+    });
+  });
+
+  describe('records of other sessions', () => {
+    it('keeps only the adopted session of what a pending engine drained', () => {
+      const tracker = new SessionTracker('pending-1700000000000');
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-own', toolName: 'Read' }));
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-other', toolName: 'Bash' }));
+      expect(tracker.getMetrics().toolCallCount).toBe(0);
+
+      tracker.adoptSessionId('sess-own');
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(1);
+      expect(metrics.toolCallCountByTool).toEqual({ Read: 1 });
+      expect(metrics.bashCommandsRun).toBe(0);
+    });
+
+    it("keeps a pending engine's newest calls of each session past the cap", () => {
+      const tracker = new SessionTracker('pending-1700000000000');
+      for (let i = 0; i < 10_000; i++) {
+        tracker.recordToolCall(makeRecord({ sessionId: 'sess-other' }));
+      }
+      for (let i = 0; i < 2_001; i++) {
+        tracker.recordToolCall(makeRecord({ sessionId: 'sess-own', timestamp: i }));
+      }
+
+      tracker.adoptSessionId('sess-own');
+
+      expect(tracker.getMetrics().toolCallCount).toBe(2_000);
+      expect(tracker.getMetrics().toolCallTimeline[0]?.timestamp).toBe(1);
+    });
+
+    it('does not count a record of another session under a real id', () => {
+      const tracker = new SessionTracker('sess-own');
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-other' }));
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-own' }));
+      expect(tracker.getMetrics().toolCallCount).toBe(1);
+    });
+
+    it('counts every session under a --local id', () => {
+      const tracker = new SessionTracker('local-1700000000000');
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-a' }));
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-b' }));
+      expect(tracker.getMetrics().toolCallCount).toBe(2);
     });
   });
 

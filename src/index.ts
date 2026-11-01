@@ -2649,6 +2649,27 @@ async function main(): Promise<void> {
       },
     });
 
+    const saveObservedSessions = (outcome: string, exceptSessionId?: string): number => {
+      if (!sessionStore || !config) return 0;
+      const rollups = localSessionAggregator.toSummaries({
+        developer: config.developer ?? 'unknown',
+        platform: eventProcessor?.activePlatform,
+        outcome,
+        toolSelectionScorer,
+        repoResolver: repoNameResolver,
+        ...(exceptSessionId !== undefined && { exceptSessionId }),
+      });
+      for (const rollup of rollups) {
+        sessionStore.saveSession(
+          rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
+        );
+      }
+      eventProcessor?.persistCountedIdsOfSavedSessions(
+        rollups.map((rollup) => String(rollup.sessionId)),
+      );
+      return rollups.length;
+    };
+
     persistSession = (opts?: { periodic?: boolean }) => {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
       try {
@@ -2698,25 +2719,13 @@ async function main(): Promise<void> {
           // draining other sessions' buffers destructively — so if it returns
           // here without writing them, those events are simply lost. Persist
           // each real session it observed instead.
-          const rollups = localSessionAggregator.toSummaries({
-            developer: config.developer ?? 'unknown',
-            platform: eventProcessor?.activePlatform,
-            outcome: opts?.periodic ? 'in progress' : 'completed',
-            toolSelectionScorer,
-            repoResolver: repoNameResolver,
-          });
-          for (const rollup of rollups) {
-            sessionStore.saveSession(
-              rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
-            );
-          }
-          eventProcessor?.persistCountedIdsOfSavedSessions(
-            rollups.map((rollup) => String(rollup.sessionId)),
+          const persistedSessions = saveObservedSessions(
+            opts?.periodic ? 'in progress' : 'completed',
           );
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
-              persistedSessions: rollups.length,
+              persistedSessions,
             });
           }
           return;
@@ -2968,23 +2977,19 @@ async function main(): Promise<void> {
     // re-registers the full tool set. Used both for the initial pending ->
     // real transition and for a later correction (see
     // startPpidCorrectionWatch below) — safe to call more than once:
-    // accumulated tracker metrics are preserved (adoptSessionId() only
-    // reassigns the id field), and any already-live NrIngestManager is
-    // stopped first so its harvest interval never leaks on a second call.
+    // accumulated tracker metrics are preserved, and any already-live
+    // NrIngestManager is stopped first so its harvest interval never leaks
+    // on a second call.
     const adoptRealSessionId = async (
       realId: string,
       opts?: { isCorrection?: boolean; viaCwdOnly?: boolean },
     ): Promise<void> => {
+      const drainedEverySession = isSyntheticSessionId(sessionTraceId);
       if (opts?.isCorrection) {
         // A real correction means the previously-adopted id was wrong, and
         // anything these four trackers accumulated since startWatchers()
         // scoped them to that wrong id (chiefly ParentTranscriptWatcher
         // backfill from an unrelated old transcript) belongs to nobody.
-        // SessionTracker itself needs no reset here: real tool-call events
-        // only ever reach it via the per-session LocalStore/HookEventProcessor
-        // path, which is keyed by whatever id the hook collector script
-        // wrote — never the wrong guess — so toolCallCount/timeline stay
-        // clean through the whole unconfirmed window regardless.
         costTracker.reset(realId);
         modelUsageTracker.reset(realId);
         contextCompositionTracker.reset(realId);
@@ -3024,6 +3029,15 @@ async function main(): Promise<void> {
       // Hot-swap the event processor to the scoped store so it only drains
       // this session's events going forward.
       eventProcessor!.replaceStore(realLocalStore, false);
+      // After the swap only realId is saved, so the sessions drained while
+      // pending are saved now or their calls are lost.
+      if (drainedEverySession) {
+        try {
+          saveObservedSessions('in progress', realId);
+        } catch (err) {
+          logger.warn('Failed to save observed sessions on adoption', { error: String(err) });
+        }
+      }
 
       // Replace the span with a real-ID span. End the previous one first
       // (end() is a no-op if never started).
