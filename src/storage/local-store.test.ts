@@ -1533,6 +1533,36 @@ describe('LocalStore', () => {
       expect(existsSync(deadPath)).toBe(false);
     });
 
+    it("deletes dead-PID breadcrumbs under every writer's directory", () => {
+      const writerDirs = ['claude-code', 'kiro'].map((writer) =>
+        resolve(tmpDir, 'breadcrumbs', writer, 'session-by-ppid'),
+      );
+      for (const dir of writerDirs) {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(resolve(dir, `${process.pid}.txt`), 'sess-live-id');
+        writeFileSync(resolve(dir, '9999999.txt'), 'sess-dead-id');
+      }
+
+      expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(2);
+      for (const dir of writerDirs) {
+        expect(existsSync(resolve(dir, `${process.pid}.txt`))).toBe(true);
+        expect(existsSync(resolve(dir, '9999999.txt'))).toBe(false);
+      }
+    });
+
+    it('skips a stray file among the writer directories without warning', () => {
+      const dir = resolve(tmpDir, 'breadcrumbs', 'kiro', 'session-by-ppid');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(resolve(dir, '9999999.txt'), 'sess-dead-id');
+      writeFileSync(resolve(tmpDir, 'breadcrumbs', '.DS_Store'), '');
+
+      expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(1);
+      const warnCalls = (stderrSpy.mock.calls as unknown[][]).filter((args) =>
+        String(args[0]).includes('gcStaleBreadcrumbs'),
+      );
+      expect(warnCalls).toHaveLength(0);
+    });
+
     it('returns 0 when breadcrumb dir does not exist', () => {
       mkdirSync(tmpDir, { recursive: true });
       const store = new LocalStore(tmpDir);

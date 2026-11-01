@@ -2125,7 +2125,7 @@ describe('collector-script', () => {
     });
 
     it('writes <storage>/session-by-ppid/<ppid>.txt with the sessionId', () => {
-      writePpidBreadcrumb('sess-bread');
+      writePpidBreadcrumb('sess-bread', tmpDir);
       const ppid = process.ppid;
       const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`);
       expect(existsSync(breadcrumbPath)).toBe(true);
@@ -2133,20 +2133,20 @@ describe('collector-script', () => {
     });
 
     it('rejects malformed sessionIds without writing', () => {
-      writePpidBreadcrumb('../../escape');
+      writePpidBreadcrumb('../../escape', tmpDir);
       const ppid = process.ppid;
       expect(existsSync(resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`))).toBe(false);
     });
 
     it('short-circuits when content already matches', () => {
-      writePpidBreadcrumb('sess-stable');
+      writePpidBreadcrumb('sess-stable', tmpDir);
       const ppid = process.ppid;
       const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`);
       const firstStat = statSync(breadcrumbPath).mtimeMs;
       // Tight loop — most calls should observe the existsSync + readFileSync
       // short-circuit and not rewrite the file. mtimeMs has 1ms resolution so
       // we just assert that we don't error and the content is unchanged.
-      for (let i = 0; i < 50; i++) writePpidBreadcrumb('sess-stable');
+      for (let i = 0; i < 50; i++) writePpidBreadcrumb('sess-stable', tmpDir);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-stable');
       // The mtime may or may not change depending on filesystem — the key
       // assertion is correctness; the perf claim is documented separately.
@@ -2154,7 +2154,7 @@ describe('collector-script', () => {
     });
 
     it('refreshes mtime on the short-circuit path so an active session never goes stale', () => {
-      writePpidBreadcrumb('sess-active');
+      writePpidBreadcrumb('sess-active', tmpDir);
       const ppid = process.ppid;
       const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`);
 
@@ -2169,18 +2169,9 @@ describe('collector-script', () => {
       // resolveFromBreadcrumb()'s staleness check (session-resolver.ts)
       // would reject this breadcrumb forever after any MCP restart that
       // keeps the same ppid and session_id.
-      writePpidBreadcrumb('sess-active');
+      writePpidBreadcrumb('sess-active', tmpDir);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-active');
       expect(statSync(breadcrumbPath).mtimeMs).toBeGreaterThan(Date.now() - 5_000);
-    });
-
-    it('processHook() drops the breadcrumb on every fire (idempotent overwrite)', () => {
-      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
-      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
-
-      processHook(makePreToolUse({ session_id: 'sess-bc' }));
-      const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`);
-      expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-bc');
     });
 
     it('writes breadcrumb at each ancestor PID (end-to-end WSL+fish path)', () => {
@@ -2195,7 +2186,7 @@ describe('collector-script', () => {
         throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
       };
       try {
-        writePpidBreadcrumb('sess-ancestor');
+        writePpidBreadcrumb('sess-ancestor', tmpDir);
       } finally {
         _procFs.readFile = origReadFile;
       }
@@ -2219,21 +2210,21 @@ describe('collector-script', () => {
     });
 
     it('writes <storage>/session-by-cwd/<sanitized-cwd>.txt with the sessionId', () => {
-      writeCwdBreadcrumb('sess-bread', '/projects/test');
+      writeCwdBreadcrumb('sess-bread', '/projects/test', tmpDir);
       const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
       expect(existsSync(breadcrumbPath)).toBe(true);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-bread');
     });
 
     it('sanitizes a backslash-separated (Windows) cwd, stripping the drive-letter colon too', () => {
-      writeCwdBreadcrumb('sess-win', 'C:\\Users\\test\\myproject');
+      writeCwdBreadcrumb('sess-win', 'C:\\Users\\test\\myproject', tmpDir);
       const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', 'C--Users-test-myproject.txt');
       expect(existsSync(breadcrumbPath)).toBe(true);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-win');
     });
 
     it('strips the drive-letter colon so the breadcrumb filename has no embedded colon', () => {
-      writeCwdBreadcrumb('sess-colon', 'C:\\Users\\test\\myproject');
+      writeCwdBreadcrumb('sess-colon', 'C:\\Users\\test\\myproject', tmpDir);
       expect(existsSync(resolve(tmpDir, 'session-by-cwd', 'C--Users-test-myproject.txt'))).toBe(
         true,
       );
@@ -2243,30 +2234,65 @@ describe('collector-script', () => {
     });
 
     it('no-ops when cwd is missing or empty', () => {
-      writeCwdBreadcrumb('sess-nocwd', undefined);
-      writeCwdBreadcrumb('sess-nocwd', '');
+      writeCwdBreadcrumb('sess-nocwd', undefined, tmpDir);
+      writeCwdBreadcrumb('sess-nocwd', '', tmpDir);
       expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
     });
 
     it('rejects malformed sessionIds without writing', () => {
-      writeCwdBreadcrumb('../../escape', '/projects/test');
+      writeCwdBreadcrumb('../../escape', '/projects/test', tmpDir);
       expect(existsSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'))).toBe(false);
     });
 
     it('short-circuits when content already matches', () => {
-      writeCwdBreadcrumb('sess-stable', '/projects/test');
+      writeCwdBreadcrumb('sess-stable', '/projects/test', tmpDir);
       const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
-      for (let i = 0; i < 50; i++) writeCwdBreadcrumb('sess-stable', '/projects/test');
+      for (let i = 0; i < 50; i++) writeCwdBreadcrumb('sess-stable', '/projects/test', tmpDir);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-stable');
     });
+  });
 
-    it('processHook() drops the cwd breadcrumb on every fire', () => {
+  describe('processHook() breadcrumb writer', () => {
+    beforeEach(() => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      for (const key of [...CLAUDE_CODE_ENV_SIGNALS, 'MCP_CLIENT', 'NEW_RELIC_AI_PLATFORM']) {
+        delete process.env[key];
+      }
+    });
 
-      processHook(makePreToolUse({ session_id: 'sess-bc', cwd: '/projects/test' }));
-      const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
-      expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-bc');
+    const crumbs = (writer: string) => ({
+      ppid: resolve(tmpDir, 'breadcrumbs', writer, 'session-by-ppid', `${process.ppid}.txt`),
+      cwd: resolve(tmpDir, 'breadcrumbs', writer, 'session-by-cwd', '-projects-test.txt'),
+    });
+
+    it('files a Claude Code hook under claude-code, never the untagged layout', () => {
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
+      expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
+      expect(existsSync(resolve(tmpDir, 'session-by-ppid'))).toBe(false);
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
+    });
+
+    it('files a hook under the engine its command names, over an inherited Claude Code env', () => {
+      process.env.CLAUDECODE = '1';
+      process.env.MCP_CLIENT = 'kiro';
+      processHook(makePreToolUse({ session_id: 'sess-kiro', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('kiro').cwd, 'utf-8')).toBe('sess-kiro');
+      expect(existsSync(crumbs('claude-code').cwd)).toBe(false);
+    });
+
+    it('files a hook that names no engine as unattributed', () => {
+      processHook(makePreToolUse({ session_id: 'sess-codex', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('unattributed').ppid, 'utf-8')).toBe('sess-codex');
+    });
+
+    it('files an engine name unsafe as a path segment as unattributed', () => {
+      process.env.MCP_CLIENT = '../escape';
+      processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('unattributed').cwd, 'utf-8')).toBe('sess-x');
+      expect(existsSync(resolve(tmpDir, 'escape'))).toBe(false);
     });
   });
 
