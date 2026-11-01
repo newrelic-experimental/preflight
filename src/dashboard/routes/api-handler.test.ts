@@ -20,6 +20,7 @@ import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
 import { makeUsage } from '../../__test-utils__/token-usage.js';
 import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
+import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
 import { CostTracker } from '../../metrics/cost-tracker.js';
 import { buildCostTrackerSeed } from '../../metrics/cost-tracker-seed.js';
@@ -4169,6 +4170,48 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     // effectiveBaseUsd is totalCostUsd and the rate is >= 0, so the forecast
     // can never be less than the amount already spent today.
     expect(parsed.forecastEndOfDayUsd as number).toBeGreaterThanOrEqual(parsed.totalCostUsd);
+  });
+
+  it("anchors the forecast at a today-started session's startTime when its spend predates its first tool call", async () => {
+    const noon = localStartOfDay(Date.now()) + 12 * 60 * 60 * 1000;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(noon);
+    try {
+      const startTime = noon - 30 * 60 * 1000;
+      const session = {
+        sessionId: 'started-today-1',
+        startTime,
+        endTime: noon,
+        estimatedCostUsd: 0.01,
+        costByDayUsd: { [localDateKey(noon)]: 0.01 },
+        timeline: [{ timestamp: noon - 10_000 }],
+      };
+      const handler = createApiHandler({
+        localStore: { peekAllBuffers: () => [] },
+        sessionStore: {
+          loadTodaySessions: () => [session],
+          loadSessionsOverlappingToday: () => [session],
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+      const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+      const { res, status, body } = fakeRes();
+      await handler(req, res);
+      expect(status()).toBe(200);
+      const parsed = JSON.parse(body()) as { forecastEndOfDayUsd: number | null };
+      const expected = buildCostForecastFromInputs(
+        {
+          sessionSpentUsd: 0.01,
+          sessionStartMs: startTime,
+          dailySpentUsd: 0.01,
+          dailyFirstActivityMs: startTime,
+        },
+        noon,
+      ).forecastEndOfDayUsd as number;
+      expect(parsed.forecastEndOfDayUsd).toBeCloseTo(expected, 2);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('returns forecastEndOfDayUsd null when there is no activity today from any source', async () => {
