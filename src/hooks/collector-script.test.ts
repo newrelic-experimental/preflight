@@ -1946,47 +1946,6 @@ describe('collector-script', () => {
       platform,
     });
 
-    it.each(['newrelic-preflight', 'preflight', 'nr-ai-observability'])(
-      'Cursor afterMCPExecution from the %s server adds a usage line to that conversation only',
-      (serverName) => {
-        processHook(
-          JSON.stringify({
-            hook_event_name: 'afterMCPExecution',
-            conversation_id: 'conv-reporting',
-            mcp_server_name: serverName,
-            tool_name: 'nr_observe_report_tokens',
-            tool_input: JSON.stringify(report),
-            result_json: JSON.stringify({ content: [{ type: 'text', text: hookReply }] }),
-          }),
-        );
-
-        const events = readBufferLines('conv-reporting');
-        expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
-        expect(events[1]).toMatchObject(expectedLine('conv-reporting', 'cursor'));
-        expect(readBufferLines('conv-other')).toEqual([]);
-      },
-    );
-
-    it('Windsurf post_mcp_tool_use adds a usage line to its trajectory', () => {
-      process.env.MCP_CLIENT = 'windsurf';
-      processHook(
-        JSON.stringify({
-          agent_action_name: 'post_mcp_tool_use',
-          trajectory_id: 'traj-reporting',
-          tool_info: {
-            mcp_server_name: 'preflight',
-            mcp_tool_name: 'nr_observe_report_tokens',
-            mcp_tool_arguments: report,
-            mcp_result: hookReply,
-          },
-        }),
-      );
-
-      const events = readBufferLines('traj-reporting');
-      expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
-      expect(events[1]).toMatchObject(expectedLine('traj-reporting', 'windsurf'));
-    });
-
     const cursorReportHook = (conversationId: string, overrides: Record<string, unknown> = {}) =>
       JSON.stringify({
         hook_event_name: 'afterMCPExecution',
@@ -1997,6 +1956,39 @@ describe('collector-script', () => {
         result_json: JSON.stringify({ content: [{ type: 'text', text: hookReply }] }),
         ...overrides,
       });
+    const windsurfReportHook = (trajectoryId: string) =>
+      JSON.stringify({
+        agent_action_name: 'post_mcp_tool_use',
+        trajectory_id: trajectoryId,
+        tool_info: {
+          mcp_server_name: 'preflight',
+          mcp_tool_name: 'nr_observe_report_tokens',
+          mcp_tool_arguments: report,
+          mcp_result: hookReply,
+        },
+      });
+
+    it.each(['newrelic-preflight', 'preflight', 'nr-ai-observability'])(
+      'Cursor afterMCPExecution from the %s server adds a usage line to that conversation only',
+      (serverName) => {
+        processHook(cursorReportHook('conv-reporting', { mcp_server_name: serverName }));
+
+        const events = readBufferLines('conv-reporting');
+        expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
+        expect(events[1]).toMatchObject(expectedLine('conv-reporting', 'cursor'));
+        expect(readBufferLines('conv-other')).toEqual([]);
+      },
+    );
+
+    it('Windsurf post_mcp_tool_use adds a usage line to its trajectory', () => {
+      process.env.MCP_CLIENT = 'windsurf';
+      processHook(windsurfReportHook('traj-reporting'));
+
+      const events = readBufferLines('traj-reporting');
+      expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
+      expect(events[1]).toMatchObject(expectedLine('traj-reporting', 'windsurf'));
+    });
+
     const errorReply = (text: string) =>
       JSON.stringify({ isError: true, content: [{ type: 'text', text }] });
 
@@ -2137,20 +2129,7 @@ describe('collector-script', () => {
 
     it.each([
       ['Cursor', 'cursor', cursorReportHook('conv-unstamped')],
-      [
-        'Windsurf',
-        'windsurf',
-        JSON.stringify({
-          agent_action_name: 'post_mcp_tool_use',
-          trajectory_id: 'conv-unstamped',
-          tool_info: {
-            mcp_server_name: 'preflight',
-            mcp_tool_name: 'nr_observe_report_tokens',
-            mcp_tool_arguments: report,
-            mcp_result: hookReply,
-          },
-        }),
-      ],
+      ['Windsurf', 'windsurf', windsurfReportHook('conv-unstamped')],
     ])(
       "stamps a %s usage line with the hook's platform even when it inherits Claude Code's environment",
       (_label, platform, payload) => {

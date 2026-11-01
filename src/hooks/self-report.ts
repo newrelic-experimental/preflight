@@ -10,7 +10,6 @@ const MAX_TOKENS = 10_000_000;
 const REPORT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
 export const MODEL_RE = /^[a-zA-Z0-9._:-]{1,256}$/;
 export const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
-const PREFLIGHT_SERVER_RE = /preflight|nr-ai-observability/i;
 const REQUIRED_COUNTS = ['input_tokens', 'output_tokens'] as const;
 const OPTIONAL_COUNTS = ['thinking_tokens', 'cache_read_tokens', 'cache_creation_tokens'] as const;
 type CountField = (typeof REQUIRED_COUNTS)[number] | (typeof OPTIONAL_COUNTS)[number];
@@ -30,7 +29,6 @@ export interface HookReportCall {
   readonly server: unknown;
   readonly args: unknown;
   readonly result: unknown;
-  readonly platform: 'cursor' | 'windsurf';
 }
 
 type ParsedSelfReport =
@@ -42,12 +40,8 @@ export function clampToken(v: number): number {
   return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
 }
 
-function isPreflightReportTool(call: HookReportCall): boolean {
-  return (
-    call.tool === REPORT_TOKENS_TOOL_NAME &&
-    typeof call.server === 'string' &&
-    PREFLIGHT_SERVER_RE.test(call.server)
-  );
+export function isPreflightServerName(name: unknown): boolean {
+  return typeof name === 'string' && (/preflight/i.test(name) || name === 'nr-ai-observability');
 }
 
 export function reportKey(r: SelfReport): string {
@@ -150,11 +144,14 @@ export function hookSelfReportLine(
   call: HookReportCall,
   conversationId: unknown,
   timestamp: number,
+  platform: string,
 ): SelfReportHookEvent | undefined {
-  if (!isPreflightReportTool(call) || !isConversationId(conversationId)) return undefined;
+  if (call.tool !== REPORT_TOKENS_TOOL_NAME || !isPreflightServerName(call.server))
+    return undefined;
+  if (!isConversationId(conversationId)) return undefined;
   const parsed = parseSelfReport(call.args);
   if (!parsed.ok || !hookAcknowledged(call.result, parsed.report.reportId)) return undefined;
-  return selfReportLine(parsed.report, conversationId, timestamp, call.platform);
+  return selfReportLine(parsed.report, conversationId, timestamp, platform);
 }
 
 function claimPath(storageDir: string, line: SelfReportHookEvent): string {

@@ -16,6 +16,7 @@
 import {
   readFileSync,
   writeFileSync,
+  writeSync,
   openSync,
   closeSync,
   mkdirSync,
@@ -112,6 +113,23 @@ function getMaxContentLength(): number {
  * whose hook-process env signal is verified; other platforms stamp via
  * explicit MCP_CLIENT in their generated hook commands.
  */
+const HOOK_EVENT_PLATFORM: Readonly<Record<string, string>> = {
+  beforeshellexecution: 'cursor',
+  aftershellexecution: 'cursor',
+  beforemcpexecution: 'cursor',
+  aftermcpexecution: 'cursor',
+  beforereadfile: 'cursor',
+  afterfileedit: 'cursor',
+  pre_read_code: 'windsurf',
+  post_read_code: 'windsurf',
+  pre_write_code: 'windsurf',
+  post_write_code: 'windsurf',
+  pre_run_command: 'windsurf',
+  post_run_command: 'windsurf',
+  pre_mcp_tool_use: 'windsurf',
+  post_mcp_tool_use: 'windsurf',
+};
+
 function detectStampPlatform(): string | undefined {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
@@ -1067,7 +1085,6 @@ function processHook(raw: string, cliEvent?: string): void {
       server: data.mcp_server_name,
       args: data.tool_input,
       result: data.result_json,
-      platform: 'cursor',
     };
   } else if (eventName === 'beforereadfile') {
     // Cursor has no "afterReadFile" event — beforeReadFile is the only file-read
@@ -1193,7 +1210,6 @@ function processHook(raw: string, cliEvent?: string): void {
       server: toolInfo.mcp_server_name,
       args: toolInfo.mcp_tool_arguments,
       result: toolInfo.mcp_result,
-      platform: 'windsurf',
     };
   } else if (isAntigravityPre) {
     // Antigravity PreToolUse — see isAntigravityPre above for how it is told
@@ -1365,16 +1381,20 @@ function processHook(raw: string, cliEvent?: string): void {
   // only the light claude-code-adapter const, not the full registry) instead
   // of going through PlatformRegistry — registry-based detection adds
   // measurable overhead on this hot, pre+post-per-tool-call path.
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ''] ?? detectStampPlatform();
   if (stampedPlatform) event.platform = stampedPlatform;
-  const selfReport = selfReportCall && hookSelfReportLine(selfReportCall, sessionId, timestamp);
+  const selfReport =
+    selfReportCall &&
+    stampedPlatform &&
+    hookSelfReportLine(selfReportCall, sessionId, timestamp, stampedPlatform);
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
 
   const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : undefined;
   // Write to buffer — wrapped in try/catch for resilience.
-  let written = false;
+  let written = 0;
+  let postBytes = 0;
   try {
     const bufferPath = getBufferPath(sessionId);
     const bufferDir = dirname(bufferPath);
@@ -1382,7 +1402,11 @@ function processHook(raw: string, cliEvent?: string): void {
       mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
     }
 
-    const line = JSON.stringify(event) + '\n' + (newReport ? JSON.stringify(newReport) + '\n' : '');
+    const post = Buffer.from(JSON.stringify(event) + '\n');
+    postBytes = post.length;
+    const line = newReport
+      ? Buffer.concat([post, Buffer.from(JSON.stringify(newReport) + '\n')])
+      : post;
 
     const fd = openSync(
       bufferPath,
@@ -1390,14 +1414,13 @@ function processHook(raw: string, cliEvent?: string): void {
       0o600,
     );
     try {
-      writeFileSync(fd, line);
-      written = true;
+      while (written < line.length) written += writeSync(fd, line, written);
     } finally {
       closeSync(fd);
     }
   } catch {
     // Silent failure — never block Claude Code
-    if (newReport && !written) releaseReport(getStorageDir(), newReport);
+    if (newReport && written <= postBytes) releaseReport(getStorageDir(), newReport);
   }
 
   // Gemini CLI's own hook examples always print "{}" before exiting 0, even
