@@ -3,11 +3,12 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { COPILOT_SDK_TOOL_MAP } from './copilot-sdk-adapter.js';
-import type {
-  NormalizedToolCall,
-  PlatformAdapter,
-  PlatformConfig,
-  PlatformSessionMetadata,
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformConfig,
+  type PlatformSessionMetadata,
 } from './types.js';
 
 /**
@@ -87,8 +88,9 @@ export class CopilotAppAdapter implements PlatformAdapter {
     ] as const,
     // The app's pooled CLI fires ~/.copilot/hooks/preflight.json, the same
     // file the standalone CLI reads, where `preflight setup --copilot` and the
-    // copilot-sdk setup stamp NEW_RELIC_AI_PLATFORM=copilot.
-    sessionBreadcrumbWriters: ['copilot-app', 'copilot'] as const,
+    // copilot-sdk setup stamp NEW_RELIC_AI_PLATFORM=copilot. That file's
+    // commands documented before #557 (2026-09-04) stamp nothing.
+    sessionBreadcrumbWriters: ['copilot-app', 'copilot', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {
