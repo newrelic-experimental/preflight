@@ -85,7 +85,10 @@ export class CopilotAppAdapter implements PlatformAdapter {
       'GEMINI.md',
       '.github/copilot-instructions.md',
     ] as const,
-    sessionBreadcrumbWriters: ['copilot-app'] as const,
+    // The app's pooled CLI fires ~/.copilot/hooks/preflight.json, the same
+    // file the standalone CLI reads, where `preflight setup --copilot` and the
+    // copilot-sdk setup stamp NEW_RELIC_AI_PLATFORM=copilot.
+    sessionBreadcrumbWriters: ['copilot-app', 'copilot'] as const,
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {

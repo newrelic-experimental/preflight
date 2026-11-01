@@ -168,7 +168,9 @@ function detectStampPlatform() {
     const name = canonicalPlatformName(process.env[key]);
     if (name !== void 0) return name;
   }
-  if (CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0)) return "claude-code";
+  if (CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0)) {
+    return CLAUDE_CODE_PLATFORM_NAME;
+  }
   return (process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM) || void 0;
 }
 var MAX_REDACT_BYTES = 1048576;

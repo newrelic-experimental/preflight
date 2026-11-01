@@ -1008,7 +1008,10 @@ describe('stdio integration', () => {
         stderr += chunk.toString('utf8');
       });
       const client = new Client({ name: 'test-client', version: '1.0.0' });
-      const sessionId = async (): Promise<string | null> => {
+      const stats = async (): Promise<{
+        session_id: string;
+        session_name: string | null;
+      } | null> => {
         const { tools } = await client.listTools();
         if (!tools.some((t) => t.name === 'nr_observe_get_session_stats')) return null;
         const result = await client.callTool({
@@ -1016,8 +1019,9 @@ describe('stdio integration', () => {
           arguments: {},
         });
         const content = result.content as Array<{ type: string; text: string }>;
-        return (JSON.parse(content[0]?.text ?? '{}') as { session_id: string }).session_id;
+        return JSON.parse(content[0]?.text ?? '{}');
       };
+      const sessionId = async (): Promise<string | null> => (await stats())?.session_id ?? null;
       const waitForSessionId = async (expected: string): Promise<string | null> => {
         let seen: string | null = null;
         for (let i = 0; i < 40 && seen !== expected; i++) {
@@ -1028,6 +1032,7 @@ describe('stdio integration', () => {
       };
       return {
         writeCrumb,
+        stats,
         sessionId,
         waitForSessionId,
         stderr: () => stderr,
@@ -1072,6 +1077,37 @@ describe('stdio integration', () => {
         await engine.close();
       }
     }, 30000);
+
+    it.each([
+      [{ MCP_CLIENT: 'claude-code' }, 'claude-session-id', 'claude job name'],
+      [{ MCP_CLIENT: 'kiro' }, 'kiro-session-id', null],
+    ])(
+      "names a %j engine from an inherited Claude job's state only when it is Claude Code",
+      async (platformEnv, expectedId, expectedJobName) => {
+        const jobDir = mkdtempSync(join(tmpdir(), 'nr-engine-writer-job-'));
+        writeFileSync(
+          resolve(jobDir, 'state.json'),
+          JSON.stringify({
+            linkScanPath: '/tmp/claude-session-id.jsonl',
+            name: 'claude job name',
+            nameSource: 'user',
+          }),
+        );
+        const engine = await startEngine({ ...platformEnv, CLAUDE_JOB_DIR: jobDir });
+        try {
+          engine.writeCrumb('kiro', 'cwd', 'kiro-session-id');
+          await engine.connect();
+          const stats = await engine.stats();
+          expect(stats?.session_id).toBe(expectedId);
+          if (expectedJobName) expect(stats?.session_name).toBe(expectedJobName);
+          else expect(stats?.session_name).not.toBe('claude job name');
+        } finally {
+          await engine.close();
+          rmSync(jobDir, { recursive: true, force: true });
+        }
+      },
+      30000,
+    );
 
     it("keeps Claude Code run from Cursor's terminal off a Kiro session, then adopts its own", async () => {
       const engine = await startEngine({ CLAUDECODE: '1', CURSOR_TRACE_ID: 'cursor-terminal' });

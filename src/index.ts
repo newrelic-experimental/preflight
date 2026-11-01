@@ -106,6 +106,7 @@ import { TrendAnalyzer } from './metrics/trend-analyzer.js';
 import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
 import { TurnTracker } from './metrics/turn-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
+import { CLAUDE_CODE_PLATFORM_NAME } from './platforms/claude-code-adapter.js';
 import { ClaudeCodeAdapter, createDefaultRegistry, GenericMcpAdapter } from './platforms/index.js';
 import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
@@ -1278,9 +1279,11 @@ async function main(): Promise<void> {
         // highSecurity upstream — never bypass). resolveSessionName still uses
         // only name/nameSource, which are display labels; the intent is
         // surfaced separately as session_intent below.
-        const jobState = readJobState(process.env.CLAUDE_JOB_DIR ?? null, {
-          recordContent: config?.recordContent ?? false,
-        });
+        const jobState = breadcrumbWriters.includes(CLAUDE_CODE_PLATFORM_NAME)
+          ? readJobState(process.env.CLAUDE_JOB_DIR ?? null, {
+              recordContent: config?.recordContent ?? false,
+            })
+          : null;
         const transcriptTitle = readTranscriptTitle({ sessionId });
         const resolved = resolveSessionName({ jobState, transcriptTitle, cwd });
         if (!resolved) return;

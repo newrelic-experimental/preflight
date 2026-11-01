@@ -28,7 +28,10 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
-import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
+import {
+  CLAUDE_CODE_ENV_SIGNALS,
+  CLAUDE_CODE_PLATFORM_NAME,
+} from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
 import { canonicalPlatformName, ENGINE_ENV_KEYS } from '../platforms/platform-names.js';
 import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
@@ -110,7 +113,9 @@ function detectStampPlatform(): string | undefined {
     const name = canonicalPlatformName(process.env[key]);
     if (name !== undefined) return name;
   }
-  if (CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)) return 'claude-code';
+  if (CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)) {
+    return CLAUDE_CODE_PLATFORM_NAME;
+  }
   return (process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM) || undefined;
 }
 
