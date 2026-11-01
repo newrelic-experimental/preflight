@@ -1170,11 +1170,13 @@ describe('stdio integration', () => {
     for (let i = 0; i < 40 && !predicate(); i++) await new Promise((r) => setTimeout(r, 250));
     expect(predicate()).toBe(true);
   };
-  const savedCalls = (storage: string, id: string): unknown => {
+  const savedField = (storage: string, id: string, field: string): unknown => {
     const dir = resolve(storage, 'sessions');
     const name = existsSync(dir) ? readdirSync(dir).find((f) => f.endsWith(`_${id}.json`)) : '';
-    return name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')).toolCallCount : null;
+    return name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8'))[field] : null;
   };
+  const savedCalls = (storage: string, id: string): unknown =>
+    savedField(storage, id, 'toolCallCount');
 
   describe('an engine that adopts its session after draining others', () => {
     const storages: string[] = [];
@@ -1287,6 +1289,63 @@ describe('stdio integration', () => {
 
       expect(savedCalls(storage, 'guessed-session')).toBe(1);
       expect(savedCalls(storage, 'corrected-session') ?? 0).toBe(0);
+    }, 30000);
+
+    // Writes token events until `adopted` holds, so the store swap's final drain reaches some.
+    const writeTokensUntil = async (
+      storage: string,
+      buffer: string,
+      sessionId: string,
+      adopted: () => boolean,
+    ) => {
+      let n = 0;
+      const writer = setInterval(() => {
+        const token = { mode: 'token', timestamp: Date.now(), sessionId, messageId: `msg_${n++}` };
+        appendFileSync(
+          resolve(storage, `buffer-${buffer}.jsonl`),
+          JSON.stringify({
+            ...token,
+            inputTokens: 1000,
+            outputTokens: 100,
+            model: 'claude-sonnet-5',
+          }) + '\n',
+        );
+      }, 2);
+      try {
+        await waitFor(adopted);
+      } finally {
+        clearInterval(writer);
+      }
+    };
+
+    it("keeps the guessed session's tokens out of the corrected session's cost", async () => {
+      const storage = makeStorage();
+      const cwd = makeCwd();
+      guessFromCwd(storage, cwd);
+      const client = await startEngine(storage, cwd);
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'corrected-session');
+      const heartbeat = resolve(storage, 'active-corrected-session.pid');
+      await writeTokensUntil(storage, 'guessed-session', 'guessed-session', () =>
+        existsSync(heartbeat),
+      );
+      await client.close();
+      await waitFor(() => !existsSync(heartbeat));
+
+      expect(savedField(storage, 'corrected-session', 'estimatedCostUsd') ?? 0).toBe(0);
+    }, 30000);
+
+    it('records its own tokens that the store swap drains at adoption', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'own-real-session');
+      const heartbeat = resolve(storage, 'active-own-real-session.pid');
+      await writeTokensUntil(storage, 'other-real-session', 'own-real-session', () =>
+        existsSync(heartbeat),
+      );
+      await client.close();
+      await waitFor(() => !existsSync(heartbeat));
+
+      expect(savedField(storage, 'own-real-session', 'estimatedCostUsd')).toBeGreaterThan(0);
     }, 30000);
 
     it('saves no session but the guessed one when the ppid breadcrumb corrects the guess', async () => {
@@ -1448,6 +1507,22 @@ describe('stdio integration', () => {
       await stopOwner(storage, guessing, 'guessed-session');
 
       expect(afterPreviousExit).toBe(true);
+    }, 30000);
+
+    it("takes the heartbeat of its guessed session once that session's own engine exits", async () => {
+      const storage = makeStorage();
+      const previous = await startOwner(storage, 'guessed-session');
+      const heartbeat = resolve(storage, 'active-guessed-session.pid');
+      const cwd = makeCwd();
+      guessFromCwd(storage, cwd);
+      const guessing = await startEngine(storage, cwd, {
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+      });
+      await stopOwner(storage, previous, 'guessed-session');
+      const retaken = await settle(() => existsSync(heartbeat), true);
+      await stopOwner(storage, guessing, 'guessed-session');
+
+      expect(retaken).toBe(true);
     }, 30000);
   });
 
