@@ -25,7 +25,7 @@ afterEach(() => {
 function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
   return {
     id: 'rec-001',
-    sessionId: null,
+    sessionId: 'test-session',
     toolName: 'Read',
     toolUseId: 'toolu_001',
     timestamp: Date.now(),

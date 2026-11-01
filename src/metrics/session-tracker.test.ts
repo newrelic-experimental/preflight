@@ -20,7 +20,7 @@ afterEach(() => {
 function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
   return {
     id: 'rec-001',
-    sessionId: null,
+    sessionId: 'test-session',
     toolName: 'Read',
     toolUseId: 'toolu_001',
     timestamp: Date.now(),
@@ -293,14 +293,14 @@ describe('SessionTracker', () => {
 
   describe('getMetrics()', () => {
     it('returns a complete snapshot with all fields', () => {
-      const tracker = new SessionTracker('snapshot-session');
+      const tracker = new SessionTracker('test-session');
 
       tracker.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 50, filePath: '/a.ts' }));
       tracker.recordToolCall(makeRecord({ toolName: 'Bash', durationMs: 200 }));
 
       const metrics = tracker.getMetrics();
 
-      expect(metrics.sessionId).toBe('snapshot-session');
+      expect(metrics.sessionId).toBe('test-session');
       expect(metrics.sessionStartTime).toBeGreaterThan(0);
       expect(metrics.sessionStartTime).toBeLessThan(Date.now() + 1000);
       expect(metrics.sessionDurationMs).toBeGreaterThanOrEqual(0);
@@ -440,7 +440,9 @@ describe('SessionTracker', () => {
       expect(metrics.sessionName).toBeNull();
       expect(metrics.sessionNameSource).toBeNull();
       // After reset the streaming fallback is active again.
-      tracker.recordToolCall(makeRecord({ cwd: '/Users/dev/projects/preflight' }));
+      tracker.recordToolCall(
+        makeRecord({ sessionId: 'new-session', cwd: '/Users/dev/projects/preflight' }),
+      );
       expect(tracker.getMetrics().sessionName).toBe('preflight');
       expect(tracker.getMetrics().sessionNameSource).toBe('cwd');
     });
@@ -542,8 +544,8 @@ describe('SessionTracker', () => {
   describe('adoptSessionId()', () => {
     it('updates the sessionId in place without clearing accumulated metrics', () => {
       const tracker = new SessionTracker('provisional-id');
-      tracker.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 50 }));
-      tracker.recordToolCall(makeRecord({ toolName: 'Edit', durationMs: 80 }));
+      tracker.recordToolCall(makeRecord({ sessionId: null, toolName: 'Read', durationMs: 50 }));
+      tracker.recordToolCall(makeRecord({ sessionId: null, toolName: 'Edit', durationMs: 80 }));
 
       // Adopt a real session ID.
       tracker.adoptSessionId('real-session-id');
@@ -564,13 +566,14 @@ describe('SessionTracker', () => {
   });
 
   describe('records of other sessions', () => {
-    it('keeps only the adopted session of what a pending engine drained', () => {
+    it('counts the session it adopts, and no other session while pending', () => {
       const tracker = new SessionTracker('pending-1700000000000');
-      tracker.recordToolCall(makeRecord({ sessionId: 'sess-own', toolName: 'Read' }));
+      const own = makeRecord({ sessionId: 'sess-own', toolName: 'Read' });
+      tracker.recordToolCall(own);
       tracker.recordToolCall(makeRecord({ sessionId: 'sess-other', toolName: 'Bash' }));
       expect(tracker.getMetrics().toolCallCount).toBe(0);
 
-      tracker.adoptSessionId('sess-own');
+      tracker.adoptSessionId('sess-own', [own]);
 
       const metrics = tracker.getMetrics();
       expect(metrics.toolCallCount).toBe(1);
@@ -578,41 +581,13 @@ describe('SessionTracker', () => {
       expect(metrics.bashCommandsRun).toBe(0);
     });
 
-    it("keeps a pending engine's newest calls of each session past the cap", () => {
-      const tracker = new SessionTracker('pending-1700000000000');
-      for (let i = 0; i < 10_000; i++) {
-        tracker.recordToolCall(makeRecord({ sessionId: 'sess-other' }));
-      }
-      for (let i = 0; i < 2_001; i++) {
-        tracker.recordToolCall(makeRecord({ sessionId: 'sess-own', timestamp: i }));
-      }
-
-      tracker.adoptSessionId('sess-own');
-
-      expect(tracker.getMetrics().toolCallCount).toBe(2_000);
-      expect(tracker.getMetrics().toolCallTimeline[0]?.timestamp).toBe(1);
-    });
-
-    it('holds 10,000 calls at most, dropping the least recently active session first', () => {
-      const tracker = new SessionTracker('pending-1700000000000');
-      for (const sessionId of ['sess-a', 'sess-b', 'sess-c', 'sess-d', 'sess-e', 'sess-f']) {
-        for (let i = 0; i < 2_000; i++) tracker.recordToolCall(makeRecord({ sessionId }));
-      }
-
-      tracker.adoptSessionId('sess-a');
-      expect(tracker.getMetrics().toolCallCount).toBe(0);
-      tracker.replaceGuessedSessionId('sess-f');
-      expect(tracker.getMetrics().toolCallCount).toBe(2_000);
-    });
-
     it("drops the guessed session's calls when its id is corrected", () => {
-      const tracker = new SessionTracker('pending-1700000000000');
+      const tracker = new SessionTracker('sess-guess', 10);
       const guessed = makeRecord({ id: 'g1', sessionId: 'sess-guess', durationMs: null });
       tracker.recordToolCall({ ...guessed, success: false, errorType: 'timeout' });
-      tracker.recordToolCall(makeRecord({ sessionId: 'sess-real', toolName: 'Bash' }));
-      tracker.adoptSessionId('sess-guess');
 
-      tracker.replaceGuessedSessionId('sess-real');
+      const real = makeRecord({ sessionId: 'sess-real', toolName: 'Bash' });
+      tracker.adoptSessionId('sess-real', [real], true);
       tracker.amendToolCall({ ...guessed, durationMs: 90_000 });
 
       const metrics = tracker.getMetrics();
@@ -659,7 +634,7 @@ describe('SessionTracker', () => {
       ]);
     });
     it('amends the timed-out record with its id, and counts its exit code and error', () => {
-      const tracker = new SessionTracker('sess-own', 10);
+      const tracker = new SessionTracker('test-session', 10);
       const call = makeRecord({
         toolName: 'Bash',
         timestamp: 1000,

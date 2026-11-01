@@ -2993,8 +2993,11 @@ async function main(): Promise<void> {
         turnCostAttributor.reset(realId);
       }
       sessionTraceId = realId;
-      if (opts?.isCorrection) sessionTracker!.replaceGuessedSessionId(realId);
-      else sessionTracker!.adoptSessionId(realId);
+      sessionTracker!.adoptSessionId(
+        realId,
+        localSessionAggregator.recordsOf(realId),
+        opts?.isCorrection,
+      );
       // Now that the real id (and thus its transcript path) is known, resolve
       // and apply the authoritative name. On a correction this re-resolves
       // against the corrected id's own transcript, replacing any name derived

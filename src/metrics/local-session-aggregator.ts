@@ -383,6 +383,10 @@ export class LocalSessionAggregator {
     return rollup;
   }
 
+  recordsOf(sessionId: string): readonly ToolCallRecord[] {
+    return this.sessions.get(sessionId)?.records ?? [];
+  }
+
   amendToolCall(record: ToolCallRecord): void {
     const rollup = record.sessionId ? this.sessions.get(record.sessionId) : undefined;
     if (!rollup) return;

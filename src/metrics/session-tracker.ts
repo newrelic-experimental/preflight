@@ -8,7 +8,7 @@
 
 import { basename } from 'node:path';
 import type { MetricAggregator } from '../shared/index.js';
-import { amendRecord, type ToolCallRecord } from '../storage/types.js';
+import type { ToolCallRecord } from '../storage/types.js';
 import {
   DEGENERATE_NAMES,
   isUnscopedAggregatorSessionId,
@@ -85,8 +85,6 @@ function addCount<K>(counts: Map<K, number>, key: K, delta: number): void {
   if (next > 0) counts.set(key, next);
   else counts.delete(key);
 }
-const MAX_HELD_RECORDS_PER_SESSION = 2_000;
-const MAX_HELD_RECORDS = 10_000;
 
 // Bounds memory on sessions that touch an unusually large number of distinct
 // files (e.g. a repo-wide codemod or search) — head-drop the oldest-added
@@ -183,8 +181,6 @@ export class SessionTracker implements Resettable {
   private timelineEntryCount = 0;
   private readonly amendable = new Map<string, { record: ToolCallRecord; timelineIndex: number }>();
   private readonly maxAmendable: number;
-  private readonly heldRecordsByRecency = new Map<string, ToolCallRecord[]>();
-  private heldCount = 0;
 
   constructor(sessionId: string, maxAmendable = 0) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -204,10 +200,7 @@ export class SessionTracker implements Resettable {
   }
 
   recordToolCall(record: ToolCallRecord): void {
-    if (!this.countsSession(record.sessionId)) {
-      if (this.sessionId.startsWith('pending-')) this.holdAsMostRecent(record.sessionId!, record);
-      return;
-    }
+    if (!this.countsSession(record.sessionId)) return;
     this.toolCallCount++;
 
     // FALLBACK naming only: an authoritative name (job-state title or
@@ -288,32 +281,6 @@ export class SessionTracker implements Resettable {
     }
   }
 
-  private holdAsMostRecent(sessionId: string, record: ToolCallRecord): void {
-    const held = this.heldRecordsByRecency.get(sessionId) ?? [];
-    this.heldRecordsByRecency.delete(sessionId);
-    this.heldRecordsByRecency.set(sessionId, held);
-    held.push(record);
-    this.heldCount++;
-    if (held.length > MAX_HELD_RECORDS_PER_SESSION) this.dropHeld(sessionId, held);
-    while (this.heldCount > MAX_HELD_RECORDS) {
-      const [oldestId, oldest] = this.heldRecordsByRecency.entries().next().value!;
-      this.dropHeld(oldestId, oldest);
-    }
-  }
-
-  private dropHeld(sessionId: string, held: ToolCallRecord[]): void {
-    held.shift();
-    this.heldCount--;
-    if (held.length === 0) this.heldRecordsByRecency.delete(sessionId);
-  }
-
-  private takeHeld(sessionId: string): ToolCallRecord[] {
-    const held = this.heldRecordsByRecency.get(sessionId) ?? [];
-    this.heldRecordsByRecency.delete(sessionId);
-    this.heldCount -= held.length;
-    return held;
-  }
-
   private applyOutcome(record: ToolCallRecord, delta: 1 | -1): void {
     const successEntry = this.toolSuccessByTool.get(record.toolName)!;
     if (record.success) {
@@ -329,12 +296,6 @@ export class SessionTracker implements Resettable {
   }
 
   amendToolCall(record: ToolCallRecord): void {
-    if (!this.countsSession(record.sessionId)) {
-      const held = this.heldRecordsByRecency.get(record.sessionId!);
-      const index = held?.findIndex((r) => r.id === record.id) ?? -1;
-      if (held && index >= 0) held[index] = amendRecord(held[index]!, record);
-      return;
-    }
     const amended = this.amendable.get(record.id);
     if (!amended) return;
     this.amendable.delete(record.id);
@@ -486,20 +447,22 @@ export class SessionTracker implements Resettable {
     this.sessionIntent = intent && intent.length > 0 ? intent : null;
   }
 
-  /** Update the session ID in place without clearing any accumulated metrics. */
-  adoptSessionId(sessionId: string): void {
+  /**
+   * Adopts the real session id and counts `records`, the calls of that session
+   * drained before this tracker knew its id. Replacing a wrong guess first drops
+   * every count of the guessed session.
+   */
+  adoptSessionId(
+    sessionId: string,
+    records: readonly ToolCallRecord[] = [],
+    replacingGuess = false,
+  ): void {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
       throw new Error('SessionTracker.adoptSessionId() requires a non-empty sessionId');
     }
+    if (replacingGuess) this.clearCounts();
     this.sessionId = sessionId;
-    for (const record of this.takeHeld(sessionId)) this.recordToolCall(record);
-  }
-
-  replaceGuessedSessionId(sessionId: string): void {
-    const held = this.takeHeld(sessionId);
-    this.clearCounts();
-    this.sessionId = sessionId;
-    for (const record of held) this.recordToolCall(record);
+    for (const record of records) this.recordToolCall(record);
   }
 
   /**
@@ -523,8 +486,6 @@ export class SessionTracker implements Resettable {
     this.sessionIntent = null;
     this.authoritativeName = false;
     this.sessionStartTime = Date.now();
-    this.heldRecordsByRecency.clear();
-    this.heldCount = 0;
     this.clearCounts();
   }
 
