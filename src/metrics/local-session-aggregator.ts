@@ -387,11 +387,11 @@ export class LocalSessionAggregator {
   amendToolCall(record: ToolCallRecord): void {
     const rollup = record.sessionId ? this.sessions.get(record.sessionId) : undefined;
     if (!rollup) return;
-    if (record.success) rollup.successCount += 1;
     const index = rollup.records.findIndex((r) => r.id === record.id);
     const previous = rollup.records[index];
     const entry = rollup.timeline[index];
-    if (!previous || !entry) return;
+    if (previous?.success !== false || !entry) return;
+    if (record.success) rollup.successCount += 1;
     rollup.records[index] = amendRecord(previous, record);
     const { errorType: _replaced, ...rest } = entry;
     rollup.timeline[index] = {

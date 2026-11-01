@@ -373,7 +373,7 @@ function findOldestFallbackKey(
     if (
       k.startsWith(`${pre.tool}:`) &&
       pre.tool.toLowerCase() === post.tool.toLowerCase() &&
-      pre.sessionId === post.sessionId &&
+      (pre.sessionId ?? post.sessionId) === (post.sessionId ?? pre.sessionId) &&
       (matchUntil === undefined || post.timestamp <= matchUntil) &&
       pre.timestamp < oldestTimestamp
     ) {
@@ -632,18 +632,14 @@ export class HookEventProcessor {
   }
 
   private handBackOtherSessionsPending(keptSessionId: string | null): void {
-    const handBack = new Map<string, HookEvent[]>();
     for (const [key, { event, phase }] of this.pending) {
       const { sessionId, toolUseId, tool, timestamp } = event;
       if (sessionId === undefined || sessionId === keptSessionId) continue;
-      this.pending.delete(key);
-      const events = handBack.get(sessionId) ?? [];
-      handBack.set(sessionId, events);
-      events.push(event);
+      const events: HookEvent[] = [event];
       if (phase === 'permission_requested' && toolUseId !== undefined)
         events.push({ mode: 'permission_request', tool, timestamp, toolUseId, sessionId });
+      if (this.store.appendToSessionBuffer(sessionId, events)) this.pending.delete(key);
     }
-    for (const [sessionId, events] of handBack) this.store.appendToSessionBuffer(sessionId, events);
   }
 
   /**
@@ -927,9 +923,11 @@ export class HookEventProcessor {
    * asked, and prompts dwell far longer than a healthy tool execution.
    */
   private pendingTtlMs(entry: PendingEntry): number {
-    return entry.phase === 'permission_requested'
-      ? PERMISSION_REQUESTED_TIMEOUT_MS
-      : Math.max(this.orphanTimeoutMs, LONG_RUNNING_TOOL_TTL_MS.get(entry.event.tool) ?? 0);
+    const phaseTtlMs =
+      entry.phase === 'permission_requested'
+        ? PERMISSION_REQUESTED_TIMEOUT_MS
+        : this.orphanTimeoutMs;
+    return Math.max(phaseTtlMs, LONG_RUNNING_TOOL_TTL_MS.get(entry.event.tool) ?? 0);
   }
 
   /**
