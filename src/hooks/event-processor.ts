@@ -10,6 +10,8 @@
  *   - Permission-requested pre events (PermissionRequest seen, then nothing —
  *     Claude Code fires no hook event for an interactive user rejection)
  *     without a post within PERMISSION_REQUESTED_TIMEOUT_MS → rejected record
+ *   - Post events with no pending pre, no countedUnpaired entry and no
+ *     counted/ hit → record with durationMs: null
  */
 
 import { randomUUID } from 'node:crypto';
@@ -835,6 +837,7 @@ export class HookEventProcessor {
       };
       if (counted) {
         this.emitAmend(record);
+        this.emitWorkflowAgent(record);
         return;
       }
       this.emitRecord(record);
@@ -1293,8 +1296,12 @@ export class HookEventProcessor {
         error: err instanceof Error ? err.message : String(err),
       });
     }
-    // Workflow observability — additively notify any registered tracker when
-    // an Agent tool call completes. Failures here MUST NOT propagate.
+    this.emitWorkflowAgent(record);
+  }
+
+  // Workflow observability — additively notify any registered tracker when
+  // an Agent tool call completes. Failures here MUST NOT propagate.
+  private emitWorkflowAgent(record: ToolCallRecord): void {
     if (this.onWorkflowAgent !== null && record.toolName === 'Agent') {
       try {
         this.onWorkflowAgent(record);

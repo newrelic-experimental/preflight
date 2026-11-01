@@ -1875,6 +1875,38 @@ describe('HookEventProcessor', () => {
       expect(workflowRecords[0]!.durationMs).toBeNull();
     });
 
+    it('fires for the amended record of an Agent call that outran its TTL', () => {
+      jest.useFakeTimers();
+      try {
+        const workflowRecords: ToolCallRecord[] = [];
+        const processor = new HookEventProcessor({
+          store,
+          onRecord,
+          onRecordAmend: () => {},
+          onWorkflowAgent: (record) => workflowRecords.push(record),
+          pollIntervalMs: 1000,
+        });
+        processor.start();
+        const start = Date.now();
+        processor.processEvents([
+          makePreEvent({ tool: 'Agent', toolUseId: 'toolu_long_agent', timestamp: start }),
+        ]);
+        jest.advanceTimersByTime(31 * 60_000);
+        processor.processEvents([
+          makePostEvent({ tool: 'Agent', toolUseId: 'toolu_long_agent', timestamp: Date.now() }),
+        ]);
+
+        expect(records).toHaveLength(1);
+        expect(workflowRecords.map((r) => [r.toolUseId, r.success, r.durationMs])).toEqual([
+          ['toolu_long_agent', false, null],
+          ['toolu_long_agent', true, 31 * 60_000],
+        ]);
+        processor.stop();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it('swallows errors from the callback so the main pipeline keeps emitting', () => {
       const processor = new HookEventProcessor({
         store,

@@ -2094,6 +2094,7 @@ async function main(): Promise<void> {
       onRecordAmend: (record) => {
         sessionTracker?.amendToolCall(record);
         localSessionAggregator.amendToolCall(record);
+        subagentAttribution.recordAgentToolCall(record);
         const index = toolCallBuffer.findIndex((r) => r.id === record.id);
         if (index >= 0) toolCallBuffer[index] = amendRecord(toolCallBuffer[index]!, record);
       },
