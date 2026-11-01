@@ -32,14 +32,6 @@ export interface CostForecastInputs {
    */
   readonly dailySpentUsd?: number;
   readonly dailyFirstActivityMs?: number | null;
-  /**
-   * Today's spend from other sessions and the earliest moment they were
-   * active today. When present, the day's burn rate and window span every
-   * session, so a session opened late in the day still has a supported
-   * forecast. The forecast stays instance-only: callers add the prior spend.
-   */
-  readonly priorDailySpentUsd?: number;
-  readonly priorDailyFirstActivityMs?: number | null;
 }
 
 /**
@@ -59,14 +51,7 @@ export function buildCostForecastFromInputs(
   inputs: CostForecastInputs,
   nowMs: number = Date.now(),
 ): CostForecast {
-  const {
-    sessionSpentUsd,
-    sessionStartMs,
-    dailySpentUsd,
-    dailyFirstActivityMs,
-    priorDailySpentUsd,
-    priorDailyFirstActivityMs,
-  } = inputs;
+  const { sessionSpentUsd, sessionStartMs, dailySpentUsd, dailyFirstActivityMs } = inputs;
   const elapsedMs = nowMs - sessionStartMs;
   if (elapsedMs < 1) {
     return {
@@ -112,19 +97,8 @@ export function buildCostForecastFromInputs(
     typeof dailyFirstActivityMs === 'number' &&
     dailyFirstActivityMs > 0
   ) {
-    const priorSpentUsd =
-      typeof priorDailySpentUsd === 'number' &&
-      priorDailySpentUsd > 0 &&
-      typeof priorDailyFirstActivityMs === 'number' &&
-      priorDailyFirstActivityMs > 0
-        ? priorDailySpentUsd
-        : 0;
-    const dayFirstActivityMs =
-      priorSpentUsd > 0
-        ? Math.min(dailyFirstActivityMs, priorDailyFirstActivityMs as number)
-        : dailyFirstActivityMs;
-    effectiveElapsedMs = Math.max(1, nowMs - dayFirstActivityMs);
-    effectiveRateUsdPerMs = (dailySpentUsd + priorSpentUsd) / effectiveElapsedMs;
+    effectiveElapsedMs = Math.max(1, nowMs - dailyFirstActivityMs);
+    effectiveRateUsdPerMs = dailySpentUsd / effectiveElapsedMs;
     effectiveBaseUsd = dailySpentUsd;
   } else {
     // Without a daily anchor, only a session that began today has all its
@@ -155,14 +129,14 @@ export function buildCostForecastFromInputs(
       ? null
       : sessionSpentUsd + sessionRateUsdPerMs * msUntilSessionEnd;
 
-  // Grades the shortest window any forecast above relies on.
-  const gradedWindowMs = Math.min(elapsedMs, effectiveElapsedMs);
+  // Grades the window of the number the caller sees: the day/week window while
+  // those forecasts are shown, else the session window behind the session-end one.
+  const sessionEndShown = forecastSessionEndUsd !== null;
+  const gradedWindowMs = forecastHeld ? (sessionEndShown ? elapsedMs : 0) : effectiveElapsedMs;
   const minWindowMin = minutes(MIN_FORECAST_WINDOW_MS);
   const moderateWindowMin = minutes(MODERATE_CONFIDENCE_WINDOW_MS);
   let confidenceNote: string;
-  if (anchorMissing) {
-    confidenceNote = 'Low confidence — no spend recorded yet today.';
-  } else if (gradedWindowMs < MIN_FORECAST_WINDOW_MS) {
+  if (gradedWindowMs < MIN_FORECAST_WINDOW_MS) {
     confidenceNote = `Low confidence — less than ${minWindowMin} minutes of data.`;
   } else if (gradedWindowMs < MODERATE_CONFIDENCE_WINDOW_MS) {
     confidenceNote = `Moderate confidence — based on less than ${moderateWindowMin} minutes of data.`;

@@ -52,7 +52,7 @@ describe('computeHistoricalCosts', () => {
   it('counts a session from yesterday toward the week only', () => {
     save('yesterday', local(14, 10), local(14, 11), 1);
 
-    expect(computeHistoricalCosts(store, 'current', REF_TS)).toMatchObject({
+    expect(computeHistoricalCosts(store, 'current', REF_TS)).toEqual({
       priorDailyCostUsd: 0,
       priorWeeklyCostUsd: 1,
     });
@@ -61,7 +61,7 @@ describe('computeHistoricalCosts', () => {
   it('counts a session from earlier today toward the day and the week', () => {
     save('today', local(15, 8), local(15, 9), 2);
 
-    expect(computeHistoricalCosts(store, 'current', REF_TS)).toMatchObject({
+    expect(computeHistoricalCosts(store, 'current', REF_TS)).toEqual({
       priorDailyCostUsd: 2,
       priorWeeklyCostUsd: 2,
     });
@@ -70,7 +70,7 @@ describe('computeHistoricalCosts', () => {
   it('pro-rates a session that spans midnight into the day, and counts all of it for the week', () => {
     save('overnight', local(14, 23), local(15, 1), 4);
 
-    expect(computeHistoricalCosts(store, 'current', REF_TS)).toMatchObject({
+    expect(computeHistoricalCosts(store, 'current', REF_TS)).toEqual({
       priorDailyCostUsd: 2,
       priorWeeklyCostUsd: 4,
     });
@@ -79,7 +79,7 @@ describe('computeHistoricalCosts', () => {
   it('counts a session from the first day of the window toward the week', () => {
     save('first-day', WINDOW_START, WINDOW_START + HOUR, 3);
 
-    expect(computeHistoricalCosts(store, 'current', REF_TS)).toMatchObject({
+    expect(computeHistoricalCosts(store, 'current', REF_TS)).toEqual({
       priorDailyCostUsd: 0,
       priorWeeklyCostUsd: 3,
     });
@@ -88,7 +88,7 @@ describe('computeHistoricalCosts', () => {
   it('ignores a session from the day before the window', () => {
     save('day-before', WINDOW_START - HOUR, WINDOW_START, 8);
 
-    expect(computeHistoricalCosts(store, 'current', REF_TS)).toMatchObject({
+    expect(computeHistoricalCosts(store, 'current', REF_TS)).toEqual({
       priorDailyCostUsd: 0,
       priorWeeklyCostUsd: 0,
     });
@@ -98,7 +98,7 @@ describe('computeHistoricalCosts', () => {
     save('current', local(15, 8), local(15, 9), 16);
     save('today', local(15, 10), local(15, 11), 2);
 
-    expect(computeHistoricalCosts(store, 'current', REF_TS)).toMatchObject({
+    expect(computeHistoricalCosts(store, 'current', REF_TS)).toEqual({
       priorDailyCostUsd: 2,
       priorWeeklyCostUsd: 2,
     });
@@ -107,7 +107,7 @@ describe('computeHistoricalCosts', () => {
   it('skips sessions with no cost estimate', () => {
     save('unpriced', local(15, 8), local(15, 9), null);
 
-    expect(computeHistoricalCosts(store, 'current', REF_TS)).toMatchObject({
+    expect(computeHistoricalCosts(store, 'current', REF_TS)).toEqual({
       priorDailyCostUsd: 0,
       priorWeeklyCostUsd: 0,
     });
@@ -120,7 +120,7 @@ describe('computeHistoricalCosts', () => {
     save('old', WINDOW_START - HOUR, WINDOW_START, 8);
     save('current', local(15, 10), local(15, 11), 16);
 
-    expect(computeHistoricalCosts(store, 'current', REF_TS)).toMatchObject({
+    expect(computeHistoricalCosts(store, 'current', REF_TS)).toEqual({
       priorDailyCostUsd: 4,
       priorWeeklyCostUsd: 7,
     });
@@ -133,25 +133,9 @@ describe('computeHistoricalCosts', () => {
       },
     };
 
-    expect(computeHistoricalCosts(broken, 'current', REF_TS)).toMatchObject({
+    expect(computeHistoricalCosts(broken, 'current', REF_TS)).toEqual({
       priorDailyCostUsd: 0,
       priorWeeklyCostUsd: 0,
     });
-  });
-
-  it('reports the earliest time today a prior session with spend was active', () => {
-    save('yesterday', local(14, 10), local(14, 11), 1);
-    save('morning', local(15, 9), local(15, 9) + HOUR, 2);
-    save('noon', local(15, 12), local(15, 13), 3);
-
-    expect(computeHistoricalCosts(store, 'current', REF_TS).priorDailyFirstActivityMs).toBe(
-      local(15, 9),
-    );
-  });
-
-  it('reports no first activity when no prior session spent today', () => {
-    save('yesterday', local(14, 10), local(14, 11), 1);
-
-    expect(computeHistoricalCosts(store, 'current', REF_TS).priorDailyFirstActivityMs).toBeNull();
   });
 });

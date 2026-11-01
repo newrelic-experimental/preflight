@@ -1,5 +1,5 @@
 import { createLogger } from '../shared/index.js';
-import { localStartOfDay, todayPortionOfSessionCost } from '../lib/date.js';
+import { todayPortionOfSessionCost } from '../lib/date.js';
 import type { SessionStore } from './session-store.js';
 
 const logger = createLogger('historical-costs');
@@ -23,30 +23,16 @@ export function computeHistoricalCosts(
   sessionStore: Pick<SessionStore, 'loadAllSessions'>,
   currentSessionId: string,
   refTs: number = Date.now(),
-): {
-  priorDailyCostUsd: number;
-  priorWeeklyCostUsd: number;
-  /** Earliest moment today that a prior session with spend today was active, or null. */
-  priorDailyFirstActivityMs: number | null;
-} {
+): { priorDailyCostUsd: number; priorWeeklyCostUsd: number } {
   const weekAgo = new Date(refTs - 7 * 24 * 60 * 60 * 1000);
   let priorDailyCostUsd = 0;
   let priorWeeklyCostUsd = 0;
-  let priorDailyFirstActivityMs: number | null = null;
-  const dayStartMs = localStartOfDay(refTs);
   try {
     const sessions = sessionStore.loadAllSessions({ since: weekAgo });
     for (const session of sessions) {
       if (session.sessionId === currentSessionId) continue;
       if (session.estimatedCostUsd === null) continue;
-      const todayCostUsd = todayPortionOfSessionCost(session, refTs);
-      priorDailyCostUsd += todayCostUsd;
-      if (todayCostUsd > 0) {
-        const firstTodayMs = Math.max(session.startTime, dayStartMs);
-        if (priorDailyFirstActivityMs === null || firstTodayMs < priorDailyFirstActivityMs) {
-          priorDailyFirstActivityMs = firstTodayMs;
-        }
-      }
+      priorDailyCostUsd += todayPortionOfSessionCost(session, refTs);
       priorWeeklyCostUsd += session.estimatedCostUsd;
     }
   } catch (err) {
@@ -55,5 +41,5 @@ export function computeHistoricalCosts(
       error: String(err),
     });
   }
-  return { priorDailyCostUsd, priorWeeklyCostUsd, priorDailyFirstActivityMs };
+  return { priorDailyCostUsd, priorWeeklyCostUsd };
 }
