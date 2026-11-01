@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { generateCopilotHooksFile } from '../install/copilot-install-helper.js';
 import { AmazonQAdapter } from './amazon-q-adapter.js';
 import { AntigravityAdapter } from './antigravity-adapter.js';
 import { CLAUDE_CODE_ENV_SIGNALS, ClaudeCodeAdapter } from './claude-code-adapter.js';
@@ -593,8 +594,8 @@ describe('capabilities', () => {
       cursor: [],
       windsurf: [],
       copilot: ['copilot', UNATTRIBUTED_BREADCRUMB_WRITER],
-      'copilot-app': ['copilot-app'],
-      'copilot-sdk': ['copilot-sdk', 'copilot', UNATTRIBUTED_BREADCRUMB_WRITER],
+      'copilot-app': ['copilot-app', 'copilot'],
+      'copilot-sdk': ['copilot-sdk', 'copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER],
       zed: [],
       continue: [],
       'amazon-q': [],
@@ -609,6 +610,23 @@ describe('capabilities', () => {
       antigravity: [],
       'generic-mcp': [UNATTRIBUTED_BREADCRUMB_WRITER],
     });
+  });
+
+  it('lets the Copilot CLI and desktop app adopt every engine name their shared hooks file can carry', () => {
+    const stamp = (command: string) =>
+      /(?:MCP_CLIENT|NEW_RELIC_AI_PLATFORM)=(\S+)/.exec(command)?.[1];
+    const sharedFileStamps = [
+      stamp(generateCopilotHooksFile().hooks.PreToolUse[0].command),
+      stamp(new CopilotAppAdapter().getHookInstallInstructions()),
+      stamp(new CopilotSdkAdapter().getHookInstallInstructions()),
+    ];
+    expect(sharedFileStamps).toEqual(['copilot', 'copilot-app', 'copilot']);
+    expect(new CopilotAppAdapter().capabilities.sessionBreadcrumbWriters).toEqual(
+      expect.arrayContaining(sharedFileStamps),
+    );
+    expect(new CopilotSdkAdapter().capabilities.sessionBreadcrumbWriters).toEqual(
+      expect.arrayContaining(sharedFileStamps),
+    );
   });
 
   it('claude-code declares CLAUDE.md and .claude/ as instruction file paths', () => {
