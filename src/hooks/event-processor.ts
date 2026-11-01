@@ -10,9 +10,6 @@
  *   - Permission-requested pre events (PermissionRequest seen, then nothing —
  *     Claude Code fires no hook event for an interactive user rejection)
  *     without a post within PERMISSION_REQUESTED_TIMEOUT_MS → rejected record
- *   - Post events without a matching pre → record with durationMs: null, unless
- *     the pre was already counted by one of the records above: in this process
- *     the post amends that record (onRecordAmend), across a restart it is dropped
  */
 
 import { randomUUID } from 'node:crypto';
@@ -74,12 +71,6 @@ export interface HookEventProcessorOptions {
    */
   drainAllSessions?: boolean;
   onRecord: (record: ToolCallRecord) => void;
-  /**
-   * Fires when a post arrives for a pre this process already emitted as a
-   * 'timeout' or 'rejected' record. `record` carries that record's id with the
-   * real outcome and duration; consumers replace the earlier record (see
-   * amendRecord), not add one.
-   */
   onRecordAmend?: (record: ToolCallRecord) => void;
   onTokenEvent?: (event: TokenEvent) => void;
   /**
@@ -338,9 +329,8 @@ const TOKEN_SOURCE_PLATFORM: ReadonlyMap<string, string> = new Map([
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_ORPHAN_TIMEOUT_MS = 60_000;
-// Permission prompts legitimately dwell — a user thinking for 90 seconds is common.
 const PERMISSION_REQUESTED_TIMEOUT_MS = 300_000;
-const DEFAULT_MAX_PENDING = 2_000;
+export const DEFAULT_MAX_PENDING = 2_000;
 // Claude Code caps a Bash call at 10 minutes; a subagent (Agent, or Task on
 // older clients) has no cap.
 const LONG_RUNNING_TOOL_TTL_MS: ReadonlyMap<string, number> = new Map([
@@ -348,9 +338,6 @@ const LONG_RUNNING_TOOL_TTL_MS: ReadonlyMap<string, number> = new Map([
   ['Agent', 30 * 60_000],
   ['Task', 30 * 60_000],
 ]);
-// A post without a toolUseId pairs by tool and session alone, so the longer a
-// counted pre stays matchable the likelier an unrelated post claims it. One
-// orphan timeout past the pre's own TTL covers a call that just missed it.
 const FALLBACK_LATE_POST_WINDOW_MS = DEFAULT_ORPHAN_TIMEOUT_MS;
 
 /**
@@ -371,10 +358,6 @@ interface CountedUnpaired {
   readonly matchUntil: number;
 }
 
-/**
- * The record that replaces `previous` once a late post completes its call:
- * the post's outcome and duration, plus the fields consumers added at intake.
- */
 export function amendRecord(previous: ToolCallRecord, amend: ToolCallRecord): ToolCallRecord {
   const { errorType: _replaced, ...intake } = previous;
   return { ...intake, ...amend };
@@ -387,8 +370,6 @@ function findOldestFallbackKey(
   let oldestKey: string | undefined;
   let oldestTimestamp = Infinity;
   for (const [k, { event: pre, matchUntil }] of entries) {
-    // Only fallback-keyed entries ("Tool:timestamp:uuid"), so a post without a
-    // toolUseId never steals the slot of a later post that carries one.
     if (
       k.startsWith(`${pre.tool}:`) &&
       pre.tool.toLowerCase() === post.tool.toLowerCase() &&
@@ -478,9 +459,6 @@ export class HookEventProcessor {
 
   private readonly pending: Map<string, PendingEntry> = new Map();
   private readonly countedUnpaired: Map<string, CountedUnpaired> = new Map();
-  // toolUseIds counted but not yet persisted, because the session holding
-  // their records has not been saved since. Fallback keys are random per
-  // process, so another process could never match them.
   private readonly unpersistedCountedIds = new Set<string>();
   private readonly maxPendingEvents: number;
   private intervalId: ReturnType<typeof setInterval> | null = null;
@@ -643,31 +621,29 @@ export class HookEventProcessor {
    * Hot-swap the underlying LocalStore and session-drain mode without
    * recreating the processor or its callbacks. Used when the provisional
    * unscoped store is replaced by the real session-scoped store once the
-   * Claude Code session ID is resolved asynchronously. Calls in flight stay
-   * pending so their posts still pair. When the new store drains only its own
-   * session, other sessions' posts land in buffers it no longer reads, so
-   * their pres go back to those buffers for whichever process drains them.
+   * Claude Code session ID is resolved asynchronously.
    */
   replaceStore(newStore: LocalStore, drainAllSessions: boolean): void {
     this.halt();
-    if (!drainAllSessions) {
-      const handBack = new Map<string, HookEvent[]>();
-      for (const [key, { event, phase }] of this.pending) {
-        const { sessionId, toolUseId, tool, timestamp } = event;
-        if (sessionId === undefined || sessionId === newStore.getSessionId()) continue;
-        this.pending.delete(key);
-        const events = handBack.get(sessionId) ?? [];
-        handBack.set(sessionId, events);
-        events.push(event);
-        if (phase === 'permission_requested' && toolUseId !== undefined)
-          events.push({ mode: 'permission_request', tool, timestamp, toolUseId, sessionId });
-      }
-      for (const [sessionId, events] of handBack)
-        this.store.appendToSessionBuffer(sessionId, events);
-    }
+    if (!drainAllSessions) this.handBackOtherSessionsPending(newStore.getSessionId());
     this.store = newStore;
     this.drainAllSessions = drainAllSessions;
     this.start();
+  }
+
+  private handBackOtherSessionsPending(keptSessionId: string | null): void {
+    const handBack = new Map<string, HookEvent[]>();
+    for (const [key, { event, phase }] of this.pending) {
+      const { sessionId, toolUseId, tool, timestamp } = event;
+      if (sessionId === undefined || sessionId === keptSessionId) continue;
+      this.pending.delete(key);
+      const events = handBack.get(sessionId) ?? [];
+      handBack.set(sessionId, events);
+      events.push(event);
+      if (phase === 'permission_requested' && toolUseId !== undefined)
+        events.push({ mode: 'permission_request', tool, timestamp, toolUseId, sessionId });
+    }
+    for (const [sessionId, events] of handBack) this.store.appendToSessionBuffer(sessionId, events);
   }
 
   /**
@@ -1065,12 +1041,7 @@ export class HookEventProcessor {
       : undefined;
   }
 
-  /**
-   * Persists the counted ids of `sessionIds`, so another process drops their
-   * late posts. Call it right after those sessions are saved: an id persisted
-   * before its record is saved makes a crash lose the call.
-   */
-  persistCountedIds(sessionIds: Iterable<string>): void {
+  persistCountedIdsOfSavedSessions(sessionIds: Iterable<string>): void {
     const idsBySession = new Map<string, string[]>();
     for (const sessionId of sessionIds) idsBySession.set(sessionId, []);
     for (const key of this.unpersistedCountedIds) {

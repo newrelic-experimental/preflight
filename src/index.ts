@@ -944,7 +944,6 @@ async function main(): Promise<void> {
     ppidCorrectionAbort?.abort();
     logger.info('Shutting down...');
     try {
-      // Flushes calls still in flight as records, so the save below holds them.
       eventProcessor?.stop();
       persistSession?.();
       if (
@@ -2710,7 +2709,9 @@ async function main(): Promise<void> {
               rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
             );
           }
-          eventProcessor?.persistCountedIds(rollups.map((rollup) => String(rollup.sessionId)));
+          eventProcessor?.persistCountedIdsOfSavedSessions(
+            rollups.map((rollup) => String(rollup.sessionId)),
+          );
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
@@ -2720,7 +2721,7 @@ async function main(): Promise<void> {
           return;
         }
         sessionStore.saveSession(summary);
-        eventProcessor?.persistCountedIds([summary.sessionId]);
+        eventProcessor?.persistCountedIdsOfSavedSessions([summary.sessionId]);
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
         // any real work), so calling it on every periodic checkpoint too is
         // cheap — and necessary: it otherwise only ran on the clean-shutdown

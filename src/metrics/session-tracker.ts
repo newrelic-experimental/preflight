@@ -9,6 +9,7 @@
 import { basename } from 'node:path';
 import type { MetricAggregator } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
+import { DEFAULT_MAX_PENDING } from '../hooks/event-processor.js';
 import {
   DEGENERATE_NAMES,
   shouldReplaceSessionName,
@@ -77,8 +78,6 @@ export interface SessionMetrics {
 // ---------------------------------------------------------------------------
 
 const MAX_TIMELINE_ENTRIES = 10_000;
-// Matches HookEventProcessor's default cap on the timed-out calls it can amend.
-const MAX_AMENDABLE_RECORDS = 2_000;
 const AMENDABLE_ERROR_TYPES = new Set(['timeout', 'rejected']);
 
 function addCount<K>(counts: Map<K, number>, key: K, delta: number): void {
@@ -267,7 +266,7 @@ export class SessionTracker implements Resettable {
       });
     }
     if (record.errorType !== undefined && AMENDABLE_ERROR_TYPES.has(record.errorType)) {
-      if (this.amendable.size >= MAX_AMENDABLE_RECORDS) {
+      if (this.amendable.size >= DEFAULT_MAX_PENDING) {
         this.amendable.delete(this.amendable.keys().next().value!);
       }
       this.amendable.set(record.id, { record, timelineIndex });
@@ -288,7 +287,6 @@ export class SessionTracker implements Resettable {
       addCount(this.bashExitCodes, exitCode, delta);
   }
 
-  /** Replaces a timed-out or rejected record with the outcome its late post carried. */
   amendToolCall(record: ToolCallRecord): void {
     const amended = this.amendable.get(record.id);
     if (!amended) return;

@@ -1223,7 +1223,7 @@ describe('HookEventProcessor', () => {
       first.stop();
       expect(records.map((r) => r.errorType)).toEqual(['timeout']);
       expect(store.hasCountedToolUseId('sess-001', 'toolu_exit')).toBe(false);
-      first.persistCountedIds(['sess-001']);
+      first.persistCountedIdsOfSavedSessions(['sess-001']);
 
       const restarted = new HookEventProcessor({
         store: new LocalStore(tmpDir),
@@ -1245,9 +1245,9 @@ describe('HookEventProcessor', () => {
         jest.advanceTimersByTime(61_000);
         expect(records.map((r) => r.errorType)).toEqual(['timeout']);
 
-        processor.persistCountedIds(['sess-other']);
+        processor.persistCountedIdsOfSavedSessions(['sess-other']);
         expect(store.hasCountedToolUseId('sess-001', 'toolu_slow')).toBe(false);
-        processor.persistCountedIds(['sess-001']);
+        processor.persistCountedIdsOfSavedSessions(['sess-001']);
         expect(store.hasCountedToolUseId('sess-001', 'toolu_slow')).toBe(true);
         processor.stop();
       } finally {

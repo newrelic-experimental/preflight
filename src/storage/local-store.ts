@@ -304,7 +304,6 @@ export class LocalStore {
     }
   }
 
-  /** Read fresh on every call: only a post with no pre in this process gets here. */
   hasCountedToolUseId(sessionId: string, toolUseId: string): boolean {
     if (!SESSION_ID_RE.test(sessionId)) return false;
     return this.countedFileNames().some(
@@ -315,12 +314,6 @@ export class LocalStore {
     );
   }
 
-  /**
-   * Deletes counted-id files, and temp files a crash left, not written for a
-   * day. A late post arrives within its call's runtime plus a restart, so a
-   * day-old id can no longer match one. A live writer rewrites its whole
-   * window on its next write.
-   */
   gcCountedToolUseIds(now: number = Date.now()): void {
     for (const name of this.countedFileNames()) {
       const path = resolve(this.countedDir, name);
