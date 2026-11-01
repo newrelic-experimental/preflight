@@ -75,6 +75,16 @@ export interface PlatformCapabilities {
    * name and then `UNATTRIBUTED_BREADCRUMB_WRITER`.
    */
   readonly sessionBreadcrumbWriters?: readonly string[];
+  readonly tokenReportHook?: TokenReportHook;
+}
+
+export interface TokenReportHook {
+  readonly clientName: string;
+  readonly postMcpEvent: string;
+  readonly homeHooksFile: string;
+  readonly projectHooksFile: string;
+  readonly homeMcpFile: string;
+  readonly projectMcpFile?: string;
 }
 
 /**
