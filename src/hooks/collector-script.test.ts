@@ -1946,7 +1946,7 @@ describe('collector-script', () => {
       platform,
     });
 
-    it.each(['newrelic-preflight', 'preflight'])(
+    it.each(['newrelic-preflight', 'preflight', 'nr-ai-observability'])(
       'Cursor afterMCPExecution from the %s server adds a usage line to that conversation only',
       (serverName) => {
         processHook(
@@ -2008,6 +2008,7 @@ describe('collector-script', () => {
       ['a prefixed tool name', { tool_name: 'preflight-nr_observe_report_tokens' }],
       ["another server's tool of the same name", { mcp_server_name: 'github' }],
       ['no server name', { mcp_server_name: undefined }],
+      ['a lookalike of the older server key', { mcp_server_name: 'my-nr-ai-observability-proxy' }],
       ['no result at all', { result_json: undefined }],
       [
         "a pending engine's reply for a tool it does not list",
@@ -2038,31 +2039,43 @@ describe('collector-script', () => {
       expect(lines.map((e) => e.inputTokens)).toEqual([1200, 1201]);
     });
 
-    it('keeps the claim when closing the buffer fails after the line was written', () => {
-      const failBufferClose = [
-        "import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';",
-        'const { openSync, closeSync } = fs; const buffers = new Set();',
-        "fs.openSync = (p, ...a) => { const fd = openSync(p, ...a); if (String(p).includes('buffer-')) buffers.add(fd); return fd; };",
+    const bufferFds = [
+      "import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';",
+      'const { openSync, closeSync, writeSync, writeFileSync } = fs; const buffers = new Set();',
+      "fs.openSync = (p, ...a) => { const fd = openSync(p, ...a); if (String(p).includes('buffer-')) buffers.add(fd); return fd; };",
+      "const enospc = () => Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });",
+    ];
+    it.each([
+      [
+        'closing the buffer fails after the line was written',
         "fs.closeSync = (fd) => { closeSync(fd); if (buffers.delete(fd)) throw new Error('EIO'); };",
-        'syncBuiltinESMExports();',
-      ].join('\n');
+      ],
+      [
+        'the disk fills after all but the last byte was written',
+        [
+          'const cut = (fd, b, off) => { buffers.delete(fd); return writeSync(fd, b, off, b.length - 1 - off); };',
+          'fs.writeFileSync = (fd, d, ...a) => { if (!buffers.has(fd)) return writeFileSync(fd, d, ...a); cut(fd, Buffer.from(d), 0); throw enospc(); };',
+          'const short = new Set();',
+          'fs.writeSync = (fd, b, off = 0, ...a) => { if (short.has(fd)) throw enospc(); if (!buffers.has(fd)) return writeSync(fd, b, off, ...a); short.add(fd); return cut(fd, b, off); };',
+        ].join('\n'),
+      ],
+    ])('keeps the claim when %s, so a retry adds no usage line', (_label, failure) => {
+      const preload = [...bufferFds, failure, 'syncBuiltinESMExports();'].join('\n');
       const script = resolve(__dirname, '..', '..', 'dist', 'hooks', 'collector-script.js');
-      for (let attempt = 0; attempt < 2; attempt++) {
-        execFileSync(
-          'node',
-          ['--import', `data:text/javascript,${encodeURIComponent(failBufferClose)}`, script],
-          {
-            input: cursorReportHook('conv-reporting'),
-            env: { ...process.env, NEW_RELIC_AI_MCP_STORAGE_PATH: tmpDir, MCP_CLIENT: 'cursor' },
-          },
-        );
-      }
+      execFileSync(
+        'node',
+        ['--import', `data:text/javascript,${encodeURIComponent(preload)}`, script],
+        {
+          input: cursorReportHook('conv-reporting'),
+          env: { ...process.env, NEW_RELIC_AI_MCP_STORAGE_PATH: tmpDir, MCP_CLIENT: 'cursor' },
+        },
+      );
+      const drained = readBufferLines('conv-reporting');
+      rmSync(resolve(tmpDir, 'buffer-conv-reporting.jsonl'));
+      processHook(cursorReportHook('conv-reporting'));
 
-      expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual([
-        'post',
-        'self_report',
-        'post',
-      ]);
+      const modes = [...drained, ...readBufferLines('conv-reporting')].map((e) => e.mode);
+      expect(modes).toEqual(['post', 'self_report', 'post']);
     });
 
     it.each(['pending-1', 'local-x', 'proxy-7', 'unknown'])(
@@ -2148,7 +2161,25 @@ describe('collector-script', () => {
 
         const events = readBufferLines('conv-unstamped');
         expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
-        expect(events[1].platform).toBe(platform);
+        expect(events.map((e) => e.platform)).toEqual([platform, platform]);
+      },
+    );
+
+    it.each([
+      ['beforeMCPExecution', 'cursor'],
+      ['beforeShellExecution', 'cursor'],
+      ['afterFileEdit', 'cursor'],
+      ['pre_mcp_tool_use', 'windsurf'],
+      ['post_run_command', 'windsurf'],
+    ])(
+      "stamps %s with the hook's platform %s under Claude Code's environment",
+      (name, platform) => {
+        process.env.MCP_CLIENT = 'claude-code';
+        process.env.CLAUDECODE = '1';
+
+        processHook(JSON.stringify({ hook_event_name: name, conversation_id: 'conv-event' }));
+
+        expect(readBufferLines('conv-event').map((e) => e.platform)).toEqual([platform]);
       },
     );
   });
