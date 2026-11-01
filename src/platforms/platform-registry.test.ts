@@ -593,8 +593,8 @@ describe('capabilities', () => {
       'claude-code': ['claude-code'],
       cursor: [],
       windsurf: [],
-      copilot: ['copilot', UNATTRIBUTED_BREADCRUMB_WRITER],
-      'copilot-app': ['copilot-app', 'copilot'],
+      copilot: ['copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER],
+      'copilot-app': ['copilot-app', 'copilot', UNATTRIBUTED_BREADCRUMB_WRITER],
       'copilot-sdk': ['copilot-sdk', 'copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER],
       zed: [],
       continue: [],
@@ -612,21 +612,27 @@ describe('capabilities', () => {
     });
   });
 
-  it('lets the Copilot CLI and desktop app adopt every engine name their shared hooks file can carry', () => {
-    const stamp = (command: string) =>
-      /(?:MCP_CLIENT|NEW_RELIC_AI_PLATFORM)=(\S+)/.exec(command)?.[1];
+  it('lets every Copilot engine adopt every engine name its shared hooks file can carry', () => {
+    const hookStamp = (text: string) => {
+      const command = /"command": "([^"]+)"/.exec(text)?.[1] ?? text;
+      return /(?:MCP_CLIENT|NEW_RELIC_AI_PLATFORM)=(\S+)/.exec(command)?.[1];
+    };
     const sharedFileStamps = [
-      stamp(generateCopilotHooksFile().hooks.PreToolUse[0].command),
-      stamp(new CopilotAppAdapter().getHookInstallInstructions()),
-      stamp(new CopilotSdkAdapter().getHookInstallInstructions()),
+      hookStamp(generateCopilotHooksFile().hooks.PreToolUse[0].command),
+      hookStamp(new CopilotAdapter().getHookInstallInstructions()),
+      hookStamp(new CopilotAppAdapter().getHookInstallInstructions()),
+      hookStamp(new CopilotSdkAdapter().getHookInstallInstructions()),
     ];
-    expect(sharedFileStamps).toEqual(['copilot', 'copilot-app', 'copilot']);
-    expect(new CopilotAppAdapter().capabilities.sessionBreadcrumbWriters).toEqual(
-      expect.arrayContaining(sharedFileStamps),
-    );
-    expect(new CopilotSdkAdapter().capabilities.sessionBreadcrumbWriters).toEqual(
-      expect.arrayContaining(sharedFileStamps),
-    );
+    expect(sharedFileStamps).toEqual(['copilot', 'copilot', 'copilot-app', 'copilot']);
+    for (const adapter of [
+      new CopilotAdapter(),
+      new CopilotAppAdapter(),
+      new CopilotSdkAdapter(),
+    ]) {
+      expect(adapter.capabilities.sessionBreadcrumbWriters).toEqual(
+        expect.arrayContaining([...sharedFileStamps, UNATTRIBUTED_BREADCRUMB_WRITER]),
+      );
+    }
   });
 
   it('claude-code declares CLAUDE.md and .claude/ as instruction file paths', () => {
