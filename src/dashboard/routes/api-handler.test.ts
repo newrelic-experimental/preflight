@@ -20,7 +20,6 @@ import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
 import { makeUsage } from '../../__test-utils__/token-usage.js';
 import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
-import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
 import { CostTracker } from '../../metrics/cost-tracker.js';
 import { buildCostTrackerSeed } from '../../metrics/cost-tracker-seed.js';
@@ -4172,46 +4171,90 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.forecastEndOfDayUsd as number).toBeGreaterThanOrEqual(parsed.totalCostUsd);
   });
 
-  it("anchors the forecast at a today-started session's startTime when its spend predates its first tool call", async () => {
-    const noon = localStartOfDay(Date.now()) + 12 * 60 * 60 * 1000;
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(noon);
-    try {
-      const startTime = noon - 30 * 60 * 1000;
-      const session = {
-        sessionId: 'started-today-1',
-        startTime,
-        endTime: noon,
-        estimatedCostUsd: 0.01,
-        costByDayUsd: { [localDateKey(noon)]: 0.01 },
-        timeline: [{ timestamp: noon - 10_000 }],
-      };
-      const handler = createApiHandler({
-        localStore: { peekAllBuffers: () => [] },
-        sessionStore: {
-          loadTodaySessions: () => [session],
-          loadSessionsOverlappingToday: () => [session],
-          listSessions: () => [],
-          loadSession: () => null,
-        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-      });
-      const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
-      const { res, status, body } = fakeRes();
-      await handler(req, res);
-      expect(status()).toBe(200);
-      const parsed = JSON.parse(body()) as { forecastEndOfDayUsd: number | null };
-      const expected = buildCostForecastFromInputs(
-        {
-          sessionSpentUsd: 0.01,
-          sessionStartMs: startTime,
-          dailySpentUsd: 0.01,
-          dailyFirstActivityMs: startTime,
-        },
-        noon,
-      ).forecastEndOfDayUsd as number;
-      expect(parsed.forecastEndOfDayUsd).toBeCloseTo(expected, 2);
-    } finally {
-      nowSpy.mockRestore();
+  describe('forecast anchor', () => {
+    const HOUR = 60 * 60 * 1000;
+    const dayStart = localStartOfDay(Date.now());
+    const todayKey = localDateKey(dayStart + 12 * HOUR);
+    const at = (h: number, m = 0, sec = 0) => dayStart + h * HOUR + m * 60_000 + sec * 1000;
+    const tool = (timestamp: number) => ({ timestamp, durationMs: null, toolName: 'Read' });
+
+    async function forecastAt(
+      nowMs: number,
+      session: Record<string, unknown>,
+    ): Promise<number | null> {
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(nowMs);
+      try {
+        const startedToday = (session.startTime as number) >= dayStart;
+        const handler = createApiHandler({
+          localStore: { peekAllBuffers: () => [] },
+          sessionStore: {
+            loadTodaySessions: () => (startedToday ? [session] : []),
+            loadSessionsOverlappingToday: () => [session],
+            listSessions: () => [],
+            loadSession: () => null,
+          } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+        });
+        const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+        const { res, status, body } = fakeRes();
+        await handler(req, res);
+        expect(status()).toBe(200);
+        return (JSON.parse(body()) as { forecastEndOfDayUsd: number | null }).forecastEndOfDayUsd;
+      } finally {
+        nowSpy.mockRestore();
+      }
     }
+
+    it('anchors at the persisted first spend today, matching /api/cost, when spend predates the first tool call', async () => {
+      const forecast = await forecastAt(at(12), {
+        sessionId: 'spend-before-tools',
+        startTime: at(9),
+        endTime: at(12),
+        estimatedCostUsd: 1,
+        costByDayUsd: { [todayKey]: 1 },
+        firstActivityByDayMs: { [todayKey]: at(9) },
+        timeline: [tool(at(9, 29, 47))],
+      });
+      expect(forecast).toBe(5);
+    });
+
+    it('does not dilute the rate with idle time between process start and the first spend', async () => {
+      const forecast = await forecastAt(at(16), {
+        sessionId: 'idle-window',
+        startTime: at(8),
+        endTime: at(16),
+        estimatedCostUsd: 1,
+        costByDayUsd: { [todayKey]: 1 },
+        firstActivityByDayMs: { [todayKey]: at(15) },
+        timeline: [tool(at(15, 10))],
+      });
+      expect(forecast).toBe(9);
+    });
+
+    it('anchors a resumed cross-midnight session at its persisted first spend today, not its first tool call today', async () => {
+      const yesterdayKey = localDateKey(dayStart - 2 * HOUR);
+      const forecast = await forecastAt(at(12), {
+        sessionId: 'resumed-cross-midnight',
+        startTime: dayStart - 2 * HOUR,
+        endTime: at(12),
+        estimatedCostUsd: 5,
+        costByDayUsd: { [yesterdayKey]: 3, [todayKey]: 2 },
+        firstActivityByDayMs: { [yesterdayKey]: dayStart - 2 * HOUR, [todayKey]: at(10) },
+        timeline: [tool(dayStart - HOUR), tool(at(11, 30))],
+      });
+      expect(forecast).toBe(14);
+    });
+
+    it('keeps the first-tool-call anchor for a legacy summary without firstActivityByDayMs', async () => {
+      const forecast = await forecastAt(at(12), {
+        sessionId: 'legacy',
+        startTime: at(9),
+        endTime: at(12),
+        estimatedCostUsd: 1,
+        costByDayUsd: { [todayKey]: 1 },
+        timeline: [tool(at(11))],
+      });
+      expect(forecast).toBe(13);
+    });
   });
 
   it('returns forecastEndOfDayUsd null when there is no activity today from any source', async () => {

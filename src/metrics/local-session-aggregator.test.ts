@@ -601,6 +601,23 @@ describe('LocalSessionAggregator subagent cost', () => {
     const [summary] = summariesOf(agg);
     expect(summary?.costByDayUsd).toBeUndefined();
     expect(summary?.subagentCostByDayUsd).toBeUndefined();
+    expect(summary?.firstActivityByDayMs).toBeUndefined();
+  });
+
+  it('records the earliest token event per local day as firstActivityByDayMs', () => {
+    const agg = new LocalSessionAggregator();
+    const day1 = Date.parse('2026-09-10T12:00:00Z');
+    const day2 = day1 + 48 * 60 * 60 * 1000;
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: day1 + 60_000 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: day1 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: day2 });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: day1 - 60_000 });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.firstActivityByDayMs).toEqual({
+      [localDateKey(day1)]: day1,
+      [localDateKey(day2)]: day2,
+    });
   });
 });
 

@@ -586,14 +586,11 @@ describe('Today view', () => {
     await waitFor(() => expect(screen.getByText(/^→ \$8\.00 by end of day/)).toBeInTheDocument());
   });
 
-  it('shows no end-of-day projection when the resolved aggregate has a null forecast, ignoring other sources', async () => {
-    useLiveStore.setState({
-      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 12.17, forecastEodUsd: 80.53 },
-    });
+  function stubForecastSources(aggregateBody: Record<string, unknown>): void {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/sessions/today/aggregate')) {
-        return new Response(JSON.stringify({ totalCostUsd: 5, forecastEndOfDayUsd: null }), {
+        return new Response(JSON.stringify(aggregateBody), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
@@ -613,11 +610,41 @@ describe('Today view', () => {
         headers: { 'content-type': 'application/json' },
       });
     }) as typeof fetch;
+  }
+
+  it('shows no end-of-day projection when the aggregate has today spend but a null forecast, ignoring other sources', async () => {
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 12.17, forecastEodUsd: 80.53 },
+    });
+    stubForecastSources({ totalCostUsd: 20, forecastEndOfDayUsd: null, sessionCount: 4 });
 
     renderToday();
-    await waitFor(() => expect(screen.getByText('avg cost / session')).toBeInTheDocument());
-    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => {
+      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+      expect(within(spendTile).getByText('$20.00')).toBeInTheDocument();
+    });
     expect(screen.queryByText(/by end of day/)).toBeNull();
+  });
+
+  it('bridges with the SSE forecast while the aggregate has seen no spend today', async () => {
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 4, forecastEodUsd: 8 },
+    });
+    stubForecastSources({ totalCostUsd: 0, forecastEndOfDayUsd: null, sessionCount: 3 });
+
+    renderToday();
+    await waitFor(() => expect(screen.getByText('3')).toBeInTheDocument());
+    expect(screen.getByText(/^→ \$8\.00 by end of day/)).toBeInTheDocument();
+  });
+
+  it('uses the aggregate forecast over the SSE forecast once the aggregate has one', async () => {
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 4, forecastEodUsd: 80.53 },
+    });
+    stubForecastSources({ totalCostUsd: 5, forecastEndOfDayUsd: 9, sessionCount: 2 });
+
+    renderToday();
+    await waitFor(() => expect(screen.getByText(/^→ \$9\.00 by end of day/)).toBeInTheDocument());
   });
 
   function stubObservabilityHealth(body: Record<string, unknown>): void {

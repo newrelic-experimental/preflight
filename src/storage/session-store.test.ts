@@ -1647,6 +1647,30 @@ describe('buildSessionSummary', () => {
     expect(merged.subagentCostByDayUsd).toBeUndefined();
   });
 
+  it('mergeSummaries keeps the earliest firstActivityByDayMs per day key', () => {
+    const existing = makeSummary({
+      firstActivityByDayMs: { '2026-09-10': 1_000, '2026-09-11': 5_000 },
+    });
+    const incoming = makeSummary({
+      firstActivityByDayMs: { '2026-09-11': 9_000, '2026-09-12': 7_000 },
+    });
+    expect(mergeSummaries(existing, incoming).firstActivityByDayMs).toEqual({
+      '2026-09-10': 1_000,
+      '2026-09-11': 5_000,
+      '2026-09-12': 7_000,
+    });
+    expect(mergeSummaries(incoming, existing).firstActivityByDayMs).toEqual({
+      '2026-09-10': 1_000,
+      '2026-09-11': 5_000,
+      '2026-09-12': 7_000,
+    });
+  });
+
+  it('mergeSummaries leaves firstActivityByDayMs undefined when neither side has it', () => {
+    const merged = mergeSummaries(makeSummary(), makeSummary());
+    expect(merged.firstActivityByDayMs).toBeUndefined();
+  });
+
   it('mergeSummaries takes the per-model max of unpriced calls and tokens', () => {
     const existing = makeSummary({
       unpricedByModel: { a: { calls: 3, tokens: 100 }, b: { calls: 1, tokens: 10 } },
@@ -1989,6 +2013,38 @@ describe('buildSessionSummary', () => {
     expect(summary.taskCount).toBe(1);
   });
 
+  it('persists the earliest token event per local day from CostTracker', () => {
+    const nowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date(2026, 8, 10, 12, 0, 0).getTime());
+    try {
+      const costTracker = new CostTracker();
+      const first = new Date(2026, 8, 10, 9, 0, 0).getTime();
+      for (const timestampMs of [first + 30 * 60_000, first]) {
+        costTracker.recordTokenUsage(
+          {
+            inputTokens: 1_000,
+            outputTokens: 100,
+            thinkingTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            totalTokens: 1_100,
+          },
+          'claude-sonnet-4',
+          { timestampMs },
+        );
+      }
+      const summary = buildSessionSummary({
+        sessionTracker: makeSessionTracker(),
+        costTracker,
+        developer: 'dev',
+      });
+      expect(summary.firstActivityByDayMs).toEqual({ '2026-09-10': first });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('includes cache token fields from CostTracker', () => {
     const sessionTracker = makeSessionTracker();
     const costTracker = new CostTracker();
@@ -2014,6 +2070,7 @@ describe('buildSessionSummary', () => {
       parentCostUsd: 0.029,
       costByWorkflowRunId: {},
       costByDayUsd: {},
+      firstActivityByDayMs: {},
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},
@@ -2057,6 +2114,7 @@ describe('buildSessionSummary', () => {
       parentCostUsd: 0.029,
       costByWorkflowRunId: { wf_test_run: { '2026-08-14': 0.05 } },
       costByDayUsd: { '2026-08-14': 0.05 },
+      firstActivityByDayMs: {},
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},
@@ -2284,6 +2342,26 @@ describe('buildSessionSummary', () => {
     };
     const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
     expect(result.costByDayUsd).toBeUndefined();
+  });
+
+  it('deserializeFullSessionSummary round-trips firstActivityByDayMs and drops non-finite entries', () => {
+    const raw = {
+      sessionId: 'sess-first-activity',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+      firstActivityByDayMs: { '2026-08-18': 1_700_000_500_000, bad: 'nope', worse: null },
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.firstActivityByDayMs).toEqual({ '2026-08-18': 1_700_000_500_000 });
+
+    const legacy = deserializeFullSessionSummary({
+      ...raw,
+      firstActivityByDayMs: undefined,
+    } as unknown as Record<string, unknown>);
+    expect(legacy.firstActivityByDayMs).toBeUndefined();
   });
 
   it('deserializeFullSessionSummary keeps valid unpricedByModel entries and drops malformed ones', () => {
