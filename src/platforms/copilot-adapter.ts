@@ -114,8 +114,10 @@ export class CopilotAdapter implements PlatformAdapter {
   readonly capabilities = {
     instructionFilePaths: [] as const,
     // Hook commands documented before #557 (2026-09-04) lack the
-    // NEW_RELIC_AI_PLATFORM=copilot stamp.
-    sessionBreadcrumbWriters: ['copilot', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
+    // NEW_RELIC_AI_PLATFORM=copilot stamp. The desktop app's setup stamps
+    // MCP_CLIENT=copilot-app into ~/.copilot/hooks/preflight.json, which VS
+    // Code reads too.
+    sessionBreadcrumbWriters: ['copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {
