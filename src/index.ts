@@ -2092,6 +2092,7 @@ async function main(): Promise<void> {
     const subagentAttribution = new SubagentAttributionIndex();
     eventProcessor = new HookEventProcessor({
       store: localStore,
+      platformAdapter: activePlatform,
       // --local mode and the provisional --stdio window own no specific Claude
       // Code session; drain every per-session buffer so the dashboard sees all
       // live sessions' events. After real session ID resolution the processor
