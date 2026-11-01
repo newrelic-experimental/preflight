@@ -1140,16 +1140,16 @@ describe('HookEventProcessor', () => {
       },
     );
 
-    it('waits out a Bash call that the user approved and that ran 8 minutes', () => {
+    it('waits out a Bash call that the user approved after 4 minutes and that ran 8', () => {
       const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
       processor.start();
       const bash = { tool: 'Bash', toolUseId: 'toolu_bash', timestamp: Date.now() };
       processor.processEvents([makePreEvent(bash), { mode: 'permission_request', ...bash }]);
-      jest.advanceTimersByTime(480_000);
+      jest.advanceTimersByTime(720_000);
       processor.processEvents([makePostEvent({ ...bash, timestamp: Date.now() })]);
       processor.stop();
 
-      expect(records).toMatchObject([{ success: true, durationMs: 480_000 }]);
+      expect(records).toMatchObject([{ success: true, durationMs: 720_000 }]);
     });
 
     it('records a 3-minute Agent call once, as a success with its duration', () => {
@@ -1252,6 +1252,23 @@ describe('HookEventProcessor', () => {
       restarted.stop();
 
       expect(records).toHaveLength(1);
+    });
+
+    it('marks every call it counted unpaired for a restart, past its in-memory cap', () => {
+      const first = new HookEventProcessor({ store, onRecord, maxPendingEvents: 300 });
+      const ids = ['toolu_a', ...Array.from({ length: 300 }, (_, i) => `toolu_${i}`)];
+      first.processEvents(
+        ids.map((toolUseId, i) => makePreEvent({ toolUseId, sessionId: i ? 'sess-b' : 'sess-a' })),
+      );
+      first.stop();
+      first.persistCountedIdsOfSavedSessions(['sess-a', 'sess-b']);
+
+      new HookEventProcessor({ store, onRecord }).processEvents([
+        makePostEvent({ toolUseId: 'toolu_a', sessionId: 'sess-a' }),
+        makePostEvent({ toolUseId: 'toolu_0', sessionId: 'sess-b' }),
+      ]);
+
+      expect(records.filter((r) => r.success).map((r) => r.toolUseId)).toEqual([]);
     });
 
     it('marks a swept timeout counted at the next save, before any stop', () => {
