@@ -1,16 +1,7 @@
 #!/usr/bin/env node
 
 // src/hooks/collector-script.ts
-import {
-  readFileSync,
-  writeFileSync,
-  openSync,
-  closeSync,
-  mkdirSync,
-  existsSync,
-  utimesSync,
-  constants as fsConstants
-} from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, utimesSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
@@ -71,6 +62,77 @@ function hookEventFromArg(arg) {
   return HOOK_EVENT_TYPES.find(
     (event) => event.toLowerCase() === lower || HOOK_SUBCOMMANDS[event] === lower
   );
+}
+
+// src/storage/hook-buffer.ts
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readSync,
+  statSync,
+  unlinkSync,
+  writeSync
+} from "node:fs";
+var DRAIN_SEAL = "\0preflight-drain-seal\n";
+var MAX_REDOS = 5;
+var MAX_OPENS = 100;
+function readRange(fd, start, end) {
+  const buf = Buffer.alloc(end - start);
+  let read = 0;
+  while (read < buf.length) {
+    const n = readSync(fd, buf, read, buf.length - read, start + read);
+    if (n === 0) break;
+    read += n;
+  }
+  return buf.subarray(0, read);
+}
+function readToEnd(fd, scratch) {
+  let total = 0;
+  for (let n; (n = readSync(fd, scratch, 0, scratch.length, null)) > 0; ) total += n;
+  return total;
+}
+function offsetAfterWrite(fd) {
+  const scratch = Buffer.alloc(64 * 1024);
+  let after = readToEnd(fd, scratch);
+  for (; ; ) {
+    const size = fstatSync(fd).size;
+    const more = readToEnd(fd, scratch);
+    if (more === 0) return size - after;
+    after += more;
+  }
+}
+function isAt(path, file) {
+  const now = statSync(path, { throwIfNoEntry: false });
+  return now !== void 0 && now.ino === file.ino && now.dev === file.dev;
+}
+function appendOnce(path, data) {
+  const fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_APPEND, 384);
+  try {
+    const opened = fstatSync(fd);
+    if (!isAt(path, opened)) return "moved";
+    const written = writeSync(fd, data);
+    if (written < data.length) {
+      writeSync(fd, "\n");
+      return "redo";
+    }
+    if (isAt(path, opened)) return "kept";
+    const start = offsetAfterWrite(fd) - data.length;
+    return readRange(fd, opened.size, start).includes(DRAIN_SEAL) ? "redo" : "kept";
+  } finally {
+    closeSync(fd);
+  }
+}
+function appendToHookBuffer(path, text) {
+  const data = Buffer.from(text);
+  let redos = 0;
+  for (let opens = 0; opens < MAX_OPENS; opens++) {
+    const landing = appendOnce(path, data);
+    if (landing === "kept") return;
+    if (landing === "redo" && ++redos === MAX_REDOS) break;
+  }
+  throw new Error(`Hook buffer write raced a drain on all attempts and was not kept: ${path}`);
 }
 
 // src/hooks/collector-script.ts
@@ -820,17 +882,10 @@ function processHook(raw, cliEvent) {
       mkdirSync(bufferDir, { recursive: true, mode: 448 });
     }
     const line = JSON.stringify(event) + "\n";
-    const fd = openSync(
-      bufferPath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND,
-      384
-    );
-    try {
-      writeFileSync(fd, line);
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
+    appendToHookBuffer(bufferPath, line);
+  } catch (err) {
+    process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}
+`);
   }
   if (isGeminiCli) {
     try {
