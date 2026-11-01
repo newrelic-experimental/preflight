@@ -1720,6 +1720,15 @@ describe('breadcrumbs filed by writer', () => {
     expect(sessionBreadcrumbs(tmpDir, writers, startedAt).cwd('/projects/shared')).toBe('sess-sdk');
   });
 
+  it("skips the engine's own cwd breadcrumb once no event has touched it for a day's work", () => {
+    const stale = new Date(Date.now() - 13 * 60 * 60 * 1000);
+    utimesSync(writeCrumb('kiro', 'cwd', '-projects-shared', 'sess-kiro-yesterday'), stale, stale);
+    writeCrumb('unattributed', 'cwd', '-projects-shared', 'sess-live');
+    expect(sessionBreadcrumbs(tmpDir, ['kiro', 'unattributed']).cwd('/projects/shared')).toBe(
+      'sess-live',
+    );
+  });
+
   it('walks past a tagged closest untagged ancestor to an acceptable farther one', () => {
     writeCrumb('claude-code', 'cwd', '-projects-shared', 'sess-claude');
     writeCrumb(null, 'ppid', '424280', 'sess-claude');
