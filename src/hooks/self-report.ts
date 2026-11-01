@@ -110,22 +110,6 @@ export function parseSelfReport(args: unknown): ParsedSelfReport {
   };
 }
 
-function selfReportLine(
-  report: SelfReport,
-  conversationId: string,
-  timestamp: number,
-  platform: string,
-): SelfReportHookEvent {
-  return {
-    mode: 'self_report',
-    tool: REPORT_TOKENS_TOOL_NAME,
-    timestamp,
-    sessionId: conversationId,
-    ...report,
-    platform,
-  };
-}
-
 function hookAcknowledged(result: unknown, reportId: string): boolean {
   const value = decodeObject(result);
   if (!value || value.isError === true) return false;
@@ -146,12 +130,19 @@ export function hookSelfReportLine(
   timestamp: number,
   platform: string,
 ): SelfReportHookEvent | undefined {
-  if (call.tool !== REPORT_TOKENS_TOOL_NAME || !isPreflightServerName(call.server))
-    return undefined;
-  if (!isConversationId(conversationId)) return undefined;
+  const isReport = call.tool === REPORT_TOKENS_TOOL_NAME && isPreflightServerName(call.server);
+  if (!isReport || !isConversationId(conversationId)) return undefined;
   const parsed = parseSelfReport(call.args);
   if (!parsed.ok || !hookAcknowledged(call.result, parsed.report.reportId)) return undefined;
-  return selfReportLine(parsed.report, conversationId, timestamp, platform);
+  const { report } = parsed;
+  return {
+    mode: 'self_report',
+    tool: REPORT_TOKENS_TOOL_NAME,
+    timestamp,
+    sessionId: conversationId,
+    ...report,
+    platform,
+  };
 }
 
 function claimPath(storageDir: string, line: SelfReportHookEvent): string {
