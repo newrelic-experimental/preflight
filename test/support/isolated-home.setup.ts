@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
+import { ISOLATED_HOME_ENV } from './isolated-home.global-setup.js';
 
-const isolated = process.env.PREFLIGHT_TEST_ISOLATED_HOME;
+const isolated = process.env[ISOLATED_HOME_ENV];
 
 if (!isolated || homedir() !== isolated) {
   throw new Error(
