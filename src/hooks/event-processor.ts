@@ -844,7 +844,6 @@ export class HookEventProcessor {
       cacheReadTokens: tokenCount(event.cacheReadTokens),
       cacheCreationTokens: tokenCount(event.cacheCreationTokens),
     };
-    // Seen before the callback runs, so a throw after it began recording never lets a copy count again.
     if (this.tokenDedupRegistry.hasAndAdd(sessionId, reportKey(report))) return;
     try {
       this.onSelfReport(report);
