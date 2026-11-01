@@ -1412,6 +1412,7 @@ async function main(): Promise<void> {
     // below can call this again for a *different* id after a pending->real
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
+    const toolCallsSavedFromRollups = new Map<string, number>();
     const rehydrateTrackersIfResumed = (sessionId: string): void => {
       if (isSyntheticSessionId(sessionId)) return;
       if (rehydratedTrackerSessionIds.has(sessionId)) return;
@@ -1420,10 +1421,14 @@ async function main(): Promise<void> {
         const persisted = sessionStore!.loadSession(sessionId);
         if (!persisted) return;
         costTracker.seedFromPersisted(buildCostTrackerSeed(persisted));
-        sessionTracker!.seedFromPersisted({
-          toolCallCount: persisted.toolCallCount,
-          bashCommandCount: persisted.bashCommandCount,
-        });
+        // A file holding no more calls than this engine saved from its rollup
+        // holds only calls that adoptSessionId() replays.
+        if (persisted.toolCallCount > (toolCallsSavedFromRollups.get(sessionId) ?? 0)) {
+          sessionTracker!.seedFromPersisted({
+            toolCallCount: persisted.toolCallCount,
+            bashCommandCount: persisted.bashCommandCount,
+          });
+        }
         budgetTracker.seedFiredThresholdsFromSessionTotal(
           costTracker.getMetrics().sessionTotalCostUsd ?? 0,
         );
@@ -2663,6 +2668,7 @@ async function main(): Promise<void> {
         sessionStore.saveSession(
           rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
         );
+        toolCallsSavedFromRollups.set(String(rollup.sessionId), Number(rollup.toolCallCount));
       }
       eventProcessor?.persistCountedIdsOfSavedSessions(
         rollups.map((rollup) => String(rollup.sessionId)),
@@ -2981,7 +2987,7 @@ async function main(): Promise<void> {
       realId: string,
       opts?: { isCorrection?: boolean; viaCwdOnly?: boolean },
     ): Promise<void> => {
-      const othersDrainedWhilePending = isSyntheticSessionId(sessionTraceId);
+      const savesOtherSessions = opts?.isCorrection || isSyntheticSessionId(sessionTraceId);
       if (opts?.isCorrection) {
         // A real correction means the previously-adopted id was wrong, and
         // anything these four trackers accumulated since startWatchers()
@@ -3030,7 +3036,7 @@ async function main(): Promise<void> {
       // Hot-swap the event processor to the scoped store so it only drains
       // this session's events going forward.
       eventProcessor!.replaceStore(realLocalStore, false);
-      if (othersDrainedWhilePending) {
+      if (savesOtherSessions) {
         try {
           saveObservedSessions('in progress', realId);
         } catch (err) {
