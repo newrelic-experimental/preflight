@@ -31,7 +31,6 @@
  */
 
 import {
-  appendFileSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -47,6 +46,7 @@ import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 import { createLogger } from '../shared/index.js';
+import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import type { LocalStore } from '../storage/local-store.js';
 
 const logger = createLogger('copilot-usage-watcher');
@@ -492,12 +492,9 @@ export class CopilotUsageWatcher {
       if (!existsSync(this.storagePath)) {
         mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
       }
-      appendFileSync(
+      appendToHookBuffer(
         join(this.storagePath, `buffer-${sessionId}.jsonl`),
         JSON.stringify(event) + '\n',
-        {
-          mode: 0o600,
-        },
       );
     } catch (err) {
       this.recordError(err);

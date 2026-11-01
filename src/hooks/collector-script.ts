@@ -13,16 +13,7 @@
  *   - Config via env vars only (no file reads for config)
  */
 
-import {
-  readFileSync,
-  writeFileSync,
-  openSync,
-  closeSync,
-  mkdirSync,
-  existsSync,
-  utimesSync,
-  constants as fsConstants,
-} from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, utimesSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -30,6 +21,7 @@ import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
+import { appendToHookBuffer } from '../storage/hook-buffer.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -1354,16 +1346,7 @@ function processHook(raw: string, cliEvent?: string): void {
 
     const line = JSON.stringify(event) + '\n';
 
-    const fd = openSync(
-      bufferPath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND,
-      0o600,
-    );
-    try {
-      writeFileSync(fd, line);
-    } finally {
-      closeSync(fd);
-    }
+    appendToHookBuffer(bufferPath, line);
   } catch {
     // Silent failure — never block Claude Code
   }

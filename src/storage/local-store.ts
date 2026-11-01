@@ -13,6 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
+import { appendToHookBuffer } from './hook-buffer.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -263,11 +264,11 @@ export class LocalStore {
 
   /**
    * Append a hook event as a JSON line to the buffer file.
-   * Uses appendFileSync for minimal latency (<5ms budget).
+   * Uses a raw append for minimal latency (<5ms budget).
    */
   appendToBuffer(event: HookEvent): void {
     try {
-      appendFileSync(this.bufferPath, JSON.stringify(event) + '\n', { mode: 0o600 });
+      appendToHookBuffer(this.bufferPath, JSON.stringify(event) + '\n');
     } catch (err) {
       // Never block the caller — log and move on
       logger.warn('Failed to append to buffer', { error: String(err) });
@@ -1193,7 +1194,7 @@ export class LocalStore {
     for (const [sid, lines] of partitioned) {
       const target = resolve(this.storagePath, `buffer-${sid}.jsonl`);
       try {
-        appendFileSync(target, lines.join('\n') + '\n', { mode: 0o600 });
+        appendToHookBuffer(target, lines.join('\n') + '\n');
       } catch (err) {
         // Mid-partition failure: the .migrating file stays on disk so the
         // operator can recover forensically. We don't retry on next boot to
