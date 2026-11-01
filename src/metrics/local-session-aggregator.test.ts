@@ -59,11 +59,14 @@ function summariesOf(agg: LocalSessionAggregator, outcome = 'in progress') {
 }
 
 describe('LocalSessionAggregator', () => {
-  it('applies the outcome of a late post to the timeout record it replaces', () => {
+  it('applies the outcome of a late post once, to the timeout record it replaces', () => {
     const agg = new LocalSessionAggregator();
     const timedOut = { id: 'r1', sessionId: REAL_ID, toolName: 'Agent', timestamp: 1000 };
     agg.recordToolCall({ ...timedOut, durationMs: null, success: false, errorType: 'timeout' });
-    agg.amendToolCall({ ...timedOut, toolUseId: 'toolu_1', durationMs: 180_000, success: true });
+    const late = { ...timedOut, toolUseId: 'toolu_1', durationMs: 180_000, success: true };
+    agg.amendToolCall(late);
+    agg.amendToolCall(late);
+    agg.amendToolCall({ ...late, id: 'not-recorded' });
 
     const [summary] = summariesOf(agg, 'in progress');
     expect(summary?.toolCallCount).toBe(1);
