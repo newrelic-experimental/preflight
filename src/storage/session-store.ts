@@ -309,6 +309,14 @@ export function hasAttributableActivity(s: AttributableActivity): boolean {
  * cost and tokens, and must still be kept. A session with none of these is an
  * idle MCP process (a window that was opened and never used).
  */
+function wouldClobber(existing: FullSessionSummary, incoming: FullSessionSummary): boolean {
+  if (!hasAttributableActivity(existing) || hasAttributableActivity(incoming)) return false;
+  // A file that holds only self-reports takes a summary with usage, such as its owning engine's.
+  return (
+    hasAttributableActivity({ ...existing, selfReportCount: 0 }) || !hasRecordedUsage(incoming)
+  );
+}
+
 function hasRecordedUsage(s: FullSessionSummary): boolean {
   return (
     hasAttributableActivity(s) ||
@@ -783,7 +791,7 @@ export class SessionStore {
     let toWrite: FullSessionSummary = summary;
     if (existingWithPath) {
       const { summary: existing } = existingWithPath;
-      if (hasAttributableActivity(existing) && !hasAttributableActivity(summary)) {
+      if (wouldClobber(existing, summary)) {
         logger.warn('Refusing to overwrite recorded session with an empty summary', {
           sessionId: summary.sessionId,
         });

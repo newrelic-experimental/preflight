@@ -24,6 +24,8 @@
 import { spawnSync } from 'node:child_process';
 
 import { createLogger } from '../shared/index.js';
+import { SESSION_ID_RE } from '../hooks/self-report.js';
+import { isSyntheticSessionId } from '../hooks/synthetic-session-id.js';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
@@ -351,12 +353,8 @@ export class LocalSessionAggregator {
   }
 
   private static isReal(sessionId: string | null | undefined): sessionId is string {
-    if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
-    return (
-      !sessionId.startsWith('local-') &&
-      !sessionId.startsWith('proxy-') &&
-      !sessionId.startsWith('pending-')
-    );
+    if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) return false;
+    return sessionId !== 'unknown' && !isSyntheticSessionId(sessionId);
   }
 
   private ensure(sessionId: string, timestamp: number): LocalSessionRollup {
