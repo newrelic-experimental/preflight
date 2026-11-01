@@ -42,6 +42,7 @@ function resolveRecordContent(highSecurity, explicitValue) {
 }
 
 // src/platforms/claude-code-adapter.ts
+var CLAUDE_CODE_PLATFORM_NAME = "claude-code";
 var CLAUDE_CODE_ENV_SIGNALS = [
   "CLAUDECODE",
   "CLAUDE_CODE_ENTRYPOINT",
@@ -132,7 +133,7 @@ function getMaxContentLength() {
 function detectStampPlatform() {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
-  return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0) ? "claude-code" : void 0;
+  return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0) ? CLAUDE_CODE_PLATFORM_NAME : void 0;
 }
 var MAX_REDACT_BYTES = 1048576;
 function redact(value) {
