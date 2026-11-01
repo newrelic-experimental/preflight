@@ -333,10 +333,8 @@ export function Today(): JSX.Element {
       cost?.forecastEodUsd ??
       costApi?.forecast?.forecastEndOfDayUsd ??
       null);
-  // Sources refresh at different times, so the chosen forecast can trail the
-  // tile's max-of-sources spend. Clamping up would claim no more spend today.
-  const forecastKpiUsd =
-    chosenForecastUsd !== null && chosenForecastUsd >= todayTotal ? chosenForecastUsd : null;
+  const forecastBehindSpend = chosenForecastUsd !== null && chosenForecastUsd < todayTotal;
+  const forecastKpiUsd = forecastBehindSpend ? null : chosenForecastUsd;
 
   // The subagent KPI must source from the polled aggregate
   // endpoint, not the liveStore — the SSE frames that would populate
