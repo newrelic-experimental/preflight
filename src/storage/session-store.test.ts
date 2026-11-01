@@ -569,6 +569,26 @@ describe('SessionStore', () => {
     expect(files[0]).toBe('2026-04-15_abc-123.json');
   });
 
+  it('saveSession reports whether it wrote a file', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    const empty = makeSummary({ sessionId: 'reports-write', startTime, toolCallCount: 0 });
+    const noUsage = {
+      ...empty,
+      toolBreakdown: {},
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensThinking: 0,
+      estimatedCostUsd: 0,
+      subagentCostUsd: 0,
+      timeline: [],
+    };
+
+    expect(store.saveSession(noUsage)).toBe(false);
+    expect(store.saveSession(makeSummary({ sessionId: 'reports-write', startTime }))).toBe(true);
+    expect(store.saveSession(noUsage)).toBe(false);
+  });
+
   it('does not let an empty summary clobber a recorded session', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const startTime = new Date('2026-04-15T10:00:00Z').getTime();
