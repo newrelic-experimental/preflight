@@ -92,6 +92,7 @@ import {
   RepoNameResolver,
   resolveAuthorEmail,
   type LocalSessionRollup,
+  type SummaryContext,
 } from './metrics/local-session-aggregator.js';
 import { ModelUsageTracker } from './metrics/model-usage-tracker.js';
 import { PersonalCoach } from './metrics/personal-coach.js';
@@ -2480,6 +2481,13 @@ async function main(): Promise<void> {
           cacheCreationTokens: report.cacheCreationTokens,
           totalTokens: report.inputTokens + report.outputTokens + report.thinkingTokens,
         };
+        if (report.sessionId === sessionTraceId) {
+          const breakdown = costTracker.recordTokenUsage(usage, report.model, {
+            timestampMs: report.timestamp,
+          });
+          modelUsageTracker.recordUsage(report.model, usage, breakdown.totalUsd);
+          return;
+        }
         localSessionAggregator.recordTokenUsage(report.sessionId, {
           ...usage,
           timestamp: report.timestamp,
@@ -2667,6 +2675,12 @@ async function main(): Promise<void> {
       },
     });
 
+    const observedContext = (): SummaryContext => ({
+      developer: config?.developer ?? 'unknown',
+      platform: eventProcessor?.activePlatform,
+      toolSelectionScorer,
+      repoResolver: repoNameResolver,
+    });
     persistSession = (opts?: { periodic?: boolean }) => {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
       try {
@@ -2704,12 +2718,7 @@ async function main(): Promise<void> {
         if (driftRecord) {
           instructionDriftTracker.recordSessionOutcome(driftRecord);
         }
-        const observed = {
-          developer: config.developer ?? 'unknown',
-          platform: eventProcessor?.activePlatform,
-          toolSelectionScorer,
-          repoResolver: repoNameResolver,
-        };
+        const observed = observedContext();
         // Skip persisting the synthetic session JSON written by --local /
         // proxy modes and the provisional pending-<ts> id. These IDs are
         // MCP-internal bookkeeping; they don't correspond to a real Claude
@@ -2734,9 +2743,9 @@ async function main(): Promise<void> {
           }
           return;
         }
-        const missingFromOwnerSummary = (rollup: Readonly<LocalSessionRollup>) =>
-          rollup.unsaved && (rollup.sessionId !== summary.sessionId || rollup.selfReportCount > 0);
-        localSessionAggregator.saveSummaries(sessionStore, observed, missingFromOwnerSummary);
+        const observedByOthers = (rollup: Readonly<LocalSessionRollup>) =>
+          rollup.unsaved && rollup.sessionId !== summary.sessionId;
+        localSessionAggregator.saveSummaries(sessionStore, observed, observedByOthers);
         sessionStore.saveSession(summary);
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
         // any real work), so calling it on every periodic checkpoint too is
@@ -3020,6 +3029,12 @@ async function main(): Promise<void> {
       // startPpidCorrectionWatch right after this returns, whose
       // confirmation branch (ppidId === staleId) calls
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
+      // From here the owner's summary carries this session, so what the rollup drained is saved first and seeded below.
+      localSessionAggregator.saveSummaries(
+        sessionStore!,
+        observedContext(),
+        (rollup) => rollup.unsaved && rollup.sessionId === realId,
+      );
       if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
 
       // Replace the current LocalStore with one scoped to the real id.

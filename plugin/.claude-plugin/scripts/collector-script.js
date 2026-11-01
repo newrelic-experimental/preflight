@@ -4,6 +4,7 @@
 import {
   readFileSync,
   writeFileSync,
+  writeSync,
   openSync as openSync2,
   closeSync as closeSync2,
   mkdirSync as mkdirSync2,
@@ -90,15 +91,14 @@ var MAX_TOKENS = 1e7;
 var REPORT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
 var MODEL_RE = /^[a-zA-Z0-9._:-]{1,256}$/;
 var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
-var PREFLIGHT_SERVER_RE = /preflight|nr-ai-observability/i;
 var REQUIRED_COUNTS = ["input_tokens", "output_tokens"];
 var OPTIONAL_COUNTS = ["thinking_tokens", "cache_read_tokens", "cache_creation_tokens"];
 function clampToken(v) {
   if (!Number.isFinite(v)) return 0;
   return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
 }
-function isPreflightReportTool(call) {
-  return call.tool === REPORT_TOKENS_TOOL_NAME && typeof call.server === "string" && PREFLIGHT_SERVER_RE.test(call.server);
+function isPreflightServerName(name) {
+  return typeof name === "string" && (/preflight/i.test(name) || name === "nr-ai-observability");
 }
 function reportKey(r) {
   const counts = [r.model, r.inputTokens, r.outputTokens, r.thinkingTokens, r.cacheReadTokens];
@@ -173,11 +173,13 @@ function hookAcknowledged(result, reportId) {
     (reply) => reply?.accepted === true && reply.recorded_by === "hook" && reply.report_id === reportId
   );
 }
-function hookSelfReportLine(call, conversationId, timestamp) {
-  if (!isPreflightReportTool(call) || !isConversationId(conversationId)) return void 0;
+function hookSelfReportLine(call, conversationId, timestamp, platform) {
+  if (call.tool !== REPORT_TOKENS_TOOL_NAME || !isPreflightServerName(call.server))
+    return void 0;
+  if (!isConversationId(conversationId)) return void 0;
   const parsed = parseSelfReport(call.args);
   if (!parsed.ok || !hookAcknowledged(call.result, parsed.report.reportId)) return void 0;
-  return selfReportLine(parsed.report, conversationId, timestamp, call.platform);
+  return selfReportLine(parsed.report, conversationId, timestamp, platform);
 }
 function claimPath(storageDir, line) {
   return resolve(storageDir, "self-reports", line.sessionId, reportKey(line));
@@ -242,6 +244,22 @@ function getMaxContentLength() {
   const parsed = parseInt(val, 10);
   return Number.isNaN(parsed) ? 10240 : parsed;
 }
+var HOOK_EVENT_PLATFORM = {
+  beforeshellexecution: "cursor",
+  aftershellexecution: "cursor",
+  beforemcpexecution: "cursor",
+  aftermcpexecution: "cursor",
+  beforereadfile: "cursor",
+  afterfileedit: "cursor",
+  pre_read_code: "windsurf",
+  post_read_code: "windsurf",
+  pre_write_code: "windsurf",
+  post_write_code: "windsurf",
+  pre_run_command: "windsurf",
+  post_run_command: "windsurf",
+  pre_mcp_tool_use: "windsurf",
+  post_mcp_tool_use: "windsurf"
+};
 function detectStampPlatform() {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
@@ -756,8 +774,7 @@ function processHook(raw, cliEvent) {
       tool: mcpTool,
       server: data.mcp_server_name,
       args: data.tool_input,
-      result: data.result_json,
-      platform: "cursor"
+      result: data.result_json
     };
   } else if (eventName === "beforereadfile") {
     event = {
@@ -857,8 +874,7 @@ function processHook(raw, cliEvent) {
       tool: mcpTool,
       server: toolInfo.mcp_server_name,
       args: toolInfo.mcp_tool_arguments,
-      result: toolInfo.mcp_result,
-      platform: "windsurf"
+      result: toolInfo.mcp_result
     };
   } else if (isAntigravityPre) {
     const agyToolName = data.toolCall?.name ?? "unknown";
@@ -952,34 +968,36 @@ function processHook(raw, cliEvent) {
   if (data.transcript_path) event.transcriptPath = data.transcript_path;
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ""] ?? detectStampPlatform();
   if (stampedPlatform) event.platform = stampedPlatform;
-  const selfReport = selfReportCall && hookSelfReportLine(selfReportCall, sessionId, timestamp);
+  const selfReport = selfReportCall && stampedPlatform && hookSelfReportLine(selfReportCall, sessionId, timestamp, stampedPlatform);
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
   const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : void 0;
-  let written = false;
+  let written = 0;
+  let postBytes = 0;
   try {
     const bufferPath = getBufferPath(sessionId);
     const bufferDir = dirname2(bufferPath);
     if (!existsSync(bufferDir)) {
       mkdirSync2(bufferDir, { recursive: true, mode: 448 });
     }
-    const line = JSON.stringify(event) + "\n" + (newReport ? JSON.stringify(newReport) + "\n" : "");
+    const post = Buffer.from(JSON.stringify(event) + "\n");
+    postBytes = post.length;
+    const line = newReport ? Buffer.concat([post, Buffer.from(JSON.stringify(newReport) + "\n")]) : post;
     const fd = openSync2(
       bufferPath,
       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND,
       384
     );
     try {
-      writeFileSync(fd, line);
-      written = true;
+      while (written < line.length) written += writeSync(fd, line, written);
     } finally {
       closeSync2(fd);
     }
   } catch {
-    if (newReport && !written) releaseReport(getStorageDir(), newReport);
+    if (newReport && written <= postBytes) releaseReport(getStorageDir(), newReport);
   }
   if (isGeminiCli) {
     try {

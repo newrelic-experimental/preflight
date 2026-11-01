@@ -844,11 +844,10 @@ export class HookEventProcessor {
       cacheReadTokens: tokenCount(event.cacheReadTokens),
       cacheCreationTokens: tokenCount(event.cacheCreationTokens),
     };
-    const key = reportKey(report);
-    if (this.tokenDedupRegistry.has(sessionId, key)) return;
+    // Seen before the callback runs, so a throw after it began recording never lets a copy count again.
+    if (this.tokenDedupRegistry.hasAndAdd(sessionId, reportKey(report))) return;
     try {
       this.onSelfReport(report);
-      this.tokenDedupRegistry.hasAndAdd(sessionId, key);
     } catch (err) {
       logger.warn('onSelfReport callback failed', {
         error: err instanceof Error ? err.message : String(err),

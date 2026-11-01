@@ -919,6 +919,20 @@ describe('LocalSessionAggregator saveSummaries', () => {
     expect(stores.map((s) => s.saved.length)).toEqual([1, 0, 1]);
   });
 
+  it('never offers a rollup whose id cannot name a session file', () => {
+    const agg = withToolCalls('bad id!', 'unknown', 'conv-a');
+    const offered: string[] = [];
+    const store = makeStore((id) => {
+      offered.push(id);
+      return /^[A-Za-z0-9_-]{1,128}$/.test(id) && id !== 'unknown';
+    });
+
+    agg.saveSummaries(store, context, unsaved);
+    agg.saveSummaries(store, context, unsaved);
+
+    expect(offered).toEqual(['conv-a']);
+  });
+
   it('keeps a rollup the store did not write unsaved, so the next call saves it', () => {
     const agg = withToolCalls('conv-a');
     const retry = makeStore();
