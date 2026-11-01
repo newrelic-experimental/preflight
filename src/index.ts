@@ -108,6 +108,7 @@ import { TurnTracker } from './metrics/turn-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
 import { CLAUDE_CODE_PLATFORM_NAME } from './platforms/claude-code-adapter.js';
 import { ClaudeCodeAdapter, createDefaultRegistry, GenericMcpAdapter } from './platforms/index.js';
+import { sessionBreadcrumbWriters } from './platforms/types.js';
 import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
@@ -170,6 +171,7 @@ export type {
   ReportSessionStartInput,
   ReportToolCallInput,
 } from './platforms/index.js';
+export { UNATTRIBUTED_BREADCRUMB_WRITER } from './platforms/types.js';
 export { ProxyManager } from './proxy/index.js';
 export type { ProxyRequestRecord, ProxyToolCallRecord, UpstreamConfig } from './proxy/index.js';
 export { createServer, NrMcpServer } from './server.js';
@@ -1043,7 +1045,7 @@ async function main(): Promise<void> {
     // correction watch (see `startPpidCorrectionWatch` below).
     let resolvedViaCwdOnly = false;
     const activePlatform = createDefaultRegistry().getActive();
-    const breadcrumbWriters = activePlatform.capabilities.sessionBreadcrumbWriters;
+    const breadcrumbWriters = sessionBreadcrumbWriters(activePlatform);
     // --local only: set when the config asked for cloud export but this
     // process fell back to local mode for want of credentials, so every
     // ownerless session it drains is kept locally and never sent to New

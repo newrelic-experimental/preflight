@@ -25,6 +25,7 @@ import {
 import type { ExecFileSyncFn } from './process-ancestry.js';
 import { redactSensitive } from '../config.js';
 import { createDefaultRegistry } from '../platforms/platform-registry.js';
+import { sessionBreadcrumbWriters } from '../platforms/types.js';
 
 /** Above every platform's pid_max, so `kill(pid, 0)` always reports ESRCH. */
 const DEAD_PID = 2_147_483_646;
@@ -1640,7 +1641,7 @@ describe('breadcrumbs filed by writer', () => {
       const adapter = createDefaultRegistry()
         .getRegistered()
         .find((a) => a.platformName === platformName)!;
-      const engine = sessionBreadcrumbs(tmpDir, adapter.capabilities.sessionBreadcrumbWriters);
+      const engine = sessionBreadcrumbs(tmpDir, sessionBreadcrumbWriters(adapter));
       expect(engine.cwd('/projects/shared')).toBe('sess-unstamped');
     },
   );
