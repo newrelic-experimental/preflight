@@ -437,10 +437,11 @@ describe('LocalStore', () => {
 
       const firstResult = store.drainBuffer();
       expect(firstResult).toEqual([]);
-      expect(existsSync(drainPath)).toBe(true);
+      const preserved = readdirSync(tmpDir).filter((n) => n.startsWith('buffer.jsonl.drain'));
+      expect(preserved).toHaveLength(1);
 
       // Restore readability and verify the next poll recovers the events
-      chmodSync(drainPath, 0o644);
+      chmodSync(resolve(tmpDir, preserved[0]!), 0o644);
       const recovered = store.drainBuffer();
       expect(recovered).toHaveLength(1);
       expect(recovered[0]?.tool).toBe('Bash');
