@@ -292,10 +292,6 @@ export class SessionTracker implements Resettable {
     }
   }
 
-  /**
-   * Replaces a 'timeout' or 'rejected' record already counted with the real
-   * outcome its late post brought, without counting the call again.
-   */
   amendToolCall(record: ToolCallRecord, replacedErrorType: string): void {
     if (!this.countsSession(record.sessionId)) {
       const held = this.heldRecords.get(record.sessionId!);

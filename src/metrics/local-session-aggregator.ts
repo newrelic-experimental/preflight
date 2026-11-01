@@ -383,26 +383,22 @@ export class LocalSessionAggregator {
     return rollup;
   }
 
-  /** Applies the real outcome a late post brought to a 'timeout' or 'rejected' record. */
   amendToolCall(record: ToolCallRecord): void {
     const rollup = record.sessionId ? this.sessions.get(record.sessionId) : undefined;
     if (!rollup) return;
     if (record.success) rollup.successCount += 1;
     const index = rollup.records.findIndex((r) => r.id === record.id);
-    if (index >= 0) rollup.records[index] = record;
-    const timelineIndex = rollup.timeline.findIndex(
-      (e) => !e.success && e.timestamp === record.timestamp && e.toolName === record.toolName,
-    );
-    const entry = rollup.timeline[timelineIndex];
-    if (entry) {
-      const { errorType: _replaced, ...rest } = entry;
-      rollup.timeline[timelineIndex] = {
-        ...rest,
-        durationMs: record.durationMs,
-        success: record.success,
-        ...(record.errorType !== undefined && { errorType: record.errorType }),
-      };
-    }
+    const previous = rollup.records[index];
+    const entry = rollup.timeline[index];
+    if (!previous || !entry) return;
+    rollup.records[index] = { ...previous, ...record };
+    const { errorType: _replaced, ...rest } = entry;
+    rollup.timeline[index] = {
+      ...rest,
+      durationMs: record.durationMs,
+      success: record.success,
+      ...(record.errorType !== undefined && { errorType: record.errorType }),
+    };
   }
 
   recordToolCall(record: {

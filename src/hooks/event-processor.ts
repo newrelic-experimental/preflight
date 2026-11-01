@@ -337,13 +337,11 @@ const TOKEN_SOURCE_PLATFORM: ReadonlyMap<string, string> = new Map([
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_ORPHAN_TIMEOUT_MS = 60_000;
-// Permission prompts legitimately dwell — a user thinking for 90 seconds is
-// common, while an approval arriving after 5 minutes is rare.
+// Permission prompts legitimately dwell — a user thinking for 90 seconds is common.
 const PERMISSION_REQUESTED_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_PENDING = 2_000;
-// Tools that routinely outlive the orphan timeout. Claude Code caps a Bash
-// call at 10 minutes; a subagent (Agent, or Task on older clients) has no cap,
-// so 30 minutes covers most and a later post still amends the timeout record.
+// Claude Code caps a Bash call at 10 minutes; a subagent (Agent, or Task on
+// older clients) has no cap.
 const LONG_RUNNING_TOOL_TTL_MS: ReadonlyMap<string, number> = new Map([
   ['Bash', 11 * 60_000],
   ['Agent', 30 * 60_000],
@@ -365,10 +363,6 @@ interface PendingEntry {
   readonly phase: 'awaiting_post' | 'permission_requested';
 }
 
-/**
- * A pre this process emitted as an unpaired record that a late post may still
- * complete. `event` keeps only what pairing and the amended record need.
- */
 interface CountedUnpaired {
   readonly event: PreHookEvent;
   readonly recordId: string;
@@ -607,9 +601,6 @@ export class HookEventProcessor {
 
   stop(): void {
     this.halt();
-    // Always flush remaining pre-events as orphans — even on a second stop() call
-    // or when stop() is called without start(). A second call on an already-empty
-    // pending map is a no-op.
     this.flushPending();
     this.persistCountedUnpaired();
   }
@@ -971,7 +962,6 @@ export class HookEventProcessor {
           ? 'hook_blocked'
           : 'timeout';
     const id = randomUUID();
-    // A blocked call never runs, so no post can follow it.
     if (errorType !== 'hook_blocked')
       this.rememberCountedUnpaired(key, entry, id, toolUseId, errorType);
     this.emitRecord({
