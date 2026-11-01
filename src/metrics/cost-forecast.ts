@@ -1,6 +1,8 @@
 import { localStartOfDay } from '../lib/date.js';
 
 const MIN_FORECAST_WINDOW_MS = 10 * 60_000;
+const MODERATE_CONFIDENCE_WINDOW_MS = 30 * 60_000;
+const minutes = (ms: number): number => ms / 60_000;
 
 export interface CostForecast {
   readonly elapsedMs: number;
@@ -57,7 +59,14 @@ export function buildCostForecastFromInputs(
   inputs: CostForecastInputs,
   nowMs: number = Date.now(),
 ): CostForecast {
-  const { sessionSpentUsd, sessionStartMs, dailySpentUsd, dailyFirstActivityMs } = inputs;
+  const {
+    sessionSpentUsd,
+    sessionStartMs,
+    dailySpentUsd,
+    dailyFirstActivityMs,
+    priorDailySpentUsd,
+    priorDailyFirstActivityMs,
+  } = inputs;
   const elapsedMs = nowMs - sessionStartMs;
   if (elapsedMs < 1) {
     return {
@@ -93,25 +102,39 @@ export function buildCostForecastFromInputs(
   const msUntilEndOfDay = Math.max(0, dayEndMs - nowMs);
 
   // Day and week projections share one effective rate and base.
-  // Falls back to the session rate and base when the daily anchor is absent.
   let effectiveElapsedMs: number;
   let effectiveRateUsdPerMs: number;
   let effectiveBaseUsd: number;
+  let anchorMissing = false;
   if (
     typeof dailySpentUsd === 'number' &&
     dailySpentUsd >= 0 &&
     typeof dailyFirstActivityMs === 'number' &&
     dailyFirstActivityMs > 0
   ) {
-    effectiveElapsedMs = Math.max(1, nowMs - dailyFirstActivityMs);
-    effectiveRateUsdPerMs = dailySpentUsd / effectiveElapsedMs;
+    const priorSpentUsd =
+      typeof priorDailySpentUsd === 'number' &&
+      priorDailySpentUsd > 0 &&
+      typeof priorDailyFirstActivityMs === 'number' &&
+      priorDailyFirstActivityMs > 0
+        ? priorDailySpentUsd
+        : 0;
+    const dayFirstActivityMs =
+      priorSpentUsd > 0
+        ? Math.min(dailyFirstActivityMs, priorDailyFirstActivityMs as number)
+        : dailyFirstActivityMs;
+    effectiveElapsedMs = Math.max(1, nowMs - dayFirstActivityMs);
+    effectiveRateUsdPerMs = (dailySpentUsd + priorSpentUsd) / effectiveElapsedMs;
     effectiveBaseUsd = dailySpentUsd;
   } else {
+    // Without a daily anchor, only a session that began today has all its
+    // spend in today's base. An older session's spend is mostly yesterday's.
     effectiveElapsedMs = elapsedMs;
     effectiveRateUsdPerMs = sessionRateUsdPerMs;
     effectiveBaseUsd = sessionSpentUsd;
+    anchorMissing = sessionStartMs < dayStartMs;
   }
-  const forecastHeld = effectiveElapsedMs < MIN_FORECAST_WINDOW_MS;
+  const forecastHeld = anchorMissing || effectiveElapsedMs < MIN_FORECAST_WINDOW_MS;
   const project = (msRemaining: number): number | null =>
     forecastHeld ? null : effectiveBaseUsd + effectiveRateUsdPerMs * msRemaining;
   const forecastEndOfDayUsd = project(msUntilEndOfDay);
@@ -127,13 +150,25 @@ export function buildCostForecastFromInputs(
   // real "end of session" signal to anchor this forecast to otherwise.
   const SESSION_TARGET_MS = 8 * 60 * 60 * 1000;
   const msUntilSessionEnd = Math.max(0, SESSION_TARGET_MS - elapsedMs);
-  const forecastSessionEndUsd = sessionSpentUsd + sessionRateUsdPerMs * msUntilSessionEnd;
+  const forecastSessionEndUsd =
+    elapsedMs < MIN_FORECAST_WINDOW_MS
+      ? null
+      : sessionSpentUsd + sessionRateUsdPerMs * msUntilSessionEnd;
 
-  const confidenceNote = forecastHeld
-    ? 'Low confidence — less than 10 minutes of data.'
-    : effectiveElapsedMs < 30 * 60_000
-      ? 'Moderate confidence — based on less than 30 minutes of data.'
-      : 'Reasonable confidence — based on 30+ minutes of data.';
+  // Grades the shortest window any forecast above relies on.
+  const gradedWindowMs = Math.min(elapsedMs, effectiveElapsedMs);
+  const minWindowMin = minutes(MIN_FORECAST_WINDOW_MS);
+  const moderateWindowMin = minutes(MODERATE_CONFIDENCE_WINDOW_MS);
+  let confidenceNote: string;
+  if (anchorMissing) {
+    confidenceNote = 'Low confidence — no spend recorded yet today.';
+  } else if (gradedWindowMs < MIN_FORECAST_WINDOW_MS) {
+    confidenceNote = `Low confidence — less than ${minWindowMin} minutes of data.`;
+  } else if (gradedWindowMs < MODERATE_CONFIDENCE_WINDOW_MS) {
+    confidenceNote = `Moderate confidence — based on less than ${moderateWindowMin} minutes of data.`;
+  } else {
+    confidenceNote = `Reasonable confidence — based on ${moderateWindowMin}+ minutes of data.`;
+  }
 
   return {
     elapsedMs,

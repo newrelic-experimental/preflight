@@ -1637,6 +1637,7 @@ async function main(): Promise<void> {
     const priorCostCache = {
       priorDailyCostUsd: 0,
       priorWeeklyCostUsd: 0,
+      priorDailyFirstActivityMs: null as number | null,
       // Date key used to invalidate on day rollover even mid-TTL.
       lastDayKey: localDateKey(),
       lastRefreshMs: 0,
@@ -1646,6 +1647,7 @@ async function main(): Promise<void> {
       const baseline = computeHistoricalCosts(sessionStoreForCostBaseline, currentSessionId, now);
       priorCostCache.priorDailyCostUsd = baseline.priorDailyCostUsd;
       priorCostCache.priorWeeklyCostUsd = baseline.priorWeeklyCostUsd;
+      priorCostCache.priorDailyFirstActivityMs = baseline.priorDailyFirstActivityMs;
       priorCostCache.lastDayKey = localDateKey(now);
       priorCostCache.lastRefreshMs = now;
     };
@@ -1829,6 +1831,8 @@ async function main(): Promise<void> {
               sessionStartMs,
               dailySpentUsd: costTracker.getCostForDay(todayKey),
               dailyFirstActivityMs: costTracker.getFirstActivityMsForDay(todayKey),
+              priorDailySpentUsd: priorCostCache.priorDailyCostUsd,
+              priorDailyFirstActivityMs: priorCostCache.priorDailyFirstActivityMs,
             });
           },
           antiPatternDetector,
@@ -2301,6 +2305,8 @@ async function main(): Promise<void> {
             sessionStartMs,
             dailySpentUsd: sessionTodayUsd,
             dailyFirstActivityMs,
+            priorDailySpentUsd: priorCostCache.priorDailyCostUsd,
+            priorDailyFirstActivityMs: priorCostCache.priorDailyFirstActivityMs,
           });
           liveBus.emit('cost-update', {
             // sessionId is always the resolved Claude Code session_id for
@@ -2449,6 +2455,8 @@ async function main(): Promise<void> {
             sessionStartMs,
             dailySpentUsd: sessionTodayUsd,
             dailyFirstActivityMs,
+            priorDailySpentUsd: priorCostCache.priorDailyCostUsd,
+            priorDailyFirstActivityMs: priorCostCache.priorDailyFirstActivityMs,
           });
           liveBus.emit('cost-update', {
             // Same as the per-tool-call cost-update emission — tag with the
