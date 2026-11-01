@@ -17,6 +17,7 @@ import { SessionStore } from '../storage/session-store.js';
 import { GenericMcpAdapter } from '../platforms/generic-mcp-adapter.js';
 import { CursorAdapter } from '../platforms/cursor-adapter.js';
 import { WindsurfAdapter } from '../platforms/windsurf-adapter.js';
+import type { TokenReportHook } from '../platforms/types.js';
 import { FeedbackCollector } from './workflow-tools.js';
 import {
   handleGetSessionStats,
@@ -951,7 +952,7 @@ describe('registerPendingTools()', () => {
       rmSync(projectDir, { recursive: true, force: true });
     });
 
-    async function connect(hook = cursorHook): Promise<void> {
+    async function connect(hook: TokenReportHook = cursorHook): Promise<void> {
       const { registerPendingTools } = await import('./session-stats.js');
       const server = createServer({ name: 'pending-report', version: '0.0.1' });
       const [ct, st] = InMemoryTransport.createLinkedPair();

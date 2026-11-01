@@ -56,6 +56,7 @@ export class WindsurfAdapter implements PlatformAdapter {
       postMcpEvent: 'post_mcp_tool_use',
       homeHooksFile: '.codeium/windsurf/hooks.json',
       projectHooksFile: '.windsurf/hooks.json',
+      homeMcpFile: '.codeium/windsurf/mcp_config.json',
     },
   };
 

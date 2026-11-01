@@ -130,7 +130,7 @@ import type { ToolCallRecord } from './storage/types.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import type { ConfigSummary } from './tools/session-stats.js';
 import { registerPendingTools, registerTools } from './tools/session-stats.js';
-import type { HookRecordedReportOptions } from './tools/cost-tools.js';
+import { hooksDetected, type HookRecordedReportOptions } from './tools/cost-tools.js';
 import { FeedbackCollector } from './tools/workflow-tools.js';
 import { initMcpTracer } from './tracing/mcp-tracer.js';
 import { SessionSpan } from './tracing/session-span.js';
@@ -798,8 +798,13 @@ export function parseArgs(argv: string[]): CliOptions {
 }
 
 function hookRecordedReports(): HookRecordedReportOptions | undefined {
-  const hook = createDefaultRegistry().getActive().capabilities.tokenReportHook;
-  return hook && { hook, homeDir: homedir(), projectDir: process.cwd() };
+  const adapter = createDefaultRegistry().getActive();
+  const hook = adapter.capabilities.tokenReportHook;
+  if (!hook) return undefined;
+  const options = { hook, homeDir: homedir(), projectDir: process.cwd() };
+  // Ambient detection alone also matches hosts launched from Cursor's terminal, which inherit CURSOR_TRACE_ID.
+  const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+  return explicit === adapter.platformName || hooksDetected(options) ? options : undefined;
 }
 
 async function main(): Promise<void> {

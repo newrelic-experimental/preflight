@@ -24,6 +24,7 @@ import { resolvePricing } from '../metrics/pricing-overlay.js';
 import type { TokenUsage } from '../shared/index.js';
 import {
   clampToken,
+  isPreflightServerName,
   MODEL_RE,
   parseSelfReport,
   REPORT_TOKENS_TOOL_NAME,
@@ -105,18 +106,46 @@ function runsCollector(path: string, event: string): boolean {
   }
 }
 
-export function hookRecordedReportTokensTool(options: HookRecordedReportOptions): ToolSpec {
+function namesPreflightServer(path: string): boolean {
+  try {
+    const config = JSON.parse(readFileSync(path, 'utf-8')) as { mcpServers?: object };
+    return Object.keys(config.mcpServers ?? {}).some(isPreflightServerName);
+  } catch {
+    return false;
+  }
+}
+
+export function hooksDetected({ hook, homeDir, projectDir }: HookRecordedReportOptions): boolean {
+  return (
+    runsCollector(resolve(homeDir, hook.homeHooksFile), hook.postMcpEvent) ||
+    runsCollector(resolve(projectDir, hook.projectHooksFile), hook.postMcpEvent)
+  );
+}
+
+export function hookRecordedReportTokensTool(
+  options: HookRecordedReportOptions,
+  withoutReportId?: ToolSpec,
+): ToolSpec {
   const { hook } = options;
+  const project = hook.projectMcpFile;
+  const mcpPaths = [resolve(options.homeDir, hook.homeMcpFile)];
+  if (project) mcpPaths.push(resolve(options.projectDir, project));
   const notDetected =
     "Preflight's hook was not detected, so this report may not be saved. " +
     `To install it, add {"command": "preflight-collector"} under hooks.${hook.postMcpEvent} in ~/${hook.homeHooksFile} or in ${hook.projectHooksFile} at the workspace root, then restart ${hook.clientName}.`;
+  const keyMismatch =
+    `Preflight's ${hook.postMcpEvent} hook was found, but no server key in ~/${hook.homeMcpFile}${project ? ` or ${project}` : ''} contains "preflight", so this report may not be saved. ` +
+    `The hook records only calls to a server whose key contains "preflight", such as newrelic-preflight. Rename the key, then restart ${hook.clientName}.`;
   const detected = `Preflight's ${hook.postMcpEvent} hook was found, so the hook should record it in this conversation after the call returns.`;
   const definition = {
     ...REPORT_TOKENS_TOOL,
     description:
       REPORT_TOKENS_TOOL.description +
       ' Set report_id to a new random value (such as a UUID) on every call, and keep it when retrying: Preflight saves a retry with the same report_id and the same counts once per conversation.' +
-      " Preflight's hook for this call should record the report in this conversation.",
+      " Preflight's hook for this call should record the report in this conversation." +
+      (withoutReportId
+        ? ' Without report_id, this server records the report in its own session.'
+        : ''),
     inputSchema: {
       ...REPORT_TOKENS_TOOL.inputSchema,
       properties: {
@@ -126,27 +155,29 @@ export function hookRecordedReportTokensTool(options: HookRecordedReportOptions)
           description: 'A new random id for this report, 8 to 128 of [A-Za-z0-9_-]',
         },
       },
-      required: [...REPORT_TOKENS_TOOL.inputSchema.required, 'report_id'],
+      required: withoutReportId
+        ? REPORT_TOKENS_TOOL.inputSchema.required
+        : [...REPORT_TOKENS_TOOL.inputSchema.required, 'report_id'],
     },
   };
   const reply = (body: Record<string, unknown>, isError?: true): ToolCallResult => ({
     content: [{ type: 'text', text: JSON.stringify(body) }],
     ...(isError && { isError }),
   });
-  const handle = (args: unknown): ToolCallResult => {
+  const handle = (args: Record<string, unknown> | undefined) => {
+    if (withoutReportId && args?.report_id === undefined) return withoutReportId.handle(args);
     const parsed = parseSelfReport(args);
     if (!parsed.ok) return reply({ error: 'invalid_token_report', message: parsed.reason }, true);
     const { report } = parsed;
-    const hooksDetected =
-      runsCollector(resolve(options.homeDir, hook.homeHooksFile), hook.postMcpEvent) ||
-      runsCollector(resolve(options.projectDir, hook.projectHooksFile), hook.postMcpEvent);
+    const found = hooksDetected(options);
+    const keyMatches = mcpPaths.some(namesPreflightServer);
     return reply({
       accepted: true,
       report_id: report.reportId,
       model: report.model,
       recorded_by: 'hook',
-      hooks_detected: hooksDetected,
-      message: hooksDetected ? detected : notDetected,
+      hooks_detected: found,
+      message: !found ? notDetected : keyMatches ? detected : keyMismatch,
     });
   };
   return { definition, available: true, handle };
@@ -464,7 +495,7 @@ function inProcessReportTokensTool(deps: CostToolsDeps): ToolSpec {
 export function registerCostTools(deps: CostToolsDeps): RegisteredToolSet {
   return buildToolSet([
     deps.hookRecordedReports
-      ? hookRecordedReportTokensTool(deps.hookRecordedReports)
+      ? hookRecordedReportTokensTool(deps.hookRecordedReports, inProcessReportTokensTool(deps))
       : inProcessReportTokensTool(deps),
     {
       definition: COST_BREAKDOWN_TOOL,

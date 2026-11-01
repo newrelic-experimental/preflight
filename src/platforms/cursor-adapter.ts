@@ -76,6 +76,8 @@ export class CursorAdapter implements PlatformAdapter {
       postMcpEvent: 'afterMCPExecution',
       homeHooksFile: '.cursor/hooks.json',
       projectHooksFile: '.cursor/hooks.json',
+      homeMcpFile: '.cursor/mcp.json',
+      projectMcpFile: '.cursor/mcp.json',
     },
   };
 

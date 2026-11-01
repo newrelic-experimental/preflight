@@ -83,6 +83,8 @@ export interface TokenReportHook {
   readonly postMcpEvent: string;
   readonly homeHooksFile: string;
   readonly projectHooksFile: string;
+  readonly homeMcpFile: string;
+  readonly projectMcpFile?: string;
 }
 
 /**
