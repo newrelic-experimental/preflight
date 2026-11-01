@@ -454,7 +454,7 @@ export class HookEventProcessor {
 
   private readonly pending: Map<string, PendingEntry> = new Map();
   private readonly countedUnpaired: Map<string, CountedUnpaired> = new Map();
-  private readonly unpersistedCountedIds = new Set<string>();
+  private readonly unpersistedCountedIds = new Map<string, string>();
   private readonly maxPendingEvents: number;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -918,11 +918,10 @@ export class HookEventProcessor {
    * asked, and prompts dwell far longer than a healthy tool execution.
    */
   private pendingTtlMs(entry: PendingEntry): number {
-    const phaseTtlMs =
-      entry.phase === 'permission_requested'
-        ? PERMISSION_REQUESTED_TIMEOUT_MS
-        : this.orphanTimeoutMs;
-    return Math.max(phaseTtlMs, LONG_RUNNING_TOOL_TTL_MS.get(entry.event.tool) ?? 0);
+    const longRunningTtlMs = LONG_RUNNING_TOOL_TTL_MS.get(entry.event.tool) ?? 0;
+    return entry.phase === 'permission_requested'
+      ? PERMISSION_REQUESTED_TIMEOUT_MS + longRunningTtlMs
+      : Math.max(this.orphanTimeoutMs, longRunningTtlMs);
   }
 
   /**
@@ -967,16 +966,13 @@ export class HookEventProcessor {
     recordId: string,
     recordToolUseId: string,
   ): void {
-    if (this.countedUnpaired.size >= this.maxPendingEvents) {
-      const oldest = this.countedUnpaired.keys().next().value;
-      if (oldest !== undefined) {
-        this.countedUnpaired.delete(oldest);
-        this.unpersistedCountedIds.delete(oldest);
-      }
-    }
     const { tool, timestamp, sessionId, toolUseId } = entry.event;
     this.countedUnpaired.delete(key);
-    if (toolUseId === key) this.unpersistedCountedIds.add(key);
+    if (this.countedUnpaired.size >= this.maxPendingEvents) {
+      const oldest = this.countedUnpaired.keys().next().value;
+      if (oldest !== undefined) this.countedUnpaired.delete(oldest);
+    }
+    if (toolUseId === key && sessionId) this.unpersistedCountedIds.set(key, sessionId);
     this.countedUnpaired.set(key, {
       event: { mode: 'pre', tool, timestamp, sessionId, toolUseId },
       recordId,
@@ -1037,15 +1033,14 @@ export class HookEventProcessor {
   persistCountedIdsOfSavedSessions(sessionIds: Iterable<string>): void {
     const idsBySession = new Map<string, string[]>();
     for (const sessionId of sessionIds) idsBySession.set(sessionId, []);
-    for (const key of this.unpersistedCountedIds) {
-      const sessionId = this.countedUnpaired.get(key)?.event.sessionId;
-      const ids = sessionId === undefined ? undefined : idsBySession.get(sessionId);
+    for (const [key, sessionId] of this.unpersistedCountedIds) {
+      const ids = idsBySession.get(sessionId);
       if (!ids) continue;
       ids.push(key);
       this.unpersistedCountedIds.delete(key);
     }
     for (const [sessionId, ids] of idsBySession) {
-      this.store.rememberCountedToolUseIds(sessionId, ids);
+      this.store.rememberCountedToolUseIds(sessionId, ids, this.maxPendingEvents);
     }
   }
 

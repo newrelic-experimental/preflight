@@ -41,7 +41,6 @@ const PARENT_TRANSCRIPT_CURSOR_RE = /^\.parent-transcript-pos-(.+)$/;
  */
 const ORPHAN_BUFFER_MTIME_MS = 5 * 60 * 1000;
 
-const MAX_COUNTED_TOOL_USE_IDS = 256;
 const COUNTED_IDS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function readCountedToolUseIds(path: string): string[] {
@@ -283,7 +282,7 @@ export class LocalStore {
    * `counted/<sessionId>.<pid>.json`. Each process writes only its own file,
    * so concurrent writers never lose each other's ids; readers take the union.
    */
-  rememberCountedToolUseIds(sessionId: string, toolUseIds: readonly string[]): void {
+  rememberCountedToolUseIds(sessionId: string, toolUseIds: readonly string[], cap: number): void {
     if (!SESSION_ID_RE.test(sessionId) || toolUseIds.length === 0) return;
     const path = resolve(this.countedDir, `${sessionId}.${process.pid}.json`);
     const window = this.ownCountedIds.get(sessionId) ?? new Set(readCountedToolUseIds(path));
@@ -292,7 +291,7 @@ export class LocalStore {
       window.add(id);
     }
     for (const id of window) {
-      if (window.size <= MAX_COUNTED_TOOL_USE_IDS) break;
+      if (window.size <= cap) break;
       window.delete(id);
     }
     this.ownCountedIds.set(sessionId, window);
