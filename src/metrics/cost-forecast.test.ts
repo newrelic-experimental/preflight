@@ -210,7 +210,7 @@ describe('buildCostForecast', () => {
       expect(f.confidenceNote).toMatch(/Reasonable confidence/i);
     });
 
-    it('holds EoD but keeps session-end graded on its own window after a midnight crossing', () => {
+    it('holds EoD on a short daily window but keeps session-end graded on its own longer window', () => {
       const f = buildCostForecastFromInputs(
         {
           sessionSpentUsd: 10,
@@ -223,6 +223,40 @@ describe('buildCostForecast', () => {
       expect(f.forecastEndOfDayUsd).toBeNull();
       expect(f.forecastSessionEndUsd).not.toBeNull();
       expect(f.confidenceNote).toMatch(/Reasonable confidence/i);
+    });
+
+    it('says why EoD and EoW are held while session-end is shown', () => {
+      const shortWindow = buildCostForecastFromInputs(
+        {
+          sessionSpentUsd: 10,
+          sessionStartMs: nowMs - 2 * 60 * 60_000,
+          dailySpentUsd: SPEND_USD,
+          dailyFirstActivityMs: nowMs - 2 * 60_000,
+        },
+        nowMs,
+      );
+      const noAnchor = buildCostForecastFromInputs(
+        { sessionSpentUsd: 10, sessionStartMs: justAfterMidnight - 6 * 60 * 60_000 },
+        justAfterMidnight,
+      );
+      const shown = buildCostForecast(SPEND_USD, nowMs - 45 * 60_000, nowMs);
+      expect(shortWindow.heldReason).toBe("held: under 10 minutes of today's data");
+      expect(noAnchor.heldReason).toBe('held: no spend yet today');
+      expect(shown.heldReason).toBeNull();
+    });
+
+    it('projects from a fresh daily anchor when the session started before local midnight', () => {
+      const f = buildCostForecastFromInputs(
+        {
+          sessionSpentUsd: 10,
+          sessionStartMs: nowMs - 20 * 60 * 60_000,
+          dailySpentUsd: SPEND_USD,
+          dailyFirstActivityMs: nowMs - 30 * 60_000,
+        },
+        nowMs,
+      );
+      expect(f.forecastEndOfDayUsd).not.toBeNull();
+      expect(f.heldReason).toBeNull();
     });
 
     it('says low confidence only when every forecast is held', () => {

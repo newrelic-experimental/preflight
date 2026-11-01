@@ -4122,6 +4122,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
   });
 
   it("anchors the forecast to a cross-midnight session's first TODAY-scoped timeline entry, not its startTime", async () => {
+    jest.useFakeTimers({ now: new Date(2024, 0, 3, 14).getTime(), doNotFake: ['nextTick'] });
     const now = Date.now();
     const startOfDay = new Date(now);
     startOfDay.setHours(0, 0, 0, 0);
@@ -4169,6 +4170,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     // effectiveBaseUsd is totalCostUsd and the rate is >= 0, so the forecast
     // can never be less than the amount already spent today.
     expect(parsed.forecastEndOfDayUsd as number).toBeGreaterThanOrEqual(parsed.totalCostUsd);
+    jest.useRealTimers();
   });
 
   it('returns forecastEndOfDayUsd null when there is no activity today from any source', async () => {

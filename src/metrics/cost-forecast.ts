@@ -2,7 +2,8 @@ import { localStartOfDay } from '../lib/date.js';
 
 const MIN_FORECAST_WINDOW_MS = 10 * 60_000;
 const MODERATE_CONFIDENCE_WINDOW_MS = 30 * 60_000;
-const minutes = (ms: number): number => ms / 60_000;
+const MIN_FORECAST_WINDOW_MIN = MIN_FORECAST_WINDOW_MS / 60_000;
+const MODERATE_CONFIDENCE_WINDOW_MIN = MODERATE_CONFIDENCE_WINDOW_MS / 60_000;
 
 export interface CostForecast {
   readonly elapsedMs: number;
@@ -12,6 +13,8 @@ export interface CostForecast {
   readonly forecastEndOfWeekUsd: number | null;
   readonly forecastSessionEndUsd: number | null;
   readonly confidenceNote: string;
+  /** Why the end-of-day and end-of-week forecasts are null, or null when they are shown. */
+  readonly heldReason: string | null;
 }
 
 export interface CostForecastInputs {
@@ -62,6 +65,7 @@ export function buildCostForecastFromInputs(
       forecastEndOfWeekUsd: null,
       forecastSessionEndUsd: null,
       confidenceNote: 'Insufficient data for forecast.',
+      heldReason: null,
     };
   }
 
@@ -76,6 +80,7 @@ export function buildCostForecastFromInputs(
       forecastEndOfWeekUsd: 0,
       forecastSessionEndUsd: 0,
       confidenceNote: 'Session running — no spend recorded yet.',
+      heldReason: null,
     };
   }
 
@@ -109,6 +114,11 @@ export function buildCostForecastFromInputs(
     anchorMissing = sessionStartMs < dayStartMs;
   }
   const forecastHeld = anchorMissing || effectiveElapsedMs < MIN_FORECAST_WINDOW_MS;
+  const heldReason = !forecastHeld
+    ? null
+    : anchorMissing
+      ? 'held: no spend yet today'
+      : `held: under ${MIN_FORECAST_WINDOW_MIN} minutes of today's data`;
   const project = (msRemaining: number): number | null =>
     forecastHeld ? null : effectiveBaseUsd + effectiveRateUsdPerMs * msRemaining;
   const forecastEndOfDayUsd = project(msUntilEndOfDay);
@@ -133,15 +143,13 @@ export function buildCostForecastFromInputs(
   // those forecasts are shown, else the session window behind the session-end one.
   const sessionEndShown = forecastSessionEndUsd !== null;
   const gradedWindowMs = forecastHeld ? (sessionEndShown ? elapsedMs : 0) : effectiveElapsedMs;
-  const minWindowMin = minutes(MIN_FORECAST_WINDOW_MS);
-  const moderateWindowMin = minutes(MODERATE_CONFIDENCE_WINDOW_MS);
   let confidenceNote: string;
   if (gradedWindowMs < MIN_FORECAST_WINDOW_MS) {
-    confidenceNote = `Low confidence — less than ${minWindowMin} minutes of data.`;
+    confidenceNote = `Low confidence — less than ${MIN_FORECAST_WINDOW_MIN} minutes of data.`;
   } else if (gradedWindowMs < MODERATE_CONFIDENCE_WINDOW_MS) {
-    confidenceNote = `Moderate confidence — based on less than ${moderateWindowMin} minutes of data.`;
+    confidenceNote = `Moderate confidence — based on less than ${MODERATE_CONFIDENCE_WINDOW_MIN} minutes of data.`;
   } else {
-    confidenceNote = `Reasonable confidence — based on ${moderateWindowMin}+ minutes of data.`;
+    confidenceNote = `Reasonable confidence — based on ${MODERATE_CONFIDENCE_WINDOW_MIN}+ minutes of data.`;
   }
 
   return {
@@ -152,5 +160,6 @@ export function buildCostForecastFromInputs(
     forecastEndOfWeekUsd,
     forecastSessionEndUsd,
     confidenceNote,
+    heldReason,
   };
 }
