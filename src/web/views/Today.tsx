@@ -327,14 +327,16 @@ export function Today(): JSX.Element {
     aggregate?.antiPatternCount ?? 0,
     persistedTodayFlags + currentSessionFlags,
   );
-  const aggregateForecastUsd = aggregate?.forecastEndOfDayUsd;
-  const aggregateOwnsForecast =
-    aggregateForecastUsd !== undefined && (aggregate?.totalCostUsd ?? 0) > 0;
-  const forecastKpiUsd = spendLoading
+  const chosenForecastUsd = spendLoading
     ? null
-    : aggregateOwnsForecast
-      ? (aggregateForecastUsd ?? null)
-      : (cost?.forecastEodUsd ?? costApi?.forecast?.forecastEndOfDayUsd ?? null);
+    : (aggregate?.forecastEndOfDayUsd ??
+      cost?.forecastEodUsd ??
+      costApi?.forecast?.forecastEndOfDayUsd ??
+      null);
+  // Sources refresh at different times, so the chosen forecast can trail the
+  // tile's max-of-sources spend. Clamping up would claim no more spend today.
+  const forecastKpiUsd =
+    chosenForecastUsd !== null && chosenForecastUsd >= todayTotal ? chosenForecastUsd : null;
 
   // The subagent KPI must source from the polled aggregate
   // endpoint, not the liveStore — the SSE frames that would populate

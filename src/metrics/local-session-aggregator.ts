@@ -508,7 +508,7 @@ export class LocalSessionAggregator {
     rollup.costUsd += usd;
     rollup.costByDayUsd.set(dayKey, (rollup.costByDayUsd.get(dayKey) ?? 0) + usd);
     const firstForDay = rollup.firstActivityByDayMs.get(dayKey);
-    if (firstForDay === undefined || timestamp < firstForDay) {
+    if (usd > 0 && (firstForDay === undefined || timestamp < firstForDay)) {
       rollup.firstActivityByDayMs.set(dayKey, timestamp);
     }
     if (usage.agentId !== undefined) {

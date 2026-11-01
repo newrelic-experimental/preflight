@@ -22,6 +22,7 @@ import type { EstimatedModelUsage, UnpricedModelUsage } from '../../metrics/cost
 import { sumCallUsageInto } from '../../metrics/call-usage.js';
 import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { attributeSessionCosts } from '../../metrics/cost-per-outcome.js';
+import { calculateModelCost } from '../../metrics/pricing-overlay.js';
 import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
 import {
   GitActivityRecorder,
@@ -1462,8 +1463,10 @@ function firstActivityTodayMs(
   },
   todayKey: string,
   startMs: number,
+  now: number,
 ): number | null {
-  if (s.firstActivityByDayMs !== undefined) return s.firstActivityByDayMs[todayKey] ?? null;
+  const persisted = s.firstActivityByDayMs?.[todayKey];
+  if (persisted !== undefined) return Math.min(Math.max(persisted, startMs), now);
   let first: number | null = null;
   for (const entry of s.timeline ?? []) {
     if (entry.timestamp >= startMs && (first === null || entry.timestamp < first)) {
@@ -1471,6 +1474,20 @@ function firstActivityTodayMs(
     }
   }
   return first;
+}
+
+function bufferTokenCostUsd(ev: { readonly [key: string]: unknown }): number {
+  const count = (v: unknown): number => (typeof v === 'number' ? v : 0);
+  const inputTokens = count(ev.inputTokens);
+  const outputTokens = count(ev.outputTokens);
+  return calculateModelCost(typeof ev.model === 'string' ? ev.model : 'unknown', {
+    inputTokens,
+    outputTokens,
+    thinkingTokens: 0,
+    cacheReadTokens: count(ev.cacheReadTokens),
+    cacheCreationTokens: count(ev.cacheCreationTokens),
+    totalTokens: inputTokens + outputTokens,
+  }).totalUsd;
 }
 
 export function createApiHandler(
@@ -1765,7 +1782,6 @@ export function createApiHandler(
     for (const ev of peeked) {
       const ts = typeof ev.timestamp === 'number' ? ev.timestamp : 0;
       if (ts < startMs) continue;
-      if (dailyFirstActivityMs === null || ts < dailyFirstActivityMs) dailyFirstActivityMs = ts;
       const sid = ev.sessionId;
       if (typeof sid === 'string' && sid.length > 0) {
         sessionsSeen.add(sid);
@@ -1789,6 +1805,12 @@ export function createApiHandler(
           });
         }
       } else if (ev.mode === 'token') {
+        if (
+          (dailyFirstActivityMs === null || ts < dailyFirstActivityMs) &&
+          bufferTokenCostUsd(ev) > 0
+        ) {
+          dailyFirstActivityMs = ts;
+        }
         cacheReadTokensSum += typeof ev.cacheReadTokens === 'number' ? ev.cacheReadTokens : 0;
         cacheCreationTokensSum +=
           typeof ev.cacheCreationTokens === 'number' ? ev.cacheCreationTokens : 0;
@@ -1895,13 +1917,6 @@ export function createApiHandler(
         firstActivityByDayMs?: Record<string, number>;
         timeline?: ReadonlyArray<{ timestamp: number }>;
       };
-      const sessionFirstActivityMs = firstActivityTodayMs(s, todayKey, startMs);
-      if (
-        sessionFirstActivityMs !== null &&
-        (dailyFirstActivityMs === null || sessionFirstActivityMs < dailyFirstActivityMs)
-      ) {
-        dailyFirstActivityMs = sessionFirstActivityMs;
-      }
       // Cost attributed to TODAY: the persisted per-day bucket, else a guarded
       // pro-rate (see todayCostOfSummary). The same helper seeds CostTracker, so
       // a restart cannot change what a checkpoint contributes.
@@ -1912,6 +1927,14 @@ export function createApiHandler(
       // drop the checkpoint's today cost, and a seeded one is not counted twice.
       // This is per-key max, the same rule mergeSummaries uses.
       const todayCost = todayCostOfSummary(s, todayKey, now);
+      const sessionFirstActivityMs =
+        todayCost.costUsd > 0 ? firstActivityTodayMs(s, todayKey, startMs, now) : null;
+      if (
+        sessionFirstActivityMs !== null &&
+        (dailyFirstActivityMs === null || sessionFirstActivityMs < dailyFirstActivityMs)
+      ) {
+        dailyFirstActivityMs = sessionFirstActivityMs;
+      }
       if (s.sessionId === liveSid) {
         liveCheckpointTodayUsd = todayCost.costUsd;
         liveCheckpointSubagentUsd = todayCost.subagentCostUsd;

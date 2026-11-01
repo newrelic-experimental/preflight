@@ -253,6 +253,8 @@ export interface CostTrackerSeed {
   /** Portion of `totalCostUsd`/`subagentCostUsd` attributable to `dayKey` (see `todayPortionOfSessionCost`). */
   readonly dayCostUsd: number;
   readonly daySubagentCostUsd: number;
+  /** The persisted first spend on `dayKey`. Absent for summaries written before it was persisted. */
+  readonly dayFirstActivityMs?: number;
   /**
    * Per-workflow-run cost, split by local-day, from the persisted checkpoint
    * — see `seedFromPersisted()`'s doc comment for why this is seeded (unlike
@@ -585,7 +587,7 @@ export class CostTracker implements Resettable {
     }
     this.lastMutationMsByDay.set(dayKey, wallNowMs);
     const existingFirst = this.firstActivityMsByDay.get(dayKey);
-    if (existingFirst === undefined || tsMs < existingFirst) {
+    if (breakdown.totalUsd > 0 && (existingFirst === undefined || tsMs < existingFirst)) {
       // Use earliest event timestamp for the day so cross-midnight burn-rate
       // denominators stay correct (NOT wall-clock arrival time).
       this.firstActivityMsByDay.set(dayKey, tsMs);
@@ -677,9 +679,10 @@ export class CostTracker implements Resettable {
         (this.costByDayUsd.get(seed.dayKey) ?? 0) + seed.dayCostUsd,
       );
       this.lastMutationMsByDay.set(seed.dayKey, Date.now());
+      const seededFirst = seed.dayFirstActivityMs ?? Date.now();
       const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
-      if (existingFirst === undefined) {
-        this.firstActivityMsByDay.set(seed.dayKey, Date.now());
+      if (existingFirst === undefined || seededFirst < existingFirst) {
+        this.firstActivityMsByDay.set(seed.dayKey, seededFirst);
       }
     }
     if (seed.daySubagentCostUsd !== 0) {

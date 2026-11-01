@@ -1273,7 +1273,9 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     estimatedCostUsd: costMetrics?.sessionTotalCostUsd ?? null,
     subagentCostUsd: costMetrics?.subagentCostUsd ?? 0,
     costByDayUsd: costMetrics?.costByDayUsd ?? {},
-    ...(costMetrics ? { firstActivityByDayMs: costMetrics.firstActivityByDayMs } : {}),
+    ...(costMetrics && Object.keys(costMetrics.firstActivityByDayMs).length > 0
+      ? { firstActivityByDayMs: costMetrics.firstActivityByDayMs }
+      : {}),
     subagentCostByDayUsd: costMetrics?.subagentCostByDayUsd ?? {},
     ...(costMetrics && Object.keys(costMetrics.unpricedByModel).length > 0
       ? { unpricedByModel: costMetrics.unpricedByModel }
