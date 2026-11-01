@@ -1116,81 +1116,6 @@ describe('stdio integration', () => {
     }
   }, 30000);
 
-  it('saves a call a pending engine drained for another session under that session, not its own', async () => {
-    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
-    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
-
-    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
-    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-pending-other-session-'));
-    const ownId = 'own-real-session';
-    const otherId = 'other-real-session';
-    const otherBuffer = resolve(tmpStoragePath, `buffer-${otherId}.jsonl`);
-    const now = Date.now();
-    writeFileSync(
-      otherBuffer,
-      [
-        { mode: 'pre', tool: 'Read', timestamp: now, sessionId: otherId, toolUseId: 'toolu_s2' },
-        {
-          mode: 'post',
-          tool: 'Read',
-          timestamp: now + 5,
-          sessionId: otherId,
-          toolUseId: 'toolu_s2',
-        },
-      ]
-        .map((e) => JSON.stringify(e) + '\n')
-        .join(''),
-    );
-    const sessionFile = (id: string): Record<string, unknown> | null => {
-      const dir = resolve(tmpStoragePath, 'sessions');
-      const name = existsSync(dir)
-        ? readdirSync(dir).find((f) => f.endsWith(`_${id}.json`))
-        : undefined;
-      return name
-        ? (JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) as Record<string, unknown>)
-        : null;
-    };
-    const waitFor = async (predicate: () => boolean): Promise<boolean> => {
-      for (let i = 0; i < 40; i++) {
-        if (predicate()) return true;
-        await new Promise((r) => setTimeout(r, 250));
-      }
-      return false;
-    };
-
-    const env = { ...process.env };
-    delete env.CLAUDE_JOB_DIR;
-    const transport = new StdioClientTransport({
-      command: 'node',
-      args: [binPath, '--stdio'],
-      env: {
-        ...env,
-        NR_AI_DASHBOARD_PORT: '0',
-        NR_AI_MODE: 'local',
-        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
-      },
-    });
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    try {
-      await client.connect(transport);
-      expect(await waitFor(() => !existsSync(otherBuffer))).toBe(true);
-
-      const breadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
-      mkdirSync(breadcrumbDir, { recursive: true });
-      writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), ownId);
-      const ownHeartbeat = resolve(tmpStoragePath, `active-${ownId}.pid`);
-      expect(await waitFor(() => existsSync(ownHeartbeat))).toBe(true);
-
-      await client.close();
-      expect(await waitFor(() => !existsSync(ownHeartbeat))).toBe(true);
-
-      expect(sessionFile(otherId)?.toolCallCount).toBe(1);
-      expect(sessionFile(ownId)?.toolCallCount ?? 0).toBe(0);
-    } finally {
-      rmSync(tmpStoragePath, { recursive: true, force: true });
-    }
-  }, 30000);
-
   describe('nr_observe_install_hooks while the session is still pending', () => {
     async function withPendingServer(
       opts: { mcpClient: string; allow: boolean },
@@ -1673,9 +1598,8 @@ describe('stdio integration', () => {
         const before = (await readStats()).tool_calls;
         const toolUseId = `toolu_drain_${++toolUseCount}`;
         const ts = Date.now();
-        const bufferPath = resolve(storagePath, `buffer-${bufferSessionId}.jsonl`);
         appendFileSync(
-          bufferPath,
+          resolve(storagePath, `buffer-${bufferSessionId}.jsonl`),
           [
             { mode: 'pre', tool: 'Bash', timestamp: ts, sessionId, toolUseId },
             { mode: 'post', tool: 'Bash', timestamp: ts + 1, sessionId, toolUseId, success: true },
@@ -1684,12 +1608,8 @@ describe('stdio integration', () => {
             .join('\n') + '\n',
           { mode: 0o600 },
         );
-        const drained = async (): Promise<boolean> =>
-          sessionId === bufferSessionId
-            ? (await readStats()).tool_calls > before
-            : !existsSync(bufferPath);
         for (let i = 0; i < 100; i++) {
-          if (await drained()) return;
+          if ((await readStats()).tool_calls > before) return;
           await new Promise((r) => setTimeout(r, 20));
         }
         throw new Error(`engine never drained the tool call under ${sessionId}`);

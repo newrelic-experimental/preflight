@@ -11,7 +11,6 @@ import type { MetricAggregator } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import {
   DEGENERATE_NAMES,
-  isUnscopedAggregatorSessionId,
   shouldReplaceSessionName,
   type SessionNameSource,
 } from '../hooks/session-resolver.js';
@@ -78,7 +77,6 @@ export interface SessionMetrics {
 // ---------------------------------------------------------------------------
 
 const MAX_TIMELINE_ENTRIES = 10_000;
-const MAX_HELD_RECORDS_PER_SESSION = 2_000;
 
 // Bounds memory on sessions that touch an unusually large number of distinct
 // files (e.g. a repo-wide codemod or search) — head-drop the oldest-added
@@ -173,8 +171,6 @@ export class SessionTracker implements Resettable {
   private readonly bashCallsByCategory = new Map<string, number>();
   private timeline: TimelineEntry[] = [];
   private timelineEntryCount = 0;
-  // A pending engine drains every session's buffer before it knows its own id.
-  private readonly heldRecords = new Map<string, ToolCallRecord[]>();
 
   constructor(sessionId: string) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -186,22 +182,7 @@ export class SessionTracker implements Resettable {
     this.sessionStartTime = Date.now();
   }
 
-  private countsSession(sessionId: string | null): boolean {
-    return (
-      !sessionId || sessionId === this.sessionId || isUnscopedAggregatorSessionId(this.sessionId)
-    );
-  }
-
   recordToolCall(record: ToolCallRecord): void {
-    if (!this.countsSession(record.sessionId)) {
-      if (this.sessionId.startsWith('pending-')) {
-        const held = this.heldRecords.get(record.sessionId!) ?? [];
-        if (held.length >= MAX_HELD_RECORDS_PER_SESSION) held.shift();
-        held.push(record);
-        this.heldRecords.set(record.sessionId!, held);
-      }
-      return;
-    }
     this.toolCallCount++;
 
     // FALLBACK naming only: an authoritative name (job-state title or
@@ -293,12 +274,6 @@ export class SessionTracker implements Resettable {
   }
 
   amendToolCall(record: ToolCallRecord, replacedErrorType: string): void {
-    if (!this.countsSession(record.sessionId)) {
-      const held = this.heldRecords.get(record.sessionId!);
-      const index = held?.findIndex((r) => r.id === record.id) ?? -1;
-      if (held && index >= 0) held[index] = record;
-      return;
-    }
     const successEntry = this.toolSuccessByTool.get(record.toolName);
     if (!successEntry) return;
     const replacedCount = (this.toolErrorsByType.get(replacedErrorType) ?? 0) - 1;
@@ -464,9 +439,6 @@ export class SessionTracker implements Resettable {
       throw new Error('SessionTracker.adoptSessionId() requires a non-empty sessionId');
     }
     this.sessionId = sessionId;
-    const held = this.heldRecords.get(sessionId) ?? [];
-    this.heldRecords.clear();
-    for (const record of held) this.recordToolCall(record);
   }
 
   /**
@@ -505,6 +477,5 @@ export class SessionTracker implements Resettable {
     this.bashCallsByCategory.clear();
     this.timeline = [];
     this.timelineEntryCount = 0;
-    this.heldRecords.clear();
   }
 }
