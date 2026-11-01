@@ -583,6 +583,81 @@ describe('SessionStore', () => {
     expect(store.loadSession('clobber-me')!.toolCallCount).toBe(12);
   });
 
+  it('merges a self-reported summary with no tool calls into a recorded session', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'reported', startTime, toolCallCount: 12 }));
+
+    store.saveSession(
+      makeSummary({
+        sessionId: 'reported',
+        startTime,
+        toolCallCount: 0,
+        toolBreakdown: {},
+        tokensInput: 99_000,
+        selfReportCount: 1,
+      }),
+    );
+
+    expect(store.loadSession('reported')).toMatchObject({ toolCallCount: 12, tokensInput: 99_000 });
+  });
+
+  it("accepts the owner's summary with usage over a file that holds only self-reports", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    const idle = { sessionId: 'reported-only', startTime, toolCallCount: 0, toolBreakdown: {} };
+    store.saveSession(makeSummary({ ...idle, tokensInput: 1000, selfReportCount: 1 }));
+
+    const saved = store.saveSession(
+      makeSummary({ ...idle, tokensInput: 1100, outcome: 'completed' }),
+    );
+
+    expect(saved).toBe(true);
+    expect(store.loadSession('reported-only')).toMatchObject({
+      tokensInput: 1100,
+      outcome: 'completed',
+    });
+  });
+
+  it('keeps the existing outcome when a write carries none', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'observed', startTime, outcome: 'in progress' }));
+    const { outcome: _outcome, ...observed } = makeSummary({ sessionId: 'observed', startTime });
+
+    store.saveSession(observed as unknown as FullSessionSummary);
+
+    expect(store.loadSession('observed')?.outcome).toBe('in progress');
+  });
+
+  it('keeps the larger selfReportCount', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'counted', startTime, selfReportCount: 2 }));
+
+    store.saveSession(makeSummary({ sessionId: 'counted', startTime, selfReportCount: 1 }));
+
+    expect(store.loadSession('counted')?.selfReportCount).toBe(2);
+  });
+
+  it('returns whether it wrote the file', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    const empty = { toolCallCount: 0, toolBreakdown: {}, estimatedCostUsd: 0 };
+    const idle = { ...empty, tokensInput: 0, tokensOutput: 0, tokensThinking: 0 };
+    mkdirSync(resolve(tmpDir, 'sessions', '2026-04-15_unwritable.json'));
+
+    const wrote = [
+      makeSummary({ sessionId: 'recorded', startTime }),
+      makeSummary({ sessionId: 'bad id', startTime }),
+      makeSummary({ sessionId: 'idle', startTime, ...idle }),
+      makeSummary({ sessionId: 'recorded', startTime, ...empty }),
+      makeSummary({ sessionId: 'unwritable', startTime }),
+    ].map((summary) => store.saveSession(summary));
+
+    expect(wrote).toEqual([true, false, false, false, false]);
+  });
+
   it('does not create a file for a session that recorded no usage', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     store.saveSession(
