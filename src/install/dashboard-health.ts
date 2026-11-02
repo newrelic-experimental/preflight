@@ -37,7 +37,9 @@ export async function waitForHealthyDashboard(
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
-      const res = await fetch(`http://${host}:${port}/api/health`);
+      const res = await fetch(`http://${host}:${port}/api/health`, {
+        signal: AbortSignal.timeout(1000),
+      });
       if (res.ok) {
         const body = (await res.json()) as { ok?: unknown; version?: unknown };
         if (body.ok === true && (expectedVersion === null || body.version === expectedVersion)) {
