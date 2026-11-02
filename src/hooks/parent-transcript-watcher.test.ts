@@ -149,6 +149,30 @@ describe('ParentTranscriptWatcher', () => {
     expect(readTokenEvents().map((e) => e.messageId)).toEqual(['msg_1']);
   });
 
+  it('counts the lines of a failed read once, after the retry succeeds', () => {
+    writeFileSync(
+      transcriptPath,
+      makeAssistantLine({ messageId: 'msg_1' }) +
+        '\n' +
+        makeAssistantLine({ messageId: 'msg_2' }) +
+        '\n',
+    );
+    const bufferPath = join(storagePath, `buffer-${SESSION_ID}.jsonl`);
+    mkdirSync(bufferPath);
+    const watcher = new ParentTranscriptWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: SESSION_ID,
+    });
+    watcher.poll();
+    watcher.poll();
+    expect(watcher.getHealthStats().linesRead).toBe(0);
+
+    rmSync(bufferPath, { recursive: true });
+    watcher.poll();
+    expect(watcher.getHealthStats().linesRead).toBe(2);
+  });
+
   it('keeps a turn whose buffer append failed and emits it once the buffer is writable', () => {
     writeFileSync(transcriptPath, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
     const bufferPath = join(storagePath, `buffer-${SESSION_ID}.jsonl`);
@@ -655,6 +679,30 @@ describe('ParentTranscriptWatcher', () => {
         parentSessionId: SESSION_ID,
       });
       watcher.poll();
+      const events = readTokenEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0]!.responseMs).toBe(4_000);
+    });
+
+    it('keeps responseMs on a turn whose first append failed, when its user line was read earlier', () => {
+      writeFileSync(transcriptPath, makeUserLine({ timestamp: '2026-06-15T12:00:00.000Z' }) + '\n');
+      const watcher = new ParentTranscriptWatcher({
+        storagePath,
+        projectsDir,
+        parentSessionId: SESSION_ID,
+      });
+      watcher.poll();
+
+      appendFileSync(
+        transcriptPath,
+        makeAssistantLine({ messageId: 'msg_1', timestamp: '2026-06-15T12:00:04.000Z' }) + '\n',
+      );
+      const bufferPath = join(storagePath, `buffer-${SESSION_ID}.jsonl`);
+      mkdirSync(bufferPath);
+      watcher.poll();
+      rmSync(bufferPath, { recursive: true });
+      watcher.poll();
+
       const events = readTokenEvents();
       expect(events).toHaveLength(1);
       expect(events[0]!.responseMs).toBe(4_000);

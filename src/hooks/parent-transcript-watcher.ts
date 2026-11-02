@@ -471,6 +471,8 @@ export class ParentTranscriptWatcher {
       this.parseErrors += 1;
     }
 
+    const linesReadBefore = this.linesRead;
+    const previousLineTimestampBefore = this.previousLineTimestampByPath.get(path);
     const parsedTurns: ParsedParentTurn[] = [];
     for (const line of lines) {
       if (!line) continue;
@@ -503,7 +505,12 @@ export class ParentTranscriptWatcher {
       this.retryWarning.warn(err);
       this.partialByPath.delete(path);
       this.decoderByPath.delete(path);
-      this.previousLineTimestampByPath.delete(path);
+      this.linesRead = linesReadBefore;
+      if (previousLineTimestampBefore === undefined) {
+        this.previousLineTimestampByPath.delete(path);
+      } else {
+        this.previousLineTimestampByPath.set(path, previousLineTimestampBefore);
+      }
       return;
     }
     this.retryWarning.succeeded();
