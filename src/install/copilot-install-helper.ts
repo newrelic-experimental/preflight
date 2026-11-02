@@ -24,7 +24,7 @@
  * both, since they share this one file) is tagged simply `'copilot'`.
  */
 
-import { dirname, join, resolve } from 'node:path';
+import { dirname, extname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { z } from 'zod';
@@ -50,6 +50,7 @@ const HOOK_FILE_LOCATIONS_SETTING = 'chat.hookFilesLocations';
 export interface CopilotHookCommand {
   type: 'command';
   command: string;
+  powershell: string;
 }
 
 export interface CopilotHooksFile {
@@ -74,8 +75,21 @@ export function generateCopilotHooksFile(binPath?: string | null): CopilotHooksF
   const bin = binPath
     ? `"${join(dirname(binPath), COLLECTOR_COMMAND).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
     : COLLECTOR_COMMAND;
-  const pre = `NEW_RELIC_AI_PLATFORM=copilot ${bin} pre-tool`;
-  const post = `NEW_RELIC_AI_PLATFORM=copilot ${bin} post-tool`;
+  // GitHub's Copilot hooks reference (docs.github.com/en/copilot/reference/
+  // hooks-configuration) runs `powershell` instead of `command` on Windows.
+  // PowerShell parses a leading VAR=value as a command name, so it sets the
+  // tag through $env: and runs the path with `&`. The path is single-quoted
+  // (verbatim in PowerShell), so it skips the sh backslash escaping above,
+  // and keeps the resolved binary's extension: PowerShell cannot run npm's
+  // extensionless sh shim, only its .cmd/.ps1 siblings.
+  const psBin = binPath
+    ? join(dirname(binPath), COLLECTOR_COMMAND + extname(binPath))
+    : COLLECTOR_COMMAND;
+  const hookCommand = (subcommand: string): CopilotHookCommand => ({
+    type: 'command',
+    command: `NEW_RELIC_AI_PLATFORM=copilot ${bin} ${subcommand}`,
+    powershell: `$env:NEW_RELIC_AI_PLATFORM='copilot'; & '${psBin.replace(/'/g, "''")}' ${subcommand}`,
+  });
   // Flat shape per GitHub's own Copilot hooks reference — each PreToolUse/
   // PostToolUse array entry is a command hook directly ({type, command}),
   // unlike Claude Code's settings.json which nests it one level deeper under
@@ -88,8 +102,8 @@ export function generateCopilotHooksFile(binPath?: string | null): CopilotHooksF
   return {
     version: 1,
     hooks: {
-      PreToolUse: [{ type: 'command', command: pre }],
-      PostToolUse: [{ type: 'command', command: post }],
+      PreToolUse: [hookCommand('pre-tool')],
+      PostToolUse: [hookCommand('post-tool')],
     },
   };
 }
