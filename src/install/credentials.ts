@@ -45,7 +45,8 @@ function readKeyFile(path: string): { key: string; warning?: string } {
 
 /**
  * Resolves the install credentials with the precedence flag > key file > env.
- * The env fallback is skipped when `hasStoredCredentials` is set, because
+ * The env fallback is skipped when `hasStoredCredentials` is set, unless the key came from
+ * a flag or file (an explicit replacement, which may take its account ID from the env), because
  * NEW_RELIC_* is commonly present in a shell for unrelated tools (APM agents,
  * the newrelic CLI) and must not silently overwrite a stored key.
  * Errors name the file path and never its contents.
@@ -63,11 +64,12 @@ export function resolveInstallCredentials(
     licenseKeySource = 'file';
     if (file.warning) warnings.push(file.warning);
   }
-  const envAllowed = !inputs.hasStoredCredentials;
-  if (!licenseKey && envAllowed) {
+  if (!licenseKey && !inputs.hasStoredCredentials) {
     licenseKey = nonEmpty(env.NEW_RELIC_LICENSE_KEY);
     if (licenseKey) licenseKeySource = 'env';
   }
+  const envAllowed =
+    !inputs.hasStoredCredentials || licenseKeySource === 'flag' || licenseKeySource === 'file';
   const accountId =
     nonEmpty(inputs.accountId) ?? (envAllowed ? nonEmpty(env.NEW_RELIC_ACCOUNT_ID) : undefined);
   return { licenseKey, accountId, licenseKeySource, warnings };

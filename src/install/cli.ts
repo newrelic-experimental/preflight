@@ -599,14 +599,17 @@ function handleSchedule(options: { time?: string; disable?: boolean }): void {
 }
 
 // Unreadable config counts as stored: the env fallback must not overwrite what
-// we could not inspect.
+// we could not inspect. migrateStoragePath runs later, so also check the
+// pre-rename location.
 function hasStoredLicenseSource(): boolean {
-  try {
-    const stored = readJsonFileStrict(NR_CONFIG_PATH);
-    return stored.licenseKey !== undefined || stored.licenseKeyCommand !== undefined;
-  } catch {
-    return true;
-  }
+  return [NR_CONFIG_PATH, resolve(homedir(), '.nr-ai-observe', 'config.json')].some((path) => {
+    try {
+      const stored = readJsonFileStrict(path);
+      return stored.licenseKey !== undefined || stored.licenseKeyCommand !== undefined;
+    } catch {
+      return true;
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -75,6 +75,19 @@ describe('resolveInstallCredentials', () => {
     ).toMatchObject({ licenseKey: 'file-key', licenseKeySource: 'file' });
   });
 
+  it('takes the account id from the environment when a flag or file replaces a stored key', () => {
+    const env = { NEW_RELIC_LICENSE_KEY: 'env-key', NEW_RELIC_ACCOUNT_ID: '333' };
+    expect(
+      resolveInstallCredentials(
+        { licenseKeyFile: keyFile('file-key'), hasStoredCredentials: true },
+        env,
+      ),
+    ).toMatchObject({ licenseKey: 'file-key', accountId: '333' });
+    expect(
+      resolveInstallCredentials({ licenseKey: 'flag-key', hasStoredCredentials: true }, env),
+    ).toMatchObject({ licenseKey: 'flag-key', accountId: '333' });
+  });
+
   it('reports the environment as the key source', () => {
     expect(
       resolveInstallCredentials({}, { NEW_RELIC_LICENSE_KEY: 'env-key' }).licenseKeySource,

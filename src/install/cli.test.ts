@@ -1368,6 +1368,29 @@ describe('platform transition matrix', () => {
     expect(mockedHelper.generateNrConfig).not.toHaveBeenCalled();
   });
 
+  it('install does not let ambient env overwrite a key stored in the pre-rename directory', async () => {
+    const legacyConfig = join(homedir(), '.nr-ai-observe', 'config.json');
+    const saved = {
+      key: process.env.NEW_RELIC_LICENSE_KEY,
+      account: process.env.NEW_RELIC_ACCOUNT_ID,
+    };
+    process.env.NEW_RELIC_LICENSE_KEY = 'NRLIC-ambient';
+    process.env.NEW_RELIC_ACCOUNT_ID = '222';
+    mFs.readFileSync.mockImplementation((p: unknown) => {
+      if (String(p) === legacyConfig) return '{"licenseKey":"KEY-A","accountId":"111"}';
+      return '{}';
+    });
+    try {
+      await runInstallCli(['install']);
+    } finally {
+      if (saved.key === undefined) delete process.env.NEW_RELIC_LICENSE_KEY;
+      else process.env.NEW_RELIC_LICENSE_KEY = saved.key;
+      if (saved.account === undefined) delete process.env.NEW_RELIC_ACCOUNT_ID;
+      else process.env.NEW_RELIC_ACCOUNT_ID = saved.account;
+    }
+    expect(mockedHelper.generateNrConfig).not.toHaveBeenCalled();
+  });
+
   it('install says where an env-sourced key came from', async () => {
     const stdout = await installWithAmbientEnv('{}');
     expect(stdout).toContain('License key read from NEW_RELIC_LICENSE_KEY');
