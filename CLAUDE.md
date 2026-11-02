@@ -282,3 +282,4 @@ Save it as `.changeset/<short-descriptive-name>.md`, or run `npx changeset --pat
 - Title: short, under 72 characters
 - Body: Summary (bullet points), Test plan (checklist)
 - Always run the checks in CONTRIBUTING.md's "Before opening a PR" first
+- Open it as a draft; see [AI-authored pull requests](./CONTRIBUTING.md#ai-authored-pull-requests)
