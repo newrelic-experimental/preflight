@@ -134,6 +134,7 @@ Proxy mode is a **separate, mutually exclusive** code path. It does not use hook
 - Session totals are saved every 30 seconds (`NR_AI_SESSION_PERSIST_INTERVAL_MS`). If Preflight is killed before the next save, the cost of the turns since the last save is lost, up to one interval. A restart does not recover it, because the ledger already holds those turns.
 - The ledger is pruned with session files after `retainSessionsDays` (default 90). A turn first seen more than that many days after it happened is not billed. With `retainSessionsDays: null` the ledger is never pruned. A turn with no timestamp is recorded in `undated.jsonl`, which is never pruned.
 - A turn whose buffer write fails (a full disk, a permissions error) is retried on the next poll, but only while the process lives: a crash before the retry loses it.
+- A ledger that cannot be written (an unwritable `billed-turns/` directory, a full disk) stops that transcript's cost events until it recovers. The watcher keeps its cursor and retries every poll, logging at most one warning a minute, because billing the turn without a claim could bill it twice. The cost is delayed, not lost, and is billed once the ledger is writable again.
 - The ledger starts empty on upgrade. A fork of a session billed by an earlier version can still bill the parent's turns a second time, once.
 
 **Proxy mode is fully separate.** Proxy mode does not use the hook collection path at all. It is architecturally independent and mutually exclusive with stdio/local modes.
