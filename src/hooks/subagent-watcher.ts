@@ -1008,12 +1008,12 @@ export class SubagentWatcher {
       );
       this.writeCursor(cursorPath, nextBytePos, newPartial, file.path);
     } catch (err) {
-      this.recordError(err, this.retryWarning);
+      this.recordError(err, this.retryWarning, file.path);
       this.decoderByPath.delete(file.path);
       this.consumedBytesByPath.delete(file.path);
       return nothingRead;
     }
-    this.retryWarning.succeeded();
+    this.retryWarning.succeeded(file.path);
     this.bytesRead += actuallyRead;
     this.linesRead += linesRead;
     this.parseErrors += parseErrors;
@@ -1358,12 +1358,12 @@ export class SubagentWatcher {
     });
   }
 
-  private recordError(err: unknown, throttle?: ThrottledWarning): void {
+  private recordError(err: unknown, throttle?: ThrottledWarning, throttleKey?: string): void {
     const message = err instanceof Error ? err.message : String(err);
     const code = (err as { code?: string }).code ?? 'UNKNOWN';
     const cls = err instanceof Error ? err.constructor.name : 'Error';
     this.lastError = { code: String(code).slice(0, 80), class: String(cls).slice(0, 80) };
-    if (throttle) throttle.warn(err);
+    if (throttle) throttle.warn(err, throttleKey);
     else logger.warn('SubagentWatcher error', { code, message: message.slice(0, 200) });
   }
 }
