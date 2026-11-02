@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   utimesSync,
@@ -406,6 +407,33 @@ describe('CopilotUsageWatcher', () => {
       makeWatcher().poll();
 
       expect(emittedMessageIds()).toEqual(['resp_1', 'resp_2']);
+    });
+
+    it('claims a record under the session whose buffer it is appended to', () => {
+      const otherSid = '11111111-2222-3333-4444-555555555555';
+      writeFileSync(
+        logPath,
+        makeLlmRequestLine({ responseId: 'resp_dir' }) +
+          '\n' +
+          makeLlmRequestLine({ responseId: 'resp_other', sid: otherSid }) +
+          '\n',
+      );
+      makeWatcher().poll();
+
+      expect(readTokenEvents(SESSION_ID).map((e) => e.messageId)).toEqual(['resp_dir']);
+      expect(readTokenEvents(otherSid).map((e) => e.messageId)).toEqual(['resp_other']);
+      const ledgerDir = join(storagePath, 'billed-turns');
+      const claims = readdirSync(ledgerDir)
+        .flatMap((f) => readFileSync(join(ledgerDir, f), 'utf8').split('\n'))
+        .filter((l) => l.trim() !== '')
+        .map((l) => JSON.parse(l) as { m: string; s: string });
+      expect(claims.find((c) => c.m === 'resp_dir')?.s).toBe(SESSION_ID);
+      expect(claims.find((c) => c.m === 'resp_other')?.s).toBe(otherSid);
+
+      rmSync(cursorPath);
+      makeWatcher().poll();
+      expect(readTokenEvents(SESSION_ID)).toHaveLength(1);
+      expect(readTokenEvents(otherSid)).toHaveLength(1);
     });
 
     it('does not re-emit already-emitted records when the cursor file is truncated JSON', () => {

@@ -375,58 +375,63 @@ export class CopilotUsageWatcher {
     }
 
     // Health counters wait until the read is committed, so a redone read counts once.
-    const records: ParsedUsageRecord[] = [];
+    const recordsBySession = new Map<string, ParsedUsageRecord[]>();
     let linesRead = 0;
     for (const line of lines) {
       if (!line) continue;
       linesRead += 1;
       const { parsed, invalidJson } = this.tryParseLine(line);
       if (invalidJson) parseErrors += 1;
-      if (parsed !== null) records.push(parsed);
+      if (parsed === null) continue;
+      const sessionId = parsed.sessionId ?? dirSessionId;
+      const group = recordsBySession.get(sessionId);
+      if (group) group.push(parsed);
+      else recordsBySession.set(sessionId, [parsed]);
     }
 
     // If the claim, an append or the cursor write fails, the cursor stays put
     // and the next poll redoes the read: the ledger hands back the records
     // still owed and refuses the ones already appended.
     try {
-      this.ledger.deliver(dirSessionId, records, (parsed) => {
-        const sessionId = parsed.sessionId ?? dirSessionId;
-        this.appendToBuffer(sessionId, {
-          mode: 'token',
-          tool: 'copilot-usage',
-          timestamp: parsed.timestampMs,
-          sessionId,
-          messageId: parsed.messageId,
-          model: parsed.model,
-          // VS Code's inputTokens is cache-INCLUSIVE (verified against a real
-          // main.jsonl: each request's cachedTokens ≈ the previous request's
-          // inputTokens). CostTracker follows the Anthropic convention where
-          // input excludes cache reads, so emit only the uncached remainder —
-          // otherwise cached tokens are double-billed at full input rate.
-          inputTokens: Math.max(0, parsed.inputTokens - parsed.cachedTokens),
-          outputTokens: parsed.outputTokens,
-          // `cachedTokens` is the only cache figure the debug-log schema exposes,
-          // and it is cache-READ (confirmed against a real main.jsonl: it tracks
-          // the previous request's input). KNOWN ESTIMATION GAP: VS Code does not
-          // surface cache-CREATION (cache-write) tokens separately, so any turn
-          // with a fresh cache write has those tokens folded into `inputTokens`
-          // above and billed at the base input rate instead of the premium
-          // `cacheCreationPerMTok` rate (src/shared/pricing.ts). This causes a
-          // small, consistent UNDER-billing on cache-write turns. We report 0
-          // rather than guess a split the source doesn't provide; revisit if VS
-          // Code adds a cache-creation field to the schema.
-          cacheReadTokens: parsed.cachedTokens,
-          cacheCreationTokens: 0,
+      for (const [sessionId, records] of recordsBySession) {
+        this.ledger.deliver(sessionId, records, (parsed) => {
+          this.appendToBuffer(sessionId, {
+            mode: 'token',
+            tool: 'copilot-usage',
+            timestamp: parsed.timestampMs,
+            sessionId,
+            messageId: parsed.messageId,
+            model: parsed.model,
+            // VS Code's inputTokens is cache-INCLUSIVE (verified against a real
+            // main.jsonl: each request's cachedTokens ≈ the previous request's
+            // inputTokens). CostTracker follows the Anthropic convention where
+            // input excludes cache reads, so emit only the uncached remainder —
+            // otherwise cached tokens are double-billed at full input rate.
+            inputTokens: Math.max(0, parsed.inputTokens - parsed.cachedTokens),
+            outputTokens: parsed.outputTokens,
+            // `cachedTokens` is the only cache figure the debug-log schema exposes,
+            // and it is cache-READ (confirmed against a real main.jsonl: it tracks
+            // the previous request's input). KNOWN ESTIMATION GAP: VS Code does not
+            // surface cache-CREATION (cache-write) tokens separately, so any turn
+            // with a fresh cache write has those tokens folded into `inputTokens`
+            // above and billed at the base input rate instead of the premium
+            // `cacheCreationPerMTok` rate (src/shared/pricing.ts). This causes a
+            // small, consistent UNDER-billing on cache-write turns. We report 0
+            // rather than guess a split the source doesn't provide; revisit if VS
+            // Code adds a cache-creation field to the schema.
+            cacheReadTokens: parsed.cachedTokens,
+            cacheCreationTokens: 0,
+          });
         });
-      });
+      }
       this.writeCursor(cursorPath, nextBytePos, newPartial);
     } catch (err) {
-      this.retryWarning.warn(err);
+      this.retryWarning.warn(err, path);
       this.partialByPath.delete(path);
       this.decoderByPath.delete(path);
       return;
     }
-    this.retryWarning.succeeded();
+    this.retryWarning.succeeded(path);
     this.bytesRead += actuallyRead;
     this.linesRead += linesRead;
     this.parseErrors += parseErrors;
