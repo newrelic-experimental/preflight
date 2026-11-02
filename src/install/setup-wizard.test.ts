@@ -775,7 +775,7 @@ describe('setupWizard mode branch', () => {
     expect(written.accountId).toBeUndefined();
   });
 
-  it("when mode='local', says nothing about New Relic", async () => {
+  it("when mode='local', omits the NR ingest note and account-ID hint", async () => {
     answers('local', 'tester', '', '', '', '', '', 'n', 'n');
 
     await runSetupWizard();
