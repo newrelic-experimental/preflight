@@ -283,6 +283,33 @@ describe('resolveBinaryPath', () => {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('resolves a PATH dir holding only a .exe shim (mise windows_shim_mode = "exe")', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const tmpDir = mkdtempSync(join(nodeOs.tmpdir(), 'schedule-test-win-exe-'));
+    try {
+      const binaryPath = join(tmpDir, 'preflight.exe');
+      writeFileSync(binaryPath, 'MZ', { mode: 0o755 });
+      process.env.PATH = tmpDir;
+      expect(resolveBinaryPath()).toBe(binaryPath);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('still prefers .cmd over .exe when one dir holds both', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const tmpDir = mkdtempSync(join(nodeOs.tmpdir(), 'schedule-test-win-both-'));
+    try {
+      writeFileSync(join(tmpDir, 'preflight.exe'), 'MZ', { mode: 0o755 });
+      const cmdPath = join(tmpDir, 'preflight.cmd');
+      writeFileSync(cmdPath, '@echo off\r\n', { mode: 0o755 });
+      process.env.PATH = tmpDir;
+      expect(resolveBinaryPath()).toBe(cmdPath);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('resolveNodeDir', () => {
