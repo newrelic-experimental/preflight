@@ -1191,8 +1191,6 @@ export interface CrossSessionToolsDeps {
   configFilePath?: string;
   /** See handleSendDigest's `webhookUrlOverride`. */
   digestWebhookUrlOverride?: string;
-  /** Which source supplied `digestWebhookUrlOverride`; named in the subscribe warning. */
-  digestWebhookUrlSource?: 'env' | 'command';
   developer?: string;
 }
 

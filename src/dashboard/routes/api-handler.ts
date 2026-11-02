@@ -95,7 +95,11 @@ import type {
 } from '../../storage/types.js';
 import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
-import { digestWebhookUrlShadowedBy, handleSendDigest } from '../../tools/cross-session-tools.js';
+import {
+  digestWebhookUrlShadowedBy,
+  handleSendDigest,
+  isDigestWebhookCommandConfigured,
+} from '../../tools/cross-session-tools.js';
 import type { AlertEvent } from '../live-event-bus.js';
 import type {
   AgentCall,
@@ -3098,15 +3102,12 @@ export function createApiHandler(
       }
     }
 
-    // c.digestWebhookUrl holds the env or command value when one outranks the
-    // file, so it is never a fallback for the file's value.
-    const overrideSource = digestWebhookUrlOverrideSource(c);
-    const fileWebhookUrl =
-      'digestWebhookUrl' in disk
-        ? (disk.digestWebhookUrl as string | null)
-        : overrideSource
-          ? null
-          : c.digestWebhookUrl;
+    // Sends read the file at call time and skip its URL when a command is
+    // configured there, so follow the disk rather than the startup snapshot.
+    const overrideSource =
+      digestWebhookUrlOverrideSource(c) ??
+      (isDigestWebhookCommandConfigured(disk) ? 'command' : undefined);
+    const fileWebhookUrl = typeof disk.digestWebhookUrl === 'string' ? disk.digestWebhookUrl : null;
 
     const diskAlerts = (disk.alerts ?? {}) as Record<string, unknown>;
     const diskPersonal = (diskAlerts['personal'] ?? {}) as Record<string, unknown>;

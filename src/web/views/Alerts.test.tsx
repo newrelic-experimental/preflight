@@ -94,7 +94,7 @@ describe('Alerts view', () => {
     } as typeof BASE_SETTINGS);
     const note = await screen.findByRole('note');
     expect(note).toHaveTextContent(label);
-    expect(note).toHaveTextContent(/ignored until you remove that source/);
+    expect(note).toHaveTextContent(/Saving a URL here is refused until you remove that source/);
   });
 
   it('counts an env-supplied URL as configured and allows sending when the file has none', async () => {

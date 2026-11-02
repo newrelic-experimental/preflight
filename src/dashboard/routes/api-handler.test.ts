@@ -11,6 +11,7 @@ import { Readable } from 'node:stream';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { loadMcpConfig } from '../../config.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import {
   ToolSelectionScorer,
@@ -6113,6 +6114,63 @@ describe('api-handler GET /api/settings', () => {
     expect(JSON.stringify(result)).not.toContain(OVERRIDE);
   });
 
+  describe('with a config loaded from disk', () => {
+    const FILE_URL = 'https://hooks.slack.com/services/T/B/FILE';
+    let savedEnv: string | undefined;
+
+    beforeEach(() => {
+      savedEnv = process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL;
+      delete process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL;
+    });
+
+    afterEach(() => {
+      if (savedEnv === undefined) delete process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL;
+      else process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL = savedEnv;
+    });
+
+    function loadFrom(content: Record<string, unknown>) {
+      const configFilePath = makeConfigFile({ mode: 'local', ...content });
+      return { configFilePath, config: loadMcpConfig({ config: configFilePath }) };
+    }
+
+    it('reports a failing command, not the file, when the command outranks the file URL', async () => {
+      const { config, configFilePath } = loadFrom({
+        digestWebhookUrl: FILE_URL,
+        digestWebhookUrlCommand: ['/usr/bin/false'],
+      });
+
+      const result = await getSettings(config, configFilePath);
+
+      expect(result.digestWebhookUrlSource).toBe('command');
+    });
+
+    it('reports a command added to the file after startup', async () => {
+      const { config, configFilePath } = loadFrom({ digestWebhookUrl: FILE_URL });
+      fs.writeFileSync(
+        configFilePath,
+        JSON.stringify({
+          mode: 'local',
+          digestWebhookUrl: FILE_URL,
+          digestWebhookUrlCommand: ['/usr/bin/false'],
+        }),
+      );
+
+      const result = await getSettings(config, configFilePath);
+
+      expect(result.digestWebhookUrlSource).toBe('command');
+    });
+
+    it('reports unset after the URL is cleared from the file', async () => {
+      const { config, configFilePath } = loadFrom({ digestWebhookUrl: FILE_URL });
+      fs.writeFileSync(configFilePath, JSON.stringify({ mode: 'local' }));
+
+      const result = await getSettings(config, configFilePath);
+
+      expect(result.digestWebhookUrl).toBeNull();
+      expect(result.digestWebhookUrlSource).toBe('unset');
+    });
+  });
+
   it('returns 503 when config is missing', async () => {
     const handler = createApiHandler({});
     const req = { method: 'GET', url: '/api/settings' } as IncomingMessage;
@@ -6138,7 +6196,8 @@ describe('api-handler GET /api/settings', () => {
     expect(result.dailyBudgetUsd).toBe(50);
     expect(result.weeklyBudgetUsd).toBe(200);
     expect(result.retainSessionsDays).toBe(30);
-    expect(result.digestWebhookUrl).toBe('https://hooks.slack.com/services/T/B/STARTUP');
+    expect(result.digestWebhookUrl).toBeNull();
+    expect(result.digestWebhookUrlSource).toBe('unset');
     expect(result.digestSchedule).toBe('0 9 * * 1');
     expect(result.alerts.personal).toEqual({
       dailyCostUsd: 2,

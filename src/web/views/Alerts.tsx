@@ -290,8 +290,9 @@ export function Alerts(): JSX.Element {
 
             {webhookOverride && (
               <p role="note" className="text-xs text-accent-amber mb-3">
-                Digests are sent to the URL from {WEBHOOK_OVERRIDE_LABELS[webhookOverride]}, not the
-                one shown here. This URL is ignored until you remove that source.
+                The webhook URL comes from {WEBHOOK_OVERRIDE_LABELS[webhookOverride]}, which
+                outranks the one saved here. Saving a URL here is refused until you remove that
+                source.
               </p>
             )}
 
