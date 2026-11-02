@@ -277,6 +277,20 @@ describe('mergeCopilotHooksFile', () => {
     );
   });
 
+  it('replaces and removes a hand-written PowerShell entry that calls the .cmd shim', () => {
+    const workaround = {
+      type: 'command',
+      command:
+        "$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'C:\\Users\\u\\AppData\\Roaming\\npm\\preflight-collector.cmd' pre-tool",
+    };
+    const existing = { version: 1, hooks: { PreToolUse: [workaround], PostToolUse: [] } };
+    const merged = mergeCopilotHooksFile(existing, '/new/preflight');
+    const hooks = merged.hooks as { PreToolUse: { command: string }[] };
+    expect(hooks.PreToolUse).toHaveLength(1);
+    expect(hooks.PreToolUse[0]!.command).toContain('/new/preflight-collector');
+    expect(removeCopilotHooksFile(existing).hooks).toBeUndefined();
+  });
+
   it('preserves unrelated top-level keys', () => {
     const merged = mergeCopilotHooksFile({ someOtherKey: 'value' }, '/bin/preflight');
     expect(merged.someOtherKey).toBe('value');
