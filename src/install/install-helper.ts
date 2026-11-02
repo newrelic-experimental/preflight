@@ -59,8 +59,11 @@ const STOP_SUBCOMMAND = 'stop';
 //   preflight-collector session-start
 //   preflight-collector user-prompt-submit
 //   preflight-collector stop
+// It also matches a Windows shim extension and a PowerShell single-quoted
+// path, so a hand-written PowerShell entry is replaced and removed too:
+//   & 'C:\npm\preflight-collector.cmd' pre-tool
 export const NR_HOOK_RE = new RegExp(
-  `preflight-collector(?:\\.exe)?"?\\s+(?:${HOOK_SUBCOMMAND_PATTERN}|${INSTRUCTIONS_LOADED_SUBCOMMAND}|${MODEL_SWITCH_SUBCOMMAND}|${SESSION_START_SUBCOMMAND}|${USER_PROMPT_SUBMIT_SUBCOMMAND}|${STOP_SUBCOMMAND})`,
+  `preflight-collector(?:\\.(?:exe|cmd|ps1))?["']?\\s+(?:${HOOK_SUBCOMMAND_PATTERN}|${INSTRUCTIONS_LOADED_SUBCOMMAND}|${MODEL_SWITCH_SUBCOMMAND}|${SESSION_START_SUBCOMMAND}|${USER_PROMPT_SUBMIT_SUBCOMMAND}|${STOP_SUBCOMMAND})`,
 );
 
 // ---------------------------------------------------------------------------

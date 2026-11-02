@@ -37,6 +37,7 @@ import {
   getDashboardDaemonStatus,
   unescapeXml,
   findExecutableNodeDir,
+  resolveNamedBinaryOnPath,
 } from './schedule.js';
 
 const mockedExecFileSync = childProcess.execFileSync as jest.Mock;
@@ -292,6 +293,19 @@ describe('resolveBinaryPath', () => {
       writeFileSync(binaryPath, 'MZ', { mode: 0o755 });
       process.env.PATH = tmpDir;
       expect(resolveBinaryPath()).toBe(binaryPath);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('finds a native copilot.exe on PATH', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const tmpDir = mkdtempSync(join(nodeOs.tmpdir(), 'schedule-test-win-copilot-'));
+    try {
+      const copilotPath = join(tmpDir, 'copilot.exe');
+      writeFileSync(copilotPath, 'MZ', { mode: 0o755 });
+      process.env.PATH = tmpDir;
+      expect(resolveNamedBinaryOnPath('copilot')).toBe(copilotPath);
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
