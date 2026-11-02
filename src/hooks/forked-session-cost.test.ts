@@ -19,9 +19,17 @@ const PARENT_SID = 'c0ac675e-9be7-48e9-87b8-86394606f2dc';
 const FORK_SID = '5634b9b2-8fa1-42c8-aff0-a4b50a704343';
 const MODEL = 'claude-sonnet-4-5';
 
-const TURN_A = { id: 'msg_011CgXKYDaTjjpaQ19vpq5o3', ts: '2026-10-29T22:30:50.181Z' };
-const TURN_B = { id: 'msg_011CgXKYXPnCVvSB6xYVwER9', ts: '2026-10-29T22:30:54.814Z' };
-const TURN_C = { id: 'msg_011CgXKbDkTSNdWe2zWjjrhv', ts: '2026-10-29T22:31:31.042Z' };
+// The recorded offsets between lines, replayed from a moment shortly before
+// now: CostTracker drops token events older than 48 hours.
+const RUN_START_MS = Date.now() - 60_000;
+const at = (offsetMs: number): string => new Date(RUN_START_MS + offsetMs).toISOString();
+
+const TURN_A = { id: 'msg_011CgXKYDaTjjpaQ19vpq5o3', ts: at(1_900) };
+const TURN_B = { id: 'msg_011CgXKYXPnCVvSB6xYVwER9', ts: at(6_533) };
+const TURN_C = { id: 'msg_011CgXKbDkTSNdWe2zWjjrhv', ts: at(42_761) };
+const USER_1_TS = at(0);
+const USER_2_TS = at(4_186);
+const USER_3_TS = at(40_670);
 
 function assistantLine(sessionId: string, turn: { id: string; ts: string }): string {
   return JSON.stringify({
@@ -69,20 +77,20 @@ describe('forked session transcript cost accounting', () => {
     writeFileSync(
       join(projectsDir, 'repoA', `${PARENT_SID}.jsonl`),
       [
-        userLine(PARENT_SID, '2026-10-29T22:30:48.281Z'),
+        userLine(PARENT_SID, USER_1_TS),
         assistantLine(PARENT_SID, TURN_A),
-        userLine(PARENT_SID, '2026-10-29T22:30:52.467Z'),
+        userLine(PARENT_SID, USER_2_TS),
         assistantLine(PARENT_SID, TURN_B),
       ].join('\n') + '\n',
     );
     writeFileSync(
       join(projectsDir, 'repoB', `${FORK_SID}.jsonl`),
       [
-        userLine(FORK_SID, '2026-10-29T22:30:48.281Z'),
+        userLine(FORK_SID, USER_1_TS),
         assistantLine(FORK_SID, TURN_A),
-        userLine(FORK_SID, '2026-10-29T22:30:52.467Z'),
+        userLine(FORK_SID, USER_2_TS),
         assistantLine(FORK_SID, TURN_B),
-        userLine(FORK_SID, '2026-10-29T22:31:28.951Z'),
+        userLine(FORK_SID, USER_3_TS),
         assistantLine(FORK_SID, TURN_C),
       ].join('\n') + '\n',
     );
