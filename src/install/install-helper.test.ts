@@ -18,7 +18,6 @@ import {
   readAndCheckHooks,
   areHooksInstalledAtAnyScope,
   NR_HOOK_RE,
-  siblingBinPath,
 } from './install-helper.js';
 import { writeJsonFile } from './json-utils.js';
 
@@ -74,26 +73,6 @@ describe('NR_HOOK_RE', () => {
   it('matches the .exe collector form, quoted or not', () => {
     expect(NR_HOOK_RE.test('"C:\\\\shims\\\\preflight-collector.exe" pre-tool')).toBe(true);
     expect(NR_HOOK_RE.test('C:/shims/preflight-collector.exe stop')).toBe(true);
-  });
-});
-
-describe('siblingBinPath', () => {
-  it('keeps the .exe extension of the resolved binary', () => {
-    expect(siblingBinPath('/shims/preflight.exe', 'preflight-collector')).toBe(
-      join('/shims', 'preflight-collector.exe'),
-    );
-    expect(siblingBinPath('/shims/PREFLIGHT.EXE', 'preflight-collector')).toBe(
-      join('/shims', 'preflight-collector.exe'),
-    );
-  });
-
-  it('adds no extension for .cmd and extensionless binaries', () => {
-    expect(siblingBinPath('/npm/preflight.cmd', 'preflight-collector')).toBe(
-      join('/npm', 'preflight-collector'),
-    );
-    expect(siblingBinPath('/usr/bin/preflight', 'preflight-collector')).toBe(
-      join('/usr/bin', 'preflight-collector'),
-    );
   });
 });
 
