@@ -30,6 +30,14 @@ Your AI coding assistant makes hundreds of decisions every session — what to r
 
 See cost breakdown, efficiency scoring, anti-patterns, and live session tracking in action.
 
+To click through the dashboard yourself without any real sessions, run:
+
+```bash
+preflight demo        # or `npm run demo` from a checkout
+```
+
+It opens a dashboard at `http://127.0.0.1:7799` with 30 days of made-up sessions across three models and three assistants, including a few flagged anti-patterns and audit alerts. Today's sessions are the same on every run, so a rehearsal matches the real demo. The demo keeps its data in `~/.newrelic-preflight-demo`, uses its own port, and never reads your real sessions or sends anything to New Relic. Re-run it to reset; press Ctrl+C to stop.
+
 ---
 
 ## What You Get

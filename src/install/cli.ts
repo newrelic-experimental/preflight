@@ -61,6 +61,12 @@ import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
 import { kiroHooksPath, mergeKiroHooksFile, removeKiroHooksFile } from './kiro-install-helper.js';
 import { LocalStore } from '../storage/index.js';
 import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
+import {
+  DEFAULT_DEMO_DIR,
+  DEFAULT_DEMO_PORT,
+  runDemo,
+  staleDemoServerPids,
+} from '../demo/demo-command.js';
 import type { DiagnosticCheck } from './diagnostics.js';
 
 const logger = createLogger('cli');
@@ -1790,6 +1796,30 @@ export function createInstallProgram(): Command {
       'Kill orphaned --local processes after listing them (prompts for confirmation)',
     )
     .action(handleLocal);
+
+  program
+    .command('demo')
+    .description(
+      'Start a local dashboard filled with 30 days of seeded demo data (isolated from your real data)',
+    )
+    .option('--dir <path>', 'Demo storage directory (reset on every run)', DEFAULT_DEMO_DIR)
+    .option('--port <number>', 'Dashboard port', String(DEFAULT_DEMO_PORT))
+    .option('--no-open', 'Do not open the dashboard in a browser')
+    .action(async (opts: { dir: string; port: string; open: boolean }) => {
+      const port = Number(opts.port);
+      if (!/^\d+$/.test(opts.port) || port <= 0 || port > 65535) {
+        process.stderr.write(`Invalid --port "${opts.port}": use a number from 1 to 65535.\n`);
+        process.exitCode = 1;
+        return;
+      }
+      try {
+        for (const pid of staleDemoServerPids(opts.dir)) await killProcessGracefully(pid);
+        process.exitCode = await runDemo({ dir: opts.dir, port, open: opts.open });
+      } catch (err) {
+        process.stderr.write(`${errMsg(err)}\n`);
+        process.exitCode = 1;
+      }
+    });
 
   return program;
 }

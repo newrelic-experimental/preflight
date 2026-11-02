@@ -542,6 +542,7 @@ const SUBCOMMAND_NAMES = [
   'schedule',
   'doctor',
   'local',
+  'demo',
 ] as const;
 type SubcommandName = (typeof SUBCOMMAND_NAMES)[number];
 
