@@ -30,6 +30,7 @@ describe('resolveInstallCredentials', () => {
     expect(resolveInstallCredentials({}, {})).toEqual({
       licenseKey: undefined,
       accountId: undefined,
+      licenseKeySource: undefined,
       warnings: [],
     });
   });
@@ -50,6 +51,34 @@ describe('resolveInstallCredentials', () => {
     ).toBe('flag-key');
     expect(resolveInstallCredentials({ licenseKeyFile }, env).licenseKey).toBe('file-key');
     expect(resolveInstallCredentials({}, env).licenseKey).toBe('env-key');
+  });
+
+  it('ignores the environment when credentials are already stored', () => {
+    const env = { NEW_RELIC_LICENSE_KEY: 'env-key', NEW_RELIC_ACCOUNT_ID: '222' };
+    expect(resolveInstallCredentials({ hasStoredCredentials: true }, env)).toMatchObject({
+      licenseKey: undefined,
+      accountId: undefined,
+      licenseKeySource: undefined,
+    });
+  });
+
+  it('still honors flags and the key file when credentials are stored', () => {
+    const env = { NEW_RELIC_LICENSE_KEY: 'env-key' };
+    expect(
+      resolveInstallCredentials({ licenseKey: 'flag-key', hasStoredCredentials: true }, env),
+    ).toMatchObject({ licenseKey: 'flag-key', licenseKeySource: 'flag' });
+    expect(
+      resolveInstallCredentials(
+        { licenseKeyFile: keyFile('file-key'), hasStoredCredentials: true },
+        env,
+      ),
+    ).toMatchObject({ licenseKey: 'file-key', licenseKeySource: 'file' });
+  });
+
+  it('reports the environment as the key source', () => {
+    expect(
+      resolveInstallCredentials({}, { NEW_RELIC_LICENSE_KEY: 'env-key' }).licenseKeySource,
+    ).toBe('env');
   });
 
   it('prefers the account id flag over the environment', () => {

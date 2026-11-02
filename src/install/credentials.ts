@@ -4,11 +4,14 @@ export interface CredentialInputs {
   readonly licenseKey?: string;
   readonly licenseKeyFile?: string;
   readonly accountId?: string;
+  /** When true, a stored key or `licenseKeyCommand` exists and ambient env must not replace it. */
+  readonly hasStoredCredentials?: boolean;
 }
 
 export interface ResolvedCredentials {
   readonly licenseKey?: string;
   readonly accountId?: string;
+  readonly licenseKeySource?: 'flag' | 'file' | 'env';
   readonly warnings: readonly string[];
 }
 
@@ -42,6 +45,9 @@ function readKeyFile(path: string): { key: string; warning?: string } {
 
 /**
  * Resolves the install credentials with the precedence flag > key file > env.
+ * The env fallback is skipped when `hasStoredCredentials` is set, because
+ * NEW_RELIC_* is commonly present in a shell for unrelated tools (APM agents,
+ * the newrelic CLI) and must not silently overwrite a stored key.
  * Errors name the file path and never its contents.
  */
 export function resolveInstallCredentials(
@@ -50,12 +56,19 @@ export function resolveInstallCredentials(
 ): ResolvedCredentials {
   const warnings: string[] = [];
   let licenseKey = nonEmpty(inputs.licenseKey);
+  let licenseKeySource: ResolvedCredentials['licenseKeySource'] = licenseKey ? 'flag' : undefined;
   if (!licenseKey && inputs.licenseKeyFile) {
     const file = readKeyFile(inputs.licenseKeyFile);
     licenseKey = file.key;
+    licenseKeySource = 'file';
     if (file.warning) warnings.push(file.warning);
   }
-  licenseKey ??= nonEmpty(env.NEW_RELIC_LICENSE_KEY);
-  const accountId = nonEmpty(inputs.accountId) ?? nonEmpty(env.NEW_RELIC_ACCOUNT_ID);
-  return { licenseKey, accountId, warnings };
+  const envAllowed = !inputs.hasStoredCredentials;
+  if (!licenseKey && envAllowed) {
+    licenseKey = nonEmpty(env.NEW_RELIC_LICENSE_KEY);
+    if (licenseKey) licenseKeySource = 'env';
+  }
+  const accountId =
+    nonEmpty(inputs.accountId) ?? (envAllowed ? nonEmpty(env.NEW_RELIC_ACCOUNT_ID) : undefined);
+  return { licenseKey, accountId, licenseKeySource, warnings };
 }

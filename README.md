@@ -155,7 +155,7 @@ preflight install \
 
 EU accounts add `--eu`. FedRAMP accounts add `--fedramp`. Japan accounts add `--jp`.
 
-A key passed with `--license-key` is visible to every local user through `ps`. For scripts, read it from a file instead (`--license-key-file ~/.nr-key`, which warns if other users can read the file) or set `NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_ACCOUNT_ID` in the environment. The flag wins over the file, and the file wins over the environment.
+A key passed with `--license-key` is visible to every local user through `ps`. For scripts, read it from a file instead (`--license-key-file ~/.nr-key`, which warns if other users can read the file) or set `NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_ACCOUNT_ID` in the environment. The flag wins over the file, and the file wins over the environment. The environment is used only when `config.json` has no stored `licenseKey` or `licenseKeyCommand`, so a shell that already exports these variables for an APM agent never overwrites your stored key. To replace a stored key, pass `--license-key-file`. With `--copilot`, the key is still handed to `copilot mcp add` as an argument, so it is briefly visible in `ps` for that one call.
 
 Then deploy the prebuilt dashboards:
 
