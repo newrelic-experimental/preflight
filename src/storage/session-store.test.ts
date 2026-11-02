@@ -895,6 +895,18 @@ describe('SessionStore', () => {
     expect(sessions.map((s) => s.sessionId)).toEqual(['today-1', 'today-2']);
   });
 
+  it('loadTodaySessions excludes a session from just before local midnight whose UTC file date is today', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayMs = today.getTime();
+
+    store.saveSession(makeSummary({ sessionId: 'late-yesterday', startTime: todayMs - 60_000 }));
+    store.saveSession(makeSummary({ sessionId: 'early-today', startTime: todayMs + 60_000 }));
+
+    expect(store.loadTodaySessions().map((s) => s.sessionId)).toEqual(['early-today']);
+  });
+
   it('loadSessionsOverlappingToday includes cross-midnight and endTime=0 sessions, excludes yesterday-only sessions', () => {
     const store = new SessionStore({ storagePath: tmpDir });
 

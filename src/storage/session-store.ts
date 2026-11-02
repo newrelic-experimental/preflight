@@ -951,7 +951,9 @@ export class SessionStore {
   loadTodaySessions(): FullSessionSummary[] {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    return this.loadAllSessions({ since: today });
+    // `since` only prefilters on the UTC file-name date, which is a different
+    // calendar day from local today anywhere off UTC.
+    return this.loadAllSessions({ since: today }).filter((s) => s.startTime >= today.getTime());
   }
 
   /**
