@@ -13,8 +13,11 @@ import {
 export const DRAIN_SEAL = '\0preflight-drain-seal\n';
 const TORN_SEAL_RE = /\0[a-z-]*/g;
 
-const MAX_REDOS = 5;
+const MAX_WRITES = 5;
 const MAX_OPENS = 100;
+// A short write leaves a fragment. Ending it with a control character as well as a newline keeps a
+// fragment that is itself complete JSON from parsing as an event, since the line is written again whole.
+const TORN_LINE_END = '\x1e\n';
 const READ_ONLY_CODES: ReadonlySet<string | undefined> = new Set(['EACCES', 'EPERM', 'EROFS']);
 
 type Landing = 'kept' | 'moved' | 'redo';
@@ -25,7 +28,7 @@ export function textBeforeSeal(raw: string): string {
 }
 
 function readRange(fd: number, start: number, end: number): Buffer {
-  const buf = Buffer.alloc(end - start);
+  const buf = Buffer.alloc(Math.max(0, end - start));
   let read = 0;
   while (read < buf.length) {
     const n = readSync(fd, buf, read, buf.length - read, start + read);
@@ -55,20 +58,20 @@ function offsetAfterWrite(fd: number): number {
   }
 }
 
-function isAt(path: string, file: { readonly ino: number; readonly dev: number }): boolean {
-  const now = statSync(path, { throwIfNoEntry: false });
+function isAt(path: string, file: { readonly ino: bigint; readonly dev: bigint }): boolean {
+  const now = statSync(path, { bigint: true, throwIfNoEntry: false });
   return now !== undefined && now.ino === file.ino && now.dev === file.dev;
 }
 
 function appendOnce(path: string, data: Buffer): Landing {
   const fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_APPEND, 0o600);
   try {
-    const opened = fstatSync(fd);
+    const opened = fstatSync(fd, { bigint: true });
     if (!isAt(path, opened)) return 'moved';
-    const sealFloor = opened.size;
+    const sealFloor = Number(opened.size);
     const written = writeSync(fd, data);
     if (written < data.length) {
-      writeSync(fd, '\n');
+      writeSync(fd, TORN_LINE_END);
       return 'redo';
     }
     if (isAt(path, opened)) return 'kept';
@@ -83,12 +86,15 @@ export function appendToHookBuffer(path: string, text: string): void {
   if (text.includes('\0')) {
     throw new Error(`Hook buffer text contains NUL, which marks a drain seal: ${path}`);
   }
+  if (!text.endsWith('\n') || text.indexOf('\n') !== text.length - 1) {
+    throw new Error(`Hook buffer text must be exactly one newline-terminated line: ${path}`);
+  }
   const data = Buffer.from(text);
-  let redos = 0;
+  let writes = 0;
   for (let opens = 0; opens < MAX_OPENS; opens++) {
     const landing = appendOnce(path, data);
     if (landing === 'kept') return;
-    if (landing === 'redo' && ++redos === MAX_REDOS) break;
+    if (landing === 'redo' && ++writes === MAX_WRITES) break;
   }
   throw new Error(`Hook buffer write raced a drain on all attempts and was not kept: ${path}`);
 }

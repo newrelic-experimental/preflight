@@ -8,6 +8,8 @@ const mockHooks: {
   beforeWrite: ((text: string) => void) | null;
   afterWrite: ((text: string) => void) | null;
   splitWrite: ((text: string) => (() => void) | null) | null;
+  afterOpen: ((path: string) => void) | null;
+  shortBy: number | null;
   failSeal: (() => void) | null;
   shortSeal: boolean;
   bytesRead: number | null;
@@ -15,6 +17,8 @@ const mockHooks: {
   beforeWrite: null,
   afterWrite: null,
   splitWrite: null,
+  afterOpen: null,
+  shortBy: null,
   failSeal: null,
   shortSeal: false,
   bytesRead: null,
@@ -43,6 +47,11 @@ jest.mock('node:fs', () => {
   const real = jest.requireActual<typeof fs>('node:fs');
   return {
     ...real,
+    openSync: ((path: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+      const fd = real.openSync(path, flags, mode);
+      mockHooks.afterOpen?.(String(path));
+      return fd;
+    }) as typeof real.openSync,
     writeSync: ((fd: number, data: unknown, ...rest: unknown[]) => {
       const text = textOf(data);
       const sealed = sealWrite(real, fd, text);
@@ -55,6 +64,11 @@ jest.mock('node:fs', () => {
         return half;
       }
       mockHooks.beforeWrite?.(text);
+      if (mockHooks.shortBy !== null && text.includes('"id"')) {
+        const keep = Buffer.byteLength(text) - mockHooks.shortBy;
+        mockHooks.shortBy = null;
+        return real.writeSync(fd, Buffer.from(text).subarray(0, keep));
+      }
       const n = (real.writeSync as (fd: number, data: unknown, ...rest: unknown[]) => number)(
         fd,
         data,
@@ -119,6 +133,8 @@ afterEach(() => {
   mockHooks.beforeWrite = null;
   mockHooks.afterWrite = null;
   mockHooks.splitWrite = null;
+  mockHooks.afterOpen = null;
+  mockHooks.shortBy = null;
   mockHooks.failSeal = null;
   mockHooks.shortSeal = false;
   mockHooks.bytesRead = null;
@@ -136,6 +152,72 @@ describe('appendToHookBuffer', () => {
   it('refuses text containing NUL, which would read as a drain seal', () => {
     expect(() => appendToHookBuffer(bufferPath, `{"a":"\0"}\n`)).toThrow(/NUL/);
     expect(fs.existsSync(bufferPath)).toBe(false);
+  });
+
+  it.each([
+    ['two lines', `${line('A')}${line('B')}`],
+    ['no newline', line('A').trimEnd()],
+    ['an empty string', ''],
+  ])('refuses text that is not one newline-terminated line (%s)', (_name, text) => {
+    expect(() => appendToHookBuffer(bufferPath, text)).toThrow(/one newline-terminated line/);
+    expect(fs.existsSync(bufferPath)).toBe(false);
+  });
+
+  it('reopens without writing when a drain finishes between its open and its check', () => {
+    fs.writeFileSync(bufferPath, line('A'));
+    let drained: string[] = [];
+    mockHooks.afterOpen = (path) => {
+      if (path !== bufferPath) return;
+      mockHooks.afterOpen = null;
+      drained = drainNow();
+    };
+
+    appendToHookBuffer(bufferPath, line('B'));
+
+    expect(drained).toEqual(['A']);
+    expect(live()).toEqual(['B']);
+  });
+
+  it('gives up after reopening 100 times without writing', () => {
+    let opens = 0;
+    mockHooks.afterOpen = (path) => {
+      if (path !== bufferPath) return;
+      fs.renameSync(bufferPath, `${bufferPath}.gone-${opens++}`);
+    };
+
+    expect(() => appendToHookBuffer(bufferPath, line('B'))).toThrow(/attempts/);
+
+    expect(opens).toBe(100);
+    expect(live()).toEqual([]);
+  });
+
+  it('keeps one copy when a short write drops only the trailing newline', () => {
+    mockHooks.shortBy = 1;
+
+    appendToHookBuffer(bufferPath, line('B'));
+
+    expect(live()).toEqual(['B']);
+  });
+
+  it('keeps one copy when a short write leaves half a line', () => {
+    mockHooks.shortBy = Math.floor(line('B').length / 2);
+
+    appendToHookBuffer(bufferPath, line('B'));
+
+    expect(live()).toEqual(['B']);
+  });
+
+  it('throws when the newline that ends a short write fails too', () => {
+    mockHooks.shortBy = 1;
+    mockHooks.beforeWrite = (text) => {
+      if (text.includes('\x1e')) {
+        throw Object.assign(new Error('ENOSPC: no space left on device, write'), {
+          code: 'ENOSPC',
+        });
+      }
+    };
+
+    expect(() => appendToHookBuffer(bufferPath, line('B'))).toThrow(/ENOSPC/);
   });
 
   it('writes a line again to the live buffer when it landed after a seal', () => {
@@ -182,10 +264,15 @@ describe('appendToHookBuffer', () => {
 
   it('throws when every attempt lands after a seal', () => {
     const drained: string[] = [];
-    mockHooks.beforeWrite = () => drained.push(...drainNow());
+    let writes = 0;
+    mockHooks.beforeWrite = () => {
+      writes++;
+      drained.push(...drainNow());
+    };
 
     expect(() => appendToHookBuffer(bufferPath, line('B'))).toThrow(/attempts/);
     mockHooks.beforeWrite = null;
+    expect(writes).toBe(5);
     expect([...drained, ...live()]).not.toContain('B');
   });
 
