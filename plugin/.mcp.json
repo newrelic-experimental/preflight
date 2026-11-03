@@ -2,7 +2,7 @@
   "mcpServers": {
     "newrelic-preflight": {
       "command": "npx",
-      "args": ["-y", "@newrelic/preflight@1.69.0", "--stdio"]
+      "args": ["-y", "@newrelic/preflight@1.70.0", "--stdio"]
     }
   }
 }
