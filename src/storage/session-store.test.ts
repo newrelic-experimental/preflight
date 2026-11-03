@@ -1,5 +1,13 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { chmodSync, existsSync, mkdirSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  readdirSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -932,6 +940,66 @@ describe('SessionStore', () => {
 
     const sessions = store.loadSessionsOverlappingToday();
     expect(sessions.map((s) => s.sessionId).sort()).toEqual(['cross-midnight', 'no-end-time']);
+  });
+
+  it('loadSessionsWithActivityToday includes a resumed session saved under an older filename date', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startOfToday = today.getTime();
+    const oldStart = startOfToday - 10 * 86_400_000;
+
+    // Original start-date filename, but the timeline has activity today and
+    // the file was just rewritten (mtime = now).
+    store.saveSession(
+      makeSummary({
+        sessionId: 'resumed',
+        startTime: oldStart,
+        endTime: oldStart + 5000,
+        timeline: [
+          { timestamp: oldStart + 1000, toolName: 'Read' },
+          { timestamp: startOfToday + 60_000, toolName: 'Read' },
+        ] as unknown as FullSessionSummary['timeline'],
+      }),
+    );
+    // Old session also rewritten today but with no activity today.
+    store.saveSession(
+      makeSummary({
+        sessionId: 'old-no-activity',
+        startTime: oldStart,
+        endTime: oldStart + 5000,
+        timeline: [
+          { timestamp: oldStart + 1000, toolName: 'Read' },
+        ] as unknown as FullSessionSummary['timeline'],
+      }),
+    );
+
+    expect(store.loadSessionsOverlappingToday()).toEqual([]);
+    expect(store.loadSessionsWithActivityToday().map((s) => s.sessionId)).toEqual(['resumed']);
+  });
+
+  it('loadSessionsWithActivityToday skips an old file whose mtime predates today even if its timeline reaches today', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startOfToday = today.getTime();
+    const oldStart = startOfToday - 10 * 86_400_000;
+
+    store.saveSession(
+      makeSummary({
+        sessionId: 'stale-file',
+        startTime: oldStart,
+        endTime: oldStart + 5000,
+        timeline: [
+          { timestamp: startOfToday + 60_000, toolName: 'Read' },
+        ] as unknown as FullSessionSummary['timeline'],
+      }),
+    );
+    const file = store.listSessions().find((f) => f.sessionId === 'stale-file')!;
+    const yesterday = new Date(startOfToday - 3_600_000);
+    utimesSync(resolve(tmpDir, 'sessions', file.filename), yesterday, yesterday);
+
+    expect(store.loadSessionsWithActivityToday()).toEqual([]);
   });
 });
 

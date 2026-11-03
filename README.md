@@ -63,7 +63,7 @@ See cost breakdown, efficiency scoring, anti-patterns, and live session tracking
   - **Session Detail** — deep-dive into a single session's tool calls
   - **Team View** — aggregated cost and efficiency across developers
   - **Manager View** — high-level team metrics, no tool-call content
-  - **Adoption & Cost** — adoption momentum, spend, MCP usage, and per-developer outcomes for engineering managers
+  - **Adoption & Cost** — adoption momentum, spend, skill and MCP usage, and per-developer outcomes for engineering managers
   - **Platform Comparison** — Claude Code vs. Cursor vs. Windsurf, etc.
   - **Security Audit** — audit trail of sensitive file access
 

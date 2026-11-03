@@ -32,6 +32,28 @@ describe('extractAnthropicTokens', () => {
     expect(result.totalTokens).toBe(180); // 100 + 50 + 0 + 20 + 10
   });
 
+  it('reads the 1h share of cache writes from cache_creation', () => {
+    const result = extractAnthropicTokens({
+      usage: {
+        input_tokens: 1,
+        cache_creation_input_tokens: 300,
+        cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 200 },
+      },
+    });
+    expect(result.cacheCreationTokens).toBe(300);
+    expect(result.cacheCreation1hTokens).toBe(200);
+  });
+
+  it('omits cacheCreation1hTokens when there are no 1h writes', () => {
+    const result = extractAnthropicTokens({
+      usage: {
+        cache_creation_input_tokens: 300,
+        cache_creation: { ephemeral_5m_input_tokens: 300, ephemeral_1h_input_tokens: 0 },
+      },
+    });
+    expect(result).not.toHaveProperty('cacheCreation1hTokens');
+  });
+
   it('defaults missing optional fields to 0', () => {
     const result = extractAnthropicTokens({
       usage: {
@@ -580,6 +602,44 @@ describe('extractOpenAITokens', () => {
 
 describe('TokenAccumulator', () => {
   describe('anthropic stream', () => {
+    it('tracks 1h cache writes from message_start', () => {
+      const acc = new TokenAccumulator('anthropic');
+      acc.addChunk({
+        type: 'message_start',
+        message: {
+          usage: {
+            input_tokens: 5,
+            cache_creation_input_tokens: 300,
+            cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 200 },
+          },
+        },
+      });
+      expect(acc.finalize().cacheCreation1hTokens).toBe(200);
+    });
+
+    it('drops 1h cache writes when message_delta revises them to zero', () => {
+      const acc = new TokenAccumulator('anthropic');
+      acc.addChunk({
+        type: 'message_start',
+        message: {
+          usage: {
+            input_tokens: 5,
+            cache_creation_input_tokens: 300,
+            cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 200 },
+          },
+        },
+      });
+      acc.addChunk({
+        type: 'message_delta',
+        usage: {
+          output_tokens: 9,
+          cache_creation_input_tokens: 300,
+          cache_creation: { ephemeral_5m_input_tokens: 300, ephemeral_1h_input_tokens: 0 },
+        },
+      });
+      expect(acc.finalize()).not.toHaveProperty('cacheCreation1hTokens');
+    });
+
     it('accumulates tokens from message_start and message_delta events', () => {
       const acc = new TokenAccumulator('anthropic');
 

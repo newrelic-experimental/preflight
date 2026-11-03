@@ -115,6 +115,19 @@ cmd_hook() {
   echo "hook $sid $tool $post"
 }
 
+cmd_prompt() {
+  [[ $# -ge 2 ]] || die "usage: prompt <session-id> <prompt-text> [--cwd DIR]"
+  local sid="$1" text="$2" cwd="/tmp/pf-verify-project"
+  [[ "${3:-}" == "--cwd" ]] && cwd="$4"
+  ensure_run_dirs
+  node -e '
+    const [sid, prompt, cwd] = process.argv.slice(1);
+    process.stdout.write(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: sid,
+      prompt, cwd, permission_mode: "default" }));
+  ' "$sid" "$text" "$cwd" | run_env node "$REPO/dist/hooks/collector-script.js"
+  echo "prompt $sid"
+}
+
 cmd_turn() {
   [[ $# -ge 4 ]] || die "usage: turn <session-id> <model> <input-tokens> <output-tokens> [cache-read-tokens]"
   [[ "$1" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] ||
@@ -238,6 +251,6 @@ cmd_where() {
 }
 
 case "${1:-}" in
-  up | doctor | sid | hook | turn | api | mcp | shot | down | where) c="$1"; shift; "cmd_$c" "$@" ;;
-  *) die "usage: pf-verify {up|doctor|sid|hook|turn|api|mcp|shot|down|where}" ;;
+  up | doctor | sid | hook | prompt | turn | api | mcp | shot | down | where) c="$1"; shift; "cmd_$c" "$@" ;;
+  *) die "usage: pf-verify {up|doctor|sid|hook|prompt|turn|api|mcp|shot|down|where}" ;;
 esac

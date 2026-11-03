@@ -6,10 +6,10 @@ import {
   type SpawnSyncOptions,
   type SpawnSyncReturns,
 } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { WorktreeIdentityResolver } from './git-workspace-identity.js';
+import { delimiter, join } from 'node:path';
+import { cacheKeyOf, WorktreeIdentityResolver } from './git-workspace-identity.js';
 
 // git sets GIT_DIR/GIT_WORK_TREE for hook subprocesses (e.g. a pre-push
 // hook), which override `-C <dir>` and silently redirect every fixture call
@@ -161,6 +161,59 @@ describe('WorktreeIdentityResolver', () => {
     expect(identity).toBeNull();
   });
 
+  it('caches a non-repo miss until the TTL expires', () => {
+    const dir = join(tmpDir, 'later-repo');
+    execSync(`mkdir -p "${dir}"`);
+    const realNow = Date.now();
+    const nowSpy = jest.spyOn(Date, 'now');
+    try {
+      nowSpy.mockReturnValue(realNow);
+      expect(resolver.resolve(dir)).toBeNull();
+
+      initGitRepo(dir);
+      nowSpy.mockReturnValue(realNow + 2_999);
+      expect(resolver.resolve(dir)).toBeNull();
+
+      nowSpy.mockReturnValue(realNow + 3_000);
+      expect(resolver.resolve(dir)).toMatchObject({
+        worktreeLabel: 'primary',
+        branch: getCurrentBranch(dir),
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('shares one cache entry across path spellings on win32', () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    try {
+      const repoDir = join(tmpDir, 'spelling-repo');
+      execSync(`mkdir -p "${repoDir}"`);
+      initGitRepo(repoDir);
+      const initialBranch = getCurrentBranch(repoDir);
+
+      resolver.resolve(repoDir);
+      execSync('git checkout -b other-branch', { cwd: repoDir });
+
+      expect(resolver.resolve(`${repoDir.toUpperCase()}/`)).toMatchObject({
+        branch: initialBranch,
+      });
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
+  it('keeps path spellings apart off win32', () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    try {
+      expect(cacheKeyOf('/Repo')).not.toBe(cacheKeyOf('/repo'));
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
   it('caches results and produces consistent identity across calls', () => {
     const repoDir = join(tmpDir, 'cached-repo');
     execSync(`mkdir -p "${repoDir}"`);
@@ -232,4 +285,35 @@ describe('WorktreeIdentityResolver', () => {
       done();
     }, 30_100);
   }, 40_000);
+
+  // The fake git is a POSIX shell script, so there is nothing to run on win32.
+  const itPosix = process.platform === 'win32' ? it.skip : it;
+
+  itPosix(
+    'does not cache a git timeout as a miss',
+    () => {
+      const repoDir = join(tmpDir, 'slow-repo');
+      mkdirSync(repoDir);
+      initGitRepo(repoDir);
+      const hangingDir = join(tmpDir, 'hanging-git-bin');
+      mkdirSync(hangingDir);
+      const fakeGit = join(hangingDir, 'git');
+      writeFileSync(fakeGit, '#!/bin/sh\nexec sleep 5\n');
+      chmodSync(fakeGit, 0o755);
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${hangingDir}${delimiter}${originalPath}`;
+      try {
+        expect(resolver.resolve(repoDir)).toBeNull();
+      } finally {
+        process.env.PATH = originalPath;
+      }
+
+      expect(resolver.resolve(repoDir)).toMatchObject({
+        worktreeLabel: 'primary',
+        branch: getCurrentBranch(repoDir),
+      });
+    },
+    15_000,
+  );
 });

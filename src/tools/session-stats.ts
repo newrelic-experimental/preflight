@@ -127,7 +127,7 @@ const SESSION_TIMELINE_TOOL = {
 const COST_PER_TOOL_TOOL = {
   name: 'nr_observe_get_cost_per_tool',
   description:
-    'Cost attribution per tool type — approximate, based on turn-level token correlation. Shows which tools cost the most and average cost per call. Also breaks Skill calls down per skill in costBySkill (calls, estimated cost and tokens, total duration).',
+    'Cost attribution per tool type — approximate, based on turn-level token correlation. Shows which tools cost the most and average cost per call. costBySkill has one row per skill covering every tool call made inside its runs (a run lasts from a Skill call or /<skill> prompt to the next prompt or skill): callCount is runs, avgCost is cost per run, plus estimated tokens and total duration. Those calls are also counted under their own tools in costByToolType, so do not add skill rows to tool totals.',
   inputSchema: {
     type: 'object' as const,
     properties: {},

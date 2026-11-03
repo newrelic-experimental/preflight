@@ -790,7 +790,7 @@ function processHook(raw, cliEvent) {
       ...typeof data.source === "string" && { source: data.source }
     };
   } else if (eventName === "userpromptsubmit") {
-    const slashCommand = typeof data.prompt === "string" ? /^\/([A-Za-z0-9_:.\-]+)/.exec(data.prompt)?.[1] : void 0;
+    const slashCommand = typeof data.prompt === "string" ? /^\/([A-Za-z0-9_:.\-]+)(?=\s|$)/.exec(data.prompt)?.[1] : void 0;
     event = {
       mode: "user_prompt_submit",
       timestamp,

@@ -1,18 +1,19 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
-import { digestWebhookUrlOverride, normalizeDeveloperName, redactSensitive } from '../../config.js';
+import {
+  digestWebhookUrlOverrideSource,
+  digestWebhookUrlOverride,
+  normalizeDeveloperName,
+  redactSensitive,
+} from '../../config.js';
 import {
   isSyntheticSessionId,
   isUnscopedAggregatorSessionId,
   type SessionNameSource,
 } from '../../hooks/session-resolver.js';
-import {
-  localDateKey,
-  localStartOfDay,
-  todayPortionOfSessionCost,
-  todayPortionRatio,
-} from '../../lib/date.js';
+import { localDateKey, localStartOfDay, todayPortionRatio } from '../../lib/date.js';
+import { todayCostOfSummary } from '../../metrics/cost-tracker-seed.js';
 import type { AntiPattern } from '../../metrics/anti-patterns.js';
 import { AntiPatternDetector } from '../../metrics/anti-patterns.js';
 import type { ApiFailureMetrics } from '../../metrics/api-failure-tracker.js';
@@ -81,7 +82,7 @@ import type {
   PersistedAntiPattern,
   SessionFileInfo,
 } from '../../storage/session-store.js';
-import { hasAttributableActivity, toPersistedAntiPatterns } from '../../storage/session-store.js';
+import { toPersistedAntiPatterns } from '../../storage/session-store.js';
 import type {
   AttributionBucket,
   HookEvent,
@@ -90,7 +91,11 @@ import type {
 } from '../../storage/types.js';
 import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
-import { digestWebhookUrlShadowedBy, handleSendDigest } from '../../tools/cross-session-tools.js';
+import {
+  digestWebhookUrlShadowedBy,
+  handleSendDigest,
+  isDigestWebhookCommandConfigured,
+} from '../../tools/cross-session-tools.js';
 import type { AlertEvent } from '../live-event-bus.js';
 import type {
   AgentCall,
@@ -403,6 +408,7 @@ export interface ApiHandlerDeps {
     // Older fakes/mocks that don't implement it fall through to the legacy
     // path which sees only same-day-started sessions.
     loadSessionsOverlappingToday?: () => FullSessionSummary[];
+    loadSessionsWithActivityToday?: () => FullSessionSummary[];
     listSessions: (opts?: { since?: Date; developer?: string }) => SessionFileInfo[];
     loadSession: (id: string) => FullSessionSummary | null;
     loadAllSessions?: (opts?: {
@@ -690,14 +696,15 @@ function mergeSkillCostEntry(
   bucket: AttributionBucket,
 ): SkillCostEntry {
   const totalCost = (existing?.totalCost ?? 0) + bucket.costUsd;
+  // A persisted skill bucket's `count` is runs, not tool calls, and it keeps
+  // no attributed-call count, so it adds runs only; avgCost is per run on
+  // every path, matching SkillCostEntry.
   const callCount = (existing?.callCount ?? 0) + bucket.count;
-  // A persisted bucket only ever holds attributed cost, so every call it counts is attributed.
-  const attributedCallCount = (existing?.attributedCallCount ?? 0) + bucket.count;
   return {
     callCount,
-    attributedCallCount,
+    attributedCallCount: existing?.attributedCallCount ?? 0,
     totalCost,
-    avgCost: attributedCallCount > 0 ? totalCost / attributedCallCount : 0,
+    avgCost: callCount > 0 ? totalCost / callCount : 0,
     inputTokens: (existing?.inputTokens ?? 0) + (bucket.breakdown?.inputTokens ?? 0),
     outputTokens: (existing?.outputTokens ?? 0) + (bucket.breakdown?.outputTokens ?? 0),
     cacheReadTokens: (existing?.cacheReadTokens ?? 0) + (bucket.breakdown?.cacheReadTokens ?? 0),
@@ -1360,6 +1367,7 @@ function countOpenPrs(
 
 interface SessionStatusAggregateInput {
   readonly replayCache: ReplaySessionCache;
+  readonly identityResolver: WorktreeIdentityResolver;
   readonly sessionIds: ReadonlySet<string>;
   readonly liveSet: ReadonlySet<string>;
   readonly startMs: number;
@@ -1401,7 +1409,7 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
     }
   }
 
-  const identityResolver = new WorktreeIdentityResolver();
+  const { identityResolver } = input;
   const activityStore = new ActivityStore<GitActivityRecord>();
   const activityRecorder = new GitActivityRecorder(activityStore, identityResolver);
   const bufferToolCalls = pairToolCallsFromBufferEvents(
@@ -1465,6 +1473,9 @@ export function createApiHandler(
   // its identity resolution makes — is only ever paid once across every
   // future /api/git-efficiency request, not on every poll.
   const gitReplayCache = new ReplaySessionCache();
+  // Shared so each repo's identity (several `git` spawns) is resolved once per
+  // 30s TTL instead of once per request.
+  const gitIdentityResolver = new WorktreeIdentityResolver();
 
   routes.set('GET /api/session/current', (_req, res) => {
     if (!deps.sessionTracker) return unavailable(res, 'sessionTracker');
@@ -1852,6 +1863,12 @@ export function createApiHandler(
     // (costByDayUsd) let us sum a session's REAL today-spend instead of
     // pro-rating its lifetime estimatedCostUsd by a timeline.
     const todayKey = localDateKey(now);
+    let liveCheckpointTodayUsd = 0;
+    let liveCheckpointSubagentUsd = 0;
+    let liveCheckpointCacheSavingsUsd = 0;
+    let liveCheckpointCacheReadTokens = 0;
+    let liveCheckpointCacheCreationTokens = 0;
+    let liveCheckpointInputTokens = 0;
     for (const raw of overlappingTodaySessions) {
       const s = raw as {
         sessionId?: string;
@@ -1871,11 +1888,6 @@ export function createApiHandler(
         antiPatterns?: ReadonlyArray<unknown>;
         timeline?: ReadonlyArray<{ timestamp: number }>;
       };
-      // Skip the live session here — its today-portion is added below from
-      // costTracker.getCostForDay()/getSubagentCostForDay(), which is more
-      // accurate (per-token-event) than pro-rating from a periodically-
-      // persisted snapshot.
-      if (s.sessionId === liveSid) continue;
       // Cross-midnight sessions that started before today aren't covered by
       // the todaySessions timeline walk above (loadTodaySessions() filters
       // by file-date = start date, so a session that started yesterday never
@@ -1890,43 +1902,35 @@ export function createApiHandler(
           }
         }
       }
-      // Cost attributed to TODAY. Prefer the session's persisted per-day
-      // bucket — authoritative, since each token event was bucketed by its real
-      // transcript timestamp. For older session files without buckets, fall back
-      // to pro-rating the lifetime estimatedCostUsd by the timeline — EXCEPT a
-      // session with no attributable activity (see hasAttributableActivity's doc
-      // comment) is an unverifiable re-read artifact: its estimatedCostUsd is a
-      // cumulative lifetime total that may include a resumed transcript's month
-      // of cache-read tokens re-read in one pass, and todayPortionRatio returns
-      // 1.0 for its entirely-today window, dumping the whole total onto today
-      // (the observed $248/$863 phantoms). Bias toward trust and contribute 0;
-      // the real per-day figure is recovered once the session re-persists WITH
-      // day buckets.
+      // Cost attributed to TODAY: the persisted per-day bucket, else a guarded
+      // pro-rate (see todayCostOfSummary). The same helper seeds CostTracker, so
+      // a restart cannot change what a checkpoint contributes.
+      //
+      // The live session is held back: step (3) adds it as the larger of this
+      // checkpoint figure and the live CostTracker's, so a tracker that was never
+      // seeded (cwd-only adoption defers seeding, rehydrate can throw) cannot
+      // drop the checkpoint's today cost, and a seeded one is not counted twice.
+      // This is per-key max, the same rule mergeSummaries uses.
+      const todayCost = todayCostOfSummary(s, todayKey, now);
+      if (s.sessionId === liveSid) {
+        liveCheckpointTodayUsd = todayCost.costUsd;
+        liveCheckpointSubagentUsd = todayCost.subagentCostUsd;
+        const liveRatio = todayPortionRatio(s, now);
+        liveCheckpointCacheSavingsUsd = (s.cacheSavingsUsd ?? 0) * liveRatio;
+        liveCheckpointCacheReadTokens = (s.tokensCacheRead ?? 0) * liveRatio;
+        liveCheckpointCacheCreationTokens = (s.tokensCacheCreation ?? 0) * liveRatio;
+        liveCheckpointInputTokens = (s.tokensInput ?? 0) * liveRatio;
+        continue;
+      }
       sumCallUsageInto(unpricedByModel, s.unpricedByModel);
       sumCallUsageInto(estimatedByModel, s.estimatedByModel);
-      const hasNoAttributableActivity = !hasAttributableActivity(s);
+      totalCostUsd += todayCost.costUsd;
+      // Subagent-only portion of the same session. This is what makes the KPI
+      // cross-session: each `--stdio` process persists its own subagent cost, so
+      // summing it here (rather than reading only THIS process's live
+      // CostTracker) picks up subagent activity from any concurrent session.
+      subagentUsd += todayCost.subagentCostUsd;
       const ratio = todayPortionRatio(s, now);
-      totalCostUsd +=
-        s.costByDayUsd !== undefined
-          ? (s.costByDayUsd[todayKey] ?? 0)
-          : hasNoAttributableActivity
-            ? 0
-            : todayPortionOfSessionCost(s, now);
-      // (2b) subagent-only portion of the same session. Day-bucket-first, else
-      // pro-rate — applying the same phantom guard explicitly rather than
-      // relying on hasNoAttributableActivity's subagentCostUsd===0 term to
-      // zero this out implicitly (that held today, but shouldn't be a silent
-      // invariant across two separate expressions). This is what makes the
-      // KPI cross-session: each `--stdio` process persists its own subagent
-      // cost, so summing it here (rather than reading only THIS process's
-      // live CostTracker) picks up subagent activity from any concurrent
-      // session.
-      subagentUsd +=
-        s.subagentCostByDayUsd !== undefined
-          ? (s.subagentCostByDayUsd[todayKey] ?? 0)
-          : hasNoAttributableActivity
-            ? 0
-            : (s.subagentCostUsd ?? 0) * ratio;
       // Cache token/dollar sums below carry the same unguarded overlap
       // characteristic subagentUsd/totalCostUsd already have on this line:
       // a session that's concurrently live in ANOTHER process (so
@@ -1955,6 +1959,7 @@ export function createApiHandler(
 
     const sessionStatus = computeSessionStatusAggregate({
       replayCache: gitReplayCache,
+      identityResolver: gitIdentityResolver,
       sessionIds: sessionsSeen,
       liveSet,
       startMs,
@@ -1965,8 +1970,16 @@ export function createApiHandler(
 
     // (3) include this MCP's live session today-portion. Per-day attribution
     // comes from CostTracker, which buckets each token event by local-day at
-    // record time (see CostTracker.accumulateTokens). Falls back to session
-    // total if no per-day data is available (older deployments / first event).
+    // record time (see CostTracker.accumulateTokens).
+    //
+    // The persisted loop above holds the live session back, so this top-up is
+    // the only place its today cost is counted. It takes the larger of the
+    // live tracker's figure and the session's own checkpoint figure, per key.
+    // A seeded tracker already contains the checkpoint (equal, counted once),
+    // and an unseeded one falls back to the checkpoint instead of losing it.
+    // liveAlreadyPersisted separately gates the anti-pattern and efficiency
+    // figures below, which the todaySessions walk counts for a checkpointed
+    // session.
     const liveAlreadyPersisted = todaySessions.some(
       (s) => (s as { sessionId?: string }).sessionId === liveSid,
     );
@@ -1981,7 +1994,7 @@ export function createApiHandler(
     // whose live cost really is exclusively its own.
     const liveIsUnscopedAggregator = isUnscopedAggregatorSessionId(liveSid);
 
-    if (!liveAlreadyPersisted && !liveIsUnscopedAggregator) {
+    if (!liveIsUnscopedAggregator) {
       const liveMetrics = deps.costTracker?.getMetrics();
       sumCallUsageInto(unpricedByModel, liveMetrics?.unpricedByModel);
       sumCallUsageInto(estimatedByModel, liveMetrics?.estimatedByModel);
@@ -1989,8 +2002,9 @@ export function createApiHandler(
       // persisted-session loop) so the persisted-loop and this live top-up can
       // never split onto two independently-derived day keys.
       const liveTodayUsd = deps.costTracker?.getCostForDay?.(todayKey) ?? null;
+      let liveTodayCostUsd = 0;
       if (typeof liveTodayUsd === 'number') {
-        totalCostUsd += liveTodayUsd;
+        liveTodayCostUsd = liveTodayUsd;
       } else {
         // Fallback for older deployments without the per-day API. NEVER add the
         // full session total here: a session that began before midnight would
@@ -2002,9 +2016,10 @@ export function createApiHandler(
         const startedTs = deps.sessionTracker?.getMetrics().sessionStartTime ?? null;
         const startedToday = typeof startedTs === 'number' && localDateKey(startedTs) === todayKey;
         if (typeof sessionCost === 'number' && startedToday) {
-          totalCostUsd += sessionCost;
+          liveTodayCostUsd = sessionCost;
         }
       }
+      totalCostUsd += Math.max(liveTodayCostUsd, liveCheckpointTodayUsd);
       // This process's own first-activity-today, covering the gap between
       // "drained from the buffer" and "persisted to a session file" — the
       // same gap liveTodayUsd above already covers for cost.
@@ -2014,38 +2029,54 @@ export function createApiHandler(
           dailyFirstActivityMs = liveFirstActivityMs;
         }
       }
-      // This MCP's own live subagent-for-day figure — the (2b) loop above
-      // already summed every OTHER today session's persisted subagentCostUsd;
-      // this process's own session isn't in that persisted set yet, so its
-      // contribution comes from the live, per-day-bucketed CostTracker value
-      // instead (same reasoning as liveTodayUsd above).
-      subagentUsd += deps.costTracker?.getSubagentCostForDay?.(todayKey) ?? 0;
-      // Cache top-up (dollars AND token counts) for this process's own live,
-      // not-yet-persisted session. These are session-cumulative totals with
-      // no per-day equivalent (unlike getCostForDay above), so — mirroring
-      // the startedToday guard the cost fallback above needs for the exact
-      // same reason — only add them when this live session actually started
-      // today; a cross-midnight live session's cumulative totals would
-      // otherwise leak yesterday's activity in too. Token counts must be
-      // topped up alongside the dollar figure: step (1)'s buffer union only
-      // sees the last undrained tail since the previous periodic checkpoint,
-      // so without this, totalSavingsUsd could reflect a session's full
-      // accumulated savings while totalCacheReadTokens/cacheHitRatePct/status
-      // reflected almost none of the activity that produced them.
+      // This MCP's own live subagent-for-day figure. The (2b) loop above
+      // summed every OTHER today session's persisted subagent cost and held
+      // this session's back, so it joins here as the larger of the live
+      // per-day CostTracker value and its own checkpoint (same reasoning as
+      // the cost above).
+      subagentUsd += Math.max(
+        deps.costTracker?.getSubagentCostForDay?.(todayKey) ?? 0,
+        liveCheckpointSubagentUsd,
+      );
+      // Cache top-up (dollars AND token counts) for this process's own live
+      // session, whether or not it has a checkpoint. These are
+      // session-cumulative totals with no per-day equivalent (unlike
+      // getCostForDay above), so, mirroring the startedToday guard the cost
+      // fallback above needs for the exact same reason, only add them when
+      // this live session actually started today; a cross-midnight live
+      // session's cumulative totals would otherwise leak yesterday's activity
+      // in too. They do not overlap step (1)'s buffer sum: the tracker holds
+      // only events already drained from the buffer (plus the seeded
+      // checkpoint), while peekAllBuffers() sees only the undrained tail. The
+      // persisted loop skips this session's cache sums, so each token is
+      // counted once. Token counts are topped up alongside the dollar figure
+      // so totalSavingsUsd, totalCacheReadTokens, cacheHitRatePct and status
+      // all describe the same activity.
       const liveStartedTs = deps.sessionTracker?.getMetrics().sessionStartTime ?? null;
       if (typeof liveStartedTs === 'number' && localDateKey(liveStartedTs) === todayKey) {
         const liveCostMetrics = deps.costTracker?.getMetrics();
-        cacheSavingsUsdSum += liveCostMetrics?.totalCacheSavingsUsd ?? 0;
-        cacheReadTokensSum += liveCostMetrics?.totalCacheReadTokens ?? 0;
-        cacheCreationTokensSum += liveCostMetrics?.totalCacheCreationTokens ?? 0;
-        cacheInputTokensSum += liveCostMetrics?.totalInputTokens ?? 0;
+        cacheSavingsUsdSum += Math.max(
+          liveCostMetrics?.totalCacheSavingsUsd ?? 0,
+          liveCheckpointCacheSavingsUsd,
+        );
+        cacheReadTokensSum += Math.max(
+          liveCostMetrics?.totalCacheReadTokens ?? 0,
+          liveCheckpointCacheReadTokens,
+        );
+        cacheCreationTokensSum += Math.max(
+          liveCostMetrics?.totalCacheCreationTokens ?? 0,
+          liveCheckpointCacheCreationTokens,
+        );
+        cacheInputTokensSum += Math.max(
+          liveCostMetrics?.totalInputTokens ?? 0,
+          liveCheckpointInputTokens,
+        );
       }
     }
 
-    // Live session anti-patterns (in-memory, not yet persisted).
-    // Mirror the alreadyPersisted guard used for cost above: if this MCP's
-    // session is already in todaySessions, its anti-patterns were counted in
-    // the loop above — don't double-count.
+    // Live session anti-patterns (in-memory, not yet persisted). If this MCP's
+    // session is already in todaySessions, its checkpointed anti-patterns were
+    // counted in the todaySessions walk above, so don't double-count.
     if (deps.antiPatternDetector && !liveAlreadyPersisted) {
       const live = deps.antiPatternDetector.getCurrentPatterns();
       antiPatternCount += live.length;
@@ -2053,7 +2084,7 @@ export function createApiHandler(
 
     // Efficiency KPI: average `efficiencyScore` across today's persisted sessions, plus
     // this process's own live score when its own session isn't in that persisted set yet
-    // (same liveAlreadyPersisted guard already used for cost/anti-patterns above).
+    // (same liveAlreadyPersisted guard as the anti-patterns above).
     let efficiencyScoreSum = 0;
     let efficiencyScoreCount = 0;
     for (const s of todaySessions) {
@@ -2748,7 +2779,6 @@ export function createApiHandler(
     let historical: GitActivityRecord[] = [];
     const historicalIdentities = new Map<string, WorktreeIdentity>();
     if (deps.sessionStore?.loadAllSessions) {
-      const identityResolver = new WorktreeIdentityResolver();
       const sessions = deps.sessionStore.loadAllSessions({
         since: new Date(since),
       }) as unknown as readonly {
@@ -2758,7 +2788,7 @@ export function createApiHandler(
         repoName?: string | null;
       }[];
       for (const session of sessions) {
-        const replayed = gitReplayCache.replay(session, identityResolver);
+        const replayed = gitReplayCache.replay(session, gitIdentityResolver);
         historical = historical.concat(replayed.records);
         for (const [key, identity] of replayed.identities) {
           historicalIdentities.set(key, identity);
@@ -2842,16 +2872,18 @@ export function createApiHandler(
         allSessions as readonly SessionActivityLike[],
       );
 
-      // Prefer loadSessionsOverlappingToday() so a session that started
-      // yesterday and is still running isn't invisible to the chart —
-      // loadTodaySessions() filters by filename date (= start date) and
-      // would otherwise silently drop it. Downstream window-building already
-      // clamps each session's activity to [startTimestamp, dayEnd], so widening
-      // the input set here can't leak yesterday's activity into today's buckets.
+      // Prefer loadSessionsWithActivityToday() so a session that started
+      // earlier and is still running, or was resumed from an older start date
+      // (keeping its original filename), isn't invisible to the chart —
+      // loadTodaySessions() filters by filename date (= start date) and would
+      // silently drop it. Downstream window-building clamps each session's
+      // activity to [startTimestamp, dayEnd], so widening the input set here
+      // can't leak earlier days' activity into today's buckets.
       // loadAllSessions()/loadTodaySessions() already exclude synthetic session
       // ids, so the chart buckets below agree with the session list shown
       // alongside the chart without re-filtering here.
       const todaySessions =
+        deps.sessionStore?.loadSessionsWithActivityToday?.() ??
         deps.sessionStore?.loadSessionsOverlappingToday?.() ??
         deps.sessionStore?.loadTodaySessions() ??
         [];
@@ -3093,6 +3125,13 @@ export function createApiHandler(
       }
     }
 
+    // Sends read the file at call time and skip its URL when a command is
+    // configured there, so follow the disk rather than the startup snapshot.
+    const overrideSource =
+      digestWebhookUrlOverrideSource(c) ??
+      (isDigestWebhookCommandConfigured(disk) ? 'command' : undefined);
+    const fileWebhookUrl = typeof disk.digestWebhookUrl === 'string' ? disk.digestWebhookUrl : null;
+
     const diskAlerts = (disk.alerts ?? {}) as Record<string, unknown>;
     const diskPersonal = (diskAlerts['personal'] ?? {}) as Record<string, unknown>;
 
@@ -3110,8 +3149,10 @@ export function createApiHandler(
         'retainSessionsDays' in disk
           ? (disk.retainSessionsDays as number | null)
           : c.retainSessionsDays,
-      digestWebhookUrl:
-        'digestWebhookUrl' in disk ? (disk.digestWebhookUrl as string | null) : c.digestWebhookUrl,
+      digestWebhookUrl: fileWebhookUrl,
+      // Where sends actually read the URL from. The value above is only the
+      // file's; env or a command outranks it, and its value is never returned.
+      digestWebhookUrlSource: overrideSource ?? (fileWebhookUrl ? 'file' : 'unset'),
       digestSchedule:
         typeof disk.digestSchedule === 'string' ? disk.digestSchedule : c.digestSchedule,
       alerts: {

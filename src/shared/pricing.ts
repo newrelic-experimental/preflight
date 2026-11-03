@@ -17,6 +17,11 @@ export interface ModelPricing {
   readonly cacheReadPerMTok?: number;
   readonly cacheCreationPerMTok?: number;
   /**
+   * Rate for 1-hour cache writes (`TokenUsage.cacheCreation1hTokens`). Falls
+   * back to `cacheCreationPerMTok` when unset.
+   */
+  readonly cacheCreation1hPerMTok?: number;
+  /**
    * Rate for audio input tokens (`TokenUsage.audioInputTokens`). Falls back to
    * `inputPerMTok` when unset. Never tier-adjusted.
    */
@@ -26,6 +31,11 @@ export interface ModelPricing {
    * back to `cacheReadPerMTok` when unset. Never tier-adjusted.
    */
   readonly audioCacheReadPerMTok?: number;
+  /**
+   * Rate for audio output tokens (`TokenUsage.audioOutputTokens`). Falls back
+   * to `outputPerMTok` when unset. Never tier-adjusted.
+   */
+  readonly audioOutputPerMTok?: number;
   readonly contextWindow: number;
   /**
    * Prompt-token count above which tier rates apply. The prompt is
@@ -45,6 +55,18 @@ export interface ModelPricing {
    */
   readonly tierCacheReadPerMTok?: number;
   /**
+   * Cache-creation (write) rate once the prompt exceeds `tierThreshold`. Only
+   * applied in `'flat'` mode; ignored in `'marginal'` mode. Falls back to
+   * `cacheCreationPerMTok` when unset.
+   */
+  readonly tierCacheCreationPerMTok?: number;
+  /**
+   * 1-hour cache-write rate once the prompt exceeds `tierThreshold`. Only
+   * applied in `'flat'` mode. Falls back to `cacheCreation1hPerMTok` when
+   * unset.
+   */
+  readonly tierCacheCreation1hPerMTok?: number;
+  /**
    * How tier rates are applied once the prompt exceeds `tierThreshold`. Defaults to
    * `'flat'` (current behavior, matches Gemini 1.5/2.5 Pro semantics).
    *
@@ -54,7 +76,7 @@ export interface ModelPricing {
    *   at `tierInputPerMTok`; tokens up to the threshold use `inputPerMTok`.
    *   Output, thinking and cache reads always use their base rates in this
    *   mode — the `tierOutputPerMTok` / `tierThinkingPerMTok` /
-   *   `tierCacheReadPerMTok` fields are ignored. This models providers that
+   *   `tierCacheReadPerMTok` / `tierCacheCreationPerMTok` fields are ignored. This models providers that
    *   charge a higher rate purely for excess context. No built-in entry uses
    *   it today. Do not set those fields on a `'marginal'` entry — they would
    *   be dead data.
@@ -87,9 +109,19 @@ const DATED_SUFFIX_RE = /-\d{8}$/;
 
 // Strip trailing bracketed context/variant tags (e.g. "[1m]"), which Claude
 // Code sometimes appends to a model id (e.g. "claude-sonnet-5[1m]",
-// "sonnet[1m]"). The `+$` (rather than a single bracket group) also strips
-// consecutive trailing tags like "sonnet[1m][queue]" in one pass.
-const CONTEXT_SUFFIX_RE = /(\[[^\]]*\])+$/;
+// "sonnet[1m]"). Repeats so consecutive tags like "sonnet[1m][queue]" are
+// removed in one call. A linear scan rather than a regex: `(\[[^\]]*\])+$`
+// backtracks quadratically on a name with many `[` (CodeQL js/polynomial-redos).
+function stripContextSuffix(id: string): string {
+  let end = id.length;
+  while (end > 0 && id[end - 1] === ']') {
+    const prevClose = id.lastIndexOf(']', end - 2);
+    const open = id.indexOf('[', prevClose + 1);
+    if (open === -1 || open >= end - 1) break;
+    end = open;
+  }
+  return id.slice(0, end);
+}
 
 // ---------------------------------------------------------------------------
 // Custom pricing file
@@ -171,12 +203,16 @@ function validatePricingEntry(model: string, entry: unknown): ModelPricing | nul
     'thinkingPerMTok',
     'cacheReadPerMTok',
     'cacheCreationPerMTok',
+    'cacheCreation1hPerMTok',
     'audioInputPerMTok',
     'audioCacheReadPerMTok',
+    'audioOutputPerMTok',
     'tierInputPerMTok',
     'tierOutputPerMTok',
     'tierThinkingPerMTok',
     'tierCacheReadPerMTok',
+    'tierCacheCreationPerMTok',
+    'tierCacheCreation1hPerMTok',
   ] as const;
   for (const field of optionalRateFields) {
     const value = e[field];
@@ -263,10 +299,14 @@ function validatePricingEntry(model: string, entry: unknown): ModelPricing | nul
     ...(typeof e.cacheCreationPerMTok === 'number' && {
       cacheCreationPerMTok: e.cacheCreationPerMTok,
     }),
+    ...(typeof e.cacheCreation1hPerMTok === 'number' && {
+      cacheCreation1hPerMTok: e.cacheCreation1hPerMTok,
+    }),
     ...(typeof e.audioInputPerMTok === 'number' && { audioInputPerMTok: e.audioInputPerMTok }),
     ...(typeof e.audioCacheReadPerMTok === 'number' && {
       audioCacheReadPerMTok: e.audioCacheReadPerMTok,
     }),
+    ...(typeof e.audioOutputPerMTok === 'number' && { audioOutputPerMTok: e.audioOutputPerMTok }),
     ...(typeof e.tierThreshold === 'number' && { tierThreshold: e.tierThreshold }),
     ...(typeof e.tierInputPerMTok === 'number' && { tierInputPerMTok: e.tierInputPerMTok }),
     ...(typeof e.tierOutputPerMTok === 'number' && { tierOutputPerMTok: e.tierOutputPerMTok }),
@@ -275,6 +315,12 @@ function validatePricingEntry(model: string, entry: unknown): ModelPricing | nul
     }),
     ...(typeof e.tierCacheReadPerMTok === 'number' && {
       tierCacheReadPerMTok: e.tierCacheReadPerMTok,
+    }),
+    ...(typeof e.tierCacheCreationPerMTok === 'number' && {
+      tierCacheCreationPerMTok: e.tierCacheCreationPerMTok,
+    }),
+    ...(typeof e.tierCacheCreation1hPerMTok === 'number' && {
+      tierCacheCreation1hPerMTok: e.tierCacheCreation1hPerMTok,
     }),
     ...((e.tierMode === 'flat' || e.tierMode === 'marginal') && { tierMode: e.tierMode }),
   };
@@ -462,7 +508,7 @@ export class PricingTable {
     // Strip a trailing bracketed context/variant tag (e.g. "[1m]") before
     // running the resolution chain below — table keys and aliases are never
     // tagged, so an unstripped tag would defeat every branch.
-    const normalizedName = modelName.replace(CONTEXT_SUFFIX_RE, '');
+    const normalizedName = stripContextSuffix(modelName);
 
     // Returns shallow copies so caller mutation cannot corrupt the instance
     // table — resolved entries are values, not live references.
@@ -583,7 +629,7 @@ export function initPricing(customFilePath?: string | null): void {
  * Resolve a model name against the default singleton pricing table.
  *
  * 0. Strip a trailing bracketed context/variant tag (e.g. `claude-sonnet-5[1m]`
- *    → `claude-sonnet-5`) before any of the steps below — see CONTEXT_SUFFIX_RE.
+ *    → `claude-sonnet-5`) before any of the steps below — see stripContextSuffix.
  * 1. Exact match (e.g. `claude-sonnet-4-20250514`)
  * 2. Family-name alias (e.g. `claude-opus-4` → `claude-opus-4-8`) — see
  *    MODEL_ALIASES in pricing-data.ts. Aliases are the *primary* mechanism
@@ -632,7 +678,14 @@ function computeCost(pricing: ModelPricing, usage: TokenUsage): CostBreakdown {
     useTier && tierMode === 'flat' && pricing.tierCacheReadPerMTok !== undefined
       ? pricing.tierCacheReadPerMTok
       : (pricing.cacheReadPerMTok ?? 0);
-  const cacheCreationRate = pricing.cacheCreationPerMTok ?? 0;
+  const cacheCreationRate =
+    useTier && tierMode === 'flat' && pricing.tierCacheCreationPerMTok !== undefined
+      ? pricing.tierCacheCreationPerMTok
+      : (pricing.cacheCreationPerMTok ?? 0);
+  const cacheCreation1hRate =
+    useTier && tierMode === 'flat' && pricing.tierCacheCreation1hPerMTok !== undefined
+      ? pricing.tierCacheCreation1hPerMTok
+      : (pricing.cacheCreation1hPerMTok ?? cacheCreationRate);
 
   // Audio tokens are a subset of inputTokens / cacheReadTokens, billed at
   // their own rates (never tiered). Clamp to the parent count so a malformed
@@ -666,12 +719,24 @@ function computeCost(pricing: ModelPricing, usage: TokenUsage): CostBreakdown {
   }
   inputUsd += tokensToUsd(audioInputTokens, audioInputRate);
 
-  const outputUsd = tokensToUsd(usage.outputTokens, outputRate);
+  const audioOutputTokens = Math.min(usage.audioOutputTokens ?? 0, usage.outputTokens);
+  const audioOutputRate = pricing.audioOutputPerMTok ?? outputRate;
+  const outputUsd =
+    tokensToUsd(usage.outputTokens - audioOutputTokens, outputRate) +
+    tokensToUsd(audioOutputTokens, audioOutputRate);
   const thinkingUsd = tokensToUsd(usage.thinkingTokens, thinkingRate);
   const cacheReadUsd =
     tokensToUsd(textCacheReadTokens, cacheReadRate) +
     tokensToUsd(audioCacheReadTokens, audioCacheReadRate);
-  const cacheCreationUsd = tokensToUsd(usage.cacheCreationTokens, cacheCreationRate);
+  // 1h writes are a subset of cacheCreationTokens; clamp so a malformed usage
+  // object cannot produce negative 5m tokens.
+  const cacheCreation1hTokens = Math.min(
+    usage.cacheCreation1hTokens ?? 0,
+    usage.cacheCreationTokens,
+  );
+  const cacheCreationUsd =
+    tokensToUsd(usage.cacheCreationTokens - cacheCreation1hTokens, cacheCreationRate) +
+    tokensToUsd(cacheCreation1hTokens, cacheCreation1hRate);
 
   const totalUsd = inputUsd + outputUsd + thinkingUsd + cacheReadUsd + cacheCreationUsd;
 
@@ -713,7 +778,7 @@ function computeCost(pricing: ModelPricing, usage: TokenUsage): CostBreakdown {
  * - `tierMode: 'marginal'` — only the input tokens above the threshold are
  *   billed at `tierInputPerMTok`; tokens up to the threshold use `inputPerMTok`.
  *   Output, thinking and cache reads always use their base rates (the
- *   `tierOutput*` / `tierThinking*` / `tierCacheRead*` fields are ignored in
+ *   `tierOutput*` / `tierThinking*` / `tierCacheRead*` / `tierCacheCreation*` fields are ignored in
  *   this mode).
  */
 export function calculateCost(model: string, usage: TokenUsage): CostBreakdown {

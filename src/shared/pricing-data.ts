@@ -17,6 +17,7 @@ export const MODEL_ALIASES: Record<string, string> = {
   // Anthropic Claude families
   'claude-opus-4': 'claude-opus-4-8',
   'claude-sonnet-4': 'claude-sonnet-4-6',
+  // Deliberately stays on 4.5 even though Haiku 5.5 exists.
   'claude-haiku-4': 'claude-haiku-4-5',
   'claude-haiku-5': 'claude-haiku-5-5',
   'claude-haiku-3-5': 'claude-haiku-3-5-20241022',
@@ -206,7 +207,9 @@ export const MODEL_ALIASES: Record<string, string> = {
 // Built-in pricing table — USD per million tokens
 //
 // Rates last fully verified against vendor public pricing pages on
-// 2026-08-27. Later partial passes: Anthropic 5.5, GPT-6, Bedrock, xAI,
+// 2026-10-26 (every vendor group, incl. xAI, Moonshot and MAI-Code; Copilot
+// read by search only). Earlier full
+// pass 2026-08-27. Partial passes since then: Anthropic 5.5, GPT-6, Bedrock, xAI,
 // Moonshot, Mistral Large 4 and the Copilot stale-entry notes on 2026-10-07;
 // OpenAI long-context cache tiers, xAI cache tiers and Moonshot cache writes
 // on 2026-10-08:
@@ -249,6 +252,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 50,
     cacheReadPerMTok: 1,
     cacheCreationPerMTok: 12.5,
+    cacheCreation1hPerMTok: 20,
     contextWindow: 1_000_000,
   },
   // Shares Fable 5's specs and pricing exactly, but is limited-availability
@@ -260,6 +264,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 50,
     cacheReadPerMTok: 1,
     cacheCreationPerMTok: 12.5,
+    cacheCreation1hPerMTok: 20,
     contextWindow: 1_000_000,
   },
   // Extends Fable 5 at the same input/output prices, with cache reads at a
@@ -272,6 +277,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 50,
     cacheReadPerMTok: 0.25,
     cacheCreationPerMTok: 12.5,
+    cacheCreation1hPerMTok: 20,
     contextWindow: 1_000_000,
   },
   // Shares Fable 5.1's specs and pricing exactly (same discounted 0.025x
@@ -283,6 +289,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 50,
     cacheReadPerMTok: 0.25,
     cacheCreationPerMTok: 12.5,
+    cacheCreation1hPerMTok: 20,
     contextWindow: 1_000_000,
   },
   // Opus 5.5 is the newest Opus: $4/$20 (below Opus 5's $5/$25), with cache
@@ -294,6 +301,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 20,
     cacheReadPerMTok: 0.2,
     cacheCreationPerMTok: 5,
+    cacheCreation1hPerMTok: 8,
     contextWindow: 1_000_000,
   },
   'claude-opus-5': {
@@ -302,6 +310,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
+    cacheCreation1hPerMTok: 10,
     contextWindow: 1_000_000,
   },
   'claude-opus-4-8': {
@@ -310,6 +319,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
+    cacheCreation1hPerMTok: 10,
     contextWindow: 1_000_000,
   },
   // $2/$10 is Anthropic's standing price, not introductory — the "What's new
@@ -322,15 +332,18 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 10,
     cacheReadPerMTok: 0.2,
     cacheCreationPerMTok: 2.5,
+    cacheCreation1hPerMTok: 4,
     contextWindow: 1_000_000,
   },
-  // Same rates as claude-sonnet-5.
+  // Same rates as claude-sonnet-5 except cache reads, which are 0.05x input
+  // (vs 0.1x) per Anthropic's pricing page.
   'claude-sonnet-5-5': {
     inputPerMTok: 2,
     outputPerMTok: 10,
     thinkingPerMTok: 10,
-    cacheReadPerMTok: 0.2,
+    cacheReadPerMTok: 0.1,
     cacheCreationPerMTok: 2.5,
+    cacheCreation1hPerMTok: 4,
     contextWindow: 1_000_000,
   },
   'claude-sonnet-4-6': {
@@ -339,25 +352,28 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 15,
     cacheReadPerMTok: 0.3,
     cacheCreationPerMTok: 3.75,
+    cacheCreation1hPerMTok: 6,
     contextWindow: 1_000_000,
   },
   // Haiku 5.5 is priced by prompt length, flat: a prompt over 100k tokens bills
   // the whole request at 5x input/output and 5x cache reads (platform.claude.com
-  // pricing, verified 2026-10-08). The 5m cache-write tier rate ($0.625 above
-  // 100k) is not modeled; cache writes stay at the base $0.125. 1M context per
-  // the model overview. 'claude-haiku-4' deliberately stays on 4.5.
+  // pricing, verified 2026-10-08). The 5m cache-write rate is $0.125, or $0.625
+  // above 100k (tierCacheCreationPerMTok). 1M context per the model overview.
   'claude-haiku-5-5': {
     inputPerMTok: 0.1,
     outputPerMTok: 0.5,
     thinkingPerMTok: 0.5,
     cacheReadPerMTok: 0.01,
     cacheCreationPerMTok: 0.125,
+    cacheCreation1hPerMTok: 0.2,
     contextWindow: 1_000_000,
     tierThreshold: 100_000,
     tierInputPerMTok: 0.5,
     tierOutputPerMTok: 2.5,
     tierThinkingPerMTok: 2.5,
     tierCacheReadPerMTok: 0.05,
+    tierCacheCreationPerMTok: 0.625,
+    tierCacheCreation1hPerMTok: 1,
   },
   // Dateless current-gen entry — MODEL_ALIASES['claude-haiku-4'] routes here.
   // Matches the opus/sonnet convention: alias → dateless key → dated legacy key.
@@ -369,6 +385,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 5,
     cacheReadPerMTok: 0.1,
     cacheCreationPerMTok: 1.25,
+    cacheCreation1hPerMTok: 2,
     contextWindow: 200_000,
   },
   // Anthropic lists retirement "not sooner than" 2026-10-15; recheck the
@@ -379,6 +396,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 5,
     cacheReadPerMTok: 0.1,
     cacheCreationPerMTok: 1.25,
+    cacheCreation1hPerMTok: 2,
     contextWindow: 200_000,
   },
 
@@ -395,6 +413,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
+    cacheCreation1hPerMTok: 10,
     contextWindow: 1_000_000,
   },
   'claude-opus-4-6': {
@@ -403,6 +422,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
+    cacheCreation1hPerMTok: 10,
     contextWindow: 1_000_000,
   },
   // Deprecated 2026-09-30, retires 2026-11-30 (replacement claude-sonnet-5-5).
@@ -413,6 +433,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 15,
     cacheReadPerMTok: 0.3,
     cacheCreationPerMTok: 3.75,
+    cacheCreation1hPerMTok: 6,
     contextWindow: 200_000,
   },
   'claude-opus-4-5': {
@@ -421,6 +442,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
+    cacheCreation1hPerMTok: 10,
     contextWindow: 200_000,
   },
   // This key uses a version-number suffix (-1), not an 8-digit date suffix,
@@ -436,6 +458,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 75,
     cacheReadPerMTok: 1.5,
     cacheCreationPerMTok: 18.75,
+    cacheCreation1hPerMTok: 30,
     contextWindow: 200_000,
   },
   // Retired 2026-06-15. Kept for historical-cost backfill.
@@ -445,6 +468,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 15,
     cacheReadPerMTok: 0.3,
     cacheCreationPerMTok: 3.75,
+    cacheCreation1hPerMTok: 6,
     contextWindow: 200_000,
   },
   // Retired 2026-06-15. Kept for historical-cost backfill.
@@ -454,6 +478,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 75,
     cacheReadPerMTok: 1.5,
     cacheCreationPerMTok: 18.75,
+    cacheCreation1hPerMTok: 30,
     contextWindow: 200_000,
   },
   // Retired 2026-02-19. Kept for historical-cost backfill.
@@ -462,6 +487,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 4,
     cacheReadPerMTok: 0.08,
     cacheCreationPerMTok: 1,
+    cacheCreation1hPerMTok: 1.6,
     contextWindow: 200_000,
   },
 
@@ -494,6 +520,19 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 3.75,
     contextWindow: 1_000_000,
   },
+  // Gemini 4 Argon: flagship reasoning model. Introductory $2/$10 (cache read
+  // $0.10) through 2026-11-30; Google lists $4/$20 (cache $0.20) from
+  // 2026-12-01, so bump these rates once that date passes. Output price includes
+  // thinking tokens. Explicit caching is unsupported (implicit only), and Google
+  // publishes no context window (1M is its stated long-decode ceiling), so
+  // contextWindow is best-effort. Verified 2026-10-26.
+  'gemini-4-argon': {
+    inputPerMTok: 2,
+    cacheReadPerMTok: 0.1,
+    outputPerMTok: 10,
+    thinkingPerMTok: 10,
+    contextWindow: 1_000_000,
+  },
   'gemini-3.6-flash': {
     inputPerMTok: 0.75,
     cacheReadPerMTok: 0.075,
@@ -501,6 +540,9 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 3.75,
     contextWindow: 1_000_000,
   },
+  // No longer on Google's pricing page: the endpoint auto-routes to
+  // gemini-3.6-flash (deprecations page, 2026-10-26). Google doesn't say which
+  // rate that routing bills, so this entry keeps the historical 3.5 rates.
   'gemini-3.5-flash': {
     inputPerMTok: 1.5,
     cacheReadPerMTok: 0.15,
@@ -539,6 +581,52 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // thinking is NOT a subset of it (extractGeminiTokens() reports
   // thoughtsTokenCount as a separate addend), so thinkingPerMTok must be
   // set explicitly or reasoning spend is silently billed at $0.
+  // Live / native-audio models bill text and audio separately. Input: text
+  // $0.75, audio $3.00 (image/video $1.00 is not modelled and bills at the text
+  // rate). Output $4.50 text / $12.00 audio, thinking at the text rate. No
+  // caching. 131,072 is the published input token limit
+  // (ai.google.dev/gemini-api/docs/pricing, verified 2026-10-26).
+  'gemini-3.8-live': {
+    inputPerMTok: 0.75,
+    audioInputPerMTok: 3,
+    outputPerMTok: 4.5,
+    audioOutputPerMTok: 12,
+    thinkingPerMTok: 4.5,
+    contextWindow: 131_072,
+  },
+  'gemini-3.8-live-extended-thinking': {
+    inputPerMTok: 0.75,
+    audioInputPerMTok: 3,
+    outputPerMTok: 4.5,
+    audioOutputPerMTok: 12,
+    thinkingPerMTok: 4.5,
+    contextWindow: 131_072,
+  },
+  'gemini-3.1-flash-live-preview': {
+    inputPerMTok: 0.75,
+    audioInputPerMTok: 3,
+    outputPerMTok: 4.5,
+    audioOutputPerMTok: 12,
+    thinkingPerMTok: 4.5,
+    contextWindow: 131_072,
+  },
+  'gemini-2.5-flash-native-audio-preview-12-2025': {
+    inputPerMTok: 0.5,
+    audioInputPerMTok: 3,
+    outputPerMTok: 2,
+    audioOutputPerMTok: 12,
+    thinkingPerMTok: 2,
+    contextWindow: 131_072,
+  },
+  // Audio in, audio out at one rate each ($3.50 / $21.00).
+  'gemini-3.5-live-translate-preview': {
+    inputPerMTok: 3.5,
+    audioInputPerMTok: 3.5,
+    outputPerMTok: 21,
+    audioOutputPerMTok: 21,
+    thinkingPerMTok: 21,
+    contextWindow: 131_072,
+  },
   'gemini-3.1-flash-lite': {
     inputPerMTok: 0.25,
     audioInputPerMTok: 0.5,
@@ -571,7 +659,17 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // same per-token rate). Output price includes thinking tokens. $1/$5 is
   // introductory per ai.google.dev, verified 2026-10-08: Google lists
   // $2/$10 starting 2027-01-01, so bump these rates once that date passes.
+  // Cache read is likewise introductory: $0.10 through 2026-12-31, $0.20 after.
   'gemini-robotics-er-2-preview': {
+    inputPerMTok: 1,
+    cacheReadPerMTok: 0.1,
+    outputPerMTok: 5,
+    thinkingPerMTok: 5,
+    contextWindow: 131_072,
+  },
+  // Live API streaming endpoint; same introductory $1/$5 -> $2/$10 on
+  // 2027-01-01. Google lists no context caching for it.
+  'gemini-robotics-er-2-streaming-preview': {
     inputPerMTok: 1,
     outputPerMTok: 5,
     thinkingPerMTok: 5,
@@ -699,10 +797,10 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // modeled here: no cacheCreationPerMTok is set, so any cache-write tokens
   // that extractOpenAITokens() reports (prompt_tokens_details.cache_write_tokens)
   // are billed at $0.
-  // The GPT-5.5/5.6 pages (verified 2026-10-08) say the >272k tier is "2x
-  // input and 1.5x output" and are silent on cached input, so no
-  // tierCacheReadPerMTok is set for them (unlike GPT-6, which states 2x
-  // "input and cache rates"). Cached input above 272k bills at the base rate.
+  // The GPT-5.5/5.6 model pages say the >272k tier is "2x input and 1.5x
+  // output" and are silent on cached input, but the pricing page's "Long
+  // context cached input" column (verified 2026-10-26) lists 2x the base
+  // cached rate for GPT-5.4/5.5/5.6, so tierCacheReadPerMTok is set to match.
   // $4/$20 is promotional pricing per OpenAI's own model page: "a 20%
   // reduction in input pricing and a 33% reduction in output pricing"
   // versus GPT-5.5 ($5/$30), "available at least through November 21,
@@ -715,6 +813,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     cacheReadPerMTok: 0.4,
     contextWindow: 1_050_000,
     tierThreshold: 272_000,
+    tierCacheReadPerMTok: 0.8,
     tierInputPerMTok: 8,
     tierOutputPerMTok: 30,
   },
@@ -724,6 +823,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     cacheReadPerMTok: 0.2,
     contextWindow: 1_050_000,
     tierThreshold: 272_000,
+    tierCacheReadPerMTok: 0.4,
     tierInputPerMTok: 4,
     tierOutputPerMTok: 18,
   },
@@ -733,6 +833,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     cacheReadPerMTok: 0.02,
     contextWindow: 1_050_000,
     tierThreshold: 272_000,
+    tierCacheReadPerMTok: 0.04,
     tierInputPerMTok: 0.4,
     tierOutputPerMTok: 1.8,
   },
@@ -778,6 +879,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     // that was wrong on three counts: mode, threshold (270k vs 272k), and
     // the missing output multiplier.
     tierThreshold: 272_000,
+    tierCacheReadPerMTok: 1,
     tierInputPerMTok: 10,
     tierOutputPerMTok: 45,
   },
@@ -787,6 +889,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     cacheReadPerMTok: 0.25,
     contextWindow: 1_050_000,
     tierThreshold: 272_000,
+    tierCacheReadPerMTok: 0.5,
     tierInputPerMTok: 5,
     tierOutputPerMTok: 22.5,
   },
@@ -1009,10 +1112,11 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // Cache pricing for these models is published on the Bedrock pricing
   // page — resolved by matching
   // each model's known direct-API cache-write/-read multipliers (1.25x /
-  // 0.1x of input), which line up exactly with AWS's own numbers. AWS
+  // 0.1x of input), which line up exactly with AWS's own numbers (except the
+  // 0.05x Sonnet/Opus 5.5 and 0.025x Fable/Mythos 5.1 cache reads). AWS
   // publishes BOTH a 5-minute and a 1-hour cache-write rate; cacheCreationPerMTok
-  // here is the 5-minute rate (matches the direct-API default TTL) — there's
-  // no field for the 1-hour rate, which would need a schema change to model.
+  // here is the 5-minute rate (matches the direct-API default TTL) and
+  // cacheCreation1hPerMTok the 1-hour rate (2x input) where AWS lists one.
   // $2/$10 is Anthropic's standing Sonnet 5 price on Bedrock too — not
   // introductory. See the direct-API claude-sonnet-5 comment above.
   //
@@ -1039,16 +1143,19 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 11,
     cacheReadPerMTok: 0.22,
     cacheCreationPerMTok: 2.75,
+    cacheCreation1hPerMTok: 4.4,
     contextWindow: 1_000_000,
   },
   // Sonnet 5.5 and Opus 5.5 geo rates are read directly from AWS's pricing
-  // page (2026-10-07), not derived from the 1.1x multiplier. Model IDs
+  // page (2026-10-07), not derived from the 1.1x multiplier.
+  // Sonnet 5.5 cache reads are 0.05x input (cut 50% effective 2026-10-07). Model IDs
   // confirmed against AWS's model cards (2026-10-07).
   'anthropic.claude-sonnet-5-5': {
     inputPerMTok: 2.2,
     outputPerMTok: 11,
-    cacheReadPerMTok: 0.22,
+    cacheReadPerMTok: 0.11,
     cacheCreationPerMTok: 2.75,
+    cacheCreation1hPerMTok: 4.4,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-opus-5-5': {
@@ -1056,6 +1163,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 22,
     cacheReadPerMTok: 0.22,
     cacheCreationPerMTok: 5.5,
+    cacheCreation1hPerMTok: 8.8,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-fable-5': {
@@ -1063,6 +1171,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 55,
     cacheReadPerMTok: 1.1,
     cacheCreationPerMTok: 13.75,
+    cacheCreation1hPerMTok: 22.0,
     contextWindow: 1_000_000,
   },
   // Geo rate read from AWS's pricing page (2026-10-07).
@@ -1071,6 +1180,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 55,
     cacheReadPerMTok: 0.275,
     cacheCreationPerMTok: 13.75,
+    cacheCreation1hPerMTok: 22.0,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-opus-5': {
@@ -1078,6 +1188,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 27.5,
     cacheReadPerMTok: 0.55,
     cacheCreationPerMTok: 6.875,
+    cacheCreation1hPerMTok: 11.0,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-opus-4-8': {
@@ -1085,6 +1196,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 27.5,
     cacheReadPerMTok: 0.55,
     cacheCreationPerMTok: 6.875,
+    cacheCreation1hPerMTok: 11.0,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-opus-4-7': {
@@ -1092,6 +1204,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 27.5,
     cacheReadPerMTok: 0.55,
     cacheCreationPerMTok: 6.875,
+    cacheCreation1hPerMTok: 11.0,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-sonnet-4-6': {
@@ -1099,6 +1212,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 16.5,
     cacheReadPerMTok: 0.33,
     cacheCreationPerMTok: 4.125,
+    cacheCreation1hPerMTok: 6.6,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-haiku-4-5-20251001-v1:0': {
@@ -1106,34 +1220,41 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 5.5,
     cacheReadPerMTok: 0.11,
     cacheCreationPerMTok: 1.375,
+    cacheCreation1hPerMTok: 2.2,
     contextWindow: 200_000,
   },
   // Haiku 5.5: IDs from its AWS model card, rates from the AWS pricing page (2026-10-07).
   // The page's "Long Context Pricing" table lists 5x input/output/cache-read; it
-  // states no threshold, so the first-party 100k flat threshold is assumed. Cache
-  // writes stay at the base rate, as on the first-party entry.
+  // states no threshold, so the first-party 100k flat threshold is assumed. Long-
+  // context cache writes are also 5x the base rate (tierCacheCreationPerMTok).
   'anthropic.claude-haiku-5-5': {
     inputPerMTok: 0.11,
     outputPerMTok: 0.55,
     thinkingPerMTok: 0.55,
     cacheReadPerMTok: 0.011,
     cacheCreationPerMTok: 0.1375,
+    cacheCreation1hPerMTok: 0.22,
     contextWindow: 1_000_000,
     tierThreshold: 100_000,
     tierInputPerMTok: 0.55,
     tierOutputPerMTok: 2.75,
     tierThinkingPerMTok: 2.75,
     tierCacheReadPerMTok: 0.055,
+    tierCacheCreationPerMTok: 0.6875,
+    tierCacheCreation1hPerMTok: 1.1,
   },
   // Older and Mythos-line Claude models, geo/in-region rates read from AWS's
   // pricing page (2026-10-07); IDs confirmed against AWS model cards except
   // Mythos Preview, Opus 4, 3.7 Sonnet and 3 Sonnet (no card; AWS still prices them).
-  // Mythos 5 is bedrock-mantle (Messages API) only, with no Geo or Global profile.
+  // Mythos 5 is bedrock-mantle (Messages API) only; AWS's pricing page lists a
+  // Geo row for it (these rates, 2026-10-26) and no Global row. Its us./eu./au./
+  // jp. aliases are unverified, like the other regional Claude aliases.
   'anthropic.claude-mythos-5': {
     inputPerMTok: 11,
     outputPerMTok: 55,
     cacheReadPerMTok: 1.1,
     cacheCreationPerMTok: 13.75,
+    cacheCreation1hPerMTok: 22.0,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-mythos-5-1': {
@@ -1141,6 +1262,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 55,
     cacheReadPerMTok: 0.275,
     cacheCreationPerMTok: 13.75,
+    cacheCreation1hPerMTok: 22.0,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-mythos-preview': {
@@ -1148,6 +1270,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 137.5,
     cacheReadPerMTok: 2.75,
     cacheCreationPerMTok: 34.375,
+    cacheCreation1hPerMTok: 55.0,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-opus-4-6-v1': {
@@ -1155,6 +1278,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 27.5,
     cacheReadPerMTok: 0.55,
     cacheCreationPerMTok: 6.875,
+    cacheCreation1hPerMTok: 11.0,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-opus-4-5-20251101-v1:0': {
@@ -1162,6 +1286,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 27.5,
     cacheReadPerMTok: 0.55,
     cacheCreationPerMTok: 6.875,
+    cacheCreation1hPerMTok: 11.0,
     contextWindow: 200_000,
   },
   'anthropic.claude-sonnet-4-5-20250929-v1:0': {
@@ -1169,6 +1294,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 16.5,
     cacheReadPerMTok: 0.33,
     cacheCreationPerMTok: 4.125,
+    cacheCreation1hPerMTok: 6.6,
     contextWindow: 200_000,
   },
   'anthropic.claude-sonnet-4-20250514-v1:0': {
@@ -1218,13 +1344,15 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 10,
     cacheReadPerMTok: 0.2,
     cacheCreationPerMTok: 2.5,
+    cacheCreation1hPerMTok: 4.0,
     contextWindow: 1_000_000,
   },
   'global.anthropic.claude-sonnet-5-5': {
     inputPerMTok: 2,
     outputPerMTok: 10,
-    cacheReadPerMTok: 0.2,
+    cacheReadPerMTok: 0.1,
     cacheCreationPerMTok: 2.5,
+    cacheCreation1hPerMTok: 4.0,
     contextWindow: 1_000_000,
   },
   'global.anthropic.claude-opus-5-5': {
@@ -1232,6 +1360,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 20,
     cacheReadPerMTok: 0.2,
     cacheCreationPerMTok: 5,
+    cacheCreation1hPerMTok: 8.0,
     contextWindow: 1_000_000,
   },
   'global.anthropic.claude-fable-5': {
@@ -1239,6 +1368,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 50,
     cacheReadPerMTok: 1,
     cacheCreationPerMTok: 12.5,
+    cacheCreation1hPerMTok: 20.0,
     contextWindow: 1_000_000,
   },
   'global.anthropic.claude-opus-5': {
@@ -1246,6 +1376,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
+    cacheCreation1hPerMTok: 10.0,
     contextWindow: 1_000_000,
   },
   'global.anthropic.claude-opus-4-8': {
@@ -1253,6 +1384,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
+    cacheCreation1hPerMTok: 10.0,
     contextWindow: 1_000_000,
   },
   'global.anthropic.claude-opus-4-7': {
@@ -1260,6 +1392,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
+    cacheCreation1hPerMTok: 10.0,
     contextWindow: 1_000_000,
   },
   'global.anthropic.claude-sonnet-4-6': {
@@ -1267,6 +1400,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 15,
     cacheReadPerMTok: 0.3,
     cacheCreationPerMTok: 3.75,
+    cacheCreation1hPerMTok: 6.0,
     contextWindow: 1_000_000,
   },
   'global.anthropic.claude-haiku-4-5-20251001-v1:0': {
@@ -1274,6 +1408,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 5,
     cacheReadPerMTok: 0.1,
     cacheCreationPerMTok: 1.25,
+    cacheCreation1hPerMTok: 2.0,
     contextWindow: 200_000,
   },
   'global.anthropic.claude-opus-4-6-v1': {
@@ -1281,6 +1416,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
+    cacheCreation1hPerMTok: 10.0,
     contextWindow: 1_000_000,
   },
   'global.anthropic.claude-opus-4-5-20251101-v1:0': {
@@ -1288,6 +1424,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
+    cacheCreation1hPerMTok: 10.0,
     contextWindow: 200_000,
   },
   'global.anthropic.claude-sonnet-4-5-20250929-v1:0': {
@@ -1295,6 +1432,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 15,
     cacheReadPerMTok: 0.3,
     cacheCreationPerMTok: 3.75,
+    cacheCreation1hPerMTok: 6.0,
     contextWindow: 200_000,
   },
   'global.anthropic.claude-haiku-5-5': {
@@ -1303,21 +1441,24 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 0.5,
     cacheReadPerMTok: 0.01,
     cacheCreationPerMTok: 0.125,
+    cacheCreation1hPerMTok: 0.2,
     contextWindow: 1_000_000,
     tierThreshold: 100_000,
     tierInputPerMTok: 0.5,
     tierOutputPerMTok: 2.5,
     tierThinkingPerMTok: 2.5,
     tierCacheReadPerMTok: 0.05,
+    tierCacheCreationPerMTok: 0.625,
+    tierCacheCreation1hPerMTok: 1.0,
   },
-  // Fable 5.1 and Mythos 5.1: AWS model cards confirm these global IDs exist, but
-  // the pricing page lists no Global-tier row. Rates are DERIVED from the geo row
-  // via AWS's flat 1.1x geo premium; replace with published rates when AWS lists them.
+  // Fable 5.1 and Mythos 5.1: global rates read from AWS's pricing page (2026-10-26);
+  // they match the geo row divided by AWS's flat 1.1x geo premium.
   'global.anthropic.claude-fable-5-1': {
     inputPerMTok: 10,
     outputPerMTok: 50,
     cacheReadPerMTok: 0.25,
     cacheCreationPerMTok: 12.5,
+    cacheCreation1hPerMTok: 20.0,
     contextWindow: 1_000_000,
   },
   'global.anthropic.claude-mythos-5-1': {
@@ -1325,6 +1466,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 50,
     cacheReadPerMTok: 0.25,
     cacheCreationPerMTok: 12.5,
+    cacheCreation1hPerMTok: 20.0,
     contextWindow: 1_000_000,
   },
   // Sonnet 4 is priced identically in the Geo and Global tiers on the AWS page.
@@ -1371,6 +1513,29 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     inputPerMTok: 15,
     outputPerMTok: 75,
     contextWindow: 200_000,
+  },
+  // Legacy Claude models AWS still prices on-demand (pricing page, 2026-10-26,
+  // no cache rates). Model IDs and context windows are the well-known Bedrock
+  // values, not confirmed against model cards.
+  'anthropic.claude-3-5-sonnet-20240620-v1:0': {
+    inputPerMTok: 3,
+    outputPerMTok: 15,
+    contextWindow: 200_000,
+  },
+  'anthropic.claude-v2:1': {
+    inputPerMTok: 8,
+    outputPerMTok: 24,
+    contextWindow: 200_000,
+  },
+  'anthropic.claude-v2': {
+    inputPerMTok: 8,
+    outputPerMTok: 24,
+    contextWindow: 100_000,
+  },
+  'anthropic.claude-instant-v1': {
+    inputPerMTok: 0.8,
+    outputPerMTok: 2.4,
+    contextWindow: 100_000,
   },
   // Meta Llama via Bedrock
   // Llama 3 (both sizes) has an 8K context window, not 128K — 128K arrived
@@ -1520,20 +1685,18 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
   // Mistral Large 4 (docs.mistral.ai/models/mistral-large-4-0, v26.10, public
   // preview since 2026-10-06; API names mistral-large-4 / mistral-large-4-0).
-  // Rates are the preview SALE price actually billed, verified 2026-10-07:
-  // $0.68 in / $2.09 out against a struck-through list of $1.36 / $4.18.
-  // TEMPORARY SALE PRICING, no published end date: re-verify at every pricing
-  // audit and revert to the list price ($1.36 / $4.18) once the sale ends,
-  // otherwise costs are under-reported by half. 'mistral-large-latest' above is
-  // deliberately unchanged: the docs don't say it now routes here.
+  // The preview sale ($0.68 / $2.09) is no longer shown on the docs page as of
+  // 2026-10-26, which lists only the $1.36 / $4.18 list price. Cached input
+  // ($0.14) is not modeled. 'mistral-large-latest' above is deliberately
+  // unchanged: the docs don't say it now routes here.
   'mistral-large-4': {
-    inputPerMTok: 0.68,
-    outputPerMTok: 2.09,
+    inputPerMTok: 1.36,
+    outputPerMTok: 4.18,
     contextWindow: 1_000_000,
   },
   'mistral-large-4-0': {
-    inputPerMTok: 0.68,
-    outputPerMTok: 2.09,
+    inputPerMTok: 1.36,
+    outputPerMTok: 4.18,
     contextWindow: 1_000_000,
   },
   'mistral-small-latest': {
@@ -1623,6 +1786,16 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   'command-r-08-2024': {
     inputPerMTok: 0.15,
     outputPerMTok: 0.6,
+    contextWindow: 128_000,
+  },
+  // Command A+ is the only Command A model with a published API rate
+  // (cohere.com/pricing, 128K context and 64K max output per
+  // docs.cohere.com/docs/models, verified 2026-10-26). command-a-03-2025,
+  // -reasoning, -vision and -translate have no published rates and are
+  // deliberately absent.
+  'command-a-plus-05-2026': {
+    inputPerMTok: 2.5,
+    outputPerMTok: 10,
     contextWindow: 128_000,
   },
   'command-r7b-12-2024': {
@@ -1773,6 +1946,8 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // split is only in response headers, so 1h writes under-price by $3.00/MTok.
   // GitHub's retirement table removes Kimi K2.7 Code from Copilot on 2026-10-02,
   // but Moonshot's direct page still lists it, so the entry stays.
+  // Moonshot's banner (2026-10-26): the K2 series closes to new users on
+  // 2026-10-31 and all K2 models retire by the end of 2026-12.
   'kimi-k2.7-code': {
     inputPerMTok: 0.95,
     outputPerMTok: 4,
@@ -1784,6 +1959,22 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 15,
     cacheReadPerMTok: 0.3,
     cacheCreationPerMTok: 3,
+    contextWindow: 1_048_576,
+  },
+  // K3.1 Pro (launched 2026-10; verified 2026-10-26 on the same page). The 1h
+  // cache-write rate ($4.00, $8.00 highspeed) is unmodeled, as for K3.
+  'kimi-k3.1-pro': {
+    inputPerMTok: 2,
+    outputPerMTok: 10,
+    cacheReadPerMTok: 0.2,
+    cacheCreationPerMTok: 2,
+    contextWindow: 1_048_576,
+  },
+  'kimi-k3.1-pro-highspeed': {
+    inputPerMTok: 4,
+    outputPerMTok: 20,
+    cacheReadPerMTok: 0.2,
+    cacheCreationPerMTok: 4,
     contextWindow: 1_048_576,
   },
 

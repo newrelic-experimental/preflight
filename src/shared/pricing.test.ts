@@ -214,6 +214,19 @@ describe('calculateCost', () => {
       expect(cost.savingsFromCacheUsd).toBeCloseTo(18, 6);
     });
 
+    it('bills Haiku 5.5 cache writes at the tier rate above 100k, base rate below', () => {
+      const above = calculateCost(
+        'claude-haiku-5-5',
+        usage({ inputTokens: 1, cacheCreationTokens: 1_000_000 }),
+      );
+      expect(above.cacheCreationUsd).toBeCloseTo(0.625, 6);
+      const below = calculateCost(
+        'claude-haiku-5-5',
+        usage({ inputTokens: 1, cacheCreationTokens: 99_000 }),
+      );
+      expect(below.cacheCreationUsd).toBeCloseTo(0.012375, 6);
+    });
+
     it('prices xAI grok-4.5 long-context cache reads at $0.6/MTok', () => {
       const cost = calculateCost(
         'grok-4.5',
@@ -232,11 +245,31 @@ describe('calculateCost', () => {
     });
 
     it('falls back to cacheReadPerMTok when no tier cache-read rate is set', () => {
-      const cost = calculateCost(
-        'gpt-5.5',
-        usage({ inputTokens: 250_000, cacheReadTokens: 1_000_000 }),
-      );
-      expect(cost.cacheReadUsd).toBeCloseTo(0.5, 6);
+      const dir = mkdtempSync(join(tmpdir(), 'tier-cache-'));
+      try {
+        const file = join(dir, 'p.json');
+        writeFileSync(
+          file,
+          JSON.stringify({
+            'flat-no-tier-cache': {
+              inputPerMTok: 1,
+              outputPerMTok: 2,
+              cacheReadPerMTok: 0.1,
+              contextWindow: 1_000_000,
+              tierThreshold: 100_000,
+              tierInputPerMTok: 2,
+            },
+          }),
+        );
+        initPricing(file);
+        const cost = calculateCost(
+          'flat-no-tier-cache',
+          usage({ inputTokens: 200_000, cacheReadTokens: 1_000_000 }),
+        );
+        expect(cost.cacheReadUsd).toBeCloseTo(0.1, 6);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     it('ignores tierCacheReadPerMTok in marginal mode', () => {
@@ -475,7 +508,7 @@ describe('resolveModelPricing', () => {
   it.each([
     ['claude-haiku-5', 0.1, 0.5],
     ['gpt-4', 30, 60],
-    ['mistral-large', 0.68, 2.09],
+    ['mistral-large', 1.36, 4.18],
   ])('resolves bare %s through an explicit alias', (name, input, output) => {
     const pricing = resolveModelPricing(name);
     expect(pricing).not.toBeNull();
@@ -653,6 +686,17 @@ describe('resolveModelPricing', () => {
       const untagged = resolveModelPricing('claude-sonnet-5');
       expect(tagged).not.toBeNull();
       expect(tagged).toEqual(untagged);
+    });
+
+    it('leaves non-trailing and unmatched brackets alone', () => {
+      expect(resolveModelPricing('claude-sonnet-5[1m]x')).toBeNull();
+      expect(resolveModelPricing('claude-sonnet-5]')).toBeNull();
+    });
+
+    it('resolves a pathological name with many "[" in linear time', () => {
+      const start = Date.now();
+      expect(resolveModelPricing('['.repeat(100_000) + ']')).toBeNull();
+      expect(Date.now() - start).toBeLessThan(1000);
     });
   });
 });
@@ -1217,6 +1261,7 @@ describe('custom pricing file', () => {
           tierOutputPerMTok: 4,
           tierThinkingPerMTok: 6,
           tierCacheReadPerMTok: 1,
+          tierCacheCreationPerMTok: 2.5,
           tierMode: 'marginal',
         },
       }),
@@ -1225,6 +1270,7 @@ describe('custom pricing file', () => {
     const result = loadCustomPricing(customFile);
     const entry = result!['optionals-model'];
     expect(entry.tierCacheReadPerMTok).toBe(1);
+    expect(entry.tierCacheCreationPerMTok).toBe(2.5);
     expect(entry.thinkingPerMTok).toBe(3);
     expect(entry.cacheReadPerMTok).toBe(0.5);
     expect(entry.cacheCreationPerMTok).toBe(1.5);
@@ -1564,6 +1610,137 @@ describe('PricingTable (instance-based)', () => {
     expect(logs.some((l) => l.includes('Ambiguous forward-prefix match'))).toBe(true);
 
     warnSpy.mockRestore();
+  });
+});
+
+describe('1h cache-write pricing', () => {
+  it('bills 1h writes at the 1h rate and the rest at the 5m rate (claude-opus-5-5)', () => {
+    const cost = calculateCost(
+      'claude-opus-5-5',
+      usage({ cacheCreationTokens: 1_000_000, cacheCreation1hTokens: 400_000 }),
+    );
+    // 600k * $5 + 400k * $8
+    expect(cost.cacheCreationUsd).toBeCloseTo(3 + 3.2, 6);
+  });
+
+  it('bills 1h writes at the tier 1h rate above the Haiku 5.5 threshold', () => {
+    const cost = calculateCost(
+      'claude-haiku-5-5',
+      usage({ cacheCreationTokens: 200_000, cacheCreation1hTokens: 200_000 }),
+    );
+    expect(cost.cacheCreationUsd).toBeCloseTo(0.2, 6);
+  });
+
+  it('falls back to the 5m rate when a model has no 1h rate', () => {
+    const cost = calculateCost(
+      'anthropic.claude-sonnet-4-20250514-v1:0',
+      usage({ cacheCreationTokens: 1_000_000, cacheCreation1hTokens: 1_000_000 }),
+    );
+    const fiveMinute = calculateCost(
+      'anthropic.claude-sonnet-4-20250514-v1:0',
+      usage({ cacheCreationTokens: 1_000_000 }),
+    );
+    expect(cost.cacheCreationUsd).toBeCloseTo(fiveMinute.cacheCreationUsd, 6);
+  });
+
+  it('clamps 1h tokens that exceed total cache writes', () => {
+    const cost = calculateCost(
+      'claude-opus-5-5',
+      usage({ cacheCreationTokens: 1_000_000, cacheCreation1hTokens: 9_000_000 }),
+    );
+    expect(cost.cacheCreationUsd).toBeCloseTo(8, 6);
+  });
+
+  it('accepts 1h rates from a custom pricing file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cache1h-pricing-'));
+    try {
+      const file = join(dir, 'p.json');
+      writeFileSync(
+        file,
+        JSON.stringify({
+          m: {
+            inputPerMTok: 1,
+            outputPerMTok: 2,
+            contextWindow: 1000,
+            cacheCreation1hPerMTok: 2,
+            tierCacheCreation1hPerMTok: 4,
+          },
+        }),
+      );
+      expect(loadCustomPricing(file)?.m).toMatchObject({
+        cacheCreation1hPerMTok: 2,
+        tierCacheCreation1hPerMTok: 4,
+      });
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
+describe('audio output pricing', () => {
+  it('extracts audio output tokens from candidatesTokensDetails', () => {
+    const tokens = extractGeminiTokens({
+      usageMetadata: {
+        promptTokenCount: 10,
+        candidatesTokenCount: 1_000_000,
+        candidatesTokensDetails: [
+          { modality: 'TEXT', tokenCount: 400_000 },
+          { modality: 'AUDIO', tokenCount: 600_000 },
+        ],
+      },
+    });
+    expect(tokens.audioOutputTokens).toBe(600_000);
+  });
+
+  it('extracts audio output tokens from the Live API responseTokensDetails', () => {
+    const tokens = extractGeminiTokens({
+      usageMetadata: {
+        candidatesTokenCount: 100,
+        responseTokensDetails: [{ modality: 'AUDIO', tokenCount: 100 }],
+      },
+    });
+    expect(tokens.audioOutputTokens).toBe(100);
+  });
+
+  it('bills text and audio output at their own rates (gemini-3.8-live)', () => {
+    const cost = calculateCost(
+      'gemini-3.8-live',
+      usage({ outputTokens: 1_000_000, audioOutputTokens: 600_000 }),
+    );
+    // text 400k * 4.50 + audio 600k * 12.00
+    expect(cost.outputUsd).toBeCloseTo(1.8 + 7.2, 6);
+  });
+
+  it('falls back to the output rate when a model has no audio output rate', () => {
+    const cost = calculateCost(
+      'gemini-2.5-flash',
+      usage({ outputTokens: 1_000_000, audioOutputTokens: 500_000 }),
+    );
+    expect(cost.outputUsd).toBeCloseTo(2.5, 6);
+  });
+
+  it('clamps audio output counts that exceed outputTokens', () => {
+    const cost = calculateCost(
+      'gemini-3.8-live',
+      usage({ outputTokens: 1_000_000, audioOutputTokens: 5_000_000 }),
+    );
+    expect(cost.outputUsd).toBeCloseTo(12, 6);
+  });
+
+  it('accepts audioOutputPerMTok from a custom pricing file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'audio-out-pricing-'));
+    try {
+      const file = join(dir, 'p.json');
+      writeFileSync(
+        file,
+        JSON.stringify({
+          m: { inputPerMTok: 1, outputPerMTok: 2, contextWindow: 1000, audioOutputPerMTok: 5 },
+        }),
+      );
+      expect(loadCustomPricing(file)?.m).toMatchObject({ audioOutputPerMTok: 5 });
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 });
 

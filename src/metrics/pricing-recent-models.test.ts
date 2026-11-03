@@ -6,7 +6,7 @@ import { calculateCost, resolveModelPricing } from '../shared/pricing.js';
 describe('recent model pricing', () => {
   it.each([
     ['claude-opus-5-5', 4, 20, 0.2, 5, 'claude-opus-5', 5],
-    ['claude-sonnet-5-5', 2, 10, 0.2, 2.5, 'claude-sonnet-5', 2],
+    ['claude-sonnet-5-5', 2, 10, 0.1, 2.5, 'claude-sonnet-5', 2],
   ])(
     'prices %s, including the [1m] id Claude Code reports',
     (model, input, output, cacheRead, cacheCreation, predecessor, predecessorInput) => {

@@ -165,6 +165,8 @@ Claude Code has its own built-in OTel export for cost, tokens, lines-of-code, an
 
 Companion mode turns on by itself when Preflight sees Claude Code's OTel metrics export going to New Relic. It checks the environment Claude Code passes to the MCP server: `CLAUDE_CODE_ENABLE_TELEMETRY` is on, `OTEL_METRICS_EXPORTER` includes `otlp`, and the OTLP endpoint (`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT`) is an `nr-data.net` host. An export to any other backend, or through a collector on another host, is not detected. Set companion mode explicitly in those cases.
 
+Detection does not follow Claude Code through Preflight's own OTLP receiver, because the receiver runs only in proxy mode and may not be forwarding. When the config enables the receiver with a New Relic forward endpoint and your shell's Claude Code OTel export points at it, `preflight doctor` warns; set `companionMode: true` (or `NR_AI_COMPANION_MODE=true`) when that proxy actually forwards Claude Code's metrics, or New Relic counts the cost twice. The warning reads the environment of the shell that runs `doctor`, so it does not see `CLAUDE_CODE_ENABLE_TELEMETRY` or `OTEL_*` values that Claude Code gets only from the `env` block of its `settings.json`.
+
 An explicit setting always wins over detection. In `~/.newrelic-preflight/config.json`:
 
 ```json
@@ -257,14 +259,15 @@ Requires `mode: "cloud"` or `mode: "both"`. Tiers fan out the cloud export path;
 
 ### Tier fields
 
-| Field                    | Required     | Notes                                                                                                                                |
-| ------------------------ | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`                   | yes          | Unique, non-empty. `"default"` is the reserved name of the implicit tier and is the only name exempt from the personal-only warning. |
-| `destination.type`       | yes          | `"nr"` or `"local"`.                                                                                                                 |
-| `destination.licenseKey` | `nr` only    | This tier's own NR ingest license key.                                                                                               |
-| `destination.accountId`  | `nr` only    | 1–12 decimal digits, as a JSON string.                                                                                               |
-| `destination.path`       | `local` only | Directory for JSONL output. Relative paths are resolved to absolute at config load.                                                  |
-| `eventTypes`             | yes          | Non-empty. Either `["*"]` (everything) or an explicit list of known event types.                                                     |
+| Field                           | Required     | Notes                                                                                                                                |
+| ------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`                          | yes          | Unique, non-empty. `"default"` is the reserved name of the implicit tier and is the only name exempt from the personal-only warning. |
+| `destination.type`              | yes          | `"nr"` or `"local"`.                                                                                                                 |
+| `destination.licenseKey`        | `nr` only    | This tier's own NR ingest license key.                                                                                               |
+| `destination.licenseKeyCommand` | `nr` only    | Argv array run to read this tier's key instead of `licenseKey`. See [Secret Helper Commands](#secret-helper-commands).               |
+| `destination.accountId`         | `nr` only    | 1–12 decimal digits, as a JSON string.                                                                                               |
+| `destination.path`              | `local` only | Directory for JSONL output. Relative paths are resolved to absolute at config load.                                                  |
+| `eventTypes`                    | yes          | Non-empty. Either `["*"]` (everything) or an explicit list of known event types.                                                     |
 
 There is no environment variable or CLI flag for `tiers` — config file only.
 
@@ -302,7 +305,7 @@ Omit `tiers` entirely and nothing changes: the flat `licenseKey`/`accountId` bec
 
 ### Misconfiguration is fatal at startup
 
-The following throw at config load with a specific message, following the same fail-fast convention as the `licenseKey`/`accountId`/`homelabServerUrl` checks: an empty `tiers` array, a duplicate tier name, a blank name, an unknown `destination.type`, an `nr` destination missing `licenseKey` or with a malformed `accountId`, a `local` destination missing `path`, an empty or unknown-valued `eventTypes`, and an array with no `nr`-type tier.
+The following throw at config load with a specific message, following the same fail-fast convention as the `licenseKey`/`accountId`/`homelabServerUrl` checks: an empty `tiers` array, a duplicate tier name, a blank name, an unknown `destination.type`, an `nr` destination missing both `licenseKey` and `licenseKeyCommand` or with a malformed `accountId`, a `local` destination missing `path`, an empty or unknown-valued `eventTypes`, and an array with no `nr`-type tier.
 
 ### Not covered
 
@@ -361,19 +364,21 @@ Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a sep
 - stdin is closed and stderr is discarded. One trailing newline is removed from stdout. Everything else is kept as is.
 - The command must exit with status 0 within 20 seconds and print at most 64 KiB.
 
-**Failures stop startup.** For `licenseKeyCommand`, a command that is not an absolute path, cannot be started, exits non-zero, is killed, times out, prints too much, or prints nothing fails config load with an error that names the field and the failure, for example `Could not read licenseKey from licenseKeyCommand: the command exited with a non-zero status (1)`. The error never contains the command's output or arguments. Run the command yourself in a terminal to see why it failed. `preflight doctor` reports the same error under "Telemetry mode". The `--local` dashboard does not exit on this failure: it falls back to local mode, as it does for a missing key, and logs that the helper failed.
+**Failures stop startup.** For `licenseKeyCommand`, a command that is not an absolute path, cannot be started, exits non-zero, is killed, times out, prints too much, or prints nothing fails config load with an error that names the field and the failure, for example `Could not read licenseKey from licenseKeyCommand: the command exited with a non-zero status (1)`. The error never contains the command's output or arguments. Run the command yourself in a terminal to see why it failed. `preflight doctor` reports the same error under "Telemetry mode". The `--local` dashboard does not exit on this failure: it falls back to local mode, as it does for a missing key, and logs that the helper failed. This includes a failing tier `licenseKeyCommand`. The fallback ignores the `tiers` array, because `tiers` is not allowed in local mode.
 
 **Optional secrets only warn.** `nrApiKeyCommand` and `digestWebhookUrlCommand` feed features that are not needed to run (team summaries, the weekly digest). When one fails, Preflight logs the same error as a warning, starts without that secret, and reports its source as `unset`. The plaintext value in the file is not used as a fallback.
 
 **Validation is unchanged.** The resolved value goes through the same checks as a plaintext one. A license key of `"null"` is rejected at load, and the digest webhook URL must be an `https://hooks.slack.com/` URL when the digest is sent.
 
+**Setup wizard on macOS.** `preflight setup` offers to store the license key, and the API key if you enter one, in the login Keychain. Answer `y` and the wizard stores each secret under the services `preflight-license-key` and `preflight-nr-api-key` for your user, reads it back to confirm, and writes `licenseKeyCommand` / `nrApiKeyCommand` instead of the plaintext value. The default is `n`, which keeps today's plaintext behavior. If the Keychain write fails, the wizard says so and writes the plaintext value. Re-running the wizard with a `licenseKeyCommand` or `nrApiKeyCommand` already set keeps it when you leave that key prompt blank, and typing a new key replaces the command. To remove a stored secret, re-run `preflight setup` and type the key (or delete `licenseKeyCommand` / `nrApiKeyCommand` from `config.json`), then run `security delete-generic-password -s preflight-license-key -a "$USER"`, and the same with `-s preflight-nr-api-key` for the API key.
+
 **Seeing where a secret came from.** `nr_observe_get_config` returns a `secretSources` object, and `preflight doctor` prints a "Secret sources" line. Each field reports `env`, `command`, `file` or `unset`, never the value.
 
 **GUI-launched clients and launchd.** An MCP client started from the Dock or Finder does not see variables set in your shell profile. A helper that needs `VAULT_ADDR`, `VAULT_TOKEN` or 1Password's `OP_*` variables either reads them from its own config file (`~/.vault-token`, the 1Password desktop app integration) or fails. The macOS Keychain needs a logged-in GUI session, so a launchd daemon or SSH session can get `User interaction is not allowed`. The first Keychain read from Preflight's `node` binary can show an access prompt. Startup waits for it until the 20-second timeout, so choose **Always Allow**.
 
-**Weekly digest.** When `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` or `digestWebhookUrlCommand` supplies the webhook URL, sending the digest uses that value. A URL written to the file by the dashboard is ignored until you remove both, and `nr_observe_subscribe_digest` refuses to save one while `digestWebhookUrlCommand` is set. If the command fails, the digest is not sent to the file's URL.
+**Weekly digest.** When `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` or `digestWebhookUrlCommand` supplies the webhook URL, sending the digest uses that value. A URL written to the file by the dashboard is ignored until you remove both, and `nr_observe_subscribe_digest` refuses to save one while either is set. The dashboard's Alerts page says when an override is active, without showing the overriding value. If the command fails, the digest is not sent to the file's URL.
 
-**Not covered.** Tier destinations (`tiers[].destination.licenseKey`) take a plaintext key only. A `licenseKeyCommand` value reaches the implicit `default` tier that Preflight builds when `tiers` is absent, but an explicit `tiers` array is used as written.
+**Tier destinations.** An `nr` tier can set `destination.licenseKeyCommand` (an argv array) instead of `destination.licenseKey`. See [Tier fields](#tier-fields). It follows the same rules as the top-level field: no shell, stripped env, 20-second timeout, and an error that never contains the output. A failure names the tier, for example `Could not read licenseKey for tier "team" from licenseKeyCommand: the command exited with a non-zero status (1)`. Tiers have no environment variable, so the order is `licenseKeyCommand` > `licenseKey`; with both set, the command wins and Preflight logs a warning. The top-level `licenseKey` (or `licenseKeyCommand`) and `accountId` are still required when `mode` is not `local`.
 
 ### Scoping `nrApiKey`
 

@@ -189,19 +189,25 @@ describe('RequestTimer', () => {
     });
 
     it('ignores duplicate markThinkingEnd() (no open phase)', () => {
-      const timer = new RequestTimer();
-      timer.start();
-      timer.markThinkingStart();
-      busyWait(1);
-      timer.markThinkingEnd();
-      busyWait(5);
-      timer.markThinkingEnd(); // no open phase — should be ignored
-      timer.stop();
+      let now = 0;
+      const nowSpy = jest.spyOn(performance, 'now').mockImplementation(() => now);
+      try {
+        const timer = new RequestTimer();
+        timer.start();
+        timer.markThinkingStart();
+        now = 1;
+        timer.markThinkingEnd();
+        now = 6;
+        timer.markThinkingEnd(); // no open phase — should be ignored
+        timer.stop();
 
-      const metrics = timer.getMetrics();
-      // The first end closed the phase; the second end didn't reopen and re-close.
-      expect(metrics.thinkingPhases).toHaveLength(1);
-      expect(metrics.thinkingDurationMs!).toBeLessThan(4);
+        const metrics = timer.getMetrics();
+        // The first end closed the phase at 1ms; a second end must not re-close it at 6ms.
+        expect(metrics.thinkingPhases).toHaveLength(1);
+        expect(metrics.thinkingDurationMs).toBe(1);
+      } finally {
+        nowSpy.mockRestore();
+      }
     });
 
     it('markFirstToken remains strictly first-write-wins', () => {

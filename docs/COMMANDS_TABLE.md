@@ -1422,16 +1422,16 @@ Cost attribution per tool type — approximate, based on turn-level token correl
 
 **How it works:** Attributes token costs reported via `nr_observe_report_tokens` to the tool calls that occurred within the same conversation turn. Each turn's cost is split evenly across its tool calls, then aggregated by tool type. `attributionRate` is the fraction of total session cost that could be attributed (turns with no token report are excluded). Results are approximate — cost is correlated at the turn level, not the individual call level.
 
-`costBySkill` has one row per invoked skill name (`code-review`, `pstack:how`). `callCount` and `totalDurationMs` are measured on every call. `totalCost`, `inputTokens`, `outputTokens`, and `cacheReadTokens` are the same even split across the turn's tool calls that `costByToolType` uses, and they cover only the `attributedCallCount` calls whose turn received a token report. `costByToolType.Skill` equals the sum of the skill rows. Skill calls that arrive without a skill name (some non-Claude-Code adapters) count under `costByToolType.Skill` and get no row here. Calls and duration per skill over any window are also available in New Relic, since `skillName` rides on every `AiToolCall`:
+`costBySkill` has one row per skill name (`code-review`, `pstack:how`) and covers every tool call made inside that skill's runs. A run opens on a named `Skill` call or a `/<skill>` prompt and lasts until the next prompt or the next skill. `callCount` counts invocations, and `avgCost` is cost per invocation. `attributedCallCount`, `totalDurationMs`, cost, and tokens cover the tool calls inside the runs, each with the same even split of its turn that `costByToolType` uses, so a Read inside a skill run counts in both `costByToolType.Read` and that skill's row. Skill calls that arrive without a skill name (some non-Claude-Code adapters) open no run. Runs, calls, and time per skill over any window are also available in New Relic, since every `AiToolCall` inside a run carries `skill_name`, `skill_source`, and `skill_run_id`:
 
 ```sql
-FROM AiToolCall SELECT count(*), sum(duration_ms)/3.6e6 AS hours WHERE tool = 'Skill' FACET skillName SINCE 1 week ago
+FROM AiToolCall SELECT uniqueCount(skill_run_id) AS runs, count(*), sum(duration_ms)/3.6e6 AS hours WHERE skill_name IS NOT NULL FACET skill_name SINCE 1 week ago
 ```
 
 Cost and tokens per skill over any window come from `AiTurnCost`:
 
 ```sql
-FROM AiTurnCost SELECT sum(cost_usd) WHERE tool = 'Skill' FACET skillName SINCE 1 week ago
+FROM AiTurnCost SELECT sum(cost_usd) WHERE skill_name IS NOT NULL FACET skill_name SINCE 1 week ago
 ```
 
 **Requires:** `TurnCostAttributor`

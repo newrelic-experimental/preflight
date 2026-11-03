@@ -24,4 +24,10 @@ describe('EmptyState', () => {
     const { container } = render(<EmptyState variant="inline" title="Nothing yet" />);
     expect(container.querySelector('.py-8')).not.toBeInTheDocument();
   });
+
+  it('inline-loading variant renders a status line with a pulsing dot', () => {
+    const { container } = render(<EmptyState variant="inline-loading" title="Loading spend…" />);
+    expect(screen.getByText('Loading spend…')).toBeInTheDocument();
+    expect(container.querySelector('.animate-pulse')).toBeInTheDocument();
+  });
 });

@@ -492,9 +492,10 @@ export function replaySessionToActivityRecords(
  * so its replay result never changes and is safe to cache forever. This is
  * what makes the cache worth having: a cache hit skips
  * `identityResolver.resolve()` entirely, and that call spawns up to three
- * `git` subprocesses per unique historical working directory with no caching
- * of its own — paying that cost again for the same closed session on every
- * dashboard poll is pure waste.
+ * `git` subprocesses per unique historical working directory. The resolver
+ * caches only per instance for 30s, and the dashboard builds a fresh resolver
+ * per request, so without this cache a closed session would re-pay that cost
+ * on every poll.
  */
 export class ReplaySessionCache {
   private readonly cache = new Map<string, ReplayedActivity>();

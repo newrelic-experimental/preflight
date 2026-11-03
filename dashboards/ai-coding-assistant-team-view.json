@@ -1,10 +1,10 @@
 {
-  "name": "AI Coding Assistant \u2014 Team View",
+  "name": "AI Coding Assistant — Team View",
   "description": "Team-level dashboard for AI coding assistant observability. Shows cost rollups, efficiency scores by developer, trend lines, and optimization insights across sessions. Requires AiToolCall, AiCodingTask, AiAntiPattern custom events and ai.* metrics.",
   "permissions": "PUBLIC_READ_WRITE",
   "pages": [
     {
-      "name": "AI Coding Assistant \u2014 Team View",
+      "name": "AI Coding Assistant — Team View",
       "description": "Team summary, developer comparison, trends, and optimization insights",
       "widgets": [
         {
@@ -308,7 +308,7 @@
           }
         },
         {
-          "title": "Skill Calls (7d)",
+          "title": "Skill Runs (7d)",
           "layout": {
             "column": 1,
             "row": 13,
@@ -322,7 +322,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall WHERE tool = 'Skill' AND developer = {{developer}} AND session_id = {{session_id}} FACET skillName SINCE 7 DAYS AGO LIMIT 20"
+                "query": "SELECT uniqueCount(skill_run_id) AS 'Runs' FROM AiToolCall WHERE skill_name IS NOT NULL AND developer = {{developer}} AND session_id = {{session_id}} FACET skill_name SINCE 7 DAYS AGO LIMIT 20"
               }
             ]
           }
@@ -342,7 +342,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT sum(duration_ms) / 3600000 AS 'Hours' FROM AiToolCall WHERE tool = 'Skill' AND developer = {{developer}} AND session_id = {{session_id}} FACET skillName SINCE 7 DAYS AGO LIMIT 20"
+                "query": "SELECT filter(sum(duration_ms), WHERE tool != 'Agent') / 3600000 AS 'Hours' FROM AiToolCall WHERE skill_name IS NOT NULL AND developer = {{developer}} AND session_id = {{session_id}} FACET skill_name SINCE 7 DAYS AGO LIMIT 20"
               }
             ]
           }
@@ -362,7 +362,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT sum(cost_usd) AS 'USD' FROM AiTurnCost WHERE tool = 'Skill' AND developer = {{developer}} AND session_id = {{session_id}} FACET skillName SINCE 7 DAYS AGO LIMIT 20"
+                "query": "SELECT sum(cost_usd) AS 'USD' FROM AiTurnCost WHERE skill_name IS NOT NULL AND developer = {{developer}} AND session_id = {{session_id}} FACET skill_name SINCE 7 DAYS AGO LIMIT 20"
               }
             ]
           }

@@ -43,12 +43,15 @@ describe('DEFAULT_PRICING_TABLE', () => {
         thinkingPerMTok: 0.5,
         cacheReadPerMTok: 0.01,
         cacheCreationPerMTok: 0.125,
+        cacheCreation1hPerMTok: 0.2,
         contextWindow: 1_000_000,
         tierThreshold: 100_000,
         tierInputPerMTok: 0.5,
         tierOutputPerMTok: 2.5,
         tierThinkingPerMTok: 2.5,
         tierCacheReadPerMTok: 0.05,
+        tierCacheCreationPerMTok: 0.625,
+        tierCacheCreation1hPerMTok: 1,
       });
     });
 
@@ -56,12 +59,18 @@ describe('DEFAULT_PRICING_TABLE', () => {
       const first = DEFAULT_PRICING_TABLE['claude-haiku-5-5'];
       const global = DEFAULT_PRICING_TABLE['global.anthropic.claude-haiku-5-5'];
       const geo = DEFAULT_PRICING_TABLE['anthropic.claude-haiku-5-5'];
-      expect(global).toEqual({ ...first });
+      expect(global).toEqual(first);
       expect(geo.tierThreshold).toBe(100_000);
       expect(geo.tierInputPerMTok).toBeCloseTo(first.tierInputPerMTok! * 1.1, 5);
       expect(geo.tierOutputPerMTok).toBeCloseTo(first.tierOutputPerMTok! * 1.1, 5);
       expect(geo.tierThinkingPerMTok).toBeCloseTo(first.tierThinkingPerMTok! * 1.1, 5);
       expect(geo.tierCacheReadPerMTok).toBeCloseTo(first.tierCacheReadPerMTok! * 1.1, 5);
+      expect(geo.tierCacheCreationPerMTok).toBeCloseTo(first.tierCacheCreationPerMTok! * 1.1, 5);
+      expect(geo.cacheCreation1hPerMTok).toBeCloseTo(first.cacheCreation1hPerMTok! * 1.1, 5);
+      expect(geo.tierCacheCreation1hPerMTok).toBeCloseTo(
+        first.tierCacheCreation1hPerMTok! * 1.1,
+        5,
+      );
     });
 
     it('has claude-sonnet-4-20250514 with correct rates', () => {
@@ -88,8 +97,28 @@ describe('DEFAULT_PRICING_TABLE', () => {
   });
 
   describe('Google Gemini models', () => {
+    it('has gemini-4-argon with introductory rates', () => {
+      expect(DEFAULT_PRICING_TABLE['gemini-4-argon']).toEqual({
+        inputPerMTok: 2,
+        cacheReadPerMTok: 0.1,
+        outputPerMTok: 10,
+        thinkingPerMTok: 10,
+        contextWindow: 1_000_000,
+      });
+    });
+
     it('has gemini-robotics-er-2-preview with introductory rates', () => {
       expect(DEFAULT_PRICING_TABLE['gemini-robotics-er-2-preview']).toEqual({
+        inputPerMTok: 1,
+        cacheReadPerMTok: 0.1,
+        outputPerMTok: 5,
+        thinkingPerMTok: 5,
+        contextWindow: 131_072,
+      });
+    });
+
+    it('has gemini-robotics-er-2-streaming-preview with introductory rates', () => {
+      expect(DEFAULT_PRICING_TABLE['gemini-robotics-er-2-streaming-preview']).toEqual({
         inputPerMTok: 1,
         outputPerMTok: 5,
         thinkingPerMTok: 5,
@@ -193,6 +222,13 @@ describe('DEFAULT_PRICING_TABLE', () => {
 
       expect(DEFAULT_PRICING_TABLE['gpt-5.6-terra']).toBeDefined();
       expect(DEFAULT_PRICING_TABLE['gpt-5.6-luna']).toBeDefined();
+    });
+
+    it('bills long-context cached input at 2x the base cached rate on gpt-5.4/5.5/5.6', () => {
+      for (const model of ['gpt-5.4', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+        const p = DEFAULT_PRICING_TABLE[model];
+        expect([model, p.tierCacheReadPerMTok]).toEqual([model, p.cacheReadPerMTok! * 2]);
+      }
     });
 
     it('has gpt-5.4-mini and gpt-5.4-nano', () => {
@@ -309,6 +345,16 @@ describe('DEFAULT_PRICING_TABLE', () => {
     });
   });
 
+  describe('Cohere models', () => {
+    it('has command-a-plus-05-2026 with published rates', () => {
+      expect(DEFAULT_PRICING_TABLE['command-a-plus-05-2026']).toEqual({
+        inputPerMTok: 2.5,
+        outputPerMTok: 10,
+        contextWindow: 128_000,
+      });
+    });
+  });
+
   describe('AWS Bedrock models', () => {
     // Bare `anthropic.*` keys price the Geo/In-region tier; `global.anthropic.*`
     // keys price the ~10%-cheaper Global tier. Every current-gen pair should
@@ -340,7 +386,40 @@ describe('DEFAULT_PRICING_TABLE', () => {
         expect(geo.outputPerMTok).toBeCloseTo(global.outputPerMTok * 1.1, 5);
         expect(geo.cacheReadPerMTok).toBeCloseTo(global.cacheReadPerMTok! * 1.1, 5);
         expect(geo.cacheCreationPerMTok).toBeCloseTo(global.cacheCreationPerMTok! * 1.1, 5);
+        expect(geo.cacheCreation1hPerMTok).toBeCloseTo(global.cacheCreation1hPerMTok! * 1.1, 5);
         expect(geo.contextWindow).toBe(global.contextWindow);
+      }
+    });
+
+    it('prices legacy Bedrock Claude 3.5 Sonnet v1, 2.x and Instant from the AWS page', () => {
+      const rates: Record<string, [number, number]> = {
+        'anthropic.claude-3-5-sonnet-20240620-v1:0': [3, 15],
+        'anthropic.claude-v2:1': [8, 24],
+        'anthropic.claude-v2': [8, 24],
+        'anthropic.claude-instant-v1': [0.8, 2.4],
+      };
+      for (const [key, [input, output]] of Object.entries(rates)) {
+        const p = resolveModelPricing(key);
+        expect([key, p?.inputPerMTok, p?.outputPerMTok]).toEqual([key, input, output]);
+      }
+    });
+
+    it('prices every Bedrock Claude 1h cache write at 2x input, and leaves it unset on legacy models', () => {
+      const bedrockClaude = Object.entries(DEFAULT_PRICING_TABLE).filter(([key]) =>
+        /^(global\.)?anthropic\.claude-/.test(key),
+      );
+      for (const [key, p] of bedrockClaude) {
+        if (p.cacheCreation1hPerMTok !== undefined) {
+          expect([key, p.cacheCreation1hPerMTok]).toEqual([key, p.inputPerMTok * 2]);
+        }
+      }
+      for (const key of [
+        'anthropic.claude-sonnet-4-20250514-v1:0',
+        'anthropic.claude-opus-4-20250514-v1:0',
+        'anthropic.claude-opus-4-1-20250805-v1:0',
+        'anthropic.claude-3-7-sonnet-20250219-v1:0',
+      ]) {
+        expect(DEFAULT_PRICING_TABLE[key].cacheCreation1hPerMTok).toBeUndefined();
       }
     });
 
