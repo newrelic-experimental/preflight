@@ -502,7 +502,7 @@ export class ParentTranscriptWatcher {
       );
       this.writeCursor(cursorPath, nextBytePos, newPartial, path);
     } catch (err) {
-      this.retryWarning.warn(err);
+      this.retryWarning.warn(err, path);
       this.partialByPath.delete(path);
       this.decoderByPath.delete(path);
       this.linesRead = linesReadBefore;
@@ -513,7 +513,7 @@ export class ParentTranscriptWatcher {
       }
       return;
     }
-    this.retryWarning.succeeded();
+    this.retryWarning.succeeded(path);
     if (newPartial.length > 0) {
       this.partialByPath.set(path, newPartial);
     } else {
