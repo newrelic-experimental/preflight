@@ -77,10 +77,11 @@ import {
   writeSync
 } from "node:fs";
 var DRAIN_SEAL = "\0preflight-drain-seal\n";
-var MAX_REDOS = 5;
+var MAX_WRITES = 5;
 var MAX_OPENS = 100;
+var TORN_LINE_END = "\n";
 function readRange(fd, start, end) {
-  const buf = Buffer.alloc(end - start);
+  const buf = Buffer.alloc(Math.max(0, end - start));
   let read = 0;
   while (read < buf.length) {
     const n = readSync(fd, buf, read, buf.length - read, start + read);
@@ -105,18 +106,18 @@ function offsetAfterWrite(fd) {
   }
 }
 function isAt(path, file) {
-  const now = statSync(path, { throwIfNoEntry: false });
+  const now = statSync(path, { bigint: true, throwIfNoEntry: false });
   return now !== void 0 && now.ino === file.ino && now.dev === file.dev;
 }
 function appendOnce(path, data) {
   const fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_APPEND, 384);
   try {
-    const opened = fstatSync(fd);
+    const opened = fstatSync(fd, { bigint: true });
     if (!isAt(path, opened)) return "moved";
-    const sealFloor = opened.size;
+    const sealFloor = Number(opened.size);
     const written = writeSync(fd, data);
     if (written < data.length) {
-      writeSync(fd, "\n");
+      writeSync(fd, TORN_LINE_END);
       return "redo";
     }
     if (isAt(path, opened)) return "kept";
@@ -130,12 +131,15 @@ function appendToHookBuffer(path, text) {
   if (text.includes("\0")) {
     throw new Error(`Hook buffer text contains NUL, which marks a drain seal: ${path}`);
   }
+  if (!text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) {
+    throw new Error(`Hook buffer text must be exactly one newline-terminated line: ${path}`);
+  }
   const data = Buffer.from(text);
-  let redos = 0;
+  let writes = 0;
   for (let opens = 0; opens < MAX_OPENS; opens++) {
     const landing = appendOnce(path, data);
     if (landing === "kept") return;
-    if (landing === "redo" && ++redos === MAX_REDOS) break;
+    if (landing === "redo" && ++writes === MAX_WRITES) break;
   }
   throw new Error(`Hook buffer write raced a drain on all attempts and was not kept: ${path}`);
 }
