@@ -1,7 +1,12 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
-import { digestWebhookUrlOverride, normalizeDeveloperName, redactSensitive } from '../../config.js';
+import {
+  digestWebhookUrlOverrideSource,
+  digestWebhookUrlOverride,
+  normalizeDeveloperName,
+  redactSensitive,
+} from '../../config.js';
 import {
   isSyntheticSessionId,
   isUnscopedAggregatorSessionId,
@@ -90,7 +95,11 @@ import type {
 } from '../../storage/types.js';
 import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
-import { digestWebhookUrlShadowedBy, handleSendDigest } from '../../tools/cross-session-tools.js';
+import {
+  digestWebhookUrlShadowedBy,
+  handleSendDigest,
+  isDigestWebhookCommandConfigured,
+} from '../../tools/cross-session-tools.js';
 import type { AlertEvent } from '../live-event-bus.js';
 import type {
   AgentCall,
@@ -3121,6 +3130,13 @@ export function createApiHandler(
       }
     }
 
+    // Sends read the file at call time and skip its URL when a command is
+    // configured there, so follow the disk rather than the startup snapshot.
+    const overrideSource =
+      digestWebhookUrlOverrideSource(c) ??
+      (isDigestWebhookCommandConfigured(disk) ? 'command' : undefined);
+    const fileWebhookUrl = typeof disk.digestWebhookUrl === 'string' ? disk.digestWebhookUrl : null;
+
     const diskAlerts = (disk.alerts ?? {}) as Record<string, unknown>;
     const diskPersonal = (diskAlerts['personal'] ?? {}) as Record<string, unknown>;
 
@@ -3138,8 +3154,10 @@ export function createApiHandler(
         'retainSessionsDays' in disk
           ? (disk.retainSessionsDays as number | null)
           : c.retainSessionsDays,
-      digestWebhookUrl:
-        'digestWebhookUrl' in disk ? (disk.digestWebhookUrl as string | null) : c.digestWebhookUrl,
+      digestWebhookUrl: fileWebhookUrl,
+      // Where sends actually read the URL from. The value above is only the
+      // file's; env or a command outranks it, and its value is never returned.
+      digestWebhookUrlSource: overrideSource ?? (fileWebhookUrl ? 'file' : 'unset'),
       digestSchedule:
         typeof disk.digestSchedule === 'string' ? disk.digestSchedule : c.digestSchedule,
       alerts: {
