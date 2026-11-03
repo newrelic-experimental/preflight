@@ -224,7 +224,7 @@ export class LocalStore {
    * is read, so concurrent drainers never return an event twice, and a claim
    * left by a drainer that died mid-drain is adopted by another.
    *
-   * One window still loses events (#1045): a hook that opened the buffer
+   * One window still loses events: a hook that opened the buffer
    * before the rename and writes after the claim was read appends to a file
    * that has already been unlinked.
    */
