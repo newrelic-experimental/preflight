@@ -284,9 +284,10 @@ export interface RecordedUsage extends AttributableActivity {
  * Does this summary represent work we can attribute to a real session?
  *
  * The narrower of the two definitions of "not empty" for session
- * persistence; `hasRecordedUsage` is the wider. Its call sites must never
- * re-implement it. The `/api/sessions/today/aggregate` route uses it to decide which persisted
- * rows may contribute a pro-rated cost when they carry no per-day buckets.
+ * persistence; `hasRecordedUsage` is the wider and gates the writes. This one
+ * is for the `/api/sessions/today/aggregate` route, which uses it to decide
+ * which persisted rows may contribute a pro-rated cost when they carry no
+ * per-day buckets. Callers must never re-implement either definition.
  *
  * Subagent spend counts as activity on purpose. A session whose parent process
  * died while its subagent transcripts were still being tailed has an empty

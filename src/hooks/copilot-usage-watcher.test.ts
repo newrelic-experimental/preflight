@@ -538,6 +538,47 @@ describe('CopilotUsageWatcher', () => {
       expect(watcher.getHealth().parseErrors).toBe(1);
     });
 
+    it('refuses an oversize line whose head and tail disagree on the model', () => {
+      const line = JSON.stringify({
+        ts: 1786151170779,
+        sid: SESSION_ID,
+        type: 'llm_request',
+        attrs: {
+          model: 'claude-opus-4-7',
+          responseId: 'resp_ambiguous',
+          inputMessages: PAD,
+          inputTokens: 1000,
+          outputTokens: 100,
+        },
+        routing: { model: 'gpt-5' },
+      });
+
+      const watcher = pollOversize(line);
+
+      expect(readTokenEvents()).toEqual([]);
+      expect(watcher.getHealth().parseErrors).toBe(1);
+    });
+
+    it('accepts an oversize line whose head and tail repeat the same model', () => {
+      const line = JSON.stringify({
+        ts: 1786151170779,
+        sid: SESSION_ID,
+        type: 'llm_request',
+        attrs: {
+          model: 'claude-opus-4-7',
+          responseId: 'resp_repeat',
+          inputMessages: PAD,
+          inputTokens: 1000,
+          outputTokens: 100,
+        },
+        routing: { model: 'claude-opus-4-7' },
+      });
+
+      pollOversize(line);
+
+      expect(readTokenEvents().map((e) => e.messageId)).toEqual(['resp_repeat']);
+    });
+
     it('does not count a parse error for an oversize record that is not an llm_request', () => {
       const line = JSON.stringify({ attrs: { payload: PAD }, type: 'tool_call' });
 

@@ -500,7 +500,16 @@ export class CopilotUsageWatcher {
     const at = line.indexOf(ELIDE_MARK);
     const head = line.slice(0, at);
     const tail = line.slice(at + ELIDE_MARK.length);
-    const find = (re: RegExp): string | null => (re.exec(head) ?? re.exec(tail))?.[1] ?? null;
+    // The same field in both windows with different values is ambiguous, for
+    // example a nested object carrying its own `model`. Refuse it instead of
+    // guessing which one is the request's.
+    let ambiguous = false;
+    const find = (re: RegExp): string | null => {
+      const inHead = re.exec(head)?.[1] ?? null;
+      const inTail = re.exec(tail)?.[1] ?? null;
+      if (inHead !== null && inTail !== null && inHead !== inTail) ambiguous = true;
+      return inHead ?? inTail;
+    };
     if (find(/("type":"llm_request")/) === null) return null;
     // A number must end at a delimiter, or a value cut by the head boundary
     // would match its leading digits.
@@ -512,7 +521,8 @@ export class CopilotUsageWatcher {
     const responseId = find(/"responseId":"([^"\\]+)"/);
     const inputTokens = findNumber('inputTokens');
     const outputTokens = findNumber('outputTokens');
-    if (!model || !responseId || inputTokens === null || outputTokens === null) {
+    const cachedTokens = findNumber('cachedTokens');
+    if (ambiguous || !model || !responseId || inputTokens === null || outputTokens === null) {
       this.parseErrors += 1;
       if (!this.warnedElided) {
         this.warnedElided = true;
@@ -529,7 +539,7 @@ export class CopilotUsageWatcher {
       model,
       inputTokens,
       outputTokens,
-      cachedTokens: findNumber('cachedTokens') ?? 0,
+      cachedTokens: cachedTokens ?? 0,
     };
   }
 
