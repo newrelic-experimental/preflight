@@ -134,6 +134,10 @@ Whichever family a tracker belongs to, it still:
 
 `TaskDetector` reads `CostTracker.getMetrics()` at task-start and task-close to compute a per-task cost/token delta; `CostTracker` reads `SessionTracker.getMetrics().uniqueFilesWritten` for `costPerFileModified`. Both assume the read-from tracker's cumulative totals only move forward between reads — resetting one tracker independently of the other (e.g. `CostTracker.reset()` while a `TaskDetector` task is active) is logged as a warning rather than allowed to fail silently, but the delta is still clamped to 0 in that case. See the JSDoc on `TaskDetectorOptions.costTracker` and `CostTracker`'s constructor.
 
+### Count cost and tokens once
+
+A session's cost reaches `CostTracker` from several sources: byte estimates (`recordEstimatedTokens`), `mode: 'token'` buffer lines (the parent transcript watcher, `CopilotUsageWatcher`, `CopilotAppUsageWatcher` and the Copilot SDK extension, all through `onTokenEvent`), self-reports from `nr_observe_report_tokens`, and persisted checkpoints seeded back in on resume. They overlap, so a change to how one source records or replaces cost has to hold for the others too, including a restart mid-session and a second process saving the same session. Test it through the real save → load → seed path, not a hand-built ledger.
+
 ## Platform Adapter Pattern
 
 Each adapter in `src/platforms/` implements `PlatformAdapter` (`types.ts`): `normalizeToolCall()`, `mapToolName()`, `getSessionMetadata()`, `getHookInstallInstructions()`, `isSupported()`. `PlatformRegistry.detect()` (`platform-registry.ts`) returns the first registered adapter whose `isSupported()` is `true` — registration order matters, and the generic MCP fallback is always registered last with `isSupported()` hardcoded `true`.
@@ -152,7 +156,7 @@ Tools are conditionally registered based on available dependencies (e.g., cross-
 
 ### MCP Tools
 
-See [COMMANDS_TABLE.md](./docs/COMMANDS_TABLE.md) for the complete tool catalog (session, cost/budget, workflow/anti-pattern, analytics, cross-session, and digest tools).
+See [COMMANDS_TABLE.md](./docs/COMMANDS_TABLE.md) for the complete tool catalog (session, cost/budget, workflow/anti-pattern, analytics, cross-session, and digest tools). A PR that adds, removes or renames a tool, or changes its parameters or return shape, updates that table in the same PR.
 
 ## Configuration
 
@@ -167,7 +171,7 @@ Key config interfaces:
 
 ### Additional Configuration Fields
 
-Beyond the fields above: per-developer/team/org identifiers, budget caps, digest delivery, session retention, the 8 `otlp.*` OTLP export/receiver fields, `companionMode` (suppresses `ai.cost.*` gauges and tags cost-bearing Claude Code events when the same org also runs Claude Code's built-in OTel export), and `tiers` (multi-tier telemetry routing — fan events out to several NR accounts and/or local JSONL directories, selected per `eventType`; requires `mode: 'cloud'` or `'both'`). See [ADVANCED.md](./docs/ADVANCED.md) for the full field reference, including the legacy flat-key backward-compatibility behavior and the `configVersion` convention.
+Beyond the fields above: per-developer/team/org identifiers, budget caps, digest delivery, session retention, the 8 `otlp.*` OTLP export/receiver fields, `companionMode` (suppresses `ai.cost.*` gauges and tags cost-bearing Claude Code events when the same org also runs Claude Code's built-in OTel export), and `tiers` (multi-tier telemetry routing — fan events out to several NR accounts and/or local JSONL directories, selected per `eventType`; requires `mode: 'cloud'` or `'both'`). See [ADVANCED.md](./docs/ADVANCED.md) for the full field reference, including the legacy flat-key backward-compatibility behavior and the `configVersion` convention. A PR that adds or changes a config field or its environment variable documents it there in the same PR.
 
 ### Event Types
 
@@ -221,7 +225,7 @@ When the config file has no `tiers` array, `loadMcpConfig()` synthesizes one imp
 
 See [SECURITY.md](./SECURITY.md) for the full guidelines, invariants, and code review checklist. Key points:
 
-- **Redaction** — `DEFAULT_REDACTION_PATTERNS` in `src/config.ts` covers API keys, Bearer tokens, AWS/Google/npm/Slack secrets, JWTs, and PEM blocks. Apply `redact()` / `redactSensitive()` before any string reaches a log or NR event field.
+- **Redaction** — `REDACTION_PATTERNS` in `src/redaction-patterns.ts` (imported by `src/config.ts` as `DEFAULT_REDACTION_PATTERNS`) covers API keys, Bearer tokens, AWS/Google/GitHub/GitLab/npm/Slack/Stripe/PyPI/Hugging Face secrets, credentials in URLs, JWTs, and PEM blocks. Apply `redact()` / `redactSensitive()` before any free-form string reaches a log or NR event field, and `redactIdentifier()` to identifiers (`project_id`, `repo_url`, repo names). See SECURITY.md § Secret Redaction.
 - **Input validation** — `accountId` is validated as `/^\d{1,12}$/` at config load. `envInt` callers supply `{ min, max }` bounds. Tool names are truncated to 256 chars with control chars stripped.
 - **SSRF protection** — `HttpUpstream` requires `https:` unless the host is loopback (`localhost`, `127.0.0.1`, `::1`), or a private host with `allowPrivateHosts` and `allowInsecureHttp`; it also rejects RFC-1918/loopback hosts before connecting unless `allowPrivateHosts`.
 - **Process safety** — `StdioUpstream` requires an absolute command path and strips `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`, and related keys from the child env.
