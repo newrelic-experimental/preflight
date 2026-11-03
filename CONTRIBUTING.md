@@ -439,12 +439,13 @@ fixes or removes it.
    [`release-pr.yml`](./.github/workflows/release-pr.yml) keeps a **Chore: Release x.y.z** PR
    open. It runs `npm run version-packages`, which bumps `package.json`, adds the CHANGELOG
    entry, and deletes the changesets it used. Then `scripts/release-files.ts` copies the new
-   version into `package-lock.json`, `server.json`, and both plugin manifests, and dates the
-   entry. Each push to `main` rebuilds the PR, so to change an entry, edit its changeset on
-   `main` instead of pushing to the PR's branch. The entry's date is the day the PR was last
-   rebuilt. If that's stale, start the Release PR workflow on `main` from the Actions tab (Run
-   workflow) before merging. Don't use Re-run on an older run: a re-run builds from that
-   run's commit, so the PR would lose any changeset that landed since.
+   version into `package-lock.json`, `server.json`, both plugin manifests, and the plugin's
+   `npx` pin in `plugin/.mcp.json`, and dates the entry. Each push to `main` rebuilds the PR,
+   so to change an entry, edit its changeset on `main` instead of pushing to the PR's branch.
+   The entry's date is the day the PR was last rebuilt. If that's stale, start the Release PR
+   workflow on `main` from the Actions tab (Run workflow) before merging. Don't use Re-run on
+   an older run: a re-run builds from that run's commit, so the PR would lose any changeset
+   that landed since.
 2. Review the release PR, then close and reopen it right before you merge, and wait for CI.
    GitHub doesn't let a PR opened by the built-in `GITHUB_TOKEN` start workflows, so CI
    doesn't run on it by itself. A reopen runs CI on the PR merged into the current `main`, so
@@ -461,14 +462,18 @@ fixes or removes it.
    ([`release.yml`](./.github/workflows/release.yml)) on `main` from the Actions tab. Run from
    any other branch, it skips its job and publishes nothing. It checks that every version file
    agrees (`npm run check:release-files`), tags `vX.Y.Z`, creates the
-   GitHub release, and publishes to npm, the Homebrew tap, and the MCP Registry.
+   GitHub release, and publishes to npm, the Homebrew tap, and the MCP Registry. Don't wait:
+   the plugin on `main` already launches the new version's MCP server, which fails to start
+   for anyone whose plugin updates before npm has it.
 
 Release tags and publishes `main` as it stands when it runs. A changeset that merges after the
 release PR goes into the next release's CHANGELOG entry, so if Release ran after it, x.y.z
 would ship that change without mentioning it. Release refuses to run while `main` has such a
 changeset. When that happens, merge the next release PR, which release-pr.yml opens as soon as
 the changeset lands, and run Release then. That release also ships everything in x.y.z, which
-keeps its CHANGELOG entry but never reaches npm under its own number.
+keeps its CHANGELOG entry but never reaches npm under its own number. Until it does, the plugin
+on `main` launches x.y.z's MCP server, which npm never gets, so the server fails to start for
+anyone whose plugin updates in between.
 
 If Release fails after tagging, for example at the npm publish, use **Re-run failed jobs** on
 that run, which uses the commit it started from. If only the Homebrew tap step failed, the run
