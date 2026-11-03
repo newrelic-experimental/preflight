@@ -223,7 +223,7 @@ export class LocalStore {
    *
    * Reading a claim appends a seal to it first. A hook that opened the buffer
    * before the rename and whose line lands after the seal writes the line
-   * again to the live buffer, so it is drained on a later pass (#1045).
+   * again to the live buffer, so it is drained on a later pass.
    */
   drainBuffer(): HookEvent[] {
     const claims = listClaims(dirname(this.bufferPath), basename(this.bufferPath));
