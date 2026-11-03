@@ -340,40 +340,45 @@ export class CopilotUsageWatcher {
     } catch {
       return;
     }
-    let head: Buffer;
+    let fd: number;
     try {
-      head = readBytes(path, 0, Math.min(size, FINGERPRINT_BYTES));
+      fd = openSync(path, 'r');
     } catch (err) {
       this.recordError(err);
       return;
     }
-    // Truncated or replaced file: restart from 0, and drop the carried partial
-    // line and decoder state, which belong to the old file's bytes. A cursor
-    // without a fingerprint can only detect truncation.
-    const knownHead =
-      startCursor.fingerprint === undefined ? null : Buffer.from(startCursor.fingerprint, 'base64');
-    const replaced = knownHead !== null && !onePrefixesOther(head, knownHead);
-    if (startCursor.bytePos > size || replaced) {
-      startCursor = { bytePos: 0, partialLine: '' };
-      this.partialByPath.delete(path);
-      this.decoderByPath.delete(path);
-    }
-    const fingerprint = (
-      knownHead !== null && !replaced && knownHead.length > head.length ? knownHead : head
-    ).toString('base64');
-    const fromPos = startCursor.bytePos;
-    if (fromPos >= size) {
-      this.bytePosBySession.set(dirSessionId, fromPos);
-      return;
-    }
-
-    const toRead = Math.min(size - fromPos, MAX_BYTES_PER_POLL);
+    let fingerprint: string;
+    let fromPos: number;
     let buf: Buffer;
     try {
-      buf = readBytes(path, fromPos, toRead);
+      const head = readAt(fd, 0, Math.min(size, FINGERPRINT_BYTES));
+      // Truncated or replaced file: restart from 0, and drop the carried partial
+      // line and decoder state, which belong to the old file's bytes. A cursor
+      // without a fingerprint can only detect truncation.
+      const knownHead =
+        startCursor.fingerprint === undefined
+          ? null
+          : Buffer.from(startCursor.fingerprint, 'base64');
+      const replaced = knownHead !== null && !onePrefixesOther(head, knownHead);
+      if (startCursor.bytePos > size || replaced) {
+        startCursor = { bytePos: 0, partialLine: '' };
+        this.partialByPath.delete(path);
+        this.decoderByPath.delete(path);
+      }
+      fingerprint = (
+        knownHead !== null && !replaced && knownHead.length > head.length ? knownHead : head
+      ).toString('base64');
+      fromPos = startCursor.bytePos;
+      if (fromPos >= size) {
+        this.bytePosBySession.set(dirSessionId, fromPos);
+        return;
+      }
+      buf = readAt(fd, fromPos, Math.min(size - fromPos, MAX_BYTES_PER_POLL));
     } catch (err) {
       this.recordError(err);
       return;
+    } finally {
+      closeSync(fd);
     }
     const actuallyRead = buf.length;
     if (actuallyRead <= 0) {
@@ -650,15 +655,10 @@ function elideOversize(partial: string): string {
   return partial.slice(0, tailStart) + partial.slice(partial.length - ELIDE_KEEP_CHARS);
 }
 
-function readBytes(path: string, pos: number, len: number): Buffer {
+function readAt(fd: number, pos: number, len: number): Buffer {
   const buf = Buffer.alloc(len);
-  const fd = openSync(path, 'r');
-  try {
-    const n = len === 0 ? 0 : readSync(fd, buf, 0, len, pos);
-    return n === len ? buf : buf.subarray(0, n);
-  } finally {
-    closeSync(fd);
-  }
+  const n = len === 0 ? 0 : readSync(fd, buf, 0, len, pos);
+  return n === len ? buf : buf.subarray(0, n);
 }
 
 function onePrefixesOther(a: Buffer, b: Buffer): boolean {
