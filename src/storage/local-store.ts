@@ -27,12 +27,7 @@ import {
   type DrainClaim,
 } from './drain-claims.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
-import {
-  appendToHookBuffer,
-  readSealed,
-  sealHookBuffer,
-  textBeforeSeal,
-} from './hook-buffer.js';
+import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -1074,7 +1069,9 @@ export class LocalStore {
    * accept this trade because re-migrating from `.migrating-<pid>` would
    * re-append already-migrated partitions and produce duplicate events,
    * which is worse than a once-only loss bounded by the size of the legacy
-   * file at upgrade time.
+   * file at upgrade time. The file is sealed, so recover it by hand with
+   * the text before the seal (`\0preflight-drain-seal`), not by appending
+   * it whole to a live buffer, where the seal would hide every later line.
    *
    * Returns the number of events migrated.
    */
