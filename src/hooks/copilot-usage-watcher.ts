@@ -24,10 +24,9 @@
  *
  * Tailing/cursor mechanics mirror `ParentTranscriptWatcher`: durable byte
  * cursor per session (`.copilot-usage-pos-<sessionId>`), bounded reads per
- * poll, bounded partial-line carry, duplicate emissions after a crash are
- * deduped downstream by (sessionId, messageId) in
- * `HookEventProcessor.handleTokenEvent()` — `responseId` serves as the
- * message id.
+ * poll, bounded partial-line carry, and each `responseId` claimed in the
+ * BilledTurnLedger before it is buffered, so a re-read after a crash or a torn
+ * cursor emits nothing already emitted.
  */
 
 import {
@@ -47,6 +46,8 @@ import { StringDecoder } from 'node:string_decoder';
 
 import { createLogger } from '../shared/index.js';
 import { appendToHookBuffer } from '../storage/hook-buffer.js';
+import { BilledTurnLedger } from './billed-turn-ledger.js';
+import { ThrottledWarning } from './throttled-warning.js';
 import type { LocalStore } from '../storage/local-store.js';
 
 const logger = createLogger('copilot-usage-watcher');
@@ -134,6 +135,8 @@ export interface CopilotUsageWatcherOptions {
   readonly parentSessionId?: string;
   /** LocalStore, used to exclude sessions already owned by a live --stdio watcher in unscoped mode. */
   readonly localStore?: LocalStore;
+  /** The process's one billed-turn ledger; tests may omit it to get a private one. */
+  readonly ledger?: BilledTurnLedger;
 }
 
 export interface CopilotUsageWatcherHealth {
@@ -154,12 +157,19 @@ export interface CopilotUsageWatcherHealth {
 
 interface ParsedUsageRecord {
   readonly timestampMs: number;
+  readonly undated: boolean;
   readonly sessionId: string | null;
-  readonly responseId: string;
+  /** The record's `responseId`, unique per API response. */
+  readonly messageId: string;
   readonly model: string;
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cachedTokens: number;
+}
+
+interface LineParse {
+  readonly parsed: ParsedUsageRecord | null;
+  readonly parseError: boolean;
 }
 
 interface CursorState {
@@ -180,6 +190,11 @@ export class CopilotUsageWatcher {
   private readonly discoveryHours: number;
   private readonly parentSessionFilter: string | null;
   private readonly localStore: LocalStore | undefined;
+  private readonly ledger: BilledTurnLedger;
+  private readonly retryWarning = new ThrottledWarning(
+    logger,
+    'CopilotUsageWatcher read deferred to the next poll',
+  );
 
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private readonly bytePosBySession = new Map<string, number>();
@@ -201,6 +216,7 @@ export class CopilotUsageWatcher {
     this.discoveryHours = options.discoveryHours ?? DEFAULT_DISCOVERY_HOURS;
     this.parentSessionFilter = options.parentSessionId ?? null;
     this.localStore = options.localStore;
+    this.ledger = options.ledger ?? new BilledTurnLedger({ storagePath: this.storagePath });
   }
 
   start(): void {
@@ -385,7 +401,6 @@ export class CopilotUsageWatcher {
       this.bytePosBySession.set(dirSessionId, fromPos);
       return;
     }
-    this.bytesRead += actuallyRead;
 
     let decoder = this.decoderByPath.get(path);
     if (!decoder) {
@@ -404,45 +419,71 @@ export class CopilotUsageWatcher {
     }
     newPartial = elideOversize(newPartial);
 
+    // Health counters wait until the read is committed, so a redone read counts once.
+    const recordsBySession = new Map<string, ParsedUsageRecord[]>();
+    let linesRead = 0;
+    let parseErrors = 0;
     for (const line of lines) {
       if (!line) continue;
-      this.linesRead += 1;
-      const parsed = line.includes(ELIDE_MARK)
+      linesRead += 1;
+      const { parsed, parseError } = line.includes(ELIDE_MARK)
         ? this.parseElidedLine(line)
         : this.tryParseLine(line);
+      if (parseError) parseErrors += 1;
       if (parsed === null) continue;
       const sessionId = parsed.sessionId ?? dirSessionId;
-      this.appendToBuffer(sessionId, {
-        mode: 'token',
-        tool: 'copilot-usage',
-        timestamp: parsed.timestampMs,
-        sessionId,
-        messageId: parsed.responseId,
-        model: parsed.model,
-        // VS Code's inputTokens is cache-INCLUSIVE (verified against a real
-        // main.jsonl: each request's cachedTokens ≈ the previous request's
-        // inputTokens). CostTracker follows the Anthropic convention where
-        // input excludes cache reads, so emit only the uncached remainder —
-        // otherwise cached tokens are double-billed at full input rate.
-        inputTokens: Math.max(0, parsed.inputTokens - parsed.cachedTokens),
-        outputTokens: parsed.outputTokens,
-        // `cachedTokens` is the only cache figure the debug-log schema exposes,
-        // and it is cache-READ (confirmed against a real main.jsonl: it tracks
-        // the previous request's input). KNOWN ESTIMATION GAP: VS Code does not
-        // surface cache-CREATION (cache-write) tokens separately, so any turn
-        // with a fresh cache write has those tokens folded into `inputTokens`
-        // above and billed at the base input rate instead of the premium
-        // `cacheCreationPerMTok` rate (src/shared/pricing.ts). This causes a
-        // small, consistent UNDER-billing on cache-write turns. We report 0
-        // rather than guess a split the source doesn't provide; revisit if VS
-        // Code adds a cache-creation field to the schema.
-        cacheReadTokens: parsed.cachedTokens,
-        cacheCreationTokens: 0,
-      });
+      const group = recordsBySession.get(sessionId);
+      if (group) group.push(parsed);
+      else recordsBySession.set(sessionId, [parsed]);
     }
 
-    this.writeCursor(cursorPath, nextBytePos, newPartial, fingerprint);
+    // If the claim, an append or the cursor write fails, the cursor stays put
+    // and the next poll redoes the read: the ledger hands back the records
+    // still owed and refuses the ones already appended.
+    try {
+      for (const [sessionId, records] of recordsBySession) {
+        this.ledger.deliver(sessionId, records, (parsed) => {
+          this.appendToBuffer(sessionId, {
+            mode: 'token',
+            tool: 'copilot-usage',
+            timestamp: parsed.timestampMs,
+            sessionId,
+            messageId: parsed.messageId,
+            model: parsed.model,
+            // VS Code's inputTokens is cache-INCLUSIVE (verified against a real
+            // main.jsonl: each request's cachedTokens ≈ the previous request's
+            // inputTokens). CostTracker follows the Anthropic convention where
+            // input excludes cache reads, so emit only the uncached remainder —
+            // otherwise cached tokens are double-billed at full input rate.
+            inputTokens: Math.max(0, parsed.inputTokens - parsed.cachedTokens),
+            outputTokens: parsed.outputTokens,
+            // `cachedTokens` is the only cache figure the debug-log schema exposes,
+            // and it is cache-READ (confirmed against a real main.jsonl: it tracks
+            // the previous request's input). KNOWN ESTIMATION GAP: VS Code does not
+            // surface cache-CREATION (cache-write) tokens separately, so any turn
+            // with a fresh cache write has those tokens folded into `inputTokens`
+            // above and billed at the base input rate instead of the premium
+            // `cacheCreationPerMTok` rate (src/shared/pricing.ts). This causes a
+            // small, consistent UNDER-billing on cache-write turns. We report 0
+            // rather than guess a split the source doesn't provide; revisit if VS
+            // Code adds a cache-creation field to the schema.
+            cacheReadTokens: parsed.cachedTokens,
+            cacheCreationTokens: 0,
+          });
+        });
+      }
+      this.writeCursor(cursorPath, nextBytePos, newPartial, fingerprint);
+    } catch (err) {
+      this.retryWarning.warn(err, path);
+      this.partialByPath.delete(path);
+      this.decoderByPath.delete(path);
+      return;
+    }
+    this.retryWarning.succeeded(path);
     this.bytePosBySession.set(dirSessionId, nextBytePos);
+    this.bytesRead += actuallyRead;
+    this.linesRead += linesRead;
+    this.parseErrors += parseErrors;
     if (newPartial.length > 0) this.partialByPath.set(path, newPartial);
     else this.partialByPath.delete(path);
   }
@@ -459,40 +500,41 @@ export class CopilotUsageWatcher {
   }
 
   /**
-   * Parse a debug-log JSONL line, returning non-null only for an
+   * Parse a debug-log JSONL line; `parsed` is non-null only for an
    * `llm_request` record carrying a model, responseId, and token counts.
    */
-  private tryParseLine(line: string): ParsedUsageRecord | null {
-    let parsed: unknown;
+  private tryParseLine(line: string): LineParse {
+    let json: unknown;
     try {
-      parsed = JSON.parse(line);
+      json = JSON.parse(line);
     } catch {
-      this.parseErrors += 1;
-      return null;
+      return { parsed: null, parseError: true };
     }
-    if (!parsed || typeof parsed !== 'object') return null;
-    const obj = parsed as Record<string, unknown>;
-    if (obj.type !== 'llm_request') return null;
+    const none = { parsed: null, parseError: false };
+    if (!json || typeof json !== 'object') return none;
+    const obj = json as Record<string, unknown>;
+    if (obj.type !== 'llm_request') return none;
     const attrs = obj.attrs;
-    if (!attrs || typeof attrs !== 'object') return null;
+    if (!attrs || typeof attrs !== 'object') return none;
     const a = attrs as Record<string, unknown>;
     const model = typeof a.model === 'string' && a.model.length > 0 ? a.model : null;
-    if (!model) return null;
+    if (!model) return none;
     const responseId =
       typeof a.responseId === 'string' && a.responseId.length > 0 ? a.responseId : null;
-    if (!responseId) return null;
-    const timestampMs =
-      typeof obj.ts === 'number' && Number.isFinite(obj.ts) && obj.ts > 0 ? obj.ts : Date.now();
+    if (!responseId) return none;
+    const ts = typeof obj.ts === 'number' && Number.isFinite(obj.ts) && obj.ts > 0 ? obj.ts : null;
     const sid = typeof obj.sid === 'string' && SESSION_ID_RE.test(obj.sid) ? obj.sid : null;
-    return {
-      timestampMs,
+    const parsed: ParsedUsageRecord = {
+      timestampMs: ts ?? Date.now(),
+      undated: ts === null,
       sessionId: sid,
-      responseId,
+      messageId: responseId,
       model,
       inputTokens: num(a.inputTokens),
       outputTokens: num(a.outputTokens),
       cachedTokens: num(a.cachedTokens),
     };
+    return { parsed, parseError: false };
   }
 
   /**
@@ -501,7 +543,7 @@ export class CopilotUsageWatcher {
    * matches the unescaped patterns below. A field that fell in the elided
    * middle yields no record: a guessed zero-token record would misreport cost.
    */
-  private parseElidedLine(line: string): ParsedUsageRecord | null {
+  private parseElidedLine(line: string): LineParse {
     const at = line.indexOf(ELIDE_MARK);
     const head = line.slice(0, at);
     const tail = line.slice(at + ELIDE_MARK.length);
@@ -515,7 +557,7 @@ export class CopilotUsageWatcher {
       if (inHead !== null && inTail !== null && inHead !== inTail) ambiguous = true;
       return inHead ?? inTail;
     };
-    if (find(/("type":"llm_request")/) === null) return null;
+    if (find(/("type":"llm_request")/) === null) return { parsed: null, parseError: false };
     // A number must end at a delimiter, or a value cut by the head boundary
     // would match its leading digits.
     const findNumber = (name: string): number | null => {
@@ -528,24 +570,26 @@ export class CopilotUsageWatcher {
     const outputTokens = findNumber('outputTokens');
     const cachedTokens = findNumber('cachedTokens');
     if (ambiguous || !model || !responseId || inputTokens === null || outputTokens === null) {
-      this.parseErrors += 1;
       if (!this.warnedElided) {
         this.warnedElided = true;
         logger.warn('Skipped an oversize Copilot log line whose usage fields were not recoverable');
       }
-      return null;
+      return { parsed: null, parseError: true };
     }
     const ts = Number(/"ts":(\d+)/.exec(head)?.[1]);
+    const dated = Number.isFinite(ts) && ts > 0;
     const sid = /"sid":"([^"\\]+)"/.exec(head)?.[1];
-    return {
-      timestampMs: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
+    const parsed: ParsedUsageRecord = {
+      timestampMs: dated ? ts : Date.now(),
+      undated: !dated,
       sessionId: sid !== undefined && SESSION_ID_RE.test(sid) ? sid : null,
-      responseId,
+      messageId: responseId,
       model,
       inputTokens,
       outputTokens,
       cachedTokens: cachedTokens ?? 0,
     };
+    return { parsed, parseError: false };
   }
 
   // -------------------------------------------------------------------------
@@ -596,31 +640,23 @@ export class CopilotUsageWatcher {
     partialLine: string,
     fingerprint: string,
   ): void {
-    try {
-      if (!existsSync(this.storagePath)) {
-        mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
-      }
-      writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine, fingerprint }), {
-        mode: 0o600,
-      });
-    } catch (err) {
-      this.recordError(err);
+    if (!existsSync(this.storagePath)) {
+      mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
     }
+    writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine, fingerprint }), {
+      mode: 0o600,
+    });
   }
 
   /** Append into the session's hook buffer, same path convention as the collector. */
   private appendToBuffer(sessionId: string, event: object): void {
-    try {
-      if (!existsSync(this.storagePath)) {
-        mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
-      }
-      appendToHookBuffer(
-        join(this.storagePath, `buffer-${sessionId}.jsonl`),
-        JSON.stringify(event) + '\n',
-      );
-    } catch (err) {
-      this.recordError(err);
+    if (!existsSync(this.storagePath)) {
+      mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
     }
+    appendToHookBuffer(
+      join(this.storagePath, `buffer-${sessionId}.jsonl`),
+      JSON.stringify(event) + '\n',
+    );
   }
 
   private recordError(err: unknown): void {
