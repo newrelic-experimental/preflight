@@ -34,7 +34,6 @@
  */
 
 import {
-  appendFileSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -55,6 +54,7 @@ import { AGENT_ID_RE, normalizeAgentType } from '../lib/agent-id.js';
 import { BilledTurnLedger } from './billed-turn-ledger.js';
 import { ThrottledWarning } from './throttled-warning.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
+import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import type { LocalStore } from '../storage/local-store.js';
 
 const logger = createLogger('subagent-watcher');
@@ -1218,7 +1218,7 @@ export class SubagentWatcher {
     if (!existsSync(this.storagePath)) {
       mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
     }
-    appendFileSync(path, JSON.stringify(event) + '\n', { mode: 0o600 });
+    appendToHookBuffer(path, JSON.stringify(event) + '\n');
   }
 
   private appendHealth(event: ObservabilityHealthEvent): void {

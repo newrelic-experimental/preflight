@@ -1,8 +1,9 @@
-import { readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 
 import { createLogger } from '../shared/index.js';
+import { takeClaimText } from './hook-buffer.js';
 
 const logger = createLogger('drain-claims');
 
@@ -129,15 +130,14 @@ export function clearFailure(key: string): void {
 }
 
 /**
- * Reads a claim and unlinks it, returning its raw text only once the unlink
- * has succeeded. A claim whose unlink failed stays on disk for a later poll
+ * Seals a claim, reads up to the seal and unlinks it, returning the text only
+ * once the unlink has succeeded. A claim whose unlink failed stays on disk for a later poll
  * rather than being counted now and again after a restart.
  */
 export function takeClaim(path: string): string | null {
   let raw: string;
   try {
-    raw = readFileSync(path, 'utf-8');
-    unlinkSync(path);
+    raw = takeClaimText(path);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       clearFailure(path);

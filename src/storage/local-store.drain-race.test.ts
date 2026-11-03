@@ -2,6 +2,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import * as fs from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { appendToHookBuffer, DRAIN_SEAL as SEAL } from './hook-buffer.js';
 import { LocalStore } from './local-store.js';
 import { formatClaimName } from './drain-claims.js';
 import type { HookEvent } from './types.js';
@@ -9,9 +10,34 @@ import type { HookEvent } from './types.js';
 const mockHooks: {
   rename: ((from: fs.PathLike, to: fs.PathLike) => void) | null;
   drainRead: ((path: string) => void) | null;
+  opened: ((path: string) => void) | null;
+  write: ((text: string) => void) | null;
+  shortWrite: ((text: string) => number | null) | null;
   unlink: ((path: string) => void) | null;
   listOrder: ((dir: string, names: string[]) => string[]) | null;
-} = { rename: null, drainRead: null, unlink: null, listOrder: null };
+} = {
+  rename: null,
+  drainRead: null,
+  opened: null,
+  write: null,
+  shortWrite: null,
+  unlink: null,
+  listOrder: null,
+};
+
+function textOf(data: unknown): string {
+  return typeof data === 'string' ? data : Buffer.from(data as Uint8Array).toString('utf-8');
+}
+
+const DRAIN_PATH_RE = /\.drain|[\\/]drains[\\/]/;
+
+function onDrainRead(path: string): void {
+  const hook = mockHooks.drainRead;
+  if (hook && DRAIN_PATH_RE.test(path)) {
+    mockHooks.drainRead = null;
+    hook(path);
+  }
+}
 
 jest.mock('node:fs', () => {
   const real = jest.requireActual<typeof fs>('node:fs');
@@ -23,6 +49,26 @@ jest.mock('node:fs', () => {
       mockHooks.rename = null;
       hook(from, to);
     },
+    openSync: ((path: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+      onDrainRead(String(path));
+      const fd = real.openSync(path, flags, mode);
+      mockHooks.opened?.(String(path));
+      return fd;
+    }) as typeof real.openSync,
+    writeSync: ((fd: number, data: unknown, ...rest: unknown[]) => {
+      const text = textOf(data);
+      mockHooks.write?.(text);
+      const short = mockHooks.shortWrite?.(text);
+      if (short !== null && short !== undefined) {
+        mockHooks.shortWrite = null;
+        return real.writeSync(fd, Buffer.from(text).subarray(0, short));
+      }
+      return (real.writeSync as (fd: number, data: unknown, ...rest: unknown[]) => number)(
+        fd,
+        data,
+        ...rest,
+      );
+    }) as typeof real.writeSync,
     unlinkSync: (path: fs.PathLike) => {
       const hook = mockHooks.unlink;
       mockHooks.unlink = null;
@@ -34,11 +80,7 @@ jest.mock('node:fs', () => {
       return mockHooks.listOrder ? mockHooks.listOrder(String(path), names) : names;
     }) as typeof real.readdirSync,
     readFileSync: ((path: fs.PathOrFileDescriptor, options?: unknown) => {
-      const hook = mockHooks.drainRead;
-      if (hook && /\.drain|[\\/]drains[\\/]/.test(String(path))) {
-        mockHooks.drainRead = null;
-        hook(String(path));
-      }
+      onDrainRead(String(path));
       return (real.readFileSync as (p: fs.PathOrFileDescriptor, o?: unknown) => string | Buffer)(
         path,
         options,
@@ -137,6 +179,9 @@ beforeEach(() => {
 afterEach(() => {
   mockHooks.rename = null;
   mockHooks.drainRead = null;
+  mockHooks.opened = null;
+  mockHooks.write = null;
+  mockHooks.shortWrite = null;
   mockHooks.unlink = null;
   mockHooks.listOrder = null;
   jest.restoreAllMocks();
@@ -482,5 +527,144 @@ describe('concurrent drainers of one buffer', () => {
     expect(tools([...first, ...second])).toEqual(['A']);
     expect(first).toEqual([]);
     expect(leftovers()).toEqual([]);
+  });
+});
+
+describe('hook writes racing a drain', () => {
+  it('keeps a write that opened the buffer before a drain and wrote after the drain finished', () => {
+    fs.writeFileSync(bufferPath, line('A'));
+    const drainer = new LocalStore(dir, SESSION);
+    let duringWrite: HookEvent[] = [];
+    mockHooks.write = (text) => {
+      if (text !== line('B')) return;
+      mockHooks.write = null;
+      duringWrite = drainer.drainBuffer();
+    };
+
+    appendToHookBuffer(bufferPath, line('B'));
+
+    expect(tools(duringWrite)).toEqual(['A']);
+    expect(tools(drainer.drainBuffer())).toEqual(['B']);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('leaves a line that lands between the GC rename and the archive seal in the archive', () => {
+    fs.writeFileSync(bufferPath, line('A'));
+    fs.writeFileSync(resolve(dir, `active-${SESSION}.pid`), String(DEAD_PID));
+    const openBeforeGc = fs.openSync(bufferPath, 'a');
+    mockHooks.rename = (from, to) => {
+      fs.renameSync(from, to);
+      fs.writeSync(openBeforeGc, line('B'));
+    };
+    const store = new LocalStore(dir, SESSION);
+
+    expect(store.gcOrphanBuffers(new Set()).archived).toBe(1);
+    fs.closeSync(openBeforeGc);
+
+    const archive = fs.readdirSync(dir).find((n) => n.includes('.archived-'));
+    expect(fs.readFileSync(resolve(dir, archive!), 'utf-8')).toBe(line('A') + line('B') + SEAL);
+    expect(store.drainBuffer()).toEqual([]);
+  });
+
+  it('keeps a write that opened an orphan buffer before GC archived it and wrote after the seal', () => {
+    fs.writeFileSync(bufferPath, line('A'));
+    fs.writeFileSync(resolve(dir, `active-${SESSION}.pid`), String(DEAD_PID));
+    const store = new LocalStore(dir, SESSION);
+    mockHooks.write = (text) => {
+      if (text !== line('B')) return;
+      mockHooks.write = null;
+      expect(store.gcOrphanBuffers(new Set()).archived).toBe(1);
+    };
+
+    appendToHookBuffer(bufferPath, line('B'));
+
+    expect(tools(store.drainBuffer())).toEqual(['B']);
+  });
+
+  it('still counts the archive and clears the heartbeat when the archive seal throws', () => {
+    fs.writeFileSync(bufferPath, line('A'));
+    const heartbeat = resolve(dir, `active-${SESSION}.pid`);
+    fs.writeFileSync(heartbeat, String(DEAD_PID));
+    mockHooks.write = (text) => {
+      if (!text.includes(SEAL)) return;
+      mockHooks.write = null;
+      throw new Error('ENOSPC: seal failed');
+    };
+
+    const result = new LocalStore(dir, SESSION).gcOrphanBuffers(new Set());
+
+    expect(result.archived).toBe(1);
+    expect(fs.existsSync(heartbeat)).toBe(false);
+    expect(JSON.stringify(warnings())).toContain('Failed to seal archived orphan buffer');
+  });
+
+  it('returns a line written to a claim just before its seal, exactly once', () => {
+    fs.writeFileSync(bufferPath, line('A'));
+    const openBeforeDrain = fs.openSync(bufferPath, 'a');
+    mockHooks.write = (text) => {
+      if (!text.includes(SEAL)) return;
+      mockHooks.write = null;
+      fs.writeSync(openBeforeDrain, line('B'));
+    };
+    const drainer = new LocalStore(dir, SESSION);
+
+    const got = [...drainer.drainBuffer(), ...drainer.drainBuffer()];
+    fs.closeSync(openBeforeDrain);
+
+    expect(tools(got)).toEqual(['A', 'B']);
+    expect(leftovers()).toEqual([]);
+  });
+});
+
+describe('drain seals', () => {
+  it('peekAllBuffers counts only the lines before a claim seal', () => {
+    writeClaim(OTHER_LIVE_PID, Date.now(), line('A') + SEAL + line('B'));
+    fs.writeFileSync(bufferPath, line('B'));
+
+    expect(tools(new LocalStore(dir).peekAllBuffers()).sort()).toEqual(['A', 'B']);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('keeps a hook line written to the legacy buffer after migration read it', () => {
+    const legacyPath = resolve(dir, 'buffer.jsonl');
+    fs.writeFileSync(legacyPath, line('A'));
+    const store = new LocalStore(dir);
+    mockHooks.write = (text) => {
+      if (!text.includes('"B"')) return;
+      mockHooks.write = null;
+      store.migrateLegacyBuffer();
+    };
+
+    appendToHookBuffer(legacyPath, line('B'));
+
+    expect(tools(store.peekAllBuffers()).sort()).toEqual(['A', 'B']);
+  });
+
+  it('migrates each legacy line once when a write comes up short', () => {
+    const legacyPath = resolve(dir, 'buffer.jsonl');
+    fs.writeFileSync(legacyPath, line('A') + line('B') + line('C'));
+    mockHooks.shortWrite = (text) => (text.includes('"A"') ? Math.floor(text.length / 2) : null);
+
+    new LocalStore(dir).migrateLegacyBuffer();
+    mockHooks.shortWrite = null;
+
+    expect(tools(new LocalStore(dir, SESSION).drainBuffer()).sort()).toEqual(['A', 'B', 'C']);
+  });
+
+  it('keeps the legacy migration file when an append cannot land', () => {
+    const legacyPath = resolve(dir, 'buffer.jsonl');
+    fs.writeFileSync(legacyPath, line('A'));
+    const drainer = new LocalStore(dir, SESSION);
+    mockHooks.write = (text) => {
+      if (text.includes('"A"')) drainer.drainBuffer();
+    };
+
+    new LocalStore(dir).migrateLegacyBuffer();
+    mockHooks.write = null;
+
+    expect(fs.readdirSync(dir).filter((n) => n.startsWith('buffer.jsonl.migrating-'))).toHaveLength(
+      1,
+    );
+    expect(warnings()).not.toEqual([]);
   });
 });

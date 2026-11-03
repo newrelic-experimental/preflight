@@ -25,7 +25,6 @@
  */
 
 import {
-  appendFileSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -44,6 +43,7 @@ import { createLogger } from '../shared/index.js';
 import { BilledTurnLedger } from './billed-turn-ledger.js';
 import { ThrottledWarning } from './throttled-warning.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
+import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import type { LocalStore } from '../storage/local-store.js';
 
 const logger = createLogger('parent-transcript-watcher');
@@ -648,7 +648,7 @@ export class ParentTranscriptWatcher {
     if (!existsSync(this.storagePath)) {
       mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
     }
-    appendFileSync(path, JSON.stringify(event) + '\n', { mode: 0o600 });
+    appendToHookBuffer(path, JSON.stringify(event) + '\n');
   }
 
   private recordError(err: unknown): void {

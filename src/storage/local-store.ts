@@ -27,6 +27,7 @@ import {
   type DrainClaim,
 } from './drain-claims.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
+import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -205,13 +206,9 @@ export class LocalStore {
     logger.debug('Storage initialized', { path: this.storagePath });
   }
 
-  /**
-   * Append a hook event as a JSON line to the buffer file.
-   * Uses appendFileSync for minimal latency (<5ms budget).
-   */
   appendToBuffer(event: HookEvent): void {
     try {
-      appendFileSync(this.bufferPath, JSON.stringify(event) + '\n', { mode: 0o600 });
+      appendToHookBuffer(this.bufferPath, JSON.stringify(event) + '\n');
     } catch (err) {
       // Never block the caller — log and move on
       logger.warn('Failed to append to buffer', { error: String(err) });
@@ -224,9 +221,9 @@ export class LocalStore {
    * is read, so concurrent drainers never return an event twice, and a claim
    * left by a drainer that died mid-drain is adopted by another.
    *
-   * One window still loses events: a hook that opened the buffer
-   * before the rename and writes after the claim was read appends to a file
-   * that has already been unlinked.
+   * Reading a claim appends a seal to it first. A hook that opened the buffer
+   * before the rename and whose line lands after the seal writes the line
+   * again to the live buffer, so it is drained on a later pass.
    */
   drainBuffer(): HookEvent[] {
     const claims = listClaims(dirname(this.bufferPath), basename(this.bufferPath));
@@ -313,7 +310,7 @@ export class LocalStore {
       const name = basename(path);
       let raw: string;
       try {
-        raw = readFileSync(path, 'utf-8');
+        raw = textBeforeSeal(readFileSync(path, 'utf-8'));
       } catch {
         continue;
       }
@@ -743,6 +740,15 @@ export class LocalStore {
       const archivedPath = `${bufferPath}.archived-${now}`;
       try {
         renameSync(bufferPath, archivedPath);
+        try {
+          sealHookBuffer(archivedPath);
+        } catch (err) {
+          logger.warn('Failed to seal archived orphan buffer', {
+            sessionId,
+            archivedPath,
+            error: String(err),
+          });
+        }
         archived++;
         logger.info('Archived orphan buffer', { sessionId, archivedPath });
         // Only remove the heartbeat once the archive rename has succeeded.
@@ -1063,7 +1069,9 @@ export class LocalStore {
    * accept this trade because re-migrating from `.migrating-<pid>` would
    * re-append already-migrated partitions and produce duplicate events,
    * which is worse than a once-only loss bounded by the size of the legacy
-   * file at upgrade time.
+   * file at upgrade time. The file is sealed, so recover it by hand with
+   * the text before the seal (`\0preflight-drain-seal`), not by appending
+   * it whole to a live buffer, where the seal would hide every later line.
    *
    * Returns the number of events migrated.
    */
@@ -1098,7 +1106,7 @@ export class LocalStore {
 
     let raw: string;
     try {
-      raw = readFileSync(migratingPath, 'utf-8');
+      raw = readSealed(migratingPath);
     } catch (err) {
       logger.warn('Failed to read legacy buffer.jsonl during migration', { error: String(err) });
       // Leave the .migrating file in place for forensic recovery; we already
@@ -1137,7 +1145,8 @@ export class LocalStore {
     for (const [sid, lines] of partitioned) {
       const target = resolve(this.storagePath, `buffer-${sid}.jsonl`);
       try {
-        appendFileSync(target, lines.join('\n') + '\n', { mode: 0o600 });
+        // One append per line: a redo after a short write can repeat only one torn line.
+        for (const l of lines) appendToHookBuffer(target, l + '\n');
       } catch (err) {
         // Mid-partition failure: the .migrating file stays on disk so the
         // operator can recover forensically. We don't retry on next boot to
