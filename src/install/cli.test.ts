@@ -138,6 +138,7 @@ const mockedHelper = installHelperMod as unknown as {
   mergeMcpConfig: jest.Mock;
   detectSettingsPath: jest.Mock;
   detectMcpConfigPath: jest.Mock;
+  generateNrConfig: jest.Mock;
 };
 const mockedConfig = configMod as unknown as { loadMcpConfig: jest.Mock };
 const mockedSetupWizard = {
@@ -1317,6 +1318,101 @@ describe('platform transition matrix', () => {
     expect(configWrites).toHaveLength(0);
   });
 
+  it('install takes the license key and account id from the environment', async () => {
+    const saved = {
+      key: process.env.NEW_RELIC_LICENSE_KEY,
+      account: process.env.NEW_RELIC_ACCOUNT_ID,
+    };
+    process.env.NEW_RELIC_LICENSE_KEY = 'NRLIC-from-env';
+    process.env.NEW_RELIC_ACCOUNT_ID = '4242';
+    mFs.readFileSync.mockReturnValue('{}');
+    try {
+      await runInstallCli(['install']);
+    } finally {
+      if (saved.key === undefined) delete process.env.NEW_RELIC_LICENSE_KEY;
+      else process.env.NEW_RELIC_LICENSE_KEY = saved.key;
+      if (saved.account === undefined) delete process.env.NEW_RELIC_ACCOUNT_ID;
+      else process.env.NEW_RELIC_ACCOUNT_ID = saved.account;
+    }
+
+    expect(mockedHelper.generateNrConfig).toHaveBeenCalledWith('NRLIC-from-env', '4242');
+  });
+
+  async function installWithAmbientEnv(storedConfig: string): Promise<string> {
+    const saved = {
+      key: process.env.NEW_RELIC_LICENSE_KEY,
+      account: process.env.NEW_RELIC_ACCOUNT_ID,
+    };
+    process.env.NEW_RELIC_LICENSE_KEY = 'NRLIC-ambient';
+    process.env.NEW_RELIC_ACCOUNT_ID = '222';
+    mFs.readFileSync.mockReturnValue(storedConfig);
+    try {
+      await runInstallCli(['install']);
+    } finally {
+      if (saved.key === undefined) delete process.env.NEW_RELIC_LICENSE_KEY;
+      else process.env.NEW_RELIC_LICENSE_KEY = saved.key;
+      if (saved.account === undefined) delete process.env.NEW_RELIC_ACCOUNT_ID;
+      else process.env.NEW_RELIC_ACCOUNT_ID = saved.account;
+    }
+    return stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+  }
+
+  it('install does not let ambient env overwrite a stored license key', async () => {
+    const stdout = await installWithAmbientEnv('{"licenseKey":"KEY-A","accountId":"111"}');
+    expect(mockedHelper.generateNrConfig).not.toHaveBeenCalled();
+    expect(stdout).not.toContain('New Relic config written');
+  });
+
+  it('install does not add a plaintext key next to a stored licenseKeyCommand', async () => {
+    await installWithAmbientEnv('{"licenseKeyCommand":{"command":"/usr/bin/security","args":[]}}');
+    expect(mockedHelper.generateNrConfig).not.toHaveBeenCalled();
+  });
+
+  it('install does not let ambient env overwrite a key stored in the pre-rename directory', async () => {
+    const legacyConfig = join(homedir(), '.nr-ai-observe', 'config.json');
+    const saved = {
+      key: process.env.NEW_RELIC_LICENSE_KEY,
+      account: process.env.NEW_RELIC_ACCOUNT_ID,
+    };
+    process.env.NEW_RELIC_LICENSE_KEY = 'NRLIC-ambient';
+    process.env.NEW_RELIC_ACCOUNT_ID = '222';
+    mFs.readFileSync.mockImplementation((p: unknown) => {
+      if (String(p) === legacyConfig) return '{"licenseKey":"KEY-A","accountId":"111"}';
+      return '{}';
+    });
+    try {
+      await runInstallCli(['install']);
+    } finally {
+      if (saved.key === undefined) delete process.env.NEW_RELIC_LICENSE_KEY;
+      else process.env.NEW_RELIC_LICENSE_KEY = saved.key;
+      if (saved.account === undefined) delete process.env.NEW_RELIC_ACCOUNT_ID;
+      else process.env.NEW_RELIC_ACCOUNT_ID = saved.account;
+    }
+    expect(mockedHelper.generateNrConfig).not.toHaveBeenCalled();
+  });
+
+  it('install says where an env-sourced key came from', async () => {
+    const stdout = await installWithAmbientEnv('{}');
+    expect(stdout).toContain('License key read from NEW_RELIC_LICENSE_KEY');
+  });
+
+  it('install with only an ambient env key does not print the missing-credentials hint', async () => {
+    const saved = process.env.NEW_RELIC_LICENSE_KEY;
+    const savedAccount = process.env.NEW_RELIC_ACCOUNT_ID;
+    process.env.NEW_RELIC_LICENSE_KEY = 'NRLIC-ambient';
+    delete process.env.NEW_RELIC_ACCOUNT_ID;
+    mFs.readFileSync.mockReturnValue('{}');
+    try {
+      await runInstallCli(['install']);
+    } finally {
+      if (saved === undefined) delete process.env.NEW_RELIC_LICENSE_KEY;
+      else process.env.NEW_RELIC_LICENSE_KEY = saved;
+      if (savedAccount !== undefined) process.env.NEW_RELIC_ACCOUNT_ID = savedAccount;
+    }
+    const stdout = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stdout).not.toContain('are both required to save NR config');
+  });
+
   // Bug fix: !nrConfigWriteFailed guard was suppressing the "Both required" hint when
   // a partial credential was passed AND the platformTarget write failed. Both messages
   // carry independent information and must both fire.
@@ -1335,7 +1431,7 @@ describe('platform transition matrix', () => {
     await runInstallCli(['install', '--license-key', 'NRLIC-partial']); // non-fatal
 
     const stdout = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
-    expect(stdout).toContain('Both --license-key and --account-id are required');
+    expect(stdout).toContain('are both required to save NR config');
     stderrSpy.mockRestore();
   });
 
