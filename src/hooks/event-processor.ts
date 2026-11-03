@@ -399,7 +399,7 @@ export class HookEventProcessor {
    * events, mirroring subagentDedup above. This path only matters for
    * `--local` mode's buffer.jsonl route — `--stdio` mode's WorkflowWatcher
    * calls ingestScriptWorkflowRun() directly in-process, bypassing the
-   * buffer/crash-recovery path entirely. The `.drain` file crash-recovery
+   * buffer/crash-recovery path entirely. The drain-claim crash-recovery
    * path can re-deliver the same buffered line after a crash mid-write;
    * without this, that redelivery emits a duplicate AiWorkflowRun event
    * (doubling cost/token metrics for that run) since a new poll cycle's
@@ -408,13 +408,9 @@ export class HookEventProcessor {
   private readonly workflowRunDedup = new Set<string>();
   private readonly workflowRunDedupOrder: string[] = [];
   /**
-   * Per-session dedup rings for recent parent-transcript token events (scoped
-   * by sessionId), mirroring subagentDedupRegistry above. ParentTranscriptWatcher
-   * tails the main transcript via a durable byte cursor and can re-deliver a
-   * line after a crash mid-emit, or after a rename-triggered cursor reset;
-   * without this, that redelivery double-counts cost. Only applied when
-   * messageId is present — events without one (defensive; any other/future
-   * producer) pass through unchanged, unaffected by this ring.
+   * In-memory, per-session dedup of token events by messageId. It cannot stop
+   * a double count across a restart or across sessions; parent-transcript
+   * turns get that from the BilledTurnLedger in ParentTranscriptWatcher.
    */
   private readonly tokenDedupRegistry = new DedupRingRegistry(50, 4096);
 

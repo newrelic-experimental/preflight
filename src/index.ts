@@ -29,6 +29,7 @@ import { CopilotUsageWatcher } from './hooks/copilot-usage-watcher.js';
 import { HookEventProcessor } from './hooks/index.js';
 import { isPlatformDetectionFellBack } from './hooks/platform-detection-health.js';
 import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
+import { BilledTurnLedger, pruneBilledTurns } from './hooks/billed-turn-ledger.js';
 import {
   isSyntheticSessionId,
   readJobState,
@@ -348,8 +349,17 @@ export function runRetentionSweep(deps: RetentionSweepDeps): void {
     deps.storagePath,
     deps.retainSessionsDays,
   );
-  if (deletedSessionFiles > 0 || deletedWeeklySummaryFiles > 0) {
-    logger.info('Retention purge complete', { deletedSessionFiles, deletedWeeklySummaryFiles });
+  const deletedBilledTurnDays = pruneBilledTurns(
+    deps.storagePath,
+    deps.retainSessionsDays,
+    Date.now(),
+  );
+  if (deletedSessionFiles > 0 || deletedWeeklySummaryFiles > 0 || deletedBilledTurnDays > 0) {
+    logger.info('Retention purge complete', {
+      deletedSessionFiles,
+      deletedWeeklySummaryFiles,
+      deletedBilledTurnDays,
+    });
   }
 }
 
@@ -1158,8 +1168,8 @@ async function main(): Promise<void> {
     }
 
     // Per-session buffer scoping: in --stdio mode the LocalStore is bound to
-    // this MCP's resolved session_id so drainBuffer() only sees this session's
-    // events. In --local mode (or the provisional window before session ID
+    // this MCP's resolved session_id so drainBuffer() reads only this session's
+    // buffer, plus this process's own leftover drain claims of other buffers. In --local mode (or the provisional window before session ID
     // resolution) we use an unscoped store that drains all session buffers.
     const isProvisional = options.stdio && sessionTraceId.startsWith('pending-');
     const localStore =
@@ -2791,6 +2801,12 @@ async function main(): Promise<void> {
     const copilotAppUsageWatcherEnabled =
       process.env['NR_AI_ENABLE_COPILOT_APP_USAGE_WATCHER'] !== '0';
 
+    // One claimant per process, shared by every watcher that bills turns.
+    const billedTurnLedger = new BilledTurnLedger({
+      storagePath: config!.storagePath,
+      retainDays: config!.retainSessionsDays,
+    });
+
     // Construct + start the watchers for a given session id. In `--stdio` mode
     // the watchers filter discovered transcript dirs by `parentSessionId`; in
     // `--local` mode they run unfiltered (parentSessionId: undefined). Shared by
@@ -2815,6 +2831,7 @@ async function main(): Promise<void> {
           storagePath: config!.storagePath,
           parentSessionId: isStdioWatcher ? watcherSessionId : undefined,
           localStore,
+          ledger: billedTurnLedger,
         });
         activeParentTranscriptWatcher.start();
         logger.info('ParentTranscriptWatcher started', {
