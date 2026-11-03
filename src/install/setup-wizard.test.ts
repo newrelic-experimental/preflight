@@ -766,8 +766,6 @@ describe('setupWizard mode branch', () => {
 
     const promptMessages = mockRl.question.mock.calls.map((c) => String(c[0]).toLowerCase());
     expect(promptMessages.some((m) => m.includes('license key —'))).toBe(false);
-    // Check that the Account ID *field prompt* (starts with "account id —") did not appear.
-    // The team label prompt contains "not your nr account id" but does not start with "account id".
     expect(promptMessages.some((m) => m.startsWith('account id —'))).toBe(false);
 
     const writtenJson = mockedFs.writeFileSync.mock.calls[0][1] as string;
@@ -775,6 +773,30 @@ describe('setupWizard mode branch', () => {
     expect(written.mode).toBe('local');
     expect(written.licenseKey).toBeUndefined();
     expect(written.accountId).toBeUndefined();
+  });
+
+  it("when mode='local', omits the NR ingest note and account-ID hint", async () => {
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n');
+
+    await runSetupWizard();
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).not.toContain('Telemetry note');
+    const prompts = mockRl.question.mock.calls.map((c) => String(c[0]));
+    const teamPrompt = prompts.find((m) => m.startsWith('Team label'));
+    expect(teamPrompt).toBeDefined();
+    expect(teamPrompt).not.toContain('NR');
+  });
+
+  it("when mode='cloud', prints the NR ingest-cost note and the account-ID hint", async () => {
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Telemetry note');
+    const prompts = mockRl.question.mock.calls.map((c) => String(c[0]));
+    expect(prompts.find((m) => m.startsWith('Team label'))).toContain('not your NR account ID');
   });
 
   it("when mode='local', persists dashboard config with chosen port", async () => {
