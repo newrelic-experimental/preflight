@@ -134,10 +134,6 @@ Whichever family a tracker belongs to, it still:
 
 `TaskDetector` reads `CostTracker.getMetrics()` at task-start and task-close to compute a per-task cost/token delta; `CostTracker` reads `SessionTracker.getMetrics().uniqueFilesWritten` for `costPerFileModified`. Both assume the read-from tracker's cumulative totals only move forward between reads — resetting one tracker independently of the other (e.g. `CostTracker.reset()` while a `TaskDetector` task is active) is logged as a warning rather than allowed to fail silently, but the delta is still clamped to 0 in that case. See the JSDoc on `TaskDetectorOptions.costTracker` and `CostTracker`'s constructor.
 
-### Count cost and tokens once
-
-A session's cost reaches `CostTracker` from several sources: byte estimates (`recordEstimatedTokens`), `mode: 'token'` buffer lines (the parent transcript watcher, `CopilotUsageWatcher`, `CopilotAppUsageWatcher` and the Copilot SDK extension, all through `onTokenEvent`), self-reports from `nr_observe_report_tokens`, and persisted checkpoints seeded back in on resume. They overlap, so a change to how one source records or replaces cost has to hold for the others too, including a restart mid-session and a second process saving the same session. Test it through the real save → load → seed path, not a hand-built ledger.
-
 ## Platform Adapter Pattern
 
 Each adapter in `src/platforms/` implements `PlatformAdapter` (`types.ts`): `normalizeToolCall()`, `mapToolName()`, `getSessionMetadata()`, `getHookInstallInstructions()`, `isSupported()`. `PlatformRegistry.detect()` (`platform-registry.ts`) returns the first registered adapter whose `isSupported()` is `true` — registration order matters, and the generic MCP fallback is always registered last with `isSupported()` hardcoded `true`.
