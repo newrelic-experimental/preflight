@@ -399,7 +399,7 @@ export class HookEventProcessor {
    * events, mirroring subagentDedup above. This path only matters for
    * `--local` mode's buffer.jsonl route — `--stdio` mode's WorkflowWatcher
    * calls ingestScriptWorkflowRun() directly in-process, bypassing the
-   * buffer/crash-recovery path entirely. The `.drain` file crash-recovery
+   * buffer/crash-recovery path entirely. The drain-claim crash-recovery
    * path can re-deliver the same buffered line after a crash mid-write;
    * without this, that redelivery emits a duplicate AiWorkflowRun event
    * (doubling cost/token metrics for that run) since a new poll cycle's

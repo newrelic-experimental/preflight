@@ -1,0 +1,5 @@
+---
+'@newrelic/preflight': patch
+---
+
+**Tool calls, token counts and self-reports are no longer lost when two Preflight processes drain the same hook buffer.** A `--local` dashboard and a stdio engine that has not yet adopted its session both drain every buffer without a live owner. Both renamed the buffer onto the same `.drain` file, so the second rename could replace the first process's unread batch. Each process now drains through a file of its own, and takes over the leftover file of a process that exited mid-drain. A leftover file is counted only after it is deleted, so a failed delete no longer counts its events twice after a restart. Leftover files come back in the order they were written, so a tool call's result never arrives before its start. A `.drain` file left by an earlier version is still recovered, once that version has had a minute to recover it itself. The current buffer waits for that file during the first minute so its events keep their order. A drain that cannot claim a buffer now logs a warning instead of staying silent.
