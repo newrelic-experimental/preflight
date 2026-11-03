@@ -554,3 +554,20 @@ describe('applyHookCollisionFix()', () => {
     expect(result.applied).toBe(true);
   });
 });
+
+describe('Copilot generators with a .exe shim binary', () => {
+  it('hooks target preflight-collector.exe', () => {
+    const hooks = generateCopilotHooksFile('/shims/preflight.exe').hooks;
+    expect(hooks.PreToolUse[0].command).toContain(`"${join('/shims', 'preflight-collector.exe')}"`);
+  });
+
+  it('hooks keep the extensionless collector for a .cmd binary', () => {
+    const hooks = generateCopilotHooksFile('/npm/preflight.cmd').hooks;
+    expect(hooks.PreToolUse[0].command).toContain(`"${join('/npm', 'preflight-collector')}"`);
+  });
+
+  it('MCP entry targets preflight.exe', () => {
+    const entry = generateVsCodeMcpEntry('/shims/preflight.exe')[COPILOT_MCP_SERVER_KEY];
+    expect(entry.command).toBe(join('/shims', 'preflight.exe'));
+  });
+});

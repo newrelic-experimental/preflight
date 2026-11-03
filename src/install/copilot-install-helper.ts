@@ -29,7 +29,7 @@ import { homedir } from 'node:os';
 import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { z } from 'zod';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
-import { entryContainsNrObserve } from './install-helper.js';
+import { entryContainsNrObserve, siblingBinPath } from './install-helper.js';
 import { resolveDataDir } from '../deploy/data-paths.js';
 import { copilotSdkExtensionInstallPath } from '../hooks/copilot-sdk-extension-health.js';
 
@@ -73,7 +73,7 @@ export function generateCopilotHooksFile(binPath?: string | null): CopilotHooksF
   // Quote the path so shells with sh -c don't split on spaces, matching
   // install-helper.ts's generateHookEntries() for Claude.
   const bin = binPath
-    ? `"${join(dirname(binPath), COLLECTOR_COMMAND).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+    ? `"${siblingBinPath(binPath, COLLECTOR_COMMAND).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
     : COLLECTOR_COMMAND;
   // GitHub's Copilot hooks reference (docs.github.com/en/copilot/reference/
   // hooks-configuration) runs `powershell` instead of `command` on Windows.
@@ -119,7 +119,7 @@ export function generateVsCodeMcpEntry(
   binPath?: string | null,
   creds?: { licenseKey?: string; accountId?: string },
 ): Record<string, VsCodeMcpServerConfig> {
-  const command = binPath ? join(dirname(binPath), MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
+  const command = binPath ? siblingBinPath(binPath, MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
   const env: Record<string, string> = { MCP_CLIENT: 'copilot' };
   if (creds?.licenseKey) env.NEW_RELIC_LICENSE_KEY = creds.licenseKey;
   if (creds?.accountId) env.NEW_RELIC_ACCOUNT_ID = creds.accountId;

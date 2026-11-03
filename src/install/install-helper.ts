@@ -23,6 +23,16 @@ const MCP_SERVER_COMMAND = 'preflight';
 const COLLECTOR_COMMAND = 'preflight-collector';
 
 /**
+ * Path of a Preflight bin that lives next to the resolved `preflight` binary.
+ * A `.exe` shim (mise's default on Windows) has `.exe` siblings; every other
+ * resolved form (`.cmd`, `.ps1`, extensionless) keeps the bare name.
+ */
+export function siblingBinPath(binPath: string, name: string): string {
+  const ext = /\.exe$/i.test(binPath) ? '.exe' : '';
+  return join(dirname(binPath), `${name}${ext}`);
+}
+
+/**
  * Alternation of every subcommand marker, for embedding in regexes that must
  * recognize any hook command this installer writes. Derived from
  * HOOK_SUBCOMMANDS so a new hook event can never be registered without the
@@ -104,14 +114,14 @@ export function generateHookEntries(
   if (options?.platform === 'wsl-windows-cc') {
     // Windows Claude Code runs hooks via wsl.exe — call the WSL binary through interop.
     // Quote the path so cmd.exe doesn't split on spaces (e.g. /home/john doe/...).
-    const collectorPath = binPath ? join(dirname(binPath), COLLECTOR_COMMAND) : COLLECTOR_COMMAND;
+    const collectorPath = binPath ? siblingBinPath(binPath, COLLECTOR_COMMAND) : COLLECTOR_COMMAND;
     const quotedPath = collectorPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     collectorInvocation = `wsl.exe -e "${quotedPath}"`;
   } else {
     // Quote the path so shells with sh -c don't split on spaces (e.g. /Users/John Doe/...).
     // Hook commands use preflight-collector (lightweight, <5ms budget).
     collectorInvocation = binPath
-      ? `"${join(dirname(binPath), COLLECTOR_COMMAND).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+      ? `"${siblingBinPath(binPath, COLLECTOR_COMMAND).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
       : COLLECTOR_COMMAND;
   }
 
@@ -210,13 +220,13 @@ export function generateMcpServerEntry(
 ): Record<string, McpServerConfig> {
   if (options?.platform === 'wsl-windows-cc') {
     // Windows Claude Code launches MCP servers as Windows processes — use wsl.exe interop.
-    const serverPath = binPath ? join(dirname(binPath), MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
+    const serverPath = binPath ? siblingBinPath(binPath, MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
     return {
       [MCP_SERVER_KEY]: { command: 'wsl.exe', args: ['-e', serverPath, '--stdio'] },
     };
   }
   // MCP server uses the main preflight binary.
-  const command = binPath ? join(dirname(binPath), MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
+  const command = binPath ? siblingBinPath(binPath, MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
   return {
     [MCP_SERVER_KEY]: { command, args: ['--stdio'] },
   };
