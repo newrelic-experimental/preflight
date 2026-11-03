@@ -725,14 +725,14 @@ function getWindsurfToolInfo(data: HookInput): Record<string, unknown> {
   return data.tool_info !== null && typeof data.tool_info === 'object' ? data.tool_info : {};
 }
 
+let stderrSinkInstalled = false;
+
 /**
  * @param cliEvent The hook command's first argument (`process.argv[2]`), if
  *   any. Only consulted for Antigravity, whose payloads never name their own
  *   event — see isAntigravityPre below. Every other platform's payload names
  *   its event, and this argument is ignored for them.
  */
-let stderrSinkInstalled = false;
-
 function processHook(raw: string, cliEvent?: string): void {
   let data: HookInput;
   try {

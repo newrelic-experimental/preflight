@@ -548,7 +548,25 @@ describe('hook writes racing a drain', () => {
     expect(leftovers()).toEqual([]);
   });
 
-  it('keeps a write that opened an orphan buffer before GC archived it', () => {
+  it('leaves a line that lands between the GC rename and the archive seal in the archive', () => {
+    fs.writeFileSync(bufferPath, line('A'));
+    fs.writeFileSync(resolve(dir, `active-${SESSION}.pid`), String(DEAD_PID));
+    const openBeforeGc = fs.openSync(bufferPath, 'a');
+    mockHooks.rename = (from, to) => {
+      fs.renameSync(from, to);
+      fs.writeSync(openBeforeGc, line('B'));
+    };
+    const store = new LocalStore(dir, SESSION);
+
+    expect(store.gcOrphanBuffers(new Set()).archived).toBe(1);
+    fs.closeSync(openBeforeGc);
+
+    const archive = fs.readdirSync(dir).find((n) => n.includes('.archived-'));
+    expect(fs.readFileSync(resolve(dir, archive!), 'utf-8')).toBe(line('A') + line('B') + SEAL);
+    expect(store.drainBuffer()).toEqual([]);
+  });
+
+  it('keeps a write that opened an orphan buffer before GC archived it and wrote after the seal', () => {
     fs.writeFileSync(bufferPath, line('A'));
     fs.writeFileSync(resolve(dir, `active-${SESSION}.pid`), String(DEAD_PID));
     const store = new LocalStore(dir, SESSION);

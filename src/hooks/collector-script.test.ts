@@ -2081,7 +2081,9 @@ describe('collector-script', () => {
         stdio: ['pipe', 'ignore', 'pipe'],
         env: { ...process.env, NEW_RELIC_AI_MCP_BUFFER_PATH: resolve(tmpDir, 'f', 'b.jsonl') },
       });
+      const closed = new Promise((done) => child.stderr.once('close', done));
       child.stderr.destroy();
+      await closed;
       child.stdin.end(makePreToolUse());
 
       const code = await new Promise((done) => child.on('exit', done));
