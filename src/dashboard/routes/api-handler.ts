@@ -82,7 +82,11 @@ import type {
   PersistedAntiPattern,
   SessionFileInfo,
 } from '../../storage/session-store.js';
-import { toPersistedAntiPatterns } from '../../storage/session-store.js';
+import {
+  hasRecordedUsage,
+  toPersistedAntiPatterns,
+  type RecordedUsage,
+} from '../../storage/session-store.js';
 import type {
   AttributionBucket,
   HookEvent,
@@ -860,9 +864,8 @@ interface SessionActivityLike {
   readonly timeline?: readonly { readonly timestamp: number }[];
 }
 
-interface SessionIdentityLike {
+interface SessionIdentityLike extends RecordedUsage {
   readonly sessionId?: string;
-  readonly toolCallCount?: number;
 }
 
 interface ReplaySessionResponse {
@@ -1518,10 +1521,7 @@ export function createApiHandler(
     // MCP-internal bookkeeping from --local / proxy modes that would
     // otherwise appear as confusing "duplicate" rows next to real Claude
     // Code sessions.
-    const withActivity = (allSessions as readonly SessionIdentityLike[]).filter((s) => {
-      const calls = s.toolCallCount ?? 0;
-      return calls > 0;
-    });
+    const withActivity = (allSessions as readonly SessionIdentityLike[]).filter(hasRecordedUsage);
     const sliced = withActivity.slice(-limit);
 
     // Append the current live session so it appears in the list before
@@ -1538,7 +1538,12 @@ export function createApiHandler(
       const alreadyPersisted = sliced.some(
         (s) => (s as { sessionId?: string }).sessionId === live.sessionId,
       );
-      if (!alreadyPersisted && live.toolCallCount > 0 && !isSyntheticSessionId(live.sessionId)) {
+      const liveCostUsd = deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null;
+      const liveHasUsage = hasRecordedUsage({
+        toolCallCount: live.toolCallCount,
+        estimatedCostUsd: liveCostUsd,
+      });
+      if (!alreadyPersisted && liveHasUsage && !isSyntheticSessionId(live.sessionId)) {
         sliced.push({
           sessionId: live.sessionId,
           sessionName: live.sessionName ?? null,
@@ -1546,7 +1551,7 @@ export function createApiHandler(
           startTime: live.sessionStartTime,
           durationMs: live.sessionDurationMs,
           toolCallCount: live.toolCallCount,
-          estimatedCostUsd: deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null,
+          estimatedCostUsd: liveCostUsd,
           // costTracker.getMetrics() also exposes the model this live
           // session is actually using; without it, aggregateModelPerformance
           // (History.tsx) buckets this session's real-time cost/count under
