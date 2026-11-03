@@ -387,11 +387,9 @@ export class HookEventProcessor {
   private static readonly MAX_STAMPED_SESSIONS = 100;
   private registeredAdaptersByName: Map<string, PlatformAdapter> | null = null;
   /**
-   * Per-agent dedup rings for recent subagent turns (scoped by agentId, one
-   * DedupRing per agent, LRU-bounded across agents). Cursor recovery may
-   * re-read a line after a crash mid-write; double-counting would be silent,
-   * so we drop on the seen-set. Was previously one global ring shared across
-   * every agent — see DedupRingRegistry's doc comment for why that's wrong.
+   * In-memory, per-agent dedup of subagent turns by messageId (one DedupRing
+   * per agent, LRU-bounded across agents). It cannot stop a double count
+   * across a restart; SubagentWatcher gets that from the BilledTurnLedger.
    */
   private readonly subagentDedupRegistry = new DedupRingRegistry(50, 4096);
   /**
@@ -399,7 +397,7 @@ export class HookEventProcessor {
    * events, mirroring subagentDedup above. This path only matters for
    * `--local` mode's buffer.jsonl route — `--stdio` mode's WorkflowWatcher
    * calls ingestScriptWorkflowRun() directly in-process, bypassing the
-   * buffer/crash-recovery path entirely. The `.drain` file crash-recovery
+   * buffer/crash-recovery path entirely. The drain-claim crash-recovery
    * path can re-deliver the same buffered line after a crash mid-write;
    * without this, that redelivery emits a duplicate AiWorkflowRun event
    * (doubling cost/token metrics for that run) since a new poll cycle's

@@ -1168,8 +1168,8 @@ async function main(): Promise<void> {
     }
 
     // Per-session buffer scoping: in --stdio mode the LocalStore is bound to
-    // this MCP's resolved session_id so drainBuffer() only sees this session's
-    // events. In --local mode (or the provisional window before session ID
+    // this MCP's resolved session_id so drainBuffer() reads only this session's
+    // buffer, plus this process's own leftover drain claims of other buffers. In --local mode (or the provisional window before session ID
     // resolution) we use an unscoped store that drains all session buffers.
     const isProvisional = options.stdio && sessionTraceId.startsWith('pending-');
     const localStore =
@@ -2843,6 +2843,7 @@ async function main(): Promise<void> {
           storagePath: config!.storagePath,
           parentSessionId: isStdioWatcher ? watcherSessionId : undefined,
           localStore,
+          ledger: billedTurnLedger,
         });
         activeCopilotUsageWatcher.start();
         logger.info('CopilotUsageWatcher started', {
@@ -2873,6 +2874,7 @@ async function main(): Promise<void> {
           // Only meaningful when unfiltered (--local) — lets discoverFiles()
           // skip sessions that already have a live --stdio owner tailing them.
           localStore,
+          ledger: billedTurnLedger,
           onTurnRead: (turn: SubagentTokenEvent) => subagentAttribution.recordSubagentTurn(turn),
         };
         activeSubagentWatcher = new SubagentWatcher(

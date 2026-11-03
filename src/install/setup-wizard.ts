@@ -459,12 +459,14 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
           );
         }
       }
-    }
 
-    print(
-      '\n  ℹ  Telemetry note: this server sends events and metrics to your NR account — ingest costs',
-    );
-    print('     apply on paid plans. Monitor usage via NR One → Data Management → Data Ingestion.');
+      print(
+        '\n  ℹ  Telemetry note: this server sends events and metrics to your NR account — ingest costs',
+      );
+      print(
+        '     apply on paid plans. Monitor usage via NR One → Data Management → Data Ingestion.',
+      );
+    }
 
     // Step 3: Developer name — prefer existing config, then email local-part, then $USER
     const emailLocalPart = validatedEmail ? (validatedEmail.split('@')[0] ?? '') : '';
@@ -488,7 +490,7 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
     const existingTeamId = typeof existing.teamId === 'string' ? existing.teamId : null;
     const teamIdAnswer = (
       await rl.question(
-        `Team label — a slug you define, e.g. "platform-eng" (not your NR account ID) used for recording metrics [${existingTeamId ?? 'optional'}]: `,
+        `Team label — a slug you define, e.g. "platform-eng"${mode === 'local' ? '' : ' (not your NR account ID)'} used for recording metrics [${existingTeamId ?? 'optional'}]: `,
       )
     ).trim();
     const teamId = teamIdAnswer || existingTeamId;
