@@ -9,9 +9,23 @@ import {
   readdirSync,
   statSync,
 } from 'node:fs';
-import { randomBytes } from 'node:crypto';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
+import {
+  DRAINS_DIR,
+  forgetLegacySightingsExcept,
+  formatClaimName,
+  holdsBuffer,
+  isAdoptable,
+  isBufferName,
+  legacyDrainBuffer,
+  listClaims,
+  noteFailure,
+  clearFailure,
+  sightLegacy,
+  takeClaim,
+  type DrainClaim,
+} from './drain-claims.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
@@ -20,96 +34,9 @@ const logger = createLogger('local-store');
 
 const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 
-const DRAINS_DIR = 'drains';
-const CLAIM_NAME_RE = /^(.+\.jsonl)\.(\d+)\.(\d+)\.[0-9a-f]+$/;
-const LEGACY_DRAIN_SUFFIX = '.drain';
-
-/**
- * An older version's drainer recovers a legacy `<buffer>.drain` on its next
- * 100 ms poll, and returns those events even when its unlink then fails, so
- * taking the file while it is mid-recovery counts it twice. A `.drain` this
- * process has watched unchanged for 60 s (600 of those polls) has no live
- * older drainer. File times are not used: a rename does not update ctime on
- * every filesystem.
- */
-const LEGACY_DRAIN_ADOPT_AGE_MS = 60_000;
-
-const STALE_CLAIM_AGE_MS = 10 * 60_000;
-
-interface DrainClaim {
-  readonly path: string;
-  readonly buffer: string;
-  readonly owner: number | 'legacy';
-  readonly claimedAt: number;
-}
-
 interface BufferDrain {
   present: boolean;
   readonly claims: DrainClaim[];
-}
-
-const legacySightings = new Map<string, { readonly stamp: string; readonly since: number }>();
-const claimReadFailures = new Map<string, number>();
-
-function isBufferName(name: string): boolean {
-  return name.endsWith('.jsonl') && (name === 'buffer.jsonl' || name.startsWith('buffer-'));
-}
-
-function legacyDrainBuffer(name: string): string | null {
-  if (!name.endsWith(LEGACY_DRAIN_SUFFIX)) return null;
-  const buffer = name.slice(0, -LEGACY_DRAIN_SUFFIX.length);
-  return isBufferName(buffer) ? buffer : null;
-}
-
-function sightLegacy(path: string, buffer: string): DrainClaim | null {
-  let stats: ReturnType<typeof statSync> | undefined;
-  try {
-    stats = statSync(path, { throwIfNoEntry: false });
-  } catch {
-    stats = undefined;
-  }
-  if (!stats) {
-    legacySightings.delete(path);
-    return null;
-  }
-  const stamp = `${stats.ino}:${stats.size}`;
-  if (legacySightings.get(path)?.stamp !== stamp) {
-    legacySightings.set(path, { stamp, since: Date.now() });
-  }
-  return { path, buffer, owner: 'legacy', claimedAt: 0 };
-}
-
-function isAdoptable(claim: DrainClaim): boolean {
-  if (claim.owner === 'legacy') {
-    const since = legacySightings.get(claim.path)?.since ?? Number.POSITIVE_INFINITY;
-    return Date.now() - since >= LEGACY_DRAIN_ADOPT_AGE_MS;
-  }
-  return !isPidAlive(claim.owner) || Date.now() - claim.claimedAt >= STALE_CLAIM_AGE_MS;
-}
-
-function takeClaim(path: string): readonly HookEvent[] {
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf-8');
-    unlinkSync(path);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      claimReadFailures.delete(path);
-      logger.debug('Drain claim was adopted by another drainer', { error: String(err) });
-      return [];
-    }
-    const failures = (claimReadFailures.get(path) ?? 0) + 1;
-    claimReadFailures.set(path, failures);
-    if ((failures & (failures - 1)) === 0) {
-      logger.warn('Failed to drain a claimed buffer — retrying each poll', {
-        error: String(err),
-        failures,
-      });
-    }
-    return [];
-  }
-  claimReadFailures.delete(path);
-  return parseHookEvents(raw);
 }
 
 /**
@@ -207,7 +134,6 @@ export class LocalStore {
   private readonly storagePath: string;
   private readonly bufferPath: string;
   private readonly sessionId: string | null;
-  private claimListingFailed = false;
 
   /**
    * @param storagePath The base storage directory (e.g. ~/.newrelic-preflight).
@@ -303,7 +229,7 @@ export class LocalStore {
    * that has already been unlinked.
    */
   drainBuffer(): HookEvent[] {
-    const claims = this.listClaims(dirname(this.bufferPath), basename(this.bufferPath));
+    const claims = listClaims(dirname(this.bufferPath), basename(this.bufferPath));
     return this.drainPath(this.bufferPath, { present: existsSync(this.bufferPath), claims });
   }
 
@@ -365,7 +291,8 @@ export class LocalStore {
    * The legacy shared `buffer.jsonl` is included so an upgrading user with
    * unmigrated events still appears in aggregate views before the next
    * `migrateLegacyBuffer()` runs. Lines held in drain claims are included
-   * too: they are still waiting for a drainer to return them.
+   * too: they are still waiting for a drainer to return them, so a claim
+   * that no drainer can unlink keeps showing up here.
    */
   peekAllBuffers(): HookEvent[] {
     const all: HookEvent[] = [];
@@ -1258,52 +1185,11 @@ export class LocalStore {
         drainOf(legacy.buffer).claims.push(legacy);
       }
     }
-    for (const path of legacySightings.keys()) {
-      if (dirname(path) === resolve(this.storagePath) && !legacies.has(path)) {
-        legacySightings.delete(path);
-      }
-    }
-    for (const claim of this.listClaims(this.storagePath)) {
+    forgetLegacySightingsExcept(resolve(this.storagePath), legacies);
+    for (const claim of listClaims(this.storagePath)) {
       if (isBufferName(claim.buffer)) drainOf(claim.buffer).claims.push(claim);
     }
     return drains;
-  }
-
-  private listClaims(dir: string, scopedTo?: string): DrainClaim[] {
-    const claims: DrainClaim[] = [];
-    const legacy = scopedTo && sightLegacy(resolve(dir, scopedTo + LEGACY_DRAIN_SUFFIX), scopedTo);
-    if (legacy) claims.push(legacy);
-    const drainsDir = resolve(dir, DRAINS_DIR);
-    let names: string[];
-    try {
-      names = readdirSync(drainsDir);
-      this.claimListingFailed = false;
-    } catch (err) {
-      const failed = (err as NodeJS.ErrnoException).code !== 'ENOENT';
-      if (failed && !this.claimListingFailed) {
-        logger.warn('Failed to list drain claims — leftover claims wait until it succeeds', {
-          error: String(err),
-        });
-      }
-      this.claimListingFailed = failed;
-      return claims;
-    }
-    const prefix = scopedTo && `${scopedTo}.`;
-    const own = `.${process.pid}.`;
-    for (const name of names) {
-      if (prefix && !name.startsWith(prefix) && !name.includes(own)) continue;
-      const match = CLAIM_NAME_RE.exec(name);
-      if (!match) continue;
-      const owner = Number(match[2]);
-      if (scopedTo && match[1] !== scopedTo && owner !== process.pid) continue;
-      claims.push({
-        path: resolve(drainsDir, name),
-        buffer: match[1]!,
-        owner,
-        claimedAt: Number(match[3]),
-      });
-    }
-    return claims;
   }
 
   private drainPath(
@@ -1312,31 +1198,38 @@ export class LocalStore {
     ownerLive: () => boolean = () => false,
   ): HookEvent[] {
     const drainsDir = resolve(dirname(bufferPath), DRAINS_DIR);
-    const owned: { readonly path: string; readonly claimedAt: number }[] = [];
+    const owned: { readonly path: string; readonly claimedAt: number; readonly origin: string }[] =
+      [];
     let mayAdopt: boolean | undefined;
     for (const claim of drain.claims) {
-      if (claim.owner === process.pid) owned.push(claim);
-      else if (isAdoptable(claim) && (mayAdopt ??= !ownerLive())) {
+      if (claim.owner === process.pid) owned.push({ ...claim, origin: claim.path });
+      else if (isAdoptable(claim, isPidAlive) && (mayAdopt ??= !ownerLive())) {
         const path = this.claimDrain(claim.path, drainsDir, claim.buffer);
-        if (path) owned.push({ path, claimedAt: claim.claimedAt });
+        if (path) owned.push({ path, claimedAt: claim.claimedAt, origin: claim.path });
       }
     }
-    const paths = owned.sort((a, b) => a.claimedAt - b.claimedAt).map(({ path }) => path);
-    if (drain.present && !ownerLive()) {
+    const paths = owned
+      .sort((a, b) => a.claimedAt - b.claimedAt || (a.origin < b.origin ? -1 : 1))
+      .map(({ path }) => path);
+    // ownerLive is asked again here on purpose: an engine can adopt the session
+    // while the claims above are being taken, and then owns the buffer.
+    const olderEventsPending = drain.claims.some((claim) => holdsBuffer(claim, isPidAlive));
+    if (drain.present && !olderEventsPending && !ownerLive()) {
       const path = this.claimDrain(bufferPath, drainsDir, basename(bufferPath));
       if (path) paths.push(path);
     }
 
     const events: HookEvent[] = [];
     for (const path of paths) {
-      for (const event of takeClaim(path)) events.push(event);
+      const raw = takeClaim(path);
+      if (raw === null) continue;
+      for (const event of parseHookEvents(raw)) events.push(event);
     }
     return events;
   }
 
   private claimDrain(from: string, drainsDir: string, buffer: string): string | null {
-    const nonce = randomBytes(6).toString('hex');
-    const to = resolve(drainsDir, `${buffer}.${process.pid}.${Date.now()}.${nonce}`);
+    const to = resolve(drainsDir, formatClaimName(buffer, process.pid, Date.now()));
     try {
       try {
         renameSync(from, to);
@@ -1345,10 +1238,13 @@ export class LocalStore {
         mkdirSync(drainsDir, { recursive: true, mode: 0o700 });
         renameSync(from, to);
       }
+      clearFailure(from);
       return to;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        logger.debug('Failed to claim drain file — will retry next poll', { error: String(err) });
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        clearFailure(from);
+      } else {
+        noteFailure(from, 'Failed to claim a buffer for draining — retrying each poll', err);
       }
       return null;
     }
