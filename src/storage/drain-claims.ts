@@ -9,7 +9,8 @@ const logger = createLogger('drain-claims');
 
 export const DRAINS_DIR = 'drains';
 const LEGACY_DRAIN_SUFFIX = '.drain';
-const CLAIM_NAME_RE = /^(.+\.jsonl)\.(\d+)\.(\d+)\.[0-9a-f]+$/;
+const CLAIM_NAME_RE = /^(.+\.jsonl)\.(\d+)\.(\d+)\.([0-9a-f]+)$/;
+const ORDER_HEX_DIGITS = 12;
 
 /**
  * An older version's drainer recovers a legacy `<buffer>.drain` on its next
@@ -25,11 +26,17 @@ export const LEGACY_DRAIN_ADOPT_AGE_MS = 60_000;
 
 export const STALE_CLAIM_AGE_MS = 10 * 60_000;
 
+/** Polls in a row, about 5 s at the 100 ms poll, that a drain holds the claims after one it cannot take. */
+export const STOP_ON_FAILED_CLAIM_POLLS = 50;
+
 export interface DrainClaim {
   readonly path: string;
   readonly buffer: string;
   readonly owner: number | 'legacy';
+  /** When its owner took the claim, which staleness reads. */
   readonly claimedAt: number;
+  /** When its lines were first claimed from the buffer, which orders claims; 0 for a legacy `.drain`. */
+  readonly firstClaimedAt: number;
 }
 
 interface LegacySighting {
@@ -46,16 +53,30 @@ export function isBufferName(name: string): boolean {
   return name.endsWith('.jsonl') && (name === 'buffer.jsonl' || name.startsWith('buffer-'));
 }
 
-export function formatClaimName(buffer: string, pid: number, claimedAt: number): string {
-  return `${buffer}.${pid}.${claimedAt}.${randomBytes(6).toString('hex')}`;
+/**
+ * `<buffer>.<pid>.<claimedAt>.<tag>`, where the tag is `firstClaimedAt` in 12 hex digits and then
+ * 12 random ones. An adopted claim gets a new `claimedAt` and keeps its `firstClaimedAt`, so it is
+ * not stale to other drainers and still comes back in order. A version that predates the tag
+ * reads it as a nonce, and a 12-digit nonce from such a version orders by `claimedAt`.
+ */
+export function formatClaimName(
+  buffer: string,
+  pid: number,
+  claimedAt: number,
+  firstClaimedAt = claimedAt,
+): string {
+  const order = firstClaimedAt.toString(16).padStart(ORDER_HEX_DIGITS, '0');
+  return `${buffer}.${pid}.${claimedAt}.${order}${randomBytes(6).toString('hex')}`;
 }
 
-export function parseClaimName(
-  name: string,
-): { readonly buffer: string; readonly owner: number; readonly claimedAt: number } | null {
+export function parseClaimName(name: string): Omit<DrainClaim, 'path'> | null {
   const match = CLAIM_NAME_RE.exec(name);
   if (!match) return null;
-  return { buffer: match[1]!, owner: Number(match[2]), claimedAt: Number(match[3]) };
+  const claimedAt = Number(match[3]);
+  const tag = match[4]!;
+  const firstClaimedAt =
+    tag.length > ORDER_HEX_DIGITS ? parseInt(tag.slice(0, ORDER_HEX_DIGITS), 16) : claimedAt;
+  return { buffer: match[1]!, owner: Number(match[2]), claimedAt, firstClaimedAt };
 }
 
 export function legacyDrainBuffer(name: string): string | null {
@@ -81,7 +102,7 @@ export function sightLegacy(path: string, buffer: string): DrainClaim | null {
     const now = Date.now();
     legacySightings.set(path, { stamp, since: now, first: seen?.first ?? now });
   }
-  return { path, buffer, owner: 'legacy', claimedAt: 0 };
+  return { path, buffer, owner: 'legacy', claimedAt: 0, firstClaimedAt: 0 };
 }
 
 export function forgetLegacySightingsExcept(dir: string, seen: ReadonlySet<string>): void {
@@ -134,21 +155,68 @@ export function clearFailure(key: string): void {
  * once the unlink has succeeded. A claim whose unlink failed stays on disk for a later poll
  * rather than being counted now and again after a restart.
  */
-export function takeClaim(path: string): string | null {
-  let raw: string;
+function takeClaim(path: string): { readonly text: string } | 'gone' | 'stuck' {
+  let text: string;
   try {
-    raw = takeClaimText(path);
+    text = takeClaimText(path);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       clearFailure(path);
       logger.debug('Drain claim was adopted by another drainer', { error: String(err) });
-    } else {
-      noteFailure(path, 'Failed to drain a claimed buffer — retrying each poll', err);
+      return 'gone';
     }
-    return null;
+    noteFailure(path, 'Failed to drain a claimed buffer — retrying each poll', err);
+    return 'stuck';
   }
   clearFailure(path);
-  return raw;
+  return { text };
+}
+
+/**
+ * Takes one drained buffer's claims in order across polls. A claim that cannot be taken stops
+ * the drain, so the claims after it keep their order, for at most `STOP_ON_FAILED_CLAIM_POLLS`
+ * polls in a row however many claims are stuck. The next poll, and any final drain, gives up
+ * the order of each claim it cannot take: it warns once naming the claim and skips it while it
+ * stays stuck, so a claim that never comes free cannot hold the buffer's events for good.
+ */
+export class DrainHold {
+  private stoppedPolls = 0;
+  private gaveUp: ReadonlySet<string> = new Set();
+  private skipped = new Set<string>();
+
+  get idle(): boolean {
+    return this.stoppedPolls === 0 && this.gaveUp.size === 0;
+  }
+
+  take(path: string, final: boolean): { readonly text: string } | 'skip' | 'stop' {
+    const taken = takeClaim(path);
+    if (taken === 'gone') return 'skip';
+    if (taken !== 'stuck') return taken;
+    if (!this.gaveUp.has(path)) {
+      if (!final && this.stoppedPolls < STOP_ON_FAILED_CLAIM_POLLS) return 'stop';
+      logger.warn(
+        'Gave up holding hook events in order behind a drain claim that cannot be taken',
+        {
+          claim: path,
+          heldPolls: this.stoppedPolls,
+          finalDrain: final,
+        },
+      );
+    }
+    this.skipped.add(path);
+    return 'skip';
+  }
+
+  /** A finished poll ends the hold and keeps only the claims still stuck. A stopped one extends it. */
+  endPoll(finished: boolean): void {
+    if (finished) {
+      this.stoppedPolls = 0;
+      this.gaveUp = this.skipped;
+    } else {
+      this.stoppedPolls += 1;
+    }
+    this.skipped = new Set();
+  }
 }
 
 /**

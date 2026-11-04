@@ -552,7 +552,7 @@ export class HookEventProcessor {
 
       // Final drain
       try {
-        const events = this.drainOnce();
+        const events = this.drainOnce(true);
         if (events.length > 0) {
           this.processEvents(events);
         }
@@ -666,8 +666,10 @@ export class HookEventProcessor {
     }
   }
 
-  private drainOnce(): HookEvent[] {
-    return this.drainAllSessions ? this.store.drainAllBuffers() : this.store.drainBuffer();
+  private drainOnce(final = false): HookEvent[] {
+    return this.drainAllSessions
+      ? this.store.drainAllBuffers(final)
+      : this.store.drainBuffer(final);
   }
 
   private handlePreEvent(event: PreHookEvent): void {

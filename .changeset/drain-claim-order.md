@@ -1,0 +1,5 @@
+---
+'@newrelic/preflight': patch
+---
+
+**A tool call's result no longer reaches Preflight before its start when a leftover hook file cannot be deleted.** When Preflight could not delete a leftover drain file (for example on a permissions error), it skipped that file and returned the files after it, so a result could be counted before its start and one call counted twice. It now stops at the file it could not delete and retries from there on the next poll. A leftover file taken over from a process that exited keeps the time its events were first claimed, so leftover files come back oldest first on every poll, not only the first. If files stay undeletable, Preflight holds the files behind them for 50 polls in a row (about 5 seconds) however many are stuck. It then logs a warning that names each stuck file and returns the files behind it, so the session's events are not held back for good. When Preflight stops, its last drain returns every file it can, so a result is not left behind while its start is counted as timed out.
