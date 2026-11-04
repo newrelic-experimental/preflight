@@ -256,7 +256,7 @@ Tests live next to the code they test (`foo.test.ts` alongside `foo.ts`).
 
 Two files sit outside all three: `jest.config.ts` also ignores `src/shared/index.test.ts`, which
 asserts an invariant that does not hold for vendored source, and
-`src/multi-instance.integration.test.ts`, which spawns real processes and runs on demand via
+`src/multi-instance.integration.test.ts`, which spawns real processes. CI runs it in the `processes` job, and you can run it via
 `npm run test:integration`. Both carry a comment saying why.
 
 `npm run test:e2e` installs its browser if needed, rebuilds, then starts two dashboards itself —
