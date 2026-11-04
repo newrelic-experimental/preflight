@@ -1492,6 +1492,26 @@ describe('platform transition matrix', () => {
       expect(calls[1]?.[2]).toMatchObject({ explicit: false });
     });
 
+    it('does not mark an account ID alone as an explicit key replacement', async () => {
+      asUid(0);
+      await runInstallCli(['install', '--target-user', 'dev', '--account-id', '123']);
+
+      const credentials = mockedTargetUser.runInstallAsUser.mock.calls[0]?.[2];
+      expect(credentials).toMatchObject({ accountId: '123', explicit: false });
+    });
+
+    it('rejects --kiro', async () => {
+      asUid(0);
+
+      await expect(runInstallCli(['install', '--target-user', 'dev', '--kiro'])).rejects.toThrow(
+        'process.exit',
+      );
+
+      const stderr = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(stderr).toContain('--kiro cannot be combined with --target-user');
+      expect(mockedTargetUser.runInstallAsUser).not.toHaveBeenCalled();
+    });
+
     it('hands the resolved key to the child so it never goes through argv', async () => {
       asUid(0);
       process.env.NEW_RELIC_LICENSE_KEY = 'NRLIC-env';

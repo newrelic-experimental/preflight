@@ -139,8 +139,9 @@ The install re-runs itself as that user with their `HOME`, so `config.json`
 (`0600`), `~/.claude/settings.json`, `~/.mcp.json` and the storage directory
 belong to them, and nothing is written under root's home. The license key is
 read as root and passed to the child through its environment, so the key file
-can stay root-only and the key never appears in `ps`. `--target-user` works on
-macOS and Linux, and not with `--project`. Without it, a root-run install warns
+can stay root-only and the key never appears in `ps`, except with `--copilot`,
+where `copilot mcp add` still receives it as an argument. `--target-user` works
+on macOS and Linux, and not with `--project` or `--kiro`. Without it, a root-run install warns
 which home it is configuring.
 
 Install `@newrelic/preflight` globally (`npm install -g`) before running this.

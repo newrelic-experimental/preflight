@@ -1701,7 +1701,7 @@ function installForTargetUser(
 
   print(`\n  Installing for ${user.name} (${user.home})`);
   try {
-    const explicit = !!(options.licenseKey || options.licenseKeyFile || options.accountId);
+    const explicit = !!(options.licenseKey || options.licenseKeyFile);
     process.exitCode = runInstallAsUser(user, process.argv.slice(1), { ...credentials, explicit });
   } catch (err) {
     eprint(`\n✗ Could not run the install as ${user.name}: ${errMsg(err)}`);
@@ -1760,6 +1760,10 @@ export function createInstallProgram(): Command {
         kiro?: boolean;
       }) => {
         if (cliOptions.kiro) {
+          if (cliOptions.targetUser) {
+            eprint('\n✗ --kiro cannot be combined with --target-user.');
+            process.exit(1);
+          }
           if (cliOptions.copilot || cliOptions.windowsCc || cliOptions.linuxCc) {
             print('\n  ⚠ --kiro cannot be combined with --copilot, --windows-cc, or --linux-cc.');
             process.exit(1);
