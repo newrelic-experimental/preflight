@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { spawnSync } from 'node:child_process';
@@ -39,6 +39,17 @@ describe('lookupUser', () => {
       return `NFSHomeDirectory: ${home}\nPrimaryGroupID: 20\nUniqueID: 501\n`;
     });
     expect(user).toEqual({ name: 'dev', uid: 501, gid: 20, home });
+  });
+
+  it('reads a dscl value that wraps onto the next line because it contains a space', () => {
+    const spaced = join(home, 'Jane Doe');
+    mkdirSync(spaced);
+    const user = lookupUser(
+      'jane',
+      'darwin',
+      () => `NFSHomeDirectory:\n ${spaced}\nPrimaryGroupID: 20\nUniqueID: 502\n`,
+    );
+    expect(user).toEqual({ name: 'jane', uid: 502, gid: 20, home: spaced });
   });
 
   it('reports an unknown user', () => {

@@ -20,9 +20,17 @@ const runCommand: RunCommand = (file, args) =>
 
 function parseDscl(output: string): Record<string, string> {
   const fields: Record<string, string> = {};
+  let key: string | undefined;
   for (const line of output.split('\n')) {
+    if (/^\s/.test(line)) {
+      if (key !== undefined && fields[key] === '') fields[key] = line.trim();
+      continue;
+    }
     const split = line.indexOf(':');
-    if (split > 0) fields[line.slice(0, split).trim()] = line.slice(split + 1).trim();
+    if (split > 0) {
+      key = line.slice(0, split).trim();
+      fields[key] = line.slice(split + 1).trim();
+    }
   }
   return fields;
 }
