@@ -13,7 +13,9 @@ the [plugin](./PLUGIN.md) and to hand every machine the same Preflight
 configuration. Preflight itself needs no machine-level config file for this.
 
 Nothing under `~/.claude/` or `~/.newrelic-preflight/` is written by your MDM
-script. Claude Code applies managed settings above every user and project
+script. (The npm-package alternative in
+[Installing the npm package from a root-run script](#installing-the-npm-package-from-a-root-run-script)
+does write there, as the user.) Claude Code applies managed settings above every user and project
 setting, so a developer cannot override a key you set.
 
 ## What to deploy
@@ -120,6 +122,10 @@ with no `NR_AI_MODE`. See [Cloud mode](./PLUGIN.md#cloud-mode) in PLUGIN.md.
 
 ## Installing the npm package from a root-run script
 
+This is the per-user alternative to the managed settings above: it writes
+`~/.claude/` and `~/.newrelic-preflight/` for the user instead of setting
+machine-wide managed settings.
+
 MDM tools such as Jamf run scripts as root, and `preflight install` configures
 the home directory of whoever runs it. Add `--target-user` to configure the
 logged-in user instead:
@@ -136,6 +142,10 @@ read as root and passed to the child through its environment, so the key file
 can stay root-only and the key never appears in `ps`. `--target-user` works on
 macOS and Linux, and not with `--project`. Without it, a root-run install warns
 which home it is configuring.
+
+Install `@newrelic/preflight` globally (`npm install -g`) before running this.
+The child runs as the user, so it cannot read a `preflight` that `npx` put under
+root's home, or a Node.js that lives there (for example one managed by `nvm`).
 
 ## What has been tested
 
