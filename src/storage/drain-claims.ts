@@ -196,9 +196,9 @@ export class DrainHold {
     const taken = takeClaim(path);
     if (taken === 'gone') return 'skip';
     if (taken !== 'stuck') return taken;
-    if (!this.gaveUp.has(path)) {
-      const parsed = parseClaimName(basename(path));
-      const lines = parsed ? `${parsed.buffer}.${parsed.firstClaimedAt}` : path;
+    const parsed = parseClaimName(basename(path));
+    const lines = parsed ? `${parsed.buffer}.${parsed.firstClaimedAt}` : path;
+    if (!this.gaveUp.has(lines)) {
       const heldPolls = lines === this.stuck ? this.stuckPolls : 0;
       if (!giveUpOrder && heldPolls < STOP_ON_FAILED_CLAIM_POLLS) {
         this.stoppedAt = lines;
@@ -209,7 +209,7 @@ export class DrainHold {
         { claim: path, heldPolls, finalDrain: giveUpOrder },
       );
     }
-    this.skipped.add(path);
+    this.skipped.add(lines);
     return 'skip';
   }
 

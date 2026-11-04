@@ -62,6 +62,7 @@ describe('claim names', () => {
 
 describe('DrainHold', () => {
   it('returns a claim whose order it gave up once the claim comes free, and ends the hold', () => {
+    if (process.getuid?.() === 0) return;
     const path = resolve(dir, formatClaimName(BUFFER, 4242, Date.now()));
     fs.writeFileSync(path, 'A\n');
     fs.chmodSync(dir, 0o500);
@@ -81,5 +82,33 @@ describe('DrainHold', () => {
 
     expect(hold.idle).toBe(true);
     expect(fs.existsSync(path)).toBe(false);
+  });
+
+  it('keeps a given-up claim given up when adoption renames it', () => {
+    if (process.getuid?.() === 0) return;
+    const first = 1700000000000;
+    const path = resolve(dir, formatClaimName(BUFFER, 4242, first));
+    fs.writeFileSync(path, 'A\n');
+    fs.chmodSync(dir, 0o500);
+    const hold = new DrainHold();
+    for (let poll = 1; poll <= STOP_ON_FAILED_CLAIM_POLLS; poll++) {
+      expect(hold.take(path, false)).toBe('stop');
+      hold.endPoll();
+    }
+    expect(hold.take(path, false)).toBe('skip');
+    hold.endPoll();
+    const gaveUpWarnings = (): number =>
+      jest.mocked(console.error).mock.calls.filter((c) => String(c[0]).includes('Gave up')).length;
+    expect(gaveUpWarnings()).toBe(1);
+
+    const adopted = resolve(dir, formatClaimName(BUFFER, 4343, first + 600000, first));
+    fs.chmodSync(dir, 0o700);
+    fs.renameSync(path, adopted);
+    fs.chmodSync(dir, 0o500);
+    expect(hold.take(adopted, false)).toBe('skip');
+    hold.endPoll();
+
+    expect(gaveUpWarnings()).toBe(1);
+    expect(hold.idle).toBe(false);
   });
 });
