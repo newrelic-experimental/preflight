@@ -1476,7 +1476,7 @@ describe('platform transition matrix', () => {
       expect(mockedTargetUser.lookupUser).toHaveBeenCalledWith('dev');
       expect(mockedTargetUser.runInstallAsUser).toHaveBeenCalledWith(
         dev,
-        expect.any(Array),
+        process.argv.slice(1),
         expect.objectContaining({ licenseKey: 'NRLIC-k', accountId: '9' }),
       );
       expect(mockedHelper.mergeSettings).not.toHaveBeenCalled();
@@ -1503,7 +1503,7 @@ describe('platform transition matrix', () => {
 
       expect(mockedTargetUser.runInstallAsUser).toHaveBeenCalledWith(
         dev,
-        expect.any(Array),
+        process.argv.slice(1),
         expect.objectContaining({ licenseKey: 'NRLIC-env' }),
       );
     });
@@ -1574,6 +1574,9 @@ describe('platform transition matrix', () => {
         'process.exit',
       );
 
+      const stderr = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(stderr).toContain('--project cannot be combined with --target-user');
+      expect(mockedTargetUser.lookupUser).not.toHaveBeenCalled();
       expect(mockedTargetUser.runInstallAsUser).not.toHaveBeenCalled();
     });
 
