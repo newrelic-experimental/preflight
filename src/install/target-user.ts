@@ -80,6 +80,13 @@ export function lookupUser(
   return { name, uid, gid, home };
 }
 
+/**
+ * Set in the child's env when the caller passed credentials explicitly, so the
+ * child treats the env-delivered key like the flag it replaced and does not
+ * defer to whatever is already stored in the target's config.
+ */
+export const EXPLICIT_CREDENTIALS_ENV = 'PREFLIGHT_INSTALL_CREDENTIALS_EXPLICIT';
+
 const VALUE_OPTIONS = ['--target-user', '--license-key', '--license-key-file', '--account-id'];
 
 /** Drops the given value-taking options (`--opt value` and `--opt=value`) from argv. */
@@ -104,7 +111,7 @@ export function stripValueOptions(argv: readonly string[], names: readonly strin
 export function runInstallAsUser(
   user: TargetUser,
   argv: readonly string[],
-  credentials: { licenseKey?: string; accountId?: string },
+  credentials: { licenseKey?: string; accountId?: string; explicit?: boolean },
   spawn: typeof spawnSync = spawnSync,
 ): number {
   const env: NodeJS.ProcessEnv = {
@@ -115,6 +122,7 @@ export function runInstallAsUser(
   };
   if (credentials.licenseKey) env.NEW_RELIC_LICENSE_KEY = credentials.licenseKey;
   if (credentials.accountId) env.NEW_RELIC_ACCOUNT_ID = credentials.accountId;
+  if (credentials.explicit) env[EXPLICIT_CREDENTIALS_ENV] = '1';
 
   const result = spawn(process.execPath, stripValueOptions(argv, VALUE_OPTIONS), {
     uid: user.uid,

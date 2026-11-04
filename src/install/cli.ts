@@ -38,7 +38,12 @@ import {
 import { copilotSdkExtensionInstallPath } from '../hooks/copilot-sdk-extension-health.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { resolveInstallCredentials } from './credentials.js';
-import { lookupUser, runInstallAsUser, type TargetUser } from './target-user.js';
+import {
+  EXPLICIT_CREDENTIALS_ENV,
+  lookupUser,
+  runInstallAsUser,
+  type TargetUser,
+} from './target-user.js';
 import {
   validateConfigFile,
   DEFAULT_STORAGE_PATH,
@@ -1657,7 +1662,13 @@ async function handleDoctor(options: {
  * Returns true when the install already ran as the target user.
  */
 function installForTargetUser(
-  options: { targetUser?: string; project?: boolean },
+  options: {
+    targetUser?: string;
+    project?: boolean;
+    licenseKey?: string;
+    licenseKeyFile?: string;
+    accountId?: string;
+  },
   credentials: { licenseKey?: string; accountId?: string },
 ): boolean {
   const currentUid = process.getuid?.();
@@ -1690,7 +1701,8 @@ function installForTargetUser(
 
   print(`\n  Installing for ${user.name} (${user.home})`);
   try {
-    process.exitCode = runInstallAsUser(user, process.argv.slice(1), credentials);
+    const explicit = !!(options.licenseKey || options.licenseKeyFile || options.accountId);
+    process.exitCode = runInstallAsUser(user, process.argv.slice(1), { ...credentials, explicit });
   } catch (err) {
     eprint(`\n✗ Could not run the install as ${user.name}: ${errMsg(err)}`);
     process.exit(1);
@@ -1763,7 +1775,8 @@ export function createInstallProgram(): Command {
         try {
           credentials = resolveInstallCredentials({
             ...cliOptions,
-            hasStoredCredentials: hasStoredLicenseSource(),
+            hasStoredCredentials:
+              hasStoredLicenseSource() && process.env[EXPLICIT_CREDENTIALS_ENV] !== '1',
           });
         } catch (err) {
           eprint(`\n✗ ${errMsg(err)}`);

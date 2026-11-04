@@ -90,6 +90,7 @@ jest.mock('./setup-wizard.js', () => ({
   runSetupWizard: jest.fn(),
 }));
 jest.mock('./target-user.js', () => ({
+  EXPLICIT_CREDENTIALS_ENV: 'PREFLIGHT_INSTALL_CREDENTIALS_EXPLICIT',
   lookupUser: jest.fn(),
   runInstallAsUser: jest.fn(() => 0),
 }));
@@ -1372,6 +1373,16 @@ describe('platform transition matrix', () => {
     expect(stdout).not.toContain('New Relic config written');
   });
 
+  it('install as a target-user child applies the key it was handed over a stored one', async () => {
+    process.env.PREFLIGHT_INSTALL_CREDENTIALS_EXPLICIT = '1';
+    try {
+      await installWithAmbientEnv('{"licenseKey":"KEY-A","accountId":"111"}');
+    } finally {
+      delete process.env.PREFLIGHT_INSTALL_CREDENTIALS_EXPLICIT;
+    }
+    expect(mockedHelper.generateNrConfig).toHaveBeenCalledWith('NRLIC-ambient', '222');
+  });
+
   it('install does not add a plaintext key next to a stored licenseKeyCommand', async () => {
     await installWithAmbientEnv('{"licenseKeyCommand":{"command":"/usr/bin/security","args":[]}}');
     expect(mockedHelper.generateNrConfig).not.toHaveBeenCalled();
@@ -1469,6 +1480,16 @@ describe('platform transition matrix', () => {
         expect.objectContaining({ licenseKey: 'NRLIC-k', accountId: '9' }),
       );
       expect(mockedHelper.mergeSettings).not.toHaveBeenCalled();
+    });
+
+    it('marks the credentials explicit only when the caller passed them', async () => {
+      asUid(0);
+      await runInstallCli(['install', '--target-user', 'dev', '--license-key', 'NRLIC-k']);
+      await runInstallCli(['install', '--target-user', 'dev']);
+
+      const calls = mockedTargetUser.runInstallAsUser.mock.calls;
+      expect(calls[0]?.[2]).toMatchObject({ explicit: true });
+      expect(calls[1]?.[2]).toMatchObject({ explicit: false });
     });
 
     it('hands the resolved key to the child so it never goes through argv', async () => {

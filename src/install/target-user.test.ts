@@ -5,7 +5,13 @@ import type { spawnSync } from 'node:child_process';
 
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 
-import { lookupUser, runInstallAsUser, stripValueOptions, type TargetUser } from './target-user.js';
+import {
+  EXPLICIT_CREDENTIALS_ENV,
+  lookupUser,
+  runInstallAsUser,
+  stripValueOptions,
+  type TargetUser,
+} from './target-user.js';
 
 describe('lookupUser', () => {
   let home: string;
@@ -124,6 +130,18 @@ describe('runInstallAsUser', () => {
       NEW_RELIC_LICENSE_KEY: 'NRLIC-secret',
       NEW_RELIC_ACCOUNT_ID: '42',
     });
+  });
+
+  it('flags explicit credentials to the child and not otherwise', () => {
+    const explicit = fakeSpawn(0);
+    runInstallAsUser(user, ['x'], { licenseKey: 'k', explicit: true }, explicit.spawn);
+    const implicit = fakeSpawn(0);
+    runInstallAsUser(user, ['x'], { licenseKey: 'k' }, implicit.spawn);
+
+    const envOf = (c: { calls: { options: Record<string, unknown> }[] }) =>
+      (c.calls[0] as (typeof c.calls)[number]).options.env as NodeJS.ProcessEnv;
+    expect(envOf(explicit)[EXPLICIT_CREDENTIALS_ENV]).toBe('1');
+    expect(envOf(implicit)[EXPLICIT_CREDENTIALS_ENV]).toBeUndefined();
   });
 
   it("drops root's dangerous env keys from the child", () => {
