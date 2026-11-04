@@ -2980,20 +2980,71 @@ describe('copilot install/uninstall', () => {
       expect(output).toContain('Registered preflight with `copilot mcp add`');
     });
 
-    it('refuses an argument cmd.exe would expand or unquote, instead of passing it to the shell', async () => {
+    it.each([
+      ['a %', '%PATH%'],
+      ['a "', 'k"ey'],
+    ])(
+      'refuses an argument holding %s instead of passing it to cmd.exe',
+      async (_label, licenseKey) => {
+        const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        await runInstallCli([
+          'install',
+          '--copilot',
+          '--license-key',
+          licenseKey,
+          '--account-id',
+          '456',
+        ]);
+
+        const cmdExeAdds = mExec.execFileSync.mock.calls.filter(
+          (c: unknown[]) =>
+            /cmd\.exe$/i.test(String(c[0])) && String((c[1] as string[])[4]).includes(' "add" '),
+        );
+        expect(cmdExeAdds).toEqual([]);
+        const stderr = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+        expect(stderr).toContain('Could not register MCP server with the copilot CLI');
+        stderrSpy.mockRestore();
+      },
+    );
+
+    it('doubles a trailing backslash so it does not escape the closing quote', async () => {
       await runInstallCli([
         'install',
         '--copilot',
         '--license-key',
-        '%PATH%',
+        'key\\',
         '--account-id',
         '456',
       ]);
 
-      const addCall = mExec.execFileSync.mock.calls.find((c: unknown[]) =>
-        JSON.stringify(c[1]).includes('"add"'),
+      expect(mExec.execFileSync).toHaveBeenCalledWith(
+        'C:\\Windows\\system32\\cmd.exe',
+        [
+          '/d',
+          '/v:off',
+          '/s',
+          '/c',
+          `""${copilotCmd}" "mcp" "add" "preflight" "--env" "MCP_CLIENT=copilot-sdk" "--env" "NEW_RELIC_LICENSE_KEY=key\\\\" "--env" "NEW_RELIC_ACCOUNT_ID=456" "--" "C:\\Users\\Jo Doe\\npm\\preflight.cmd" "--stdio""`,
+        ],
+        { stdio: 'pipe', windowsVerbatimArguments: true },
       );
-      expect(addCall).toBeUndefined();
+    });
+
+    it('runs a copilot.bat through cmd.exe too', async () => {
+      const copilotBat = 'C:\\tools\\copilot.bat';
+      mockedSchedule.resolveNamedBinaryOnPath.mockReturnValue(copilotBat);
+      await runInstallCli(['uninstall', '--copilot', '--yes']);
+
+      expect(mExec.execFileSync).toHaveBeenCalledWith(
+        'C:\\Windows\\system32\\cmd.exe',
+        ['/d', '/v:off', '/s', '/c', `""${copilotBat}" "mcp" "remove" "preflight""`],
+        { stdio: 'pipe', windowsVerbatimArguments: true },
+      );
+      expect(mExec.execFileSync).not.toHaveBeenCalledWith(
+        copilotBat,
+        expect.anything(),
+        expect.anything(),
+      );
     });
 
     it('unregisters through cmd.exe on uninstall', async () => {

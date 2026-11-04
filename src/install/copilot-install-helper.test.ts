@@ -18,6 +18,7 @@ import {
   applyHookCollisionFix,
   COPILOT_MCP_SERVER_KEY,
   AGENT_DEBUG_LOG_SETTING,
+  type CopilotHookCommand,
 } from './copilot-install-helper.js';
 import { writeJsonFile } from './json-utils.js';
 
@@ -289,11 +290,83 @@ describe('mergeCopilotHooksFile', () => {
       {
         type: 'command',
         command: 'NEW_RELIC_AI_PLATFORM=copilot "/abs/preflight-collector" pre-tool',
-        powershell: "$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'preflight-collector.cmd' pre-tool",
+        powershell:
+          "$env:NEW_RELIC_AI_PLATFORM='copilot'; & '/abs/preflight-collector.cmd' pre-tool",
         timeoutSec: 5,
       },
     ]);
     expect(hooks.PostToolUse).toEqual(generateCopilotHooksFile(null).hooks.PostToolUse);
+  });
+
+  it('points PowerShell at the absolute collector path the existing command uses when no binPath resolves', () => {
+    const entry = (command: string) => ({
+      version: 1,
+      hooks: { PreToolUse: [{ type: 'command', command }], PostToolUse: [] },
+    });
+    const powershellFor = (command: string) =>
+      (mergeCopilotHooksFile(entry(command), null).hooks as Record<string, CopilotHookCommand[]>)
+        .PreToolUse[0]!.powershell;
+
+    expect(
+      powershellFor('NEW_RELIC_AI_PLATFORM=copilot "C:\\x\\preflight-collector.exe" pre-tool'),
+    ).toBe("$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'C:\\x\\preflight-collector.exe' pre-tool");
+    expect(
+      powershellFor(
+        'NEW_RELIC_AI_PLATFORM=copilot "C:\\\\Program Files\\\\nodejs\\\\preflight-collector" pre-tool',
+      ),
+    ).toBe(
+      "$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'C:\\Program Files\\nodejs\\preflight-collector.cmd' pre-tool",
+    );
+  });
+
+  it('rewrites a PowerShell workaround in command into the sh and PowerShell shape when no binPath resolves', () => {
+    const existing = {
+      version: 1,
+      hooks: {
+        PreToolUse: [
+          {
+            type: 'command',
+            command: "$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'preflight-collector.cmd' pre-tool",
+          },
+        ],
+        PostToolUse: [
+          {
+            type: 'command',
+            command:
+              "$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'C:\\Users\\u\\npm\\preflight-collector.cmd' post-tool",
+          },
+        ],
+      },
+    };
+    const hooks = mergeCopilotHooksFile(existing, null).hooks as Record<string, unknown[]>;
+    expect(hooks.PreToolUse).toEqual(generateCopilotHooksFile(null).hooks.PreToolUse);
+    expect(hooks.PostToolUse).toEqual([
+      {
+        type: 'command',
+        command:
+          'NEW_RELIC_AI_PLATFORM=copilot "C:\\\\Users\\\\u\\\\npm\\\\preflight-collector" post-tool',
+        powershell:
+          "$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'C:\\Users\\u\\npm\\preflight-collector.cmd' post-tool",
+      },
+    ]);
+  });
+
+  it('keeps Preflight entries where they were among the user hooks', () => {
+    const mine = { type: 'command', command: 'echo mine' };
+    const after = { type: 'command', command: 'echo after' };
+    const preflight = {
+      type: 'command',
+      command: 'NEW_RELIC_AI_PLATFORM=copilot "/abs/preflight-collector" pre-tool',
+    };
+    const existing = { version: 1, hooks: { PreToolUse: [mine, preflight, after] } };
+    for (const binPath of [null, '/new/preflight']) {
+      const pre = (mergeCopilotHooksFile(existing, binPath).hooks as Record<string, unknown[]>)
+        .PreToolUse;
+      expect(pre).toHaveLength(3);
+      expect(pre[0]).toEqual(mine);
+      expect(JSON.stringify(pre[1])).toContain('preflight-collector');
+      expect(pre[2]).toEqual(after);
+    }
   });
 
   it('recognizes a hand-written entry that runs the collector only from powershell or bash', () => {

@@ -24,12 +24,12 @@
  * both, since they share this one file) is tagged simply `'copilot'`.
  */
 
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, win32 } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { z } from 'zod';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
-import { entryContainsNrObserve, siblingBinPath } from './install-helper.js';
+import { entryContainsNrObserve, shimExtension, siblingBinPath } from './install-helper.js';
 import { resolveDataDir } from '../deploy/data-paths.js';
 import { copilotSdkExtensionInstallPath } from '../hooks/copilot-sdk-extension-health.js';
 
@@ -69,25 +69,68 @@ export interface VsCodeMcpServerConfig {
 // Generators
 // ---------------------------------------------------------------------------
 
-export function generateCopilotHooksFile(binPath?: string | null): CopilotHooksFile {
+const HOOK_SUBCOMMANDS = { PreToolUse: 'pre-tool', PostToolUse: 'post-tool' } as const;
+
+// The hook entry that runs the collector at `collectorPath`, given in any of
+// its shim forms, or the bare name on PATH when null.
+function collectorHookCommand(
+  collectorPath: string | null,
+  subcommand: string,
+): CopilotHookCommand {
+  const stem = collectorPath?.replace(/\.(?:exe|cmd|ps1)$/i, '');
   // Quote the path so shells with sh -c don't split on spaces, matching
   // install-helper.ts's generateHookEntries() for Claude.
-  const bin = binPath
-    ? `"${siblingBinPath(binPath, COLLECTOR_COMMAND).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  const bin = collectorPath
+    ? `"${`${stem}${shimExtension(collectorPath)}`.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
     : COLLECTOR_COMMAND;
   // GitHub's Copilot hooks reference (docs.github.com/en/copilot/reference/
   // hooks-configuration) runs `powershell` instead of `command` on Windows.
   // PowerShell parses a leading VAR=value as a command name, so it sets the
   // tag through $env: and runs the path with `&`. The path is single-quoted
   // (verbatim in PowerShell), so it skips the sh backslash escaping above.
-  const psBin = binPath
-    ? siblingBinPath(binPath, COLLECTOR_COMMAND, { powershell: true })
+  const psBin = collectorPath
+    ? `${stem}${shimExtension(collectorPath, { powershell: true })}`
     : `${COLLECTOR_COMMAND}.cmd`;
-  const hookCommand = (subcommand: string): CopilotHookCommand => ({
+  return {
     type: 'command',
     command: `NEW_RELIC_AI_PLATFORM=copilot ${bin} ${subcommand}`,
     powershell: `$env:NEW_RELIC_AI_PLATFORM='copilot'; & '${psBin.replace(/'/g, "''")}' ${subcommand}`,
-  });
+  };
+}
+
+// The collector path in a hook command, from sh double quotes, PowerShell
+// single quotes, or a bare word, when it is absolute.
+const COLLECTOR_REF_RE =
+  /"((?:\\"|[^"])*preflight-collector(?:\.\w+)?)"|'((?:[^']|'')*preflight-collector(?:\.\w+)?)'|([^\s"']*preflight-collector(?:\.\w+)?)/i;
+
+function absoluteCollectorPath(command: string): string | null {
+  const m = COLLECTOR_REF_RE.exec(command);
+  if (!m) return null;
+  const path =
+    m[1] !== undefined
+      ? m[1].replace(/\\([\\"$`])/g, '$1')
+      : m[2] !== undefined
+        ? m[2].replace(/''/g, "'")
+        : m[3]!;
+  return win32.isAbsolute(path) ? path : null;
+}
+
+// Without a resolved path, an entry keeps its own fields, so a working
+// absolute path is not downgraded to a bare name, and gains any it lacks,
+// such as `powershell`, aimed at the same collector. A PowerShell `command`
+// (the hand-written #1057 workaround) is rewritten, because sh runs `command`.
+function upgradeWithoutBinPath(
+  entry: Record<string, unknown>,
+  subcommand: string,
+): Record<string, unknown> {
+  const command = typeof entry.command === 'string' ? entry.command : '';
+  const fresh = collectorHookCommand(absoluteCollectorPath(command), subcommand);
+  return /^\s*(?:\$env:|&\s)/i.test(command) ? { ...entry, ...fresh } : { ...fresh, ...entry };
+}
+
+export function generateCopilotHooksFile(binPath?: string | null): CopilotHooksFile {
+  const collectorPath = binPath ? siblingBinPath(binPath, COLLECTOR_COMMAND) : null;
+  const hookCommand = (subcommand: string) => collectorHookCommand(collectorPath, subcommand);
   // Flat shape per GitHub's own Copilot hooks reference — each PreToolUse/
   // PostToolUse array entry is a command hook directly ({type, command}),
   // unlike Claude Code's settings.json which nests it one level deeper under
@@ -100,8 +143,8 @@ export function generateCopilotHooksFile(binPath?: string | null): CopilotHooksF
   return {
     version: 1,
     hooks: {
-      PreToolUse: [hookCommand('pre-tool')],
-      PostToolUse: [hookCommand('post-tool')],
+      PreToolUse: [hookCommand(HOOK_SUBCOMMANDS.PreToolUse)],
+      PostToolUse: [hookCommand(HOOK_SUBCOMMANDS.PostToolUse)],
     },
   };
 }
@@ -217,18 +260,21 @@ export function mergeCopilotHooksFile(
 
   for (const hookType of ['PreToolUse', 'PostToolUse'] as const) {
     const existingArr = Array.isArray(hooks[hookType]) ? (hooks[hookType] as unknown[]) : [];
-    const ours = existingArr.filter(entryContainsNrObserve);
-    const fresh = hookEntries[hookType];
+    const first = existingArr.findIndex(entryContainsNrObserve);
     // A resolved path rewrites Preflight's entries outright, upgrading a
     // bare-name or outdated path (matches mergeSettings's behavior for Claude).
-    // Without one, each entry keeps its own fields, so a working absolute path
-    // is not downgraded to a bare name, and gains any it lacks, such as
-    // `powershell`.
-    const upgraded =
-      binPath || ours.length === 0
-        ? fresh
-        : ours.map((entry) => ({ ...fresh[0], ...(entry as Record<string, unknown>) }));
-    hooks[hookType] = [...existingArr.filter((e) => !entryContainsNrObserve(e)), ...upgraded];
+    // Either way Preflight's entries stay where they were, since hook order
+    // can matter.
+    hooks[hookType] =
+      first === -1
+        ? [...existingArr, ...hookEntries[hookType]]
+        : existingArr.flatMap((entry, i) => {
+            if (!entryContainsNrObserve(entry)) return [entry];
+            if (binPath) return i === first ? hookEntries[hookType] : [];
+            return [
+              upgradeWithoutBinPath(entry as Record<string, unknown>, HOOK_SUBCOMMANDS[hookType]),
+            ];
+          });
   }
 
   result.hooks = hooks;

@@ -35,8 +35,11 @@ export function siblingBinPath(
   name: string,
   options?: { powershell?: boolean },
 ): string {
-  const ext = /\.exe$/i.test(binPath) ? '.exe' : options?.powershell ? '.cmd' : '';
-  return join(dirname(binPath), `${name}${ext}`);
+  return join(dirname(binPath), `${name}${shimExtension(binPath, options)}`);
+}
+
+export function shimExtension(binPath: string, options?: { powershell?: boolean }): string {
+  return /\.exe$/i.test(binPath) ? '.exe' : options?.powershell ? '.cmd' : '';
 }
 
 /**
