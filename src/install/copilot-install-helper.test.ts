@@ -372,7 +372,6 @@ describe('mergeCopilotHooksFile', () => {
   it('recognizes a hand-written entry that runs the collector only from powershell or bash', () => {
     const psOnly = {
       type: 'command',
-      command: 'echo hi',
       powershell:
         "$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'C:\\npm\\preflight-collector.cmd' pre-tool",
     };
@@ -419,6 +418,88 @@ describe('mergeCopilotHooksFile', () => {
     expect(hooks.PreToolUse).toHaveLength(1);
     expect(hooks.PreToolUse[0]!.command).toContain('/new/preflight-collector');
     expect(removeCopilotHooksFile(existing).hooks).toBeUndefined();
+  });
+
+  it('collapses duplicate Preflight entries to the first when no binPath resolves', () => {
+    const broken = {
+      type: 'command',
+      command: 'NEW_RELIC_AI_PLATFORM=copilot "C:\\\\npm\\\\preflight-collector" pre-tool',
+    };
+    const workaround = {
+      type: 'command',
+      command:
+        "$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'C:\\npm\\preflight-collector.cmd' pre-tool",
+    };
+    const mine = { type: 'command', command: 'echo mine' };
+    const existing = { version: 1, hooks: { PreToolUse: [broken, mine, workaround] } };
+    const pre = (mergeCopilotHooksFile(existing, null).hooks as Record<string, unknown[]>)
+      .PreToolUse;
+    expect(pre).toEqual([
+      {
+        ...broken,
+        powershell:
+          "$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'C:\\npm\\preflight-collector.cmd' pre-tool",
+      },
+      mine,
+    ]);
+  });
+
+  it('leaves an entry alone when another of its shell fields runs a user script', () => {
+    const lint = {
+      type: 'command',
+      command: './my-lint.sh',
+      powershell: "./my-lint.ps1; & 'preflight-collector.cmd' pre-tool",
+    };
+    const existing = { version: 1, hooks: { PreToolUse: [lint] } };
+    for (const binPath of ['/new/preflight', null]) {
+      const pre = (mergeCopilotHooksFile(existing, binPath).hooks as Record<string, unknown[]>)
+        .PreToolUse;
+      expect(pre[0]).toEqual(lint);
+      expect(pre).toEqual([lint, ...generateCopilotHooksFile(binPath).hooks.PreToolUse]);
+    }
+    expect(removeCopilotHooksFile(existing)).toEqual(existing);
+  });
+
+  it('leaves a nested Claude-shape entry as it was when no binPath resolves', () => {
+    const nested = {
+      matcher: '*',
+      hooks: [{ type: 'command', command: '"/abs/preflight-collector" pre-tool' }],
+    };
+    const existing = { version: 1, hooks: { PreToolUse: [nested] } };
+    const pre = (mergeCopilotHooksFile(existing, null).hooks as Record<string, unknown[]>)
+      .PreToolUse;
+    expect(pre).toEqual([nested]);
+  });
+
+  it('keeps a UNC collector path from a PowerShell workaround when no binPath resolves', () => {
+    const unc = '\\\\server\\share\\preflight-collector.cmd';
+    for (const quoted of [`"${unc}"`, `'${unc}'`]) {
+      const existing = {
+        version: 1,
+        hooks: {
+          PreToolUse: [
+            {
+              type: 'command',
+              command: `$env:NEW_RELIC_AI_PLATFORM='copilot'; & ${quoted} pre-tool`,
+            },
+          ],
+        },
+      };
+      const pre = (
+        mergeCopilotHooksFile(existing, null).hooks as Record<string, CopilotHookCommand[]>
+      ).PreToolUse;
+      expect(pre[0]!.powershell).toBe(`$env:NEW_RELIC_AI_PLATFORM='copilot'; & '${unc}' pre-tool`);
+      expect(pre[0]!.command).toBe(
+        'NEW_RELIC_AI_PLATFORM=copilot "\\\\\\\\server\\\\share\\\\preflight-collector" pre-tool',
+      );
+    }
+  });
+
+  it('types the PowerShell command as readonly', () => {
+    const hook: CopilotHookCommand = generateCopilotHooksFile().hooks.PreToolUse[0]!;
+    // @ts-expect-error -- powershell is readonly
+    hook.powershell = '';
+    expect(hook.powershell).toBe('');
   });
 
   it('preserves unrelated top-level keys', () => {

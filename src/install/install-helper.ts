@@ -25,19 +25,15 @@ const COLLECTOR_COMMAND = 'preflight-collector';
 /**
  * Path of a Preflight bin that lives next to the resolved `preflight` binary.
  * A `.exe` shim (mise's default on Windows) has `.exe` siblings; every other
- * resolved form (`.cmd`, `.ps1`, extensionless) keeps the bare name, unless
- * the caller is PowerShell. PowerShell cannot run npm's extensionless sh shim
- * and its default execution policy blocks the `.ps1` one, so it gets the
- * `.cmd` that npm writes beside both.
+ * resolved form (`.cmd`, `.ps1`, extensionless) keeps the bare name.
  */
-export function siblingBinPath(
-  binPath: string,
-  name: string,
-  options?: { powershell?: boolean },
-): string {
-  return join(dirname(binPath), `${name}${shimExtension(binPath, options)}`);
+export function siblingBinPath(binPath: string, name: string): string {
+  return join(dirname(binPath), `${name}${shimExtension(binPath)}`);
 }
 
+// PowerShell cannot run npm's extensionless sh shim and its default execution
+// policy blocks the `.ps1` one, so it gets the `.cmd` that npm writes beside
+// both.
 export function shimExtension(binPath: string, options?: { powershell?: boolean }): string {
   return /\.exe$/i.test(binPath) ? '.exe' : options?.powershell ? '.cmd' : '';
 }
@@ -277,14 +273,18 @@ export function detectMcpConfigPath(
 // ---------------------------------------------------------------------------
 
 // Copilot hook entries add per-OS `bash` and `powershell` commands beside the
-// cross-platform `command`; a collector call in any of them makes it ours.
+// cross-platform `command`. A hook is ours only when every one of them it has
+// calls the collector, so a user script in any of them keeps it the user's.
 function hookRunsCollector(hook: unknown): boolean {
   if (typeof hook !== 'object' || hook === null) return false;
   const obj = hook as Record<string, unknown>;
-  return (['command', 'bash', 'powershell'] as const).some((field) => {
-    const command = obj[field];
-    return typeof command === 'string' && NR_HOOK_RE.test(command);
-  });
+  const commands = (['command', 'bash', 'powershell'] as const)
+    .map((field) => obj[field])
+    .filter((command) => command !== undefined);
+  return (
+    commands.length > 0 &&
+    commands.every((command) => typeof command === 'string' && NR_HOOK_RE.test(command))
+  );
 }
 
 export function entryContainsNrObserve(entry: unknown): boolean {

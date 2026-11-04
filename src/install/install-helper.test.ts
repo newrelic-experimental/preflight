@@ -18,6 +18,7 @@ import {
   readAndCheckHooks,
   areHooksInstalledAtAnyScope,
   NR_HOOK_RE,
+  siblingBinPath,
 } from './install-helper.js';
 import { writeJsonFile } from './json-utils.js';
 
@@ -94,6 +95,13 @@ describe('generators with a .exe shim binary', () => {
     const hooks = generateHookEntries('/npm/preflight.cmd');
     expect(hooks.PreToolUse[0].hooks[0].command).toBe(
       `"${join('/npm', 'preflight-collector')}" pre-tool`,
+    );
+  });
+
+  it('derives a sibling path from the resolved binary alone', () => {
+    // @ts-expect-error -- PowerShell shim selection lives in shimExtension, not here
+    expect(siblingBinPath('/npm/preflight', 'preflight-collector', { powershell: true })).toBe(
+      join('/npm', 'preflight-collector'),
     );
   });
 
