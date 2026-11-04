@@ -74,6 +74,12 @@ describe('NR_HOOK_RE', () => {
     expect(NR_HOOK_RE.test('"C:\\\\shims\\\\preflight-collector.exe" pre-tool')).toBe(true);
     expect(NR_HOOK_RE.test('C:/shims/preflight-collector.exe stop')).toBe(true);
   });
+
+  it('matches a Windows shim extension in any case', () => {
+    expect(NR_HOOK_RE.test("& 'C:\\npm\\preflight-collector.CMD' pre-tool")).toBe(true);
+    expect(NR_HOOK_RE.test('"C:\\shims\\preflight-collector.Exe" stop')).toBe(true);
+    expect(NR_HOOK_RE.test("& 'C:\\npm\\preflight-collector.PS1' post-tool")).toBe(true);
+  });
 });
 
 describe('generators with a .exe shim binary', () => {

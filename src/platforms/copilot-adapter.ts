@@ -181,7 +181,7 @@ export class CopilotAdapter implements PlatformAdapter {
       '   `copilot mcp add --env MCP_CLIENT=...`), so without it every event falls',
       '   through to the claude-code platform default.',
       '   On Windows, PowerShell cannot parse that prefix. Add a "powershell" field to',
-      "   each entry: $env:NEW_RELIC_AI_PLATFORM='copilot'; & 'preflight-collector' pre-tool",
+      "   each entry: $env:NEW_RELIC_AI_PLATFORM='copilot'; & 'preflight-collector.cmd' pre-tool",
       '   (post-tool for PostToolUse).',
       '1b. VS Code also reads Claude-format hooks from ~/.claude/settings.json by',
       '   default — if preflight hooks are installed there for Claude Code, either',

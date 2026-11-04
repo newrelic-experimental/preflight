@@ -2932,6 +2932,83 @@ describe('copilot install/uninstall', () => {
     expect(addCall![1]).toContain(`NEW_RELIC_LICENSE_KEY=${dangerousKey}`);
   });
 
+  describe('with an npm-installed copilot.cmd on Windows', () => {
+    const originalPlatform = process.platform;
+    const originalComSpec = process.env.ComSpec;
+    const copilotCmd = 'C:\\Users\\Jo Doe\\AppData\\Roaming\\npm\\copilot.cmd';
+
+    beforeEach(() => {
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      process.env.ComSpec = 'C:\\Windows\\system32\\cmd.exe';
+      mockedSchedule.resolveNamedBinaryOnPath.mockReturnValue(copilotCmd);
+      mockedSchedule.resolveBinaryPath.mockReturnValue('C:\\Users\\Jo Doe\\npm\\preflight.cmd');
+      // Node >= 18.20.2 refuses to spawn a .cmd without a shell (CVE-2024-27980).
+      mExec.execFileSync.mockImplementation((file: unknown) => {
+        if (/\.(?:cmd|bat)$/i.test(String(file))) throw new Error('spawnSync EINVAL');
+        return Buffer.from('');
+      });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      if (originalComSpec === undefined) delete process.env.ComSpec;
+      else process.env.ComSpec = originalComSpec;
+    });
+
+    it('registers the MCP server through cmd.exe with every argument quoted', async () => {
+      await runInstallCli([
+        'install',
+        '--copilot',
+        '--license-key',
+        'k&ey|^()',
+        '--account-id',
+        '456',
+      ]);
+
+      expect(mExec.execFileSync).toHaveBeenCalledWith(
+        'C:\\Windows\\system32\\cmd.exe',
+        [
+          '/d',
+          '/v:off',
+          '/s',
+          '/c',
+          `""${copilotCmd}" "mcp" "add" "preflight" "--env" "MCP_CLIENT=copilot-sdk" "--env" "NEW_RELIC_LICENSE_KEY=k&ey|^()" "--env" "NEW_RELIC_ACCOUNT_ID=456" "--" "C:\\Users\\Jo Doe\\npm\\preflight.cmd" "--stdio""`,
+        ],
+        { stdio: 'pipe', windowsVerbatimArguments: true },
+      );
+      const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(output).toContain('Registered preflight with `copilot mcp add`');
+    });
+
+    it('refuses an argument cmd.exe would expand or unquote, instead of passing it to the shell', async () => {
+      await runInstallCli([
+        'install',
+        '--copilot',
+        '--license-key',
+        '%PATH%',
+        '--account-id',
+        '456',
+      ]);
+
+      const addCall = mExec.execFileSync.mock.calls.find((c: unknown[]) =>
+        JSON.stringify(c[1]).includes('"add"'),
+      );
+      expect(addCall).toBeUndefined();
+    });
+
+    it('unregisters through cmd.exe on uninstall', async () => {
+      await runInstallCli(['uninstall', '--copilot', '--yes']);
+
+      expect(mExec.execFileSync).toHaveBeenCalledWith(
+        'C:\\Windows\\system32\\cmd.exe',
+        ['/d', '/v:off', '/s', '/c', `""${copilotCmd}" "mcp" "remove" "preflight""`],
+        { stdio: 'pipe', windowsVerbatimArguments: true },
+      );
+      const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(output).toContain('Removed preflight from `copilot mcp list`');
+    });
+  });
+
   it('skips VS Code steps gracefully when the VS Code user directory is not found', async () => {
     mFs.existsSync.mockImplementation(() => false);
     await runInstallCli(['install', '--copilot']);

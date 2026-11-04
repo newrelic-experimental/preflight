@@ -24,7 +24,7 @@
  * both, since they share this one file) is tagged simply `'copilot'`.
  */
 
-import { dirname, extname, join, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { z } from 'zod';
@@ -79,12 +79,10 @@ export function generateCopilotHooksFile(binPath?: string | null): CopilotHooksF
   // hooks-configuration) runs `powershell` instead of `command` on Windows.
   // PowerShell parses a leading VAR=value as a command name, so it sets the
   // tag through $env: and runs the path with `&`. The path is single-quoted
-  // (verbatim in PowerShell), so it skips the sh backslash escaping above,
-  // and keeps the resolved binary's extension: PowerShell cannot run npm's
-  // extensionless sh shim, only its .cmd/.ps1 siblings.
+  // (verbatim in PowerShell), so it skips the sh backslash escaping above.
   const psBin = binPath
-    ? join(dirname(binPath), COLLECTOR_COMMAND + extname(binPath))
-    : COLLECTOR_COMMAND;
+    ? siblingBinPath(binPath, COLLECTOR_COMMAND, { powershell: true })
+    : `${COLLECTOR_COMMAND}.cmd`;
   const hookCommand = (subcommand: string): CopilotHookCommand => ({
     type: 'command',
     command: `NEW_RELIC_AI_PLATFORM=copilot ${bin} ${subcommand}`,
@@ -218,22 +216,19 @@ export function mergeCopilotHooksFile(
       : {};
 
   for (const hookType of ['PreToolUse', 'PostToolUse'] as const) {
-    const existingArr = Array.isArray(hooks[hookType]) ? [...(hooks[hookType] as unknown[])] : [];
-
-    if (binPath !== null && binPath !== undefined) {
-      // Resolved path available: remove stale entry and re-add with the
-      // current absolute path so re-install always upgrades a bare-name or
-      // outdated entry (matches mergeSettings's behavior for Claude).
-      const withoutNr = existingArr.filter((e) => !entryContainsNrObserve(e));
-      hooks[hookType] = [...withoutNr, ...hookEntries[hookType]];
-    } else {
-      // No path resolved: leave any existing entry untouched so a working
-      // absolute-path hook is not downgraded to a bare name.
-      if (!existingArr.some(entryContainsNrObserve)) {
-        existingArr.push(...hookEntries[hookType]);
-      }
-      hooks[hookType] = existingArr;
-    }
+    const existingArr = Array.isArray(hooks[hookType]) ? (hooks[hookType] as unknown[]) : [];
+    const ours = existingArr.filter(entryContainsNrObserve);
+    const fresh = hookEntries[hookType];
+    // A resolved path rewrites Preflight's entries outright, upgrading a
+    // bare-name or outdated path (matches mergeSettings's behavior for Claude).
+    // Without one, each entry keeps its own fields, so a working absolute path
+    // is not downgraded to a bare name, and gains any it lacks, such as
+    // `powershell`.
+    const upgraded =
+      binPath || ours.length === 0
+        ? fresh
+        : ours.map((entry) => ({ ...fresh[0], ...(entry as Record<string, unknown>) }));
+    hooks[hookType] = [...existingArr.filter((e) => !entryContainsNrObserve(e)), ...upgraded];
   }
 
   result.hooks = hooks;

@@ -190,7 +190,7 @@ export class CopilotSdkAdapter implements PlatformAdapter {
       '   below, so without it every event falls through to the claude-code',
       '   platform default.',
       '   On Windows, PowerShell cannot parse that prefix. Add a "powershell" field to',
-      "   each entry: $env:NEW_RELIC_AI_PLATFORM='copilot'; & 'preflight-collector' pre-tool",
+      "   each entry: $env:NEW_RELIC_AI_PLATFORM='copilot'; & 'preflight-collector.cmd' pre-tool",
       '   (post-tool for PostToolUse).',
       '2. Ensure preflight-collector is on PATH (npm link, or npm install -g @newrelic/preflight)',
       '3. Register the Preflight MCP server:',

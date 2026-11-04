@@ -25,10 +25,17 @@ const COLLECTOR_COMMAND = 'preflight-collector';
 /**
  * Path of a Preflight bin that lives next to the resolved `preflight` binary.
  * A `.exe` shim (mise's default on Windows) has `.exe` siblings; every other
- * resolved form (`.cmd`, `.ps1`, extensionless) keeps the bare name.
+ * resolved form (`.cmd`, `.ps1`, extensionless) keeps the bare name, unless
+ * the caller is PowerShell. PowerShell cannot run npm's extensionless sh shim
+ * and its default execution policy blocks the `.ps1` one, so it gets the
+ * `.cmd` that npm writes beside both.
  */
-export function siblingBinPath(binPath: string, name: string): string {
-  const ext = /\.exe$/i.test(binPath) ? '.exe' : '';
+export function siblingBinPath(
+  binPath: string,
+  name: string,
+  options?: { powershell?: boolean },
+): string {
+  const ext = /\.exe$/i.test(binPath) ? '.exe' : options?.powershell ? '.cmd' : '';
   return join(dirname(binPath), `${name}${ext}`);
 }
 
@@ -60,10 +67,13 @@ const STOP_SUBCOMMAND = 'stop';
 //   preflight-collector user-prompt-submit
 //   preflight-collector stop
 // It also matches a Windows shim extension and a PowerShell single-quoted
-// path, so a hand-written PowerShell entry is replaced and removed too:
+// path, ignoring case as Windows does. entryContainsNrObserve tests it against
+// a hook's command, bash, and powershell fields, so a hand-written PowerShell
+// entry is replaced on install and removed on uninstall too:
 //   & 'C:\npm\preflight-collector.cmd' pre-tool
 export const NR_HOOK_RE = new RegExp(
   `preflight-collector(?:\\.(?:exe|cmd|ps1))?["']?\\s+(?:${HOOK_SUBCOMMAND_PATTERN}|${INSTRUCTIONS_LOADED_SUBCOMMAND}|${MODEL_SWITCH_SUBCOMMAND}|${SESSION_START_SUBCOMMAND}|${USER_PROMPT_SUBMIT_SUBCOMMAND}|${STOP_SUBCOMMAND})`,
+  'i',
 );
 
 // ---------------------------------------------------------------------------
@@ -263,28 +273,27 @@ export function detectMcpConfigPath(
 // Merge helpers
 // ---------------------------------------------------------------------------
 
+// Copilot hook entries add per-OS `bash` and `powershell` commands beside the
+// cross-platform `command`; a collector call in any of them makes it ours.
+function hookRunsCollector(hook: unknown): boolean {
+  if (typeof hook !== 'object' || hook === null) return false;
+  const obj = hook as Record<string, unknown>;
+  return (['command', 'bash', 'powershell'] as const).some((field) => {
+    const command = obj[field];
+    return typeof command === 'string' && NR_HOOK_RE.test(command);
+  });
+}
+
 export function entryContainsNrObserve(entry: unknown): boolean {
   if (typeof entry !== 'object' || entry === null) return false;
   const obj = entry as Record<string, unknown>;
 
   // New format: { matcher, hooks: [{ type, command }] }
-  if (Array.isArray(obj.hooks)) {
-    return obj.hooks.some(
-      (h: unknown) =>
-        typeof h === 'object' &&
-        h !== null &&
-        'command' in (h as Record<string, unknown>) &&
-        typeof (h as Record<string, unknown>).command === 'string' &&
-        NR_HOOK_RE.test((h as Record<string, unknown>).command as string),
-    );
-  }
+  if (Array.isArray(obj.hooks)) return obj.hooks.some(hookRunsCollector);
 
-  // Legacy flat format: { matcher, command }
-  if ('command' in obj && typeof obj.command === 'string' && NR_HOOK_RE.test(obj.command)) {
-    return true;
-  }
-
-  return false;
+  // Flat formats: Claude's legacy { matcher, command } and Copilot's
+  // { type, command, bash?, powershell? }
+  return hookRunsCollector(obj);
 }
 
 /**
