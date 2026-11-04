@@ -2,6 +2,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 
+import { stripDangerousEnv } from '../lib/child-env.js';
+
 export interface TargetUser {
   readonly name: string;
   readonly uid: number;
@@ -106,7 +108,7 @@ export function runInstallAsUser(
   spawn: typeof spawnSync = spawnSync,
 ): number {
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...stripDangerousEnv(process.env).env,
     HOME: user.home,
     USER: user.name,
     LOGNAME: user.name,

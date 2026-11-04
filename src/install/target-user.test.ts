@@ -126,6 +126,26 @@ describe('runInstallAsUser', () => {
     });
   });
 
+  it("drops root's dangerous env keys from the child", () => {
+    const saved = { options: process.env.NODE_OPTIONS, preload: process.env.LD_PRELOAD };
+    process.env.NODE_OPTIONS = '--require /tmp/x.js';
+    process.env.LD_PRELOAD = '/tmp/x.so';
+    try {
+      const { spawn, calls } = fakeSpawn(0);
+      runInstallAsUser(user, ['index.js', 'install'], {}, spawn);
+
+      const env = (calls[0] as (typeof calls)[number]).options.env as NodeJS.ProcessEnv;
+      expect(env.NODE_OPTIONS).toBeUndefined();
+      expect(env.LD_PRELOAD).toBeUndefined();
+      expect(env.HOME).toBe('/Users/dev');
+    } finally {
+      if (saved.options === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = saved.options;
+      if (saved.preload === undefined) delete process.env.LD_PRELOAD;
+      else process.env.LD_PRELOAD = saved.preload;
+    }
+  });
+
   it('returns the child exit status, and 1 when it was killed by a signal', () => {
     expect(runInstallAsUser(user, ['x'], {}, fakeSpawn(3).spawn)).toBe(3);
     expect(runInstallAsUser(user, ['x'], {}, fakeSpawn(null).spawn)).toBe(1);
