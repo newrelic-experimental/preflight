@@ -1,6 +1,6 @@
 import { readdirSync, statSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { dirname, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 
 import { createLogger } from '../shared/index.js';
 import { takeClaimText } from './hook-buffer.js';
@@ -26,7 +26,7 @@ export const LEGACY_DRAIN_ADOPT_AGE_MS = 60_000;
 
 export const STALE_CLAIM_AGE_MS = 10 * 60_000;
 
-/** Polls in a row, about 5 s at the 100 ms poll, that a drain holds the claims after one it cannot take. */
+/** Polls in a row, about 5 s at the 100 ms poll, that a drain holds the claims after each claim it cannot take. */
 export const STOP_ON_FAILED_CLAIM_POLLS = 50;
 
 export interface DrainClaim {
@@ -174,33 +174,39 @@ function takeClaim(path: string): { readonly text: string } | 'gone' | 'stuck' {
 
 /**
  * Takes one drained buffer's claims in order across polls. A claim that cannot be taken stops
- * the drain, so the claims after it keep their order, for at most `STOP_ON_FAILED_CLAIM_POLLS`
- * polls in a row however many claims are stuck. The next poll, and any final drain, gives up
- * the order of each claim it cannot take: it warns once naming the claim and skips it while it
- * stays stuck, so a claim that never comes free cannot hold the buffer's events for good.
+ * the drain, so the claims after it keep their order. Once one claim has stopped
+ * `STOP_ON_FAILED_CLAIM_POLLS` polls in a row, the next poll gives up its order: it warns once
+ * naming the claim and skips it while it stays stuck, so a claim that never comes free cannot
+ * hold the buffer's events for good. A claim that first fails on that poll starts a hold of its
+ * own. A claim is known by its buffer and `firstClaimedAt`, which adoption keeps, so a rename
+ * does not restart its count. A drain that gives up held order skips every claim it cannot take.
  */
 export class DrainHold {
-  private stoppedPolls = 0;
+  private stuck: string | null = null;
+  private stuckPolls = 0;
+  private stoppedAt: string | null = null;
   private gaveUp: ReadonlySet<string> = new Set();
   private skipped = new Set<string>();
 
   get idle(): boolean {
-    return this.stoppedPolls === 0 && this.gaveUp.size === 0;
+    return this.stuck === null && this.gaveUp.size === 0;
   }
 
-  take(path: string, final: boolean): { readonly text: string } | 'skip' | 'stop' {
+  take(path: string, giveUpOrder: boolean): { readonly text: string } | 'skip' | 'stop' {
     const taken = takeClaim(path);
     if (taken === 'gone') return 'skip';
     if (taken !== 'stuck') return taken;
     if (!this.gaveUp.has(path)) {
-      if (!final && this.stoppedPolls < STOP_ON_FAILED_CLAIM_POLLS) return 'stop';
+      const parsed = parseClaimName(basename(path));
+      const lines = parsed ? `${parsed.buffer}.${parsed.firstClaimedAt}` : path;
+      const heldPolls = lines === this.stuck ? this.stuckPolls : 0;
+      if (!giveUpOrder && heldPolls < STOP_ON_FAILED_CLAIM_POLLS) {
+        this.stoppedAt = lines;
+        return 'stop';
+      }
       logger.warn(
         'Gave up holding hook events in order behind a drain claim that cannot be taken',
-        {
-          claim: path,
-          heldPolls: this.stoppedPolls,
-          finalDrain: final,
-        },
+        { claim: path, heldPolls, finalDrain: giveUpOrder },
       );
     }
     this.skipped.add(path);
@@ -208,13 +214,17 @@ export class DrainHold {
   }
 
   /** A finished poll ends the hold and keeps only the claims still stuck. A stopped one extends it. */
-  endPoll(finished: boolean): void {
-    if (finished) {
-      this.stoppedPolls = 0;
+  endPoll(): void {
+    if (this.stoppedAt === null) {
+      this.stuck = null;
+      this.stuckPolls = 0;
       this.gaveUp = this.skipped;
     } else {
-      this.stoppedPolls += 1;
+      this.stuckPolls = this.stoppedAt === this.stuck ? this.stuckPolls + 1 : 1;
+      this.stuck = this.stoppedAt;
+      this.gaveUp = new Set([...this.gaveUp, ...this.skipped]);
     }
+    this.stoppedAt = null;
     this.skipped = new Set();
   }
 }

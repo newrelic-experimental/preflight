@@ -136,6 +136,7 @@ export class LocalStore {
   private readonly bufferPath: string;
   private readonly sessionId: string | null;
   private readonly holds = new Map<string, DrainHold>();
+  private giveUpOrder = false;
 
   /**
    * @param storagePath The base storage directory (e.g. ~/.newrelic-preflight).
@@ -225,15 +226,21 @@ export class LocalStore {
    * Reading a claim appends a seal to it first. A hook that opened the buffer
    * before the rename and whose line lands after the seal writes the line
    * again to the live buffer, so it is drained on a later pass.
-   *
-   * @param final The last drain before the processor flushes its pending pre
-   *   events as timeouts. It takes every claim it can rather than holding the
-   *   claims after one it cannot take, since a post left behind would pair
-   *   with nothing and count its call twice.
    */
-  drainBuffer(final = false): HookEvent[] {
+  drainBuffer(): HookEvent[] {
     const claims = listClaims(dirname(this.bufferPath), basename(this.bufferPath));
-    return this.drainPath(this.bufferPath, { present: existsSync(this.bufferPath), claims }, final);
+    return this.drainPath(this.bufferPath, { present: existsSync(this.bufferPath), claims });
+  }
+
+  /**
+   * For a processor that is shutting down: every later drain takes each claim
+   * it can rather than holding the claims after one it cannot take. The
+   * processor flushes its pending pre events as timeouts right after its last
+   * drain, so a post left behind would pair with nothing and count its call
+   * twice.
+   */
+  giveUpHeldOrder(): void {
+    this.giveUpOrder = true;
   }
 
   /**
@@ -244,10 +251,9 @@ export class LocalStore {
    * MCP isn't running) are picked up too.
    *
    * A per-session buffer whose `active-<sessionId>.pid` heartbeat names a
-   * live PID is left to that session's own `--stdio` process. `final` is as
-   * for `drainBuffer`.
+   * live PID is left to that session's own `--stdio` process.
    */
-  drainAllBuffers(final = false): HookEvent[] {
+  drainAllBuffers(): HookEvent[] {
     const all: HookEvent[] = [];
     let entries: string[];
     try {
@@ -257,17 +263,14 @@ export class LocalStore {
       logger.warn('Failed to enumerate storage path for drainAllBuffers', { error: String(err) });
       return [];
     }
-    for (const [name, drain] of this.bufferDrains(entries)) {
+    const drains = this.bufferDrains(entries);
+    for (const [name, drain] of drains) {
       const ownerLive = (): boolean => name !== 'buffer.jsonl' && this.hasLiveOwner(name);
-      for (const event of this.drainPath(
-        resolve(this.storagePath, name),
-        drain,
-        final,
-        ownerLive,
-      )) {
+      for (const event of this.drainPath(resolve(this.storagePath, name), drain, ownerLive)) {
         all.push(event);
       }
     }
+    for (const path of this.holds.keys()) if (!drains.has(basename(path))) this.holds.delete(path);
     return all;
   }
 
@@ -1216,7 +1219,6 @@ export class LocalStore {
   private drainPath(
     bufferPath: string,
     drain: BufferDrain,
-    final: boolean,
     ownerLive: () => boolean = () => false,
   ): HookEvent[] {
     const drainsDir = resolve(dirname(bufferPath), DRAINS_DIR);
@@ -1240,20 +1242,20 @@ export class LocalStore {
     const hold = this.holds.get(bufferPath) ?? new DrainHold();
     const events: HookEvent[] = [];
     const take = (path: string): boolean => {
-      const taken = hold.take(path, final);
+      const taken = hold.take(path, this.giveUpOrder);
       if (taken === 'stop') return false;
       if (taken !== 'skip') for (const event of parseHookEvents(taken.text)) events.push(event);
       return true;
     };
-    let finished = paths.every(take);
+    const finished = paths.every(take);
     // The buffer is claimed only once every older claim is taken or given up, and ownerLive is
     // asked again on purpose: an engine can adopt the session while the claims above are taken.
     const olderEventsPending = drain.claims.some((claim) => holdsBuffer(claim, isPidAlive));
     if (finished && drain.present && !olderEventsPending && !ownerLive()) {
       const path = this.claimDrain(bufferPath, drainsDir, basename(bufferPath));
-      if (path) finished = take(path);
+      if (path) take(path);
     }
-    hold.endPoll(finished);
+    hold.endPoll();
     if (hold.idle) this.holds.delete(bufferPath);
     else this.holds.set(bufferPath, hold);
     return events;
