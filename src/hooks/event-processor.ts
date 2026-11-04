@@ -578,11 +578,11 @@ export class HookEventProcessor {
    * recreating the processor or its callbacks. Used when the provisional
    * unscoped store is replaced by the real session-scoped store once the
    * Claude Code session ID is resolved asynchronously. The last drain of the
-   * old store still holds claims in order, and the new store takes them later.
+   * old store still holds claims in order, and the new store takes them later,
+   * so pending pre events stay pending for the posts in those claims.
    */
   replaceStore(newStore: LocalStore, drainAllSessions: boolean): void {
     this.halt();
-    this.flushPending();
     this.store = newStore;
     this.drainAllSessions = drainAllSessions;
     this.start();

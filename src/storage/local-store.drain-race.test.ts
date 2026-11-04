@@ -572,6 +572,32 @@ describe('concurrent drainers of one buffer', () => {
     expect(gaveUpWarnings()).toEqual([]);
   });
 
+  it('keeps a pending pre through replaceStore while its post waits behind a stuck claim', () => {
+    const records: ToolCallRecord[] = [];
+    const store = new LocalStore(dir, SESSION);
+    const processor = new HookEventProcessor({
+      store,
+      pollIntervalMs: 3_600_000,
+      onRecord: (record) => records.push(record),
+    });
+    fs.writeFileSync(bufferPath, line('A', 'pre'));
+    processor.processEvents(store.drainBuffer());
+    const now = Date.now();
+    writeClaim(REAL_PID, now - 2_000, line('X', 'pre'));
+    writeClaim(REAL_PID, now - 1_000, line('A'));
+    refuseUnlinkOf('X');
+
+    processor.start();
+    processor.replaceStore(new LocalStore(dir, SESSION), false);
+    mockHooks.unlink = null;
+    processor.stop();
+
+    expect(records.map((r) => `${r.toolName}:${r.success ? 'paired' : r.errorType}`)).toEqual([
+      'A:paired',
+      'X:timeout',
+    ]);
+  });
+
   it('keeps two adopted claims oldest first when the first take fails', () => {
     const now = Date.now();
     writeClaim(DEAD_PID, now - 20_000, line('A', 'pre'));
