@@ -405,7 +405,7 @@ describe('concurrent drainers of one buffer', () => {
     expect(gaveUpWarnings()).toEqual([expect.objectContaining({ claim: stuck })]);
   });
 
-  it('holds the claims behind several stuck claims for 50 polls in all', () => {
+  it('holds the claims behind each of several stuck claims for 50 polls in turn', () => {
     const now = Date.now();
     writeClaim(DEAD_PID, now - 30_000, line('S1', 'pre'));
     writeClaim(DEAD_PID, now - 29_000, line('S2', 'pre'));
@@ -414,9 +414,47 @@ describe('concurrent drainers of one buffer', () => {
     refuseUnlinkOf('S1', 'S2', 'S3');
     const store = new LocalStore(dir, SESSION);
 
-    for (let poll = 1; poll <= 50; poll++) expect(store.drainBuffer()).toEqual([]);
+    for (let poll = 1; poll <= 150; poll++) expect(store.drainBuffer()).toEqual([]);
 
     expect(tools(store.drainBuffer())).toEqual(['B:pre']);
+    expect(gaveUpWarnings()).toHaveLength(3);
+  });
+
+  it('holds a claim that first fails on the poll that gives up another, so its post waits', () => {
+    writeClaim(DEAD_PID, Date.now() - 10_000, line('A', 'pre'));
+    fs.writeFileSync(bufferPath, line('B', 'pre'));
+    let preFailures = 0;
+    const refuse = (path: string): void => {
+      mockHooks.unlink = refuse;
+      const text = fs.readFileSync(path, 'utf-8');
+      if (text.includes('"tool":"A"')) throw failing('EPERM');
+      if (text.includes('"mode":"pre","tool":"B"') && preFailures++ < 3) throw failing('EPERM');
+    };
+    mockHooks.unlink = refuse;
+    const store = new LocalStore(dir, SESSION);
+
+    for (let poll = 1; poll <= 51; poll++) expect(store.drainBuffer()).toEqual([]);
+    fs.appendFileSync(bufferPath, line('B'));
+    const returned: string[] = [];
+    for (let poll = 1; poll <= 5; poll++) returned.push(...tools(store.drainBuffer()));
+
+    expect(returned).toEqual(['B:pre', 'B']);
+  });
+
+  it('gives a stuck claim the full 50 polls after an earlier hold ended with its buffer unlisted', () => {
+    const first = writeClaim(REAL_PID, Date.now() - 10_000, line('A', 'pre'));
+    refuseUnlinkOf('A', 'C');
+    const store = new LocalStore(dir);
+    for (let poll = 1; poll <= 30; poll++) expect(store.drainAllBuffers()).toEqual([]);
+    fs.rmSync(first);
+    expect(store.drainAllBuffers()).toEqual([]);
+
+    const now = Date.now();
+    writeClaim(REAL_PID, now - 2_000, line('C', 'pre'));
+    writeClaim(REAL_PID, now - 1_000, line('D', 'pre'));
+    for (let poll = 1; poll <= 50; poll++) expect(store.drainAllBuffers()).toEqual([]);
+
+    expect(tools(store.drainAllBuffers())).toEqual(['D:pre']);
   });
 
   it('claims no new buffer while a claim it cannot unlink holds the drain', () => {
@@ -505,6 +543,33 @@ describe('concurrent drainers of one buffer', () => {
     expect(records.map((r) => `${r.toolName}:${r.success ? 'paired' : r.errorType}`)).toEqual([
       'A:paired',
     ]);
+  });
+
+  it('holds the claims behind a stuck claim through replaceStore, so the call counts once', () => {
+    const records: ToolCallRecord[] = [];
+    const processor = new HookEventProcessor({
+      store: new LocalStore(dir, SESSION),
+      pollIntervalMs: 3_600_000,
+      onRecord: (record) => records.push(record),
+    });
+    const now = Date.now();
+    const stuck = writeClaim(REAL_PID, now - 2_000, line('A', 'pre'));
+    writeClaim(REAL_PID, now - 1_000, line('A'));
+    const refuse = (path: string): void => {
+      mockHooks.unlink = refuse;
+      if (path === stuck) throw failing('EPERM');
+    };
+    mockHooks.unlink = refuse;
+
+    processor.start();
+    processor.replaceStore(new LocalStore(dir, SESSION), false);
+    mockHooks.unlink = null;
+    processor.stop();
+
+    expect(records.map((r) => `${r.toolName}:${r.success ? 'paired' : r.errorType}`)).toEqual([
+      'A:paired',
+    ]);
+    expect(gaveUpWarnings()).toEqual([]);
   });
 
   it('keeps two adopted claims oldest first when the first take fails', () => {
