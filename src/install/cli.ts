@@ -1689,7 +1689,12 @@ function installForTargetUser(
   }
 
   print(`\n  Installing for ${user.name} (${user.home})`);
-  process.exitCode = runInstallAsUser(user, process.argv.slice(1), credentials);
+  try {
+    process.exitCode = runInstallAsUser(user, process.argv.slice(1), credentials);
+  } catch (err) {
+    eprint(`\n✗ Could not run the install as ${user.name}: ${errMsg(err)}`);
+    process.exit(1);
+  }
   return true;
 }
 

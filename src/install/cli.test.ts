@@ -1496,6 +1496,21 @@ describe('platform transition matrix', () => {
       expect(process.exitCode).toBe(3);
     });
 
+    it('reports a spawn failure and exits 1', async () => {
+      asUid(0);
+      mockedTargetUser.runInstallAsUser.mockImplementation(() => {
+        throw new Error('spawn /nonexistent/node ENOENT');
+      });
+
+      await expect(runInstallCli(['install', '--target-user', 'dev'])).rejects.toThrow(
+        'process.exit',
+      );
+
+      const stderr = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(stderr).toContain('Could not run the install as dev: spawn /nonexistent/node ENOENT');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
     it('refuses when not root', async () => {
       asUid(777);
 
