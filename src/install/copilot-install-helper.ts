@@ -24,12 +24,12 @@
  * both, since they share this one file) is tagged simply `'copilot'`.
  */
 
-import { dirname, join, resolve } from 'node:path';
+import { dirname, resolve, win32 } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { z } from 'zod';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
-import { entryContainsNrObserve } from './install-helper.js';
+import { entryContainsNrObserve, shimExtension, siblingBinPath } from './install-helper.js';
 import { resolveDataDir } from '../deploy/data-paths.js';
 import { copilotSdkExtensionInstallPath } from '../hooks/copilot-sdk-extension-health.js';
 
@@ -50,6 +50,7 @@ const HOOK_FILE_LOCATIONS_SETTING = 'chat.hookFilesLocations';
 export interface CopilotHookCommand {
   type: 'command';
   command: string;
+  readonly powershell: string;
 }
 
 export interface CopilotHooksFile {
@@ -68,14 +69,80 @@ export interface VsCodeMcpServerConfig {
 // Generators
 // ---------------------------------------------------------------------------
 
-export function generateCopilotHooksFile(binPath?: string | null): CopilotHooksFile {
+const HOOK_SUBCOMMANDS = { PreToolUse: 'pre-tool', PostToolUse: 'post-tool' } as const;
+
+// The collector shim at `collectorPath`, given in any of its shim forms, that
+// sh or PowerShell can run.
+function collectorShim(collectorPath: string, powershell: boolean): string {
+  return `${collectorPath.replace(/\.(?:exe|cmd|ps1)$/i, '')}${shimExtension(collectorPath, { powershell })}`;
+}
+
+// The hook entry that runs the collector at `collectorPath`, or the bare name
+// on PATH when null.
+function collectorHookCommand(
+  collectorPath: string | null,
+  subcommand: string,
+): CopilotHookCommand {
   // Quote the path so shells with sh -c don't split on spaces, matching
   // install-helper.ts's generateHookEntries() for Claude.
-  const bin = binPath
-    ? `"${join(dirname(binPath), COLLECTOR_COMMAND).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  const bin = collectorPath
+    ? `"${collectorShim(collectorPath, false).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
     : COLLECTOR_COMMAND;
-  const pre = `NEW_RELIC_AI_PLATFORM=copilot ${bin} pre-tool`;
-  const post = `NEW_RELIC_AI_PLATFORM=copilot ${bin} post-tool`;
+  // GitHub's Copilot hooks reference (docs.github.com/en/copilot/reference/
+  // hooks-configuration) runs `powershell` instead of `command` on Windows.
+  // PowerShell parses a leading VAR=value as a command name, so it sets the
+  // tag through $env: and runs the path with `&`. The path is single-quoted
+  // (verbatim in PowerShell), so it skips the sh backslash escaping above.
+  const psBin = collectorShim(collectorPath ?? COLLECTOR_COMMAND, true);
+  return {
+    type: 'command',
+    command: `NEW_RELIC_AI_PLATFORM=copilot ${bin} ${subcommand}`,
+    powershell: `$env:NEW_RELIC_AI_PLATFORM='copilot'; & '${psBin.replace(/'/g, "''")}' ${subcommand}`,
+  };
+}
+
+// The collector path in a hook command, from sh double quotes, PowerShell
+// single quotes, or a bare word, when it is absolute.
+const POWERSHELL_COMMAND_RE = /^\s*(?:\$env:|&)/i;
+
+const COLLECTOR_REF_RE =
+  /"((?:\\"|[^"])*preflight-collector(?:\.\w+)?)"|'((?:[^']|'')*preflight-collector(?:\.\w+)?)'|([^\s"']*preflight-collector(?:\.\w+)?)/i;
+
+function absoluteCollectorPath(command: string): string | null {
+  const m = COLLECTOR_REF_RE.exec(command);
+  if (!m) return null;
+  // Only sh unescapes inside double quotes. PowerShell keeps backslashes, as
+  // in a UNC path.
+  const path =
+    m[1] !== undefined
+      ? POWERSHELL_COMMAND_RE.test(command)
+        ? m[1]
+        : m[1].replace(/\\([\\"$`])/g, '$1')
+      : m[2] !== undefined
+        ? m[2].replace(/''/g, "'")
+        : m[3]!;
+  return win32.isAbsolute(path) ? path : null;
+}
+
+// Without a resolved path, an entry keeps its own fields, so a working
+// absolute path is not downgraded to a bare name, and gains any it lacks,
+// such as `powershell`, aimed at the same collector. A PowerShell `command`
+// (a hand-written workaround) is rewritten, because sh runs `command`.
+// A Claude-shape {matcher, hooks} entry stays as it was, since flat fields
+// beside `hooks` would make a hybrid.
+function upgradeWithoutBinPath(
+  entry: Record<string, unknown>,
+  subcommand: string,
+): Record<string, unknown> {
+  if (Array.isArray(entry.hooks)) return entry;
+  const command = typeof entry.command === 'string' ? entry.command : '';
+  const fresh = collectorHookCommand(absoluteCollectorPath(command), subcommand);
+  return POWERSHELL_COMMAND_RE.test(command) ? { ...entry, ...fresh } : { ...fresh, ...entry };
+}
+
+export function generateCopilotHooksFile(binPath?: string | null): CopilotHooksFile {
+  const collectorPath = binPath ? siblingBinPath(binPath, COLLECTOR_COMMAND) : null;
+  const hookCommand = (subcommand: string) => collectorHookCommand(collectorPath, subcommand);
   // Flat shape per GitHub's own Copilot hooks reference — each PreToolUse/
   // PostToolUse array entry is a command hook directly ({type, command}),
   // unlike Claude Code's settings.json which nests it one level deeper under
@@ -88,8 +155,8 @@ export function generateCopilotHooksFile(binPath?: string | null): CopilotHooksF
   return {
     version: 1,
     hooks: {
-      PreToolUse: [{ type: 'command', command: pre }],
-      PostToolUse: [{ type: 'command', command: post }],
+      PreToolUse: [hookCommand(HOOK_SUBCOMMANDS.PreToolUse)],
+      PostToolUse: [hookCommand(HOOK_SUBCOMMANDS.PostToolUse)],
     },
   };
 }
@@ -105,7 +172,7 @@ export function generateVsCodeMcpEntry(
   binPath?: string | null,
   creds?: { licenseKey?: string; accountId?: string },
 ): Record<string, VsCodeMcpServerConfig> {
-  const command = binPath ? join(dirname(binPath), MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
+  const command = binPath ? siblingBinPath(binPath, MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
   const env: Record<string, string> = { MCP_CLIENT: 'copilot' };
   if (creds?.licenseKey) env.NEW_RELIC_LICENSE_KEY = creds.licenseKey;
   if (creds?.accountId) env.NEW_RELIC_ACCOUNT_ID = creds.accountId;
@@ -204,22 +271,22 @@ export function mergeCopilotHooksFile(
       : {};
 
   for (const hookType of ['PreToolUse', 'PostToolUse'] as const) {
-    const existingArr = Array.isArray(hooks[hookType]) ? [...(hooks[hookType] as unknown[])] : [];
-
-    if (binPath !== null && binPath !== undefined) {
-      // Resolved path available: remove stale entry and re-add with the
-      // current absolute path so re-install always upgrades a bare-name or
-      // outdated entry (matches mergeSettings's behavior for Claude).
-      const withoutNr = existingArr.filter((e) => !entryContainsNrObserve(e));
-      hooks[hookType] = [...withoutNr, ...hookEntries[hookType]];
-    } else {
-      // No path resolved: leave any existing entry untouched so a working
-      // absolute-path hook is not downgraded to a bare name.
-      if (!existingArr.some(entryContainsNrObserve)) {
-        existingArr.push(...hookEntries[hookType]);
-      }
-      hooks[hookType] = existingArr;
-    }
+    const existingArr = Array.isArray(hooks[hookType]) ? (hooks[hookType] as unknown[]) : [];
+    const first = existingArr.findIndex(entryContainsNrObserve);
+    // Preflight's entries collapse to the first, in place, since hook order
+    // can matter. A resolved path rewrites it outright, upgrading a bare-name
+    // or outdated path (matches mergeSettings's behavior for Claude).
+    hooks[hookType] =
+      first === -1
+        ? [...existingArr, ...hookEntries[hookType]]
+        : existingArr.flatMap((entry, i) => {
+            if (!entryContainsNrObserve(entry)) return [entry];
+            if (i !== first) return [];
+            if (binPath) return hookEntries[hookType];
+            return [
+              upgradeWithoutBinPath(entry as Record<string, unknown>, HOOK_SUBCOMMANDS[hookType]),
+            ];
+          });
   }
 
   result.hooks = hooks;
