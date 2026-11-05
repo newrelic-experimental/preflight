@@ -618,10 +618,14 @@ export class HookEventProcessor {
    * unscoped store is replaced by the real session-scoped store once the
    * Claude Code session ID is resolved asynchronously. The last drain of the
    * old store still holds claims in order, and the new store takes them later,
-   * so pending pre events stay pending for the posts in those claims.
+   * so the new session's pending pres stay pending for the posts in those
+   * claims. A scoped store never drains another session's buffer, so that
+   * session's pending pres count once now, as timeouts. A post of theirs left
+   * in this process's claims amends its timeout record.
    */
   replaceStore(newStore: LocalStore, drainAllSessions: boolean): void {
     this.halt();
+    if (!drainAllSessions) this.flushPending(newStore.getSessionId());
     this.store = newStore;
     this.drainAllSessions = drainAllSessions;
     this.start();
@@ -989,11 +993,14 @@ export class HookEventProcessor {
     }
   }
 
-  private flushPending(): void {
+  private flushPending(keptSessionId?: string | null): void {
     for (const [key, entry] of this.pending) {
+      const { sessionId } = entry.event;
+      if (keptSessionId !== undefined && (sessionId === undefined || sessionId === keptSessionId))
+        continue;
+      this.pending.delete(key);
       this.emitUnpairedPreRecord(key, entry);
     }
-    this.pending.clear();
   }
 
   private pairingKey(event: PreHookEvent): string {
