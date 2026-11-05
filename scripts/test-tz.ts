@@ -38,6 +38,17 @@ if (list.jest.length === 0 || list.vitest.length === 0) {
   process.exit(1);
 }
 
+// Node falls back to UTC for a TZ it does not recognise, so a misspelled zone would run
+// the tests under UTC and pass.
+if (process.env.TZ !== undefined) {
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: process.env.TZ });
+  } catch {
+    console.error(`TZ=${process.env.TZ} is not a time zone this Node recognises`);
+    process.exit(1);
+  }
+}
+
 console.log(`Zone-sensitive tests under TZ=${process.env.TZ ?? '(host default)'}`);
 // --runTestsByPath takes the paths literally. By default jest reads each as an unanchored regex.
 const jestStatus = run(['jest', '--runTestsByPath', ...list.jest]);

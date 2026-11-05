@@ -54,6 +54,12 @@ function localDayHelperRe(): RegExp {
       /^export const (\w+)\s*(?::(?:[^=]|=>)+?)?=(?!>)\s*(?:async\s*)?(?:\(|function\b)/gm,
     ),
   ].map((m) => m[1]);
+  // An empty name list would build a pattern that matches every file.
+  if (names.length === 0) {
+    throw new Error(
+      'found no exported functions in src/lib/date.ts; update localDayHelperRe in scripts/check-tz-tests.ts for its new export style',
+    );
+  }
   return new RegExp(`\\b(?:${names.join('|')})\\b`);
 }
 
