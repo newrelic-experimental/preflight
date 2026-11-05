@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { appendToHookBuffer, DRAIN_SEAL as SEAL } from './hook-buffer.js';
 import { LocalStore } from './local-store.js';
 import { formatClaimName } from './drain-claims.js';
-import type { HookEvent } from './types.js';
+import { HookEventProcessor } from '../hooks/event-processor.js';
+import type { HookEvent, ToolCallRecord } from './types.js';
 
 const mockHooks: {
   rename: ((from: fs.PathLike, to: fs.PathLike) => void) | null;
@@ -15,6 +16,7 @@ const mockHooks: {
   shortWrite: ((text: string) => number | null) | null;
   unlink: ((path: string) => void) | null;
   listOrder: ((dir: string, names: string[]) => string[]) | null;
+  nonce: ((size: number) => Buffer) | null;
 } = {
   rename: null,
   drainRead: null,
@@ -23,6 +25,7 @@ const mockHooks: {
   shortWrite: null,
   unlink: null,
   listOrder: null,
+  nonce: null,
 };
 
 function textOf(data: unknown): string {
@@ -89,6 +92,14 @@ jest.mock('node:fs', () => {
   };
 });
 
+jest.mock('node:crypto', () => {
+  const real = jest.requireActual<typeof import('node:crypto')>('node:crypto');
+  return {
+    ...real,
+    randomBytes: (size: number) => mockHooks.nonce?.(size) ?? real.randomBytes(size),
+  };
+});
+
 const SESSION = 'drain-race-session';
 const DEAD_PID = 2_147_483_000;
 const OTHER_LIVE_PID = process.ppid;
@@ -147,6 +158,21 @@ function failing(code: string): Error {
   return Object.assign(new Error(`${code}: injected`), { code });
 }
 
+function refuseUnlinkOf(...tools: string[]): void {
+  const refuse = (path: string): void => {
+    mockHooks.unlink = refuse;
+    const text = fs.readFileSync(path, 'utf-8');
+    if (tools.some((tool) => text.includes(`"tool":"${tool}"`))) throw failing('EPERM');
+  };
+  mockHooks.unlink = refuse;
+}
+
+function gaveUpWarnings(): unknown[] {
+  return warnings().filter((entry) =>
+    String((entry as { message?: string }).message).startsWith('Gave up holding hook events'),
+  );
+}
+
 function setPid(pid: number): void {
   Object.defineProperty(process, 'pid', { value: pid, configurable: true, enumerable: true });
 }
@@ -184,6 +210,7 @@ afterEach(() => {
   mockHooks.shortWrite = null;
   mockHooks.unlink = null;
   mockHooks.listOrder = null;
+  mockHooks.nonce = null;
   jest.restoreAllMocks();
   for (const d of [dir, resolve(dir, 'drains')]) if (fs.existsSync(d)) fs.chmodSync(d, 0o700);
   fs.rmSync(dir, { recursive: true, force: true });
@@ -344,6 +371,248 @@ describe('concurrent drainers of one buffer', () => {
     fs.appendFileSync(claim!, line('A'));
 
     expect(tools(new LocalStore(dir, SESSION).drainBuffer())).toEqual(['A:pre', 'A', 'B']);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('returns nothing after a claim it cannot unlink, so a post never precedes its pre', () => {
+    writeClaim(DEAD_PID, Date.now() - 10_000, line('A', 'pre'));
+    fs.writeFileSync(bufferPath, line('B', 'pre') + line('A'));
+    mockHooks.unlink = () => {
+      throw failing('EPERM');
+    };
+
+    const store = new LocalStore(dir, SESSION);
+    const firstPoll = store.drainBuffer();
+    const secondPoll = store.drainBuffer();
+
+    expect(tools(firstPoll)).toEqual([]);
+    expect(tools(secondPoll)).toEqual(['A:pre', 'B:pre', 'A']);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('holds the claims behind a claim it cannot unlink for 50 polls, then warns once and returns them', () => {
+    writeClaim(DEAD_PID, Date.now() - 10_000, line('A', 'pre'));
+    writeClaim(DEAD_PID, Date.now() - 5_000, line('B', 'pre'));
+    refuseUnlinkOf('A');
+    const store = new LocalStore(dir, SESSION);
+
+    for (let poll = 1; poll <= 50; poll++) expect(store.drainBuffer()).toEqual([]);
+    expect(gaveUpWarnings()).toEqual([]);
+
+    expect(tools(store.drainBuffer())).toEqual(['B:pre']);
+    for (let poll = 1; poll <= 5; poll++) expect(store.drainBuffer()).toEqual([]);
+    const [stuck] = claimPaths();
+    expect(gaveUpWarnings()).toEqual([expect.objectContaining({ claim: stuck })]);
+  });
+
+  it('holds the claims behind each of several stuck claims for 50 polls in turn', () => {
+    const now = Date.now();
+    writeClaim(DEAD_PID, now - 30_000, line('S1', 'pre'));
+    writeClaim(DEAD_PID, now - 29_000, line('S2', 'pre'));
+    writeClaim(DEAD_PID, now - 28_000, line('S3', 'pre'));
+    writeClaim(DEAD_PID, now - 10_000, line('B', 'pre'));
+    refuseUnlinkOf('S1', 'S2', 'S3');
+    const store = new LocalStore(dir, SESSION);
+
+    for (let poll = 1; poll <= 150; poll++) expect(store.drainBuffer()).toEqual([]);
+
+    expect(tools(store.drainBuffer())).toEqual(['B:pre']);
+    expect(gaveUpWarnings()).toHaveLength(3);
+  });
+
+  it('holds a claim that first fails on the poll that gives up another, so its post waits', () => {
+    writeClaim(DEAD_PID, Date.now() - 10_000, line('A', 'pre'));
+    fs.writeFileSync(bufferPath, line('B', 'pre'));
+    let preFailures = 0;
+    const refuse = (path: string): void => {
+      mockHooks.unlink = refuse;
+      const text = fs.readFileSync(path, 'utf-8');
+      if (text.includes('"tool":"A"')) throw failing('EPERM');
+      if (text.includes('"mode":"pre","tool":"B"') && preFailures++ < 3) throw failing('EPERM');
+    };
+    mockHooks.unlink = refuse;
+    const store = new LocalStore(dir, SESSION);
+
+    for (let poll = 1; poll <= 51; poll++) expect(store.drainBuffer()).toEqual([]);
+    fs.appendFileSync(bufferPath, line('B'));
+    const returned: string[] = [];
+    for (let poll = 1; poll <= 5; poll++) returned.push(...tools(store.drainBuffer()));
+
+    expect(returned).toEqual(['B:pre', 'B']);
+  });
+
+  it('gives a stuck claim the full 50 polls after an earlier hold ended with its buffer unlisted', () => {
+    const first = writeClaim(REAL_PID, Date.now() - 10_000, line('A', 'pre'));
+    refuseUnlinkOf('A', 'C');
+    const store = new LocalStore(dir);
+    for (let poll = 1; poll <= 30; poll++) expect(store.drainAllBuffers()).toEqual([]);
+    fs.rmSync(first);
+    expect(store.drainAllBuffers()).toEqual([]);
+
+    const now = Date.now();
+    writeClaim(REAL_PID, now - 2_000, line('C', 'pre'));
+    writeClaim(REAL_PID, now - 1_000, line('D', 'pre'));
+    for (let poll = 1; poll <= 50; poll++) expect(store.drainAllBuffers()).toEqual([]);
+
+    expect(tools(store.drainAllBuffers())).toEqual(['D:pre']);
+  });
+
+  it('claims no new buffer while a claim it cannot unlink holds the drain', () => {
+    writeClaim(DEAD_PID, Date.now() - 10_000, line('A', 'pre'));
+    refuseUnlinkOf('A');
+    const store = new LocalStore(dir, SESSION);
+
+    for (let poll = 1; poll <= 10; poll++) {
+      fs.appendFileSync(bufferPath, line(`B${poll}`, 'pre'));
+      expect(store.drainBuffer()).toEqual([]);
+    }
+
+    expect(claimPaths()).toHaveLength(1);
+  });
+
+  it('keeps a legacy .drain it took over ahead of a buffer claimed in the same millisecond', () => {
+    fs.writeFileSync(`${bufferPath}.drain`, line('A', 'pre'));
+    fs.writeFileSync(bufferPath, line('A'));
+    const store = new LocalStore(dir, SESSION);
+    expect(store.drainBuffer()).toEqual([]);
+    later(61_000);
+    const nonces = [0xff, 0x00];
+    mockHooks.nonce = (size) => Buffer.alloc(size, nonces.shift() ?? 0x80);
+    mockHooks.unlink = () => {
+      throw failing('EPERM');
+    };
+
+    const polls = [store.drainBuffer(), store.drainBuffer()];
+
+    expect(tools(polls.flat())).toEqual(['A:pre', 'A']);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('does not let a second live drainer take over a claim it holds in order', () => {
+    const now = Date.now();
+    writeClaim(DEAD_PID, now - 20 * 60_000, line('A', 'pre'));
+    writeClaim(REAL_PID, now - 1_000, line('B', 'pre') + line('A'));
+    mockHooks.unlink = () => {
+      throw failing('EPERM');
+    };
+    const store = new LocalStore(dir, SESSION);
+
+    expect(store.drainBuffer()).toEqual([]);
+    expect(asProcess(OTHER_LIVE_PID, () => new LocalStore(dir, SESSION).drainBuffer())).toEqual([]);
+
+    expect(tools(store.drainBuffer())).toEqual(['A:pre', 'B:pre', 'A']);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('returns the claims behind a stuck claim when two live drainers both see it', () => {
+    const now = Date.now();
+    writeClaim(DEAD_PID, now - 20 * 60_000, line('A', 'pre'));
+    writeClaim(REAL_PID, now - 1_000, line('B', 'pre'));
+    writeClaim(OTHER_LIVE_PID, now - 1_000, line('C', 'pre'));
+    refuseUnlinkOf('A');
+    const mine = new LocalStore(dir, SESSION);
+    const theirs = new LocalStore(dir, SESSION);
+    const returned: string[] = [];
+
+    for (let poll = 1; poll <= 60; poll++) {
+      returned.push(...tools(mine.drainBuffer()));
+      returned.push(...tools(asProcess(OTHER_LIVE_PID, () => theirs.drainBuffer())));
+    }
+
+    expect(returned.sort()).toEqual(['B:pre', 'C:pre']);
+  });
+
+  it('takes every claim it can on the final drain, so stop() pairs each post once', () => {
+    const records: ToolCallRecord[] = [];
+    const store = new LocalStore(dir, SESSION);
+    const processor = new HookEventProcessor({
+      store,
+      pollIntervalMs: 3_600_000,
+      onRecord: (record) => records.push(record),
+    });
+    fs.writeFileSync(bufferPath, line('A', 'pre'));
+    processor.processEvents(store.drainBuffer());
+    const now = Date.now();
+    writeClaim(REAL_PID, now - 2_000, line('X', 'pre'));
+    writeClaim(REAL_PID, now - 1_000, line('A'));
+    refuseUnlinkOf('X');
+
+    processor.start();
+    processor.stop();
+
+    expect(records.map((r) => `${r.toolName}:${r.success ? 'paired' : r.errorType}`)).toEqual([
+      'A:paired',
+    ]);
+  });
+
+  it('holds the claims behind a stuck claim through replaceStore, so the call counts once', () => {
+    const records: ToolCallRecord[] = [];
+    const processor = new HookEventProcessor({
+      store: new LocalStore(dir, SESSION),
+      pollIntervalMs: 3_600_000,
+      onRecord: (record) => records.push(record),
+    });
+    const now = Date.now();
+    const stuck = writeClaim(REAL_PID, now - 2_000, line('A', 'pre'));
+    writeClaim(REAL_PID, now - 1_000, line('A'));
+    const refuse = (path: string): void => {
+      mockHooks.unlink = refuse;
+      if (path === stuck) throw failing('EPERM');
+    };
+    mockHooks.unlink = refuse;
+
+    processor.start();
+    processor.replaceStore(new LocalStore(dir, SESSION), false);
+    mockHooks.unlink = null;
+    processor.stop();
+
+    expect(records.map((r) => `${r.toolName}:${r.success ? 'paired' : r.errorType}`)).toEqual([
+      'A:paired',
+    ]);
+    expect(gaveUpWarnings()).toEqual([]);
+  });
+
+  it('keeps a pending pre through replaceStore while its post waits behind a stuck claim', () => {
+    const records: ToolCallRecord[] = [];
+    const store = new LocalStore(dir, SESSION);
+    const processor = new HookEventProcessor({
+      store,
+      pollIntervalMs: 3_600_000,
+      onRecord: (record) => records.push(record),
+    });
+    fs.writeFileSync(bufferPath, line('A', 'pre'));
+    processor.processEvents(store.drainBuffer());
+    const now = Date.now();
+    writeClaim(REAL_PID, now - 2_000, line('X', 'pre'));
+    writeClaim(REAL_PID, now - 1_000, line('A'));
+    refuseUnlinkOf('X');
+
+    processor.start();
+    processor.replaceStore(new LocalStore(dir, SESSION), false);
+    mockHooks.unlink = null;
+    processor.stop();
+
+    expect(records.map((r) => `${r.toolName}:${r.success ? 'paired' : r.errorType}`)).toEqual([
+      'A:paired',
+      'X:timeout',
+    ]);
+  });
+
+  it('keeps two adopted claims oldest first when the first take fails', () => {
+    const now = Date.now();
+    writeClaim(DEAD_PID, now - 20_000, line('A', 'pre'));
+    writeClaim(DEAD_PID, now - 10_000, line('B', 'pre') + line('B'));
+    mockHooks.listOrder = (_d, names) => [...names].sort().reverse();
+    mockHooks.unlink = () => {
+      throw failing('EPERM');
+    };
+    let clock = now;
+    jest.spyOn(Date, 'now').mockImplementation(() => (clock += 5));
+
+    const store = new LocalStore(dir, SESSION);
+    const polls = [store.drainBuffer(), store.drainBuffer()];
+
+    expect(tools(polls.flat())).toEqual(['A:pre', 'B:pre', 'B']);
     expect(leftovers()).toEqual([]);
   });
 
