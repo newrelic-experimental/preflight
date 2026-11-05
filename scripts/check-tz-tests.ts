@@ -21,9 +21,27 @@ const ROOT = process.cwd();
 const LIST_PATH = 'test/support/tz-sensitive-tests.json';
 const TEST_FILE_RE = /\.test\.tsx?$/;
 
-// Calls whose result depends on the host's zone.
-const LOCAL_TIME_RE =
-  /getHours|getDate\(|getDay\(|getMonth\(|getFullYear\(|setHours|setDate\(|setMonth|getTimezoneOffset|toLocale|new Date\(\d+, *\d|resolvedOptions|timeZone|process\.env\.TZ|startOfDay|startOfWeek|toDateString|Intl\.DateTimeFormat/;
+// Calls whose result depends on the host's zone: the local getters and setters,
+// `new Date(y, m, ...)` with literals or variables, a date-time string with no
+// offset (parsed as local time), and Intl formatting without a pinned zone.
+const LOCAL_TIME_RE = new RegExp(
+  [
+    'get(?:Hours|Minutes|Seconds|Milliseconds|Date|Day|Month|FullYear)\\(',
+    'set(?:Hours|Minutes|Seconds|Milliseconds|Date|Month|FullYear)\\(',
+    'getTimezoneOffset',
+    'toLocale',
+    'toTimeString',
+    'toDateString',
+    'new Date\\([^()]*,',
+    '(?:new Date|Date\\.parse)\\([\'"`]\\d{4}-\\d{2}-\\d{2}[T ][\\d:.]+[\'"`]\\)',
+    'resolvedOptions',
+    'timeZone',
+    'process\\.env\\.TZ',
+    'startOfDay',
+    'startOfWeek',
+    'Intl\\.DateTimeFormat',
+  ].join('|'),
+);
 
 interface TzTestList {
   readonly jest: readonly string[];

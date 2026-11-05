@@ -74,6 +74,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Every test that reads the host's zone must be in the list the UTC and
+      # Auckland steps run, or it runs under New York only. Ahead of the tests so
+      # a missing entry fails in a second instead of after the zone runs.
+      - name: Check time-zone test list
+        run: npm run check:tz-tests
+
       # jest.config.ts pins maxWorkers to 1 for local runs, where parallel workers
       # have deadlocked on stdio. This one step overrides it to find out whether the
       # runner's cores can be used. If it flakes, go back to `npm test`.
@@ -119,11 +125,6 @@ jobs:
       # A test outside both globs passes CI by never running.
       - name: Check test-runner ownership
         run: npm run check:test-ownership
-
-      # Every test that reads the host's zone must be in the list the UTC and
-      # Auckland steps run, or it runs under New York only.
-      - name: Check time-zone test list
-        run: npm run check:tz-tests
 
       # package.json's devEngines pins the npm that keeps the lockfile's `libc`
       # fields; an older npm strips them. Fails when a plain install would rewrite

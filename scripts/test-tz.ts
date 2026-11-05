@@ -26,7 +26,14 @@ function run(args: readonly string[]): number {
   return result.status ?? 1;
 }
 
+// With no file arguments, jest and vitest run everything.
+if (list.jest.length === 0 || list.vitest.length === 0) {
+  console.error('test/support/tz-sensitive-tests.json needs at least one jest and one vitest file');
+  process.exit(1);
+}
+
 console.log(`Zone-sensitive tests under TZ=${process.env.TZ ?? '(host default)'}`);
-const jestStatus = run(['jest', '--', ...list.jest]);
+// --runTestsByPath takes the paths literally. By default jest reads each as an unanchored regex.
+const jestStatus = run(['jest', '--runTestsByPath', ...list.jest]);
 const vitestStatus = run(['vitest', 'run', ...list.vitest]);
 process.exit(jestStatus !== 0 || vitestStatus !== 0 ? 1 : 0);
