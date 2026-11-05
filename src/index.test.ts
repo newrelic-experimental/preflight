@@ -1152,6 +1152,7 @@ describe('stdio integration', () => {
   ])(
     '$title',
     async ({ sessionsMode, toolCallCounts, countedFiles }) => {
+      if (sessionsMode === 0o500 && process.getuid?.() === 0) return; // root ignores the mode
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
       const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
       const storage = mkdtempSync(join(tmpdir(), 'nr-shutdown-in-flight-'));

@@ -1014,9 +1014,10 @@ export class HookEventProcessor {
       this.unpersistedCountedIds.delete(key);
       return counted;
     }
-    return event.toolUseId !== undefined &&
-      event.sessionId !== undefined &&
-      this.store.hasCountedToolUseId(event.sessionId, event.toolUseId)
+    const id = event.toolUseId;
+    return id !== undefined &&
+      (this.unpersistedCountedIds.has(id) ||
+        (event.sessionId !== undefined && this.store.hasCountedToolUseId(event.sessionId, id)))
       ? 'counted-elsewhere'
       : undefined;
   }

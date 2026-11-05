@@ -1202,8 +1202,15 @@ describe('HookEventProcessor', () => {
         makePostEvent({ toolUseId: 'toolu_a', sessionId: 'sess-a' }),
         makePostEvent({ toolUseId: 'toolu_0', sessionId: 'sess-b' }),
       ]);
-
       expect(records.filter((r) => r.success).map((r) => r.toolUseId)).toEqual([]);
+    });
+
+    it('does not count a late post twice for an id evicted from the amend window', () => {
+      const p = new HookEventProcessor({ store, onRecord, maxPendingEvents: 2 });
+      p.processEvents(['a', 'b', 'c', 'd'].map((toolUseId) => makePreEvent({ toolUseId })));
+      p.stop();
+      p.processEvents([makePostEvent({ toolUseId: 'a' })]);
+      expect(records.filter((r) => r.toolUseId === 'a')).toHaveLength(1);
     });
 
     it('retries a counted-file write that failed at the next save', () => {
