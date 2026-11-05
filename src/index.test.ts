@@ -1721,7 +1721,7 @@ describe('stdio integration', () => {
         expect(readSaved(storagePath, 'skipped-first-id')?.tokensInput).toBe(1400);
       } finally {
         rmSync(otherCwd, { recursive: true, force: true });
-        cleanup();
+        await cleanup();
       }
     }, 60000);
 
