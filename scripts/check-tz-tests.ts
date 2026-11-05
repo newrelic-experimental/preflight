@@ -48,7 +48,12 @@ const LOCAL_TIME_RE = new RegExp(
 // source so a new helper is covered without editing this file.
 function localDayHelperRe(): RegExp {
   const source = readFileSync(resolve(ROOT, 'src/lib/date.ts'), 'utf8');
-  const names = [...source.matchAll(/^export (?:async )?function (\w+)/gm)].map((m) => m[1]);
+  const names = [
+    ...source.matchAll(/^export (?:async )?function (\w+)/gm),
+    ...source.matchAll(
+      /^export const (\w+)\s*(?::(?:[^=]|=>)+?)?=(?!>)\s*(?:async\s*)?(?:\(|function\b)/gm,
+    ),
+  ].map((m) => m[1]);
   return new RegExp(`\\b(?:${names.join('|')})\\b`);
 }
 
@@ -85,7 +90,10 @@ function main(): void {
       const isWeb = file.startsWith('src/web/');
       if (!onDisk.has(file)) {
         problems.push(`${LIST_PATH} names ${file}, which no longer exists; remove it`);
-      } else if ([...onDisk].filter((other) => other.includes(file)).length > 1) {
+      } else if (
+        runner === 'vitest' &&
+        [...onDisk].filter((other) => other.includes(file)).length > 1
+      ) {
         // Vitest reads each listed path as a substring filter, so a longer path that
         // contains this one would run too.
         problems.push(`${file} is a substring of another test path, so vitest would run both`);
@@ -102,10 +110,12 @@ function main(): void {
   const helperRe = localDayHelperRe();
   for (const file of [...onDisk].sort()) {
     if (listed.has(file)) continue;
-    // A comment that names an API or helper does not call it.
+    // A comment that names an API or helper does not call it. Only comments that start
+    // their line are dropped: a `/*` or ` //` inside a string would otherwise swallow real
+    // code, and a trailing comment that over-flags costs one listed test, not a missed one.
     const code = readFileSync(resolve(ROOT, file), 'utf8')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/(^|\s)\/\/.*$/gm, '$1');
+      .replace(/^[ \t]*\/\*[\s\S]*?\*\//gm, '')
+      .replace(/^[ \t]*\/\/.*$/gm, '');
     if (LOCAL_TIME_RE.test(code) || helperRe.test(code)) {
       problems.push(
         `${file} uses a local-time API but is not in ${LIST_PATH}, so CI runs it under one zone only. Add it to the "${file.startsWith('src/web/') ? 'vitest' : 'jest'}" list, or make the test independent of the host zone`,

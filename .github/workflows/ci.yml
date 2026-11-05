@@ -110,7 +110,7 @@ jobs:
       # Springs forward at local midnight, a transition the dailyPeaks DST test
       # has to scan past.
       - name: Test (DST, America/Havana)
-        run: npx jest src/dashboard/routes/api-handler.test.ts
+        run: npx jest --runTestsByPath src/dashboard/routes/api-handler.test.ts
         env:
           TZ: America/Havana
 
