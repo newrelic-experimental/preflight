@@ -37,7 +37,7 @@ const config: Config = {
   // package — and the path resolution (join(__dirname, '..', 'package.json')) resolves
   // correctly in the upstream repo but to src/package.json (non-existent) in this layout.
   // Integration tests spawn real child processes and require a compiled binary
-  // (built via beforeAll). They run via `npm run test:integration` only.
+  // (built via beforeAll). They run via `npm run test:integration`, which CI's `processes` job also runs.
   testPathIgnorePatterns: [
     '/node_modules/',
     // src/web is Vitest's (jsdom + React). Jest's testMatch would otherwise claim

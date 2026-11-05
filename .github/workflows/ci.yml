@@ -5,7 +5,9 @@ name: CI
 # the drift-checker scripts that otherwise never run automatically:
 # check-docs-inventory.ts (docs/code drift), check-bundle-size.ts (SPA
 # bundle budget, mirrors verify:plugin-hook's already-enforced pattern in
-# release.yml) and check-test-ownership.ts (every test file has a runner).
+# release.yml) and check-test-ownership.ts (every test file has a runner). The
+# processes job adds the two checks that spawn real processes, which `npm test`
+# does not run: the multi-instance integration test and the hook-drain stress script.
 on:
   pull_request:
   workflow_dispatch:
@@ -141,6 +143,7 @@ jobs:
   # Separate from verify so a timing flake here is visible under its own name.
   processes:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
 
