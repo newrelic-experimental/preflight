@@ -50,11 +50,12 @@ jobs:
       - name: Verify plugin hook bundle is up to date
         run: npm run verify:plugin-hook
 
-      # Checks that package-lock.json, server.json, and both plugin manifests
-      # carry package.json's version, and that the newest CHANGELOG entry is
-      # for it. Also fails while .changeset/ holds a changeset that releases
-      # something, or one it can't read: the tag below goes on this checkout, so
-      # its change would ship under a version whose entry leaves it out. main
+      # Checks that package-lock.json, server.json, both plugin manifests, and
+      # the plugin's npx pin in plugin/.mcp.json carry package.json's version,
+      # and that the newest CHANGELOG entry is for it. Also fails while
+      # .changeset/ holds a changeset that releases something, or one it can't
+      # read: the tag below goes on this checkout, so its change would ship
+      # under a version whose entry leaves it out. main
       # only takes changes through a reviewed PR, so this job can't push a
       # fix-up commit. It can only fail loudly and point at the PR that needs
       # to land first, which is normally the release PR.

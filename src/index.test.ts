@@ -674,6 +674,22 @@ describe('startRetentionSweep()', () => {
     clearInterval(handle as NodeJS.Timeout);
   });
 
+  it('prunes billed-turn ledger generations older than the retention window and keeps the current one', () => {
+    const ledgerDir = resolve(storagePath, 'billed-turns');
+    mkdirSync(ledgerDir, { recursive: true });
+    const currentGeneration = Math.floor(Date.now() / (7 * 24 * 60 * 60 * 1000));
+    const oldLedger = resolve(ledgerDir, 'g1-0.jsonl');
+    const currentLedger = resolve(ledgerDir, `g${currentGeneration}-0.jsonl`);
+    writeFileSync(oldLedger, '', { mode: 0o600 });
+    writeFileSync(currentLedger, '', { mode: 0o600 });
+
+    const handle = startRetentionSweep({ storagePath, retainSessionsDays: 90 });
+
+    expect(existsSync(oldLedger)).toBe(false);
+    expect(existsSync(currentLedger)).toBe(true);
+    clearInterval(handle as NodeJS.Timeout);
+  });
+
   it('re-runs the sweep every 6 hours', () => {
     const handle = startRetentionSweep({ storagePath, retainSessionsDays: 90 });
 
