@@ -1320,6 +1320,7 @@ export interface SettingsResponse {
   readonly weeklyBudgetUsd: number | null;
   readonly retainSessionsDays: number | null;
   readonly digestWebhookUrl: string | null;
+  readonly digestWebhookUrlSource: 'env' | 'command' | 'file' | 'unset';
   readonly digestSchedule: string;
   readonly alerts: {
     readonly personal: {
