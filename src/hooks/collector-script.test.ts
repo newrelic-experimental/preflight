@@ -9,7 +9,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import {
   _procFs,
@@ -41,6 +41,7 @@ beforeEach(() => {
   tmpDir = resolve(tmpdir(), `nr-hook-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tmpDir, { recursive: true });
   bufferPath = resolve(tmpDir, 'buffer.jsonl');
+  process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
   process.env.NEW_RELIC_AI_MCP_BUFFER_PATH = bufferPath;
   delete process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT;
   delete process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
@@ -253,6 +254,12 @@ function readBufferLines(sessionId?: string): Record<string, unknown>[] {
 
 describe('collector-script', () => {
   describe('processHook() — PreToolUse', () => {
+    it('lands its session breadcrumbs in the test temp dir, not the default storage dir', () => {
+      processHook(makePreToolUse());
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'))).toBe(true);
+      expect(existsSync(resolve(homedir(), '.newrelic-preflight'))).toBe(false);
+    });
+
     it('writes a valid pre event to the buffer', () => {
       processHook(makePreToolUse());
 
