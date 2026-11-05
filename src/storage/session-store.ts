@@ -739,10 +739,16 @@ export class SessionStore {
     return this.sessionsDir;
   }
 
-  saveSession(summary: FullSessionSummary): void {
+  /**
+   * Returns null when nothing was written, else the file the write merged
+   * against (`previous`, null for a new file).
+   */
+  saveSession(
+    summary: FullSessionSummary,
+  ): { readonly previous: FullSessionSummary | null } | null {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(summary.sessionId) || summary.sessionId === 'unknown') {
       logger.warn('Rejecting invalid sessionId for file path', { sessionId: summary.sessionId });
-      return;
+      return null;
     }
 
     if (!existsSync(this.sessionsDir)) {
@@ -770,7 +776,7 @@ export class SessionStore {
       logger.debug('Skipping first write of a session with no recorded usage', {
         sessionId: summary.sessionId,
       });
-      return;
+      return null;
     }
 
     // A second process saving under the same sessionId (e.g. two MCP
@@ -791,7 +797,7 @@ export class SessionStore {
         logger.warn('Refusing to overwrite recorded session with an empty summary', {
           sessionId: summary.sessionId,
         });
-        return;
+        return null;
       }
       // Two processes legitimately share one session id: the CLI/editor
       // spawns an MCP engine that owns the session natively, while a
@@ -859,6 +865,7 @@ export class SessionStore {
         }
       }
       logger.debug('Session saved', { sessionId: toWrite.sessionId, filename });
+      return { previous: existingWithPath?.summary ?? null };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn('Failed to save session file', {
@@ -866,6 +873,7 @@ export class SessionStore {
         filename,
         error: message,
       });
+      return null;
     }
   }
 
