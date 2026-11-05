@@ -23,7 +23,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { basename, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
@@ -919,7 +919,14 @@ export class SessionStore {
     const sinceDate = options?.since ? formatDate(options.since) : null;
     const results: SessionFileInfo[] = [];
 
-    for (const file of readdirSync(this.sessionsDir)) {
+    const names = readdirSync(this.sessionsDir);
+    const filesPerId = new Map<string, number>();
+    for (const name of names) {
+      const sessionId = parseSessionFilename(name)?.sessionId;
+      if (sessionId !== undefined) filesPerId.set(sessionId, (filesPerId.get(sessionId) ?? 0) + 1);
+    }
+
+    for (const file of names) {
       if (!file.endsWith('.json')) continue;
 
       const parsed = parseSessionFilename(file);
@@ -930,8 +937,11 @@ export class SessionStore {
       if (options?.developer) {
         try {
           const filepath = join(this.sessionsDir, file);
-          const read = parseSessionFile(readFileSync(filepath, 'utf-8'), filepath);
-          if (read.kind === 'unreadable' || read.summary.developer !== options.developer) continue;
+          const summary = usableSummary(
+            parseSessionFile(readFileSync(filepath, 'utf-8'), filepath),
+            filesPerId.get(parsed.sessionId) ?? 0,
+          );
+          if (!summary || summary.developer !== options.developer) continue;
         } catch {
           continue;
         }
@@ -1924,10 +1934,12 @@ function parseSessionFile(raw: string, filepath: string): ParsedSessionFile {
   const recovered = first === null ? null : parseSummary(first);
   const file = basename(filepath);
   if (recovered) {
-    warnOnce(filepath, 'Recovered first JSON document from corrupt session file', { file });
+    warnOnce(`recovered:${filepath}`, 'Recovered first JSON document from corrupt session file', {
+      file,
+    });
     return { kind: 'recovered', summary: recovered };
   }
-  warnOnce(filepath, 'Failed to deserialize session file', { file });
+  warnOnce(`unreadable:${filepath}`, 'Failed to deserialize session file', { file });
   return { kind: 'unreadable' };
 }
 
@@ -1964,7 +1976,9 @@ function copiedAsideUnchanged(file: SessionFileRead): boolean {
       logger.warn('Session file changed since it was read; skipping this save', { file: name });
       return false;
     }
-    writeFileSync(`${file.filepath}.${Date.now()}.corrupt`, file.bytes, {
+    if (hasCorruptCopy(file)) return true;
+    const suffix = `${Date.now()}.${process.pid}.${randomBytes(4).toString('hex')}`;
+    writeFileSync(`${file.filepath}.${suffix}.corrupt`, file.bytes, {
       mode: 0o600,
       flag: 'wx',
     });
@@ -1976,6 +1990,20 @@ function copiedAsideUnchanged(file: SessionFileRead): boolean {
     });
     return false;
   }
+}
+
+/** True when a `.corrupt` copy of these exact bytes already sits beside the file. */
+function hasCorruptCopy(file: SessionFileRead): boolean {
+  const dir = dirname(file.filepath);
+  const prefix = `${basename(file.filepath)}.`;
+  return readdirSync(dir).some((entry) => {
+    if (!entry.startsWith(prefix) || !entry.endsWith('.corrupt')) return false;
+    try {
+      return readFileSync(join(dir, entry)).equals(file.bytes);
+    } catch {
+      return false;
+    }
+  });
 }
 
 const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
@@ -1995,14 +2023,23 @@ function renameIntoPlace(tmpPath: string, filepath: string, content: string): vo
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code ?? '';
       if (!RENAME_RETRY_CODES.has(code)) throw err;
-      if (attempt === RENAME_BACKOFF_MS.length) break;
+      if (process.platform !== 'win32' || attempt === RENAME_BACKOFF_MS.length) break;
       Atomics.wait(SLEEP_CELL, 0, 0, RENAME_BACKOFF_MS[attempt]);
     }
   }
-  warnOnce(`rename:${filepath}`, 'Could not rename session file into place; writing it directly', {
+  try {
+    writeFileSync(filepath, content, { mode: 0o600 });
+  } catch (err) {
+    warnOnce(
+      `rename-failed:${filepath}`,
+      'Could not rename session file into place and the direct write failed too',
+      { file: basename(filepath), error: err instanceof Error ? err.message : String(err) },
+    );
+    throw err;
+  }
+  warnOnce(`rename:${filepath}`, 'Could not rename session file into place; wrote it directly', {
     file: basename(filepath),
   });
-  writeFileSync(filepath, content, { mode: 0o600 });
 }
 
 /** Returns the leading `{...}` of `raw` (string- and escape-aware), or null if it never closes. */

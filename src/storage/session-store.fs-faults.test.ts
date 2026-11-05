@@ -67,6 +67,12 @@ afterEach(() => {
   realFs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+function onPlatform(platform: NodeJS.Platform): () => void {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { value: platform });
+  return () => Object.defineProperty(process, 'platform', original);
+}
+
 describe('SessionStore saves under filesystem faults', () => {
   it('leaves the saved file intact when a save crashes mid-write', () => {
     const store = new SessionStore({ storagePath: tmpDir });
@@ -84,6 +90,7 @@ describe('SessionStore saves under filesystem faults', () => {
   });
 
   it('retries a rename refused while another process holds the file', () => {
+    const restore = onPlatform('win32');
     const store = new SessionStore({ storagePath: tmpDir });
     store.saveSession(summary(3));
     renameSync
@@ -91,10 +98,11 @@ describe('SessionStore saves under filesystem faults', () => {
       .mockImplementationOnce(heldByAnotherProcess);
 
     store.saveSession(summary(8));
+    restore();
 
     expect(savedToolCalls()).toBe(8);
     expect(sessionFiles()).toEqual([basename(target)]);
-    expect(warnings('writing it directly')).toHaveLength(0);
+    expect(warnings('directly')).toHaveLength(0);
   });
 
   it('writes the file directly when the rename keeps failing, and warns once', () => {
@@ -106,7 +114,7 @@ describe('SessionStore saves under filesystem faults', () => {
 
     expect(savedToolCalls()).toBe(8);
     expect(sessionFiles()).toEqual([basename(target)]);
-    expect(warnings('writing it directly')).toHaveLength(1);
+    expect(warnings('wrote it directly')).toHaveLength(1);
   });
 
   it('does not replace or set aside a file another process rewrote after the save read it', () => {
@@ -131,5 +139,53 @@ describe('SessionStore saves under filesystem faults', () => {
     store.saveSession(summary(5));
 
     expect(savedToolCalls()).toBe(9);
+  });
+
+  it('retries a refused rename on win32 only', () => {
+    const attempts: Record<string, number> = {};
+    for (const platform of ['win32', 'linux'] as const) {
+      const restore = onPlatform(platform);
+      try {
+        renameSync.mockClear();
+        renameSync.mockImplementation(heldByAnotherProcess);
+        new SessionStore({ storagePath: tmpDir }).saveSession(summary(3));
+        attempts[platform] = renameSync.mock.calls.length;
+      } finally {
+        restore();
+      }
+    }
+
+    expect(attempts).toEqual({ win32: 5, linux: 1 });
+  });
+
+  it('reports the failure when the direct write fails too, never a write that did not happen', () => {
+    renameSync.mockImplementation(heldByAnotherProcess);
+    writeFileSync.mockImplementation((path, data, options) => {
+      if (path === target) throw Object.assign(new Error('EPERM: locked'), { code: 'EPERM' });
+      realFs.writeFileSync(path, data, options);
+    });
+
+    new SessionStore({ storagePath: tmpDir }).saveSession(summary(3));
+
+    expect(warnings('wrote it directly')).toHaveLength(0);
+    const failed = warnings('direct write failed');
+    expect(failed).toHaveLength(1);
+    expect(String((failed[0] as unknown[])[0])).toContain('EPERM: locked');
+  });
+
+  it('copies the same unparsed bytes aside once however many saves fail over them', () => {
+    realFs.writeFileSync(target, '{ "sessionId": ');
+    renameSync.mockImplementation(heldByAnotherProcess);
+    writeFileSync.mockImplementation((path, data, options) => {
+      if (path === target) throw Object.assign(new Error('EPERM: locked'), { code: 'EPERM' });
+      realFs.writeFileSync(path, data, options);
+    });
+    const store = new SessionStore({ storagePath: tmpDir });
+
+    store.saveSession(summary(3));
+    store.saveSession(summary(4));
+    store.saveSession(summary(5));
+
+    expect(sessionFiles().filter((f) => f.endsWith('.corrupt'))).toHaveLength(1);
   });
 });

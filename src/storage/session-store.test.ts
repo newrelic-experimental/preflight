@@ -4361,6 +4361,60 @@ describe('SessionStore split and corrupt session files', () => {
     expect(warnings).toHaveLength(1);
   });
 
+  it('lists the same files for a developer as loadAllSessions loads when an id has a recovered file and a clean sibling', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeSessionFile(
+      '2026-03-01',
+      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 7 }),
+      tail,
+    );
+    writeSessionFile(
+      '2026-03-02',
+      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 4 }),
+    );
+
+    const listed = store.listSessions({ developer: 'alice' }).map((f) => f.filename);
+
+    expect(listed).toEqual([`2026-03-02_${id}.json`]);
+    expect(store.loadAllSessions({ developer: 'alice' })).toHaveLength(listed.length);
+  });
+
+  it('warns again when a file that was recovered later becomes unreadable', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const path = writeSessionFile(
+      '2026-03-01',
+      makeSummary({ sessionId: id, startTime: day1 }),
+      tail,
+    );
+    store.loadAllSessions();
+
+    writeFileSync(path, '{ "sessionId": ');
+    store.loadAllSessions();
+
+    const failed = stderrSpy.mock.calls.filter((call: unknown[]) =>
+      String(call[0]).includes('Failed to deserialize'),
+    );
+    expect(failed).toHaveLength(1);
+  });
+
+  it('saves past a .corrupt file already named for the same millisecond', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const path = join(sessionsDir(), `2026-03-01_${id}.json`);
+    writeFileSync(path, '{ "sessionId": ');
+    const now = Date.now();
+    jest.spyOn(Date, 'now').mockReturnValue(now);
+    writeFileSync(`${path}.${now}.corrupt`, 'someone else');
+
+    try {
+      store.saveSession(makeSummary({ sessionId: id, startTime: day1, toolCallCount: 5 }));
+    } finally {
+      jest.mocked(Date.now).mockRestore();
+    }
+
+    expect(store.loadSession(id)?.toolCallCount).toBe(5);
+    expect(filesEndingIn('.corrupt')).toHaveLength(2);
+  });
+
   it('keeps disjoint split files for one id as separate records', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     writeSessionFile(
