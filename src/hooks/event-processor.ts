@@ -541,6 +541,15 @@ export class HookEventProcessor {
   }
 
   stop(): void {
+    if (this.running) this.store.giveUpHeldOrder();
+    this.halt();
+    // Always flush remaining pre-events as orphans — even on a second stop() call
+    // or when stop() is called without start(). A second call on an already-empty
+    // pending map is a no-op.
+    this.flushPending();
+  }
+
+  private halt(): void {
     if (this.running) {
       this.running = false;
 
@@ -564,21 +573,18 @@ export class HookEventProcessor {
 
       logger.info('Event processor stopped');
     }
-
-    // Always flush remaining pre-events as orphans — even on a second stop() call
-    // or when stop() is called without start(). A second call on an already-empty
-    // pending map is a no-op.
-    this.flushPending();
   }
 
   /**
    * Hot-swap the underlying LocalStore and session-drain mode without
    * recreating the processor or its callbacks. Used when the provisional
    * unscoped store is replaced by the real session-scoped store once the
-   * Claude Code session ID is resolved asynchronously.
+   * Claude Code session ID is resolved asynchronously. The last drain of the
+   * old store still holds claims in order, and the new store takes them later,
+   * so pending pre events stay pending for the posts in those claims.
    */
   replaceStore(newStore: LocalStore, drainAllSessions: boolean): void {
-    this.stop();
+    this.halt();
     this.store = newStore;
     this.drainAllSessions = drainAllSessions;
     this.start();
