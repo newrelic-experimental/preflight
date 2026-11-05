@@ -2,4 +2,4 @@
 '@newrelic/preflight': patch
 ---
 
-**Activity today charts label the right hour on daylight saving days.** The spend, tool call, and concurrent session charts assumed a 24-hour day, so after the clock change events landed one hour early or late and the last hour spilled into the next day. They now bucket by local clock hour.
+**Today page shows the right hours and totals on daylight saving days.** The spend by hour and tool call charts, the spend headline, the session list and the end-of-day forecast assumed a 24-hour day, so after the clock change events landed an hour off and the last hour spilled into the next day. They now share one end-of-day and bucket by local clock hour.
