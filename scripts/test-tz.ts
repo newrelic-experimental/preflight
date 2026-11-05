@@ -23,7 +23,13 @@ const list = JSON.parse(
 
 function run(args: readonly string[]): number {
   const result = spawnSync('npx', [...args], { stdio: 'inherit', cwd: process.cwd() });
-  return result.status ?? 1;
+  if (result.status === null) {
+    console.error(
+      `npx ${args[0]} did not exit normally: ${result.error?.message ?? `killed by ${result.signal}`}`,
+    );
+    return 1;
+  }
+  return result.status;
 }
 
 // With no file arguments, jest and vitest run everything.

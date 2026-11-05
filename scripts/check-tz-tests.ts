@@ -43,6 +43,15 @@ const LOCAL_TIME_RE = new RegExp(
   ].join('|'),
 );
 
+// The local-day helpers in src/lib/date.ts. docs/TEST_PATTERNS.md tells tests to build
+// fixtures with them, so a test that calls one reads the host's zone. Read from the
+// source so a new helper is covered without editing this file.
+function localDayHelperRe(): RegExp {
+  const source = readFileSync(resolve(ROOT, 'src/lib/date.ts'), 'utf8');
+  const names = [...source.matchAll(/^export (?:async )?function (\w+)/gm)].map((m) => m[1]);
+  return new RegExp(`\\b(?:${names.join('|')})\\b`);
+}
+
 interface TzTestList {
   readonly jest: readonly string[];
   readonly vitest: readonly string[];
@@ -76,6 +85,10 @@ function main(): void {
       const isWeb = file.startsWith('src/web/');
       if (!onDisk.has(file)) {
         problems.push(`${LIST_PATH} names ${file}, which no longer exists; remove it`);
+      } else if ([...onDisk].filter((other) => other.includes(file)).length > 1) {
+        // Vitest reads each listed path as a substring filter, so a longer path that
+        // contains this one would run too.
+        problems.push(`${file} is a substring of another test path, so vitest would run both`);
       } else if (isWeb !== (runner === 'vitest')) {
         problems.push(
           `${file} is under "${runner}" in ${LIST_PATH}; src/web tests belong under "vitest", the rest under "jest"`,
@@ -86,9 +99,14 @@ function main(): void {
     }
   }
 
+  const helperRe = localDayHelperRe();
   for (const file of [...onDisk].sort()) {
     if (listed.has(file)) continue;
-    if (LOCAL_TIME_RE.test(readFileSync(resolve(ROOT, file), 'utf8'))) {
+    // A comment that names an API or helper does not call it.
+    const code = readFileSync(resolve(ROOT, file), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|\s)\/\/.*$/gm, '$1');
+    if (LOCAL_TIME_RE.test(code) || helperRe.test(code)) {
       problems.push(
         `${file} uses a local-time API but is not in ${LIST_PATH}, so CI runs it under one zone only. Add it to the "${file.startsWith('src/web/') ? 'vitest' : 'jest'}" list, or make the test independent of the host zone`,
       );
