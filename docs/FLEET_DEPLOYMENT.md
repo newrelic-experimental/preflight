@@ -13,7 +13,9 @@ the [plugin](./PLUGIN.md) and to hand every machine the same Preflight
 configuration. Preflight itself needs no machine-level config file for this.
 
 Nothing under `~/.claude/` or `~/.newrelic-preflight/` is written by your MDM
-script. Claude Code applies managed settings above every user and project
+script. (The npm-package alternative in
+[Installing the npm package from a root-run script](#installing-the-npm-package-from-a-root-run-script)
+does write there, as the user.) Claude Code applies managed settings above every user and project
 setting, so a developer cannot override a key you set.
 
 ## What to deploy
@@ -117,6 +119,34 @@ person is attributed individually without a per-machine setting.
 
 If the server shows `Failed to connect`, the most common cause is a license key
 with no `NR_AI_MODE`. See [Cloud mode](./PLUGIN.md#cloud-mode) in PLUGIN.md.
+
+## Installing the npm package from a root-run script
+
+This is the per-user alternative to the managed settings above: it writes
+`~/.claude/` and `~/.newrelic-preflight/` for the user instead of setting
+machine-wide managed settings.
+
+MDM tools such as Jamf run scripts as root, and `preflight install` configures
+the home directory of whoever runs it. Add `--target-user` to configure the
+logged-in user instead:
+
+```bash
+preflight install --mode cloud --target-user "$LOGGED_IN_USER" \
+  --license-key-file /path/to/key --account-id 123456
+```
+
+The install re-runs itself as that user with their `HOME`, so `config.json`
+(`0600`), `~/.claude/settings.json`, `~/.mcp.json` and the storage directory
+belong to them, and nothing is written under root's home. The license key is
+read as root and passed to the child through its environment, so the key file
+can stay root-only and the key never appears in `ps`, except with `--copilot`,
+where `copilot mcp add` still receives it as an argument. `--target-user` works
+on macOS and Linux, and not with `--project` or `--kiro`. Without it, a root-run install warns
+which home it is configuring.
+
+Install `@newrelic/preflight` globally (`npm install -g`) before running this.
+The child runs as the user, so it cannot read a `preflight` that `npx` put under
+root's home, or a Node.js that lives there (for example one managed by `nvm`).
 
 ## What has been tested
 
