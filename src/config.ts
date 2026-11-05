@@ -452,6 +452,12 @@ function sanitizeOrgField(value: string | null | undefined): string | null {
   return sanitized || null;
 }
 
+// execSync's default stdio inherits stderr, so outside a repo git's "fatal:
+// not a git repository" would reach the terminal of every CLI command that
+// loads config (e.g. `preflight setup` run from ~). A failed lookup already
+// falls back via the catch below; the message is never useful.
+const GIT_STDIO: ['ignore', 'pipe', 'ignore'] = ['ignore', 'pipe', 'ignore'];
+
 function inferDeveloper(): string {
   if (process.env.USER) return sanitizeDeveloper(process.env.USER);
   if (process.env.USERNAME) return sanitizeDeveloper(process.env.USERNAME);
@@ -460,6 +466,7 @@ function inferDeveloper(): string {
       execSync('git config user.name', {
         encoding: 'utf-8',
         timeout: 2000,
+        stdio: GIT_STDIO,
         env: { ...process.env },
       }).trim(),
     );
@@ -473,6 +480,7 @@ function getGitRemoteUrl(): string | null {
     return execSync('git remote get-url origin', {
       encoding: 'utf-8',
       timeout: 2000,
+      stdio: GIT_STDIO,
       // GIT_DIR/GIT_WORK_TREE (set by git for hook subprocesses, e.g. this
       // process running under husky's pre-push) override the cwd-implied
       // repo, silently redirecting this call to whatever repo the ambient
@@ -784,9 +792,18 @@ export class CloudSecretCommandError extends SecretCommandError {
 export function digestWebhookUrlOverride(
   config: Pick<McpServerConfig, 'digestWebhookUrl' | 'secretSources'>,
 ): string | undefined {
+  return digestWebhookUrlOverrideSource(config)
+    ? (config.digestWebhookUrl ?? undefined)
+    : undefined;
+}
+
+/** Which source is overriding the file's `digestWebhookUrl`, if any. */
+export function digestWebhookUrlOverrideSource(
+  config: Pick<McpServerConfig, 'digestWebhookUrl' | 'secretSources'>,
+): 'env' | 'command' | undefined {
   const source = config.secretSources.digestWebhookUrl;
   return (source === 'env' || source === 'command') && config.digestWebhookUrl !== null
-    ? config.digestWebhookUrl
+    ? source
     : undefined;
 }
 

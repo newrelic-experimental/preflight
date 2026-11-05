@@ -37,6 +37,13 @@ import {
 } from './copilot-install-helper.js';
 import { copilotSdkExtensionInstallPath } from '../hooks/copilot-sdk-extension-health.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
+import { resolveInstallCredentials } from './credentials.js';
+import {
+  EXPLICIT_CREDENTIALS_ENV,
+  lookupUser,
+  runInstallAsUser,
+  type TargetUser,
+} from './target-user.js';
 import {
   validateConfigFile,
   DEFAULT_STORAGE_PATH,
@@ -597,6 +604,20 @@ function handleSchedule(options: { time?: string; disable?: boolean }): void {
   }
 }
 
+// Unreadable config counts as stored: the env fallback must not overwrite what
+// we could not inspect. migrateStoragePath runs later, so also check the
+// pre-rename location.
+function hasStoredLicenseSource(): boolean {
+  return [NR_CONFIG_PATH, resolve(homedir(), '.nr-ai-observe', 'config.json')].some((path) => {
+    try {
+      const stored = readJsonFileStrict(path);
+      return stored.licenseKey !== undefined || stored.licenseKeyCommand !== undefined;
+    } catch {
+      return true;
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Install handler
 // ---------------------------------------------------------------------------
@@ -604,6 +625,7 @@ function handleSchedule(options: { time?: string; disable?: boolean }): void {
 function handleInstall(options: {
   licenseKey?: string;
   accountId?: string;
+  credentialsRequested?: boolean;
   mode?: Mode;
   project?: boolean;
   windowsCc?: boolean;
@@ -720,8 +742,10 @@ function handleInstall(options: {
 
   if (nrConfigWritten) {
     print(`\n✓ New Relic config written: ${NR_CONFIG_PATH}`);
-  } else if (!credentialsProvided && (options.licenseKey || options.accountId)) {
-    print('\n⚠ Both --license-key and --account-id are required to save NR config. Skipped.');
+  } else if (!credentialsProvided && options.credentialsRequested) {
+    print(
+      '\n⚠ A license key (--license-key, --license-key-file, or NEW_RELIC_LICENSE_KEY) and an account ID (--account-id or NEW_RELIC_ACCOUNT_ID) are both required to save NR config. Skipped.',
+    );
   }
 
   if (binPath !== null) {
@@ -1633,6 +1657,59 @@ async function handleDoctor(options: {
 // CLI program
 // ---------------------------------------------------------------------------
 
+/**
+ * Handles `install` when the caller is root or names a --target-user.
+ * Returns true when the install already ran as the target user.
+ */
+function installForTargetUser(
+  options: {
+    targetUser?: string;
+    project?: boolean;
+    licenseKey?: string;
+    licenseKeyFile?: string;
+    accountId?: string;
+  },
+  credentials: { licenseKey?: string; accountId?: string },
+): boolean {
+  const currentUid = process.getuid?.();
+  if (!options.targetUser) {
+    if (currentUid === 0) {
+      print(
+        `\n  ⚠ Running as root: this configures root's home (${homedir()}). ` +
+          "To configure a user's home instead, add --target-user <name>.",
+      );
+    }
+    return false;
+  }
+
+  if (options.project) {
+    eprint('\n✗ --project cannot be combined with --target-user.');
+    process.exit(1);
+  }
+  let user: TargetUser;
+  try {
+    user = lookupUser(options.targetUser);
+  } catch (err) {
+    eprint(`\n✗ ${errMsg(err)}`);
+    process.exit(1);
+  }
+  if (user.uid === currentUid) return false;
+  if (currentUid !== 0) {
+    eprint(`\n✗ --target-user ${user.name} requires running as root.`);
+    process.exit(1);
+  }
+
+  print(`\n  Installing for ${user.name} (${user.home})`);
+  try {
+    const explicit = !!(options.licenseKey || options.licenseKeyFile);
+    process.exitCode = runInstallAsUser(user, process.argv.slice(1), { ...credentials, explicit });
+  } catch (err) {
+    eprint(`\n✗ Could not run the install as ${user.name}: ${errMsg(err)}`);
+    process.exit(1);
+  }
+  return true;
+}
+
 export function createInstallProgram(): Command {
   const program = new Command();
   program.name('preflight').description('New Relic AI observability for Claude Code');
@@ -1640,12 +1717,23 @@ export function createInstallProgram(): Command {
   program
     .command('install')
     .description('Configure Claude Code hooks and MCP server for AI observability')
-    .option('--license-key <key>', 'New Relic license key')
-    .option('--account-id <id>', 'New Relic account ID')
+    .option(
+      '--license-key <key>',
+      'New Relic license key (visible in `ps`; prefer --license-key-file or NEW_RELIC_LICENSE_KEY)',
+    )
+    .option(
+      '--license-key-file <path>',
+      'Read the New Relic license key from a file (not visible in `ps`, except with --copilot)',
+    )
+    .option('--account-id <id>', 'New Relic account ID (default: NEW_RELIC_ACCOUNT_ID)')
     .addOption(
       new Option('--mode <mode>', 'Telemetry mode: cloud, local, or both (default: local)').choices(
         [...VALID_MODES],
       ),
+    )
+    .option(
+      '--target-user <name>',
+      "Run as root and configure this user's home (for MDM tools such as Jamf that run scripts as root)",
     )
     .option('--project', 'Write to project-level .claude/settings.json instead of user-level')
     .option('--windows-cc', 'Target Windows Claude Code (desktop app) when running inside WSL')
@@ -1659,9 +1747,11 @@ export function createInstallProgram(): Command {
       'Configure Amazon Kiro instead — writes .kiro/hooks/preflight-observability.json in the current directory',
     )
     .action(
-      (options: {
+      (cliOptions: {
         licenseKey?: string;
+        licenseKeyFile?: string;
         accountId?: string;
+        targetUser?: string;
         mode?: Mode;
         project?: boolean;
         windowsCc?: boolean;
@@ -1669,19 +1759,49 @@ export function createInstallProgram(): Command {
         copilot?: boolean;
         kiro?: boolean;
       }) => {
-        if (options.kiro) {
-          if (options.copilot || options.windowsCc || options.linuxCc) {
+        if (cliOptions.kiro) {
+          if (cliOptions.targetUser) {
+            eprint('\n✗ --kiro cannot be combined with --target-user.');
+            process.exit(1);
+          }
+          if (cliOptions.copilot || cliOptions.windowsCc || cliOptions.linuxCc) {
             print('\n  ⚠ --kiro cannot be combined with --copilot, --windows-cc, or --linux-cc.');
             process.exit(1);
           }
           handleKiroInstall();
           return;
         }
+        if (cliOptions.copilot && (cliOptions.windowsCc || cliOptions.linuxCc)) {
+          print('\n  ⚠ --copilot cannot be combined with --windows-cc or --linux-cc.');
+          process.exit(1);
+        }
+        let credentials: ReturnType<typeof resolveInstallCredentials>;
+        try {
+          credentials = resolveInstallCredentials({
+            ...cliOptions,
+            hasStoredCredentials:
+              hasStoredLicenseSource() && process.env[EXPLICIT_CREDENTIALS_ENV] !== '1',
+          });
+        } catch (err) {
+          eprint(`\n✗ ${errMsg(err)}`);
+          process.exit(1);
+        }
+        for (const warning of credentials.warnings) print(`\n  ⚠ ${warning}`);
+        if (credentials.licenseKeySource === 'env') {
+          print('\n  License key read from NEW_RELIC_LICENSE_KEY');
+        }
+        if (installForTargetUser(cliOptions, credentials)) return;
+        const options = {
+          ...cliOptions,
+          credentialsRequested: !!(
+            cliOptions.licenseKey ||
+            cliOptions.licenseKeyFile ||
+            cliOptions.accountId
+          ),
+          licenseKey: credentials.licenseKey,
+          accountId: credentials.accountId,
+        };
         if (options.copilot) {
-          if (options.windowsCc || options.linuxCc) {
-            print('\n  ⚠ --copilot cannot be combined with --windows-cc or --linux-cc.');
-            process.exit(1);
-          }
           handleCopilotInstall(options);
           return;
         }
