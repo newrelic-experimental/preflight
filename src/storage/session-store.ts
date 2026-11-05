@@ -23,7 +23,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { join, resolve, sep } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
@@ -760,7 +760,7 @@ export class SessionStore {
     // merged (inflated, since counters take the max) result to a NEW file
     // while leaving the OLD file on disk untouched — the session then
     // appeared twice in history with overlapping, double-counted totals.
-    const existingWithPath = this.loadSessionWithPath(summary.sessionId);
+    const { existing: existingWithPath, filesRead } = this.loadSessionWithPath(summary.sessionId);
 
     // Every MCP server process checkpoints every 30s, including windows that
     // never saw a tool call or a token. Writing those first-time files filled
@@ -821,21 +821,28 @@ export class SessionStore {
       throw new Error(`Session path escaped storage directory: ${filepath}`);
     }
 
+    const unparsedFilesReplaced = filesRead.filter(
+      (file) =>
+        file.parsed.kind !== 'clean' &&
+        (file.filepath === filepath || file.filepath === existingWithPath?.filepath),
+    );
+
     // Write-then-rename so two processes saving the same session id can never
     // interleave bytes in the target file (the temp name does not end in .json,
     // so loaders never see it).
+    const content = JSON.stringify(toWrite, null, 2) + '\n';
     const tmpPath = `${filepath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     try {
       try {
-        writeFileSync(tmpPath, JSON.stringify(toWrite, null, 2) + '\n', { mode: 0o600 });
-        renameSync(tmpPath, filepath);
-      } catch (err) {
+        writeFileSync(tmpPath, content, { mode: 0o600 });
+        if (!unparsedFilesReplaced.every(copiedAsideUnchanged)) return;
+        renameIntoPlace(tmpPath, filepath, content);
+      } finally {
         try {
           unlinkSync(tmpPath);
         } catch {
-          // temp file may not have been created
+          // Renamed into place, or never written.
         }
-        throw err;
       }
       // The merge landed on a different filename than where the existing
       // record lived (a date-rollover case) — remove the now-superseded
@@ -863,7 +870,7 @@ export class SessionStore {
   }
 
   loadSession(sessionId: string): FullSessionSummary | null {
-    return this.loadSessionWithPath(sessionId)?.summary ?? null;
+    return this.loadSessionWithPath(sessionId).existing?.summary ?? null;
   }
 
   /**
@@ -871,40 +878,39 @@ export class SessionStore {
    *
    * An unreadable file is skipped rather than ending the search: returning null
    * there made saveSession() treat the session as new and start a fresh file
-   * on every later save (#997). It is also renamed to `*.corrupt` so a later
-   * save that lands on the same filename can't overwrite the only copy of its
-   * bytes. Sibling files for one id are not merged here, because files split
-   * that way hold disjoint activity that mergeSummaries' per-counter max would
-   * drop (#908).
+   * on every later save (#997). Sibling files for one id are not merged here,
+   * because files split that way hold disjoint activity that mergeSummaries'
+   * per-counter max would drop (#908).
    */
-  private loadSessionWithPath(
-    sessionId: string,
-  ): { summary: FullSessionSummary; filepath: string } | null {
-    if (!existsSync(this.sessionsDir)) return null;
+  private loadSessionWithPath(sessionId: string): {
+    readonly existing: { readonly summary: FullSessionSummary; readonly filepath: string } | null;
+    readonly filesRead: readonly SessionFileRead[];
+  } {
+    if (!existsSync(this.sessionsDir)) return { existing: null, filesRead: [] };
 
-    for (const file of readdirSync(this.sessionsDir).sort()) {
-      if (!file.endsWith('.json')) continue;
-      if (parseSessionFilename(file)?.sessionId !== sessionId) continue;
-
-      const filepath = join(this.sessionsDir, file);
+    const names = readdirSync(this.sessionsDir)
+      .filter((file) => parseSessionFilename(file)?.sessionId === sessionId)
+      .sort();
+    const filesRead: SessionFileRead[] = [];
+    for (const file of names) {
+      const filepath = resolve(this.sessionsDir, file);
       try {
-        const session = deserializeSession(readFileSync(filepath, 'utf-8'), file);
-        if (session === null) {
-          logger.warn('Failed to deserialize session file; moving it aside', { file });
-          try {
-            renameSync(filepath, `${filepath}.${Date.now()}.corrupt`);
-          } catch {
-            // Left in place; the next load retries.
-          }
-          continue;
-        }
-        return { summary: session, filepath };
+        const bytes = readFileSync(filepath);
+        filesRead.push({
+          filepath,
+          bytes,
+          parsed: parseSessionFile(bytes.toString('utf-8'), filepath),
+        });
       } catch {
         logger.warn('Failed to read session file', { file });
       }
     }
 
-    return null;
+    for (const { filepath, parsed } of filesRead) {
+      const summary = usableSummary(parsed, names.length);
+      if (summary) return { existing: { summary, filepath }, filesRead };
+    }
+    return { existing: null, filesRead };
   }
 
   listSessions(options?: ListSessionsOptions): SessionFileInfo[] {
@@ -923,9 +929,9 @@ export class SessionStore {
 
       if (options?.developer) {
         try {
-          const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
-          const session = deserializeSession(raw, file);
-          if (session?.developer !== options.developer) continue;
+          const filepath = join(this.sessionsDir, file);
+          const read = parseSessionFile(readFileSync(filepath, 'utf-8'), filepath);
+          if (read.kind === 'unreadable' || read.summary.developer !== options.developer) continue;
         } catch {
           continue;
         }
@@ -946,12 +952,16 @@ export class SessionStore {
     const modifiedSinceMs = options?.includeModifiedSince?.getTime() ?? null;
     const results: FullSessionSummary[] = [];
 
-    for (const file of readdirSync(this.sessionsDir)) {
-      if (!file.endsWith('.json')) continue;
+    const sessionFiles = readdirSync(this.sessionsDir).flatMap(
+      (file) => parseSessionFilename(file) ?? [],
+    );
+    const filesPerId = new Map<string, number>();
+    for (const { sessionId } of sessionFiles) {
+      filesPerId.set(sessionId, (filesPerId.get(sessionId) ?? 0) + 1);
+    }
 
-      const parsed = parseSessionFilename(file);
-      if (!parsed) continue;
-
+    for (const parsed of sessionFiles) {
+      const file = parsed.filename;
       if (sinceDate && parsed.date < sinceDate) {
         if (modifiedSinceMs === null) continue;
         try {
@@ -962,8 +972,11 @@ export class SessionStore {
       }
 
       try {
-        const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
-        const session = deserializeSession(raw, file);
+        const filepath = join(this.sessionsDir, file);
+        const session = usableSummary(
+          parseSessionFile(readFileSync(filepath, 'utf-8'), filepath),
+          filesPerId.get(parsed.sessionId) ?? 0,
+        );
         if (!session) continue;
 
         // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
@@ -1885,28 +1898,111 @@ export function deserializeFullSessionSummary(
   };
 }
 
+type ParsedSessionFile =
+  | { readonly kind: 'clean' | 'recovered'; readonly summary: FullSessionSummary }
+  | { readonly kind: 'unreadable' };
+
+interface SessionFileRead {
+  readonly filepath: string;
+  readonly bytes: Buffer;
+  readonly parsed: ParsedSessionFile;
+}
+
+const warnedKeys = new Set<string>();
+
+function warnOnce(key: string, message: string, data: Record<string, unknown>): void {
+  if (warnedKeys.has(key)) return;
+  warnedKeys.add(key);
+  logger.warn(message, data);
+}
+
+function parseSessionFile(raw: string, filepath: string): ParsedSessionFile {
+  const summary = parseSummary(raw);
+  if (summary) return { kind: 'clean', summary };
+
+  const first = firstTopLevelJsonDocument(raw);
+  const recovered = first === null ? null : parseSummary(first);
+  const file = basename(filepath);
+  if (recovered) {
+    warnOnce(filepath, 'Recovered first JSON document from corrupt session file', { file });
+    return { kind: 'recovered', summary: recovered };
+  }
+  warnOnce(filepath, 'Failed to deserialize session file', { file });
+  return { kind: 'unreadable' };
+}
+
+/**
+ * A recovered document is used only when its file is the id's only file.
+ * Beside a sibling it may repeat activity the sibling already holds, so
+ * adding the two could double count. It stays unread there, as it was before
+ * recovery existed, until #908 combines a session's split files.
+ */
+function usableSummary(parsed: ParsedSessionFile, filesForId: number): FullSessionSummary | null {
+  if (parsed.kind === 'unreadable') return null;
+  return parsed.kind === 'clean' || filesForId === 1 ? parsed.summary : null;
+}
+
 /**
  * Parse a raw session JSON string and extract known fields. Delegates field
  * extraction to `deserializeFullSessionSummary` to avoid duplication.
  */
-function deserializeSession(raw: string, file?: string): FullSessionSummary | null {
+function parseSummary(raw: string): FullSessionSummary | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    // Overlapping writes from two processes left a full document followed by
-    // the tail of a longer one; the first document is the intact data.
-    const first = firstTopLevelJsonDocument(raw);
-    if (first === null) return null;
-    try {
-      parsed = JSON.parse(first);
-    } catch {
-      return null;
-    }
-    logger.warn('Recovered first JSON document from corrupt session file', { file });
+    return null;
   }
   if (typeof parsed !== 'object' || parsed === null) return null;
   return deserializeFullSessionSummary(parsed as SerializedFullSessionSummary);
+}
+
+function copiedAsideUnchanged(file: SessionFileRead): boolean {
+  const name = basename(file.filepath);
+  try {
+    if (!readFileSync(file.filepath).equals(file.bytes)) {
+      logger.warn('Session file changed since it was read; skipping this save', { file: name });
+      return false;
+    }
+    writeFileSync(`${file.filepath}.${Date.now()}.corrupt`, file.bytes, {
+      mode: 0o600,
+      flag: 'wx',
+    });
+    return true;
+  } catch (err) {
+    logger.warn('Could not copy an unparsed session file aside; skipping this save', {
+      file: name,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_BACKOFF_MS = [10, 20, 40, 80];
+const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Windows refuses to rename over a file another process has open, which
+ * antivirus scanners do briefly after each write. Retry with backoff, then
+ * write the target directly so saves never silently stop.
+ */
+function renameIntoPlace(tmpPath: string, filepath: string, content: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(tmpPath, filepath);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      if (!RENAME_RETRY_CODES.has(code)) throw err;
+      if (attempt === RENAME_BACKOFF_MS.length) break;
+      Atomics.wait(SLEEP_CELL, 0, 0, RENAME_BACKOFF_MS[attempt]);
+    }
+  }
+  warnOnce(`rename:${filepath}`, 'Could not rename session file into place; writing it directly', {
+    file: basename(filepath),
+  });
+  writeFileSync(filepath, content, { mode: 0o600 });
 }
 
 /** Returns the leading `{...}` of `raw` (string- and escape-aware), or null if it never closes. */
