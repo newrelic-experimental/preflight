@@ -1,5 +1,6 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   writeFileSync,
@@ -1181,6 +1182,51 @@ describe('stdio integration', () => {
         '["toolu_running"]',
       ]);
     } finally {
+      rmSync(storage, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('does not mark a call counted when its session could not be saved', async () => {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+    const storage = mkdtempSync(join(tmpdir(), 'nr-shutdown-unsaved-'));
+    const ownId = 'own-real-session';
+    const waitFor = async (predicate: () => boolean): Promise<void> => {
+      for (let i = 0; i < 40 && !predicate(); i++) await new Promise((r) => setTimeout(r, 250));
+      expect(predicate()).toBe(true);
+    };
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const sessions = resolve(storage, 'sessions');
+    mkdirSync(sessions, { mode: 0o500 });
+    try {
+      await client.connect(
+        new StdioClientTransport({
+          command: 'node',
+          args: [resolve(__dirname, '..', 'dist', 'index.js'), '--stdio'],
+          env: {
+            ...env,
+            NR_AI_DASHBOARD_PORT: '0',
+            NR_AI_MODE: 'local',
+            NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
+          },
+        }),
+      );
+      mkdirSync(resolve(storage, 'session-by-ppid'), { recursive: true });
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), ownId);
+      await waitFor(() => existsSync(resolve(storage, `active-${ownId}.pid`)));
+      const buffer = resolve(storage, `buffer-${ownId}.jsonl`);
+      const pre = { mode: 'pre', tool: 'Read', timestamp: Date.now(), sessionId: ownId };
+      writeFileSync(buffer, JSON.stringify({ ...pre, toolUseId: 'toolu_running' }) + '\n');
+      await waitFor(() => !existsSync(buffer));
+      await client.close();
+      await waitFor(() => !existsSync(resolve(storage, `active-${ownId}.pid`)));
+
+      expect(readdirSync(sessions)).toEqual([]);
+      expect(existsSync(resolve(storage, 'counted'))).toBe(false);
+    } finally {
+      chmodSync(sessions, 0o700);
       rmSync(storage, { recursive: true, force: true });
     }
   }, 30000);

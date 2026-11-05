@@ -1206,6 +1206,21 @@ describe('HookEventProcessor', () => {
       expect(records.filter((r) => r.success).map((r) => r.toolUseId)).toEqual([]);
     });
 
+    it('retries a counted-file write that failed at the next save', () => {
+      const first = new HookEventProcessor({ store, onRecord });
+      first.processEvents([makePreEvent({ toolUseId: 'toolu_retry' })]);
+      first.stop();
+      const countedDir = resolve(tmpDir, 'counted');
+      writeFileSync(countedDir, 'not a directory');
+
+      first.persistCountedIdsOfSavedSessions(['sess-001']);
+      expect(store.hasCountedToolUseId('sess-001', 'toolu_retry')).toBe(false);
+
+      rmSync(countedDir);
+      first.persistCountedIdsOfSavedSessions(['sess-001']);
+      expect(store.hasCountedToolUseId('sess-001', 'toolu_retry')).toBe(true);
+    });
+
     it('marks a swept timeout counted at the next save, before any stop', () => {
       const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
       processor.start();

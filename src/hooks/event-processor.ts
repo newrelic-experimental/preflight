@@ -1025,13 +1025,11 @@ export class HookEventProcessor {
     const idsBySession = new Map<string, string[]>();
     for (const sessionId of sessionIds) idsBySession.set(sessionId, []);
     for (const [key, sessionId] of this.unpersistedCountedIds) {
-      const ids = idsBySession.get(sessionId);
-      if (!ids) continue;
-      ids.push(key);
-      this.unpersistedCountedIds.delete(key);
+      idsBySession.get(sessionId)?.push(key);
     }
     for (const [sessionId, ids] of idsBySession) {
-      this.store.rememberCountedToolUseIds(sessionId, ids, this.maxPendingEvents);
+      if (!this.store.rememberCountedToolUseIds(sessionId, ids, this.maxPendingEvents)) continue;
+      for (const key of ids) this.unpersistedCountedIds.delete(key);
     }
   }
 

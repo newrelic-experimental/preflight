@@ -1423,15 +1423,17 @@ async function main(): Promise<void> {
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
     const firstSaveBaselines = new FirstSaveBaselines();
-    const saveSessionRememberingBaseline = (summary: FullSessionSummary): void => {
+    const saveSessionRememberingBaseline = (summary: FullSessionSummary): boolean => {
       const saved = sessionStore!.saveSession(summary);
       // Only a --stdio engine ever adopts a real session id and seeds it.
-      if (!saved || !options.stdio || rehydratedTrackerSessionIds.has(summary.sessionId)) return;
-      firstSaveBaselines.recordSave({
-        sessionId: summary.sessionId,
-        previous: saved.previous,
-        ownSession: summary.sessionId === sessionTraceId,
-      });
+      if (saved && options.stdio && !rehydratedTrackerSessionIds.has(summary.sessionId)) {
+        firstSaveBaselines.recordSave({
+          sessionId: summary.sessionId,
+          previous: saved.previous,
+          ownSession: summary.sessionId === sessionTraceId,
+        });
+      }
+      return saved !== null;
     };
     const rehydrateTrackersIfResumed = (sessionId: string): void => {
       if (isSyntheticSessionId(sessionId)) return;
@@ -2713,12 +2715,10 @@ async function main(): Promise<void> {
             toolSelectionScorer,
             repoResolver: repoNameResolver,
           });
-          for (const rollup of rollups) {
-            saveSessionRememberingBaseline(rollup as unknown as FullSessionSummary);
-          }
-          eventProcessor?.persistCountedIdsOfSavedSessions(
-            rollups.map((rollup) => String(rollup.sessionId)),
+          const saved = rollups.filter((rollup) =>
+            saveSessionRememberingBaseline(rollup as unknown as FullSessionSummary),
           );
+          eventProcessor?.persistCountedIdsOfSavedSessions(saved.map((r) => String(r.sessionId)));
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
@@ -2727,8 +2727,9 @@ async function main(): Promise<void> {
           }
           return;
         }
-        saveSessionRememberingBaseline(summary);
-        eventProcessor?.persistCountedIdsOfSavedSessions([summary.sessionId]);
+        if (saveSessionRememberingBaseline(summary)) {
+          eventProcessor?.persistCountedIdsOfSavedSessions([summary.sessionId]);
+        }
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
         // any real work), so calling it on every periodic checkpoint too is
         // cheap — and necessary: it otherwise only ran on the clean-shutdown
