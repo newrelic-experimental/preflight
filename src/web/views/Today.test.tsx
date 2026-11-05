@@ -2882,7 +2882,9 @@ describe.each([
         endTime: at(day, lateEnd),
         estimatedCostUsd: 10,
       } as unknown as Parameters<typeof computeTodaySpend>[0][number];
-      expect(todayPortionRatio(session)).toBe(1);
+      expect(todayPortionRatio({ startTime: at(day, lateStart), endTime: at(day, lateEnd) })).toBe(
+        1,
+      );
       expect(computeTodaySpend([session])).toBeCloseTo(10, 9);
       const hourly = buildHourlySpend([session]);
       expect(hourly.reduce((n, h) => n + h.cost, 0)).toBeCloseTo(10, 9);
