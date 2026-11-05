@@ -13,6 +13,7 @@ import { basename, dirname, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import {
   DRAINS_DIR,
+  DrainHold,
   forgetLegacySightingsExcept,
   formatClaimName,
   holdsBuffer,
@@ -23,7 +24,6 @@ import {
   noteFailure,
   clearFailure,
   sightLegacy,
-  takeClaim,
   type DrainClaim,
 } from './drain-claims.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
@@ -135,6 +135,8 @@ export class LocalStore {
   private readonly storagePath: string;
   private readonly bufferPath: string;
   private readonly sessionId: string | null;
+  private readonly holds = new Map<string, DrainHold>();
+  private giveUpOrder = false;
 
   /**
    * @param storagePath The base storage directory (e.g. ~/.newrelic-preflight).
@@ -231,6 +233,17 @@ export class LocalStore {
   }
 
   /**
+   * For a processor that is shutting down: every later drain takes each claim
+   * it can rather than holding the claims after one it cannot take. The
+   * processor flushes its pending pre events as timeouts right after its last
+   * drain, so a post left behind would pair with nothing and count its call
+   * twice.
+   */
+  giveUpHeldOrder(): void {
+    this.giveUpOrder = true;
+  }
+
+  /**
    * Drain every per-session buffer file under the storage path. Used by
    * `--local` standalone mode where the dashboard owner sees all live
    * sessions' events. Each file is drained atomically (rename-then-read) so a
@@ -250,12 +263,14 @@ export class LocalStore {
       logger.warn('Failed to enumerate storage path for drainAllBuffers', { error: String(err) });
       return [];
     }
-    for (const [name, drain] of this.bufferDrains(entries)) {
+    const drains = this.bufferDrains(entries);
+    for (const [name, drain] of drains) {
       const ownerLive = (): boolean => name !== 'buffer.jsonl' && this.hasLiveOwner(name);
       for (const event of this.drainPath(resolve(this.storagePath, name), drain, ownerLive)) {
         all.push(event);
       }
     }
+    for (const path of this.holds.keys()) if (!drains.has(basename(path))) this.holds.delete(path);
     return all;
   }
 
@@ -1207,38 +1222,52 @@ export class LocalStore {
     ownerLive: () => boolean = () => false,
   ): HookEvent[] {
     const drainsDir = resolve(dirname(bufferPath), DRAINS_DIR);
-    const owned: { readonly path: string; readonly claimedAt: number; readonly origin: string }[] =
-      [];
+    const owned: {
+      readonly path: string;
+      readonly firstClaimedAt: number;
+      readonly origin: string;
+    }[] = [];
     let mayAdopt: boolean | undefined;
     for (const claim of drain.claims) {
       if (claim.owner === process.pid) owned.push({ ...claim, origin: claim.path });
       else if (isAdoptable(claim, isPidAlive) && (mayAdopt ??= !ownerLive())) {
-        const path = this.claimDrain(claim.path, drainsDir, claim.buffer);
-        if (path) owned.push({ path, claimedAt: claim.claimedAt, origin: claim.path });
+        const path = this.claimDrain(claim.path, drainsDir, claim.buffer, claim.firstClaimedAt);
+        if (path) owned.push({ path, firstClaimedAt: claim.firstClaimedAt, origin: claim.path });
       }
     }
     const paths = owned
-      .sort((a, b) => a.claimedAt - b.claimedAt || (a.origin < b.origin ? -1 : 1))
+      .sort((a, b) => a.firstClaimedAt - b.firstClaimedAt || (a.origin < b.origin ? -1 : 1))
       .map(({ path }) => path);
-    // ownerLive is asked again here on purpose: an engine can adopt the session
-    // while the claims above are being taken, and then owns the buffer.
-    const olderEventsPending = drain.claims.some((claim) => holdsBuffer(claim, isPidAlive));
-    if (drain.present && !olderEventsPending && !ownerLive()) {
-      const path = this.claimDrain(bufferPath, drainsDir, basename(bufferPath));
-      if (path) paths.push(path);
-    }
 
+    const hold = this.holds.get(bufferPath) ?? new DrainHold();
     const events: HookEvent[] = [];
-    for (const path of paths) {
-      const raw = takeClaim(path);
-      if (raw === null) continue;
-      for (const event of parseHookEvents(raw)) events.push(event);
+    const take = (path: string): boolean => {
+      const taken = hold.take(path, this.giveUpOrder);
+      if (taken === 'stop') return false;
+      if (taken !== 'skip') for (const event of parseHookEvents(taken.text)) events.push(event);
+      return true;
+    };
+    const finished = paths.every(take);
+    // The buffer is claimed only once every older claim is taken or given up, and ownerLive is
+    // asked again on purpose: an engine can adopt the session while the claims above are taken.
+    const olderEventsPending = drain.claims.some((claim) => holdsBuffer(claim, isPidAlive));
+    if (finished && drain.present && !olderEventsPending && !ownerLive()) {
+      const path = this.claimDrain(bufferPath, drainsDir, basename(bufferPath));
+      if (path) take(path);
     }
+    hold.endPoll();
+    if (hold.idle) this.holds.delete(bufferPath);
+    else this.holds.set(bufferPath, hold);
     return events;
   }
 
-  private claimDrain(from: string, drainsDir: string, buffer: string): string | null {
-    const to = resolve(drainsDir, formatClaimName(buffer, process.pid, Date.now()));
+  private claimDrain(
+    from: string,
+    drainsDir: string,
+    buffer: string,
+    firstClaimedAt?: number,
+  ): string | null {
+    const to = resolve(drainsDir, formatClaimName(buffer, process.pid, Date.now(), firstClaimedAt));
     try {
       try {
         renameSync(from, to);
