@@ -1808,6 +1808,52 @@ describe('stdio integration', () => {
         cleanup();
       }
     }, 60000);
+
+    it('keeps the token cost a provisional engine saved when it adopts their session', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const engine = await startEngine(storagePath, projectCwd);
+        appendFileSync(
+          resolve(storagePath, 'buffer-provisional-cost-id.jsonl'),
+          JSON.stringify({
+            mode: 'token',
+            tool: 'copilot-sdk-usage',
+            timestamp: Date.now(),
+            sessionId: 'provisional-cost-id',
+            messageId: 'msg_rollup',
+            model: 'claude-sonnet-5',
+            inputTokens: 1000,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+          }) + '\n',
+          { mode: 0o600 },
+        );
+        expect(
+          await waitUntil(
+            () => readSaved(storagePath, 'provisional-cost-id')?.tokensInput === 1000,
+          ),
+        ).toBe(true);
+        const rollupSaved = readSaved(storagePath, 'provisional-cost-id')!;
+
+        writeFileSync(ppidBreadcrumb(storagePath), 'provisional-cost-id');
+        expect(await engine.logged(ADOPTED)).toBe(true);
+        await engine.reportInputTokens(500);
+        expect(
+          await waitUntil(
+            () => readSaved(storagePath, 'provisional-cost-id')?.tokensInput === 1500,
+          ),
+        ).toBe(true);
+        await engine.settle();
+
+        const saved = readSaved(storagePath, 'provisional-cost-id')!;
+        expect(saved.tokensInput).toBe(1500);
+        expect(saved.estimatedCostUsd).toBeCloseTo(rollupSaved.estimatedCostUsd * 1.5, 9);
+        await engine.close();
+      } finally {
+        cleanup();
+      }
+    }, 60000);
   });
 
   // The correction watch reads the parent level only off Linux and Windows,

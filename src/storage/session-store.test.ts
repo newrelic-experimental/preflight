@@ -569,7 +569,7 @@ describe('SessionStore', () => {
     expect(files[0]).toBe('2026-04-15_abc-123.json');
   });
 
-  it('saveSession reports whether it wrote a file', () => {
+  it('saveSession returns the file it merged against, or null when it writes nothing', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const startTime = new Date('2026-04-15T10:00:00Z').getTime();
     const empty = makeSummary({ sessionId: 'reports-write', startTime, toolCallCount: 0 });
@@ -584,9 +584,15 @@ describe('SessionStore', () => {
       timeline: [],
     };
 
-    expect(store.saveSession(noUsage)).toBe(false);
-    expect(store.saveSession(makeSummary({ sessionId: 'reports-write', startTime }))).toBe(true);
-    expect(store.saveSession(noUsage)).toBe(false);
+    expect(store.saveSession(noUsage)).toBeNull();
+    expect(store.saveSession(makeSummary({ sessionId: 'reports-write', startTime }))).toEqual({
+      previous: null,
+    });
+    const firstFile = store.loadSession('reports-write');
+    expect(
+      store.saveSession(makeSummary({ sessionId: 'reports-write', startTime, toolCallCount: 12 })),
+    ).toEqual({ previous: firstFile });
+    expect(store.saveSession(noUsage)).toBeNull();
   });
 
   it('does not let an empty summary clobber a recorded session', () => {

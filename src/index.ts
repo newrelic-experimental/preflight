@@ -71,6 +71,7 @@ import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
 import { CostTracker } from './metrics/cost-tracker.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
+import { FirstSaveBaselines } from './metrics/first-save-baselines.js';
 import type { RepoContext } from './metrics/git-efficiency-tracker.js';
 import {
   GitEfficiencyTracker,
@@ -101,7 +102,6 @@ import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
-import { buildTaskDetectorSeed } from './metrics/task-detector-seed.js';
 import { TaskDetector } from './metrics/task-detector.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
@@ -121,10 +121,10 @@ import { computeHistoricalCosts } from './storage/historical-costs.js';
 import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.js';
 import {
   buildSessionSummary,
+  type FullSessionSummary,
   SessionStore,
   sessionSummaryToDriftRecord,
 } from './storage/session-store.js';
-import type { FullSessionSummary } from './storage/session-store.js';
 import type { ToolCallRecord } from './storage/types.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import type { ConfigSummary } from './tools/session-stats.js';
@@ -1422,55 +1422,42 @@ async function main(): Promise<void> {
     // below can call this again for a *different* id after a pending->real
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
-    const firstSaveBaselines = new Map<string, FullSessionSummary | null>();
-    const saveSessionRememberingBaseline = (
-      summary: Parameters<NonNullable<typeof sessionStore>['saveSession']>[0],
-      remember = true,
-    ): void => {
-      const sessionId = String(summary.sessionId);
-      const track =
-        remember &&
-        !rehydratedTrackerSessionIds.has(sessionId) &&
-        !firstSaveBaselines.has(sessionId);
-      const fileBefore = track ? sessionStore!.loadSession(sessionId) : null;
-      const wrote = sessionStore!.saveSession(summary);
-      if (track && wrote) firstSaveBaselines.set(sessionId, fileBefore);
+    const firstSaveBaselines = new FirstSaveBaselines();
+    const saveSessionRememberingBaseline = (summary: FullSessionSummary): void => {
+      const saved = sessionStore!.saveSession(summary);
+      // Only a --stdio engine ever adopts a real session id and seeds it.
+      if (!saved || !options.stdio || rehydratedTrackerSessionIds.has(summary.sessionId)) return;
+      firstSaveBaselines.recordSave({
+        sessionId: summary.sessionId,
+        previous: saved.previous,
+        ownSession: summary.sessionId === sessionTraceId,
+      });
     };
     const rehydrateTrackersIfResumed = (sessionId: string): void => {
       if (isSyntheticSessionId(sessionId)) return;
       if (rehydratedTrackerSessionIds.has(sessionId)) return;
       rehydratedTrackerSessionIds.add(sessionId);
       try {
-        const baseline = firstSaveBaselines.has(sessionId)
-          ? (firstSaveBaselines.get(sessionId) ?? null)
-          : sessionStore!.loadSession(sessionId);
-        firstSaveBaselines.clear();
-        if (baseline) {
-          costTracker.seedFromPersisted(buildCostTrackerSeed(baseline));
+        const { cost, toolCalls } = firstSaveBaselines.take(sessionId, () =>
+          sessionStore!.loadSession(sessionId),
+        );
+        if (cost) {
+          costTracker.seedFromPersisted(buildCostTrackerSeed(cost));
           budgetTracker.seedFiredThresholdsFromSessionTotal(
             costTracker.getMetrics().sessionTotalCostUsd ?? 0,
           );
-          modelUsageTracker.seedFromPersisted(baseline.modelBreakdown);
-          sessionTracker!.seedFromPersisted({
-            toolCallCount: baseline.toolCallCount,
-            bashCommandCount: baseline.bashCommandCount,
-          });
-          qualityProxyTracker.seedFromPersisted(baseline.qualityProxy);
-          taskDetector!.seedFromPersisted(buildTaskDetectorSeed(baseline));
-          if (
-            baseline.efficiencyScore !== null &&
-            baseline.efficiencyScoreComponents &&
-            (baseline.efficiencyScoreSampleCount ?? 0) > 0
-          ) {
-            efficiencyScorer.seedFromPersisted({
-              score: baseline.efficiencyScore,
-              components: baseline.efficiencyScoreComponents,
-              sampleCount: baseline.efficiencyScoreSampleCount ?? 0,
-            });
-          }
+          modelUsageTracker.seedFromPersisted(cost.modelBreakdown);
+        }
+        if (toolCalls) {
+          sessionTracker!.seedFromPersisted(toolCalls.sessionTracker);
+          qualityProxyTracker.seedFromPersisted(toolCalls.qualityProxy);
+          taskDetector!.seedFromPersisted(toolCalls.taskDetector);
+          if (toolCalls.efficiency) efficiencyScorer.seedFromPersisted(toolCalls.efficiency);
+        }
+        if (cost || toolCalls) {
           logger.info('Rehydrated trackers from a prior checkpoint for this session', {
             sessionId,
-            estimatedCostUsd: baseline.estimatedCostUsd ?? null,
+            estimatedCostUsd: cost?.estimatedCostUsd ?? null,
           });
         }
       } catch (err) {
@@ -2722,10 +2709,7 @@ async function main(): Promise<void> {
             repoResolver: repoNameResolver,
           });
           for (const rollup of rollups) {
-            saveSessionRememberingBaseline(
-              rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
-              options.stdio,
-            );
+            saveSessionRememberingBaseline(rollup as unknown as FullSessionSummary);
           }
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
