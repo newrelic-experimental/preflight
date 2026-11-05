@@ -12,7 +12,7 @@ import {
   isUnscopedAggregatorSessionId,
   type SessionNameSource,
 } from '../../hooks/session-resolver.js';
-import { localDateKey, localStartOfDay, todayPortionRatio } from '../../lib/date.js';
+import { localDateKey, localEndOfDay, localStartOfDay, todayPortionRatio } from '../../lib/date.js';
 import { todayCostOfSummary } from '../../metrics/cost-tracker-seed.js';
 import type { AntiPattern } from '../../metrics/anti-patterns.js';
 import { AntiPatternDetector } from '../../metrics/anti-patterns.js';
@@ -1087,14 +1087,7 @@ function computeDailyPeakConcurrency(
     const dayStart = new Date(todayStart);
     dayStart.setDate(dayStart.getDate() - d);
     const dayStartMs = dayStart.getTime();
-    // `dayEnd` must be derived via the same local-date arithmetic as
-    // `dayStart`, not `dayStartMs + 86_400_000` — a local calendar day is
-    // 23h or 25h long on the ~2 DST-transition days/year, so the fixed-ms
-    // offset lands an hour into (or short of) the next/previous local day,
-    // misattributing entries near the boundary on those days.
-    const dayEnd = new Date(dayStart);
-    dayEnd.setDate(dayEnd.getDate() + 1);
-    const dayEndMs = dayEnd.getTime();
+    const dayEndMs = localEndOfDay(dayStartMs);
     const dateKey = localDateKey(dayStartMs);
 
     // Find sessions that overlap with this day and have timeline data
