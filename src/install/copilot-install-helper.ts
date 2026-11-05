@@ -127,7 +127,7 @@ function absoluteCollectorPath(command: string): string | null {
 // Without a resolved path, an entry keeps its own fields, so a working
 // absolute path is not downgraded to a bare name, and gains any it lacks,
 // such as `powershell`, aimed at the same collector. A PowerShell `command`
-// (the hand-written #1057 workaround) is rewritten, because sh runs `command`.
+// (a hand-written workaround) is rewritten, because sh runs `command`.
 // A Claude-shape {matcher, hooks} entry stays as it was, since flat fields
 // beside `hooks` would make a hybrid.
 function upgradeWithoutBinPath(
