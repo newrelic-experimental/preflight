@@ -29,6 +29,7 @@ const MAX_CONTEXT_WINDOW = 10_000_000;
 const LONG_CONTEXT_THRESHOLD = 200_000;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000;
+const RECHECK_INTERVAL_MS = 60 * 60 * 1000;
 const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype', 'sample_spec']);
 
 function isNonNegative(value: unknown): value is number {
@@ -182,13 +183,15 @@ function writeCache(cachePath: string, entries: Record<string, ModelPricing>): v
   }
 }
 
-/** Never rejects. With `enabled: false` it touches neither network nor disk. */
-export async function startPricingRefresh(opts: {
+interface PricingRefreshOptions {
   readonly enabled: boolean;
   readonly cachePath: string;
   readonly nowMs?: () => number;
   readonly fetchImpl?: typeof fetch;
-}): Promise<void> {
+}
+
+/** Never rejects. With `enabled: false` it touches neither network nor disk. */
+export async function startPricingRefresh(opts: PricingRefreshOptions): Promise<void> {
   if (!opts.enabled) return;
   try {
     const now = (opts.nowMs ?? Date.now)();
@@ -213,4 +216,28 @@ export async function startPricingRefresh(opts: {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+let recheckTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Reruns `startPricingRefresh` hourly so a long-running server prices models released
+ * after it started. Each run refetches only once the cache is a day old, and it loads a
+ * cache another server process refreshed, so the hourly tick costs a stat and no request.
+ * The timer is unref'd, and a second call replaces the first.
+ */
+export function schedulePricingRecheck(
+  opts: PricingRefreshOptions,
+  intervalMs: number = RECHECK_INTERVAL_MS,
+): void {
+  if (recheckTimer) clearInterval(recheckTimer);
+  recheckTimer = null;
+  if (!opts.enabled) return;
+  recheckTimer = setInterval(() => void startPricingRefresh(opts), intervalMs);
+  recheckTimer.unref();
+}
+
+export function stopPricingRecheck(): void {
+  if (recheckTimer) clearInterval(recheckTimer);
+  recheckTimer = null;
 }

@@ -15,7 +15,9 @@ import {
   fetchLiteLlmPrices,
   LITELLM_PRICES_URL,
   parseLiteLlmPrices,
+  schedulePricingRecheck,
   startPricingRefresh,
+  stopPricingRecheck,
 } from './pricing-refresh.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -334,5 +336,62 @@ describe('startPricingRefresh', () => {
       expect(resolvePricingDetail('boom')).toEqual({ kind: 'unpriced' });
       expect(({} as Record<string, unknown>).inputPerMTok).toBeUndefined();
     });
+  });
+});
+
+describe('schedulePricingRecheck', () => {
+  let cachePath: string;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    cachePath = join(tmpDir, 'pricing-cache.json');
+  });
+
+  afterEach(() => {
+    stopPricingRecheck();
+    jest.useRealTimers();
+  });
+
+  it('prices a model released after startup once the cache is a day old', async () => {
+    const opts = {
+      enabled: true,
+      cachePath,
+      fetchImpl: jest
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse({ 'claude-opus-8-5': OPUS }))
+        .mockResolvedValue(jsonResponse({ 'claude-opus-8-5': OPUS, 'acme-chat-1': SONNET_5_5 })),
+    };
+    await startPricingRefresh(opts);
+    schedulePricingRecheck(opts);
+    expect(resolvePricingDetail('acme-chat-1').kind).toBe('unpriced');
+
+    await jest.advanceTimersByTimeAsync(25 * 60 * 60 * 1000);
+
+    expect(resolvePricingDetail('acme-chat-1')).toMatchObject({
+      kind: 'priced',
+      source: 'refreshed',
+    });
+    expect(opts.fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('refetches nothing while the cache is fresh', async () => {
+    const fetchImpl = fakeFetch({ 'claude-opus-8-5': OPUS });
+    const opts = { enabled: true, cachePath, fetchImpl };
+    await startPricingRefresh(opts);
+    schedulePricingRecheck(opts);
+
+    await jest.advanceTimersByTimeAsync(12 * 60 * 60 * 1000);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('schedules nothing when disabled', async () => {
+    const fetchImpl = fakeFetch({ 'claude-opus-8-5': OPUS });
+    schedulePricingRecheck({ enabled: false, cachePath, fetchImpl });
+
+    await jest.advanceTimersByTimeAsync(3 * DAY_MS);
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(existsSync(cachePath)).toBe(false);
   });
 });
