@@ -786,10 +786,37 @@ function handleInstall(options: {
 // Copilot install/uninstall handlers
 // ---------------------------------------------------------------------------
 
+// Node refuses to spawn a .cmd or .bat without a shell (CVE-2024-27980), and
+// npm installs the Copilot CLI as copilot.cmd on Windows, so that runs through
+// cmd.exe with every argument double-quoted. Inside quotes cmd.exe treats
+// & | < > ^ ( ) as text, but it still expands %VAR%, and a " or line break
+// ends the quote, so an argument holding any of those is refused. Every other
+// path gets an argv array and no shell.
+function execCopilotCli(cliPath: string, args: string[]): void {
+  if (!/\.(?:cmd|bat)$/i.test(cliPath)) {
+    execFileSync(cliPath, args, { stdio: 'pipe' });
+    return;
+  }
+  const quoted = [cliPath, ...args].map((arg) => {
+    if (/["%\r\n]/.test(arg)) {
+      throw new Error(
+        `an argument to ${cliPath} holds a ", %, or line break that cmd.exe cannot quote`,
+      );
+    }
+    // Double trailing backslashes so the closing quote is not escaped.
+    return `"${arg.replace(/(\\+)$/, '$1$1')}"`;
+  });
+  // execFileSync hands its options to spawnSync, which honors this flag,
+  // though execFileSync's type leaves it out.
+  const options = { stdio: 'pipe' as const, windowsVerbatimArguments: true };
+  const command = `"${quoted.join(' ')}"`;
+  execFileSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/v:off', '/s', '/c', command], options);
+}
+
 // Idempotent: always remove-then-add rather than parsing `copilot mcp list`
-// output (undocumented/unstable format risk). Uses execFileSync with an
-// argv array — never a shell string — so a license key containing shell
-// metacharacters can never be interpreted by a shell.
+// output (undocumented/unstable format risk). Goes through execCopilotCli, so
+// a license key containing shell metacharacters is never interpreted by a
+// shell.
 //
 // Registers with MCP_CLIENT=copilot-sdk (unchanged from today's documented
 // setup) — this env var only affects the MCP *server* process's own
@@ -805,7 +832,7 @@ function registerCopilotMcpServer(
   accountId?: string,
 ): void {
   try {
-    execFileSync(copilotCliPath, ['mcp', 'remove', 'preflight'], { stdio: 'pipe' });
+    execCopilotCli(copilotCliPath, ['mcp', 'remove', 'preflight']);
   } catch {
     /* not previously registered — fine */
   }
@@ -824,7 +851,7 @@ function registerCopilotMcpServer(
     target,
     ...targetArgs,
   ];
-  execFileSync(copilotCliPath, args, { stdio: 'pipe' });
+  execCopilotCli(copilotCliPath, args);
 }
 
 function handleKiroInstall(): void {
@@ -1102,7 +1129,7 @@ async function handleCopilotUninstall(options: {
 
   if (copilotCliPath) {
     try {
-      execFileSync(copilotCliPath, ['mcp', 'remove', 'preflight'], { stdio: 'pipe' });
+      execCopilotCli(copilotCliPath, ['mcp', 'remove', 'preflight']);
       print('✓ Removed preflight from `copilot mcp list`');
       anyRemoved = true;
     } catch (err) {

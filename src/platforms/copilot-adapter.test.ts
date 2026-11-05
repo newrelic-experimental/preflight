@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { CopilotToolCallEvent } from './copilot-adapter.js';
 import { CopilotAdapter, parseCopilotUsageResponse } from './copilot-adapter.js';
+import { generateCopilotHooksFile } from '../install/copilot-install-helper.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 const savedEnv: Record<string, string | undefined> = {};
@@ -318,6 +319,11 @@ describe('CopilotAdapter', () => {
     it('embeds NEW_RELIC_AI_PLATFORM=copilot directly in the hook commands', () => {
       const instructions = adapter.getHookInstallInstructions();
       expect(instructions).toContain('NEW_RELIC_AI_PLATFORM=copilot');
+    });
+
+    it('gives Windows the same PowerShell hook command the installer writes', () => {
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain(generateCopilotHooksFile().hooks.PreToolUse[0]!.powershell);
     });
 
     it('mentions the automated installer', () => {

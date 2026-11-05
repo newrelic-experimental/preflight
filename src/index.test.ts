@@ -32,6 +32,9 @@ import {
   dispatchSubcommand,
 } from './index.js';
 import type { DashboardServer } from './dashboard/dashboard-server.js';
+import { sanitizeCwdForFilename } from './hooks/session-resolver.js';
+import { SessionStore } from './storage/session-store.js';
+import { appendToHookBuffer } from './storage/hook-buffer.js';
 import type { LocalStore } from './storage/index.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
 import type { NrIngestManager } from './transport/nr-ingest.js';
@@ -1552,6 +1555,400 @@ describe('stdio integration', () => {
       rmSync(tmpProjectCwd, { recursive: true, force: true });
     }
   }, 30000);
+
+  describe('seeding a session this process already saved', () => {
+    const PPID_WATCH_RESOLVED = 'Resolved corrected session_id from ppid breadcrumb';
+    const ADOPTED = 'Session ID resolved, full initialization complete';
+
+    const CHECKPOINTED = 'Session checkpointed';
+    const BUDGET_80 = /"pct":80[^\n]*Budget threshold reached/g;
+    const SKIPPED_EMPTY = 'Skipping first write of a session with no recorded usage';
+
+    const startedEngines: Engine[] = [];
+    const closeStartedEngines = async (): Promise<void> => {
+      await Promise.all(startedEngines.splice(0).map((engine) => engine.close().catch(() => {})));
+    };
+    afterEach(async () => {
+      await closeStartedEngines();
+    });
+
+    const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+    async function waitUntil(predicate: () => boolean, timeoutMs = 15_000): Promise<boolean> {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) return true;
+        await sleep(100);
+      }
+      return predicate();
+    }
+
+    function makeDirs(): { storagePath: string; projectCwd: string; cleanup: () => Promise<void> } {
+      const storagePath = mkdtempSync(join(tmpdir(), 'nr-seed-storage-'));
+      const projectCwd = mkdtempSync(join(tmpdir(), 'nr-seed-project-'));
+      mkdirSync(resolve(storagePath, 'session-by-cwd'), { recursive: true });
+      mkdirSync(resolve(storagePath, 'session-by-ppid'), { recursive: true });
+      return {
+        storagePath,
+        projectCwd,
+        cleanup: async () => {
+          await closeStartedEngines();
+          rmSync(storagePath, { recursive: true, force: true });
+          rmSync(projectCwd, { recursive: true, force: true });
+        },
+      };
+    }
+
+    function writeCwdBreadcrumb(storagePath: string, projectCwd: string, sessionId: string): void {
+      const sanitizedCwd = sanitizeCwdForFilename(realpathSync(projectCwd));
+      writeFileSync(resolve(storagePath, 'session-by-cwd', `${sanitizedCwd}.txt`), sessionId);
+    }
+
+    const ppidBreadcrumb = (storagePath: string): string =>
+      resolve(storagePath, 'session-by-ppid', `${process.pid}.txt`);
+
+    interface SavedTotals {
+      readonly tokensInput: number;
+      readonly estimatedCostUsd: number;
+      readonly toolCallCount: number;
+    }
+
+    function readSaved(storagePath: string, sessionId: string): SavedTotals | null {
+      const saved = new SessionStore({ storagePath }).loadSession(sessionId);
+      if (!saved) return null;
+      return {
+        tokensInput: saved.tokensInput,
+        estimatedCostUsd: saved.estimatedCostUsd ?? 0,
+        toolCallCount: saved.toolCallCount,
+      };
+    }
+
+    interface Engine {
+      logged: (text: string) => Promise<boolean>;
+      count: (pattern: RegExp) => number;
+      settle: () => Promise<void>;
+      reportInputTokens: (inputTokens: number) => Promise<unknown>;
+      close: () => Promise<void>;
+    }
+
+    async function startEngine(
+      storagePath: string,
+      projectCwd: string,
+      extraEnv: Record<string, string> = {},
+    ): Promise<Engine> {
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+      const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+      const env = { ...process.env };
+      delete env.CLAUDE_JOB_DIR;
+      const transport = new StdioClientTransport({
+        command: 'node',
+        args: [resolve(__dirname, '..', 'dist', 'index.js'), '--stdio', '--log-level', 'debug'],
+        cwd: projectCwd,
+        stderr: 'pipe',
+        env: {
+          ...env,
+          NR_AI_DASHBOARD_PORT: '0',
+          NR_AI_MODE: 'local',
+          NEW_RELIC_AI_MCP_STORAGE_PATH: storagePath,
+          NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+          NR_AI_PENDING_CONFIRMATION_CAP_MS: '500',
+          ...extraEnv,
+        },
+      });
+      let stderr = '';
+      transport.stderr?.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString('utf8');
+      });
+      const client = new Client({ name: 'test-client', version: '1.0.0' });
+      await client.connect(transport);
+      await client.listTools();
+      const engine: Engine = {
+        logged: (text: string) => waitUntil(() => stderr.includes(text)),
+        count: (pattern: RegExp) => stderr.match(pattern)?.length ?? 0,
+        settle: async () => {
+          const countCheckpoints = (): number => stderr.split(CHECKPOINTED).length - 1;
+          const target = countCheckpoints() + 3;
+          expect(await waitUntil(() => countCheckpoints() >= target)).toBe(true);
+        },
+        reportInputTokens: (inputTokens: number) =>
+          client.callTool({
+            name: 'nr_observe_report_tokens',
+            arguments: { input_tokens: inputTokens, output_tokens: 0, model: 'claude-sonnet-5' },
+          }),
+        close: () => client.close(),
+      };
+      startedEngines.push(engine);
+      return engine;
+    }
+
+    async function savePriorSession(
+      storagePath: string,
+      projectCwd: string,
+      sessionId: string,
+      inputTokens: number,
+    ): Promise<SavedTotals> {
+      const prior = await startEngine(storagePath, projectCwd);
+      writeFileSync(ppidBreadcrumb(storagePath), sessionId);
+      expect(await prior.logged(ADOPTED)).toBe(true);
+      await prior.reportInputTokens(inputTokens);
+      await prior.close();
+      expect(
+        await waitUntil(() => readSaved(storagePath, sessionId)?.tokensInput === inputTokens),
+      ).toBe(true);
+      rmSync(ppidBreadcrumb(storagePath));
+      return readSaved(storagePath, sessionId)!;
+    }
+
+    async function startGuessedEngineAndCheckpoint(
+      storagePath: string,
+      projectCwd: string,
+      guessId: string,
+      inputTokens: number,
+    ): Promise<{
+      engine: Engine;
+      capSaved: SavedTotals;
+    }> {
+      writeCwdBreadcrumb(storagePath, projectCwd, guessId);
+      const engine = await startEngine(storagePath, projectCwd);
+      await engine.reportInputTokens(inputTokens);
+      expect(
+        await waitUntil(() => readSaved(storagePath, guessId)?.tokensInput === inputTokens),
+      ).toBe(true);
+      return { engine, capSaved: readSaved(storagePath, guessId)! };
+    }
+
+    async function confirmViaPpid(
+      storagePath: string,
+      engine: Engine,
+      sessionId: string,
+    ): Promise<void> {
+      writeFileSync(ppidBreadcrumb(storagePath), sessionId);
+      expect(await engine.logged(PPID_WATCH_RESOLVED)).toBe(true);
+      await engine.settle();
+    }
+
+    it('keeps the saved cost and tokens when the ppid breadcrumb confirms the same id', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const { engine, capSaved } = await startGuessedEngineAndCheckpoint(
+          storagePath,
+          projectCwd,
+          'guess-confirmed-id',
+          1000,
+        );
+        expect(capSaved.estimatedCostUsd).toBeGreaterThan(0);
+
+        await confirmViaPpid(storagePath, engine, 'guess-confirmed-id');
+
+        expect(readSaved(storagePath, 'guess-confirmed-id')).toEqual(capSaved);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
+    it("keeps another writer's total saved after this engine's skipped first checkpoint", async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      const otherCwd = mkdtempSync(join(tmpdir(), 'nr-seed-other-'));
+      try {
+        writeCwdBreadcrumb(storagePath, projectCwd, 'skipped-first-id');
+        const engine = await startEngine(storagePath, projectCwd);
+        expect(await engine.logged(SKIPPED_EMPTY)).toBe(true);
+
+        writeCwdBreadcrumb(storagePath, otherCwd, 'skipped-first-id');
+        const other = await startEngine(storagePath, otherCwd);
+        await other.reportInputTokens(400);
+        expect(
+          await waitUntil(() => readSaved(storagePath, 'skipped-first-id')?.tokensInput === 400),
+        ).toBe(true);
+        await other.close();
+
+        await engine.reportInputTokens(1000);
+        expect(
+          await waitUntil(() => readSaved(storagePath, 'skipped-first-id')?.tokensInput === 1000),
+        ).toBe(true);
+        await confirmViaPpid(storagePath, engine, 'skipped-first-id');
+
+        expect(
+          await waitUntil(() => readSaved(storagePath, 'skipped-first-id')?.tokensInput === 1400),
+        ).toBe(true);
+        await engine.settle();
+        expect(readSaved(storagePath, 'skipped-first-id')?.tokensInput).toBe(1400);
+      } finally {
+        rmSync(otherCwd, { recursive: true, force: true });
+        cleanup();
+      }
+    }, 60000);
+
+    it("folds another writer's earlier total in exactly once", async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(storagePath, projectCwd, 'guess-shared-id', 400);
+        const { engine, capSaved } = await startGuessedEngineAndCheckpoint(
+          storagePath,
+          projectCwd,
+          'guess-shared-id',
+          1000,
+        );
+
+        await confirmViaPpid(storagePath, engine, 'guess-shared-id');
+
+        const saved = readSaved(storagePath, 'guess-shared-id')!;
+        expect(saved.tokensInput).toBe(1400);
+        expect(saved.estimatedCostUsd).toBeCloseTo(
+          prior.estimatedCostUsd + capSaved.estimatedCostUsd,
+          9,
+        );
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
+    it('neither drops nor double counts cost when the ppid breadcrumb corrects the guess', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(storagePath, projectCwd, 'corrected-real-id', 400);
+        const { engine, capSaved } = await startGuessedEngineAndCheckpoint(
+          storagePath,
+          projectCwd,
+          'corrected-guess-id',
+          1000,
+        );
+
+        await confirmViaPpid(storagePath, engine, 'corrected-real-id');
+        await engine.reportInputTokens(300);
+        expect(
+          await waitUntil(() => readSaved(storagePath, 'corrected-real-id')?.tokensInput === 700),
+        ).toBe(true);
+        await engine.settle();
+
+        const saved = readSaved(storagePath, 'corrected-real-id')!;
+        expect(saved.tokensInput).toBe(700);
+        expect(saved.estimatedCostUsd).toBeCloseTo(prior.estimatedCostUsd * (700 / 400), 9);
+        expect(readSaved(storagePath, 'corrected-guess-id')).toEqual(capSaved);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
+    it('alerts on a budget threshold that prior plus own spend crosses when the ppid breadcrumb confirms the guess', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(storagePath, projectCwd, 'budget-confirmed-id', 400);
+        const budgetUsd = prior.estimatedCostUsd / 0.6;
+        writeCwdBreadcrumb(storagePath, projectCwd, 'budget-confirmed-id');
+        const engine = await startEngine(storagePath, projectCwd, {
+          NEW_RELIC_AI_SESSION_BUDGET_USD: String(budgetUsd),
+        });
+        await engine.reportInputTokens(200);
+        expect(engine.count(BUDGET_80)).toBe(0);
+
+        await confirmViaPpid(storagePath, engine, 'budget-confirmed-id');
+        appendToHookBuffer(
+          resolve(storagePath, 'buffer-budget-confirmed-id.jsonl'),
+          JSON.stringify({
+            mode: 'token',
+            tool: 'copilot-sdk-usage',
+            timestamp: Date.now(),
+            sessionId: 'budget-confirmed-id',
+            messageId: 'msg_trigger',
+            model: 'claude-sonnet-5',
+            inputTokens: 10,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+          }) + '\n',
+        );
+
+        expect(await waitUntil(() => engine.count(BUDGET_80) > 0)).toBe(true);
+        await engine.settle();
+        expect(engine.count(BUDGET_80)).toBe(1);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
+    it('keeps the tool calls a provisional engine saved when it adopts their session', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const engine = await startEngine(storagePath, projectCwd);
+        const ts = Date.now();
+        const bufferPath = resolve(storagePath, 'buffer-provisional-id.jsonl');
+        for (const n of [1, 2]) {
+          const base = { tool: 'Bash', timestamp: ts + n, sessionId: 'provisional-id' };
+          const toolUseId = `toolu_${n}`;
+          appendToHookBuffer(
+            bufferPath,
+            JSON.stringify({ ...base, mode: 'pre', toolUseId }) + '\n',
+          );
+          appendToHookBuffer(
+            bufferPath,
+            JSON.stringify({ ...base, mode: 'post', toolUseId, success: true }) + '\n',
+          );
+        }
+        expect(
+          await waitUntil(() => readSaved(storagePath, 'provisional-id')?.toolCallCount === 2),
+        ).toBe(true);
+
+        writeFileSync(ppidBreadcrumb(storagePath), 'provisional-id');
+        expect(await engine.logged(ADOPTED)).toBe(true);
+        await engine.settle();
+
+        expect(readSaved(storagePath, 'provisional-id')?.toolCallCount).toBe(2);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
+    it('keeps the token cost a provisional engine saved when it adopts their session', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const engine = await startEngine(storagePath, projectCwd);
+        appendToHookBuffer(
+          resolve(storagePath, 'buffer-provisional-cost-id.jsonl'),
+          JSON.stringify({
+            mode: 'token',
+            tool: 'copilot-sdk-usage',
+            timestamp: Date.now(),
+            sessionId: 'provisional-cost-id',
+            messageId: 'msg_rollup',
+            model: 'claude-sonnet-5',
+            inputTokens: 1000,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+          }) + '\n',
+        );
+        expect(
+          await waitUntil(
+            () => readSaved(storagePath, 'provisional-cost-id')?.tokensInput === 1000,
+          ),
+        ).toBe(true);
+        const rollupSaved = readSaved(storagePath, 'provisional-cost-id')!;
+
+        writeFileSync(ppidBreadcrumb(storagePath), 'provisional-cost-id');
+        expect(await engine.logged(ADOPTED)).toBe(true);
+        await engine.reportInputTokens(500);
+        expect(
+          await waitUntil(
+            () => readSaved(storagePath, 'provisional-cost-id')?.tokensInput === 1500,
+          ),
+        ).toBe(true);
+        await engine.settle();
+
+        const saved = readSaved(storagePath, 'provisional-cost-id')!;
+        expect(saved.tokensInput).toBe(1500);
+        expect(saved.estimatedCostUsd).toBeCloseTo(rollupSaved.estimatedCostUsd * 1.5, 9);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+  });
 
   // The correction watch reads the parent level only off Linux and Windows,
   // so these skip in CI, which relies on the session-resolver.test.ts cases

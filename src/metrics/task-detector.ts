@@ -372,8 +372,8 @@ export class TaskDetector implements Resettable {
    * doc comment for why this doesn't touch `completedTasks` directly.
    *
    * Adds to current totals rather than overwriting, so callers must invoke
-   * this at most once per (re)adopted session id, before any real activity
-   * for that id has reached this tracker.
+   * this at most once per (re)adopted session id, with totals this tracker
+   * has not already counted — see `rehydrateTrackersIfResumed` in `index.ts`.
    */
   seedFromPersisted(seed: TaskDetectorSeed): void {
     const hasAnything =
