@@ -841,7 +841,7 @@ export class SessionStore {
     try {
       try {
         writeFileSync(tmpPath, content, { mode: 0o600 });
-        if (!unparsedFilesReplaced.every(copiedAsideUnchanged)) return;
+        if (!unparsedFilesReplaced.every(copiedAsideUnchanged)) return null;
         renameIntoPlace(tmpPath, filepath, content);
       } finally {
         try {
