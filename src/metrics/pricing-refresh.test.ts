@@ -385,6 +385,19 @@ describe('schedulePricingRecheck', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it('leaves the pricing memo alone while the cache is unchanged and fresh', async () => {
+    const opts = { enabled: true, cachePath, fetchImpl: fakeFetch({ 'claude-opus-8-5': OPUS }) };
+    await startPricingRefresh(opts);
+    schedulePricingRecheck(opts);
+    const memoProbe = resolvePricingDetail('claude-opus-8-5');
+    const logsBefore = consoleError.mock.calls.length;
+
+    await jest.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
+
+    expect(resolvePricingDetail('claude-opus-8-5')).toBe(memoProbe);
+    expect(consoleError.mock.calls.length).toBe(logsBefore);
+  });
+
   it('schedules nothing when disabled', async () => {
     const fetchImpl = fakeFetch({ 'claude-opus-8-5': OPUS });
     schedulePricingRecheck({ enabled: false, cachePath, fetchImpl });

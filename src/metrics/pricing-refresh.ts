@@ -220,11 +220,20 @@ export async function startPricingRefresh(opts: PricingRefreshOptions): Promise<
 
 let recheckTimer: NodeJS.Timeout | null = null;
 
+function cacheMtimeMs(cachePath: string): number | null {
+  try {
+    return statSync(cachePath).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Reruns `startPricingRefresh` hourly so a long-running server prices models released
- * after it started. Each run refetches only once the cache is a day old, and it loads a
- * cache another server process refreshed, so the hourly tick costs a stat and no request.
- * The timer is unref'd, and a second call replaces the first.
+ * Rechecks the price cache hourly so a long-running server prices models released after
+ * it started. A tick does nothing while the cache file is unchanged and under a day old.
+ * Otherwise it runs `startPricingRefresh`, which loads a cache another server process
+ * refreshed and refetches only once the cache is a day old. The timer is unref'd, and a
+ * second call replaces the first.
  */
 export function schedulePricingRecheck(
   opts: PricingRefreshOptions,
@@ -233,7 +242,15 @@ export function schedulePricingRecheck(
   if (recheckTimer) clearInterval(recheckTimer);
   recheckTimer = null;
   if (!opts.enabled) return;
-  recheckTimer = setInterval(() => void startPricingRefresh(opts), intervalMs);
+  let seenMtimeMs = cacheMtimeMs(opts.cachePath);
+  recheckTimer = setInterval(() => {
+    const mtimeMs = cacheMtimeMs(opts.cachePath);
+    const now = (opts.nowMs ?? Date.now)();
+    if (mtimeMs !== null && mtimeMs === seenMtimeMs && now - mtimeMs < CACHE_TTL_MS) return;
+    void startPricingRefresh(opts).then(() => {
+      seenMtimeMs = cacheMtimeMs(opts.cachePath);
+    });
+  }, intervalMs);
   recheckTimer.unref();
 }
 
