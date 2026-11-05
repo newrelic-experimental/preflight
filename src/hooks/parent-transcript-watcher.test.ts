@@ -17,7 +17,10 @@ import {
   buildParentTranscriptCursorPath,
 } from './parent-transcript-watcher.js';
 import { BilledTurnLedger } from './billed-turn-ledger.js';
+import { HookEventProcessor } from './event-processor.js';
 import { LocalStore } from '../storage/local-store.js';
+import type { HookEvent } from '../storage/types.js';
+import { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 
 const STDERR_WRITE = process.stderr.write;
 
@@ -33,6 +36,7 @@ function makeAssistantLine(opts: {
   outputTokens?: number;
   cacheRead?: number;
   cacheCreation?: number;
+  cacheCreation1h?: number;
   isSidechain?: boolean;
   /** Pad the line with a string of this many bytes, for byte-boundary tests. */
   padBytes?: number;
@@ -43,6 +47,9 @@ function makeAssistantLine(opts: {
     cache_read_input_tokens: opts.cacheRead ?? 1000,
     cache_creation_input_tokens: opts.cacheCreation ?? 200,
   };
+  if (opts.cacheCreation1h !== undefined) {
+    usage.cache_creation = { ephemeral_1h_input_tokens: opts.cacheCreation1h };
+  }
   const content: Array<Record<string, unknown>> = [{ type: 'text' }];
   if (opts.padBytes && opts.padBytes > 0) {
     content.push({ type: 'text', text: 'a'.repeat(opts.padBytes) });
@@ -116,6 +123,55 @@ describe('ParentTranscriptWatcher', () => {
       cacheReadTokens: 1000,
       cacheCreationTokens: 200,
     });
+  });
+
+  it('carries 1-hour cache writes on the token line and omits them when zero', () => {
+    writeFileSync(
+      transcriptPath,
+      [
+        makeAssistantLine({ messageId: 'msg_1h', cacheCreation: 5000, cacheCreation1h: 3000 }),
+        makeAssistantLine({ messageId: 'msg_5m', cacheCreation: 5000 }),
+      ].join('\n') + '\n',
+    );
+    new ParentTranscriptWatcher({ storagePath, projectsDir, parentSessionId: SESSION_ID }).poll();
+    const events = readTokenEvents();
+    expect(
+      events.map((e) => [e.messageId, e.cacheCreationTokens, e.cacheCreation1hTokens]),
+    ).toEqual([
+      ['msg_1h', 5000, 3000],
+      ['msg_5m', 5000, undefined],
+    ]);
+  });
+
+  it('prices a transcript turn with 1-hour cache writes at the 1-hour rate end to end', () => {
+    const turn = {
+      model: 'claude-fable-5',
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheRead: 0,
+      cacheCreation: 1_000_000,
+    };
+    writeFileSync(
+      transcriptPath,
+      [
+        makeAssistantLine({ ...turn, messageId: 'msg_1h', cacheCreation1h: 1_000_000 }),
+        makeAssistantLine({ ...turn, messageId: 'msg_5m' }),
+      ].join('\n') + '\n',
+    );
+    new ParentTranscriptWatcher({ storagePath, projectsDir, parentSessionId: SESSION_ID }).poll();
+
+    const attributor = new TurnCostAttributor();
+    const costs: number[] = [];
+    const processor = new HookEventProcessor({
+      store: new LocalStore(storagePath),
+      onRecord: () => undefined,
+      onTokenEvent: (event) => {
+        costs.push(attributor.recordTokenEvent(event).attribution.estimatedCostUsd);
+      },
+    });
+    processor.processEvents(readTokenEvents() as unknown as HookEvent[]);
+
+    expect(costs).toEqual([20, 12.5]);
   });
 
   it('does not re-emit on a second poll with no new data', () => {

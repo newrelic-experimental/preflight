@@ -2392,6 +2392,9 @@ async function main(): Promise<void> {
           thinkingTokens: 0,
           cacheReadTokens: tokenEvent.cacheReadTokens,
           cacheCreationTokens: tokenEvent.cacheCreationTokens,
+          ...(tokenEvent.cacheCreation1hTokens !== undefined && {
+            cacheCreation1hTokens: tokenEvent.cacheCreation1hTokens,
+          }),
           totalTokens: tokenEvent.inputTokens + tokenEvent.outputTokens,
         };
         let breakdown: CostBreakdown;
@@ -2505,6 +2508,9 @@ async function main(): Promise<void> {
           thinkingTokens: turn.reasoningTokens,
           cacheReadTokens: turn.cacheReadTokens,
           cacheCreationTokens: turn.cacheCreationTokens,
+          ...(turn.cacheCreation1hTokens !== undefined && {
+            cacheCreation1hTokens: turn.cacheCreation1hTokens,
+          }),
           totalTokens:
             turn.inputTokens +
             turn.outputTokens +

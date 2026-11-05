@@ -94,6 +94,7 @@ interface ParsedParentTurn {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  readonly cacheCreation1hTokens: number;
   /**
    * Gap (ms) between this line's timestamp and the previous raw transcript
    * line's timestamp — an estimate of time spent waiting on the model API.
@@ -497,6 +498,9 @@ export class ParentTranscriptWatcher {
           outputTokens: parsed.outputTokens,
           cacheReadTokens: parsed.cacheReadTokens,
           cacheCreationTokens: parsed.cacheCreationTokens,
+          ...(parsed.cacheCreation1hTokens > 0 && {
+            cacheCreation1hTokens: parsed.cacheCreation1hTokens,
+          }),
           ...(parsed.responseMs !== undefined && { responseMs: parsed.responseMs }),
         }),
       );
@@ -596,6 +600,7 @@ export class ParentTranscriptWatcher {
       outputTokens: fields.outputTokens,
       cacheReadTokens: fields.cacheReadTokens,
       cacheCreationTokens: fields.cacheCreationTokens,
+      cacheCreation1hTokens: fields.cacheCreation1hTokens,
       responseMs,
     };
   }
