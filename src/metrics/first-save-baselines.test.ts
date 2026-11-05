@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@jest/globals';
-import { FirstSaveBaselines, toolCallSeedOf } from './first-save-baselines.js';
+import { FirstSaveBaselines, costSeedOf, toolCallSeedOf } from './first-save-baselines.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from './quality-proxy-tracker.js';
 
@@ -61,7 +61,7 @@ describe('FirstSaveBaselines', () => {
 
   it('seeds both families from the current file when this process saved nothing', () => {
     const seeds = new FirstSaveBaselines().take('sess-a', () => current);
-    expect(seeds).toEqual({ toolCalls: toolCallSeedOf(current), cost: current });
+    expect(seeds).toEqual({ toolCalls: toolCallSeedOf(current), cost: costSeedOf(current) });
   });
 
   it('seeds tool calls from before a rollup save and cost from the current file', () => {
@@ -70,7 +70,7 @@ describe('FirstSaveBaselines', () => {
 
     const seeds = baselines.take('sess-a', () => current);
 
-    expect(seeds).toEqual({ toolCalls: toolCallSeedOf(beforeSave), cost: current });
+    expect(seeds).toEqual({ toolCalls: toolCallSeedOf(beforeSave), cost: costSeedOf(current) });
   });
 
   it('seeds both families from before the first save of its own summary', () => {
@@ -80,7 +80,7 @@ describe('FirstSaveBaselines', () => {
 
     const seeds = baselines.take('sess-a', () => current);
 
-    expect(seeds).toEqual({ toolCalls: toolCallSeedOf(beforeSave), cost: beforeSave });
+    expect(seeds).toEqual({ toolCalls: toolCallSeedOf(beforeSave), cost: costSeedOf(beforeSave) });
   });
 
   it('seeds cost from before its own first save when a rollup save came earlier', () => {
@@ -91,14 +91,17 @@ describe('FirstSaveBaselines', () => {
 
     const seeds = baselines.take('sess-a', () => current);
 
-    expect(seeds).toEqual({ toolCalls: toolCallSeedOf(beforeSave), cost: afterRollup });
+    expect(seeds).toEqual({ toolCalls: toolCallSeedOf(beforeSave), cost: costSeedOf(afterRollup) });
   });
 
   it('seeds nothing for a family whose first save created the file', () => {
     const baselines = new FirstSaveBaselines();
     baselines.recordSave({ sessionId: 'sess-a', previous: null, ownSession: false });
 
-    expect(baselines.take('sess-a', () => current)).toEqual({ toolCalls: null, cost: current });
+    expect(baselines.take('sess-a', () => current)).toEqual({
+      toolCalls: null,
+      cost: costSeedOf(current),
+    });
   });
 
   it("keeps another session's snapshot when one session is taken", () => {
@@ -120,8 +123,32 @@ describe('FirstSaveBaselines', () => {
 
     expect(baselines.take('sess-a', () => current)).toEqual({
       toolCalls: toolCallSeedOf(current),
-      cost: current,
+      cost: costSeedOf(current),
     });
+  });
+});
+
+describe('FirstSaveBaselines.forget', () => {
+  it('holds no entries for a corrected-away id', () => {
+    const baselines = new FirstSaveBaselines();
+    const before = makeSummary({ toolCallCount: 2, estimatedCostUsd: 0.4 });
+    const current = makeSummary({ toolCallCount: 6, estimatedCostUsd: 1.4 });
+    baselines.recordSave({ sessionId: 'guess', previous: before, ownSession: true });
+
+    baselines.forget('guess');
+
+    expect(baselines.take('guess', () => current)).toEqual({
+      toolCalls: toolCallSeedOf(current),
+      cost: costSeedOf(current),
+    });
+  });
+});
+
+describe('costSeedOf', () => {
+  it('carries the prior spend the budget thresholds seed from', () => {
+    const seed = costSeedOf(makeSummary({ estimatedCostUsd: 6 }));
+    expect(seed.estimatedCostUsd).toBe(6);
+    expect(seed.costTracker.totalCostUsd).toBe(6);
   });
 });
 

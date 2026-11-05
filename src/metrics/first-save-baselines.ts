@@ -1,4 +1,7 @@
 import type { FullSessionSummary } from '../storage/session-store.js';
+import { buildCostTrackerSeed } from './cost-tracker-seed.js';
+import type { CostTrackerSeed } from './cost-tracker.js';
+import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import type { EfficiencyScoreSeed } from './efficiency-score.js';
 import type { QualityProxyRawCounts } from './quality-proxy-tracker.js';
 import type { SessionTrackerSeed } from './session-tracker.js';
@@ -33,11 +36,27 @@ export function toolCallSeedOf(summary: FullSessionSummary): ToolCallSeed {
   };
 }
 
+/** What CostTracker, ModelUsageTracker and the budget thresholds seed from. */
+export interface CostSeed {
+  readonly costTracker: CostTrackerSeed;
+  readonly modelBreakdown: Readonly<Record<string, ModelBreakdownEntry>>;
+  /** The prior spend alone, which is all the budget thresholds may be seeded from. */
+  readonly estimatedCostUsd: number | null;
+}
+
+export function costSeedOf(summary: FullSessionSummary): CostSeed {
+  return {
+    costTracker: buildCostTrackerSeed(summary),
+    modelBreakdown: summary.modelBreakdown,
+    estimatedCostUsd: summary.estimatedCostUsd,
+  };
+}
+
 /** The session file each tracker family seeds from; null seeds nothing. */
 export interface RehydrationSeeds {
   readonly toolCalls: ToolCallSeed | null;
   /** For CostTracker, ModelUsageTracker and the budget thresholds. */
-  readonly cost: FullSessionSummary | null;
+  readonly cost: CostSeed | null;
 }
 
 /**
@@ -58,7 +77,7 @@ export interface RehydrationSeeds {
  */
 export class FirstSaveBaselines {
   private readonly toolCalls = new Map<string, ToolCallSeed | null>();
-  private readonly cost = new Map<string, FullSessionSummary | null>();
+  private readonly cost = new Map<string, CostSeed | null>();
 
   /** `previous` is the file the save merged against, null for a new file. */
   recordSave(save: {
@@ -70,7 +89,14 @@ export class FirstSaveBaselines {
     if (!this.toolCalls.has(sessionId)) {
       this.toolCalls.set(sessionId, previous && toolCallSeedOf(previous));
     }
-    if (ownSession && !this.cost.has(sessionId)) this.cost.set(sessionId, previous);
+    if (ownSession && !this.cost.has(sessionId))
+      this.cost.set(sessionId, previous && costSeedOf(previous));
+  }
+
+  /** Drops a session id that a correction showed was a wrong guess. */
+  forget(sessionId: string): void {
+    this.toolCalls.delete(sessionId);
+    this.cost.delete(sessionId);
   }
 
   /** Seeds for `sessionId`, falling back to `loadCurrent()` per family, and forgets it. */
@@ -81,7 +107,9 @@ export class FirstSaveBaselines {
       toolCalls: this.toolCalls.has(sessionId)
         ? (this.toolCalls.get(sessionId) ?? null)
         : current && toolCallSeedOf(current),
-      cost: this.cost.has(sessionId) ? (this.cost.get(sessionId) ?? null) : current,
+      cost: this.cost.has(sessionId)
+        ? (this.cost.get(sessionId) ?? null)
+        : current && costSeedOf(current),
     };
     this.toolCalls.delete(sessionId);
     this.cost.delete(sessionId);

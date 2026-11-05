@@ -34,6 +34,7 @@ import {
 import type { DashboardServer } from './dashboard/dashboard-server.js';
 import { sanitizeCwdForFilename } from './hooks/session-resolver.js';
 import { SessionStore } from './storage/session-store.js';
+import { appendToHookBuffer } from './storage/hook-buffer.js';
 import type { LocalStore } from './storage/index.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
 import type { NrIngestManager } from './transport/nr-ingest.js';
@@ -1505,11 +1506,15 @@ describe('stdio integration', () => {
     const ADOPTED = 'Session ID resolved, full initialization complete';
 
     const CHECKPOINTED = 'Session checkpointed';
+    const BUDGET_80 = /"pct":80[^\n]*Budget threshold reached/g;
     const SKIPPED_EMPTY = 'Skipping first write of a session with no recorded usage';
 
-    const startedEngines: Array<{ close: () => Promise<void> }> = [];
-    afterEach(async () => {
+    const startedEngines: Engine[] = [];
+    const closeStartedEngines = async (): Promise<void> => {
       await Promise.all(startedEngines.splice(0).map((engine) => engine.close().catch(() => {})));
+    };
+    afterEach(async () => {
+      await closeStartedEngines();
     });
 
     const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -1523,7 +1528,7 @@ describe('stdio integration', () => {
       return predicate();
     }
 
-    function makeDirs(): { storagePath: string; projectCwd: string; cleanup: () => void } {
+    function makeDirs(): { storagePath: string; projectCwd: string; cleanup: () => Promise<void> } {
       const storagePath = mkdtempSync(join(tmpdir(), 'nr-1039-storage-'));
       const projectCwd = mkdtempSync(join(tmpdir(), 'nr-1039-project-'));
       mkdirSync(resolve(storagePath, 'session-by-cwd'), { recursive: true });
@@ -1531,7 +1536,8 @@ describe('stdio integration', () => {
       return {
         storagePath,
         projectCwd,
-        cleanup: () => {
+        cleanup: async () => {
+          await closeStartedEngines();
           rmSync(storagePath, { recursive: true, force: true });
           rmSync(projectCwd, { recursive: true, force: true });
         },
@@ -1564,12 +1570,17 @@ describe('stdio integration', () => {
 
     interface Engine {
       logged: (text: string) => Promise<boolean>;
+      count: (pattern: RegExp) => number;
       settle: () => Promise<void>;
       reportInputTokens: (inputTokens: number) => Promise<unknown>;
       close: () => Promise<void>;
     }
 
-    async function startEngine(storagePath: string, projectCwd: string): Promise<Engine> {
+    async function startEngine(
+      storagePath: string,
+      projectCwd: string,
+      extraEnv: Record<string, string> = {},
+    ): Promise<Engine> {
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
       const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
       const env = { ...process.env };
@@ -1586,6 +1597,7 @@ describe('stdio integration', () => {
           NEW_RELIC_AI_MCP_STORAGE_PATH: storagePath,
           NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
           NR_AI_PENDING_CONFIRMATION_CAP_MS: '500',
+          ...extraEnv,
         },
       });
       let stderr = '';
@@ -1597,6 +1609,7 @@ describe('stdio integration', () => {
       await client.listTools();
       const engine: Engine = {
         logged: (text: string) => waitUntil(() => stderr.includes(text)),
+        count: (pattern: RegExp) => stderr.match(pattern)?.length ?? 0,
         settle: async () => {
           const countCheckpoints = (): number => stderr.split(CHECKPOINTED).length - 1;
           const target = countCheckpoints() + 3;
@@ -1637,7 +1650,7 @@ describe('stdio integration', () => {
       guessId: string,
       inputTokens: number,
     ): Promise<{
-      engine: Awaited<ReturnType<typeof startEngine>>;
+      engine: Engine;
       capSaved: SavedTotals;
     }> {
       writeCwdBreadcrumb(storagePath, projectCwd, guessId);
@@ -1651,7 +1664,7 @@ describe('stdio integration', () => {
 
     async function confirmViaPpid(
       storagePath: string,
-      engine: Awaited<ReturnType<typeof startEngine>>,
+      engine: Engine,
       sessionId: string,
     ): Promise<void> {
       writeFileSync(ppidBreadcrumb(storagePath), sessionId);
@@ -1675,7 +1688,7 @@ describe('stdio integration', () => {
         expect(readSaved(storagePath, 'guess-confirmed-id')).toEqual(capSaved);
         await engine.close();
       } finally {
-        cleanup();
+        await cleanup();
       }
     }, 60000);
 
@@ -1733,7 +1746,7 @@ describe('stdio integration', () => {
         );
         await engine.close();
       } finally {
-        cleanup();
+        await cleanup();
       }
     }, 60000);
 
@@ -1761,7 +1774,45 @@ describe('stdio integration', () => {
         expect(readSaved(storagePath, 'corrected-guess-id')).toEqual(capSaved);
         await engine.close();
       } finally {
-        cleanup();
+        await cleanup();
+      }
+    }, 60000);
+
+    it('alerts on a budget threshold that prior plus own spend crosses when the ppid breadcrumb confirms the guess', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(storagePath, projectCwd, 'budget-confirmed-id', 400);
+        const budgetUsd = prior.estimatedCostUsd / 0.6;
+        writeCwdBreadcrumb(storagePath, projectCwd, 'budget-confirmed-id');
+        const engine = await startEngine(storagePath, projectCwd, {
+          NEW_RELIC_AI_SESSION_BUDGET_USD: String(budgetUsd),
+        });
+        await engine.reportInputTokens(200);
+        expect(engine.count(BUDGET_80)).toBe(0);
+
+        await confirmViaPpid(storagePath, engine, 'budget-confirmed-id');
+        appendToHookBuffer(
+          resolve(storagePath, 'buffer-budget-confirmed-id.jsonl'),
+          JSON.stringify({
+            mode: 'token',
+            tool: 'copilot-sdk-usage',
+            timestamp: Date.now(),
+            sessionId: 'budget-confirmed-id',
+            messageId: 'msg_trigger',
+            model: 'claude-sonnet-5',
+            inputTokens: 10,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+          }) + '\n',
+        );
+
+        expect(await waitUntil(() => engine.count(BUDGET_80) > 0)).toBe(true);
+        await engine.settle();
+        expect(engine.count(BUDGET_80)).toBe(1);
+        await engine.close();
+      } finally {
+        await cleanup();
       }
     }, 60000);
 
@@ -1770,30 +1821,19 @@ describe('stdio integration', () => {
       try {
         const engine = await startEngine(storagePath, projectCwd);
         const ts = Date.now();
-        appendFileSync(
-          resolve(storagePath, 'buffer-provisional-id.jsonl'),
-          [1, 2]
-            .flatMap((n) => [
-              {
-                mode: 'pre',
-                tool: 'Bash',
-                timestamp: ts + n,
-                sessionId: 'provisional-id',
-                toolUseId: `toolu_${n}`,
-              },
-              {
-                mode: 'post',
-                tool: 'Bash',
-                timestamp: ts + n,
-                sessionId: 'provisional-id',
-                toolUseId: `toolu_${n}`,
-                success: true,
-              },
-            ])
-            .map((e) => JSON.stringify(e))
-            .join('\n') + '\n',
-          { mode: 0o600 },
-        );
+        const bufferPath = resolve(storagePath, 'buffer-provisional-id.jsonl');
+        for (const n of [1, 2]) {
+          const base = { tool: 'Bash', timestamp: ts + n, sessionId: 'provisional-id' };
+          const toolUseId = `toolu_${n}`;
+          appendToHookBuffer(
+            bufferPath,
+            JSON.stringify({ ...base, mode: 'pre', toolUseId }) + '\n',
+          );
+          appendToHookBuffer(
+            bufferPath,
+            JSON.stringify({ ...base, mode: 'post', toolUseId, success: true }) + '\n',
+          );
+        }
         expect(
           await waitUntil(() => readSaved(storagePath, 'provisional-id')?.toolCallCount === 2),
         ).toBe(true);
@@ -1805,7 +1845,7 @@ describe('stdio integration', () => {
         expect(readSaved(storagePath, 'provisional-id')?.toolCallCount).toBe(2);
         await engine.close();
       } finally {
-        cleanup();
+        await cleanup();
       }
     }, 60000);
 
@@ -1813,7 +1853,7 @@ describe('stdio integration', () => {
       const { storagePath, projectCwd, cleanup } = makeDirs();
       try {
         const engine = await startEngine(storagePath, projectCwd);
-        appendFileSync(
+        appendToHookBuffer(
           resolve(storagePath, 'buffer-provisional-cost-id.jsonl'),
           JSON.stringify({
             mode: 'token',
@@ -1827,7 +1867,6 @@ describe('stdio integration', () => {
             cacheReadTokens: 0,
             cacheCreationTokens: 0,
           }) + '\n',
-          { mode: 0o600 },
         );
         expect(
           await waitUntil(
@@ -1851,7 +1890,7 @@ describe('stdio integration', () => {
         expect(saved.estimatedCostUsd).toBeCloseTo(rollupSaved.estimatedCostUsd * 1.5, 9);
         await engine.close();
       } finally {
-        cleanup();
+        await cleanup();
       }
     }, 60000);
   });

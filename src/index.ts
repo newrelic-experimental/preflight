@@ -67,7 +67,6 @@ import { ContextWindowTracker } from './metrics/context-window-tracker.js';
 import { initModelPricing } from './metrics/pricing-init.js';
 import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
-import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
 import { CostTracker } from './metrics/cost-tracker.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
@@ -1442,10 +1441,8 @@ async function main(): Promise<void> {
           sessionStore!.loadSession(sessionId),
         );
         if (cost) {
-          costTracker.seedFromPersisted(buildCostTrackerSeed(cost));
-          budgetTracker.seedFiredThresholdsFromSessionTotal(
-            costTracker.getMetrics().sessionTotalCostUsd ?? 0,
-          );
+          costTracker.seedFromPersisted(cost.costTracker);
+          budgetTracker.seedFiredThresholdsFromSessionTotal(cost.estimatedCostUsd ?? 0);
           modelUsageTracker.seedFromPersisted(cost.modelBreakdown);
         }
         if (toolCalls) {
@@ -2991,6 +2988,7 @@ async function main(): Promise<void> {
         // path, which is keyed by whatever id the hook collector script
         // wrote — never the wrong guess — so toolCallCount/timeline stay
         // clean through the whole unconfirmed window regardless.
+        firstSaveBaselines.forget(sessionTraceId);
         costTracker.reset(realId);
         modelUsageTracker.reset(realId);
         contextCompositionTracker.reset(realId);
