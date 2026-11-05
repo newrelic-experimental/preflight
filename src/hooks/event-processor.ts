@@ -10,8 +10,8 @@
  *   - Permission-requested pre events (PermissionRequest seen, then nothing —
  *     Claude Code fires no hook event for an interactive user rejection)
  *     without a post within PERMISSION_REQUESTED_TIMEOUT_MS → rejected record
- *   - Post events with no pending pre, no countedUnpaired entry and no
- *     counted/ hit → record with durationMs: null
+ *   - Post events with no pending pre whose call was not already counted,
+ *     here or in counted/ → record with durationMs: null
  */
 
 import { randomUUID } from 'node:crypto';
@@ -800,7 +800,7 @@ export class HookEventProcessor {
     this.pending.delete(key);
     const counted = pendingPre ? undefined : this.takeCountedUnpaired(event);
     if (counted === 'counted-elsewhere') {
-      logger.debug('Late post for a pre another process counted — dropped', {
+      logger.debug('Late post for a call already counted — dropped', {
         tool: event.tool,
         key,
       });
