@@ -1501,7 +1501,7 @@ describe('stdio integration', () => {
     }
   }, 30000);
 
-  describe('seeding a session this process already saved (#1039)', () => {
+  describe('seeding a session this process already saved', () => {
     const PPID_WATCH_RESOLVED = 'Resolved corrected session_id from ppid breadcrumb';
     const ADOPTED = 'Session ID resolved, full initialization complete';
 
@@ -1529,8 +1529,8 @@ describe('stdio integration', () => {
     }
 
     function makeDirs(): { storagePath: string; projectCwd: string; cleanup: () => Promise<void> } {
-      const storagePath = mkdtempSync(join(tmpdir(), 'nr-1039-storage-'));
-      const projectCwd = mkdtempSync(join(tmpdir(), 'nr-1039-project-'));
+      const storagePath = mkdtempSync(join(tmpdir(), 'nr-seed-storage-'));
+      const projectCwd = mkdtempSync(join(tmpdir(), 'nr-seed-project-'));
       mkdirSync(resolve(storagePath, 'session-by-cwd'), { recursive: true });
       mkdirSync(resolve(storagePath, 'session-by-ppid'), { recursive: true });
       return {
@@ -1694,7 +1694,7 @@ describe('stdio integration', () => {
 
     it("keeps another writer's total saved after this engine's skipped first checkpoint", async () => {
       const { storagePath, projectCwd, cleanup } = makeDirs();
-      const otherCwd = mkdtempSync(join(tmpdir(), 'nr-1039-other-'));
+      const otherCwd = mkdtempSync(join(tmpdir(), 'nr-seed-other-'));
       try {
         writeCwdBreadcrumb(storagePath, projectCwd, 'skipped-first-id');
         const engine = await startEngine(storagePath, projectCwd);
