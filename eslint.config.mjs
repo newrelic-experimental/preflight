@@ -36,6 +36,32 @@ export default [
     },
   },
   {
+    // A raw append to a hook buffer that races a drain is lost. These files write buffers, so they
+    // go through appendToHookBuffer in src/storage/hook-buffer.ts.
+    files: [
+      'src/hooks/collector-script.ts',
+      'src/hooks/copilot-app-usage-watcher.ts',
+      'src/hooks/copilot-usage-watcher.ts',
+      'src/hooks/parent-transcript-watcher.ts',
+      'src/hooks/subagent-watcher.ts',
+    ],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'node:fs',
+              importNames: ['appendFileSync', 'appendFile'],
+              message:
+                'Append to a hook buffer with appendToHookBuffer (src/storage/hook-buffer.ts).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // CLI scripts report to the terminal. The no-console rule protects the MCP server's
     // stdout, which is its stdio transport; these never run as part of that process.
     files: ['scripts/**/*.ts'],
