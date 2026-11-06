@@ -14,8 +14,7 @@ import { tmpdir } from 'node:os';
 import {
   SessionStore,
   buildSessionSummary,
-  classifySiblings,
-  combineSiblingSummaries,
+  combineSessionFiles,
   deserializeFullSessionSummary,
   hasAttributableActivity,
   mergeSummaries,
@@ -27,6 +26,7 @@ import type { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { buildCostTrackerSeed } from '../metrics/cost-tracker-seed.js';
 import { FirstSaveBaselines } from '../metrics/first-save-baselines.js';
+import { computeHistoricalCosts } from './historical-costs.js';
 import type { CostMetrics } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
@@ -4610,59 +4610,9 @@ describe('combining a session split across files', () => {
       },
     });
 
-  it('adds files whose timelines share no entry', () => {
-    const a = first();
-    const b = second();
-    expect(classifySiblings(a, b)).toBe('disjoint');
-
-    const combined = combineSiblingSummaries(a, b);
-    expect(combined.toolCallCount).toBe(3);
-    expect(combined.toolBreakdown).toEqual({ Read: 2, Bash: 1 });
-    expect(combined.estimatedCostUsd).toBeCloseTo(3);
-    expect(combined.exactTotals?.costUsd).toBeCloseTo(2.6);
-    expect(combined.byteEstimates?.costUsd).toBeCloseTo(0.4);
-    expect(combined.costByDayUsd).toEqual({ '2026-03-01': 1, '2026-03-02': 2 });
-    expect(combined.tokensInput).toBe(4000);
-    expect(combined.tokensOutput).toBe(1200);
-    expect(combined.timeline?.map((e) => e.timestamp)).toEqual([day1 + 1, day1 + 2, day2 + 1]);
-    expect([combined.startTime, combined.endTime]).toEqual([day1, day2 + HOUR]);
-    expect(combined.userMessages).toBe(8);
-    expect(combined.taskCount).toBe(2);
-    expect(combined.taskSuccessRate).toBeCloseTo(0.5);
-    expect(combined.efficiencyScore).toBeCloseTo(0.7);
-    expect(combined.efficiencyScoreSampleCount).toBe(3);
-    expect(combined.efficiencyScoreComponents?.autonomy).toBeCloseTo(0.7);
-    expect(combineSiblingSummaries(b, a)).toEqual(combined);
-  });
-
-  it('max-merges files that share some timeline entries', () => {
-    const a = first();
-    const b = { ...second(), timeline: [entry(day1 + 2, 'Bash'), entry(day2 + 1)] };
-    expect(classifySiblings(a, b)).toBe('overlapping');
-
-    const combined = combineSiblingSummaries(a, b);
-    expect(combined).toEqual(mergeSummaries(a, b));
-    expect(combined.toolCallCount).toBe(2);
-    expect(combined.timeline).toHaveLength(3);
-  });
-
-  it('max-merges a file whose timeline contains the other', () => {
-    const a = first();
-    const b = { ...second(), timeline: [...(a.timeline ?? []), entry(day2 + 1)], toolCallCount: 3 };
-    expect(classifySiblings(a, b)).toBe('overlapping');
-    expect(combineSiblingSummaries(a, b).toolCallCount).toBe(3);
-  });
-
-  it('max-merges a file with no timeline, which cannot show it is separate', () => {
-    const a = first();
-    const copy = { ...a, startTime: day2, endTime: day2 + HOUR, timeline: [], toolCallCount: 0 };
-    expect(classifySiblings(a, copy)).toBe('overlapping');
-    expect(combineSiblingSummaries(a, copy).estimatedCostUsd).toBeCloseTo(1);
-  });
-
-  it('converges when a heal wrote the combined file but crashed before deleting a source', () => {
+  it('converges when a save wrote the combined file but crashed before setting a source aside', () => {
     const store = new SessionStore({ storagePath: tmpDir });
-    writeSessionFile(combineSiblingSummaries(first(), second()));
+    writeSessionFile(combineSessionFiles([first(), second()]));
     writeSessionFile(second());
 
     const loaded = store.loadSession(id);
@@ -4680,19 +4630,20 @@ describe('combining a session split across files', () => {
   });
 
   it('does not add a source again once the combined timeline cap pushed its entries out', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
     const middle = { ...second(), startTime: day1 + HOUR, endTime: day1 + 2 * HOUR };
     middle.timeline = [entry(day1 + HOUR + 1)];
     const latest = {
       ...second(),
       timeline: Array.from({ length: 10_000 }, (_, i) => entry(day2 + i)),
     };
-    const combined = [first(), middle, latest].reduce((acc, s) => combineSiblingSummaries(acc, s));
+    const combined = combineSessionFiles([first(), middle, latest]);
     expect(combined.toolCallCount).toBe(4);
     expect(combined.timeline?.some((e) => e.timestamp === day1 + HOUR + 1)).toBe(false);
 
-    expect(classifySiblings(combined, middle)).toBe('overlapping');
-    expect(combineSiblingSummaries(combined, middle).toolCallCount).toBe(4);
-    expect(classifySiblings(first(), latest)).toBe('disjoint');
+    writeSessionFile(combined);
+    writeFileSync(join(sessionsDir(), `2026-03-02_${id}.json`), JSON.stringify(middle));
+    expect(store.loadSession(id)?.toolCallCount).toBe(4);
   });
 
   it('lists one record per id with the split files added together', () => {
@@ -4705,7 +4656,70 @@ describe('combining a session split across files', () => {
     expect(all[0].toolCallCount).toBe(3);
     expect(all[0].estimatedCostUsd).toBeCloseTo(3);
     expect(store.loadSession(id)).toEqual(all[0]);
-    expect(store.loadAllSessions({ since: new Date(day2) })).toEqual([]);
+  });
+
+  describe('a load limited to a window', () => {
+    const recent = (end: number) => ({ ...second(), startTime: end - HOUR, endTime: end });
+    const setMtime = (date: string, ms: number) =>
+      utimesSync(join(sessionsDir(), `${date}_${id}.json`), new Date(ms), new Date(ms));
+
+    it('combines only the files in the window, leaving lifetime totals out', () => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      writeSessionFile(first());
+      writeSessionFile(second());
+      const third = {
+        ...second(),
+        startTime: day2 + 24 * HOUR,
+        endTime: day2 + 25 * HOUR,
+        timeline: [entry(day2 + 24 * HOUR + 1)],
+        toolCallCount: 5,
+        estimatedCostUsd: 4,
+      };
+      writeSessionFile(third);
+
+      const window = store.loadAllSessions({ since: new Date(day2) });
+      expect(window.map((s) => [s.toolCallCount, s.estimatedCostUsd])).toEqual([[6, 6]]);
+      expect(store.loadAllSessions({ since: new Date(day2 + 24 * HOUR) })).toHaveLength(1);
+      expect(store.loadAllSessions({ since: new Date(day2 + 48 * HOUR) })).toEqual([]);
+    });
+
+    it('adds an older file only when it was modified since the cutoff', () => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      writeSessionFile(first());
+      writeSessionFile(second());
+      const options = { since: new Date(day2), includeModifiedSince: new Date(day2) };
+
+      setMtime('2026-03-01', day1);
+      expect(store.loadAllSessions(options).map((s) => s.toolCallCount)).toEqual([1]);
+      setMtime('2026-03-01', day2);
+      expect(store.loadAllSessions(options).map((s) => s.toolCallCount)).toEqual([3]);
+    });
+
+    it('keeps the recent piece of a long session in today and week views', () => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const now = Date.now();
+      writeSessionFile({ ...first(), startTime: now - 720 * HOUR, endTime: now - 719 * HOUR });
+      writeSessionFile({ ...recent(now), timeline: [entry(now - 60_000)] });
+
+      expect(store.loadTodaySessions().map((s) => s.toolCallCount)).toEqual([1]);
+      expect(store.loadSessionsOverlappingToday().map((s) => s.toolCallCount)).toEqual([1]);
+      expect(computeHistoricalCosts(store, 'another-session', now).priorWeeklyCostUsd).toBeCloseTo(
+        2,
+      );
+    });
+  });
+
+  it("filters by developer per file, so one developer never gets another one's activity", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeSessionFile({ ...first(), developer: 'alice' });
+    writeSessionFile({ ...second(), developer: 'bob' });
+
+    const calls = (developer: string) =>
+      store.loadAllSessions({ developer }).map((s) => s.toolCallCount);
+    expect(calls('alice')).toEqual([2]);
+    expect(calls('bob')).toEqual([1]);
+    expect(calls('carol')).toEqual([]);
+    expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([3]);
   });
 
   it('saves into one file, sets the other split files aside, and leaves unreadable ones in place', () => {

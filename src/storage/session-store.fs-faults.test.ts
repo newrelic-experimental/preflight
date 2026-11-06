@@ -214,6 +214,7 @@ describe('SessionStore saves under filesystem faults', () => {
     readFileSync.mockImplementation(realFs.readFileSync as (...args: unknown[]) => unknown);
 
     expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([41]);
+    expect(store.loadSession(id)?.toolCallCount).toBe(41);
   });
 
   it('keeps a split file another process rewrote after the save read it, and combines it next', () => {
@@ -252,5 +253,88 @@ describe('SessionStore saves under filesystem faults', () => {
     expect(sessionFiles()).toEqual([basename(target), basename(sibling)]);
     expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([3]);
     expect(store.loadSession(id)?.timeline).toHaveLength(4);
+  });
+
+  describe('when another process sets a split file aside during a read', () => {
+    const dayTwo = new Date('2026-03-02T10:00:00Z').getTime();
+    const split = (start: number, toolCallCount: number, timestamps: number[]) =>
+      JSON.stringify({
+        ...summary(toolCallCount),
+        startTime: start,
+        timeline: timestamps.map((timestamp) => ({ timestamp, toolName: 'Read' })),
+      });
+    const siblingPath = () => join(tmpDir, 'sessions', `2026-03-02_${id}.json`);
+    const seedSplitFiles = () => {
+      realFs.writeFileSync(target, split(startTime, 10, [startTime + 1]));
+      realFs.writeFileSync(siblingPath(), split(dayTwo, 20, [dayTwo + 1]));
+    };
+    /** The other process finishes its whole save right after this one read the first file. */
+    const otherProcessSavesAfterFirstRead = () => {
+      let done = false;
+      readFileSync.mockImplementation((...args: unknown[]) => {
+        const contents = (realFs.readFileSync as (...a: unknown[]) => unknown)(...args);
+        if (args[0] === target && !done) {
+          done = true;
+          realFs.writeFileSync(target, split(startTime, 30, [startTime + 1, dayTwo + 1]));
+          realFs.renameSync(siblingPath(), `${siblingPath()}.1.merged`);
+        }
+        return contents;
+      });
+    };
+    const store = () => new SessionStore({ storagePath: tmpDir });
+
+    it("a save keeps the other process's combined record and reports it as previous", () => {
+      seedSplitFiles();
+      otherProcessSavesAfterFirstRead();
+      const saved = store().saveSession(summary(2));
+      expect(saved?.previous?.toolCallCount).toBe(30);
+      expect(savedToolCalls()).toBe(30);
+    });
+
+    it('loadSession returns the combined record, not the piece it read first', () => {
+      seedSplitFiles();
+      otherProcessSavesAfterFirstRead();
+      expect(store().loadSession(id)?.toolCallCount).toBe(30);
+    });
+
+    it('loadAllSessions returns the combined record, not the piece it read first', () => {
+      seedSplitFiles();
+      otherProcessSavesAfterFirstRead();
+      expect(
+        store()
+          .loadAllSessions()
+          .map((s) => s.toolCallCount),
+      ).toEqual([30]);
+    });
+
+    it('a window load relists within its window', () => {
+      seedSplitFiles();
+      const since = new Date(dayTwo);
+      realFs.writeFileSync(
+        join(tmpDir, 'sessions', `2026-03-03_${id}.json`),
+        split(dayTwo + 86_400_000, 5, [dayTwo + 86_400_000]),
+      );
+      readFileSync.mockImplementation((...args: unknown[]) => {
+        if (args[0] === siblingPath()) {
+          realFs.renameSync(siblingPath(), `${siblingPath()}.1.merged`);
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        }
+        return (realFs.readFileSync as (...a: unknown[]) => unknown)(...args);
+      });
+      expect(
+        store()
+          .loadAllSessions({ since })
+          .map((s) => s.toolCallCount),
+      ).toEqual([5]);
+    });
+
+    it('skips a listed file that can never be read, and the save still lands', () => {
+      realFs.writeFileSync(target, split(startTime, 10, [startTime + 1]));
+      realFs.symlinkSync(join(tmpDir, 'missing'), siblingPath());
+      const saved = store().saveSession(summary(12));
+      expect(saved?.previous?.toolCallCount).toBe(10);
+      expect(savedToolCalls()).toBe(12);
+      expect(warnings('cannot be found')).not.toHaveLength(0);
+    });
   });
 });

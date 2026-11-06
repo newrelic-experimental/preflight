@@ -1129,7 +1129,7 @@ export class SessionStore {
     }
   }
 
-  /** Every readable file for the id, combined into one record (see combineSiblingSummaries). */
+  /** Every readable file for the id, combined into one record (see combineSessionFiles). */
   loadSession(sessionId: string): FullSessionSummary | null {
     return this.loadSessionFiles(sessionId).existing;
   }
@@ -1148,29 +1148,61 @@ export class SessionStore {
   } {
     if (!existsSync(this.sessionsDir)) return { existing: null, filesRead: [] };
 
-    const filesRead: SessionFileRead[] = [];
-    for (const file of readdirSync(this.sessionsDir).sort()) {
-      if (parseSessionFilename(file)?.sessionId !== sessionId) continue;
-      const filepath = resolve(this.sessionsDir, file);
-      try {
-        const bytes = readFileSync(filepath);
-        filesRead.push({
-          filepath,
-          bytes,
-          parsed: parseSessionFile(bytes.toString('utf-8'), filepath),
-        });
-      } catch {
-        logger.warn('Failed to read session file', { file });
-      }
-    }
-
-    const summaries = filesRead.flatMap(({ parsed }) =>
-      parsed.kind === 'unreadable' ? [] : [parsed.summary],
-    );
+    const listFiles = () => this.listSessionFiles().filter((f) => f.sessionId === sessionId);
+    const filesRead = this.readListedFiles(listFiles(), listFiles);
+    const summaries = summariesIn(filesRead);
     return {
       existing: summaries.length > 0 ? combineSessionFiles(summaries) : null,
       filesRead,
     };
+  }
+
+  private listSessionFiles(): SessionFileInfo[] {
+    return readdirSync(this.sessionsDir)
+      .sort()
+      .flatMap((file) => parseSessionFilename(file) ?? []);
+  }
+
+  /**
+   * Reads the listed files. One that vanished after the listing was set aside
+   * by a concurrent save, and the file that save wrote holds its activity, so
+   * what was read so far must not be combined and saved over it. Reads a fresh
+   * listing instead. A listing that does not change names a file that can never
+   * be read, such as a dangling symlink, and that file is skipped.
+   */
+  private readListedFiles(
+    listed: readonly SessionFileInfo[],
+    relist: () => readonly SessionFileInfo[],
+  ): SessionFileRead[] {
+    const reads: SessionFileRead[] = [];
+    let vanished = false;
+    for (const { filename } of listed) {
+      const filepath = resolve(this.sessionsDir, filename);
+      try {
+        const bytes = readFileSync(filepath);
+        reads.push({
+          filepath,
+          bytes,
+          parsed: parseSessionFile(bytes.toString('utf-8'), filepath),
+        });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') vanished = true;
+        else logger.warn('Failed to read session file', { file: filename });
+      }
+    }
+    if (!vanished) return reads;
+
+    const fresh = relist();
+    if (
+      fresh.length === listed.length &&
+      fresh.every((f, i) => f.filename === listed[i].filename)
+    ) {
+      logger.warn('Skipping a listed session file that cannot be found', {
+        sessionId: listed[0].sessionId,
+      });
+      return reads;
+    }
+    return this.readListedFiles(fresh, relist);
   }
 
   listSessions(options?: ListSessionsOptions): SessionFileInfo[] {
@@ -1211,17 +1243,6 @@ export class SessionStore {
     const modifiedSinceMs = options?.includeModifiedSince?.getTime() ?? null;
     const results: FullSessionSummary[] = [];
 
-    const filesById = new Map<string, SessionFileInfo[]>();
-    for (const file of readdirSync(this.sessionsDir).sort()) {
-      const parsed = parseSessionFilename(file);
-      if (!parsed) continue;
-      const group = filesById.get(parsed.sessionId);
-      if (group) group.push(parsed);
-      else filesById.set(parsed.sessionId, [parsed]);
-    }
-
-    // One id's files are filtered as the single file a save would combine
-    // them into: dated by the earliest file, modified when any file was.
     const modifiedSince = (file: SessionFileInfo): boolean => {
       if (modifiedSinceMs === null) return false;
       try {
@@ -1231,18 +1252,25 @@ export class SessionStore {
       }
     };
 
-    for (const files of filesById.values()) {
-      if (sinceDate && files[0].date < sinceDate && !files.some(modifiedSince)) continue;
+    // A `since` load combines only the files in its window. Combining the whole
+    // id would either pull a long session's lifetime totals into a recent
+    // window or drop its recent activity because its first file is old.
+    const inWindow = (file: SessionFileInfo): boolean =>
+      !sinceDate || file.date >= sinceDate || modifiedSince(file);
 
-      const summaries = files.flatMap(({ filename }) => {
-        try {
-          const session = readSessionFile(join(this.sessionsDir, filename));
-          return session ? [session] : [];
-        } catch {
-          logger.warn('Failed to read session file', { file: filename });
-          return [];
-        }
-      });
+    const filesById = new Map<string, SessionFileInfo[]>();
+    for (const file of this.listSessionFiles().filter(inWindow)) {
+      const group = filesById.get(file.sessionId);
+      if (group) group.push(file);
+      else filesById.set(file.sessionId, [file]);
+    }
+
+    for (const [sessionId, files] of filesById) {
+      const relist = () =>
+        this.listSessionFiles().filter((f) => f.sessionId === sessionId && inWindow(f));
+      const summaries = summariesIn(this.readListedFiles(files, relist)).filter(
+        (s) => !options?.developer || s.developer === options.developer,
+      );
       if (summaries.length === 0) continue;
       const session = combineSessionFiles(summaries);
 
@@ -1255,8 +1283,6 @@ export class SessionStore {
       // loadSessionsOverlappingToday(), which both delegate to it) gets
       // clean data without re-implementing the same check.
       if (isSyntheticSessionId(session.sessionId)) continue;
-
-      if (options?.developer && session.developer !== options.developer) continue;
 
       results.push(session);
     }
@@ -2195,6 +2221,10 @@ function parseSessionFile(raw: string, filepath: string): ParsedSessionFile {
   }
   warnOnce(`unreadable:${filepath}`, 'Failed to deserialize session file', { file });
   return { kind: 'unreadable' };
+}
+
+function summariesIn(files: readonly SessionFileRead[]): FullSessionSummary[] {
+  return files.flatMap(({ parsed }) => (parsed.kind === 'unreadable' ? [] : [parsed.summary]));
 }
 
 function readSessionFile(filepath: string): FullSessionSummary | null {
