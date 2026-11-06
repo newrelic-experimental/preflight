@@ -546,7 +546,6 @@ describe('LocalSessionAggregator panel rehydration', () => {
     expect(summary?.cacheSavingsUsd).toBeCloseTo(0.0162, 10);
   });
 
-
   it('emits a token-only session so its cost is persisted', () => {
     const agg = new LocalSessionAggregator();
     agg.recordTokenUsage(REAL_ID, {
