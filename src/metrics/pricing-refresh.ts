@@ -29,6 +29,7 @@ const MAX_CONTEXT_WINDOW = 10_000_000;
 const LONG_CONTEXT_THRESHOLD = 200_000;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000;
+const RECHECK_INTERVAL_MS = 60 * 60 * 1000;
 const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype', 'sample_spec']);
 
 function isNonNegative(value: unknown): value is number {
@@ -43,7 +44,8 @@ function perMTok(perToken: number): number {
  * Maps LiteLLM's price file to ModelPricing. Keeps the standard rates and the
  * above-200K input/output tier, which Anthropic bills for the whole request like
  * the vendored 'flat' tier mode. Batch, flex and priority rates do not apply to
- * interactive coding sessions; tiered cache rates have no ModelPricing field.
+ * interactive coding sessions; the cache rates are the 5-minute and 1-hour write
+ * rates and the read rate.
  * Never throws.
  */
 export function parseLiteLlmPrices(raw: unknown): Record<string, ModelPricing> {
@@ -70,6 +72,9 @@ export function parseLiteLlmPrices(raw: unknown): Record<string, ModelPricing> {
     const cacheCreationPerMTok = isNonNegative(e.cache_creation_input_token_cost)
       ? perMTok(e.cache_creation_input_token_cost)
       : undefined;
+    const cacheCreation1hPerMTok = isNonNegative(e.cache_creation_input_token_cost_above_1hr)
+      ? perMTok(e.cache_creation_input_token_cost_above_1hr)
+      : undefined;
     const hasTier =
       isNonNegative(e.input_cost_per_token_above_200k_tokens) &&
       isNonNegative(e.output_cost_per_token_above_200k_tokens);
@@ -84,6 +89,7 @@ export function parseLiteLlmPrices(raw: unknown): Record<string, ModelPricing> {
       outputPerMTok,
       cacheReadPerMTok,
       cacheCreationPerMTok,
+      cacheCreation1hPerMTok,
       tierInputPerMTok,
       tierOutputPerMTok,
     ];
@@ -94,6 +100,7 @@ export function parseLiteLlmPrices(raw: unknown): Record<string, ModelPricing> {
       outputPerMTok,
       ...(cacheReadPerMTok !== undefined && { cacheReadPerMTok }),
       ...(cacheCreationPerMTok !== undefined && { cacheCreationPerMTok }),
+      ...(cacheCreation1hPerMTok !== undefined && { cacheCreation1hPerMTok }),
       ...(hasTier && {
         tierThreshold: LONG_CONTEXT_THRESHOLD,
         tierInputPerMTok,
@@ -182,13 +189,15 @@ function writeCache(cachePath: string, entries: Record<string, ModelPricing>): v
   }
 }
 
-/** Never rejects. With `enabled: false` it touches neither network nor disk. */
-export async function startPricingRefresh(opts: {
+interface PricingRefreshOptions {
   readonly enabled: boolean;
   readonly cachePath: string;
   readonly nowMs?: () => number;
   readonly fetchImpl?: typeof fetch;
-}): Promise<void> {
+}
+
+/** Never rejects. With `enabled: false` it touches neither network nor disk. */
+export async function startPricingRefresh(opts: PricingRefreshOptions): Promise<void> {
   if (!opts.enabled) return;
   try {
     const now = (opts.nowMs ?? Date.now)();
@@ -213,4 +222,45 @@ export async function startPricingRefresh(opts: {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+let recheckTimer: NodeJS.Timeout | null = null;
+
+function cacheMtimeMs(cachePath: string): number | null {
+  try {
+    return statSync(cachePath).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Rechecks the price cache hourly so a long-running server prices models released after
+ * it started. A tick does nothing while the cache file is unchanged and under a day old.
+ * Otherwise it runs `startPricingRefresh`, which loads a cache another server process
+ * refreshed and refetches only once the cache is a day old. The timer is unref'd, and a
+ * second call replaces the first.
+ */
+export function schedulePricingRecheck(
+  opts: PricingRefreshOptions,
+  intervalMs: number = RECHECK_INTERVAL_MS,
+): void {
+  if (recheckTimer) clearInterval(recheckTimer);
+  recheckTimer = null;
+  if (!opts.enabled) return;
+  let seenMtimeMs = cacheMtimeMs(opts.cachePath);
+  recheckTimer = setInterval(() => {
+    const mtimeMs = cacheMtimeMs(opts.cachePath);
+    const now = (opts.nowMs ?? Date.now)();
+    if (mtimeMs !== null && mtimeMs === seenMtimeMs && now - mtimeMs < CACHE_TTL_MS) return;
+    void startPricingRefresh(opts).then(() => {
+      seenMtimeMs = cacheMtimeMs(opts.cachePath);
+    });
+  }, intervalMs);
+  recheckTimer.unref();
+}
+
+export function stopPricingRecheck(): void {
+  if (recheckTimer) clearInterval(recheckTimer);
+  recheckTimer = null;
 }
