@@ -1069,6 +1069,12 @@ export interface ModelStats {
   readonly avgOutputTokensPerRequest: number | null;
 }
 
+export interface TaskCompletionMetrics {
+  readonly completedTasks: number;
+  readonly avgTaskDurationMs: number | null;
+  readonly avgToolCallsPerTask: number | null;
+}
+
 export interface ModelUsageMetrics {
   readonly byModel: Readonly<Record<string, ModelStats>>;
   readonly mostUsedModel: string | null;
@@ -1277,6 +1283,8 @@ export interface SettingsPatch {
   };
 }
 
+export const fetchTaskCompletion = (signal?: AbortSignal): Promise<TaskCompletionMetrics> =>
+  getJson<TaskCompletionMetrics>('/api/task-completion', signal);
 export const fetchModelUsage = (signal?: AbortSignal): Promise<ModelUsageMetrics> =>
   getJson<ModelUsageMetrics>('/api/model-usage', signal);
 export const fetchCacheHealth = (signal?: AbortSignal): Promise<CacheHealthResponse> =>
@@ -1596,6 +1604,7 @@ export const qk = {
   activityHeatmap: (view: string) => ['activity-heatmap', view] as const,
   context: ['context'] as const,
   modelUsage: ['model-usage'] as const,
+  taskCompletion: ['task-completion'] as const,
   cacheHealth: ['cache-health'] as const,
   costPerTool: (days?: number) => ['cost-per-tool', days] as const,
   settings: ['settings'] as const,
