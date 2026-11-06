@@ -4419,6 +4419,14 @@ describe('SessionStore split and corrupt session files', () => {
     expect(store.listSessions({ developer: 'alice' }).map((f) => f.filename)).toEqual([
       `2026-03-01_${id}.json`,
     ]);
+
+    const saved = store.saveSession(
+      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 9 }),
+    );
+
+    expect(saved?.previous?.toolCallCount).toBe(7);
+    expect(store.loadSession(id)?.toolCallCount).toBe(9);
+    expect(readFileSync(join(sessionsDir(), `2026-03-02_${id}.json`), 'utf-8')).toBe('{"trunc');
   });
 
   it('warns again when a file that was recovered later becomes unreadable', () => {

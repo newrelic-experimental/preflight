@@ -190,4 +190,31 @@ describe('SessionStore saves under filesystem faults', () => {
 
     expect(sessionFiles().filter((f) => f.endsWith('.corrupt'))).toHaveLength(1);
   });
+
+  it('does not add a recovered file back beside a sibling that was briefly unreadable', () => {
+    const dayTwo = new Date('2026-03-02T10:00:00Z').getTime();
+    const recovered = join(tmpDir, 'sessions', `2026-03-01_${id}.json`);
+    const sibling = join(tmpDir, 'sessions', `2026-03-02_${id}.json`);
+    realFs.writeFileSync(
+      recovered,
+      `${JSON.stringify({ ...summary(7), startTime, developer: 'alice' })}{"tail":`,
+    );
+    realFs.writeFileSync(
+      sibling,
+      JSON.stringify({ ...summary(40), startTime: dayTwo, developer: 'alice' }),
+    );
+    const store = new SessionStore({ storagePath: tmpDir });
+    expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([40]);
+
+    readFileSync.mockImplementation((...args: unknown[]) => {
+      if (args[0] === sibling) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      return (realFs.readFileSync as (...a: unknown[]) => unknown)(...args);
+    });
+    store.saveSession({ ...summary(41), startTime: dayTwo, developer: 'alice' });
+    readFileSync.mockImplementation(realFs.readFileSync as (...args: unknown[]) => unknown);
+
+    const counts = store.loadAllSessions().map((s) => s.toolCallCount);
+    expect(counts).toEqual([41]);
+    expect(store.listSessions({ developer: 'alice' }).length).toBe(counts.length);
+  });
 });

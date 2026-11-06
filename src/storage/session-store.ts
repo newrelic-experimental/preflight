@@ -917,7 +917,7 @@ export class SessionStore {
     for (const { filepath, parsed } of filesRead) {
       const summary = usableSummary(
         parsed,
-        () => filesRead.filter((f) => f.parsed.kind !== 'unreadable').length,
+        () => names.length - filesRead.filter((f) => f.parsed.kind === 'unreadable').length,
       );
       if (summary) return { existing: { summary, filepath }, filesRead };
     }
@@ -1955,9 +1955,10 @@ function parseSessionFile(raw: string, filepath: string): ParsedSessionFile {
  * that parses. Beside a parsing sibling it may repeat activity the sibling
  * already holds, so adding the two could double count. It stays unread there,
  * as it was before recovery existed, until a session's split files are
- * combined. An unreadable sibling holds nothing to double count, so it does
- * not hide the recovered file. The count includes the file itself and is only
- * asked for when the file is recovered.
+ * combined. A sibling that parses as unreadable holds nothing to double count,
+ * so it does not hide the recovered file. A sibling that cannot be read at all
+ * might hold anything, so it counts as parsing. The count includes the file
+ * itself and is only asked for when the file is recovered.
  */
 function usableSummary(
   parsed: ParsedSessionFile,
@@ -1967,7 +1968,11 @@ function usableSummary(
   return parsed.kind === 'clean' || parsingFilesForId() === 1 ? parsed.summary : null;
 }
 
-/** Counts, per session id, the files that parse as clean or recovered. Reads an id's files once, on first ask. */
+/**
+ * Counts, per session id, the files that parse as clean or recovered. A file
+ * that cannot be read at all might hold anything, so it counts as parsing.
+ * Reads an id's files once, on first ask.
+ */
 function parsingFileCounter(
   sessionsDir: string,
   files: readonly SessionFileInfo[],
@@ -1985,7 +1990,7 @@ function parsingFileCounter(
       try {
         return parseSessionFile(readFileSync(filepath, 'utf-8'), filepath).kind !== 'unreadable';
       } catch {
-        return false;
+        return true;
       }
     }).length;
     counts.set(sessionId, count);
