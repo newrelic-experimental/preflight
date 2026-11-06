@@ -97,6 +97,7 @@ import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import {
   digestWebhookUrlShadowedBy,
+  handleGetDigestPreview,
   handleSendDigest,
   isDigestWebhookCommandConfigured,
 } from '../../tools/cross-session-tools.js';
@@ -3364,6 +3365,11 @@ export function createApiHandler(
 
     writeFileSync(deps.configFilePath, JSON.stringify(existing, null, 2), { mode: 0o600 });
     jsonOk(res, { ok: true, restartRequired: !digestUrlOnly });
+  });
+
+  routes.set('GET /api/digest/preview', (_req, res) => {
+    if (!deps.weeklySummaryGenerator) return unavailable(res, 'digest');
+    jsonOk(res, handleGetDigestPreview(deps.weeklySummaryGenerator));
   });
 
   routes.set('POST /api/digest/send', async (_req, res) => {
