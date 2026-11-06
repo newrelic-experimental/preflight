@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
@@ -9,9 +9,10 @@ import type {
   ContextResponse,
   ContextCompositionResponse,
   ContextEfficiencyResponse,
+  SessionListEntry,
 } from '../api/client';
 import { Card, Eyebrow, Pill, type PillTone } from './ui';
-import { formatTokensCompact } from '../lib/format.js';
+import { formatDuration, formatTokensCompact, formatUsdOrDash } from '../lib/format.js';
 import { ContextTimeline } from './ContextBar';
 
 export interface SessionDetailDialogProps {
@@ -21,6 +22,7 @@ export interface SessionDetailDialogProps {
   readonly contextWindow?: number;
   readonly contextComposition?: ContextCompositionResponse;
   readonly contextEfficiency?: ContextEfficiencyResponse;
+  readonly summary?: SessionListEntry;
   readonly onClose: () => void;
 }
 
@@ -29,6 +31,41 @@ const OUTCOME_TONE: Record<'unknown' | 'success' | 'failure', PillTone> = {
   failure: 'danger',
   unknown: 'neutral',
 };
+
+const MARKDOWN_ANTI_PATTERN_LIMIT = 3;
+
+// Anti-pattern commands are left out on purpose: they are raw shell text and can
+// carry secrets, while the type and file path are enough for a standup or bug report.
+function formatSessionMarkdown(s: SessionListEntry): string {
+  const lines = [`## Session ${s.sessionName ?? s.sessionId}`, ''];
+  if (s.startTime != null) lines.push(`- Started: ${new Date(s.startTime).toISOString()}`);
+  if (s.durationMs != null) lines.push(`- Duration: ${formatDuration(s.durationMs)}`);
+  lines.push(`- Cost: ${formatUsdOrDash(s.estimatedCostUsd)}`);
+  lines.push(`- Tool calls: ${s.toolCallCount ?? 0}`);
+  if (s.model) lines.push(`- Model: ${s.model}`);
+  if (s.tokensInput != null || s.tokensOutput != null) {
+    lines.push(
+      `- Tokens: ${formatTokensCompact(s.tokensInput ?? 0)} in / ${formatTokensCompact(s.tokensOutput ?? 0)} out / ${formatTokensCompact(s.tokensCacheRead ?? 0)} cache read`,
+    );
+  }
+  const patterns = (s.antiPatterns ?? []).slice(0, MARKDOWN_ANTI_PATTERN_LIMIT);
+  if (patterns.length > 0) {
+    const described = patterns.map((ap) => (ap.file ? `${ap.type} (${ap.file})` : ap.type));
+    lines.push(`- Anti-patterns: ${described.join(', ')}`);
+  }
+  return lines.join('\n');
+}
+
+type CopyKind = 'markdown' | 'json';
+
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // Same drawer/backdrop/focus-trap pattern as WorkflowRunDetail — kept in
 // lockstep with that component so the two dialogs behave identically.
@@ -39,10 +76,31 @@ export function SessionDetailDialog({
   contextWindow,
   contextComposition,
   contextEfficiency,
+  summary,
   onClose,
 }: SessionDetailDialogProps): JSX.Element {
   const drawerRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const [copyStatus, setCopyStatus] = useState<{ kind: CopyKind; ok: boolean } | null>(null);
+
+  useEffect(() => {
+    if (copyStatus === null) return;
+    const timer = setTimeout(() => setCopyStatus(null), 1500);
+    return () => clearTimeout(timer);
+  }, [copyStatus]);
+
+  async function copySummary(kind: CopyKind): Promise<void> {
+    if (!summary) return;
+    const text =
+      kind === 'markdown' ? formatSessionMarkdown(summary) : JSON.stringify(summary, null, 2);
+    const ok = await writeClipboard(text);
+    setCopyStatus({ kind, ok });
+  }
+
+  function copyLabel(kind: CopyKind, idle: string): string {
+    if (copyStatus?.kind !== kind) return idle;
+    return copyStatus.ok ? 'Copied' : 'Copy failed';
+  }
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent): void {
@@ -105,6 +163,24 @@ export function SessionDetailDialog({
               Composition &amp; Efficiency remain live, current-process-only — they reflect this
               dashboard process&rsquo;s own current session, not necessarily the one selected above.
             </p>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              disabled={!summary}
+              onClick={() => void copySummary('markdown')}
+              className="px-2 py-1 rounded-md text-[11px] text-ink-muted hover:text-ink-base hover:bg-surface-5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40"
+            >
+              {copyLabel('markdown', 'Copy as Markdown')}
+            </button>
+            <button
+              type="button"
+              disabled={!summary}
+              onClick={() => void copySummary('json')}
+              className="px-2 py-1 rounded-md text-[11px] text-ink-muted hover:text-ink-base hover:bg-surface-5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40"
+            >
+              {copyLabel('json', 'Copy as JSON')}
+            </button>
           </div>
           <button
             ref={closeButtonRef}
