@@ -6,6 +6,7 @@ import { createLogger } from '../shared/index.js';
 import { checkNodeVersion, MIN_SUPPORTED_NODE_MAJOR } from './node-version-check.js';
 import { isNewerVersion, fetchLatestNpmVersion } from './npm-version-check.js';
 import { VERSION } from '../version.js';
+import { withClaudeSettingsEnv } from '../lib/claude-settings-env.js';
 
 import {
   validateConfigFile,
@@ -198,7 +199,9 @@ function checkCompanionMode(
   loaded: LoadedConfig,
 ): DiagnosticCheck {
   const check = describeCompanionMode(fileValue, storagePath);
-  const doubleCount = loaded.ok ? findReceiverDoubleCount(process.env, loaded.config) : null;
+  const doubleCount = loaded.ok
+    ? findReceiverDoubleCount(withClaudeSettingsEnv(process.env), loaded.config)
+    : null;
   if (!doubleCount) return check;
   const grpc = doubleCount.grpc
     ? ' Claude Code is set to export over gRPC, which the receiver does not accept; switch it to http/protobuf.'
@@ -214,7 +217,7 @@ function describeCompanionMode(
   fileValue: boolean | undefined,
   storagePath: string,
 ): DiagnosticCheck {
-  const shell = resolveCompanionMode(process.env, fileValue);
+  const shell = resolveCompanionMode(withClaudeSettingsEnv(process.env), fileValue);
   const shellText = `${shell.value} (source: ${shell.source})`;
   const servers = listRunningServerCompanionModes(storagePath);
 
@@ -222,7 +225,7 @@ function describeCompanionMode(
     return {
       check: 'Companion mode',
       status: 'ok',
-      detail: `Resolved to ${shellText} from this shell's environment; no running Preflight MCP server to confirm.`,
+      detail: `Resolved to ${shellText} from this shell's environment and Claude Code settings; no running Preflight MCP server to confirm.`,
     };
   }
 

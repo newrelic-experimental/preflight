@@ -32,12 +32,12 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { createLogger, type TokenUsage } from '../shared/index.js';
 import { calculateModelCost } from '../metrics/pricing-overlay.js';
 import { AGENT_ID_RE } from '../lib/agent-id.js';
+import { claudeProjectsDir } from '../lib/claude-config-dir.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
 import { findWorkflowScriptPath, WorkflowStore } from './workflow-store.js';
 import { parseWorkflowScript, type DeclaredTopology } from '../hooks/workflow-script-parser.js';
@@ -49,7 +49,6 @@ const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]
 // AGENT_ID_RE imported from ../lib/agent-id.js — see its doc comment for the
 // two valid agentId shapes.
 const WORKFLOW_RUN_ID_RE = /^wf_[A-Za-z0-9_-]{1,128}$/;
-const PROJECTS_DIR_NAME = '.claude/projects';
 
 /** Skip agent files larger than this — a transcript this big is pathological. */
 const MAX_AGENT_FILE_BYTES = 64 * 1024 * 1024; // 64 MiB
@@ -199,7 +198,7 @@ export interface AgentCall {
 }
 
 export interface SubagentTimelineStoreOptions {
-  /** `~/.claude/projects` directory; defaults to homedir-relative. */
+  /** Claude Code projects directory; defaults to `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`. */
   readonly projectsDir?: string;
   /**
    * Optional injected workflow reader (tests). When omitted, a `WorkflowStore`
@@ -291,7 +290,7 @@ export class SubagentTimelineStore {
   private readonly runLocationCache = new Map<string, RunLocation>();
 
   constructor(options: SubagentTimelineStoreOptions = {}) {
-    this.projectsDir = options.projectsDir ?? join(homedir(), PROJECTS_DIR_NAME);
+    this.projectsDir = options.projectsDir ?? claudeProjectsDir();
     this.injectedWorkflowStore = options.workflowStore;
   }
 
