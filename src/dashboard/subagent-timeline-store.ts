@@ -761,6 +761,9 @@ export class SubagentTimelineStore {
           thinkingTokens: 0,
           cacheReadTokens: turn.cacheReadTokens,
           cacheCreationTokens: turn.cacheCreationTokens,
+          ...(turn.cacheCreation1hTokens > 0 && {
+            cacheCreation1hTokens: turn.cacheCreation1hTokens,
+          }),
           totalTokens:
             turn.inputTokens + turn.outputTokens + turn.cacheReadTokens + turn.cacheCreationTokens,
         },
@@ -907,6 +910,7 @@ interface AssistantTurn {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  readonly cacheCreation1hTokens: number;
 }
 
 /**
@@ -941,6 +945,7 @@ function parseAssistantTurn(line: string): AssistantTurn | null {
     outputTokens: fields.outputTokens,
     cacheReadTokens: fields.cacheReadTokens,
     cacheCreationTokens: fields.cacheCreationTokens,
+    cacheCreation1hTokens: fields.cacheCreation1hTokens,
   };
 }
 

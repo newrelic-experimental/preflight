@@ -135,6 +135,8 @@ export interface SubagentTokenEvent {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  /** Subset of `cacheCreationTokens` written to the 1-hour cache. Omitted when zero. */
+  readonly cacheCreation1hTokens?: number;
   readonly reasoningTokens: number;
   readonly stopReason: string | null;
   readonly schemaFingerprint: string;
@@ -245,6 +247,7 @@ interface ParsedAssistantTurn {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  readonly cacheCreation1hTokens: number;
   readonly reasoningTokens: number;
   readonly stopReason: string | null;
   readonly usageKeysFingerprint: string;
@@ -985,6 +988,9 @@ export class SubagentWatcher {
         outputTokens: parsed.outputTokens,
         cacheReadTokens: parsed.cacheReadTokens,
         cacheCreationTokens: parsed.cacheCreationTokens,
+        ...(parsed.cacheCreation1hTokens > 0 && {
+          cacheCreation1hTokens: parsed.cacheCreation1hTokens,
+        }),
         reasoningTokens: parsed.reasoningTokens,
         stopReason: parsed.stopReason,
         schemaFingerprint: parsed.usageKeysFingerprint,
@@ -1161,6 +1167,7 @@ export class SubagentWatcher {
       outputTokens: fields.outputTokens,
       cacheReadTokens: fields.cacheReadTokens,
       cacheCreationTokens: fields.cacheCreationTokens,
+      cacheCreation1hTokens: fields.cacheCreation1hTokens,
       reasoningTokens: fields.reasoningTokens,
       stopReason: fields.stopReason,
       usageKeysFingerprint: fields.usageKeysFingerprint,
