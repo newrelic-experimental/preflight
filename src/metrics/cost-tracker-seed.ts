@@ -93,6 +93,8 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     daySubagentCostUsd,
     ...(persisted.unpricedByModel && { unpricedByModel: persisted.unpricedByModel }),
     ...(persisted.estimatedByModel && { estimatedByModel: persisted.estimatedByModel }),
+    ...(persisted.unpricedByDay && { unpricedByDay: persisted.unpricedByDay }),
+    ...(persisted.estimatedByDay && { estimatedByDay: persisted.estimatedByDay }),
     ...(persisted.byteEstimates && { byteEstimates: persisted.byteEstimates }),
     ...(!hadExactReport(persisted) && { hadExactReport: false }),
   };

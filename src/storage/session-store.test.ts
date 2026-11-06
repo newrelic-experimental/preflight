@@ -1149,6 +1149,12 @@ describe('buildSessionSummary', () => {
         estimatedByModel: {
           'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
         },
+        unpricedByDay: { '2026-11-06': { 'claude-foo-9-9': { calls: 2, tokens: 30 } } },
+        estimatedByDay: {
+          '2026-11-06': {
+            'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+          },
+        },
       }),
     };
 
@@ -1236,6 +1242,9 @@ describe('buildSessionSummary', () => {
     expect(summary.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 2, tokens: 30 } });
     expect(summary.estimatedByModel).toEqual({
       'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+    });
+    expect(summary.unpricedByDay).toEqual({
+      '2026-11-06': { 'claude-foo-9-9': { calls: 2, tokens: 30 } },
     });
     expect(summary.toolCallCount).toBe(15);
     expect(summary.toolBreakdown).toEqual({ Read: 5, Edit: 7, Bash: 3 });
@@ -1777,6 +1786,100 @@ describe('buildSessionSummary', () => {
     ).toEqual(only);
   });
 
+  describe('call counts and the byte-estimate ledger', () => {
+    const ledger = (calls: number, tokens: number, day = '2026-11-06') => ({
+      costUsd: 0.01,
+      inputTokens: 10,
+      outputTokens: 5,
+      costByModel: {},
+      costByDayUsd: {},
+      unpricedByModel: { a: { calls, tokens } },
+      unpricedByDay: { [day]: { a: { calls, tokens } } },
+    });
+
+    it('mergeSummaries drops the calls of byte estimates a later write replaced', () => {
+      const existing = makeSummary({
+        unpricedByModel: { a: { calls: 3, tokens: 30 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 3, tokens: 30 } } },
+        byteEstimates: ledger(2, 20),
+      });
+      const incoming = makeSummary({
+        unpricedByModel: { a: { calls: 1, tokens: 10 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 1, tokens: 10 } } },
+        byteEstimates: {
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByModel: {},
+          costByDayUsd: {},
+        },
+      });
+
+      const merged = mergeSummaries(existing, incoming);
+
+      expect(merged.unpricedByModel).toEqual({ a: { calls: 1, tokens: 10 } });
+      expect(merged.unpricedByDay).toEqual({ '2026-11-06': { a: { calls: 1, tokens: 10 } } });
+    });
+
+    it('mergeSummaries keeps the calls of byte estimates the latest write still holds', () => {
+      const existing = makeSummary({
+        unpricedByModel: { a: { calls: 1, tokens: 10 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 1, tokens: 10 } } },
+      });
+      const incoming = makeSummary({
+        unpricedByModel: { a: { calls: 3, tokens: 30 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 3, tokens: 30 } } },
+        byteEstimates: ledger(2, 20),
+      });
+
+      const merged = mergeSummaries(existing, incoming);
+
+      expect(merged.unpricedByModel).toEqual({ a: { calls: 3, tokens: 30 } });
+      expect(merged.unpricedByDay).toEqual({ '2026-11-06': { a: { calls: 3, tokens: 30 } } });
+    });
+
+    it('mergeSummaries leaves the day counts undefined when neither side has them', () => {
+      const merged = mergeSummaries(
+        makeSummary({ unpricedByModel: { a: { calls: 1, tokens: 1 } } }),
+        makeSummary(),
+      );
+      expect(merged.unpricedByDay).toBeUndefined();
+      expect(merged.estimatedByDay).toBeUndefined();
+    });
+
+    it('mergeSummaries takes the per-day max of calls', () => {
+      const merged = mergeSummaries(
+        makeSummary({
+          unpricedByDay: {
+            d1: { a: { calls: 2, tokens: 20 } },
+            d2: { a: { calls: 1, tokens: 5 } },
+          },
+        }),
+        makeSummary({ unpricedByDay: { d1: { a: { calls: 3, tokens: 10 } } } }),
+      );
+      expect(merged.unpricedByDay).toEqual({
+        d1: { a: { calls: 3, tokens: 20 } },
+        d2: { a: { calls: 1, tokens: 5 } },
+      });
+    });
+
+    it('deserializeFullSessionSummary round-trips the day counts and the ledger counts', () => {
+      const result = deserializeFullSessionSummary({
+        ...makeSummary(),
+        unpricedByDay: { d1: { a: { calls: 1, tokens: 2 }, bad: { calls: -1, tokens: 2 } } },
+        estimatedByDay: { d1: { b: { calls: 1, tokens: 2, estimatedFrom: 'c' } }, d2: 5 },
+        byteEstimates: ledger(2, 20, 'd1'),
+      } as unknown as Parameters<typeof deserializeFullSessionSummary>[0]);
+
+      expect(result.unpricedByDay).toEqual({ d1: { a: { calls: 1, tokens: 2 } } });
+      expect(result.estimatedByDay).toEqual({
+        d1: { b: { calls: 1, tokens: 2, estimatedFrom: 'c' } },
+      });
+      expect(result.byteEstimates?.unpricedByModel).toEqual({ a: { calls: 2, tokens: 20 } });
+      expect(result.byteEstimates?.unpricedByDay).toEqual({ d1: { a: { calls: 2, tokens: 20 } } });
+    });
+  });
+
   it('mergeSummaries takes the per-model max of estimated calls and keeps the incoming estimatedFrom', () => {
     const existing = makeSummary({
       estimatedByModel: { a: { calls: 3, tokens: 100, estimatedFrom: 'old' } },
@@ -2118,6 +2221,8 @@ describe('buildSessionSummary', () => {
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},
+      unpricedByDay: {},
+      estimatedByDay: {},
       subagentByAgentType: {},
       highContextCostUsd: 0,
       apiDurationMs: null,
@@ -2161,6 +2266,8 @@ describe('buildSessionSummary', () => {
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},
+      unpricedByDay: {},
+      estimatedByDay: {},
       subagentByAgentType: {},
       highContextCostUsd: 0,
       apiDurationMs: null,
@@ -3895,6 +4002,8 @@ describe('attribution field', () => {
         apiDurationMs: 12_000,
         unpricedByModel: {},
         estimatedByModel: {},
+        unpricedByDay: {},
+        estimatedByDay: {},
       }),
     } as unknown as CostTracker;
 

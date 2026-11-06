@@ -27,7 +27,7 @@ import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
 import { hasRecordedUsage, type FullSessionSummary } from '../storage/session-store.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
-import { addCallUsage } from './call-usage.js';
+import { CallUsageBook } from './call-usage.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import { resolvePricingDetail } from './pricing-overlay.js';
 import { QualityProxyTracker } from './quality-proxy-tracker.js';
@@ -134,8 +134,8 @@ export interface LocalSessionRollup {
   tokensCacheRead: number;
   tokensCacheCreation: number;
   models: Set<string>;
-  unpricedByModel: Map<string, UnpricedModelUsage>;
-  estimatedByModel: Map<string, EstimatedModelUsage>;
+  unpriced: CallUsageBook<UnpricedModelUsage>;
+  estimated: CallUsageBook<EstimatedModelUsage>;
   successCount: number;
 }
 
@@ -372,8 +372,8 @@ export class LocalSessionAggregator {
         tokensCacheRead: 0,
         tokensCacheCreation: 0,
         models: new Set(),
-        unpricedByModel: new Map(),
-        estimatedByModel: new Map(),
+        unpriced: new CallUsageBook(),
+        estimated: new CallUsageBook(),
         successCount: 0,
       };
       this.sessions.set(sessionId, rollup);
@@ -560,9 +560,9 @@ export class LocalSessionAggregator {
       if (tokens > 0) {
         const resolution = resolvePricingDetail(usage.model);
         if (resolution.kind === 'unpriced') {
-          addCallUsage(rollup.unpricedByModel, usage.model, { calls: 1, tokens });
+          rollup.unpriced.add(usage.model, dayKey, { calls: 1, tokens });
         } else if (resolution.source === 'estimated') {
-          addCallUsage(rollup.estimatedByModel, usage.model, {
+          rollup.estimated.add(usage.model, dayKey, {
             calls: 1,
             tokens,
             estimatedFrom: resolution.estimatedFrom,
@@ -697,12 +697,7 @@ export class LocalSessionAggregator {
         ...(rollup.subagentCostByDayUsd.size > 0
           ? { subagentCostByDayUsd: Object.fromEntries(rollup.subagentCostByDayUsd) }
           : {}),
-        ...(rollup.unpricedByModel.size > 0
-          ? { unpricedByModel: Object.fromEntries(rollup.unpricedByModel) }
-          : {}),
-        ...(rollup.estimatedByModel.size > 0
-          ? { estimatedByModel: Object.fromEntries(rollup.estimatedByModel) }
-          : {}),
+        ...callUsageFields(rollup),
         tokensInput: rollup.tokensInput,
         tokensOutput: rollup.tokensOutput,
         tokensThinking: 0,
@@ -887,4 +882,23 @@ function modelBreakdownOf(rollup: {
     };
   }
   return out;
+}
+
+/** Only the non-empty call-usage fields: an absent day map tells readers to fall back to whole-session counts. */
+function callUsageFields(
+  rollup: LocalSessionRollup,
+): Pick<
+  FullSessionSummary,
+  'unpricedByModel' | 'estimatedByModel' | 'unpricedByDay' | 'estimatedByDay'
+> {
+  const unpricedByModel = rollup.unpriced.byModel();
+  const estimatedByModel = rollup.estimated.byModel();
+  const unpricedByDay = rollup.unpriced.byDay();
+  const estimatedByDay = rollup.estimated.byDay();
+  return {
+    ...(Object.keys(unpricedByModel).length > 0 ? { unpricedByModel } : {}),
+    ...(Object.keys(estimatedByModel).length > 0 ? { estimatedByModel } : {}),
+    ...(Object.keys(unpricedByDay).length > 0 ? { unpricedByDay } : {}),
+    ...(Object.keys(estimatedByDay).length > 0 ? { estimatedByDay } : {}),
+  };
 }
