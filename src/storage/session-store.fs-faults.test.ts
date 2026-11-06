@@ -333,6 +333,22 @@ describe('SessionStore saves under filesystem faults', () => {
       ]);
     });
 
+    it('rereads when a fresh listing has the same length but other files', () => {
+      seedSplitFiles();
+      const earlier = join(tmpDir, 'sessions', `2026-02-28_${id}.json`);
+      readFileSync.mockImplementation((...args: unknown[]) => {
+        if (args[0] === siblingPath() && realFs.existsSync(siblingPath())) {
+          realFs.writeFileSync(
+            earlier,
+            split(startTime - 86_400_000, 30, [startTime + 1, dayTwo + 1]),
+          );
+          realFs.renameSync(siblingPath(), `${siblingPath()}.1.merged`);
+        }
+        return (realFs.readFileSync as (...a: unknown[]) => unknown)(...args);
+      });
+      expect(store().loadSession(id)?.toolCallCount).toBe(30);
+    });
+
     it('a save still succeeds when it cannot set a superseded file aside', () => {
       seedSplitFiles();
       renameSync.mockImplementation((from, to) => {
