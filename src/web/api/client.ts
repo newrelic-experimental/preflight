@@ -258,6 +258,7 @@ export interface CostForecast {
   readonly forecastEndOfWeekUsd: number | null;
   readonly forecastSessionEndUsd: number | null;
   readonly confidenceNote: string;
+  readonly heldReason?: string | null;
 }
 
 export interface CostResponse {
