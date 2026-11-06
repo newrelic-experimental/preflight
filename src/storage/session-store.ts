@@ -45,7 +45,16 @@ import type {
   EstimatedModelUsage,
   UnpricedModelUsage,
 } from '../metrics/cost-tracker.js';
-import { mergeCallUsageMax, parseCallUsageRecord } from '../metrics/call-usage.js';
+import {
+  addCallUsageRecords,
+  combineCallUsageByDay,
+  mergeCallUsageMax,
+  parseCallUsageByDay,
+  parseCallUsageRecord,
+  subtractCallUsage,
+  type CallUsage,
+  type CallUsageByDay,
+} from '../metrics/call-usage.js';
 import type {
   TurnCostAttributor,
   CostAttributionMetrics,
@@ -162,6 +171,14 @@ export interface FullSessionSummary extends SessionSummary {
   readonly unpricedByModel?: Record<string, UnpricedModelUsage>;
   /** Calls priced from a sibling model; their cost is in the totals as an estimate. */
   readonly estimatedByModel?: Record<string, EstimatedModelUsage>;
+  /**
+   * `unpricedByModel` split by local day, like `costByDayUsd`, so a today-scoped
+   * reader counts only that day's calls. Absent on summaries written before this
+   * field; readers then fall back to the whole-session counts.
+   */
+  readonly unpricedByDay?: CallUsageByDay<UnpricedModelUsage>;
+  /** `estimatedByModel` split by local day; see `unpricedByDay`. */
+  readonly estimatedByDay?: CallUsageByDay<EstimatedModelUsage>;
   /**
    * Byte-estimated share of the cost and token totals that a real token report
    * has not yet replaced (see `ByteEstimateLedger`). Written all-zero once the
@@ -497,6 +514,51 @@ function subtractRecord(
   return out;
 }
 
+type CallUsageSide<T extends CallUsage> = readonly [
+  total: Readonly<Record<string, T>> | undefined,
+  ledger: Readonly<Record<string, T>> | undefined,
+];
+
+/**
+ * Merges one session's call counts the way `mergeSummaries` merges its cost: the
+ * exact share (total minus the writer's ledger) is max-merged and the merged
+ * ledger is added back. A max over the estimate-laden totals would keep the
+ * calls of byte estimates a real report has since replaced.
+ */
+function mergeCallUsageWithLedger<T extends CallUsage>(
+  existing: CallUsageSide<T>,
+  incoming: CallUsageSide<T>,
+  mergedLedger: Readonly<Record<string, T>> | undefined,
+): Record<string, T> | undefined {
+  if (existing[0] === undefined && incoming[0] === undefined) return undefined;
+  const exact = mergeCallUsageMax(
+    subtractCallUsage(existing[0], existing[1]),
+    subtractCallUsage(incoming[0], incoming[1]),
+  );
+  const merged = addCallUsageRecords(exact, mergedLedger);
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+type CallUsageByDaySide<T extends CallUsage> = readonly [
+  total: Readonly<CallUsageByDay<T>> | undefined,
+  ledger: Readonly<CallUsageByDay<T>> | undefined,
+];
+
+function mergeCallUsageByDayWithLedger<T extends CallUsage>(
+  existing: CallUsageByDaySide<T>,
+  incoming: CallUsageByDaySide<T>,
+  mergedLedger: Readonly<CallUsageByDay<T>> | undefined,
+): CallUsageByDay<T> | undefined {
+  if (existing[0] === undefined && incoming[0] === undefined) return undefined;
+  const exact = combineCallUsageByDay(
+    combineCallUsageByDay(existing[0], existing[1], subtractCallUsage),
+    combineCallUsageByDay(incoming[0], incoming[1], subtractCallUsage),
+    mergeCallUsageMax,
+  );
+  const merged = combineCallUsageByDay(exact, mergedLedger, addCallUsageRecords);
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
 export function mergeSummaries(
   existing: FullSessionSummary,
   incoming: FullSessionSummary,
@@ -582,8 +644,26 @@ export function mergeSummaries(
     incoming.subagentCostByDayUsd,
   );
 
-  const unpricedByModel = mergeCallUsageMax(existing.unpricedByModel, incoming.unpricedByModel);
-  const estimatedByModel = mergeCallUsageMax(existing.estimatedByModel, incoming.estimatedByModel);
+  const unpricedByModel = mergeCallUsageWithLedger(
+    [existing.unpricedByModel, existing.byteEstimates?.unpricedByModel],
+    [incoming.unpricedByModel, incoming.byteEstimates?.unpricedByModel],
+    mergedLedger?.unpricedByModel,
+  );
+  const estimatedByModel = mergeCallUsageWithLedger(
+    [existing.estimatedByModel, existing.byteEstimates?.estimatedByModel],
+    [incoming.estimatedByModel, incoming.byteEstimates?.estimatedByModel],
+    mergedLedger?.estimatedByModel,
+  );
+  const unpricedByDay = mergeCallUsageByDayWithLedger(
+    [existing.unpricedByDay, existing.byteEstimates?.unpricedByDay],
+    [incoming.unpricedByDay, incoming.byteEstimates?.unpricedByDay],
+    mergedLedger?.unpricedByDay,
+  );
+  const estimatedByDay = mergeCallUsageByDayWithLedger(
+    [existing.estimatedByDay, existing.byteEstimates?.estimatedByDay],
+    [incoming.estimatedByDay, incoming.byteEstimates?.estimatedByDay],
+    mergedLedger?.estimatedByDay,
+  );
   // Latest writer wins, not max: the ledger shrinks to zero when a real report
   // replaces it, and a max-merge would resurrect the stale estimate.
   const byteEstimates = mergedLedger;
@@ -691,6 +771,8 @@ export function mergeSummaries(
     ...(subagentCostByDayUsd !== undefined ? { subagentCostByDayUsd } : {}),
     ...(unpricedByModel !== undefined ? { unpricedByModel } : {}),
     ...(estimatedByModel !== undefined ? { estimatedByModel } : {}),
+    ...(unpricedByDay !== undefined ? { unpricedByDay } : {}),
+    ...(estimatedByDay !== undefined ? { estimatedByDay } : {}),
     ...(byteEstimates !== undefined ? { byteEstimates } : {}),
     exactTotals,
     tokensInput: exactTotals.inputTokens + (mergedLedger?.inputTokens ?? 0),
@@ -1334,6 +1416,12 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     ...(costMetrics && Object.keys(costMetrics.estimatedByModel).length > 0
       ? { estimatedByModel: costMetrics.estimatedByModel }
       : {}),
+    ...(costMetrics && Object.keys(costMetrics.unpricedByDay).length > 0
+      ? { unpricedByDay: costMetrics.unpricedByDay }
+      : {}),
+    ...(costMetrics && Object.keys(costMetrics.estimatedByDay).length > 0
+      ? { estimatedByDay: costMetrics.estimatedByDay }
+      : {}),
     ...(costMetrics?.byteEstimates !== undefined
       ? { byteEstimates: costMetrics.byteEstimates }
       : {}),
@@ -1461,6 +1549,8 @@ interface SerializedFullSessionSummary {
   readonly subagentCostByDayUsd?: unknown;
   readonly unpricedByModel?: unknown;
   readonly estimatedByModel?: unknown;
+  readonly unpricedByDay?: unknown;
+  readonly estimatedByDay?: unknown;
   readonly byteEstimates?: unknown;
   readonly exactTotals?: unknown;
   readonly tokensInput?: unknown;
@@ -1611,6 +1701,13 @@ function parseByteEstimates(value: unknown): ByteEstimateLedger | undefined {
     outputTokens: finite(obj.outputTokens),
     costByModel: parseNumberRecord(obj.costByModel) ?? {},
     costByDayUsd: parseNumberRecord(obj.costByDayUsd) ?? {},
+    unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
+    estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
+    unpricedByDay: parseCallUsageByDay<UnpricedModelUsage>(obj.unpricedByDay, parseUnpricedExtra),
+    estimatedByDay: parseCallUsageByDay<EstimatedModelUsage>(
+      obj.estimatedByDay,
+      parseEstimatedExtra,
+    ),
   };
 }
 
@@ -1626,18 +1723,26 @@ function parseExactTotals(value: unknown): ExactTotals | undefined {
   };
 }
 
+function parseUnpricedExtra(): Omit<UnpricedModelUsage, keyof CallUsage> {
+  return {};
+}
+
+function parseEstimatedExtra({
+  estimatedFrom,
+}: Record<string, unknown>): Omit<EstimatedModelUsage, keyof CallUsage> | null {
+  return typeof estimatedFrom === 'string' &&
+    estimatedFrom.length > 0 &&
+    estimatedFrom.length <= MAX_MODEL_ID_LENGTH
+    ? { estimatedFrom }
+    : null;
+}
+
 function parseUnpricedByModel(value: unknown): Record<string, UnpricedModelUsage> | undefined {
-  return parseCallUsageRecord<UnpricedModelUsage>(value, () => ({}));
+  return parseCallUsageRecord<UnpricedModelUsage>(value, parseUnpricedExtra);
 }
 
 function parseEstimatedByModel(value: unknown): Record<string, EstimatedModelUsage> | undefined {
-  return parseCallUsageRecord<EstimatedModelUsage>(value, ({ estimatedFrom }) =>
-    typeof estimatedFrom === 'string' &&
-    estimatedFrom.length > 0 &&
-    estimatedFrom.length <= MAX_MODEL_ID_LENGTH
-      ? { estimatedFrom }
-      : null,
-  );
+  return parseCallUsageRecord<EstimatedModelUsage>(value, parseEstimatedExtra);
 }
 
 /**
@@ -1852,6 +1957,11 @@ export function deserializeFullSessionSummary(
     subagentCostByDayUsd: parseNumberRecord(obj.subagentCostByDayUsd),
     unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
     estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
+    unpricedByDay: parseCallUsageByDay<UnpricedModelUsage>(obj.unpricedByDay, parseUnpricedExtra),
+    estimatedByDay: parseCallUsageByDay<EstimatedModelUsage>(
+      obj.estimatedByDay,
+      parseEstimatedExtra,
+    ),
     byteEstimates: parseByteEstimates(obj.byteEstimates),
     exactTotals: parseExactTotals(obj.exactTotals),
     tokensInput: typeof obj.tokensInput === 'number' ? obj.tokensInput : 0,

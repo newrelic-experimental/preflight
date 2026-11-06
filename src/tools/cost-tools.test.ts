@@ -368,6 +368,8 @@ describe('handleGetPromptCacheHealth()', () => {
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},
+      unpricedByDay: {},
+      estimatedByDay: {},
       subagentByAgentType: {},
       highContextCostUsd: 0,
       apiDurationMs: null,

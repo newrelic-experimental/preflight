@@ -110,7 +110,7 @@ export interface CostAttributionMetrics {
    * report no burst claims is not counted here: it becomes a response turn.
    * See `recordTokenEvent()`.
    */
-  readonly droppedTokenEvents: number;
+  readonly evictedToolBursts: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ interface SessionState {
   totalAttributedCost: number;
   totalToolCalls: number;
   attributedToolCalls: number;
-  droppedTokenEvents: number;
+  evictedToolBursts: number;
   /**
    * Platform of the most recent stamped tool call, for a response turn whose
    * token report came from a source with no known platform.
@@ -234,7 +234,7 @@ function createSessionState(): SessionState {
     totalAttributedCost: 0,
     totalToolCalls: 0,
     attributedToolCalls: 0,
-    droppedTokenEvents: 0,
+    evictedToolBursts: 0,
     lastPlatform: undefined,
     skillRuns: new Map(),
   };
@@ -382,7 +382,7 @@ export class TurnCostAttributor {
     // been delayed) — evict the oldest rather than grow unboundedly.
     if (state.pendingTurns.length > MAX_PENDING_TURNS) {
       state.pendingTurns.shift();
-      state.droppedTokenEvents++;
+      state.evictedToolBursts++;
     }
   }
 
@@ -403,7 +403,7 @@ export class TurnCostAttributor {
       event.timestamp - state.pendingTurns[0].endTime > STALE_PENDING_TURN_MS
     ) {
       state.pendingTurns.shift();
-      state.droppedTokenEvents++;
+      state.evictedToolBursts++;
     }
 
     const pendingTurn = state.pendingTurns[0];
@@ -415,7 +415,7 @@ export class TurnCostAttributor {
     // belong to that burst (it hadn't even finished yet), so it stays queued
     // for the next token report and this one is claimed by no burst. If no
     // later report arrives, the burst is evicted as stale above and counted
-    // in `droppedTokenEvents`.
+    // in `evictedToolBursts`.
     const timeSinceLastTool = event.timestamp - pendingTurn.endTime;
     if (timeSinceLastTool < 0) {
       return this.responseTurn(state, event);
@@ -554,7 +554,7 @@ export class TurnCostAttributor {
       costBySkill: {},
       totalAttributedCost: 0,
       attributionRate: 0,
-      droppedTokenEvents: 0,
+      evictedToolBursts: 0,
     };
 
     if (sessionId !== undefined) {
@@ -575,7 +575,7 @@ export class TurnCostAttributor {
       aggregate.totalAttributedCost += state.totalAttributedCost;
       aggregate.totalToolCalls += state.totalToolCalls;
       aggregate.attributedToolCalls += state.attributedToolCalls;
-      aggregate.droppedTokenEvents += state.droppedTokenEvents;
+      aggregate.evictedToolBursts += state.evictedToolBursts;
       for (const [key, bucket] of state.buckets) {
         const merged = getOrCreateBucket(aggregate.buckets, key, bucket);
         for (const counter of BUCKET_COUNTERS) merged[counter] += bucket[counter];
@@ -699,7 +699,7 @@ export class TurnCostAttributor {
       totalAttributedCost: state.totalAttributedCost,
       attributionRate:
         state.totalToolCalls > 0 ? state.attributedToolCalls / state.totalToolCalls : 0,
-      droppedTokenEvents: state.droppedTokenEvents,
+      evictedToolBursts: state.evictedToolBursts,
     };
   }
 

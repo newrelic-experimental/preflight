@@ -3504,7 +3504,9 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costTracker: {
         getMetrics: () => ({
           sessionTotalCostUsd: 0,
-          unpricedByModel: { 'claude-bar-1': { calls: 1, tokens: 5 } },
+          unpricedByDay: {
+            [localDateKey(Date.now())]: { 'claude-bar-1': { calls: 1, tokens: 5 } },
+          },
         }),
         getCostForDay: () => 0,
       } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
@@ -3520,6 +3522,41 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       'claude-foo-9-9': { calls: 3, tokens: 350 },
       'claude-bar-1': { calls: 5, tokens: 75 },
     });
+  });
+
+  it('counts only the calls recorded today for a session that crossed midnight', async () => {
+    const todayKey = localDateKey(Date.now());
+    const yesterdayKey = localDateKey(localStartOfDay() - 1);
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'crossed',
+            unpricedByModel: { 'claude-foo-9-9': { calls: 5, tokens: 500 } },
+            unpricedByDay: {
+              [yesterdayKey]: { 'claude-foo-9-9': { calls: 4, tokens: 400 } },
+              [todayKey]: { 'claude-foo-9-9': { calls: 1, tokens: 100 } },
+            },
+            estimatedByModel: { 'claude-opus-5-9': { calls: 3, tokens: 30, estimatedFrom: 'x' } },
+            estimatedByDay: {
+              [yesterdayKey]: { 'claude-opus-5-9': { calls: 3, tokens: 30, estimatedFrom: 'x' } },
+            },
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const parsed = JSON.parse(body()) as {
+      unpricedByModel: Record<string, unknown>;
+      estimatedByModel: Record<string, unknown>;
+    };
+    expect(parsed.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 1, tokens: 100 } });
+    expect(parsed.estimatedByModel).toEqual({});
   });
 
   it('sums estimated calls per model across persisted sessions and the live tracker', async () => {
@@ -3547,8 +3584,10 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costTracker: {
         getMetrics: () => ({
           sessionTotalCostUsd: 0,
-          estimatedByModel: {
-            'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+          estimatedByDay: {
+            [localDateKey(Date.now())]: {
+              'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+            },
           },
         }),
         getCostForDay: () => 0,

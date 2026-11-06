@@ -3,7 +3,7 @@ import { CostTracker } from './cost-tracker.js';
 import { makeUsage } from '../__test-utils__/token-usage.js';
 import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import type { TokenRecordContext, CostTrackerSeed } from './cost-tracker.js';
-import { localDateKey } from '../lib/date.js';
+import { localDateKey, localStartOfDay } from '../lib/date.js';
 import { SessionTracker } from './session-tracker.js';
 import { MetricAggregator } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
@@ -1856,6 +1856,10 @@ describe('byte-estimate ledger', () => {
       outputTokens: 0,
       costByModel: {},
       costByDayUsd: {},
+      unpricedByModel: {},
+      estimatedByModel: {},
+      unpricedByDay: {},
+      estimatedByDay: {},
     });
   });
 
@@ -1893,5 +1897,142 @@ describe('byte-estimate ledger', () => {
     const exact = second.recordTokenUsage(real, MODEL, REPLAY);
 
     expect(second.getMetrics().sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 9);
+  });
+});
+
+describe('call counts and the byte-estimate ledger', () => {
+  const real = makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 });
+  const UNPRICED = 'claude-foo-9-9';
+  const todayKey = localDateKey(Date.now());
+
+  it('takes the unpriced calls of byte estimates back out when a real report replaces them', () => {
+    const tracker = new CostTracker();
+    tracker.recordEstimatedTokens(4_000, 2_000, UNPRICED);
+    tracker.recordEstimatedTokens(4_000, 2_000, UNPRICED);
+    expect(tracker.getMetrics().unpricedByModel[UNPRICED]?.calls).toBe(2);
+
+    tracker.recordTokenUsage(real, UNPRICED, { replacesEstimates: true });
+
+    const m = tracker.getMetrics();
+    expect(m.unpricedByModel[UNPRICED]).toEqual({ calls: 1, tokens: 1_500 });
+    expect(m.unpricedByDay).toEqual({ [todayKey]: { [UNPRICED]: { calls: 1, tokens: 1_500 } } });
+  });
+
+  it('takes the estimated-price calls of byte estimates back out too', () => {
+    const tracker = new CostTracker();
+    tracker.recordEstimatedTokens(4_000, 2_000, 'claude-opus-5-9');
+    expect(Object.keys(tracker.getMetrics().estimatedByModel)).toEqual(['claude-opus-5-9']);
+
+    tracker.recordTokenUsage(real, 'claude-sonnet-4', { replacesEstimates: true });
+
+    expect(tracker.getMetrics().estimatedByModel).toEqual({});
+    expect(tracker.getMetrics().estimatedByDay).toEqual({});
+  });
+
+  it('keeps the calls of a self-report that does not replace the estimates', () => {
+    const tracker = new CostTracker();
+    tracker.recordEstimatedTokens(4_000, 2_000, UNPRICED);
+    tracker.recordTokenUsage(real, UNPRICED);
+    expect(tracker.getMetrics().unpricedByModel[UNPRICED]?.calls).toBe(2);
+  });
+
+  it('keeps exact calls recorded before the replay', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(real, UNPRICED, { agentId: 'sub-1' });
+    tracker.recordEstimatedTokens(4_000, 2_000, UNPRICED);
+
+    tracker.recordTokenUsage(real, UNPRICED, { replacesEstimates: true });
+
+    expect(tracker.getMetrics().unpricedByModel[UNPRICED]?.calls).toBe(2);
+  });
+
+  it('removes the calls after a restart that restored the ledger', () => {
+    const first = new CostTracker();
+    first.recordEstimatedTokens(4_000, 2_000, UNPRICED);
+    const before = first.getMetrics();
+
+    const second = new CostTracker();
+    second.seedFromPersisted({
+      totalCostUsd: 0,
+      subagentCostUsd: 0,
+      parentCostUsd: 0,
+      totalInputTokens: before.totalInputTokens,
+      totalOutputTokens: before.totalOutputTokens,
+      totalThinkingTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheCreationTokens: 0,
+      totalCacheSavingsUsd: 0,
+      costByModel: {},
+      dayKey: todayKey,
+      dayCostUsd: 0,
+      daySubagentCostUsd: 0,
+      costByWorkflowRunId: {},
+      unpricedByModel: before.unpricedByModel,
+      unpricedByDay: before.unpricedByDay,
+      ...(before.byteEstimates !== undefined && { byteEstimates: before.byteEstimates }),
+      hadExactReport: false,
+    });
+    expect(second.getMetrics().unpricedByModel[UNPRICED]?.calls).toBe(1);
+
+    second.recordTokenUsage(real, 'claude-sonnet-4', { replacesEstimates: true });
+
+    expect(second.getMetrics().unpricedByModel).toEqual({});
+  });
+});
+
+describe('call counts by day', () => {
+  const UNPRICED = 'claude-foo-9-9';
+
+  it('buckets each call under the day of its transcript timestamp', () => {
+    const tracker = new CostTracker();
+    const now = Date.now();
+    const yesterdayMs = localStartOfDay(now) - 60_000;
+    tracker.recordTokenUsage(makeUsage({ inputTokens: 10, totalTokens: 10 }), UNPRICED, {
+      timestampMs: yesterdayMs,
+    });
+    tracker.recordTokenUsage(makeUsage({ inputTokens: 20, totalTokens: 20 }), UNPRICED, {
+      timestampMs: now,
+    });
+
+    const m = tracker.getMetrics();
+    expect(m.unpricedByModel[UNPRICED]).toEqual({ calls: 2, tokens: 30 });
+    expect(m.unpricedByDay).toEqual({
+      [localDateKey(yesterdayMs)]: { [UNPRICED]: { calls: 1, tokens: 10 } },
+      [localDateKey(now)]: { [UNPRICED]: { calls: 1, tokens: 20 } },
+    });
+  });
+
+  it('counts a late arrival in the totals but in no day', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(makeUsage({ inputTokens: 10, totalTokens: 10 }), UNPRICED, {
+      timestampMs: Date.now() - 72 * 60 * 60 * 1000,
+    });
+    const m = tracker.getMetrics();
+    expect(m.unpricedByModel[UNPRICED]?.calls).toBe(1);
+    expect(m.unpricedByDay).toEqual({});
+  });
+
+  it('books a checkpoint written before day buckets to the seed day', () => {
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted({
+      totalCostUsd: 1,
+      subagentCostUsd: 0,
+      parentCostUsd: 1,
+      totalInputTokens: 10,
+      totalOutputTokens: 0,
+      totalThinkingTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheCreationTokens: 0,
+      totalCacheSavingsUsd: 0,
+      costByModel: {},
+      dayKey: '2026-11-06',
+      dayCostUsd: 1,
+      daySubagentCostUsd: 0,
+      costByWorkflowRunId: {},
+      unpricedByModel: { [UNPRICED]: { calls: 3, tokens: 30 } },
+    });
+    expect(tracker.getMetrics().unpricedByDay).toEqual({
+      '2026-11-06': { [UNPRICED]: { calls: 3, tokens: 30 } },
+    });
   });
 });
