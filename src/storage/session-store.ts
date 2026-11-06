@@ -886,9 +886,9 @@ export class SessionStore {
    *
    * An unreadable file is skipped rather than ending the search: returning null
    * there made saveSession() treat the session as new and start a fresh file
-   * on every later save (#997). Sibling files for one id are not merged here,
+   * on every later save. Sibling files for one id are not merged here,
    * because files split that way hold disjoint activity that mergeSummaries'
-   * per-counter max would drop (#908).
+   * per-counter max would drop.
    */
   private loadSessionWithPath(sessionId: string): {
     readonly existing: { readonly summary: FullSessionSummary; readonly filepath: string } | null;
@@ -1955,7 +1955,7 @@ function parseSessionFile(raw: string, filepath: string): ParsedSessionFile {
  * A recovered document is used only when its file is the id's only file.
  * Beside a sibling it may repeat activity the sibling already holds, so
  * adding the two could double count. It stays unread there, as it was before
- * recovery existed, until #908 combines a session's split files.
+ * recovery existed, until a session's split files are combined.
  */
 function usableSummary(parsed: ParsedSessionFile, filesForId: number): FullSessionSummary | null {
   if (parsed.kind === 'unreadable') return null;
