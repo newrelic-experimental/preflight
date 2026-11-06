@@ -24,7 +24,7 @@
 import { spawnSync } from 'node:child_process';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
-import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
+import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
 import { hasRecordedUsage, type FullSessionSummary } from '../storage/session-store.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
 import { CallUsageBook } from './call-usage.js';
@@ -381,6 +381,24 @@ export class LocalSessionAggregator {
     if (timestamp < rollup.startTime) rollup.startTime = timestamp;
     if (timestamp > rollup.endTime) rollup.endTime = timestamp;
     return rollup;
+  }
+
+  amendToolCall(record: ToolCallRecord): void {
+    const rollup = record.sessionId ? this.sessions.get(record.sessionId) : undefined;
+    if (!rollup) return;
+    const index = rollup.records.findIndex((r) => r.id === record.id);
+    const previous = rollup.records[index];
+    const entry = rollup.timeline[index];
+    if (previous?.success !== false || !entry) return;
+    if (record.success) rollup.successCount += 1;
+    rollup.records[index] = amendRecord(previous, record);
+    const { errorType: _replaced, ...rest } = entry;
+    rollup.timeline[index] = {
+      ...rest,
+      durationMs: record.durationMs,
+      success: record.success,
+      ...(record.errorType !== undefined && { errorType: record.errorType }),
+    };
   }
 
   recordToolCall(record: {

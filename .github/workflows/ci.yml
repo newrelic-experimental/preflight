@@ -5,7 +5,9 @@ name: CI
 # the drift-checker scripts that otherwise never run automatically:
 # check-docs-inventory.ts (docs/code drift), check-bundle-size.ts (SPA
 # bundle budget, mirrors verify:plugin-hook's already-enforced pattern in
-# release.yml) and check-test-ownership.ts (every test file has a runner).
+# release.yml) and check-test-ownership.ts (every test file has a runner). The
+# processes job adds the two checks that spawn real processes, which `npm test`
+# does not run: the multi-instance integration test and the hook-drain stress script.
 on:
   pull_request:
   workflow_dispatch:
@@ -134,10 +136,46 @@ jobs:
           npm install --package-lock-only --ignore-scripts
           git diff --exit-code package-lock.json
 
+      # The committed plugin hook bundle must match what src/hooks/collector-script.ts
+      # builds. release.yml and the pre-push hook run this; a PR that skips the hook
+      # would otherwise ship a stale bundle.
+      - name: Verify plugin hook bundle
+        run: npm run verify:plugin-hook
+
       # shellcheck for the tracked scripts under .claude/skills/, which neither
       # ESLint nor Prettier reaches. ubuntu-latest ships shellcheck.
       - name: Lint shell scripts
         run: npm run lint:shell
+
+  # Real processes, no mocks. Neither check is part of `npm test`: the integration suite
+  # is ignored by jest.config.ts, and the stress script is a standalone tsx program.
+  # Separate from verify so a timing flake here is visible under its own name.
+  processes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Three concurrent --stdio servers sharing one dashboard port, and the takeover
+      # when the port's owner exits.
+      - name: Test (multi-instance integration)
+        run: npm run test:integration
+
+      # One writer racing four drainer processes; exits non-zero on any lost or
+      # doubled hook-buffer line.
+      - name: Stress hook-buffer drain
+        run: npx tsx scripts/stress-hook-drain.ts
 
   # A PR describes its change in a changeset and leaves the version and CHANGELOG.md to the
   # release PR (CONTRIBUTING.md#changesets). Both checks need a base branch, so they're

@@ -1530,6 +1530,68 @@ describe('LocalStore', () => {
     });
   });
 
+  describe('counted toolUseIds', () => {
+    it('finds an id another process saved for the session, after an earlier lookup', () => {
+      const store = new LocalStore(tmpDir);
+      store.rememberCountedToolUseIds('sess-1', ['toolu_mine'], 256);
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_theirs')).toBe(false);
+
+      writeFileSync(resolve(tmpDir, 'counted', 'sess-1.999999.json'), '["toolu_theirs"]');
+
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_mine')).toBe(true);
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_theirs')).toBe(true);
+      expect(store.hasCountedToolUseId('sess-2', 'toolu_theirs')).toBe(false);
+    });
+
+    it('keeps an id saved again among the newest 256', () => {
+      const store = new LocalStore(tmpDir);
+      store.rememberCountedToolUseIds('sess-1', ['toolu_again'], 256);
+      const others = Array.from({ length: 256 }, (_, i) => `toolu_${i}`);
+      store.rememberCountedToolUseIds('sess-1', [...others, 'toolu_again'], 256);
+
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_again')).toBe(true);
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_0')).toBe(false);
+    });
+
+    it('deletes the day-old files of any process, and leftover temp files', () => {
+      const store = new LocalStore(tmpDir);
+      store.rememberCountedToolUseIds('sess-live', ['toolu_1'], 256);
+      store.rememberCountedToolUseIds('sess-idle', ['toolu_2'], 256);
+      const dir = resolve(tmpDir, 'counted');
+      writeFileSync(resolve(dir, 'sess-old.999999.json'), '["toolu_3"]');
+      writeFileSync(resolve(dir, 'sess-recent.999999.json'), '["toolu_4"]');
+      writeFileSync(resolve(dir, 'x.json.tmp'), '[]');
+      const dayAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
+      for (const name of ['sess-old.999999.json', `sess-idle.${process.pid}.json`, 'x.json.tmp']) {
+        utimesSync(resolve(dir, name), dayAgo, dayAgo);
+      }
+
+      store.gcCountedToolUseIds();
+
+      expect(readdirSync(dir).sort()).toEqual([
+        `sess-live.${process.pid}.json`,
+        'sess-recent.999999.json',
+      ]);
+    });
+
+    it('finds an id another process wrote in the same mtime tick as an earlier lookup', () => {
+      const store = new LocalStore(tmpDir);
+      store.rememberCountedToolUseIds('sess-1', ['toolu_mine'], 256);
+      const dir = resolve(tmpDir, 'counted');
+      const file = resolve(dir, 'sess-1.999999.json');
+      writeFileSync(file, '[]');
+      const tick = new Date(Math.floor(Date.now() / 1000) * 1000);
+      utimesSync(dir, tick, tick);
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_theirs')).toBe(false);
+
+      writeFileSync(`${file}.tmp`, '["toolu_theirs"]');
+      renameSync(`${file}.tmp`, file);
+      utimesSync(dir, tick, tick);
+
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_theirs')).toBe(true);
+    });
+  });
+
   describe('gcStaleBreadcrumbs()', () => {
     it('deletes breadcrumb files whose PID is dead and preserves live ones', () => {
       mkdirSync(tmpDir, { recursive: true });

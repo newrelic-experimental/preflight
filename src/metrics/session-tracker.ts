@@ -77,6 +77,13 @@ export interface SessionMetrics {
 // ---------------------------------------------------------------------------
 
 const MAX_TIMELINE_ENTRIES = 10_000;
+const AMENDABLE_ERROR_TYPES = new Set(['timeout', 'rejected']);
+
+function addCount<K>(counts: Map<K, number>, key: K, delta: number): void {
+  const next = (counts.get(key) ?? 0) + delta;
+  if (next > 0) counts.set(key, next);
+  else counts.delete(key);
+}
 
 // Bounds memory on sessions that touch an unusually large number of distinct
 // files (e.g. a repo-wide codemod or search) — head-drop the oldest-added
@@ -171,8 +178,10 @@ export class SessionTracker implements Resettable {
   private readonly bashCallsByCategory = new Map<string, number>();
   private timeline: TimelineEntry[] = [];
   private timelineEntryCount = 0;
+  private readonly amendable = new Map<string, { record: ToolCallRecord; timelineIndex: number }>();
+  private readonly maxAmendable: number;
 
-  constructor(sessionId: string) {
+  constructor(sessionId: string, maxAmendable = 0) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
       // The MCP no longer fabricates session_ids. Callers must pass the
       // resolved Claude Code session_id (or a real UUID for tests).
@@ -180,6 +189,7 @@ export class SessionTracker implements Resettable {
     }
     this.sessionId = sessionId;
     this.sessionStartTime = Date.now();
+    this.maxAmendable = maxAmendable;
   }
 
   recordToolCall(record: ToolCallRecord): void {
@@ -216,22 +226,10 @@ export class SessionTracker implements Resettable {
       }
     }
 
-    // Success/failure tracking
     const successEntry = this.toolSuccessByTool.get(tool) ?? { success: 0, total: 0 };
     successEntry.total++;
-    if (record.success) {
-      successEntry.success++;
-      this.successCount++;
-    } else {
-      this.toolErrorCount++;
-      if (record.errorType) {
-        this.toolErrorsByType.set(
-          record.errorType,
-          (this.toolErrorsByType.get(record.errorType) ?? 0) + 1,
-        );
-      }
-    }
     this.toolSuccessByTool.set(tool, successEntry);
+    this.applyOutcome(record, 1);
 
     // File tracking (uses tool-specific fields from parsers)
     const filePath = record.filePath as string | undefined;
@@ -246,10 +244,6 @@ export class SessionTracker implements Resettable {
     // Bash tracking
     if (tool === 'Bash') {
       this.bashCommandsRun++;
-      const exitCode = record.exitCode as number | undefined;
-      if (exitCode != null) {
-        this.bashExitCodes.set(exitCode, (this.bashExitCodes.get(exitCode) ?? 0) + 1);
-      }
       const category = record.bashCategory as string | undefined;
       if (typeof category === 'string' && category.length > 0) {
         this.bashCallsByCategory.set(category, (this.bashCallsByCategory.get(category) ?? 0) + 1);
@@ -263,13 +257,54 @@ export class SessionTracker implements Resettable {
 
     // Timeline (capped); always increment the lifetime counter.
     this.timelineEntryCount++;
-    if (this.timeline.length < MAX_TIMELINE_ENTRIES) {
+    const timelineIndex = this.timeline.length < MAX_TIMELINE_ENTRIES ? this.timeline.length : -1;
+    if (timelineIndex >= 0) {
       this.timeline.push({
         timestamp: record.timestamp,
         toolName: tool,
         durationMs: record.durationMs,
         success: record.success,
       });
+    }
+    if (record.errorType !== undefined && AMENDABLE_ERROR_TYPES.has(record.errorType)) {
+      this.amendable.set(record.id, { record, timelineIndex });
+      if (this.amendable.size > this.maxAmendable)
+        this.amendable.delete(this.amendable.keys().next().value!);
+    }
+  }
+
+  private applyOutcome(record: ToolCallRecord, delta: 1 | -1): void {
+    const successEntry = this.toolSuccessByTool.get(record.toolName)!;
+    if (record.success) {
+      successEntry.success += delta;
+      this.successCount += delta;
+    } else {
+      this.toolErrorCount += delta;
+      if (record.errorType) addCount(this.toolErrorsByType, record.errorType, delta);
+    }
+    const exitCode = record.exitCode as number | undefined;
+    if (record.toolName === 'Bash' && exitCode != null)
+      addCount(this.bashExitCodes, exitCode, delta);
+  }
+
+  amendToolCall(record: ToolCallRecord): void {
+    const amended = this.amendable.get(record.id);
+    if (!amended) return;
+    this.amendable.delete(record.id);
+    this.applyOutcome(amended.record, -1);
+    this.applyOutcome(record, 1);
+    if (record.durationMs !== null) {
+      const durations = this.toolDurationsByTool.get(record.toolName) ?? [];
+      if (durations.length < 500) durations.push(record.durationMs);
+      this.toolDurationsByTool.set(record.toolName, durations);
+    }
+    const entry = this.timeline[amended.timelineIndex];
+    if (entry) {
+      this.timeline[amended.timelineIndex] = {
+        ...entry,
+        durationMs: record.durationMs,
+        success: record.success,
+      };
     }
   }
 
@@ -448,5 +483,6 @@ export class SessionTracker implements Resettable {
     this.bashCallsByCategory.clear();
     this.timeline = [];
     this.timelineEntryCount = 0;
+    this.amendable.clear();
   }
 }
