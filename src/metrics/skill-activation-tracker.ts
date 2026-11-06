@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { SkillStamp, ToolCallRecord } from '../storage/types.js';
+import { DEFAULT_IDLE_TIMEOUT_MS } from './task-detector.js';
 import type { Resettable } from './tracker-contracts.js';
 
 const NULL_SESSION_KEY = '__no_session__';
@@ -17,15 +18,23 @@ export interface SkillActivationMetrics {
  * Tracks the open skill run per session and per agent, so every tool call can
  * be stamped with the skill whose work it is. A run opens on a successful,
  * named `Skill` tool call or a `/<skill>` prompt and lasts until the next
- * prompt or the next skill (last wins: there is no signal for a nested skill
- * returning, so the new run records the one it replaced as its parent
- * instead). A subagent keeps whatever run the main agent had open when the
- * subagent first appeared, since that skill is what spawned it; later prompts
- * and skills on the main agent don't move it.
+ * prompt, an idle gap, or the next skill (last wins: there is no signal for a
+ * nested skill returning, so the new run records the one it replaced as its
+ * parent instead). The idle gap is the task detector's idle timeout, measured
+ * on record timestamps, and ends the main agent's run only in a session that
+ * has never sent a prompt event. A subagent keeps whatever run the main agent
+ * had open when the subagent first appeared, since that skill is what spawned
+ * it; later prompts, idle gaps, and skills on the main agent don't move it.
  */
 export class SkillActivationTracker implements Resettable {
   /** Per session, per agent; `null` pins a subagent that appeared outside any run. */
   private readonly sessions = new Map<string, Map<string, SkillStamp | null>>();
+  /**
+   * Latest record timestamp per session, from any agent, so a subagent's work
+   * isn't idle time. `null` marks a session that has sent a prompt: its
+   * prompts close runs accurately, so it never closes on a gap.
+   */
+  private readonly lastActivity = new Map<string, number | null>();
 
   private runsFor(sessionId: string | null | undefined): Map<string, SkillStamp | null> {
     const key = sessionId ?? NULL_SESSION_KEY;
@@ -35,7 +44,10 @@ export class SkillActivationTracker implements Resettable {
     } else {
       if (this.sessions.size >= DEFAULT_MAX_SESSIONS) {
         const oldest = this.sessions.keys().next().value;
-        if (oldest !== undefined) this.sessions.delete(oldest);
+        if (oldest !== undefined) {
+          this.sessions.delete(oldest);
+          this.lastActivity.delete(oldest);
+        }
       }
       runs = new Map();
     }
@@ -45,6 +57,15 @@ export class SkillActivationTracker implements Resettable {
 
   recordToolCall(record: ToolCallRecord): SkillStamp | null {
     const runs = this.runsFor(record.sessionId);
+    const sessionKey = record.sessionId ?? NULL_SESSION_KEY;
+    const last = this.lastActivity.get(sessionKey);
+    if (last !== null) {
+      if (last !== undefined && record.timestamp - last > DEFAULT_IDLE_TIMEOUT_MS) {
+        runs.set(MAIN_AGENT_KEY, null);
+      }
+      if (last === undefined || record.timestamp > last)
+        this.lastActivity.set(sessionKey, record.timestamp);
+    }
     const agentKey = record.agentId ?? MAIN_AGENT_KEY;
     if (agentKey !== MAIN_AGENT_KEY && !runs.has(agentKey)) {
       if (runs.size > MAX_AGENTS_PER_SESSION) {
@@ -84,6 +105,7 @@ export class SkillActivationTracker implements Resettable {
       ? { name: slashCommand, source: 'slash', runId: randomUUID() }
       : null;
     this.runsFor(sessionId).set(MAIN_AGENT_KEY, stamp);
+    this.lastActivity.set(sessionId ?? NULL_SESSION_KEY, null);
     return stamp;
   }
 
@@ -100,5 +122,6 @@ export class SkillActivationTracker implements Resettable {
 
   reset(_sessionId?: string): void {
     this.sessions.clear();
+    this.lastActivity.clear();
   }
 }
