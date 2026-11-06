@@ -1,8 +1,9 @@
-import type {
-  NormalizedToolCall,
-  PlatformAdapter,
-  PlatformConfig,
-  PlatformSessionMetadata,
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformConfig,
+  type PlatformSessionMetadata,
 } from './types.js';
 
 /**
@@ -64,7 +65,11 @@ export class CodexAdapter implements PlatformAdapter {
   // model_instructions_file field: "Replacement for built-in instructions
   // instead of AGENTS.md." Same convention Droid, Cursor, and Gemini CLI
   // also read.
-  readonly capabilities = { instructionFilePaths: ['AGENTS.md'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['AGENTS.md'] as const,
+    // The documented hook command names no engine.
+    sessionBreadcrumbWriters: ['codex', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Codex hooks are configured externally (hooks.json or inline [hooks]

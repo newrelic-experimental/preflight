@@ -57,7 +57,11 @@ export class AntigravityAdapter implements PlatformAdapter {
   // Confirmed via antigravity.google/docs/ide/rules and /docs/rules-workflows:
   // global rules live in ~/.gemini/GEMINI.md; workspace rules live in
   // .agents/rules/ (with backward-compat support for the older .agent/rules/).
-  readonly capabilities = { instructionFilePaths: ['GEMINI.md', '.agents/rules/'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['GEMINI.md', '.agents/rules/'] as const,
+    // Antigravity's hooks send conversationId, never session_id, so they write no breadcrumb.
+    sessionBreadcrumbWriters: [] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Antigravity's built-in tool-call capture is delivered via a

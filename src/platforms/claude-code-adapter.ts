@@ -22,7 +22,10 @@ export const CLAUDE_CODE_ENV_SIGNALS = [
 export class ClaudeCodeAdapter implements PlatformAdapter {
   readonly platformName = 'claude-code';
   readonly visibilityLevel = 'full-hooks' as const;
-  readonly capabilities = { instructionFilePaths: ['CLAUDE.md', '.claude/'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['CLAUDE.md', '.claude/'] as const,
+    sessionBreadcrumbWriters: ['claude-code'] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // No-op — Claude Code hooks are configured externally

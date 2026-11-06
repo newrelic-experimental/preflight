@@ -1,8 +1,9 @@
-import type {
-  NormalizedToolCall,
-  PlatformAdapter,
-  PlatformConfig,
-  PlatformSessionMetadata,
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformConfig,
+  type PlatformSessionMetadata,
 } from './types.js';
 
 /**
@@ -49,7 +50,11 @@ function isGeminiCliToolCallEvent(x: unknown): x is GeminiCliToolCallEvent {
 export class GeminiCliAdapter implements PlatformAdapter {
   readonly platformName = 'gemini-cli';
   readonly visibilityLevel = 'full-hooks' as const;
-  readonly capabilities = { instructionFilePaths: ['GEMINI.md'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['GEMINI.md'] as const,
+    // The documented hook command names no engine.
+    sessionBreadcrumbWriters: ['gemini-cli', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Gemini CLI hooks are configured externally (settings.json).
