@@ -22,6 +22,7 @@ import { resolveRecordContent } from '../record-content-gate.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
 import { appendToHookBuffer } from '../storage/hook-buffer.js';
+import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -644,7 +645,7 @@ function extractOutputMeta(
   if (output === null || output === undefined || typeof output !== 'object') return undefined;
   const obj = output as Record<string, unknown>;
 
-  if (toolName.endsWith('create_pull_request')) {
+  if (mcpPrToolAction(toolName) === 'create') {
     const createdPrNumber = findCreatedPrNumber(output as Record<string, unknown> | unknown[]);
     return createdPrNumber === undefined ? undefined : { createdPrNumber };
   }

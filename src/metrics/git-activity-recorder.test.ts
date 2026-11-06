@@ -16,7 +16,10 @@ import {
 import { ActivityStore } from './git-activity-store.js';
 import type { GitActivityRecord } from './git-activity-recorder.js';
 import { WorktreeIdentityResolver } from './git-workspace-identity.js';
-import type { ToolCallRecord } from '../storage/types.js';
+import { HookEventProcessor } from '../hooks/event-processor.js';
+import { ClaudeCodeAdapter } from '../platforms/claude-code-adapter.js';
+import { LocalStore } from '../storage/local-store.js';
+import type { HookEvent, ToolCallRecord } from '../storage/types.js';
 
 // git sets GIT_DIR/GIT_WORK_TREE for hook subprocesses (e.g. a pre-push
 // hook), which override `-C <dir>` and silently redirect every fixture call
@@ -274,6 +277,68 @@ describe('GitActivityRecorder', () => {
         kind: 'pr',
       });
       expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('edit');
+    });
+  });
+
+  // Claude Code names an MCP tool `mcp__<server>__<tool>`; #833.
+  describe('MCP PR tools under Claude Code names', () => {
+    /** Pairs one Claude Code pre/post hook per tool through HookEventProcessor
+     *  and feeds the records to the recorder. `toolOutput` is what the
+     *  collector writes for a create_pull_request result naming PR 57. */
+    function recordThroughHooks(toolNames: readonly string[]): void {
+      const bufferDir = mkdtempSync(join('/tmp', 'git-activity-hooks-'));
+      try {
+        const localStore = new LocalStore(bufferDir);
+        localStore.initialize();
+        const processor = new HookEventProcessor({
+          store: localStore,
+          onRecord: (record) => recorder.recordToolCall(record),
+          platformAdapter: new ClaudeCodeAdapter(),
+        });
+        processor.processEvents(
+          toolNames.flatMap((tool, i): HookEvent[] => [
+            { mode: 'pre', tool, timestamp: 1000 + i * 10, toolUseId: `tu-${i}`, sessionId: 's' },
+            {
+              mode: 'post',
+              tool,
+              timestamp: 1005 + i * 10,
+              success: true,
+              toolUseId: `tu-${i}`,
+              sessionId: 's',
+              cwd: repoDir,
+              toolOutput: { createdPrNumber: '57' },
+            },
+          ]),
+        );
+      } finally {
+        rmSync(bufferDir, { recursive: true, force: true });
+      }
+    }
+
+    const prEvents = () =>
+      store
+        .query({ since: 0, until: Date.now() + 1000 })
+        .flatMap((r) => (r.kind === 'pr' ? [r.prEvent] : []));
+
+    it('records mcp__github__create_pull_request with its PR number', () => {
+      recordThroughHooks(['mcp__github__create_pull_request']);
+
+      expect(prEvents()).toEqual([expect.objectContaining({ action: 'create', prNumber: '57' })]);
+    });
+
+    it('records update_pull_request from a plugin-bundled GitHub server', () => {
+      recordThroughHooks(['mcp__plugin_github_github__update_pull_request']);
+
+      expect(prEvents()).toEqual([expect.objectContaining({ action: 'edit', prNumber: null })]);
+    });
+
+    it('ignores GitHub MCP tools whose names only start like a PR tool', () => {
+      recordThroughHooks([
+        'mcp__github__create_pull_request_with_copilot',
+        'mcp__github__update_pull_request_branch',
+      ]);
+
+      expect(prEvents()).toEqual([]);
     });
   });
 

@@ -17,6 +17,7 @@ import {
 } from './git-event-classifier.js';
 import { UNATTRIBUTED_WORKSPACE_KEY, WorktreeIdentityResolver } from './git-workspace-identity.js';
 import { stripHeredocs } from './local-session-aggregator.js';
+import { mcpPrToolAction } from './mcp-pr-tools.js';
 import type { PrEvent } from './git-efficiency-tracker.js';
 
 /** `sessionId` used for commit records hydrated from `git log` rather than
@@ -44,12 +45,6 @@ export type GitActivityRecord = KeyedRecord & {
     | { readonly kind: 'verify'; readonly verify: 'build' | 'test' }
     | { readonly kind: 'pr'; readonly prEvent: PrEvent }
   );
-
-/** Detected PR action from gh CLI or MCP tools. */
-const MCP_PR_TOOL_ACTION: Record<string, PrEvent['action']> = {
-  create_pull_request: 'create',
-  update_pull_request: 'edit',
-};
 
 export class GitActivityRecorder {
   constructor(
@@ -103,8 +98,8 @@ export class GitActivityRecorder {
     }
 
     // MCP tool calls (e.g. the GitHub MCP server's create_pull_request /
-    // update_pull_request)
-    const mcpPrAction = MCP_PR_TOOL_ACTION[record.toolName];
+    // update_pull_request), bare or as Claude Code's mcp__<server>__<tool>
+    const mcpPrAction = mcpPrToolAction(record.toolName);
     if (mcpPrAction) {
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',
