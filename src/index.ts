@@ -2644,6 +2644,7 @@ async function main(): Promise<void> {
       onStop: (frame) => {
         turnTracker.finalizeTurnAt(frame.timestamp);
         taskDetector!.markBoundary(frame.timestamp);
+        emitCompletedTasks?.();
       },
     });
 
@@ -3097,6 +3098,7 @@ async function main(): Promise<void> {
       };
       registerTools(mcpServer!.server, {
         headlessInstaller: buildHeadlessInstaller(),
+        onTaskClosed: () => emitCompletedTasks?.(),
         sessionTracker: sessionTracker!,
         costTracker,
         budgetTracker,
@@ -3345,6 +3347,7 @@ async function main(): Promise<void> {
         };
         registerTools(mcpServer!.server, {
           headlessInstaller: buildHeadlessInstaller(),
+          onTaskClosed: () => emitCompletedTasks?.(),
           sessionTracker,
           costTracker,
           budgetTracker,

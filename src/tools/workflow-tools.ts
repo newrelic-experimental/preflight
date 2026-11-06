@@ -423,6 +423,7 @@ const FeedbackSchema = z.object({
 
 export interface WorkflowToolsDeps {
   taskDetector?: TaskDetector;
+  onTaskClosed?: () => void;
   antiPatternDetector?: AntiPatternDetector;
   efficiencyScorer?: EfficiencyScorer;
   feedbackCollector?: FeedbackCollector;
@@ -490,7 +491,9 @@ export function registerWorkflowTools(deps: WorkflowToolsDeps): RegisteredToolSe
       handle: () => {
         const check = requireTracker(deps.taskDetector, 'TaskDetector');
         if (!check.ok) return check.result;
-        return handleMarkTaskBoundary(check.value);
+        const result = handleMarkTaskBoundary(check.value);
+        deps.onTaskClosed?.();
+        return result;
       },
     },
   ]);
