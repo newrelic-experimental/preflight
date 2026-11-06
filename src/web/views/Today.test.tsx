@@ -3103,6 +3103,24 @@ describe('Today view — daily budget KPI', () => {
     expect(screen.queryByText('$1.50')).toBeNull();
   });
 
+  it('switches the budget value to the warning tone at 50 percent used', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 5, pctUsed: 50, exceeded: false });
+    renderToday();
+
+    const value = await screen.findByText('$5.00');
+    expect(value).toHaveClass('text-accent-amber');
+    expect(screen.getByText('of $10.00 · 50% used')).toBeInTheDocument();
+  });
+
+  it('keeps the budget value out of the warning tone below 50 percent used', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 4.9, pctUsed: 49, exceeded: false });
+    renderToday();
+
+    const value = await screen.findByText('$4.90');
+    expect(value).not.toHaveClass('text-accent-amber');
+    expect(value).not.toHaveClass('text-accent-red');
+  });
+
   it('switches the budget value to the warning tone at 80 percent used', async () => {
     stubBudget({ budgetUsd: 10, spentUsd: 8, pctUsed: 80, exceeded: false });
     renderToday();

@@ -231,13 +231,11 @@ interface ToolSelectionMetrics {
 
 const QUALITY_REFETCH_MS = 10_000;
 
-// Thresholds match the ones BudgetTracker fires on. Kpi has no info tone, so
-// 50 to 79 percent uses `good`, the green the Alerts bar shows below 80.
+// Thresholds match the ones BudgetTracker fires on.
 function budgetKpiTone(period: BudgetPeriod): KpiTone {
   const pct = period.pctUsed ?? 0;
   if (period.exceeded || pct >= 100) return 'bad';
-  if (pct >= 80) return 'warn';
-  if (pct >= 50) return 'good';
+  if (pct >= 50) return 'warn';
   return 'neutral';
 }
 
