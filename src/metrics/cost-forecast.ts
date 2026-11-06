@@ -13,7 +13,7 @@ export interface CostForecast {
   readonly forecastEndOfWeekUsd: number | null;
   readonly forecastSessionEndUsd: number | null;
   readonly confidenceNote: string;
-  /** Why the end-of-day and end-of-week forecasts are null, or null when they are shown. */
+  /** Why the end-of-day and end-of-week forecasts are held. Null when they are shown, and also for the no-data and no-spend early returns. */
   readonly heldReason: string | null;
 }
 

@@ -245,6 +245,61 @@ describe('buildCostForecast', () => {
       expect(shown.heldReason).toBeNull();
     });
 
+    it('treats a 1 ms session as data, not as no data', () => {
+      const f = buildCostForecastFromInputs(
+        { sessionSpentUsd: SPEND_USD, sessionStartMs: nowMs - 1 },
+        nowMs,
+      );
+      expect(f.elapsedMs).toBe(1);
+    });
+
+    it('carries no heldReason when the clock reads before the session start', () => {
+      const f = buildCostForecastFromInputs(
+        { sessionSpentUsd: SPEND_USD, sessionStartMs: nowMs },
+        nowMs,
+      );
+      expect(f.heldReason).toBeNull();
+    });
+
+    it('carries no heldReason while a session has no spend yet', () => {
+      const f = buildCostForecastFromInputs(
+        { sessionSpentUsd: 0, sessionStartMs: nowMs - 60_000 },
+        nowMs,
+      );
+      expect(f.heldReason).toBeNull();
+    });
+
+    it('projects EoD for a session that started exactly at local midnight with no daily anchor', () => {
+      const f = buildCostForecastFromInputs(
+        { sessionSpentUsd: SPEND_USD, sessionStartMs: new Date(2024, 0, 3).getTime() },
+        nowMs,
+      );
+      expect(f.forecastEndOfDayUsd).not.toBeNull();
+    });
+
+    it('grades a shown forecast on the daily window, not the longer session window', () => {
+      const f = buildCostForecastFromInputs(
+        {
+          sessionSpentUsd: 10,
+          sessionStartMs: nowMs - 2 * 60 * 60_000,
+          dailySpentUsd: SPEND_USD,
+          dailyFirstActivityMs: nowMs - 15 * 60_000,
+        },
+        nowMs,
+      );
+      expect(f.confidenceNote).toMatch(/Moderate confidence/i);
+    });
+
+    it('grades exactly 10 minutes as moderate, not low', () => {
+      const f = buildCostForecast(SPEND_USD, nowMs - 10 * 60_000, nowMs);
+      expect(f.confidenceNote).toMatch(/Moderate confidence/i);
+    });
+
+    it('grades exactly 30 minutes as reasonable, not moderate', () => {
+      const f = buildCostForecast(SPEND_USD, nowMs - 30 * 60_000, nowMs);
+      expect(f.confidenceNote).toMatch(/Reasonable confidence/i);
+    });
+
     it('projects from a fresh daily anchor when the session started before local midnight', () => {
       const f = buildCostForecastFromInputs(
         {

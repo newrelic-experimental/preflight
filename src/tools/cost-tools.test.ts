@@ -5,6 +5,7 @@ import {
   handleGetPromptCacheHealth,
   handleGetBudgetStatus,
   handleGetCostForecast,
+  COST_FORECAST_TOOL,
   handleGetCostBreakdown,
   registerCostTools,
 } from './cost-tools.js';
@@ -558,6 +559,55 @@ describe('handleGetCostForecast()', () => {
     expect(body.forecastEndOfDayUsd).toBeCloseTo(expected.forecastEndOfDayUsd as number, 2);
     expect(sessionTotalCostUsd).toBeGreaterThan(tracker.getCostForDay(todayKey));
   }
+
+  function recordSmallSpend(tracker: CostTracker): void {
+    tracker.recordTokenUsage(
+      {
+        inputTokens: 1_000,
+        outputTokens: 200,
+        thinkingTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalTokens: 1_200,
+      },
+      'claude-sonnet-4',
+    );
+  }
+
+  it('returns heldReason while end-of-day is held', () => {
+    jest.useFakeTimers({ now: new Date(2024, 0, 3, 12).getTime() });
+    try {
+      const tracker = new CostTracker();
+      recordSmallSpend(tracker);
+      const body = JSON.parse(handleGetCostForecast(tracker, Date.now() - 60_000).content[0].text);
+      expect(body.heldReason).toBe("held: under 10 minutes of today's data");
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('returns heldReason alongside resumeContext', () => {
+    jest.useFakeTimers({ now: new Date(2024, 0, 3, 12).getTime() });
+    try {
+      const tracker = new CostTracker();
+      recordSmallSpend(tracker);
+      const body = JSON.parse(
+        handleGetCostForecast(tracker, Date.now() - 60_000, new SessionResumeTracker()).content[0]
+          .text,
+      );
+      expect(body.heldReason).toBe("held: under 10 minutes of today's data");
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('describes heldReason in the tool description', () => {
+    expect(COST_FORECAST_TOOL.description).toContain('heldReason');
+  });
+
+  it('states the 10-minute hold in the tool description', () => {
+    expect(COST_FORECAST_TOOL.description).toContain('need 10 minutes of');
+  });
 
   it('omits resumeContext when no sessionResumeTracker is passed', () => {
     const tracker = new CostTracker();
