@@ -15,17 +15,16 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { createLogger } from '../shared/index.js';
 import { redactSensitive } from '../config.js';
+import { claudeProjectsDir } from '../lib/claude-config-dir.js';
 import { parseWorkflowScript, type DeclaredTopology } from '../hooks/workflow-script-parser.js';
 
 const logger = createLogger('workflow-store');
 
 const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-const PROJECTS_DIR_NAME = '.claude/projects';
 // Mirrors SubagentTimelineStore's MAX_AGENTS_PER_SESSION bound — without
 // this, GET /api/workflows?since=0 walks and returns every wf_*.json ever
 // written across all projects/sessions with no upper bound.
@@ -147,7 +146,7 @@ export class WorkflowStore {
   private readonly cache = new Map<string, CacheEntry>();
 
   constructor(options: WorkflowStoreOptions = {}) {
-    this.projectsDir = options.projectsDir ?? join(homedir(), PROJECTS_DIR_NAME);
+    this.projectsDir = options.projectsDir ?? claudeProjectsDir();
     this.windowHours = options.windowHours ?? 24 * 30; // 30 days for dashboard listing
     this.getCostForRun = options.getCostForRun;
     this.hasCostForRun = options.hasCostForRun;

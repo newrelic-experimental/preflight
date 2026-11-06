@@ -758,22 +758,14 @@ export function mergeSummaries(
 }
 
 /**
- * How two readable files for one session id relate. Files a session was split
- * into hold separate activity and share no timeline entry; two writers'
- * copies of one stretch share entries. A file with an empty timeline cannot
- * show that it is separate, and on real installs such a sibling repeats another
- * file's spend, so it counts as overlapping.
+ * Whether two files with timelines may hold the same activity. Files a session
+ * was split into hold separate activity and share no timeline entry; two
+ * writers' copies of one stretch share entries.
  */
-export type SiblingRelationship = 'disjoint' | 'overlapping';
-
-export function classifySiblings(
-  a: FullSessionSummary,
-  b: FullSessionSummary,
-): SiblingRelationship {
-  if (!a.timeline?.length || !b.timeline?.length) return 'overlapping';
-  if (mayHoldDroppedEntries(a, b) || mayHoldDroppedEntries(b, a)) return 'overlapping';
-  const keys = new Set(a.timeline.map(timelineKey));
-  return b.timeline.some((entry) => keys.has(timelineKey(entry))) ? 'overlapping' : 'disjoint';
+function mayShareActivity(a: FullSessionSummary, b: FullSessionSummary): boolean {
+  if (mayHoldDroppedEntries(a, b) || mayHoldDroppedEntries(b, a)) return true;
+  const keys = new Set((a.timeline ?? []).map(timelineKey));
+  return (b.timeline ?? []).some((entry) => keys.has(timelineKey(entry)));
 }
 
 /**
@@ -792,45 +784,65 @@ function mayHoldDroppedEntries(capped: FullSessionSummary, other: FullSessionSum
   );
 }
 
-/**
- * Combine two files for one session id: max-merge overlapping files, add
- * disjoint ones. The result's timeline contains each source's, so combining it
- * again with a source that a crashed heal failed to delete max-merges instead
- * of counting that source twice.
- */
-export function combineSiblingSummaries(
-  a: FullSessionSummary,
-  b: FullSessionSummary,
-): FullSessionSummary {
-  const [older, newer] = b.endTime > a.endTime ? [a, b] : [b, a];
-  const maxed = mergeSummaries(older, newer);
-  return classifySiblings(a, b) === 'disjoint' ? addSummaries(older, newer, maxed) : maxed;
+/** Files connected by shared activity, directly or through another file. */
+function groupBySharedActivity(files: readonly FullSessionSummary[]): FullSessionSummary[][] {
+  const ungrouped = new Set(files);
+  const groups: FullSessionSummary[][] = [];
+  for (const seed of files) {
+    if (!ungrouped.delete(seed)) continue;
+    const group = [seed];
+    for (const member of group) {
+      for (const other of ungrouped) {
+        if (mayShareActivity(member, other)) {
+          ungrouped.delete(other);
+          group.push(other);
+        }
+      }
+    }
+    groups.push(group);
+  }
+  return groups;
+}
+
+/** A total order, oldest writer first, so a combine cannot depend on the order files were listed. */
+function byWriteOrder(x: FullSessionSummary, y: FullSessionSummary): number {
+  const order = x.endTime - y.endTime || x.startTime - y.startTime;
+  if (order !== 0) return order;
+  const [textX, textY] = [JSON.stringify(x), JSON.stringify(y)];
+  return textX < textY ? -1 : textX > textY ? 1 : 0;
+}
+
+function maxMerge(files: readonly FullSessionSummary[]): FullSessionSummary {
+  return [...files].sort(byWriteOrder).reduce((acc, next) => mergeSummaries(acc, next));
 }
 
 /**
- * Files with a timeline are folded first, so a file without one is only ever
- * max-merged into the full result and never stands in for one of them.
+ * Combine every file for one session id, of which there must be at least one.
+ * Files that share activity are copies of one stretch, so they max-merge. The
+ * resulting groups hold separate activity, so they add. A file without a
+ * timeline cannot show that it is separate, and on real installs such a file
+ * repeats another file's spend, so it max-merges into the total. A combined file
+ * contains its sources' timelines, so meeting a source that a crashed save
+ * failed to set aside max-merges rather than counting that source twice.
  */
-function combineSessionFiles(summaries: readonly FullSessionSummary[]): FullSessionSummary {
-  const byStart = [...summaries].sort((x, y) => x.startTime - y.startTime);
-  return [
-    ...byStart.filter((s) => s.timeline?.length),
-    ...byStart.filter((s) => !s.timeline?.length),
-  ].reduce((acc, next) => combineSiblingSummaries(acc, next));
+export function combineSessionFiles(files: readonly FullSessionSummary[]): FullSessionSummary {
+  const separate = groupBySharedActivity(files.filter((f) => f.timeline?.length))
+    .map(maxMerge)
+    .sort(byWriteOrder);
+  const added = separate.length > 0 ? [separate.reduce((a, b) => addSummaries(a, b))] : [];
+  return maxMerge([...added, ...files.filter((f) => !f.timeline?.length)]);
 }
 
 /**
- * Sums two disjoint files. `maxed` supplies the fields that do not add: names
- * and labels, the timeline and file-list unions, the time span, and the
- * tool-selection score. Transcript message counts stay maxed because every
- * process reads the transcript from its first byte, so a later split file
- * already counts the earlier files' messages.
+ * Sums two files holding separate activity, `b` the newer writer.
+ * `mergeSummaries` supplies the fields that do not add: names and labels, the
+ * timeline and file-list unions, the time span, and the tool-selection score.
+ * Transcript message counts stay maxed because every process reads the
+ * transcript from its first byte, so a later split file already counts the
+ * earlier files' messages.
  */
-function addSummaries(
-  a: FullSessionSummary,
-  b: FullSessionSummary,
-  maxed: FullSessionSummary,
-): FullSessionSummary {
+function addSummaries(a: FullSessionSummary, b: FullSessionSummary): FullSessionSummary {
+  const maxed = mergeSummaries(a, b);
   const ledger = addLedgers(a.byteEstimates, b.byteEstimates);
   const exactA = exactTotalsOf(a);
   const exactB = exactTotalsOf(b);
