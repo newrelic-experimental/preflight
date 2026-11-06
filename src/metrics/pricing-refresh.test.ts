@@ -73,6 +73,37 @@ describe('parseLiteLlmPrices', () => {
     });
   });
 
+  it('keeps the 1-hour cache write rate and prices 1h writes at it', async () => {
+    const entry = {
+      ...OPUS,
+      cache_creation_input_token_cost: 3.75e-6,
+      cache_creation_input_token_cost_above_1hr: 6e-6,
+    };
+    expect(parseLiteLlmPrices({ 'claude-opus-8-5': entry })['claude-opus-8-5']).toMatchObject({
+      cacheCreationPerMTok: 3.75,
+      cacheCreation1hPerMTok: 6,
+    });
+
+    await startPricingRefresh({
+      enabled: true,
+      cachePath: join(tmpDir, 'pricing-cache.json'),
+      fetchImpl: fakeFetch({ 'claude-opus-8-5': entry }),
+    });
+    const usage = makeUsage({
+      cacheCreationTokens: 1_000_000,
+      cacheCreation1hTokens: 1_000_000,
+      totalTokens: 1_000_000,
+    });
+    expect(priceModelUsage('claude-opus-8-5', usage).breakdown.totalUsd).toBeCloseTo(6, 10);
+  });
+
+  it('skips an entry whose 1-hour cache write rate exceeds the cap', () => {
+    const result = parseLiteLlmPrices({
+      'claude-opus-8-5': { ...OPUS, cache_creation_input_token_cost_above_1hr: 1 },
+    });
+    expect(result).toEqual({});
+  });
+
   it('converts 3e-6 to exactly 3', () => {
     const result = parseLiteLlmPrices({
       m: { ...SONNET_5_5, input_cost_per_token: 3e-6 },

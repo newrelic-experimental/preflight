@@ -20,6 +20,8 @@ import { BilledTurnLedger } from './billed-turn-ledger.js';
 import { HookEventProcessor } from './event-processor.js';
 import { LocalStore } from '../storage/local-store.js';
 import type { HookEvent } from '../storage/types.js';
+import { CostTracker } from '../metrics/cost-tracker.js';
+import { tokenUsageFromTokenEvent } from '../metrics/token-usage.js';
 import { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 
 const STDERR_WRITE = process.stderr.write;
@@ -161,17 +163,23 @@ describe('ParentTranscriptWatcher', () => {
     new ParentTranscriptWatcher({ storagePath, projectsDir, parentSessionId: SESSION_ID }).poll();
 
     const attributor = new TurnCostAttributor();
+    const costTracker = new CostTracker();
     const costs: number[] = [];
+    const sessionCosts: number[] = [];
     const processor = new HookEventProcessor({
       store: new LocalStore(storagePath),
       onRecord: () => undefined,
       onTokenEvent: (event) => {
         costs.push(attributor.recordTokenEvent(event).attribution.estimatedCostUsd);
+        sessionCosts.push(
+          costTracker.recordTokenUsage(tokenUsageFromTokenEvent(event), event.model).totalUsd,
+        );
       },
     });
     processor.processEvents(readTokenEvents() as unknown as HookEvent[]);
 
     expect(costs).toEqual([20, 12.5]);
+    expect(sessionCosts).toEqual([20, 12.5]);
   });
 
   it('does not re-emit on a second poll with no new data', () => {

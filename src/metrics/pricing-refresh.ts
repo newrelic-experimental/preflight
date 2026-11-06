@@ -44,7 +44,8 @@ function perMTok(perToken: number): number {
  * Maps LiteLLM's price file to ModelPricing. Keeps the standard rates and the
  * above-200K input/output tier, which Anthropic bills for the whole request like
  * the vendored 'flat' tier mode. Batch, flex and priority rates do not apply to
- * interactive coding sessions; tiered cache rates have no ModelPricing field.
+ * interactive coding sessions; the cache rates are the 5-minute and 1-hour write
+ * rates and the read rate.
  * Never throws.
  */
 export function parseLiteLlmPrices(raw: unknown): Record<string, ModelPricing> {
@@ -71,6 +72,9 @@ export function parseLiteLlmPrices(raw: unknown): Record<string, ModelPricing> {
     const cacheCreationPerMTok = isNonNegative(e.cache_creation_input_token_cost)
       ? perMTok(e.cache_creation_input_token_cost)
       : undefined;
+    const cacheCreation1hPerMTok = isNonNegative(e.cache_creation_input_token_cost_above_1hr)
+      ? perMTok(e.cache_creation_input_token_cost_above_1hr)
+      : undefined;
     const hasTier =
       isNonNegative(e.input_cost_per_token_above_200k_tokens) &&
       isNonNegative(e.output_cost_per_token_above_200k_tokens);
@@ -85,6 +89,7 @@ export function parseLiteLlmPrices(raw: unknown): Record<string, ModelPricing> {
       outputPerMTok,
       cacheReadPerMTok,
       cacheCreationPerMTok,
+      cacheCreation1hPerMTok,
       tierInputPerMTok,
       tierOutputPerMTok,
     ];
@@ -95,6 +100,7 @@ export function parseLiteLlmPrices(raw: unknown): Record<string, ModelPricing> {
       outputPerMTok,
       ...(cacheReadPerMTok !== undefined && { cacheReadPerMTok }),
       ...(cacheCreationPerMTok !== undefined && { cacheCreationPerMTok }),
+      ...(cacheCreation1hPerMTok !== undefined && { cacheCreation1hPerMTok }),
       ...(hasTier && {
         tierThreshold: LONG_CONTEXT_THRESHOLD,
         tierInputPerMTok,

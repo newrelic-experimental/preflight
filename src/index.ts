@@ -105,6 +105,7 @@ import { TaskDetector } from './metrics/task-detector.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
+import { tokenUsageFromSubagentTurn, tokenUsageFromTokenEvent } from './metrics/token-usage.js';
 import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
 import { TurnTracker } from './metrics/turn-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
@@ -113,7 +114,7 @@ import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 import { createServer } from './server.js';
-import type { CostBreakdown, TokenUsage } from './shared/index.js';
+import type { CostBreakdown } from './shared/index.js';
 import { createLogger } from './shared/index.js';
 import { LocalStore } from './storage/index.js';
 import { computeHistoricalCosts } from './storage/historical-costs.js';
@@ -2384,17 +2385,7 @@ async function main(): Promise<void> {
         });
         const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
         if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
-        const usage = {
-          inputTokens: tokenEvent.inputTokens,
-          outputTokens: tokenEvent.outputTokens,
-          thinkingTokens: 0,
-          cacheReadTokens: tokenEvent.cacheReadTokens,
-          cacheCreationTokens: tokenEvent.cacheCreationTokens,
-          ...(tokenEvent.cacheCreation1hTokens !== undefined && {
-            cacheCreation1hTokens: tokenEvent.cacheCreation1hTokens,
-          }),
-          totalTokens: tokenEvent.inputTokens + tokenEvent.outputTokens,
-        };
+        const usage = tokenUsageFromTokenEvent(tokenEvent);
         let breakdown: CostBreakdown;
         if (!isOwnEvent) {
           breakdown = costTracker.priceUsage(usage, tokenEvent.model);
@@ -2497,25 +2488,7 @@ async function main(): Promise<void> {
         // the buffer.
         subagentAttribution.recordSubagentTurn(turn);
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
-        const usage: TokenUsage = {
-          inputTokens: turn.inputTokens,
-          outputTokens: turn.outputTokens,
-          // Subagent reasoning tokens (extended thinking) live under
-          // `output_tokens_details.reasoning_tokens`; map to `thinkingTokens`
-          // so the existing `thinkingPerMTok` rate column charges correctly.
-          thinkingTokens: turn.reasoningTokens,
-          cacheReadTokens: turn.cacheReadTokens,
-          cacheCreationTokens: turn.cacheCreationTokens,
-          ...(turn.cacheCreation1hTokens !== undefined && {
-            cacheCreation1hTokens: turn.cacheCreation1hTokens,
-          }),
-          totalTokens:
-            turn.inputTokens +
-            turn.outputTokens +
-            turn.reasoningTokens +
-            turn.cacheReadTokens +
-            turn.cacheCreationTokens,
-        };
+        const usage = tokenUsageFromSubagentTurn(turn);
         const breakdown = costTracker.recordTokenUsage(usage, turn.model, {
           timestampMs: turn.timestampMs,
           workflowRunId: turn.workflowRunId,
