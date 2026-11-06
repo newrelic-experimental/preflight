@@ -1483,6 +1483,13 @@ describe('stdio integration', () => {
       expect(savedCalls(storage, 'own-real-session') ?? 0).toBe(0);
     }, 30000);
 
+    const settleCalls = async (storage: string, id: string, want: number): Promise<unknown> => {
+      for (let i = 0; i < 12 && savedCalls(storage, id) !== want; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      return savedCalls(storage, id);
+    };
+
     const saveCalls = async (storage: string, id: string, count: number): Promise<void> => {
       const owner = await startOwner(storage, id);
       await drainCalls(storage, id, count);
@@ -1581,6 +1588,23 @@ describe('stdio integration', () => {
       await waitFor(() => savedField(storage, 'other-real-session', 'outcome') === 'completed');
 
       expect(atCheckpoint).toBe('in progress');
+    }, 30000);
+
+    it("keeps adding to a session's file across its later checkpoints", async () => {
+      const storage = makeStorage();
+      const owner = await startOwner(storage, 'other-real-session');
+      await drainCalls(storage, 'other-real-session', 3);
+      await stopOwner(storage, owner, 'other-real-session');
+      const client = await startEngine(storage, undefined, {
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+      });
+      await drainCalls(storage, 'other-real-session', 1);
+      await waitFor(() => savedCalls(storage, 'other-real-session') === 4);
+      await drainCalls(storage, 'other-real-session', 1);
+      const after = await settleCalls(storage, 'other-real-session', 5);
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(after).toBe(5);
     }, 30000);
 
     it('keeps a call with no session id across its first adoption', async () => {
