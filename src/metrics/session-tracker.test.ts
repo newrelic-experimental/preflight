@@ -564,12 +564,13 @@ describe('SessionTracker', () => {
   });
 
   describe('records of other sessions', () => {
-    it('counts the session it adopts, and no other session while pending', () => {
+    it('shows every call it drained while pending, then counts only the session it adopts', () => {
       const tracker = new SessionTracker('pending-1700000000000');
       const own = makeRecord({ sessionId: 'sess-own', toolName: 'Read' });
       tracker.recordToolCall(own);
       tracker.recordToolCall(makeRecord({ sessionId: 'sess-other', toolName: 'Bash' }));
-      expect(tracker.getMetrics().toolCallCount).toBe(0);
+      expect(tracker.getMetrics().sessionId).toBe('pending-1700000000000');
+      expect(tracker.getMetrics().toolCallCountByTool).toEqual({ Read: 1, Bash: 1 });
 
       tracker.adoptSessionId('sess-own', [own]);
 
@@ -582,7 +583,16 @@ describe('SessionTracker', () => {
     it('counts a record with no session id while pending', () => {
       const tracker = new SessionTracker('pending-1700000000000');
       tracker.recordToolCall(makeRecord({ sessionId: undefined }));
+      tracker.adoptSessionId('sess-own');
       expect(tracker.getMetrics().toolCallCount).toBe(1);
+    });
+
+    it('shows the amended outcome of a call it drained while pending', () => {
+      const tracker = new SessionTracker('pending-1700000000000', 10);
+      const call = makeRecord({ id: 'c1', sessionId: 'sess-other', durationMs: null });
+      tracker.recordToolCall({ ...call, success: false, errorType: 'timeout' });
+      tracker.amendToolCall({ ...call, durationMs: 50, success: true });
+      expect(tracker.getMetrics().toolErrorCount).toBe(0);
     });
 
     it("drops the guessed session's calls when its id is corrected", () => {

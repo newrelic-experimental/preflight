@@ -1426,6 +1426,74 @@ describe('stdio integration', () => {
       expect(savedCalls(storage, 'own-real-session') ?? 0).toBe(0);
     }, 30000);
 
+    const saveCalls = async (storage: string, id: string, count: number): Promise<void> => {
+      const owner = await startOwner(storage, id);
+      await drainCalls(storage, id, count);
+      await stopOwner(storage, owner, id);
+      expect(savedCalls(storage, id)).toBe(count);
+    };
+
+    it("adds the calls it drained for a session with a file to that file's count", async () => {
+      const storage = makeStorage();
+      await saveCalls(storage, 'other-real-session', 3);
+      const client = await startEngine(storage);
+      await drainCalls(storage, 'other-real-session', 2);
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedCalls(storage, 'other-real-session')).toBe(5);
+    }, 30000);
+
+    it("counts another session's call in flight once when that session has a file", async () => {
+      const storage = makeStorage();
+      await saveCalls(storage, 'other-real-session', 3);
+      const breadcrumb = resolve(storage, 'session-by-ppid', `${process.pid}.txt`);
+      const adopted = await startEngine(storage);
+      writeHook(storage, 'other-real-session', 'pre', 'toolu_x');
+      await waitFor(drained(storage, 'other-real-session'));
+      writeFileSync(breadcrumb, 'own-real-session');
+      await waitFor(() => existsSync(resolve(storage, 'active-own-real-session.pid')));
+      rmSync(breadcrumb);
+      expect(savedCalls(storage, 'other-real-session')).toBe(3);
+      const drainer = await startEngine(storage);
+      writeHook(storage, 'other-real-session', 'post', 'toolu_x');
+      await waitFor(drained(storage, 'other-real-session'));
+      await adoptAndStop(storage, drainer, 'other-real-session');
+      await stopOwner(storage, adopted, 'own-real-session');
+
+      expect(savedCalls(storage, 'other-real-session')).toBe(4);
+    }, 30000);
+
+    it('adds no call that another process marked counted after this one drained its post', async () => {
+      const storage = makeStorage();
+      await saveCalls(storage, 'other-real-session', 1);
+      const client = await startEngine(storage);
+      writeHook(storage, 'other-real-session', 'post', 'toolu_x');
+      await waitFor(drained(storage, 'other-real-session'));
+      mkdirSync(resolve(storage, 'counted'), { recursive: true });
+      writeFileSync(
+        resolve(storage, 'counted', 'other-real-session.1.json'),
+        JSON.stringify(['toolu_x']),
+      );
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedCalls(storage, 'other-real-session')).toBe(1);
+    }, 30000);
+
+    it('counts a guess once when a correction saves what its own checkpoint already saved', async () => {
+      const storage = makeStorage();
+      const cwd = makeCwd();
+      guessFromCwd(storage, cwd);
+      const client = await startEngine(storage, cwd, {
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+        NR_AI_PENDING_CONFIRMATION_CAP_MS: '200',
+      });
+      await drainCalls(storage, 'guessed-session', 2);
+      await waitFor(() => savedCalls(storage, 'guessed-session') === 2);
+      await adoptAndStop(storage, client, 'corrected-session');
+
+      expect(savedCalls(storage, 'guessed-session')).toBe(2);
+    }, 30000);
+
     it('counts its own call drained while pending once it adopts its session', async () => {
       const storage = makeStorage();
       const client = await startEngine(storage);
@@ -1473,7 +1541,7 @@ describe('stdio integration', () => {
       const cwd = makeCwd();
       const client = await startEngine(storage, cwd, { NR_AI_SESSION_PERSIST_INTERVAL_MS: '200' });
       await drainCalls(storage, 'real-session', 2);
-      await waitFor(() => savedCalls(storage, 'real-session') === 2);
+      await waitFor(() => savedCalls(storage, 'real-session') === 3);
       guessFromCwd(storage, cwd);
       await waitFor(() => existsSync(resolve(storage, 'active-guessed-session.pid')));
       await adoptAndStop(storage, client, 'real-session');
