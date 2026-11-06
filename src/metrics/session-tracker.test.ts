@@ -623,6 +623,25 @@ describe('SessionTracker', () => {
       expect(metrics.sessionIntent).toBe('fix the bug');
     });
 
+    it('replays every record of the session it adopts', () => {
+      const tracker = new SessionTracker('pending-1700000000000');
+      const first = makeRecord({ sessionId: 'sess-own', toolName: 'Read' });
+      const second = makeRecord({ sessionId: 'sess-own', toolName: 'Bash' });
+
+      tracker.adoptSessionId('sess-own', [first, second]);
+
+      expect(tracker.getMetrics().toolCallCountByTool).toEqual({ Read: 1, Bash: 1 });
+    });
+
+    it('stops showing what it drained while pending once it is reset to a real id', () => {
+      const tracker = new SessionTracker('pending-1700000000000');
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-other' }));
+
+      tracker.reset('sess-real');
+
+      expect(tracker.getMetrics().toolCallCount).toBe(0);
+    });
+
     it('counts a record of another session under a real id', () => {
       const tracker = new SessionTracker('sess-own');
       tracker.recordToolCall(makeRecord({ sessionId: 'sess-other' }));
