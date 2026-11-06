@@ -25,6 +25,7 @@ import { spawnSync } from 'node:child_process';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
+import { isAwaitingLatePost } from './session-tracker.js';
 import { hasRecordedUsage, type FullSessionSummary } from '../storage/session-store.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
 import { addCallUsage } from './call-usage.js';
@@ -385,6 +386,13 @@ export class LocalSessionAggregator {
 
   recordsOf(sessionId: string): readonly ToolCallRecord[] {
     return this.sessions.get(sessionId)?.records ?? [];
+  }
+
+  /** Timeouts, whose post may land in another process, and calls another process marked counted. */
+  callsOtherProcessesMayCount(sessionId: string, countedIds: ReadonlySet<string>): number {
+    return this.recordsOf(sessionId).filter(
+      (r) => isAwaitingLatePost(r) || (r.toolUseId !== undefined && countedIds.has(r.toolUseId)),
+    ).length;
   }
 
   amendToolCall(record: ToolCallRecord): void {

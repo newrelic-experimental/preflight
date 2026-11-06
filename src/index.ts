@@ -1424,8 +1424,13 @@ async function main(): Promise<void> {
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
     const firstSaveBaselines = new FirstSaveBaselines();
+    // A session's calls in its file before this process first wrote it, none of them this process's.
+    const callsBeforeFirstWrite = new Map<string, number>();
     const saveSessionRememberingBaseline = (summary: FullSessionSummary): boolean => {
       const saved = sessionStore!.saveSession(summary);
+      if (saved && !callsBeforeFirstWrite.has(summary.sessionId)) {
+        callsBeforeFirstWrite.set(summary.sessionId, saved.previous?.toolCallCount ?? 0);
+      }
       // Only a --stdio engine ever adopts a real session id and seeds it.
       if (saved && options.stdio && !rehydratedTrackerSessionIds.has(summary.sessionId)) {
         firstSaveBaselines.recordSave({
@@ -2655,7 +2660,29 @@ async function main(): Promise<void> {
       for (const rollup of rollups) {
         const sessionId = String(rollup.sessionId);
         try {
-          if (saveSessionRememberingBaseline(rollup as unknown as FullSessionSummary)) {
+          const prior =
+            callsBeforeFirstWrite.get(sessionId) ??
+            sessionStore.loadSession(sessionId)?.toolCallCount ??
+            0;
+          // A file with calls adds this rollup to them, since a max-merge would drop it. It leaves
+          // out a call another process may count, and marks no ids, so that process still can.
+          const summary =
+            prior === 0
+              ? rollup
+              : {
+                  ...rollup,
+                  toolCallCount:
+                    prior +
+                    Number(rollup.toolCallCount) -
+                    localSessionAggregator.callsOtherProcessesMayCount(
+                      sessionId,
+                      localStoreForShutdown?.countedToolUseIds(sessionId) ?? new Set<string>(),
+                    ),
+                };
+          if (
+            saveSessionRememberingBaseline(summary as unknown as FullSessionSummary) &&
+            prior === 0
+          ) {
             savedSessionIds.push(sessionId);
           }
         } catch (err) {
