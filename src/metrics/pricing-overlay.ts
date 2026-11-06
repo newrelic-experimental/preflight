@@ -112,10 +112,11 @@ function computeResolution(model: string): PricingResolution {
     }
   }
 
-  const estimatedFrom = estimateFromFamily(id, [
-    ...Object.keys(DEFAULT_PRICING_TABLE),
-    ...extraPricingIds,
-  ]);
+  const estimatedFrom = estimateFromFamily(
+    id,
+    [...Object.keys(DEFAULT_PRICING_TABLE), ...extraPricingIds],
+    resolveModelPricing,
+  );
   const estimatedPricing = estimatedFrom === null ? null : resolveModelPricing(estimatedFrom);
   if (estimatedFrom === null || estimatedPricing === null) return { kind: 'unpriced' };
   logger.info('Pricing estimated from model family', { model, estimatedFrom });
