@@ -8,8 +8,7 @@ import {
   type AlertEvent,
   type AntiPatternEvent,
 } from '../store/liveStore';
-import { Kpi } from '../components/Kpi';
-import { DailyBudgetMeter } from '../components/DailyBudgetMeter';
+import { Kpi, type KpiTone } from '../components/Kpi';
 import { AnimatedCard } from '../components/AnimatedCard';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
 import { EmptyState } from '../components/EmptyState';
@@ -33,6 +32,9 @@ import { AttentionList, type AttentionRow } from '../components/AttentionList';
 import { Card, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
 import {
   fetchRecentAlerts,
+  fetchBudget,
+  type BudgetPeriod,
+  type BudgetStatus,
   fetchCacheHealth,
   fetchCost,
   fetchCostPerTool,
@@ -229,6 +231,16 @@ interface ToolSelectionMetrics {
 
 const QUALITY_REFETCH_MS = 10_000;
 
+// Thresholds match the ones BudgetTracker fires on. Kpi has no info tone, so
+// 50 to 79 percent uses `good`, the green the Alerts bar shows below 80.
+function budgetKpiTone(period: BudgetPeriod): KpiTone {
+  const pct = period.pctUsed ?? 0;
+  if (period.exceeded || pct >= 100) return 'bad';
+  if (pct >= 80) return 'warn';
+  if (pct >= 50) return 'good';
+  return 'neutral';
+}
+
 export function Today(): JSX.Element {
   const cost = useLiveStore((s) => s.cost);
   const antiPatterns = useLiveStore((s) => s.antiPatterns);
@@ -244,6 +256,14 @@ export function Today(): JSX.Element {
     queryFn: ({ signal }) => fetchCost(signal),
     refetchInterval: 10_000,
   });
+  const { data: budget } = useQuery<BudgetStatus>({
+    queryKey: qk.budget,
+    queryFn: ({ signal }) => fetchBudget(signal),
+    refetchInterval: 10_000,
+  });
+  const dailyBudget: BudgetPeriod | null = budget?.daily ?? null;
+  const dailyBudgetCap = dailyBudget?.budgetUsd ?? null;
+  const dailyBudgetTone = dailyBudget ? budgetKpiTone(dailyBudget) : 'neutral';
   const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
     queryFn: ({ signal }) => fetchTodayAggregate(signal),
@@ -460,7 +480,9 @@ export function Today(): JSX.Element {
         <>
           <AnimatedCard index={0} className="mb-4">
             <Card padding="lg" tone="elevated" glow="green">
-              <div className="grid grid-cols-5 gap-4">
+              <div
+                className={`grid ${dailyBudgetCap !== null ? 'grid-cols-6' : 'grid-cols-5'} gap-4`}
+              >
                 <Kpi
                   label="efficiency"
                   hero
@@ -511,9 +533,16 @@ export function Today(): JSX.Element {
                   value={flagsLoading ? '…' : String(flagsCount)}
                   {...(flagsLoading ? {} : { animate: true, numericValue: flagsCount })}
                 />
+                {dailyBudget && dailyBudgetCap !== null && (
+                  <Kpi
+                    label="daily budget"
+                    tone={dailyBudgetTone}
+                    value={formatUsd(dailyBudget.spentUsd)}
+                    sub={`of ${formatUsd(dailyBudgetCap)}${dailyBudget.pctUsed !== null ? ` · ${dailyBudget.pctUsed.toFixed(0)}% used` : ''}${dailyBudget.exceeded ? ' · over budget' : ''}`}
+                  />
+                )}
               </div>
             </Card>
-            <DailyBudgetMeter />
             {watcherOff && (
               <div className="mt-2 text-[10px] text-ink-muted">
                 Subagent cost tracking is disabled (

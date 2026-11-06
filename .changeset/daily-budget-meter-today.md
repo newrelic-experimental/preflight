@@ -2,4 +2,4 @@
 '@newrelic/preflight': minor
 ---
 
-**The daily budget was visible only on the Alerts view.** The Today dashboard now shows a daily budget meter under its KPI strip, with spend against the cap, the percent used, and an "exceeded" flag once the cap is passed. The meter uses Preflight's local spend estimate. When no daily cap is set, it shows today's spend and a link to Settings.
+**Today shows the daily budget next to the other spend KPIs.** When a daily budget is set, the Today KPI strip adds a daily budget tile with the day's estimated spend, the cap, and the percent used. The tile changes color at 50, 80, and 100 percent of the cap, and it says "over budget" once the cap is passed. With no daily budget set, the strip is unchanged.
