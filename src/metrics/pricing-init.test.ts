@@ -5,14 +5,16 @@ jest.mock('./pricing-overlay.js', () => ({
 }));
 jest.mock('./pricing-refresh.js', () => ({
   startPricingRefresh: jest.fn(async () => undefined),
+  schedulePricingRecheck: jest.fn(),
 }));
 
 import { initModelPricing } from './pricing-init.js';
 import { applyPricingOverlay } from './pricing-overlay.js';
-import { startPricingRefresh } from './pricing-refresh.js';
+import { schedulePricingRecheck, startPricingRefresh } from './pricing-refresh.js';
 
 const mockedApply = applyPricingOverlay as jest.MockedFunction<typeof applyPricingOverlay>;
 const mockedRefresh = startPricingRefresh as jest.MockedFunction<typeof startPricingRefresh>;
+const mockedRecheck = schedulePricingRecheck as jest.MockedFunction<typeof schedulePricingRecheck>;
 
 const makeConfig = (
   overrides: Partial<Parameters<typeof initModelPricing>[0]> = {},
@@ -35,11 +37,16 @@ describe('initModelPricing', () => {
       enabled: true,
       cachePath: '/test-home/.newrelic-preflight/pricing-cache.json',
     });
+    expect(mockedRecheck).toHaveBeenCalledWith({
+      enabled: true,
+      cachePath: '/test-home/.newrelic-preflight/pricing-cache.json',
+    });
   });
 
   it('applies the pricing file but skips the refresh when refresh is false', () => {
     initModelPricing(makeConfig({ customPricingFile: null }), { refresh: false });
     expect(mockedApply).toHaveBeenCalledWith(null);
     expect(mockedRefresh).not.toHaveBeenCalled();
+    expect(mockedRecheck).not.toHaveBeenCalled();
   });
 });
