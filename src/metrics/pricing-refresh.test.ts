@@ -389,14 +389,20 @@ describe('schedulePricingRecheck', () => {
       cachePath,
       fetchImpl: jest
         .fn<typeof fetch>()
-        .mockResolvedValueOnce(jsonResponse({ 'claude-opus-8-5': OPUS }))
-        .mockResolvedValue(jsonResponse({ 'claude-opus-8-5': OPUS, 'acme-chat-1': SONNET_5_5 })),
+        .mockImplementationOnce(async () => jsonResponse({ 'claude-opus-8-5': OPUS }))
+        .mockImplementation(async () =>
+          jsonResponse({ 'claude-opus-8-5': OPUS, 'acme-chat-1': SONNET_5_5 }),
+        ),
     };
     await startPricingRefresh(opts);
+    // The file's real mtime can sit a few ms behind the fake clock, which would age the
+    // cache past a day one tick early and fetch twice.
+    const startedAt = new Date(Date.now());
+    utimesSync(cachePath, startedAt, startedAt);
     schedulePricingRecheck(opts);
     expect(resolvePricingDetail('acme-chat-1').kind).toBe('unpriced');
 
-    await jest.advanceTimersByTimeAsync(25 * 60 * 60 * 1000);
+    await jest.advanceTimersByTimeAsync(DAY_MS);
 
     expect(resolvePricingDetail('acme-chat-1')).toMatchObject({
       kind: 'priced',
