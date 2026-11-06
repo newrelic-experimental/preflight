@@ -1429,7 +1429,7 @@ function SessionTraceSection({
         {peakLabel !== null && (
           <span
             className="text-xs text-ink-muted"
-            title="Counts each subagent from its first to its last model turn, so the count is approximate"
+            title="Counts each subagent from its first to its last model turn, so this can read slightly low"
           >
             {peakLabel}
           </span>

@@ -1463,6 +1463,6 @@ describe('Sessions view — subagent peak label', () => {
     await openSession();
     await waitFor(() => expect(screen.queryByText('Loading subagents')).toBeNull());
     expect(screen.queryByText(/Peak/)).toBeNull();
-    expect(screen.queryByTitle(/first to its last model turn/)).toBeNull();
+    expect(screen.getByText('Session trace').parentElement?.children).toHaveLength(1);
   });
 });
