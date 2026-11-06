@@ -215,6 +215,7 @@ describe('SessionStore saves under filesystem faults', () => {
 
     expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([41]);
     expect(store.loadSession(id)?.toolCallCount).toBe(41);
+    expect(warnings('cannot be found')).toHaveLength(0);
   });
 
   it('keeps a split file another process rewrote after the save read it, and combines it next', () => {
@@ -311,6 +312,10 @@ describe('SessionStore saves under filesystem faults', () => {
       seedSplitFiles();
       const since = new Date(dayTwo);
       realFs.writeFileSync(
+        join(tmpDir, 'sessions', '2026-03-03_another-session.json'),
+        JSON.stringify({ ...summary(1), sessionId: 'another-session', startTime: dayTwo }),
+      );
+      realFs.writeFileSync(
         join(tmpDir, 'sessions', `2026-03-03_${id}.json`),
         split(dayTwo + 86_400_000, 5, [dayTwo + 86_400_000]),
       );
@@ -321,11 +326,23 @@ describe('SessionStore saves under filesystem faults', () => {
         }
         return (realFs.readFileSync as (...a: unknown[]) => unknown)(...args);
       });
-      expect(
-        store()
-          .loadAllSessions({ since })
-          .map((s) => s.toolCallCount),
-      ).toEqual([5]);
+      const loaded = store().loadAllSessions({ since });
+      expect(loaded.map((s) => [s.sessionId, s.toolCallCount])).toEqual([
+        ['another-session', 1],
+        [id, 5],
+      ]);
+    });
+
+    it('a save still succeeds when it cannot set a superseded file aside', () => {
+      seedSplitFiles();
+      renameSync.mockImplementation((from, to) => {
+        if (String(to).endsWith('.merged')) heldByAnotherProcess();
+        realFs.renameSync(from, to);
+      });
+      const saved = store().saveSession(summary(31));
+      expect(saved?.previous?.toolCallCount).toBe(30);
+      expect(warnings('Failed to set aside')).not.toHaveLength(0);
+      expect(sessionFiles()).toEqual([basename(target), basename(siblingPath())]);
     });
 
     it('skips a listed file that can never be read, and the save still lands', () => {
