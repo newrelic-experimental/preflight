@@ -9,7 +9,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { basename, resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   SessionStore,
@@ -4281,6 +4281,14 @@ describe('SessionStore split and corrupt session files', () => {
     }));
   }
 
+  function withActivity(
+    startTime: number,
+    toolCallCount: number,
+    timeline = activity(startTime, toolCallCount),
+  ): FullSessionSummary {
+    return makeSummary({ sessionId: id, startTime, toolCallCount, timeline });
+  }
+
   it.each([
     ['older', '2026-03-01', day1, '2026-03-02', day2],
     ['newer', '2026-03-02', day2, '2026-03-01', day1],
@@ -4288,31 +4296,14 @@ describe('SessionStore split and corrupt session files', () => {
     'adds a recovered %s split file to a sibling holding separate activity',
     (_, recoveredDate, recoveredStart, readableDate, readableStart) => {
       const store = new SessionStore({ storagePath: tmpDir });
-      const recovered = writeSessionFile(
-        recoveredDate,
-        makeSummary({
-          sessionId: id,
-          startTime: recoveredStart,
-          toolCallCount: 7,
-          timeline: activity(recoveredStart, 7),
-        }),
-        tail,
-      );
+      const recovered = writeSessionFile(recoveredDate, withActivity(recoveredStart, 7), tail);
       const recoveredBytes = readFileSync(recovered, 'utf-8');
-      writeSessionFile(
-        readableDate,
-        makeSummary({
-          sessionId: id,
-          startTime: readableStart,
-          toolCallCount: 4,
-          timeline: activity(readableStart, 4),
-        }),
-      );
+      writeSessionFile(readableDate, withActivity(readableStart, 4));
 
       expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([11]);
       expect(store.loadSession(id)?.toolCallCount).toBe(11);
 
-      store.saveSession(makeSummary({ sessionId: id, startTime: day1, toolCallCount: 12 }));
+      store.saveSession(withActivity(day1, 12, []));
 
       expect(filesEndingIn('.json')).toEqual([`2026-03-01_${id}.json`]);
       expect(totalToolCalls(store)).toBe(12);
@@ -4329,25 +4320,8 @@ describe('SessionStore split and corrupt session files', () => {
     ['has no timeline next to', []],
   ])('does not add a recovered file that %s its sibling', (_, recoveredTimeline) => {
     const store = new SessionStore({ storagePath: tmpDir });
-    writeSessionFile(
-      '2026-03-01',
-      makeSummary({
-        sessionId: id,
-        startTime: day1,
-        toolCallCount: 40,
-        timeline: recoveredTimeline,
-      }),
-      tail,
-    );
-    writeSessionFile(
-      '2026-03-02',
-      makeSummary({
-        sessionId: id,
-        startTime: day2,
-        toolCallCount: 41,
-        timeline: activity(day1, 41),
-      }),
-    );
+    writeSessionFile('2026-03-01', withActivity(day1, 40, recoveredTimeline), tail);
+    writeSessionFile('2026-03-02', withActivity(day2, 41, activity(day1, 41)));
 
     expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([41]);
     expect(store.loadSession(id)?.toolCallCount).toBe(41);
@@ -4355,33 +4329,13 @@ describe('SessionStore split and corrupt session files', () => {
 
   it('combines two recovered files for one id', () => {
     const store = new SessionStore({ storagePath: tmpDir });
-    writeSessionFile(
-      '2026-03-01',
-      makeSummary({
-        sessionId: id,
-        startTime: day1,
-        toolCallCount: 7,
-        timeline: activity(day1, 7),
-      }),
-      tail,
-    );
-    writeSessionFile(
-      '2026-03-02',
-      makeSummary({
-        sessionId: id,
-        startTime: day2,
-        toolCallCount: 4,
-        timeline: activity(day2, 4),
-      }),
-      tail,
-    );
+    writeSessionFile('2026-03-01', withActivity(day1, 7), tail);
+    writeSessionFile('2026-03-02', withActivity(day2, 4), tail);
 
     expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([11]);
     expect(store.loadSession(id)?.toolCallCount).toBe(11);
 
-    const saved = store.saveSession(
-      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 12 }),
-    );
+    const saved = store.saveSession(withActivity(day1, 12, []));
 
     expect(saved?.previous?.toolCallCount).toBe(11);
     expect(filesEndingIn('.json')).toEqual([`2026-03-01_${id}.json`]);
@@ -4392,37 +4346,15 @@ describe('SessionStore split and corrupt session files', () => {
 
   it('does not double count once a sibling that was truncated at a save reads whole again', () => {
     const store = new SessionStore({ storagePath: tmpDir });
-    const whole = makeSummary({
-      sessionId: id,
-      startTime: day2,
-      toolCallCount: 40,
-      timeline: activity(day1, 40),
-    });
-    writeSessionFile(
-      '2026-03-01',
-      makeSummary({
-        sessionId: id,
-        startTime: day1,
-        toolCallCount: 40,
-        timeline: activity(day1, 40),
-      }),
-      tail,
-    );
+    const whole = JSON.stringify(withActivity(day2, 40, activity(day1, 40)));
+    writeSessionFile('2026-03-01', withActivity(day1, 40), tail);
     const sibling = join(sessionsDir(), `2026-03-02_${id}.json`);
-    writeFileSync(sibling, JSON.stringify(whole).slice(0, 40));
+    writeFileSync(sibling, whole.slice(0, 40));
 
-    store.saveSession(
-      makeSummary({
-        sessionId: id,
-        startTime: day1,
-        toolCallCount: 41,
-        timeline: activity(day1, 41),
-      }),
-    );
-    writeFileSync(sibling, JSON.stringify(whole));
+    store.saveSession(withActivity(day1, 41));
+    writeFileSync(sibling, whole);
 
     expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([41]);
-    expect(store.loadSession(id)?.toolCallCount).toBe(41);
   });
 
   it('skips a corrupt file and finds the good one', () => {
@@ -4436,17 +4368,23 @@ describe('SessionStore split and corrupt session files', () => {
     expect(store.loadSession(id)?.toolCallCount).toBe(4);
   });
 
-  it('never moves or rewrites a file it cannot parse while only reading', () => {
+  it('never moves or rewrites a file while only reading, split or unparsed', () => {
     const store = new SessionStore({ storagePath: tmpDir });
-    const path = join(sessionsDir(), `2026-03-01_${id}.json`);
-    writeFileSync(path, '{ "sessionId": ');
+    const unreadable = join(sessionsDir(), `2026-02-28_${id}.json`);
+    writeFileSync(unreadable, '{ "sessionId": ');
+    const paths = [
+      unreadable,
+      writeSessionFile('2026-03-01', withActivity(day1, 3), tail),
+      writeSessionFile('2026-03-02', withActivity(day2, 8)),
+    ];
+    const before = paths.map((path) => readFileSync(path, 'utf-8'));
 
     store.loadSession(id);
     store.loadAllSessions();
     store.listSessions({ developer: 'alice' });
 
-    expect(readdirSync(sessionsDir())).toEqual([`2026-03-01_${id}.json`]);
-    expect(readFileSync(path, 'utf-8')).toBe('{ "sessionId": ');
+    expect(readdirSync(sessionsDir()).sort()).toEqual(paths.map((path) => basename(path)));
+    expect(paths.map((path) => readFileSync(path, 'utf-8'))).toEqual(before);
   });
 
   it('merges a save past an unreadable sibling into the readable file and leaves the sibling as it was', () => {
@@ -4518,15 +4456,8 @@ describe('SessionStore split and corrupt session files', () => {
 
   it('lists every parsing file for a developer, recovered ones too, as one record in loadAllSessions', () => {
     const store = new SessionStore({ storagePath: tmpDir });
-    writeSessionFile(
-      '2026-03-01',
-      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 7 }),
-      tail,
-    );
-    writeSessionFile(
-      '2026-03-02',
-      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 4 }),
-    );
+    writeSessionFile('2026-03-01', withActivity(day1, 7), tail);
+    writeSessionFile('2026-03-02', withActivity(day2, 4));
 
     expect(store.listSessions({ developer: 'alice' }).map((f) => f.filename)).toEqual([
       `2026-03-01_${id}.json`,
@@ -4593,30 +4524,6 @@ describe('SessionStore split and corrupt session files', () => {
 
     expect(store.loadSession(id)?.toolCallCount).toBe(5);
     expect(filesEndingIn('.corrupt')).toHaveLength(2);
-  });
-
-  it('never renames or rewrites split files while only reading', () => {
-    const store = new SessionStore({ storagePath: tmpDir });
-    const recovered = writeSessionFile(
-      '2026-03-01',
-      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 3 }),
-      tail,
-    );
-    const clean = writeSessionFile(
-      '2026-03-02',
-      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 8 }),
-    );
-    const before = [readFileSync(recovered, 'utf-8'), readFileSync(clean, 'utf-8')];
-
-    store.loadSession(id);
-    store.loadAllSessions();
-    store.listSessions({ developer: 'alice' });
-
-    expect(readdirSync(sessionsDir()).sort()).toEqual([
-      `2026-03-01_${id}.json`,
-      `2026-03-02_${id}.json`,
-    ]);
-    expect([readFileSync(recovered, 'utf-8'), readFileSync(clean, 'utf-8')]).toEqual(before);
   });
 });
 
