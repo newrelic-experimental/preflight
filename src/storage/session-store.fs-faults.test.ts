@@ -93,6 +93,7 @@ describe('SessionStore saves under filesystem faults', () => {
     const restore = onPlatform('win32');
     const store = new SessionStore({ storagePath: tmpDir });
     store.saveSession(summary(3));
+    renameSync.mockClear();
     renameSync
       .mockImplementationOnce(heldByAnotherProcess)
       .mockImplementationOnce(heldByAnotherProcess);
@@ -100,6 +101,7 @@ describe('SessionStore saves under filesystem faults', () => {
     store.saveSession(summary(8));
     restore();
 
+    expect(renameSync).toHaveBeenCalledTimes(3);
     expect(savedToolCalls()).toBe(8);
     expect(sessionFiles()).toEqual([basename(target)]);
     expect(warnings('directly')).toHaveLength(0);

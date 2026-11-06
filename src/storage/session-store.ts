@@ -886,9 +886,9 @@ export class SessionStore {
    *
    * An unreadable file is skipped rather than ending the search: returning null
    * there made saveSession() treat the session as new and start a fresh file
-   * on every later save (#997). Sibling files for one id are not merged here,
+   * on every later save. Sibling files for one id are not merged here,
    * because files split that way hold disjoint activity that mergeSummaries'
-   * per-counter max would drop (#908).
+   * per-counter max would drop.
    */
   private loadSessionWithPath(sessionId: string): {
     readonly existing: { readonly summary: FullSessionSummary; readonly filepath: string } | null;
@@ -915,7 +915,10 @@ export class SessionStore {
     }
 
     for (const { filepath, parsed } of filesRead) {
-      const summary = usableSummary(parsed, names.length);
+      const summary = usableSummary(
+        parsed,
+        () => filesRead.filter((f) => f.parsed.kind !== 'unreadable').length,
+      );
       if (summary) return { existing: { summary, filepath }, filesRead };
     }
     return { existing: null, filesRead };
@@ -928,11 +931,10 @@ export class SessionStore {
     const results: SessionFileInfo[] = [];
 
     const names = readdirSync(this.sessionsDir);
-    const filesPerId = new Map<string, number>();
-    for (const name of names) {
-      const sessionId = parseSessionFilename(name)?.sessionId;
-      if (sessionId !== undefined) filesPerId.set(sessionId, (filesPerId.get(sessionId) ?? 0) + 1);
-    }
+    const parsingFilesForId = parsingFileCounter(
+      this.sessionsDir,
+      names.flatMap((name) => parseSessionFilename(name) ?? []),
+    );
 
     for (const file of names) {
       if (!file.endsWith('.json')) continue;
@@ -947,7 +949,7 @@ export class SessionStore {
           const filepath = join(this.sessionsDir, file);
           const summary = usableSummary(
             parseSessionFile(readFileSync(filepath, 'utf-8'), filepath),
-            filesPerId.get(parsed.sessionId) ?? 0,
+            () => parsingFilesForId(parsed.sessionId),
           );
           if (!summary || summary.developer !== options.developer) continue;
         } catch {
@@ -973,10 +975,7 @@ export class SessionStore {
     const sessionFiles = readdirSync(this.sessionsDir).flatMap(
       (file) => parseSessionFilename(file) ?? [],
     );
-    const filesPerId = new Map<string, number>();
-    for (const { sessionId } of sessionFiles) {
-      filesPerId.set(sessionId, (filesPerId.get(sessionId) ?? 0) + 1);
-    }
+    const parsingFilesForId = parsingFileCounter(this.sessionsDir, sessionFiles);
 
     for (const parsed of sessionFiles) {
       const file = parsed.filename;
@@ -993,7 +992,7 @@ export class SessionStore {
         const filepath = join(this.sessionsDir, file);
         const session = usableSummary(
           parseSessionFile(readFileSync(filepath, 'utf-8'), filepath),
-          filesPerId.get(parsed.sessionId) ?? 0,
+          () => parsingFilesForId(parsed.sessionId),
         );
         if (!session) continue;
 
@@ -1952,14 +1951,46 @@ function parseSessionFile(raw: string, filepath: string): ParsedSessionFile {
 }
 
 /**
- * A recovered document is used only when its file is the id's only file.
- * Beside a sibling it may repeat activity the sibling already holds, so
- * adding the two could double count. It stays unread there, as it was before
- * recovery existed, until #908 combines a session's split files.
+ * A recovered document is used only when its file is the only one of its id
+ * that parses. Beside a parsing sibling it may repeat activity the sibling
+ * already holds, so adding the two could double count. It stays unread there,
+ * as it was before recovery existed, until a session's split files are
+ * combined. An unreadable sibling holds nothing to double count, so it does
+ * not hide the recovered file. The count includes the file itself and is only
+ * asked for when the file is recovered.
  */
-function usableSummary(parsed: ParsedSessionFile, filesForId: number): FullSessionSummary | null {
+function usableSummary(
+  parsed: ParsedSessionFile,
+  parsingFilesForId: () => number,
+): FullSessionSummary | null {
   if (parsed.kind === 'unreadable') return null;
-  return parsed.kind === 'clean' || filesForId === 1 ? parsed.summary : null;
+  return parsed.kind === 'clean' || parsingFilesForId() === 1 ? parsed.summary : null;
+}
+
+/** Counts, per session id, the files that parse as clean or recovered. Reads an id's files once, on first ask. */
+function parsingFileCounter(
+  sessionsDir: string,
+  files: readonly SessionFileInfo[],
+): (sessionId: string) => number {
+  const filenamesById = new Map<string, string[]>();
+  for (const { sessionId, filename } of files) {
+    filenamesById.set(sessionId, [...(filenamesById.get(sessionId) ?? []), filename]);
+  }
+  const counts = new Map<string, number>();
+  return (sessionId) => {
+    const known = counts.get(sessionId);
+    if (known !== undefined) return known;
+    const count = (filenamesById.get(sessionId) ?? []).filter((filename) => {
+      const filepath = join(sessionsDir, filename);
+      try {
+        return parseSessionFile(readFileSync(filepath, 'utf-8'), filepath).kind !== 'unreadable';
+      } catch {
+        return false;
+      }
+    }).length;
+    counts.set(sessionId, count);
+    return count;
+  };
 }
 
 /**

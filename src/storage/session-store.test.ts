@@ -4405,6 +4405,22 @@ describe('SessionStore split and corrupt session files', () => {
     expect(store.loadAllSessions({ developer: 'alice' })).toHaveLength(listed.length);
   });
 
+  it('reads a recovered file whose only sibling is unreadable, in every read path', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeSessionFile(
+      '2026-03-01',
+      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 7 }),
+      '{"tail":',
+    );
+    writeFileSync(join(sessionsDir(), `2026-03-02_${id}.json`), '{"trunc');
+
+    expect(store.loadSession(id)?.toolCallCount).toBe(7);
+    expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([7]);
+    expect(store.listSessions({ developer: 'alice' }).map((f) => f.filename)).toEqual([
+      `2026-03-01_${id}.json`,
+    ]);
+  });
+
   it('warns again when a file that was recovered later becomes unreadable', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const path = writeSessionFile(
