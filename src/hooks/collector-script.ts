@@ -13,16 +13,7 @@
  *   - Config via env vars only (no file reads for config)
  */
 
-import {
-  readFileSync,
-  writeFileSync,
-  openSync,
-  closeSync,
-  mkdirSync,
-  existsSync,
-  utimesSync,
-  constants as fsConstants,
-} from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, utimesSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -30,6 +21,7 @@ import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
+import { appendToHookBuffer } from '../storage/hook-buffer.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -733,6 +725,8 @@ function getWindsurfToolInfo(data: HookInput): Record<string, unknown> {
   return data.tool_info !== null && typeof data.tool_info === 'object' ? data.tool_info : {};
 }
 
+let stderrSinkInstalled = false;
+
 /**
  * @param cliEvent The hook command's first argument (`process.argv[2]`), if
  *   any. Only consulted for Antigravity, whose payloads never name their own
@@ -1354,18 +1348,18 @@ function processHook(raw: string, cliEvent?: string): void {
 
     const line = JSON.stringify(event) + '\n';
 
-    const fd = openSync(
-      bufferPath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND,
-      0o600,
-    );
-    try {
-      writeFileSync(fd, line);
-    } finally {
-      closeSync(fd);
+    appendToHookBuffer(bufferPath, line);
+  } catch (err) {
+    // A closed stderr (EPIPE) must not turn a dropped event into a failed hook.
+    if (!stderrSinkInstalled) {
+      stderrSinkInstalled = true;
+      process.stderr.on('error', () => undefined);
     }
-  } catch {
-    // Silent failure — never block Claude Code
+    try {
+      process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}\n`);
+    } catch {
+      // The hook still exits 0.
+    }
   }
 
   // Gemini CLI's own hook examples always print "{}" before exiting 0, even

@@ -1,4 +1,4 @@
-import { localStartOfDay } from '../lib/date.js';
+import { localEndOfDay, localStartOfDay } from '../lib/date.js';
 
 const MIN_FORECAST_WINDOW_MS = 10 * 60_000;
 const MODERATE_CONFIDENCE_WINDOW_MS = 30 * 60_000;
@@ -88,7 +88,7 @@ export function buildCostForecastFromInputs(
 
   // Local-time day boundary, matching the dashboard's day bucketing.
   const dayStartMs = localStartOfDay(nowMs);
-  const dayEndMs = dayStartMs + 86_400_000;
+  const dayEndMs = localEndOfDay(dayStartMs);
   const msUntilEndOfDay = Math.max(0, dayEndMs - nowMs);
 
   // Day and week projections share one effective rate and base.

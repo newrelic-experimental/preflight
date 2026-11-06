@@ -23,6 +23,22 @@ const MCP_SERVER_COMMAND = 'preflight';
 const COLLECTOR_COMMAND = 'preflight-collector';
 
 /**
+ * Path of a Preflight bin that lives next to the resolved `preflight` binary.
+ * A `.exe` shim (mise's default on Windows) has `.exe` siblings; every other
+ * resolved form (`.cmd`, `.ps1`, extensionless) keeps the bare name.
+ */
+export function siblingBinPath(binPath: string, name: string): string {
+  return join(dirname(binPath), `${name}${shimExtension(binPath)}`);
+}
+
+// PowerShell cannot run npm's extensionless sh shim and its default execution
+// policy blocks the `.ps1` one, so it gets the `.cmd` that npm writes beside
+// both.
+export function shimExtension(binPath: string, options?: { powershell?: boolean }): string {
+  return /\.exe$/i.test(binPath) ? '.exe' : options?.powershell ? '.cmd' : '';
+}
+
+/**
  * Alternation of every subcommand marker, for embedding in regexes that must
  * recognize any hook command this installer writes. Derived from
  * HOOK_SUBCOMMANDS so a new hook event can never be registered without the
@@ -49,8 +65,14 @@ const STOP_SUBCOMMAND = 'stop';
 //   preflight-collector session-start
 //   preflight-collector user-prompt-submit
 //   preflight-collector stop
+// It also matches a Windows shim extension and a PowerShell single-quoted
+// path, ignoring case as Windows does. entryContainsNrObserve tests it against
+// a hook's command, bash, and powershell fields, so a hand-written PowerShell
+// entry is replaced on install and removed on uninstall too:
+//   & 'C:\npm\preflight-collector.cmd' pre-tool
 export const NR_HOOK_RE = new RegExp(
-  `preflight-collector"?\\s+(?:${HOOK_SUBCOMMAND_PATTERN}|${INSTRUCTIONS_LOADED_SUBCOMMAND}|${MODEL_SWITCH_SUBCOMMAND}|${SESSION_START_SUBCOMMAND}|${USER_PROMPT_SUBMIT_SUBCOMMAND}|${STOP_SUBCOMMAND})`,
+  `preflight-collector(?:\\.(?:exe|cmd|ps1))?["']?\\s+(?:${HOOK_SUBCOMMAND_PATTERN}|${INSTRUCTIONS_LOADED_SUBCOMMAND}|${MODEL_SWITCH_SUBCOMMAND}|${SESSION_START_SUBCOMMAND}|${USER_PROMPT_SUBMIT_SUBCOMMAND}|${STOP_SUBCOMMAND})`,
+  'i',
 );
 
 // ---------------------------------------------------------------------------
@@ -101,14 +123,14 @@ export function generateHookEntries(
   if (options?.platform === 'wsl-windows-cc') {
     // Windows Claude Code runs hooks via wsl.exe — call the WSL binary through interop.
     // Quote the path so cmd.exe doesn't split on spaces (e.g. /home/john doe/...).
-    const collectorPath = binPath ? join(dirname(binPath), COLLECTOR_COMMAND) : COLLECTOR_COMMAND;
+    const collectorPath = binPath ? siblingBinPath(binPath, COLLECTOR_COMMAND) : COLLECTOR_COMMAND;
     const quotedPath = collectorPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     collectorInvocation = `wsl.exe -e "${quotedPath}"`;
   } else {
     // Quote the path so shells with sh -c don't split on spaces (e.g. /Users/John Doe/...).
     // Hook commands use preflight-collector (lightweight, <5ms budget).
     collectorInvocation = binPath
-      ? `"${join(dirname(binPath), COLLECTOR_COMMAND).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+      ? `"${siblingBinPath(binPath, COLLECTOR_COMMAND).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
       : COLLECTOR_COMMAND;
   }
 
@@ -207,13 +229,13 @@ export function generateMcpServerEntry(
 ): Record<string, McpServerConfig> {
   if (options?.platform === 'wsl-windows-cc') {
     // Windows Claude Code launches MCP servers as Windows processes — use wsl.exe interop.
-    const serverPath = binPath ? join(dirname(binPath), MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
+    const serverPath = binPath ? siblingBinPath(binPath, MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
     return {
       [MCP_SERVER_KEY]: { command: 'wsl.exe', args: ['-e', serverPath, '--stdio'] },
     };
   }
   // MCP server uses the main preflight binary.
-  const command = binPath ? join(dirname(binPath), MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
+  const command = binPath ? siblingBinPath(binPath, MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
   return {
     [MCP_SERVER_KEY]: { command, args: ['--stdio'] },
   };
@@ -250,28 +272,31 @@ export function detectMcpConfigPath(
 // Merge helpers
 // ---------------------------------------------------------------------------
 
+// Copilot hook entries add per-OS `bash` and `powershell` commands beside the
+// cross-platform `command`. A hook is ours only when every one of them it has
+// calls the collector, so a user script in any of them keeps it the user's.
+function hookRunsCollector(hook: unknown): boolean {
+  if (typeof hook !== 'object' || hook === null) return false;
+  const obj = hook as Record<string, unknown>;
+  const commands = (['command', 'bash', 'powershell'] as const)
+    .map((field) => obj[field])
+    .filter((command) => command !== undefined);
+  return (
+    commands.length > 0 &&
+    commands.every((command) => typeof command === 'string' && NR_HOOK_RE.test(command))
+  );
+}
+
 export function entryContainsNrObserve(entry: unknown): boolean {
   if (typeof entry !== 'object' || entry === null) return false;
   const obj = entry as Record<string, unknown>;
 
   // New format: { matcher, hooks: [{ type, command }] }
-  if (Array.isArray(obj.hooks)) {
-    return obj.hooks.some(
-      (h: unknown) =>
-        typeof h === 'object' &&
-        h !== null &&
-        'command' in (h as Record<string, unknown>) &&
-        typeof (h as Record<string, unknown>).command === 'string' &&
-        NR_HOOK_RE.test((h as Record<string, unknown>).command as string),
-    );
-  }
+  if (Array.isArray(obj.hooks)) return obj.hooks.some(hookRunsCollector);
 
-  // Legacy flat format: { matcher, command }
-  if ('command' in obj && typeof obj.command === 'string' && NR_HOOK_RE.test(obj.command)) {
-    return true;
-  }
-
-  return false;
+  // Flat formats: Claude's legacy { matcher, command } and Copilot's
+  // { type, command, bash?, powershell? }
+  return hookRunsCollector(obj);
 }
 
 /**
