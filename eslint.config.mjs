@@ -4,6 +4,15 @@ import reactPlugin from 'eslint-plugin-react';
 import reactHooksPlugin from 'eslint-plugin-react-hooks';
 import prettierConfig from 'eslint-config-prettier';
 
+// A lookup that skips pricing-overlay.ts also skips model-name normalization and custom
+// aliases, so an ARN or gateway-named model prices at $0. Overridden per file block, so
+// every `no-restricted-imports` block that matches src/ files must include these.
+const PRICING_BOUNDARY_PATTERN = {
+  regex: '(^|/)shared/(index|pricing)\\.js$',
+  importNames: ['resolveModelPricing', 'calculateCost'],
+  message: 'Price through calculateModelCost or priceModelUsage in src/metrics/pricing-overlay.ts.',
+};
+
 export default [
   {
     ignores: ['dist/', 'coverage/', 'node_modules/', '.astro/'],
@@ -36,6 +45,13 @@ export default [
     },
   },
   {
+    files: ['src/**/*.ts', 'src/**/*.tsx'],
+    ignores: ['src/shared/**', 'src/metrics/pricing-overlay.ts', '**/*.test.ts', '**/*.test.tsx'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [PRICING_BOUNDARY_PATTERN] }],
+    },
+  },
+  {
     // A raw append to a hook buffer that races a drain is lost. These files write buffers, so they
     // go through appendToHookBuffer in src/storage/hook-buffer.ts.
     files: [
@@ -57,6 +73,7 @@ export default [
                 'Append to a hook buffer with appendToHookBuffer (src/storage/hook-buffer.ts).',
             },
           ],
+          patterns: [PRICING_BOUNDARY_PATTERN],
         },
       ],
     },
