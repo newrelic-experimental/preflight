@@ -428,6 +428,7 @@ export interface ToolRegistrationOptions {
   costTracker?: CostTracker;
   budgetTracker?: BudgetTracker;
   taskDetector?: TaskDetector;
+  onTaskClosed?: () => void;
   antiPatternDetector?: AntiPatternDetector;
   efficiencyScorer?: EfficiencyScorer;
   feedbackCollector?: FeedbackCollector;

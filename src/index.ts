@@ -870,6 +870,7 @@ async function main(): Promise<void> {
   let config: import('./config.js').McpServerConfig | undefined;
   let sessionTracker: SessionTracker | undefined;
   let taskDetector: TaskDetector | undefined;
+  let emitCompletedTasks: (() => void) | undefined;
   let sessionSpan: SessionSpan | undefined;
   let taskSpanTracker: TaskSpanTracker | undefined;
   let dashboardServer: DashboardServer | undefined;
@@ -956,6 +957,8 @@ async function main(): Promise<void> {
     logger.info('Shutting down...');
     try {
       eventProcessor?.stop();
+      taskDetector?.dispose();
+      emitCompletedTasks?.();
       persistSession?.();
       if (
         config?.otlp?.transport !== 'nr-events-api' &&
@@ -1222,7 +1225,7 @@ async function main(): Promise<void> {
     const rateMultiplier =
       (config.costRateMultiplier ?? 1) * (config.dataResidencyPremium ? 1.1 : 1);
     const costTracker = new CostTracker(sessionTracker, { rateMultiplier });
-    taskDetector = new TaskDetector({ costTracker });
+    taskDetector = new TaskDetector({ costTracker, onIdleClose: () => emitCompletedTasks?.() });
     const antiPatternDetector = new AntiPatternDetector();
     const efficiencyScorer = new EfficiencyScorer({ costTracker });
     const feedbackCollector = new FeedbackCollector();
@@ -2095,6 +2098,56 @@ async function main(): Promise<void> {
     // with idle expiry so a long-running --local daemon doesn't keep one entry
     // per subagent call forever.
     const subagentAttribution = new SubagentAttributionIndex();
+    const capturedTaskDetector = taskDetector;
+    const capturedConfig = config;
+    emitCompletedTasks = () => {
+      // Runs from the record handler, the idle-close callback, and shutdown,
+      // so a task that closes with no following record still reaches ingest.
+      for (const task of capturedTaskDetector.drainNewlyCompletedTasks()) {
+        capturedNrIngest?.ingestCodingTask(task);
+        taskCompletionTracker.recordTask(task);
+        // Close the task span — this handles both signal-driven and idle-timer-driven closures
+        if (capturedConfig.otlp.transport !== 'nr-events-api' && taskSpanTracker) {
+          taskSpanTracker.closeTask(task.taskId, task.toolCallCount);
+        }
+        const firstRecord = task.toolCalls[0];
+        // sessionTraceId is the resolved Claude Code session_id and is
+        // shared across the whole MCP, so we use it directly rather than
+        // peeking at the first record's sessionId (which may be null).
+        const context = {
+          sessionId: sessionTraceId,
+          platform: typeof firstRecord?.platform === 'string' ? firstRecord.platform : undefined,
+          taskId: task.taskId,
+        };
+        const enrichedToolCalls = task.toolCalls.map((r) => subagentAttribution.backfill(r));
+        const { patterns } = antiPatternDetector.analyze(enrichedToolCalls);
+        efficiencyScorer.computeScore(task, patterns);
+        for (const pattern of patterns) {
+          capturedNrIngest?.ingestAntiPattern(pattern, context);
+          liveBus.emit('anti-pattern', {
+            // Tag with the originating session so the Today view can render
+            // a "Session: <name>" pill on each alert row.
+            sessionId: sessionTraceId,
+            type: pattern.type,
+            target: pattern.file ?? pattern.command ?? 'unknown',
+            count:
+              pattern.iterations ??
+              pattern.readCount ??
+              pattern.repeatCount ??
+              pattern.editCount ??
+              pattern.agentCount ??
+              1,
+          });
+          // Mirror each detected pattern into the alert collector's
+          // rolling buffer so antipattern.count rules have data.
+          capturedAlertSnapshotCollector?.recordAntiPattern({
+            type: pattern.type,
+            ts: Date.now(),
+          });
+        }
+      }
+    };
+
     eventProcessor = new HookEventProcessor({
       store: localStore,
       // --local mode and the provisional --stdio window own no specific Claude
@@ -2334,51 +2387,7 @@ async function main(): Promise<void> {
           });
         }
 
-        // Emit any tasks that completed as a result of this record,
-        // and detect anti-patterns across each completed task's tool calls
-        for (const task of taskDetector.drainNewlyCompletedTasks()) {
-          capturedNrIngest?.ingestCodingTask(task);
-          taskCompletionTracker.recordTask(task);
-          // Close the task span — this handles both signal-driven and idle-timer-driven closures
-          if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker) {
-            taskSpanTracker.closeTask(task.taskId, task.toolCallCount);
-          }
-          const firstRecord = task.toolCalls[0];
-          // sessionTraceId is the resolved Claude Code session_id and is
-          // shared across the whole MCP, so we use it directly rather than
-          // peeking at the first record's sessionId (which may be null).
-          const context = {
-            sessionId: sessionTraceId,
-            platform: typeof firstRecord?.platform === 'string' ? firstRecord.platform : undefined,
-            taskId: task.taskId,
-          };
-          const enrichedToolCalls = task.toolCalls.map((r) => subagentAttribution.backfill(r));
-          const { patterns } = antiPatternDetector.analyze(enrichedToolCalls);
-          efficiencyScorer.computeScore(task, patterns);
-          for (const pattern of patterns) {
-            capturedNrIngest?.ingestAntiPattern(pattern, context);
-            liveBus.emit('anti-pattern', {
-              // Tag with the originating session so the Today view can render
-              // a "Session: <name>" pill on each alert row.
-              sessionId: sessionTraceId,
-              type: pattern.type,
-              target: pattern.file ?? pattern.command ?? 'unknown',
-              count:
-                pattern.iterations ??
-                pattern.readCount ??
-                pattern.repeatCount ??
-                pattern.editCount ??
-                pattern.agentCount ??
-                1,
-            });
-            // Mirror each detected pattern into the alert collector's
-            // rolling buffer so antipattern.count rules have data.
-            capturedAlertSnapshotCollector?.recordAntiPattern({
-              type: pattern.type,
-              ts: Date.now(),
-            });
-          }
-        }
+        emitCompletedTasks?.();
         homelabForwarder?.enqueue(record);
       },
       onTokenEvent: (tokenEvent) => {
@@ -2635,6 +2644,7 @@ async function main(): Promise<void> {
       onStop: (frame) => {
         turnTracker.finalizeTurnAt(frame.timestamp);
         taskDetector!.markBoundary(frame.timestamp);
+        emitCompletedTasks?.();
       },
     });
 
@@ -3088,6 +3098,7 @@ async function main(): Promise<void> {
       };
       registerTools(mcpServer!.server, {
         headlessInstaller: buildHeadlessInstaller(),
+        onTaskClosed: () => emitCompletedTasks?.(),
         sessionTracker: sessionTracker!,
         costTracker,
         budgetTracker,
@@ -3336,6 +3347,7 @@ async function main(): Promise<void> {
         };
         registerTools(mcpServer!.server, {
           headlessInstaller: buildHeadlessInstaller(),
+          onTaskClosed: () => emitCompletedTasks?.(),
           sessionTracker,
           costTracker,
           budgetTracker,
