@@ -563,6 +563,69 @@ describe('SessionTracker', () => {
     });
   });
 
+  describe('amendToolCall()', () => {
+    it('applies the outcome of a late post to the timeout record it replaces', () => {
+      const tracker = new SessionTracker('sess-own', 10);
+      const timedOut = makeRecord({ sessionId: 'sess-own', toolName: 'Agent', timestamp: 1000 });
+      tracker.recordToolCall({
+        ...timedOut,
+        durationMs: null,
+        success: false,
+        errorType: 'timeout',
+      });
+      tracker.amendToolCall({ ...timedOut, durationMs: 180_000, success: true });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(1);
+      expect(metrics.toolSuccessRate).toBe(1);
+      expect(metrics.toolErrorCount).toBe(0);
+      expect(metrics.toolDurationMsByTool.Agent?.max).toBe(180_000);
+      expect(metrics.toolCallTimeline).toEqual([
+        { timestamp: 1000, toolName: 'Agent', durationMs: 180_000, success: true },
+      ]);
+    });
+    it('amends the timed-out record with its id, and counts its exit code and error', () => {
+      const tracker = new SessionTracker('sess-own', 10);
+      const call = makeRecord({
+        toolName: 'Bash',
+        timestamp: 1000,
+        durationMs: null,
+        success: false,
+      });
+      tracker.recordToolCall({ ...call, id: 'first', errorType: 'timeout' });
+      tracker.recordToolCall({ ...call, id: 'second', errorType: 'timeout' });
+      tracker.amendToolCall({ ...call, id: 'second', durationMs: 5000, exitCode: 2 });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(2);
+      expect(metrics.toolErrorCount).toBe(2);
+      expect(metrics.toolErrorsByType).toEqual({ timeout: 1 });
+      expect(metrics.bashExitCodes).toEqual({ '2': 1 });
+      expect(metrics.toolCallTimeline.map((e) => e.durationMs)).toEqual([null, 5000]);
+    });
+    it('amends the right timeline entry after older entries were evicted, and skips an evicted one', () => {
+      const tracker = new SessionTracker('sess-own', 10);
+      const timedOut = (id: string, timestamp: number) => ({
+        ...makeRecord({ id, timestamp }),
+        durationMs: null,
+        success: false,
+        errorType: 'timeout' as const,
+      });
+      tracker.recordToolCall(timedOut('evicted', 1));
+      tracker.recordToolCall(timedOut('kept', 2));
+      for (let i = 3; i <= 10_001; i++) tracker.recordToolCall(makeRecord({ timestamp: i }));
+
+      tracker.amendToolCall({ ...makeRecord({ id: 'evicted', timestamp: 1 }), durationMs: 111 });
+      const afterEvicted = tracker.getMetrics().toolCallTimeline;
+      expect(afterEvicted[0]).toMatchObject({ timestamp: 2, durationMs: null, success: false });
+
+      tracker.amendToolCall({ ...makeRecord({ id: 'kept', timestamp: 2 }), durationMs: 222 });
+      const timeline = tracker.getMetrics().toolCallTimeline;
+      expect(timeline[0]).toMatchObject({ timestamp: 2, durationMs: 222, success: true });
+      expect(timeline[1]).toMatchObject({ timestamp: 3, durationMs: 50 });
+    });
+  });
+
   describe('reset()', () => {
     it('clears all counters back to initial state', () => {
       const tracker = new SessionTracker('old-session');
