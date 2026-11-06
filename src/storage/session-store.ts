@@ -570,6 +570,7 @@ function subtractRecord(
 export function mergeSummaries(
   existing: FullSessionSummary,
   incoming: FullSessionSummary,
+  mergedLedger: ByteEstimateLedger | undefined = incoming.byteEstimates ?? existing.byteEstimates,
 ): FullSessionSummary {
   const maxNum = (a: unknown, b: unknown): number =>
     Math.max(typeof a === 'number' ? a : 0, typeof b === 'number' ? b : 0);
@@ -630,7 +631,6 @@ export function mergeSummaries(
   // The ledger is latest-wins and shrinks when a real report replaces it, so
   // only the exact-only totals are max-merged; the merged ledger is added back
   // on top. A max over the estimate-laden totals would keep the stale estimate.
-  const mergedLedger = incoming.byteEstimates ?? existing.byteEstimates;
   const existingExact = exactTotalsOf(existing);
   const incomingExact = exactTotalsOf(incoming);
   const exactTotals: ExactTotals = {
@@ -758,9 +758,8 @@ export function mergeSummaries(
 }
 
 /**
- * Whether two files with timelines may hold the same activity. Files a session
- * was split into hold separate activity and share no timeline entry; two
- * writers' copies of one stretch share entries.
+ * Whether two files may hold the same activity. Split files hold separate
+ * activity and share no timeline entry; copies of one stretch share entries.
  */
 function mayShareActivity(a: FullSessionSummary, b: FullSessionSummary): boolean {
   if (mayHoldDroppedEntries(a, b) || mayHoldDroppedEntries(b, a)) return true;
@@ -769,9 +768,9 @@ function mayShareActivity(a: FullSessionSummary, b: FullSessionSummary): boolean
 }
 
 /**
- * A timeline at the cap has lost its oldest entries. If it started no later
- * than `other` and `other` ends before its first kept entry, `other` may be
- * among the dropped ones, as when a combined file meets a source it absorbed.
+ * A timeline at the cap has dropped entries. `mergeTimeline` drops the oldest,
+ * so if `capped` started no later than `other` and `other` ends before its first
+ * kept entry, `other` may be a source the combined file absorbed.
  */
 function mayHoldDroppedEntries(capped: FullSessionSummary, other: FullSessionSummary): boolean {
   const kept = capped.timeline ?? [];
@@ -811,8 +810,34 @@ function byWriteOrder(x: FullSessionSummary, y: FullSessionSummary): number {
   return textX < textY ? -1 : textX > textY ? 1 : 0;
 }
 
-function maxMerge(files: readonly FullSessionSummary[]): FullSessionSummary {
-  return [...files].sort(byWriteOrder).reduce((acc, next) => mergeSummaries(acc, next));
+/**
+ * Which file's ledger a max-merge keeps. Among copies, exact totals only grow
+ * and a report moves a ledger into them, so the file furthest along holds the
+ * current one, even when a source left beside its sum is the newer file. A file
+ * with no timeline may not be a later state of anything, so there the largest
+ * total wins, and of equal totals the one with more of it reported.
+ */
+function ledgerRank(s: FullSessionSummary, byTotal: boolean): number[] {
+  const exact = exactTotalsOf(s);
+  const exactTokens = exact.inputTokens + exact.outputTokens;
+  const cost = s.byteEstimates?.costUsd ?? 0;
+  const tokens = (s.byteEstimates?.inputTokens ?? 0) + (s.byteEstimates?.outputTokens ?? 0);
+  return byTotal
+    ? [exact.costUsd + cost, exactTokens + tokens, -cost, -tokens]
+    : [exact.costUsd, exactTokens, cost, tokens];
+}
+
+function maxMerge(files: readonly FullSessionSummary[], byTotal = false): FullSessionSummary {
+  const ordered = [...files].sort(byWriteOrder);
+  const ledger = ordered
+    .filter((f) => f.byteEstimates)
+    .sort((x, y) => {
+      const other = ledgerRank(y, byTotal);
+      const gaps = ledgerRank(x, byTotal).map((v, i) => v - other[i]);
+      return gaps.find((gap) => gap !== 0) ?? 0;
+    })
+    .at(-1)?.byteEstimates;
+  return ordered.reduce((acc, next) => mergeSummaries(acc, next, ledger));
 }
 
 /**
@@ -820,25 +845,21 @@ function maxMerge(files: readonly FullSessionSummary[]): FullSessionSummary {
  * Files that share activity are copies of one stretch, so they max-merge. The
  * resulting groups hold separate activity, so they add. A file without a
  * timeline cannot show that it is separate, and on real installs such a file
- * repeats another file's spend, so it max-merges into the total. A combined file
- * contains its sources' timelines, so meeting a source that a crashed save
- * failed to set aside max-merges rather than counting that source twice.
+ * repeats another file's spend, so it max-merges into the total.
  */
 export function combineSessionFiles(files: readonly FullSessionSummary[]): FullSessionSummary {
   const separate = groupBySharedActivity(files.filter((f) => f.timeline?.length))
-    .map(maxMerge)
+    .map((group) => maxMerge(group))
     .sort(byWriteOrder);
   const added = separate.length > 0 ? [separate.reduce((a, b) => addSummaries(a, b))] : [];
-  return maxMerge([...added, ...files.filter((f) => !f.timeline?.length)]);
+  return maxMerge([...added, ...files.filter((f) => !f.timeline?.length)], true);
 }
 
 /**
  * Sums two files holding separate activity, `b` the newer writer.
- * `mergeSummaries` supplies the fields that do not add: names and labels, the
- * timeline and file-list unions, the time span, and the tool-selection score.
- * Transcript message counts stay maxed because every process reads the
- * transcript from its first byte, so a later split file already counts the
- * earlier files' messages.
+ * `mergeSummaries` supplies the fields that do not add. Transcript message
+ * counts stay maxed: every process reads the transcript from its first byte, so
+ * a later split file already counts the earlier files' messages.
  */
 function addSummaries(a: FullSessionSummary, b: FullSessionSummary): FullSessionSummary {
   const maxed = mergeSummaries(a, b);
@@ -895,7 +916,7 @@ function addSummaries(a: FullSessionSummary, b: FullSessionSummary): FullSession
     ...addEfficiencyScores(a, b),
     antiPatterns: [...a.antiPatterns, ...b.antiPatterns],
     taskCount: a.taskCount + b.taskCount,
-    taskSuccessRate: weightedRate(a.taskSuccessRate, a.taskCount, b.taskSuccessRate, b.taskCount),
+    taskSuccessRate: addedTaskSuccessRate(a, b),
     toolSuccessRate: weightedRate(
       a.toolSuccessRate,
       a.toolCallCount,
@@ -930,9 +951,8 @@ function addLedgers(
 }
 
 /**
- * The sample-weighted average `EfficiencyScorer.seedFromPersisted()` would
- * build from both files. Empty when either side cannot be weighted, which
- * leaves `mergeSummaries`' pick of one whole triple in place.
+ * The sample-weighted average `EfficiencyScorer.seedFromPersisted()` would build.
+ * Empty when either side cannot be weighted, leaving `mergeSummaries`' whole pick.
  */
 function addEfficiencyScores(
   a: FullSessionSummary,
@@ -960,6 +980,14 @@ function addEfficiencyScores(
       firstAttemptQuality: avg(partsA.firstAttemptQuality, partsB.firstAttemptQuality),
     },
   };
+}
+
+/** The rate is tests passed over tests run, so those counts rebuild it when they cover both files. */
+function addedTaskSuccessRate(a: FullSessionSummary, b: FullSessionSummary): number | null {
+  const runs = a.testRunCount + b.testRunCount;
+  const covered = [a, b].every((s) => s.taskSuccessRate === null || s.testRunCount > 0);
+  if (runs > 0 && covered) return (a.testPassCount + b.testPassCount) / runs;
+  return weightedRate(a.taskSuccessRate, a.taskCount, b.taskSuccessRate, b.taskCount);
 }
 
 function weightedRate(

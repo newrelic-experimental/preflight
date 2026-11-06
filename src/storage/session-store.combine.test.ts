@@ -64,19 +64,19 @@ const NEVER_ADDED = `
 const SCORES = `
   efficiencyScore efficiencyScoreComponents.speed efficiencyScoreComponents.correctness
   efficiencyScoreComponents.autonomy efficiencyScoreComponents.firstAttemptQuality`;
-const RATES = 'taskSuccessRate toolSuccessRate';
 
 const RULES: ReadonlyArray<[string, Rule, Rule]> = [
   ...rows(sum, max, COUNTERS),
-  ...rows(sum, latest, LEDGER),
+  ...rows(sum, max, LEDGER),
   ...rows(
     (x, y) => 2 * (x + y),
-    (x, y) => Math.max(x, y) + y,
+    (x, y) => 2 * Math.max(x, y),
     TOTALS,
   ),
   ...rows(max, max, NEVER_ADDED),
   ...rows(weighted, max, SCORES),
-  ...rows(weighted, latest, RATES),
+  ...rows(() => 1, latest, 'taskSuccessRate'),
+  ...rows(weighted, latest, 'toolSuccessRate'),
 ];
 
 function setPath(target: Record<string, unknown>, path: string, value: number): void {
@@ -233,6 +233,15 @@ describe('combining fields that do not always exist', () => {
   });
 
   it.each([
+    ['tests pooled', 0.5, 50, 100, 51 / 101],
+    ['a rate with no counts', 0.5, 0, 0, 0.75],
+  ])('rebuilds the task rate: %s', (_, rate, testPassCount, testRunCount, expected) => {
+    const file = { taskSuccessRate: rate, testPassCount, testRunCount, taskCount: 1 };
+    const other = { taskSuccessRate: 1, testPassCount: 1, testRunCount: 1, taskCount: 1 };
+    expect(pair(file, other).taskSuccessRate).toBeCloseTo(expected);
+  });
+
+  it.each([
     ['a file has no score', { efficiencyScore: null }],
     ['a file has no samples', { efficiencyScore: 0.1, efficiencyScoreSampleCount: 0 }],
     ['a file has no components', { efficiencyScore: 0.1, efficiencyScoreComponents: null }],
@@ -334,6 +343,36 @@ describe('which files add and which max-merge', () => {
     const long = calls(d(0), 2, { timeline: shared, sessionName: 'long', endTime: d(5) });
     const short = calls(d(1), 2, { timeline: shared, sessionName: 'short', endTime: d(2) });
     expect(combineInEveryOrder([long, short]).sessionName).toBe('long');
+  });
+});
+
+describe('a ledger, which a combine must not lose or resurrect', () => {
+  const file = (start: number, exact: number, usd: number, timeline?: Entry[]) =>
+    calls(start, 1, {
+      timeline,
+      estimatedCostUsd: exact + usd,
+      exactTotals: { costUsd: exact, inputTokens: 0, outputTokens: 0, costByDayUsd: {} },
+      byteEstimates: { costUsd: usd, inputTokens: 0, outputTokens: 0 },
+    });
+  const [t1, t2, t3] = [START, START + DAY, START + 2 * DAY];
+  const [e1, e2, shared] = [[entry(t1)], [entry(t2)], [entry(t1 + 1)]];
+  const [a, b] = [file(t1, 1, 4, e1), file(t2, 1, 4, e2)];
+  const sum = (endTime: number) => ({ ...file(t1, 2, 8, [...e1, ...e2]), endTime });
+
+  it.each([
+    ['newer, no timeline', [a, b, file(t3, 0, 1)], 10],
+    ['older, no timeline', [a, b, file(t1 - DAY, 0, 1)], 10],
+    ['no timeline, larger exact', [a, b, file(t3, 3, 0)], 11],
+    ['no timeline, larger total', [a, b, file(t3, 1, 20)], 22],
+    ['no timeline, equal total, reported', [a, b, file(t1 - DAY, 10, 0)], 10],
+    ['a leftover source ties the sum', [sum(t2), { ...a, endTime: t2 }], 10],
+    ['a leftover source beats the sum', [sum(t2), { ...a, endTime: t2 + 1 }], 10],
+    ['copies, a report replaced it', [file(t1, 1, 4, shared), file(t2, 5, 0, shared)], 5],
+    ['copies, a report came in lower', [file(t1, 1, 4, shared), file(t2, 3, 0, shared)], 3],
+    ['copies, older is further along', [file(t1, 5, 0, shared), file(t2, 1, 6, shared)], 5],
+    ['copies, a tie keeps the larger', [file(t1, 1, 8, shared), file(t2, 1, 4, shared)], 9],
+  ])('%s', (_, files, usd) => {
+    expect(combineInEveryOrder(files).estimatedCostUsd).toBeCloseTo(usd);
   });
 });
 

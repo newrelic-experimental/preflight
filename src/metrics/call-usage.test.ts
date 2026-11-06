@@ -6,9 +6,8 @@ describe('mergeCallUsageSum', () => {
   const b = { m: { calls: 3, tokens: 30, estimatedFrom: 'new' }, onlyB: { calls: 4, tokens: 4 } };
 
   it('adds per model and takes extra fields from the second record', () => {
-    expect(
-      mergeCallUsageSum<{ calls: number; tokens: number; estimatedFrom?: string }>(a, b),
-    ).toEqual({
+    type Usage = { calls: number; tokens: number; estimatedFrom?: string };
+    expect(mergeCallUsageSum<Usage>(a, b)).toEqual({
       m: { calls: 5, tokens: 50, estimatedFrom: 'new' },
       onlyA: { calls: 1, tokens: 1 },
       onlyB: { calls: 4, tokens: 4 },
