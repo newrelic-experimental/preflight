@@ -1573,6 +1573,20 @@ describe('stdio integration', () => {
       expect(savedField(storage, 'other-real-session', 'outcome')).toBe('in progress');
     }, 30000);
 
+    it('saves a pending checkpoint in progress and its shutdown save completed', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage, undefined, {
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+      });
+      await drainCalls(storage, 'other-real-session', 1);
+      await waitFor(() => savedCalls(storage, 'other-real-session') === 1);
+      const atCheckpoint = savedField(storage, 'other-real-session', 'outcome');
+      await client.close();
+      await waitFor(() => savedField(storage, 'other-real-session', 'outcome') === 'completed');
+
+      expect(atCheckpoint).toBe('in progress');
+    }, 30000);
+
     it('keeps a call with no session id across its first adoption', async () => {
       const storage = makeStorage();
       const client = await startEngine(storage);
