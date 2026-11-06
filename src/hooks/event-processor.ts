@@ -6,10 +6,10 @@
  * computes duration, and emits completed ToolCallRecords via a callback.
  *
  * Handles orphans:
- *   - Pre events without a post within orphanTimeoutMs → timeout record
+ *   - Pre events without a post within their wait (pendingTtlMs) → timeout record
  *   - Permission-requested pre events (PermissionRequest seen, then nothing —
  *     Claude Code fires no hook event for an interactive user rejection)
- *     without a post within PERMISSION_REQUESTED_TIMEOUT_MS → rejected record
+ *     without a post within their permission wait (pendingTtlMs) → rejected record
  *   - Post events with no pending pre whose call was not already counted,
  *     here or in counted/ → record with durationMs: null
  */
