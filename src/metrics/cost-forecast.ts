@@ -1,4 +1,4 @@
-import { localStartOfDay } from '../lib/date.js';
+import { localEndOfDay, localStartOfDay } from '../lib/date.js';
 
 export interface CostForecast {
   readonly elapsedMs: number;
@@ -81,7 +81,7 @@ export function buildCostForecastFromInputs(
   // (lib/date.ts localStartOfDay). Previously this used UTC, which drifted
   // a forecast across the day boundary for non-UTC users.
   const dayStartMs = localStartOfDay(nowMs);
-  const dayEndMs = dayStartMs + 86_400_000;
+  const dayEndMs = localEndOfDay(dayStartMs);
   const msUntilEndOfDay = Math.max(0, dayEndMs - nowMs);
 
   // Daily-anchored EoD/EoW forecast when caller supplies today's spend +

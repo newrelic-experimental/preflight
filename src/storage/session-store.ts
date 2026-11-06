@@ -17,11 +17,13 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
@@ -273,15 +275,21 @@ export interface AttributableActivity {
   readonly timeline?: ReadonlyArray<unknown>;
 }
 
+export interface RecordedUsage extends AttributableActivity {
+  readonly estimatedCostUsd?: number | null;
+  readonly tokensInput?: number;
+  readonly tokensOutput?: number;
+  readonly tokensThinking?: number;
+}
+
 /**
  * Does this summary represent work we can attribute to a real session?
  *
- * THE single definition of "not empty" for session persistence. Three call
- * sites derive from it and must never re-implement it:
- *   1. `LocalSessionAggregator.toSummaries()` — which rollups get written.
- *   2. `SessionStore.saveSession()` — which incoming writes may overwrite.
- *   3. the `/api/sessions/today/aggregate` route — which persisted rows may
- *      contribute a pro-rated cost when they carry no per-day buckets.
+ * The narrower of the two definitions of "not empty" for session
+ * persistence; `hasRecordedUsage` is the wider and gates the writes. This one
+ * is for the `/api/sessions/today/aggregate` route, which uses it to decide
+ * which persisted rows may contribute a pro-rated cost when they carry no
+ * per-day buckets. Callers must never re-implement either definition.
  *
  * Subagent spend counts as activity on purpose. A session whose parent process
  * died while its subagent transcripts were still being tailed has an empty
@@ -304,9 +312,12 @@ export function hasAttributableActivity(s: AttributableActivity): boolean {
  * Did this session record anything worth a file on disk? Wider than
  * `hasAttributableActivity`: a chat-only session has no tool calls but real
  * cost and tokens, and must still be kept. A session with none of these is an
- * idle MCP process (a window that was opened and never used).
+ * idle MCP process (a window that was opened and never used). It gates the
+ * aggregator's summaries, every write `SessionStore.saveSession()` accepts,
+ * the existing file an empty write must not clobber, and the History list in
+ * `/api/sessions`.
  */
-function hasRecordedUsage(s: FullSessionSummary): boolean {
+export function hasRecordedUsage(s: RecordedUsage): boolean {
   return (
     hasAttributableActivity(s) ||
     (s.estimatedCostUsd ?? 0) > 0 ||
@@ -734,10 +745,16 @@ export class SessionStore {
     return this.sessionsDir;
   }
 
-  saveSession(summary: FullSessionSummary): void {
+  /**
+   * Returns null when nothing was written, else the file the write merged
+   * against (`previous`, null for a new file).
+   */
+  saveSession(
+    summary: FullSessionSummary,
+  ): { readonly previous: FullSessionSummary | null } | null {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(summary.sessionId) || summary.sessionId === 'unknown') {
       logger.warn('Rejecting invalid sessionId for file path', { sessionId: summary.sessionId });
-      return;
+      return null;
     }
 
     if (!existsSync(this.sessionsDir)) {
@@ -755,7 +772,7 @@ export class SessionStore {
     // merged (inflated, since counters take the max) result to a NEW file
     // while leaving the OLD file on disk untouched — the session then
     // appeared twice in history with overlapping, double-counted totals.
-    const existingWithPath = this.loadSessionWithPath(summary.sessionId);
+    const { existing: existingWithPath, filesRead } = this.loadSessionWithPath(summary.sessionId);
 
     // Every MCP server process checkpoints every 30s, including windows that
     // never saw a tool call or a token. Writing those first-time files filled
@@ -765,7 +782,7 @@ export class SessionStore {
       logger.debug('Skipping first write of a session with no recorded usage', {
         sessionId: summary.sessionId,
       });
-      return;
+      return null;
     }
 
     // A second process saving under the same sessionId (e.g. two MCP
@@ -777,16 +794,16 @@ export class SessionStore {
     // never observed any hook activity would replace a fully recorded session
     // with an all-zero summary, erasing tool calls, tokens and cost from the
     // dashboard on the next refresh. Never let an empty summary clobber a
-    // non-empty one; other collisions keep the previous last-write-wins
-    // behaviour with a warning.
+    // non-empty one. A summary with cost or tokens but no tool calls, such as
+    // a restarted dashboard's parent-only rollup, is not empty: it merges.
     let toWrite: FullSessionSummary = summary;
     if (existingWithPath) {
       const { summary: existing } = existingWithPath;
-      if (hasAttributableActivity(existing) && !hasAttributableActivity(summary)) {
+      if (hasRecordedUsage(existing) && !hasRecordedUsage(summary)) {
         logger.warn('Refusing to overwrite recorded session with an empty summary', {
           sessionId: summary.sessionId,
         });
-        return;
+        return null;
       }
       // Two processes legitimately share one session id: the CLI/editor
       // spawns an MCP engine that owns the session natively, while a
@@ -816,8 +833,29 @@ export class SessionStore {
       throw new Error(`Session path escaped storage directory: ${filepath}`);
     }
 
+    const unparsedFilesReplaced = filesRead.filter(
+      (file) =>
+        file.parsed.kind !== 'clean' &&
+        (file.filepath === filepath || file.filepath === existingWithPath?.filepath),
+    );
+
+    // Write-then-rename so two processes saving the same session id can never
+    // interleave bytes in the target file (the temp name does not end in .json,
+    // so loaders never see it).
+    const content = JSON.stringify(toWrite, null, 2) + '\n';
+    const tmpPath = `${filepath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     try {
-      writeFileSync(filepath, JSON.stringify(toWrite, null, 2) + '\n', { mode: 0o600 });
+      try {
+        writeFileSync(tmpPath, content, { mode: 0o600 });
+        if (!unparsedFilesReplaced.every(copiedAsideUnchanged)) return null;
+        renameIntoPlace(tmpPath, filepath, content);
+      } finally {
+        try {
+          unlinkSync(tmpPath);
+        } catch {
+          // Renamed into place, or never written.
+        }
+      }
       // The merge landed on a different filename than where the existing
       // record lived (a date-rollover case) — remove the now-superseded
       // file so the session isn't left duplicated across two files.
@@ -833,6 +871,7 @@ export class SessionStore {
         }
       }
       logger.debug('Session saved', { sessionId: toWrite.sessionId, filename });
+      return { previous: existingWithPath?.summary ?? null };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn('Failed to save session file', {
@@ -840,38 +879,55 @@ export class SessionStore {
         filename,
         error: message,
       });
+      return null;
     }
   }
 
   loadSession(sessionId: string): FullSessionSummary | null {
-    return this.loadSessionWithPath(sessionId)?.summary ?? null;
+    return this.loadSessionWithPath(sessionId).existing?.summary ?? null;
   }
 
-  /** Like loadSession(), but also returns the file path it was loaded from — used by saveSession() to detect and clean up a stale file after a merge relocates a session to a different filename. */
-  private loadSessionWithPath(
-    sessionId: string,
-  ): { summary: FullSessionSummary; filepath: string } | null {
-    if (!existsSync(this.sessionsDir)) return null;
+  /**
+   * Like loadSession(), but also returns the file path it was loaded from — used by saveSession() to detect and clean up a stale file after a merge relocates a session to a different filename.
+   *
+   * An unreadable file is skipped rather than ending the search: returning null
+   * there made saveSession() treat the session as new and start a fresh file
+   * on every later save. Sibling files for one id are not merged here,
+   * because files split that way hold disjoint activity that mergeSummaries'
+   * per-counter max would drop.
+   */
+  private loadSessionWithPath(sessionId: string): {
+    readonly existing: { readonly summary: FullSessionSummary; readonly filepath: string } | null;
+    readonly filesRead: readonly SessionFileRead[];
+  } {
+    if (!existsSync(this.sessionsDir)) return { existing: null, filesRead: [] };
 
-    for (const file of readdirSync(this.sessionsDir)) {
-      if (!file.endsWith('.json')) continue;
-      if (parseSessionFilename(file)?.sessionId !== sessionId) continue;
-
-      const filepath = join(this.sessionsDir, file);
+    const names = readdirSync(this.sessionsDir)
+      .filter((file) => parseSessionFilename(file)?.sessionId === sessionId)
+      .sort();
+    const filesRead: SessionFileRead[] = [];
+    for (const file of names) {
+      const filepath = resolve(this.sessionsDir, file);
       try {
-        const raw = readFileSync(filepath, 'utf-8');
-        const session = deserializeSession(raw);
-        if (session === null) {
-          logger.warn('Failed to deserialize session file', { file });
-          return null;
-        }
-        return { summary: session, filepath };
+        const bytes = readFileSync(filepath);
+        filesRead.push({
+          filepath,
+          bytes,
+          parsed: parseSessionFile(bytes.toString('utf-8'), filepath),
+        });
       } catch {
         logger.warn('Failed to read session file', { file });
       }
     }
 
-    return null;
+    for (const { filepath, parsed } of filesRead) {
+      const summary = usableSummary(
+        parsed,
+        () => names.length - filesRead.filter((f) => f.parsed.kind === 'unreadable').length,
+      );
+      if (summary) return { existing: { summary, filepath }, filesRead };
+    }
+    return { existing: null, filesRead };
   }
 
   listSessions(options?: ListSessionsOptions): SessionFileInfo[] {
@@ -880,7 +936,13 @@ export class SessionStore {
     const sinceDate = options?.since ? formatDate(options.since) : null;
     const results: SessionFileInfo[] = [];
 
-    for (const file of readdirSync(this.sessionsDir)) {
+    const names = readdirSync(this.sessionsDir);
+    const parsingFilesForId = parsingFileCounter(
+      this.sessionsDir,
+      names.flatMap((name) => parseSessionFilename(name) ?? []),
+    );
+
+    for (const file of names) {
       if (!file.endsWith('.json')) continue;
 
       const parsed = parseSessionFilename(file);
@@ -890,9 +952,12 @@ export class SessionStore {
 
       if (options?.developer) {
         try {
-          const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
-          const session = deserializeSession(raw);
-          if (session?.developer !== options.developer) continue;
+          const filepath = join(this.sessionsDir, file);
+          const summary = usableSummary(
+            parseSessionFile(readFileSync(filepath, 'utf-8'), filepath),
+            () => parsingFilesForId(parsed.sessionId),
+          );
+          if (!summary || summary.developer !== options.developer) continue;
         } catch {
           continue;
         }
@@ -913,12 +978,13 @@ export class SessionStore {
     const modifiedSinceMs = options?.includeModifiedSince?.getTime() ?? null;
     const results: FullSessionSummary[] = [];
 
-    for (const file of readdirSync(this.sessionsDir)) {
-      if (!file.endsWith('.json')) continue;
+    const sessionFiles = readdirSync(this.sessionsDir).flatMap(
+      (file) => parseSessionFilename(file) ?? [],
+    );
+    const parsingFilesForId = parsingFileCounter(this.sessionsDir, sessionFiles);
 
-      const parsed = parseSessionFilename(file);
-      if (!parsed) continue;
-
+    for (const parsed of sessionFiles) {
+      const file = parsed.filename;
       if (sinceDate && parsed.date < sinceDate) {
         if (modifiedSinceMs === null) continue;
         try {
@@ -929,8 +995,11 @@ export class SessionStore {
       }
 
       try {
-        const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
-        const session = deserializeSession(raw);
+        const filepath = join(this.sessionsDir, file);
+        const session = usableSummary(
+          parseSessionFile(readFileSync(filepath, 'utf-8'), filepath),
+          () => parsingFilesForId(parsed.sessionId),
+        );
         if (!session) continue;
 
         // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
@@ -1852,11 +1921,94 @@ export function deserializeFullSessionSummary(
   };
 }
 
+type ParsedSessionFile =
+  | { readonly kind: 'clean' | 'recovered'; readonly summary: FullSessionSummary }
+  | { readonly kind: 'unreadable' };
+
+interface SessionFileRead {
+  readonly filepath: string;
+  readonly bytes: Buffer;
+  readonly parsed: ParsedSessionFile;
+}
+
+const warnedKeys = new Set<string>();
+
+function warnOnce(key: string, message: string, data: Record<string, unknown>): void {
+  if (warnedKeys.has(key)) return;
+  warnedKeys.add(key);
+  logger.warn(message, data);
+}
+
+function parseSessionFile(raw: string, filepath: string): ParsedSessionFile {
+  const summary = parseSummary(raw);
+  if (summary) return { kind: 'clean', summary };
+
+  const first = firstTopLevelJsonDocument(raw);
+  const recovered = first === null ? null : parseSummary(first);
+  const file = basename(filepath);
+  if (recovered) {
+    warnOnce(`recovered:${filepath}`, 'Recovered first JSON document from corrupt session file', {
+      file,
+    });
+    return { kind: 'recovered', summary: recovered };
+  }
+  warnOnce(`unreadable:${filepath}`, 'Failed to deserialize session file', { file });
+  return { kind: 'unreadable' };
+}
+
+/**
+ * A recovered document is used only when its file is the only one of its id
+ * that parses. Beside a parsing sibling it may repeat activity the sibling
+ * already holds, so adding the two could double count. It stays unread there,
+ * as it was before recovery existed, until a session's split files are
+ * combined. A sibling that parses as unreadable holds nothing to double count,
+ * so it does not hide the recovered file. A sibling that cannot be read at all
+ * might hold anything, so it counts as parsing. The count includes the file
+ * itself and is only asked for when the file is recovered.
+ */
+function usableSummary(
+  parsed: ParsedSessionFile,
+  parsingFilesForId: () => number,
+): FullSessionSummary | null {
+  if (parsed.kind === 'unreadable') return null;
+  return parsed.kind === 'clean' || parsingFilesForId() === 1 ? parsed.summary : null;
+}
+
+/**
+ * Counts, per session id, the files that parse as clean or recovered. A file
+ * that cannot be read at all might hold anything, so it counts as parsing.
+ * Reads an id's files once, on first ask.
+ */
+function parsingFileCounter(
+  sessionsDir: string,
+  files: readonly SessionFileInfo[],
+): (sessionId: string) => number {
+  const filenamesById = new Map<string, string[]>();
+  for (const { sessionId, filename } of files) {
+    filenamesById.set(sessionId, [...(filenamesById.get(sessionId) ?? []), filename]);
+  }
+  const counts = new Map<string, number>();
+  return (sessionId) => {
+    const known = counts.get(sessionId);
+    if (known !== undefined) return known;
+    const count = (filenamesById.get(sessionId) ?? []).filter((filename) => {
+      const filepath = join(sessionsDir, filename);
+      try {
+        return parseSessionFile(readFileSync(filepath, 'utf-8'), filepath).kind !== 'unreadable';
+      } catch {
+        return true;
+      }
+    }).length;
+    counts.set(sessionId, count);
+    return count;
+  };
+}
+
 /**
  * Parse a raw session JSON string and extract known fields. Delegates field
  * extraction to `deserializeFullSessionSummary` to avoid duplication.
  */
-function deserializeSession(raw: string): FullSessionSummary | null {
+function parseSummary(raw: string): FullSessionSummary | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -1865,6 +2017,101 @@ function deserializeSession(raw: string): FullSessionSummary | null {
   }
   if (typeof parsed !== 'object' || parsed === null) return null;
   return deserializeFullSessionSummary(parsed as SerializedFullSessionSummary);
+}
+
+function copiedAsideUnchanged(file: SessionFileRead): boolean {
+  const name = basename(file.filepath);
+  try {
+    if (!readFileSync(file.filepath).equals(file.bytes)) {
+      logger.warn('Session file changed since it was read; skipping this save', { file: name });
+      return false;
+    }
+    if (hasCorruptCopy(file)) return true;
+    const suffix = `${Date.now()}.${process.pid}.${randomBytes(4).toString('hex')}`;
+    writeFileSync(`${file.filepath}.${suffix}.corrupt`, file.bytes, {
+      mode: 0o600,
+      flag: 'wx',
+    });
+    return true;
+  } catch (err) {
+    logger.warn('Could not copy an unparsed session file aside; skipping this save', {
+      file: name,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+/** True when a `.corrupt` copy of these exact bytes already sits beside the file. */
+function hasCorruptCopy(file: SessionFileRead): boolean {
+  const dir = dirname(file.filepath);
+  const prefix = `${basename(file.filepath)}.`;
+  return readdirSync(dir).some((entry) => {
+    if (!entry.startsWith(prefix) || !entry.endsWith('.corrupt')) return false;
+    try {
+      return readFileSync(join(dir, entry)).equals(file.bytes);
+    } catch {
+      return false;
+    }
+  });
+}
+
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_BACKOFF_MS = [10, 20, 40, 80];
+const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Windows refuses to rename over a file another process has open, which
+ * antivirus scanners do briefly after each write. Retry with backoff, then
+ * write the target directly so saves never silently stop.
+ */
+function renameIntoPlace(tmpPath: string, filepath: string, content: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(tmpPath, filepath);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      if (!RENAME_RETRY_CODES.has(code)) throw err;
+      if (process.platform !== 'win32' || attempt === RENAME_BACKOFF_MS.length) break;
+      Atomics.wait(SLEEP_CELL, 0, 0, RENAME_BACKOFF_MS[attempt]);
+    }
+  }
+  try {
+    writeFileSync(filepath, content, { mode: 0o600 });
+  } catch (err) {
+    warnOnce(
+      `rename-failed:${filepath}`,
+      'Could not rename session file into place and the direct write failed too',
+      { file: basename(filepath), error: err instanceof Error ? err.message : String(err) },
+    );
+    throw err;
+  }
+  warnOnce(`rename:${filepath}`, 'Could not rename session file into place; wrote it directly', {
+    file: basename(filepath),
+  });
+}
+
+/** Returns the leading `{...}` of `raw` (string- and escape-aware), or null if it never closes. */
+function firstTopLevelJsonDocument(raw: string): string | null {
+  const start = raw.search(/\S/);
+  if (start === -1 || raw[start] !== '{') return null;
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inString) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}' && --depth === 0) {
+      return raw.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
 function parseSessionFilename(filename: string): SessionFileInfo | null {
