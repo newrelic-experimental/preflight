@@ -136,13 +136,15 @@ describe('computeHistoricalCosts', () => {
       writeFileSync(path, JSON.stringify({ ...fields, estimatedCostUsd, costByDayUsd, timeline }));
       utimesSync(path, new Date(start), new Date(start));
     };
-    const weekly = () => computeHistoricalCosts(store, 'current', REF_TS).priorWeeklyCostUsd;
+    const baselines = () => computeHistoricalCosts(store, 'current', REF_TS);
+    const expected = { priorDailyCostUsd: 5, priorWeeklyCostUsd: 205 };
     place(REF_TS - 30 * DAY, 100);
     place(REF_TS - 3 * DAY, 200);
-    expect(weekly()).toBe(200);
+    place(REF_TS - HOUR, 5);
+    expect(baselines()).toEqual(expected);
     store.saveSession(store.loadSession('split') as FullSessionSummary);
     expect(store.loadAllSessions({ since: new Date(REF_TS - 7 * DAY) })).toEqual([]);
-    expect(weekly()).toBe(200);
+    expect(baselines()).toEqual(expected);
   });
 
   it('falls back to zero when the session store cannot be read', () => {

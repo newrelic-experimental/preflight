@@ -4,21 +4,6 @@ import type { FullSessionSummary, SessionStore } from './session-store.js';
 
 const logger = createLogger('historical-costs');
 
-// Compute cost baselines from prior sessions for daily/weekly budget tracking.
-//
-// Called on every cost-update emission, not just at session start. Three reasons:
-//   1) Sessions persisted by other MCP instances during this session need to
-//      land in the daily/weekly totals.
-//   2) Day rollover — a session running past midnight needs a refreshed
-//      "today" baseline. Snapshotting at startup left long-running sessions
-//      with stale yesterday-as-today bookkeeping forever.
-//   3) Cross-midnight prior sessions need today-portion attribution, not
-//      whole-session attribution by startTime. We use timeline-based
-//      pro-rating via todayPortionOfSessionCost() so a session that ran
-//      11pm→2am only contributes its 2-hour today slice to the daily total.
-//
-// The current in-flight session is excluded from the prior totals so we don't
-// double-count with costTracker.getCostForDay(today) on the caller side.
 // A save folds split files into the file of their earliest day, whose name can
 // fall before the window while its spend is recent. A session that started before
 // the window counts only its days inside it, so older spend is not this week's.
@@ -34,6 +19,28 @@ function weeklyPortion(session: FullSessionSummary, weekAgo: Date): number {
   );
 }
 
+// A record combined from days of pieces pro-rates badly, so its day map decides.
+function dailyPortion(session: FullSessionSummary, refTs: number): number {
+  return session.costByDayUsd
+    ? (session.costByDayUsd[localDateKey(refTs)] ?? 0)
+    : todayPortionOfSessionCost(session, refTs);
+}
+
+// Compute cost baselines from prior sessions for daily/weekly budget tracking.
+//
+// Called on every cost-update emission, not just at session start. Three reasons:
+//   1) Sessions persisted by other MCP instances during this session need to
+//      land in the daily/weekly totals.
+//   2) Day rollover — a session running past midnight needs a refreshed
+//      "today" baseline. Snapshotting at startup left long-running sessions
+//      with stale yesterday-as-today bookkeeping forever.
+//   3) Cross-midnight prior sessions need today-portion attribution, not
+//      whole-session attribution by startTime. We use timeline-based
+//      pro-rating via todayPortionOfSessionCost() so a session that ran
+//      11pm→2am only contributes its 2-hour today slice to the daily total.
+//
+// The current in-flight session is excluded from the prior totals so we don't
+// double-count with costTracker.getCostForDay(today) on the caller side.
 export function computeHistoricalCosts(
   sessionStore: Pick<SessionStore, 'loadAllSessions'>,
   currentSessionId: string,
@@ -50,7 +57,7 @@ export function computeHistoricalCosts(
     for (const session of sessions) {
       if (session.sessionId === currentSessionId) continue;
       if (session.estimatedCostUsd === null) continue;
-      priorDailyCostUsd += todayPortionOfSessionCost(session, refTs);
+      priorDailyCostUsd += dailyPortion(session, refTs);
       priorWeeklyCostUsd += weeklyPortion(session, weekAgo);
     }
   } catch (err) {
