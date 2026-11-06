@@ -99,6 +99,17 @@ describe('SkillActivationTracker', () => {
     expect(stamp).toBeNull();
   });
 
+  it('closing the main run when a turn stops leaves later tool calls unstamped', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', toolUseId: 'u1' }));
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'other', sessionId: 's2' }));
+
+    t.closeRun('s1');
+
+    expect(t.recordToolCall(makeRecord({ toolUseId: 'u2' }))).toBeNull();
+    expect(t.recordToolCall(makeRecord({ sessionId: 's2', toolUseId: 'u3' }))?.name).toBe('other');
+  });
+
   it('slash prompt opens source slash', () => {
     const t = new SkillActivationTracker();
     t.recordPrompt('s1', 'lint');

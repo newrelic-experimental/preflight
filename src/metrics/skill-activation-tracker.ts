@@ -17,7 +17,7 @@ export interface SkillActivationMetrics {
  * Tracks the open skill run per session and per agent, so every tool call can
  * be stamped with the skill whose work it is. A run opens on a successful,
  * named `Skill` tool call or a `/<skill>` prompt and lasts until the next
- * prompt or the next skill (last wins: there is no signal for a nested skill
+ * prompt, the end of the turn, or the next skill (last wins: there is no signal for a nested skill
  * returning, so the new run records the one it replaced as its parent
  * instead). A subagent keeps whatever run the main agent had open when the
  * subagent first appeared, since that skill is what spawned it; later prompts
@@ -85,6 +85,11 @@ export class SkillActivationTracker implements Resettable {
       : null;
     this.runsFor(sessionId).set(MAIN_AGENT_KEY, stamp);
     return stamp;
+  }
+
+  /** Closes the main agent's run, for turn ends on installs that send no prompt events. */
+  closeRun(sessionId: string | null | undefined): void {
+    this.recordPrompt(sessionId, null);
   }
 
   getMetrics(sessionId?: string): SkillActivationMetrics {
