@@ -144,6 +144,21 @@ function appendToHookBuffer(path, text) {
   throw new Error(`Hook buffer write raced a drain on all attempts and was not kept: ${path}`);
 }
 
+// src/metrics/mcp-pr-tools.ts
+var MCP_PR_TOOL_ACTION = {
+  create_pull_request: "create",
+  update_pull_request: "edit"
+};
+function bareMcpToolName(toolName) {
+  const parts = toolName.split("__");
+  if (parts.length >= 3 && parts[0] === "mcp") return parts.slice(2).join("__");
+  return toolName;
+}
+function mcpPrToolAction(toolName) {
+  const bare = bareMcpToolName(toolName);
+  return Object.hasOwn(MCP_PR_TOOL_ACTION, bare) ? MCP_PR_TOOL_ACTION[bare] : void 0;
+}
+
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
 var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -478,7 +493,7 @@ function findCreatedPrNumber(output) {
 function extractOutputMeta(toolName, output, input) {
   if (output === null || output === void 0 || typeof output !== "object") return void 0;
   const obj = output;
-  if (toolName.endsWith("create_pull_request")) {
+  if (mcpPrToolAction(toolName) === "create") {
     const createdPrNumber = findCreatedPrNumber(output);
     return createdPrNumber === void 0 ? void 0 : { createdPrNumber };
   }
