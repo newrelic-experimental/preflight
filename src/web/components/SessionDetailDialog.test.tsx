@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { SessionDetailDialog } from './SessionDetailDialog';
 import type {
   DecisionTreeResponse,
@@ -7,6 +7,7 @@ import type {
   ContextResponse,
   ContextCompositionResponse,
   ContextEfficiencyResponse,
+  SessionListEntry,
 } from '../api/client';
 
 function makeDecisionTree(overrides: Partial<DecisionTreeResponse> = {}): DecisionTreeResponse {
@@ -264,5 +265,108 @@ describe('SessionDetailDialog — context composition/efficiency section', () =>
       />,
     );
     expect(screen.getByText('No composition/efficiency data yet.')).toBeInTheDocument();
+  });
+});
+
+function makeSummary(overrides: Partial<SessionListEntry> = {}): SessionListEntry {
+  return {
+    sessionId: 'sess-abc',
+    sessionName: 'billing-refactor',
+    startTime: Date.UTC(2026, 10, 5, 14, 30),
+    durationMs: 198_000,
+    toolCallCount: 42,
+    estimatedCostUsd: 1.37,
+    model: 'claude-sonnet-5',
+    tokensInput: 120_000,
+    tokensOutput: 8_000,
+    tokensCacheRead: 900_000,
+    antiPatterns: [
+      { type: 're_reading', file: 'src/billing.ts', readCount: 5 },
+      { type: 'stuck_loop', command: 'npm test -- --token=secret123', iterations: 3 },
+    ],
+    ...overrides,
+  };
+}
+
+function installClipboard(): ReturnType<typeof vi.fn> {
+  const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', {
+    value: { writeText },
+    configurable: true,
+  });
+  return writeText;
+}
+
+describe('SessionDetailDialog — copy session', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('copies a Markdown summary of the session', async () => {
+    const writeText = installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as markdown/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const text = writeText.mock.calls[0]![0];
+    expect(text).toContain('billing-refactor');
+    expect(text).toContain('3m 18s');
+    expect(text).toContain('$1.37');
+    expect(text).toContain('42');
+    expect(text).toContain('claude-sonnet-5');
+    expect(text).toContain('re_reading');
+    expect(text).toContain('stuck_loop');
+    expect(text).not.toContain('secret123');
+    expect(text).not.toContain('npm test');
+  });
+
+  it('copies the session summary as pretty-printed JSON', async () => {
+    const writeText = installClipboard();
+    const summary = makeSummary();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={summary}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const text = writeText.mock.calls[0]![0];
+    expect(JSON.parse(text)).toEqual(summary);
+    expect(text).toContain('\n  "sessionId"');
+  });
+
+  it('shows a Copied state after a successful copy', async () => {
+    installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
+    expect(await screen.findByText('Copied')).toBeInTheDocument();
+  });
+
+  it('disables both copy buttons when there is no session summary', () => {
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /copy as markdown/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /copy as json/i })).toBeDisabled();
   });
 });
