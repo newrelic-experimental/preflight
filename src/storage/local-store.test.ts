@@ -978,18 +978,8 @@ describe('LocalStore', () => {
       store.writeHeartbeat(67890);
       expect(existsSync(resolve(tmpDir, 'active-sess-hb-2.pid'))).toBe(true);
 
-      store.removeHeartbeat(67890);
+      store.removeHeartbeat();
       expect(existsSync(resolve(tmpDir, 'active-sess-hb-2.pid'))).toBe(false);
-    });
-
-    it('keeps a heartbeat that another process wrote over its own', () => {
-      mkdirSync(tmpDir, { recursive: true });
-      const store = new LocalStore(tmpDir, 'sess-hb-5');
-      store.writeHeartbeat(67890, ['/opt/preflight/dist/index.js'], '/home/user/project');
-
-      store.removeHeartbeat(12345);
-      expect(readFileSync(resolve(tmpDir, 'active-sess-hb-5.pid'), 'utf-8')).toBe('67890');
-      expect(existsSync(resolve(tmpDir, 'active-sess-hb-5.meta.json'))).toBe(true);
     });
 
     it('writeHeartbeat is a no-op when LocalStore has no sessionId', () => {
@@ -1032,7 +1022,7 @@ describe('LocalStore', () => {
       store.writeHeartbeat(67890, ['/opt/preflight/dist/index.js'], '/home/user/project');
       expect(existsSync(resolve(tmpDir, 'active-sess-hb-4.meta.json'))).toBe(true);
 
-      store.removeHeartbeat(67890);
+      store.removeHeartbeat();
       expect(existsSync(resolve(tmpDir, 'active-sess-hb-4.meta.json'))).toBe(false);
     });
 

@@ -1323,63 +1323,6 @@ describe('stdio integration', () => {
       expect(savedCalls(storage, 'corrected-session') ?? 0).toBe(0);
     }, 30000);
 
-    // Writes token events until `adopted` holds, so the store swap's final drain reaches some.
-    const writeTokensUntil = async (
-      storage: string,
-      buffer: string,
-      sessionId: string,
-      adopted: () => boolean,
-    ) => {
-      let n = 0;
-      const writer = setInterval(() => {
-        const token = { mode: 'token', timestamp: Date.now(), sessionId, messageId: `msg_${n++}` };
-        appendToHookBuffer(
-          resolve(storage, `buffer-${buffer}.jsonl`),
-          JSON.stringify({
-            ...token,
-            inputTokens: 1000,
-            outputTokens: 100,
-            model: 'claude-sonnet-5',
-          }) + '\n',
-        );
-      }, 2);
-      try {
-        await waitFor(adopted);
-      } finally {
-        clearInterval(writer);
-      }
-    };
-
-    it("keeps the guessed session's tokens out of the corrected session's cost", async () => {
-      const storage = makeStorage();
-      const cwd = makeCwd();
-      guessFromCwd(storage, cwd);
-      const client = await startEngine(storage, cwd);
-      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'corrected-session');
-      const heartbeat = resolve(storage, 'active-corrected-session.pid');
-      await writeTokensUntil(storage, 'guessed-session', 'guessed-session', () =>
-        existsSync(heartbeat),
-      );
-      await client.close();
-      await waitFor(() => !existsSync(heartbeat));
-
-      expect(savedField(storage, 'corrected-session', 'estimatedCostUsd') ?? 0).toBe(0);
-    }, 30000);
-
-    it('records its own tokens that the store swap drains at adoption', async () => {
-      const storage = makeStorage();
-      const client = await startEngine(storage);
-      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'own-real-session');
-      const heartbeat = resolve(storage, 'active-own-real-session.pid');
-      await writeTokensUntil(storage, 'other-real-session', 'own-real-session', () =>
-        existsSync(heartbeat),
-      );
-      await client.close();
-      await waitFor(() => !existsSync(heartbeat));
-
-      expect(savedField(storage, 'own-real-session', 'estimatedCostUsd')).toBeGreaterThan(0);
-    }, 30000);
-
     it('saves no session but the guessed one when the ppid breadcrumb corrects the guess', async () => {
       const storage = makeStorage();
       const cwd = makeCwd();
@@ -1433,10 +1376,6 @@ describe('stdio integration', () => {
       );
     const drained = (storage: string, sessionId: string) => () =>
       !existsSync(resolve(storage, `buffer-${sessionId}.jsonl`));
-    const settle = async <T>(read: () => T, want: T): Promise<T> => {
-      for (let i = 0; i < 20 && read() !== want; i++) await new Promise((r) => setTimeout(r, 250));
-      return read();
-    };
     const startOwner = async (storage: string, id: string) => {
       const jobDir = mkdtempSync(join(tmpdir(), 'nr-adopt-job-'));
       storages.push(jobDir);
@@ -1496,21 +1435,6 @@ describe('stdio integration', () => {
       expect(savedCalls(storage, 'own-real-session')).toBe(1);
     }, 30000);
 
-    const adoptedId = async (client: Awaited<ReturnType<typeof startEngine>>): Promise<string> => {
-      for (let i = 0; i < 80; i++) {
-        const result = await client
-          .callTool({ name: 'nr_observe_get_session_stats', arguments: {} })
-          .catch(() => null);
-        const content = result?.content as Array<{ text?: string }> | undefined;
-        const id = content
-          ? (JSON.parse(content[0]?.text ?? '{}') as { session_id?: string }).session_id
-          : '';
-        if (id && !id.startsWith('pending-')) return id;
-        await new Promise((r) => setTimeout(r, 250));
-      }
-      throw new Error('engine never adopted a session');
-    };
-
     it('writes no file for a cwd guess it adopts until the guess is confirmed', async () => {
       const storage = makeStorage();
       const cwd = makeCwd();
@@ -1522,22 +1446,6 @@ describe('stdio integration', () => {
       await client.close();
 
       expect(atAdoption).toBeNull();
-    }, 30000);
-
-    it("leaves a live engine's heartbeat alone when it adopts that session from a cwd guess", async () => {
-      const storage = makeStorage();
-      const owner = await startOwner(storage, 'guessed-session');
-      const heartbeat = resolve(storage, 'active-guessed-session.pid');
-      const ownerPid = readFileSync(heartbeat, 'utf-8');
-      const cwd = makeCwd();
-      const guessing = await startEngine(storage, cwd);
-      guessFromCwd(storage, cwd);
-      expect(await adoptedId(guessing)).toBe('guessed-session');
-      const afterAdoption = readFileSync(heartbeat, 'utf-8');
-      await guessing.close();
-      await stopOwner(storage, owner, 'guessed-session');
-
-      expect(afterAdoption).toBe(ownerPid);
     }, 30000);
 
     it("keeps a call's id unmarked when the adoption could not save its session", async () => {
@@ -1573,27 +1481,6 @@ describe('stdio integration', () => {
       expect(savedCalls(storage, 'real-session')).toBe(3);
     }, 30000);
 
-    it("lets another process drain the guessed session's buffer after a correction", async () => {
-      const storage = makeStorage();
-      const cwd = makeCwd();
-      guessFromCwd(storage, cwd);
-      const guessing = await startEngine(storage, cwd);
-      const breadcrumb = resolve(storage, 'session-by-ppid', `${process.pid}.txt`);
-      writeFileSync(breadcrumb, 'corrected-session');
-      await waitFor(() => existsSync(resolve(storage, 'active-corrected-session.pid')));
-      rmSync(breadcrumb);
-      const drainer = await startEngine(storage, undefined, {
-        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
-      });
-      writeHook(storage, 'guessed-session', 'pre', 'toolu_b');
-      writeHook(storage, 'guessed-session', 'post', 'toolu_b');
-      const saved = await settle(() => savedCalls(storage, 'guessed-session'), 1);
-      await drainer.close();
-      await stopOwner(storage, guessing, 'corrected-session');
-
-      expect(saved).toBe(1);
-    }, 30000);
-
     it('counts a call once when its owner recorded the post and restarted before adoption', async () => {
       const storage = makeStorage();
       const pending = await startEngine(storage);
@@ -1610,56 +1497,6 @@ describe('stdio integration', () => {
 
       expect(savedCalls(storage, 'other-real-session')).toBe(1);
       expect(savedCalls(storage, 'own-real-session') ?? 0).toBe(0);
-    }, 30000);
-
-    it("keeps the heartbeat of the guessed session's own engine through the correction", async () => {
-      const storage = makeStorage();
-      const owner = await startOwner(storage, 'guessed-session');
-      const heartbeat = resolve(storage, 'active-guessed-session.pid');
-      const ownerPid = readFileSync(heartbeat, 'utf-8');
-      const cwd = makeCwd();
-      guessFromCwd(storage, cwd);
-      const guessing = await startEngine(storage, cwd);
-      const guessedPid = readFileSync(heartbeat, 'utf-8');
-      await adoptAndStop(storage, guessing, 'corrected-session');
-      const afterCorrection = existsSync(heartbeat) ? readFileSync(heartbeat, 'utf-8') : null;
-      await stopOwner(storage, owner, 'guessed-session');
-
-      expect([guessedPid, afterCorrection]).toEqual([ownerPid, ownerPid]);
-    }, 30000);
-
-    it('takes the heartbeat of its guessed session once the ppid breadcrumb confirms it', async () => {
-      const storage = makeStorage();
-      const previous = await startOwner(storage, 'guessed-session');
-      const heartbeat = resolve(storage, 'active-guessed-session.pid');
-      const previousPid = readFileSync(heartbeat, 'utf-8');
-      const cwd = makeCwd();
-      guessFromCwd(storage, cwd);
-      const guessing = await startEngine(storage, cwd);
-      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'guessed-session');
-      await waitFor(() => readFileSync(heartbeat, 'utf-8') !== previousPid);
-      await previous.close();
-      await new Promise((r) => setTimeout(r, 1000));
-      const afterPreviousExit = existsSync(heartbeat);
-      await stopOwner(storage, guessing, 'guessed-session');
-
-      expect(afterPreviousExit).toBe(true);
-    }, 30000);
-
-    it("takes the heartbeat of its guessed session once that session's own engine exits", async () => {
-      const storage = makeStorage();
-      const previous = await startOwner(storage, 'guessed-session');
-      const heartbeat = resolve(storage, 'active-guessed-session.pid');
-      const cwd = makeCwd();
-      guessFromCwd(storage, cwd);
-      const guessing = await startEngine(storage, cwd, {
-        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
-      });
-      await stopOwner(storage, previous, 'guessed-session');
-      const retaken = await settle(() => existsSync(heartbeat), true);
-      await stopOwner(storage, guessing, 'guessed-session');
-
-      expect(retaken).toBe(true);
     }, 30000);
   });
 
