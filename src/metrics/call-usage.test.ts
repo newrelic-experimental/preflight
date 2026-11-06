@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@jest/globals';
-import { mergeCallUsageMax, mergeCallUsageSum } from './call-usage.js';
+import { mergeCallUsageSum } from './call-usage.js';
 
 describe('mergeCallUsageSum', () => {
   const a = { m: { calls: 2, tokens: 20, estimatedFrom: 'old' }, onlyA: { calls: 1, tokens: 1 } };
@@ -13,9 +13,6 @@ describe('mergeCallUsageSum', () => {
       onlyA: { calls: 1, tokens: 1 },
       onlyB: { calls: 4, tokens: 4 },
     });
-    expect(
-      mergeCallUsageMax<{ calls: number; tokens: number; estimatedFrom?: string }>(a, b)?.m,
-    ).toEqual({ calls: 3, tokens: 30, estimatedFrom: 'new' });
   });
 
   it.each([

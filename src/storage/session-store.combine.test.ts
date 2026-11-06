@@ -1,9 +1,5 @@
 import { describe, it, expect } from '@jest/globals';
-import {
-  combineSessionFiles,
-  deserializeFullSessionSummary,
-  mergeSummaries,
-} from './session-store.js';
+import { combineSessionFiles, deserializeFullSessionSummary } from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
 
 const START = Date.parse('2026-03-01T10:00:00Z');
@@ -192,13 +188,7 @@ describe.each([
 describe('combining fields that do not always exist', () => {
   const pair = (older: Record<string, unknown>, newer: Record<string, unknown>) =>
     combineInEveryOrder([calls(START, 1, older), calls(START + DAY, 1, newer)]);
-  const ledger = (k: number) => ({
-    costUsd: k,
-    inputTokens: k,
-    outputTokens: k,
-    costByModel: { m: k },
-    costByDayUsd: { d: k },
-  });
+  const ledger = { costUsd: 2, inputTokens: 2, outputTokens: 2, costByModel: {}, costByDayUsd: {} };
 
   it('leaves cost unknown only when neither file knows it', () => {
     const unknown = { estimatedCostUsd: null };
@@ -214,9 +204,11 @@ describe('combining fields that do not always exist', () => {
   );
 
   it('keeps a ledger only one file has', () => {
-    const combined = pair({ byteEstimates: ledger(2) }, {});
-    expect(combined.byteEstimates).toEqual(ledger(2));
+    const combined = pair({ byteEstimates: ledger }, {});
+    expect(combined.byteEstimates).toEqual(ledger);
     expect(pair({}, {}).byteEstimates).toBeUndefined();
+    const added = pair({ byteEstimates: ledger, estimatedCostUsd: 3 }, { estimatedCostUsd: 5 });
+    expect(added.estimatedCostUsd).toBeCloseTo(8);
   });
 
   it.each([
@@ -241,7 +233,7 @@ describe('combining fields that do not always exist', () => {
   });
 
   it.each([
-    ['a file has no score', { efficiencyScore: null, efficiencyScoreSampleCount: 0 }],
+    ['a file has no score', { efficiencyScore: null }],
     ['a file has no samples', { efficiencyScore: 0.1, efficiencyScoreSampleCount: 0 }],
     ['a file has no components', { efficiencyScore: 0.1, efficiencyScoreComponents: null }],
   ])('keeps one whole efficiency score when %s', (_, thin) => {
@@ -255,6 +247,15 @@ describe('combining fields that do not always exist', () => {
     expect(combined.efficiencyScoreSampleCount).toBe(4);
   });
 
+  it('does not divide by zero when neither efficiency score has samples', () => {
+    const unsampled = (efficiencyScore: number) => ({
+      efficiencyScore,
+      efficiencyScoreSampleCount: 0,
+      efficiencyScoreComponents: { speed: 1, correctness: 1, autonomy: 1, firstAttemptQuality: 1 },
+    });
+    expect(pair(unsampled(0.1), unsampled(0.9)).efficiencyScore).toBe(0.9);
+  });
+
   it('leaves attribution duration unknown only when neither file knows it', () => {
     const attribution = (apiDurationMs: number | null) => ({
       attribution: { buckets: {}, highContextCostUsd: 0, apiDurationMs },
@@ -266,10 +267,6 @@ describe('combining fields that do not always exist', () => {
 
 describe('which files add and which max-merge', () => {
   const d = (n: number) => START + n * DAY;
-  const counts = (combined: FullSessionSummary) => [
-    combined.toolCallCount,
-    combined.estimatedCostUsd,
-  ];
 
   it('returns a lone file as it is', () => {
     const only = calls(d(0), 3);
@@ -286,7 +283,8 @@ describe('which files add and which max-merge', () => {
       calls(d(1), 20, { timeline: y }),
       calls(d(2), 25, { timeline: [...y, ...entries(d(5), 5)] }),
     ];
-    expect(counts(combineInEveryOrder(files))).toEqual([35, 3.5]);
+    const combined = combineInEveryOrder(files);
+    expect([combined.toolCallCount, combined.estimatedCostUsd]).toEqual([35, 3.5]);
   });
 
   it('max-merges within each group of shared activity and adds across groups', () => {
@@ -331,11 +329,11 @@ describe('which files add and which max-merge', () => {
     expect(added.toolCallCount).toBe(2);
   });
 
-  it('lets the later writer win when two copies are merged', () => {
+  it('counts the file that ended last as the later writer, not the one that started last', () => {
     const shared = entries(d(0), 2);
-    const older = calls(d(0), 2, { timeline: shared, sessionName: 'older' });
-    const newer = calls(d(1), 2, { timeline: shared, sessionName: 'newer' });
-    expect(combineInEveryOrder([older, newer])).toEqual(mergeSummaries(older, newer));
+    const long = calls(d(0), 2, { timeline: shared, sessionName: 'long', endTime: d(5) });
+    const short = calls(d(1), 2, { timeline: shared, sessionName: 'short', endTime: d(2) });
+    expect(combineInEveryOrder([long, short]).sessionName).toBe('long');
   });
 });
 

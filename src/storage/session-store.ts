@@ -806,8 +806,7 @@ function groupBySharedActivity(files: readonly FullSessionSummary[]): FullSessio
 
 /** A total order, oldest writer first, so a combine cannot depend on the order files were listed. */
 function byWriteOrder(x: FullSessionSummary, y: FullSessionSummary): number {
-  const order = x.endTime - y.endTime || x.startTime - y.startTime;
-  if (order !== 0) return order;
+  if (x.endTime !== y.endTime) return x.endTime - y.endTime;
   const [textX, textY] = [JSON.stringify(x), JSON.stringify(y)];
   return textX < textY ? -1 : textX > textY ? 1 : 0;
 }
