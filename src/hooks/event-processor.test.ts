@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MAX_AGENT_TYPE_LENGTH } from '../lib/agent-id.js';
+import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import { LocalStore } from '../storage/local-store.js';
 import { HookEventProcessor } from './event-processor.js';
 import { SkillActivationTracker } from '../metrics/skill-activation-tracker.js';
@@ -1197,6 +1198,24 @@ describe('HookEventProcessor', () => {
       ]);
       expect(records).toHaveLength(2);
       expect(existsSync(resolve(tmpDir, 'buffer-sess-other.jsonl'))).toBe(false);
+    });
+
+    it("counts another session's pre that only the swap's final drain reaches", () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        drainAllSessions: true,
+        pollIntervalMs: 3_600_000,
+      });
+      processor.start();
+      const pre = makePreEvent({ toolUseId: 'toolu_late', sessionId: 'sess-other' });
+      appendToHookBuffer(resolve(tmpDir, 'buffer-sess-other.jsonl'), JSON.stringify(pre) + '\n');
+
+      processor.replaceStore(new LocalStore(tmpDir, 'sess-001'), false);
+      const atSwap = [...records];
+      processor.stop();
+
+      expect(atSwap).toMatchObject([{ toolUseId: 'toolu_late', errorType: 'timeout' }]);
     });
 
     it('keeps a pre with no session id pending across replaceStore()', () => {

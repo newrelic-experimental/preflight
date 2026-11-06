@@ -611,6 +611,18 @@ describe('SessionTracker', () => {
       expect(metrics.toolDurationMsByTool.Read).toBeUndefined();
     });
 
+    it("keeps the session's name and intent when a guess is corrected", () => {
+      const tracker = new SessionTracker('sess-guess');
+      tracker.setAuthoritativeName('my title', 'user');
+      tracker.setSessionIntent('fix the bug');
+
+      tracker.adoptSessionId('sess-real', [], true);
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.sessionName).toBe('my title');
+      expect(metrics.sessionIntent).toBe('fix the bug');
+    });
+
     it('counts a record of another session under a real id', () => {
       const tracker = new SessionTracker('sess-own');
       tracker.recordToolCall(makeRecord({ sessionId: 'sess-other' }));
