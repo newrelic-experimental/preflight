@@ -24,8 +24,8 @@
 import { spawnSync } from 'node:child_process';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
-import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
-import { hasAttributableActivity, type FullSessionSummary } from '../storage/session-store.js';
+import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
+import { hasRecordedUsage, type FullSessionSummary } from '../storage/session-store.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
 import { addCallUsage } from './call-usage.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
@@ -385,6 +385,24 @@ export class LocalSessionAggregator {
     return rollup;
   }
 
+  amendToolCall(record: ToolCallRecord): void {
+    const rollup = record.sessionId ? this.sessions.get(record.sessionId) : undefined;
+    if (!rollup) return;
+    const index = rollup.records.findIndex((r) => r.id === record.id);
+    const previous = rollup.records[index];
+    const entry = rollup.timeline[index];
+    if (previous?.success !== false || !entry) return;
+    if (record.success) rollup.successCount += 1;
+    rollup.records[index] = amendRecord(previous, record);
+    const { errorType: _replaced, ...rest } = entry;
+    rollup.timeline[index] = {
+      ...rest,
+      durationMs: record.durationMs,
+      success: record.success,
+      ...(record.errorType !== undefined && { errorType: record.errorType }),
+    };
+  }
+
   recordToolCall(record: {
     sessionId?: string | null;
     toolName?: string;
@@ -605,12 +623,12 @@ export class LocalSessionAggregator {
 
   /**
    * Session summaries ready for `SessionStore.saveSession()`. Only sessions
-   * with attributable activity are returned (see `hasAttributableActivity`) —
-   * a rollup with neither tool calls nor subagent spend would be filtered out
-   * of `/api/sessions` anyway, and writing it would burn a file that the
+   * with recorded usage (see `hasRecordedUsage`) are returned. A rollup with
+   * none is an idle process, and writing it would burn a file that the
    * empty-summary guard then has to defend. A subagent-only rollup (dead
    * parent, tail still being read) DOES qualify: it has real dollars even
-   * though its parent timeline and toolCallCount are both zero.
+   * though its parent timeline and toolCallCount are both zero. So does a
+   * chat-only rollup, with no tool calls but real cost or tokens.
    */
   toSummaries(context: {
     developer: string;
@@ -621,7 +639,17 @@ export class LocalSessionAggregator {
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
-      if (!hasAttributableActivity(rollup)) continue;
+      if (
+        !hasRecordedUsage({
+          toolCallCount: rollup.toolCallCount,
+          subagentCostUsd: rollup.subagentCostUsd,
+          timeline: rollup.timeline,
+          estimatedCostUsd: rollup.costUsd,
+          tokensInput: rollup.tokensInput,
+          tokensOutput: rollup.tokensOutput,
+        })
+      )
+        continue;
       const models = [...rollup.models];
       rollup.lastEmittedCost = {
         costUsd: rollup.costUsd,

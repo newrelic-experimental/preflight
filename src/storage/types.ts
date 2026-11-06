@@ -374,6 +374,11 @@ export interface ToolCallRecord {
   readonly [key: string]: unknown;
 }
 
+export function amendRecord(previous: ToolCallRecord, amend: ToolCallRecord): ToolCallRecord {
+  const { errorType: _replaced, ...intake } = previous;
+  return { ...intake, ...amend };
+}
+
 export interface ReplayTimelineEntry {
   readonly timestamp: number;
   readonly toolName: string;
