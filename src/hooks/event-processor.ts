@@ -131,6 +131,8 @@ export interface SubagentTurnEvent {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  /** Subset of `cacheCreationTokens` written to the 1-hour cache. Omitted when zero. */
+  readonly cacheCreation1hTokens?: number;
   readonly reasoningTokens: number;
   readonly stopReason: string | null;
   readonly schemaFingerprint: string;
@@ -872,6 +874,7 @@ export class HookEventProcessor {
     }
 
     const platform = event.platform ?? TOKEN_SOURCE_PLATFORM.get(event.tool);
+    const cacheCreation1hTokens = numAttr(event.cacheCreation1hTokens);
     const tokenEvent: TokenEvent = {
       mode: 'token',
       timestamp: event.timestamp,
@@ -889,6 +892,7 @@ export class HookEventProcessor {
         typeof event.cacheCreationTokens === 'number' && !isNaN(event.cacheCreationTokens)
           ? event.cacheCreationTokens
           : 0,
+      ...(cacheCreation1hTokens > 0 && { cacheCreation1hTokens }),
       model: event.model ?? 'unknown',
       sessionId: event.sessionId,
       ...(event.responseMs !== undefined && { responseMs: event.responseMs }),
@@ -1042,6 +1046,7 @@ export class HookEventProcessor {
     if (this.subagentDedupRegistry.hasAndAdd(agentId, messageId)) return;
 
     const agentType = normalizeAgentType(event.agentType);
+    const cacheCreation1hTokens = numAttr(event.cacheCreation1hTokens);
     const turn: SubagentTurnEvent = {
       timestampMs:
         typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
@@ -1057,6 +1062,7 @@ export class HookEventProcessor {
       outputTokens: numAttr(event.outputTokens),
       cacheReadTokens: numAttr(event.cacheReadTokens),
       cacheCreationTokens: numAttr(event.cacheCreationTokens),
+      ...(cacheCreation1hTokens > 0 && { cacheCreation1hTokens }),
       reasoningTokens: numAttr(event.reasoningTokens),
       stopReason: event.stopReason ?? null,
       schemaFingerprint: event.schemaFingerprint ?? '',
