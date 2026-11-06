@@ -18,6 +18,7 @@ import {
   readAndCheckHooks,
   areHooksInstalledAtAnyScope,
   NR_HOOK_RE,
+  siblingBinPath,
 } from './install-helper.js';
 import { writeJsonFile } from './json-utils.js';
 
@@ -68,6 +69,46 @@ describe('NR_HOOK_RE', () => {
 
   it('does not match unrelated commands', () => {
     expect(NR_HOOK_RE.test('some-other-tool stop-failure')).toBe(false);
+  });
+
+  it('matches the .exe collector form, quoted or not', () => {
+    expect(NR_HOOK_RE.test('"C:\\\\shims\\\\preflight-collector.exe" pre-tool')).toBe(true);
+    expect(NR_HOOK_RE.test('C:/shims/preflight-collector.exe stop')).toBe(true);
+  });
+
+  it('matches a Windows shim extension in any case', () => {
+    expect(NR_HOOK_RE.test("& 'C:\\npm\\preflight-collector.CMD' pre-tool")).toBe(true);
+    expect(NR_HOOK_RE.test('"C:\\shims\\preflight-collector.Exe" stop')).toBe(true);
+    expect(NR_HOOK_RE.test("& 'C:\\npm\\preflight-collector.PS1' post-tool")).toBe(true);
+  });
+});
+
+describe('generators with a .exe shim binary', () => {
+  it('hooks target preflight-collector.exe', () => {
+    const hooks = generateHookEntries('/shims/preflight.exe');
+    expect(hooks.PreToolUse[0].hooks[0].command).toBe(
+      `"${join('/shims', 'preflight-collector.exe')}" pre-tool`,
+    );
+  });
+
+  it('hooks keep the extensionless collector for an npm-style .cmd binary', () => {
+    const hooks = generateHookEntries('/npm/preflight.cmd');
+    expect(hooks.PreToolUse[0].hooks[0].command).toBe(
+      `"${join('/npm', 'preflight-collector')}" pre-tool`,
+    );
+  });
+
+  it('derives a sibling path from the resolved binary alone', () => {
+    // @ts-expect-error -- PowerShell shim selection lives in shimExtension, not here
+    expect(siblingBinPath('/npm/preflight', 'preflight-collector', { powershell: true })).toBe(
+      join('/npm', 'preflight-collector'),
+    );
+  });
+
+  it('points the MCP server at preflight.exe', () => {
+    expect(generateMcpServerEntry('/shims/preflight.exe')['newrelic-preflight'].command).toBe(
+      join('/shims', 'preflight.exe'),
+    );
   });
 });
 

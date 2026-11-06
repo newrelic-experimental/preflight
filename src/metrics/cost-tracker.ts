@@ -603,9 +603,9 @@ export class CostTracker implements Resettable {
   /**
    * Seeds cumulative totals from a previous process's last checkpoint for
    * this same session. Adds to current state rather than overwriting, so
-   * callers must invoke this at most once per (re)adopted session id, before
-   * any real activity for that id has been recorded here — see the call
-   * sites in `index.ts` for the once-per-id guard.
+   * callers must invoke this at most once per (re)adopted session id, with
+   * totals this tracker has not already counted — see
+   * `rehydrateTrackersIfResumed` in `index.ts`.
    *
    * Restart data-loss fix: `ParentTranscriptWatcher`'s transcript-read cursor
    * is durably persisted across process restarts so a resumed session never

@@ -6,12 +6,12 @@
  * computes duration, and emits completed ToolCallRecords via a callback.
  *
  * Handles orphans:
- *   - Pre events without a post within orphanTimeoutMs → timeout record
+ *   - Pre events without a post within their wait (pendingTtlMs) → timeout record
  *   - Permission-requested pre events (PermissionRequest seen, then nothing —
  *     Claude Code fires no hook event for an interactive user rejection)
- *     without a post within PERMISSION_REQUESTED_TIMEOUT_MS → rejected record
- *   - Post events with no pending pre, no countedUnpaired entry and no
- *     counted/ hit → record with durationMs: null
+ *     without a post within their permission wait (pendingTtlMs) → rejected record
+ *   - Post events with no pending pre whose call was not already counted,
+ *     here or in counted/ → record with durationMs: null
  */
 
 import { randomUUID } from 'node:crypto';
@@ -804,7 +804,7 @@ export class HookEventProcessor {
     this.pending.delete(key);
     const counted = pendingPre ? undefined : this.takeCountedUnpaired(event);
     if (counted === 'counted-elsewhere') {
-      logger.debug('Late post for a pre another process counted — dropped', {
+      logger.debug('Late post for a call already counted — dropped', {
         tool: event.tool,
         key,
       });
@@ -1021,9 +1021,10 @@ export class HookEventProcessor {
       this.unpersistedCountedIds.delete(key);
       return counted;
     }
-    return event.toolUseId !== undefined &&
-      event.sessionId !== undefined &&
-      this.store.hasCountedToolUseId(event.sessionId, event.toolUseId)
+    const id = event.toolUseId;
+    return id !== undefined &&
+      (this.unpersistedCountedIds.has(id) ||
+        (event.sessionId !== undefined && this.store.hasCountedToolUseId(event.sessionId, id)))
       ? 'counted-elsewhere'
       : undefined;
   }
@@ -1032,13 +1033,11 @@ export class HookEventProcessor {
     const idsBySession = new Map<string, string[]>();
     for (const sessionId of sessionIds) idsBySession.set(sessionId, []);
     for (const [key, sessionId] of this.unpersistedCountedIds) {
-      const ids = idsBySession.get(sessionId);
-      if (!ids) continue;
-      ids.push(key);
-      this.unpersistedCountedIds.delete(key);
+      idsBySession.get(sessionId)?.push(key);
     }
     for (const [sessionId, ids] of idsBySession) {
-      this.store.rememberCountedToolUseIds(sessionId, ids, this.maxPendingEvents);
+      if (!this.store.rememberCountedToolUseIds(sessionId, ids, this.maxPendingEvents)) continue;
+      for (const key of ids) this.unpersistedCountedIds.delete(key);
     }
   }
 

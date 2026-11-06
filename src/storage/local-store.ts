@@ -294,11 +294,11 @@ export class LocalStore {
    * `counted/<sessionId>.<pid>.json`. Each process writes only its own file,
    * so concurrent writers never lose each other's ids; readers take the union.
    */
-  rememberCountedToolUseIds(sessionId: string, toolUseIds: readonly string[], cap: number): void {
-    if (!SESSION_ID_RE.test(sessionId) || toolUseIds.length === 0) return;
+  rememberCountedToolUseIds(sessionId: string, ids: readonly string[], cap: number): boolean {
+    if (!SESSION_ID_RE.test(sessionId) || ids.length === 0) return true;
     const path = resolve(this.countedDir, `${sessionId}.${process.pid}.json`);
     const window = this.ownCountedIds.get(sessionId) ?? new Set(readCountedToolUseIds(path));
-    for (const id of toolUseIds) {
+    for (const id of ids) {
       window.delete(id);
       window.add(id);
     }
@@ -312,8 +312,10 @@ export class LocalStore {
       mkdirSync(this.countedDir, { recursive: true, mode: 0o700 });
       writeFileSync(tmpPath, JSON.stringify([...window]), { mode: 0o600 });
       renameSync(tmpPath, path);
+      return true;
     } catch (err) {
       logger.warn('Failed to save counted toolUseIds', { sessionId, error: String(err) });
+      return false;
     }
   }
 

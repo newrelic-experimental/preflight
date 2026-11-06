@@ -67,10 +67,10 @@ import { ContextWindowTracker } from './metrics/context-window-tracker.js';
 import { initModelPricing } from './metrics/pricing-init.js';
 import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
-import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
 import { CostTracker } from './metrics/cost-tracker.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
+import { FirstSaveBaselines } from './metrics/first-save-baselines.js';
 import type { RepoContext } from './metrics/git-efficiency-tracker.js';
 import {
   GitEfficiencyTracker,
@@ -101,7 +101,6 @@ import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
-import { buildTaskDetectorSeed } from './metrics/task-detector-seed.js';
 import { TaskDetector } from './metrics/task-detector.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
@@ -122,6 +121,7 @@ import { computeHistoricalCosts } from './storage/historical-costs.js';
 import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.js';
 import {
   buildSessionSummary,
+  type FullSessionSummary,
   SessionStore,
   sessionSummaryToDriftRecord,
 } from './storage/session-store.js';
@@ -1431,49 +1431,44 @@ async function main(): Promise<void> {
     // below can call this again for a *different* id after a pending->real
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
-    const toolCallsSaved = new Map<string, number>();
+    const firstSaveBaselines = new FirstSaveBaselines();
+    const saveSessionRememberingBaseline = (summary: FullSessionSummary): boolean => {
+      const saved = sessionStore!.saveSession(summary);
+      // Only a --stdio engine ever adopts a real session id and seeds it.
+      if (saved && options.stdio && !rehydratedTrackerSessionIds.has(summary.sessionId)) {
+        firstSaveBaselines.recordSave({
+          sessionId: summary.sessionId,
+          previous: saved.previous,
+          ownSession: summary.sessionId === sessionTraceId,
+        });
+      }
+      return saved !== null;
+    };
     const rehydrateTrackersIfResumed = (sessionId: string): void => {
       if (isSyntheticSessionId(sessionId)) return;
       if (rehydratedTrackerSessionIds.has(sessionId)) return;
       rehydratedTrackerSessionIds.add(sessionId);
       try {
-        const persisted = sessionStore!.loadSession(sessionId);
-        if (!persisted) return;
-        costTracker.seedFromPersisted(buildCostTrackerSeed(persisted));
-        // A file holding no more calls than this engine saved holds only calls
-        // this engine already counts.
-        if (persisted.toolCallCount > (toolCallsSaved.get(sessionId) ?? 0)) {
-          sessionTracker!.seedFromPersisted({
-            toolCallCount: persisted.toolCallCount,
-            bashCommandCount: persisted.bashCommandCount,
-          });
-        }
-        budgetTracker.seedFiredThresholdsFromSessionTotal(
-          costTracker.getMetrics().sessionTotalCostUsd ?? 0,
+        const { cost, toolCalls } = firstSaveBaselines.take(sessionId, () =>
+          sessionStore!.loadSession(sessionId),
         );
-        modelUsageTracker.seedFromPersisted(persisted.modelBreakdown);
-        qualityProxyTracker.seedFromPersisted(persisted.qualityProxy);
-        // Non-null: taskDetector is assigned unconditionally earlier in this
-        // same setup path (see line ~980), before rehydrateTrackersIfResumed
-        // can be invoked — same pattern as the other `taskDetector!` use
-        // below, needed because its declared type stays `| undefined` for
-        // callers outside this path.
-        taskDetector!.seedFromPersisted(buildTaskDetectorSeed(persisted));
-        if (
-          persisted.efficiencyScore !== null &&
-          persisted.efficiencyScoreComponents &&
-          (persisted.efficiencyScoreSampleCount ?? 0) > 0
-        ) {
-          efficiencyScorer.seedFromPersisted({
-            score: persisted.efficiencyScore,
-            components: persisted.efficiencyScoreComponents,
-            sampleCount: persisted.efficiencyScoreSampleCount ?? 0,
+        if (cost) {
+          costTracker.seedFromPersisted(cost.costTracker);
+          budgetTracker.seedFiredThresholdsFromSessionTotal(cost.estimatedCostUsd ?? 0);
+          modelUsageTracker.seedFromPersisted(cost.modelBreakdown);
+        }
+        if (toolCalls) {
+          sessionTracker!.seedFromPersisted(toolCalls.sessionTracker);
+          qualityProxyTracker.seedFromPersisted(toolCalls.qualityProxy);
+          taskDetector!.seedFromPersisted(toolCalls.taskDetector);
+          if (toolCalls.efficiency) efficiencyScorer.seedFromPersisted(toolCalls.efficiency);
+        }
+        if (cost || toolCalls) {
+          logger.info('Rehydrated trackers from a prior checkpoint for this session', {
+            sessionId,
+            estimatedCostUsd: cost?.estimatedCostUsd ?? null,
           });
         }
-        logger.info('Rehydrated trackers from a prior checkpoint for this session', {
-          sessionId,
-          estimatedCostUsd: persisted.estimatedCostUsd,
-        });
       } catch (err) {
         logger.warn('Failed to rehydrate trackers from a prior checkpoint', {
           sessionId,
@@ -2690,11 +2685,9 @@ async function main(): Promise<void> {
       for (const rollup of rollups) {
         const sessionId = String(rollup.sessionId);
         try {
-          sessionStore.saveSession(
-            rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
-          );
-          toolCallsSaved.set(sessionId, Number(rollup.toolCallCount));
-          savedSessionIds.push(sessionId);
+          if (saveSessionRememberingBaseline(rollup as unknown as FullSessionSummary)) {
+            savedSessionIds.push(sessionId);
+          }
         } catch (err) {
           logger.warn('Failed to save observed session', { sessionId, error: String(err) });
         }
@@ -2763,9 +2756,9 @@ async function main(): Promise<void> {
           }
           return;
         }
-        sessionStore.saveSession(summary);
-        toolCallsSaved.set(summary.sessionId, summary.toolCallCount);
-        eventProcessor?.persistCountedIdsOfSavedSessions([summary.sessionId]);
+        if (saveSessionRememberingBaseline(summary)) {
+          eventProcessor?.persistCountedIdsOfSavedSessions([summary.sessionId]);
+        }
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
         // any real work), so calling it on every periodic checkpoint too is
         // cheap — and necessary: it otherwise only ran on the clean-shutdown
@@ -3033,6 +3026,7 @@ async function main(): Promise<void> {
         // anything these four trackers accumulated since startWatchers()
         // scoped them to that wrong id (chiefly ParentTranscriptWatcher
         // backfill from an unrelated old transcript) belongs to nobody.
+        firstSaveBaselines.forget(staleId);
         costTracker.reset(realId);
         modelUsageTracker.reset(realId);
         contextCompositionTracker.reset(realId);

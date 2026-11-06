@@ -321,7 +321,7 @@ describe('runDiagnostics', () => {
       const c = checks.find((x) => x.check === 'Companion mode')!;
       expect(c.status).toBe('ok');
       expect(c.detail).toBe(
-        "Resolved to false (source: default) from this shell's environment; no running Preflight MCP server to confirm.",
+        "Resolved to false (source: default) from this shell's environment and Claude Code settings; no running Preflight MCP server to confirm.",
       );
     });
 
