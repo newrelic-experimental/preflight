@@ -239,6 +239,7 @@ describe('combining fields that do not always exist', () => {
     const file = { taskSuccessRate: rate, testPassCount, testRunCount, taskCount: 1 };
     const other = { taskSuccessRate: 1, testPassCount: 1, testRunCount: 1, taskCount: 1 };
     expect(pair(file, other).taskSuccessRate).toBeCloseTo(expected);
+    expect(pair(other, file).taskSuccessRate).toBeCloseTo(expected);
   });
 
   it.each([
