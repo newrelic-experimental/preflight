@@ -1,5 +1,5 @@
 import type { ModelPricing } from '../shared/index.js';
-import { createLogger, resolveModelPricing } from '../shared/index.js';
+import { createLogger } from '../shared/index.js';
 
 const logger = createLogger('model-pricing');
 
@@ -61,7 +61,7 @@ const DATED_SUFFIX_RE = /-\d{8}$/;
 export function estimateFromFamily(
   model: string,
   candidateIds: readonly string[],
-  priceOf: (id: string) => unknown = (id) => resolveModelPricing(id),
+  priceOf: (id: string) => unknown,
 ): string | null {
   // Only the target is reduced from its Bedrock spelling: the table's own
   // Bedrock twins are priced separately and must not pool with the bare ids.
