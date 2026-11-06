@@ -137,8 +137,9 @@ describe('computeHistoricalCosts', () => {
       utimesSync(path, new Date(start), new Date(start));
     };
     const baselines = () => computeHistoricalCosts(store, 'current', REF_TS);
-    const expected = { priorDailyCostUsd: 5, priorWeeklyCostUsd: 205 };
+    const expected = { priorDailyCostUsd: 5, priorWeeklyCostUsd: 208 };
     place(REF_TS - 30 * DAY, 100);
+    place(REF_TS - 7 * DAY, 3);
     place(REF_TS - 3 * DAY, 200);
     place(REF_TS - HOUR, 5);
     expect(baselines()).toEqual(expected);
