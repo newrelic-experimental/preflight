@@ -386,6 +386,38 @@ Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a sep
 
 ---
 
+## Environment Variable Reference
+
+Each variable below sets one config field. A set variable outranks the config file key and the default. A CLI flag, where one exists, outranks both.
+
+| Env var                               | Config key                  | Default                      | Effect                                                                                                                                                          |
+| ------------------------------------- | --------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NEW_RELIC_AI_MCP_APP_NAME`           | `appName`                   | `preflight`                  | Sets the `app_name` attribute on events sent to New Relic.                                                                                                      |
+| `NEW_RELIC_AI_MODEL`                  | `model`                     | `claude-sonnet-4-6`          | Model used to estimate cost when the session does not report one.                                                                                               |
+| `NEW_RELIC_AI_MCP_DEVELOPER`          | `developer`                 | Local user name              | Developer name on session spans and the personal coaching view.                                                                                                 |
+| `NEW_RELIC_AI_PROJECT_ID`             | `projectId`                 | Derived from the git remote  | Project identifier on events (`project_id`).                                                                                                                    |
+| `NEW_RELIC_AI_TEAM_ID`                | `teamId`                    | None                         | Team identifier on events (`team_id`).                                                                                                                          |
+| `NEW_RELIC_AI_ORG_ID`                 | `orgId`                     | None                         | Organization identifier on events (`org_id`).                                                                                                                   |
+| `NEW_RELIC_AI_MCP_ENABLED`            | `enabled`                   | `true`                       | When `false`, the server exits at startup.                                                                                                                      |
+| `NEW_RELIC_AI_HIGH_SECURITY`          | `highSecurity`              | `false`                      | When `true`, forces content recording, pricing refresh, and headless install off. See [PRIVACY.md](../PRIVACY.md).                                              |
+| `NEW_RELIC_AI_MCP_RECORD_CONTENT`     | `recordContent`             | `false`                      | When `true`, file contents, command output, and agent text are recorded. High security forces this to `false`. See [PRIVACY.md](../PRIVACY.md).                 |
+| `NEW_RELIC_AI_MCP_STORAGE_PATH`       | `storagePath`               | `~/.newrelic-preflight`      | Directory for local data: session summaries, weekly summaries, and the pricing cache.                                                                           |
+| `NEW_RELIC_AI_MCP_BUFFER_PATH`        | `hookBufferPath`            | `<storagePath>/buffer.jsonl` | Hook event buffer file.                                                                                                                                         |
+| `NEW_RELIC_AI_MCP_HARVEST_METRICS_MS` | `harvestIntervalMs.metrics` | `60000`                      | Milliseconds between metric flushes to New Relic. Accepts 100 to 3600000.                                                                                       |
+| `NEW_RELIC_AI_MCP_LOG_LEVEL`          | `logLevel`                  | `info`                       | One of `debug`, `info`, `warn`, or `error`. Logs go to stderr.                                                                                                  |
+| `NEW_RELIC_AI_MCP_PROXY_UPSTREAMS`    | `proxyUpstreams`            | None                         | JSON array of upstream MCP servers for proxy mode. See [Proxy HTTP Upstreams](#proxy-http-upstreams-https-required).                                            |
+| `NEW_RELIC_AI_SESSION_BUDGET_USD`     | `sessionBudgetUsd`          | None (no budget)             | Positive USD limit per session. Budget warnings fire at 50, 80, and 100 percent.                                                                                |
+| `NEW_RELIC_AI_DAILY_BUDGET_USD`       | `dailyBudgetUsd`            | None (no budget)             | Positive USD limit per day.                                                                                                                                     |
+| `NEW_RELIC_AI_WEEKLY_BUDGET_USD`      | `weeklyBudgetUsd`           | None (no budget)             | Positive USD limit per week.                                                                                                                                    |
+| `NEW_RELIC_AI_DIGEST_SCHEDULE`        | `digestSchedule`            | `0 9 * * 1`                  | Cron expression stored in the config and shown on the dashboard. No scheduler in this build reads it. Digests are sent only when `nr_observe_send_digest` runs. |
+| `NEW_RELIC_AI_RETAIN_SESSIONS_DAYS`   | `retainSessionsDays`        | `90`                         | Session summaries older than this many days are deleted. A value that is not a positive integer is ignored.                                                     |
+| `NEW_RELIC_AI_HOMELAB_URL`            | `homelabServerUrl`          | None                         | URL of the homelab server that receives a copy of each hook event. See [homelab.md](./homelab.md).                                                              |
+| `NEW_RELIC_AI_HOMELAB_TOKEN`          | `homelabToken`              | None                         | Shared bearer token for the homelab server.                                                                                                                     |
+| `NEW_RELIC_AI_HOMELAB_SERVER_PORT`    | `homelabServer.port`        | `7777`                       | Port the homelab server listens on.                                                                                                                             |
+| `NEW_RELIC_AI_HOMELAB_BIND_ADDRESS`   | `homelabServer.bindAddress` | `0.0.0.0`                    | Address the homelab server binds to.                                                                                                                            |
+
+---
+
 ## Setup Wizard — Environment Variable Pre-Fill
 
 If `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, or `NEW_RELIC_API_KEY` are set in the environment when `preflight setup` is run, the wizard pre-fills those prompts and shows the env var name as the hint (`$NEW_RELIC_LICENSE_KEY`). Pressing Enter accepts the value — no copy-paste needed. This makes the wizard scriptable in CI pipelines or Docker-based dev environments where credentials are already injected as environment variables.
