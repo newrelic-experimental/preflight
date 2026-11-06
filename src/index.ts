@@ -29,6 +29,7 @@ import { CopilotUsageWatcher } from './hooks/copilot-usage-watcher.js';
 import { HookEventProcessor } from './hooks/index.js';
 import { isPlatformDetectionFellBack } from './hooks/platform-detection-health.js';
 import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
+import { BilledTurnLedger, pruneBilledTurns } from './hooks/billed-turn-ledger.js';
 import {
   isSyntheticSessionId,
   readJobState,
@@ -66,10 +67,10 @@ import { ContextWindowTracker } from './metrics/context-window-tracker.js';
 import { initModelPricing } from './metrics/pricing-init.js';
 import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
-import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
 import { CostTracker } from './metrics/cost-tracker.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
+import { FirstSaveBaselines } from './metrics/first-save-baselines.js';
 import type { RepoContext } from './metrics/git-efficiency-tracker.js';
 import {
   GitEfficiencyTracker,
@@ -100,7 +101,6 @@ import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
-import { buildTaskDetectorSeed } from './metrics/task-detector-seed.js';
 import { TaskDetector } from './metrics/task-detector.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
@@ -120,6 +120,7 @@ import { computeHistoricalCosts } from './storage/historical-costs.js';
 import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.js';
 import {
   buildSessionSummary,
+  type FullSessionSummary,
   SessionStore,
   sessionSummaryToDriftRecord,
 } from './storage/session-store.js';
@@ -348,8 +349,17 @@ export function runRetentionSweep(deps: RetentionSweepDeps): void {
     deps.storagePath,
     deps.retainSessionsDays,
   );
-  if (deletedSessionFiles > 0 || deletedWeeklySummaryFiles > 0) {
-    logger.info('Retention purge complete', { deletedSessionFiles, deletedWeeklySummaryFiles });
+  const deletedBilledTurnDays = pruneBilledTurns(
+    deps.storagePath,
+    deps.retainSessionsDays,
+    Date.now(),
+  );
+  if (deletedSessionFiles > 0 || deletedWeeklySummaryFiles > 0 || deletedBilledTurnDays > 0) {
+    logger.info('Retention purge complete', {
+      deletedSessionFiles,
+      deletedWeeklySummaryFiles,
+      deletedBilledTurnDays,
+    });
   }
 }
 
@@ -1158,8 +1168,8 @@ async function main(): Promise<void> {
     }
 
     // Per-session buffer scoping: in --stdio mode the LocalStore is bound to
-    // this MCP's resolved session_id so drainBuffer() only sees this session's
-    // events. In --local mode (or the provisional window before session ID
+    // this MCP's resolved session_id so drainBuffer() reads only this session's
+    // buffer, plus this process's own leftover drain claims of other buffers. In --local mode (or the provisional window before session ID
     // resolution) we use an unscoped store that drains all session buffers.
     const isProvisional = options.stdio && sessionTraceId.startsWith('pending-');
     const localStore =
@@ -1411,44 +1421,42 @@ async function main(): Promise<void> {
     // below can call this again for a *different* id after a pending->real
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
+    const firstSaveBaselines = new FirstSaveBaselines();
+    const saveSessionRememberingBaseline = (summary: FullSessionSummary): void => {
+      const saved = sessionStore!.saveSession(summary);
+      // Only a --stdio engine ever adopts a real session id and seeds it.
+      if (!saved || !options.stdio || rehydratedTrackerSessionIds.has(summary.sessionId)) return;
+      firstSaveBaselines.recordSave({
+        sessionId: summary.sessionId,
+        previous: saved.previous,
+        ownSession: summary.sessionId === sessionTraceId,
+      });
+    };
     const rehydrateTrackersIfResumed = (sessionId: string): void => {
       if (isSyntheticSessionId(sessionId)) return;
       if (rehydratedTrackerSessionIds.has(sessionId)) return;
       rehydratedTrackerSessionIds.add(sessionId);
       try {
-        const persisted = sessionStore!.loadSession(sessionId);
-        if (!persisted) return;
-        costTracker.seedFromPersisted(buildCostTrackerSeed(persisted));
-        sessionTracker!.seedFromPersisted({
-          toolCallCount: persisted.toolCallCount,
-          bashCommandCount: persisted.bashCommandCount,
-        });
-        budgetTracker.seedFiredThresholdsFromSessionTotal(
-          costTracker.getMetrics().sessionTotalCostUsd ?? 0,
+        const { cost, toolCalls } = firstSaveBaselines.take(sessionId, () =>
+          sessionStore!.loadSession(sessionId),
         );
-        modelUsageTracker.seedFromPersisted(persisted.modelBreakdown);
-        qualityProxyTracker.seedFromPersisted(persisted.qualityProxy);
-        // Non-null: taskDetector is assigned unconditionally earlier in this
-        // same setup path (see line ~980), before rehydrateTrackersIfResumed
-        // can be invoked — same pattern as the other `taskDetector!` use
-        // below, needed because its declared type stays `| undefined` for
-        // callers outside this path.
-        taskDetector!.seedFromPersisted(buildTaskDetectorSeed(persisted));
-        if (
-          persisted.efficiencyScore !== null &&
-          persisted.efficiencyScoreComponents &&
-          (persisted.efficiencyScoreSampleCount ?? 0) > 0
-        ) {
-          efficiencyScorer.seedFromPersisted({
-            score: persisted.efficiencyScore,
-            components: persisted.efficiencyScoreComponents,
-            sampleCount: persisted.efficiencyScoreSampleCount ?? 0,
+        if (cost) {
+          costTracker.seedFromPersisted(cost.costTracker);
+          budgetTracker.seedFiredThresholdsFromSessionTotal(cost.estimatedCostUsd ?? 0);
+          modelUsageTracker.seedFromPersisted(cost.modelBreakdown);
+        }
+        if (toolCalls) {
+          sessionTracker!.seedFromPersisted(toolCalls.sessionTracker);
+          qualityProxyTracker.seedFromPersisted(toolCalls.qualityProxy);
+          taskDetector!.seedFromPersisted(toolCalls.taskDetector);
+          if (toolCalls.efficiency) efficiencyScorer.seedFromPersisted(toolCalls.efficiency);
+        }
+        if (cost || toolCalls) {
+          logger.info('Rehydrated trackers from a prior checkpoint for this session', {
+            sessionId,
+            estimatedCostUsd: cost?.estimatedCostUsd ?? null,
           });
         }
-        logger.info('Rehydrated trackers from a prior checkpoint for this session', {
-          sessionId,
-          estimatedCostUsd: persisted.estimatedCostUsd,
-        });
       } catch (err) {
         logger.warn('Failed to rehydrate trackers from a prior checkpoint', {
           sessionId,
@@ -2698,9 +2706,7 @@ async function main(): Promise<void> {
             repoResolver: repoNameResolver,
           });
           for (const rollup of rollups) {
-            sessionStore.saveSession(
-              rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
-            );
+            saveSessionRememberingBaseline(rollup as unknown as FullSessionSummary);
           }
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
@@ -2710,7 +2716,7 @@ async function main(): Promise<void> {
           }
           return;
         }
-        sessionStore.saveSession(summary);
+        saveSessionRememberingBaseline(summary);
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
         // any real work), so calling it on every periodic checkpoint too is
         // cheap — and necessary: it otherwise only ran on the clean-shutdown
@@ -2791,6 +2797,12 @@ async function main(): Promise<void> {
     const copilotAppUsageWatcherEnabled =
       process.env['NR_AI_ENABLE_COPILOT_APP_USAGE_WATCHER'] !== '0';
 
+    // One claimant per process, shared by every watcher that bills turns.
+    const billedTurnLedger = new BilledTurnLedger({
+      storagePath: config!.storagePath,
+      retainDays: config!.retainSessionsDays,
+    });
+
     // Construct + start the watchers for a given session id. In `--stdio` mode
     // the watchers filter discovered transcript dirs by `parentSessionId`; in
     // `--local` mode they run unfiltered (parentSessionId: undefined). Shared by
@@ -2815,6 +2827,7 @@ async function main(): Promise<void> {
           storagePath: config!.storagePath,
           parentSessionId: isStdioWatcher ? watcherSessionId : undefined,
           localStore,
+          ledger: billedTurnLedger,
         });
         activeParentTranscriptWatcher.start();
         logger.info('ParentTranscriptWatcher started', {
@@ -2826,6 +2839,7 @@ async function main(): Promise<void> {
           storagePath: config!.storagePath,
           parentSessionId: isStdioWatcher ? watcherSessionId : undefined,
           localStore,
+          ledger: billedTurnLedger,
         });
         activeCopilotUsageWatcher.start();
         logger.info('CopilotUsageWatcher started', {
@@ -2856,6 +2870,7 @@ async function main(): Promise<void> {
           // Only meaningful when unfiltered (--local) — lets discoverFiles()
           // skip sessions that already have a live --stdio owner tailing them.
           localStore,
+          ledger: billedTurnLedger,
           onTurnRead: (turn: SubagentTokenEvent) => subagentAttribution.recordSubagentTurn(turn),
         };
         activeSubagentWatcher = new SubagentWatcher(
@@ -2973,6 +2988,7 @@ async function main(): Promise<void> {
         // path, which is keyed by whatever id the hook collector script
         // wrote — never the wrong guess — so toolCallCount/timeline stay
         // clean through the whole unconfirmed window regardless.
+        firstSaveBaselines.forget(sessionTraceId);
         costTracker.reset(realId);
         modelUsageTracker.reset(realId);
         contextCompositionTracker.reset(realId);

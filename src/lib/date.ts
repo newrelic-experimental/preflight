@@ -166,6 +166,17 @@ export function localStartOfDay(refTs?: number, tz?: string): number {
 }
 
 /**
+ * Epoch ms at the next local midnight after `dayStart` (a value from
+ * `localStartOfDay`). Built from Y/M/D parts so a 23h or 25h day ends at the
+ * real midnight, and a zone that skips midnight (Santiago) lands on its
+ * 00:00 or 01:00 start via `localStartOfDay` instead of drifting by an hour.
+ */
+export function localEndOfDay(dayStart: number): number {
+  const d = new Date(dayStart);
+  return localStartOfDay(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime());
+}
+
+/**
  * True iff `ts` and `refTs` (or now) fall on the same calendar day.
  * Uses Y/M/D comparison so DST transitions don't introduce off-by-one bugs
  * (a "day" can be 23 h or 25 h on DST boundaries; raw ts-range arithmetic
@@ -232,7 +243,7 @@ export function todayPortionRatio(
   refTs?: number,
 ): number {
   const dayStart = localStartOfDay(refTs);
-  const dayEnd = dayStart + 86_400_000;
+  const dayEnd = localEndOfDay(dayStart);
 
   if (session.endTime < dayStart) return 0;
   if (session.startTime >= dayEnd) return 0;

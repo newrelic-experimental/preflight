@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { execFileSync, spawn } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import {
   _procFs,
@@ -33,6 +41,7 @@ beforeEach(() => {
   tmpDir = resolve(tmpdir(), `nr-hook-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tmpDir, { recursive: true });
   bufferPath = resolve(tmpDir, 'buffer.jsonl');
+  process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
   process.env.NEW_RELIC_AI_MCP_BUFFER_PATH = bufferPath;
   delete process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT;
   delete process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
@@ -245,6 +254,12 @@ function readBufferLines(sessionId?: string): Record<string, unknown>[] {
 
 describe('collector-script', () => {
   describe('processHook() — PreToolUse', () => {
+    it('lands its session breadcrumbs in the test temp dir, not the default storage dir', () => {
+      processHook(makePreToolUse());
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'))).toBe(true);
+      expect(existsSync(resolve(homedir(), '.newrelic-preflight'))).toBe(false);
+    });
+
     it('writes a valid pre event to the buffer', () => {
       processHook(makePreToolUse());
 
@@ -2057,11 +2072,51 @@ describe('collector-script', () => {
       expect(events[0]!.mode).toBe('pre');
       expect(events[0]!.tool).toBe('Read');
     });
+
+    it('exits 0 when it drops an event and its stderr is closed', async () => {
+      const scriptPath = resolve(
+        __dirname,
+        '..',
+        '..',
+        'plugin',
+        '.claude-plugin',
+        'scripts',
+        'collector-script.js',
+      );
+      writeFileSync(resolve(tmpDir, 'f'), '');
+      const child = spawn(process.execPath, [scriptPath], {
+        stdio: ['pipe', 'ignore', 'pipe'],
+        env: { ...process.env, NEW_RELIC_AI_MCP_BUFFER_PATH: resolve(tmpDir, 'f', 'b.jsonl') },
+      });
+      const closed = new Promise((done) => child.stderr.once('close', done));
+      child.stderr.destroy();
+      await closed;
+      child.stdin.end(makePreToolUse());
+
+      const code = await new Promise((done) => child.on('exit', done));
+      expect(code).toBe(0);
+    });
   });
 
   // ---------------------------------------------------------------------------
   // Per-session buffer paths + PPID breadcrumb
   // ---------------------------------------------------------------------------
+
+  describe('processHook() — failed buffer writes', () => {
+    it('installs one stderr error listener across repeated drops', () => {
+      mkdirSync(bufferPath);
+      const write = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        processHook(makePreToolUse());
+        const afterFirst = process.stderr.listenerCount('error');
+        for (let i = 0; i < 19; i++) processHook(makePreToolUse());
+        expect(write).toHaveBeenCalledTimes(20);
+        expect(process.stderr.listenerCount('error')).toBe(afterFirst);
+      } finally {
+        write.mockRestore();
+      }
+    });
+  });
 
   describe('getBufferPath()', () => {
     it('honours NEW_RELIC_AI_MCP_BUFFER_PATH verbatim and ignores sessionId', () => {
