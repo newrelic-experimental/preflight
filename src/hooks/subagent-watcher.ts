@@ -51,6 +51,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 import { createLogger } from '../shared/index.js';
 import { AGENT_ID_RE, normalizeAgentType } from '../lib/agent-id.js';
+import { claudeProjectsDir } from '../lib/claude-config-dir.js';
 import { BilledTurnLedger } from './billed-turn-ledger.js';
 import { ThrottledWarning } from './throttled-warning.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
@@ -110,7 +111,6 @@ const COST_SELF_CHECK_MS = 60 * 60 * 1000; // 1h
 const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 // AGENT_ID_RE imported from ../lib/agent-id.js — see its doc comment for the
 // two valid agentId shapes.
-const PROJECTS_DIR_NAME = '.claude/projects';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -181,7 +181,7 @@ export interface ObservabilityHealthEvent {
 interface SubagentWatcherBaseOptions {
   /** Storage path for cursor + fingerprint state (defaults to ~/.newrelic-preflight). */
   readonly storagePath?: string;
-  /** ~/.claude/projects directory; defaults to homedir-relative. */
+  /** Claude Code projects directory; defaults to `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`. */
   readonly projectsDir?: string;
   /** Poll interval in ms. Default 2000 scoped, UNFILTERED_POLL_INTERVAL_MS unfiltered. */
   readonly pollIntervalMs?: number;
@@ -380,7 +380,7 @@ export class SubagentWatcher {
 
   constructor(options: SubagentWatcherOptions = {}) {
     this.storagePath = options.storagePath ?? join(homedir(), '.newrelic-preflight');
-    this.projectsDir = options.projectsDir ?? join(homedir(), PROJECTS_DIR_NAME);
+    this.projectsDir = options.projectsDir ?? claudeProjectsDir();
     this.parentSessionFilter = options.parentSessionId ?? null;
     this.pollIntervalMs =
       options.pollIntervalMs ??
