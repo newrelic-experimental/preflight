@@ -831,6 +831,19 @@ describe('LocalSessionAggregator baseline fold from a file with a byte-estimate 
     expect(merged.estimatedCostUsd!).toBeGreaterThanOrEqual(merged.subagentCostUsd);
     expect(merged.subagentCostUsd).toBe(0.75);
   });
+
+  it('seeds a saved subagent day that the exact per-day costs do not list', () => {
+    const otherDay = localDateKey(new Date(2026, 8, 9, 12).getTime());
+    const file: FullSessionSummary = {
+      ...makeSavedFileWithLedger('stored'),
+      subagentCostUsd: 0.5,
+      subagentCostByDayUsd: { [otherDay]: 0.5 },
+    };
+    const agg = new LocalSessionAggregator({ persistedCostBaseline: () => file });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.25, timestamp: DAY, agentId: 'agent-1' });
+    const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
+    expect(incoming!.costByDayUsd![otherDay]).toBe(0.5);
+  });
 });
 
 describe('stripHeredocs', () => {
