@@ -634,6 +634,37 @@ describe('loadMcpConfig()', () => {
     expect(config.pricingRefresh).toBe(false);
   });
 
+  it('experimentalArtifacts defaults to false', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.experimentalArtifacts).toBe(false);
+  });
+
+  it('experimentalArtifacts env var true enables it', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_EXPERIMENTAL_ARTIFACTS = 'true';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.experimentalArtifacts).toBe(true);
+  });
+
+  it('experimentalArtifacts config-file key enables it', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const config = loadMcpConfig({ config: writeConfigFile({ experimentalArtifacts: true }) });
+    expect(config.experimentalArtifacts).toBe(true);
+  });
+
+  it('highSecurity forces experimentalArtifacts off even when env var and file say true', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_HIGH_SECURITY = 'true';
+    process.env.NEW_RELIC_AI_EXPERIMENTAL_ARTIFACTS = 'true';
+    const config = loadMcpConfig({ config: writeConfigFile({ experimentalArtifacts: true }) });
+    expect(config.experimentalArtifacts).toBe(false);
+  });
+
   it('highSecurity=true set via env var', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';

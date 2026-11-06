@@ -11,8 +11,11 @@ import {
   Settings2,
   Bell,
   ExternalLink,
+  FileCode2,
 } from 'lucide-react';
 
+import { useQuery } from '@tanstack/react-query';
+import { fetchSettings, qk } from '../api/client';
 import { useLiveAlerts } from '../hooks/useLiveAlerts';
 import { useVersionInfo } from '../hooks/useVersionInfo';
 import type { AlertEvent } from '../store/liveStore';
@@ -30,6 +33,9 @@ const NAV_ANALYZE = [
   { path: '/git', label: 'Git', Icon: GitBranch },
   { path: '/audit', label: 'Audit', Icon: ShieldCheck },
 ] as const;
+
+// Shown only when the experimental artifact index is on (see the filter in render).
+const NAV_ARTIFACTS = [{ path: '/artifacts', label: 'Artifacts', Icon: FileCode2 }] as const;
 
 const NAV_CONFIGURE = [
   { path: '/settings', label: 'Settings', Icon: Settings2 },
@@ -59,6 +65,13 @@ export function Sidebar({
 }: SidebarProps): JSX.Element {
   const { count: alertCount, maxSeverity } = useLiveAlerts();
   const versionInfo = useVersionInfo();
+  const { data: settings } = useQuery({
+    queryKey: qk.settings,
+    queryFn: ({ signal }) => fetchSettings(signal),
+  });
+  const analyzeItems = settings?.experimentalArtifacts
+    ? [...NAV_ANALYZE, ...NAV_ARTIFACTS]
+    : NAV_ANALYZE;
 
   function renderNavItem({
     path,
@@ -170,7 +183,7 @@ export function Sidebar({
         Analyze
       </div>
       <nav aria-label="Analyze" className="flex flex-col gap-0.5 mb-4">
-        {NAV_ANALYZE.map((item) => renderNavItem(item))}
+        {analyzeItems.map((item) => renderNavItem(item))}
       </nav>
 
       {/* CONFIGURE section */}
