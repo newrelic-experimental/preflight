@@ -9,6 +9,7 @@ import {
   type AntiPatternEvent,
 } from '../store/liveStore';
 import { Kpi } from '../components/Kpi';
+import { DailyBudgetMeter } from '../components/DailyBudgetMeter';
 import { AnimatedCard } from '../components/AnimatedCard';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
 import { EmptyState } from '../components/EmptyState';
@@ -512,6 +513,7 @@ export function Today(): JSX.Element {
                 />
               </div>
             </Card>
+            <DailyBudgetMeter />
             {watcherOff && (
               <div className="mt-2 text-[10px] text-ink-muted">
                 Subagent cost tracking is disabled (
