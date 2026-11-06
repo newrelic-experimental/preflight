@@ -186,6 +186,7 @@ export interface CostMetrics {
    * a single day when it has no timeline to pro-rate against.
    */
   readonly costByDayUsd: Record<string, number>;
+  readonly firstActivityByDayMs: Record<string, number>;
   /** Subagent-attributed cost bucketed by local-day key; today-scoped
    * counterpart to `subagentCostUsd`. Same rationale as `costByDayUsd`. */
   readonly subagentCostByDayUsd: Record<string, number>;
@@ -252,6 +253,7 @@ export interface CostTrackerSeed {
   /** Portion of `totalCostUsd`/`subagentCostUsd` attributable to `dayKey` (see `todayPortionOfSessionCost`). */
   readonly dayCostUsd: number;
   readonly daySubagentCostUsd: number;
+  readonly dayFirstActivityMs?: number;
   /**
    * Per-workflow-run cost, split by local-day, from the persisted checkpoint
    * — see `seedFromPersisted()`'s doc comment for why this is seeded (unlike
@@ -584,7 +586,7 @@ export class CostTracker implements Resettable {
     }
     this.lastMutationMsByDay.set(dayKey, wallNowMs);
     const existingFirst = this.firstActivityMsByDay.get(dayKey);
-    if (existingFirst === undefined || tsMs < existingFirst) {
+    if (breakdown.totalUsd > 0 && (existingFirst === undefined || tsMs < existingFirst)) {
       // Use earliest event timestamp for the day so cross-midnight burn-rate
       // denominators stay correct (NOT wall-clock arrival time).
       this.firstActivityMsByDay.set(dayKey, tsMs);
@@ -676,9 +678,10 @@ export class CostTracker implements Resettable {
         (this.costByDayUsd.get(seed.dayKey) ?? 0) + seed.dayCostUsd,
       );
       this.lastMutationMsByDay.set(seed.dayKey, Date.now());
+      const seededFirst = seed.dayFirstActivityMs ?? Date.now();
       const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
-      if (existingFirst === undefined) {
-        this.firstActivityMsByDay.set(seed.dayKey, Date.now());
+      if (existingFirst === undefined || seededFirst < existingFirst) {
+        this.firstActivityMsByDay.set(seed.dayKey, seededFirst);
       }
     }
     if (seed.daySubagentCostUsd !== 0) {
@@ -860,6 +863,7 @@ export class CostTracker implements Resettable {
       parentCostUsd: this.parentCostUsd,
       costByWorkflowRunId,
       costByDayUsd: Object.fromEntries(this.costByDayUsd),
+      firstActivityByDayMs: Object.fromEntries(this.firstActivityMsByDay),
       unpricedByModel: Object.fromEntries(this.unpricedByModel),
       estimatedByModel: Object.fromEntries(this.estimatedByModel),
       subagentCostByDayUsd: Object.fromEntries(this.subagentCostByDayUsd),

@@ -606,6 +606,35 @@ describe('LocalSessionAggregator subagent cost', () => {
     const [summary] = summariesOf(agg);
     expect(summary?.costByDayUsd).toBeUndefined();
     expect(summary?.subagentCostByDayUsd).toBeUndefined();
+    expect(summary?.firstActivityByDayMs).toBeUndefined();
+  });
+
+  it('leaves $0 usage out of firstActivityByDayMs', () => {
+    const agg = new LocalSessionAggregator();
+    const firstSpend = Date.parse('2026-09-10T12:00:00Z');
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0, timestamp: firstSpend - 60_000 });
+    agg.recordTokenUsage(REAL_ID, { timestamp: firstSpend - 30_000 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: firstSpend });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: firstSpend });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.firstActivityByDayMs).toEqual({ [localDateKey(firstSpend)]: firstSpend });
+  });
+
+  it('records the earliest token event per local day as firstActivityByDayMs', () => {
+    const agg = new LocalSessionAggregator();
+    const day1 = Date.parse('2026-09-10T12:00:00Z');
+    const day2 = day1 + 48 * 60 * 60 * 1000;
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: day1 + 60_000 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: day1 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: day2 });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: day1 - 60_000 });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.firstActivityByDayMs).toEqual({
+      [localDateKey(day1)]: day1,
+      [localDateKey(day2)]: day2,
+    });
   });
 });
 

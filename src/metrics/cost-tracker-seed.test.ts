@@ -11,6 +11,10 @@ import { CostTracker } from './cost-tracker.js';
 import { BudgetTracker, type BudgetThresholdEvent } from './budget-tracker.js';
 import { shouldApplyCostEstimate } from './cost-estimate-gate.js';
 import { handleReportTokens, handleGetPromptCacheHealth } from '../tools/cost-tools.js';
+import { buildCostForecastFromInputs } from './cost-forecast.js';
+import { createApiHandler } from '../dashboard/routes/api-handler.js';
+import { makeUsage } from '../__test-utils__/token-usage.js';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -456,5 +460,103 @@ describe('buildCostTrackerSeed today attribution', () => {
     );
     expect(seed.dayCostUsd).toBeCloseTo(2, 6);
     expect(seed.daySubagentCostUsd).toBeLessThanOrEqual(seed.dayCostUsd);
+  });
+});
+
+describe('first spend today across a real restart', () => {
+  const DAY_START = localStartOfDay(new Date(2026, 9, 29, 12, 0, 0).getTime());
+  const TODAY_KEY = localDateKey(DAY_START);
+  const HOUR = 3_600_000;
+  const at = (h: number): number => DAY_START + h * HOUR;
+  const SESSION_ID = 'sess-restart-anchor';
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'preflight-restart-anchor-'));
+    jest.useFakeTimers({
+      now: at(13),
+      doNotFake: ['setTimeout', 'setInterval', 'setImmediate', 'nextTick', 'queueMicrotask'],
+    });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const sessionTracker = {
+    getMetrics: () => ({
+      sessionId: SESSION_ID,
+      sessionName: null,
+      sessionStartTime: at(9),
+      toolCallCount: 0,
+      toolCallCountByTool: {},
+      bashCommandsRun: 0,
+      toolSuccessRate: null,
+    }),
+  } as unknown as SessionTracker;
+
+  async function getJson(
+    handler: ReturnType<typeof createApiHandler>,
+    url: string,
+  ): Promise<Record<string, unknown>> {
+    let body = '';
+    const res = {
+      writeHead: () => undefined,
+      setHeader: () => undefined,
+      end: (chunk?: string) => {
+        body = chunk ?? '';
+      },
+    } as unknown as ServerResponse;
+    await handler({ method: 'GET', url } as IncomingMessage, res);
+    return JSON.parse(body) as Record<string, unknown>;
+  }
+
+  it('keeps the 09:00 first spend after a 14:00 restart, so /api/cost matches the aggregate', async () => {
+    const before = new CostTracker();
+    const usage = makeUsage({ inputTokens: 100_000, outputTokens: 10_000, totalTokens: 110_000 });
+    for (const h of [9, 11]) {
+      before.recordTokenUsage(usage, 'claude-sonnet-4', { timestampMs: at(h) });
+    }
+    const store = new SessionStore({ storagePath: dir });
+    store.saveSession(
+      buildSessionSummary({ sessionTracker, costTracker: before, developer: 'dev' }),
+    );
+
+    jest.setSystemTime(at(14));
+    const restartMs = Date.now();
+    const persisted = store.loadSession(SESSION_ID);
+    if (!persisted) throw new Error('session was not persisted');
+    const after = new CostTracker();
+    after.seedFromPersisted(buildCostTrackerSeed(persisted));
+
+    expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBe(at(9));
+
+    jest.setSystemTime(at(14) + 10 * 60_000);
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [persisted],
+        loadSessionsOverlappingToday: () => [persisted],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker,
+      costTracker: after,
+      costForecast: () =>
+        buildCostForecastFromInputs({
+          sessionSpentUsd: after.getMetrics().sessionTotalCostUsd ?? 0,
+          sessionStartMs: restartMs,
+          dailySpentUsd: after.getCostForDay(TODAY_KEY),
+          dailyFirstActivityMs: after.getFirstActivityMsForDay(TODAY_KEY),
+        }),
+    } as unknown as Parameters<typeof createApiHandler>[0]);
+    const cost = (await getJson(handler, '/api/cost')) as {
+      forecast: { forecastEndOfDayUsd: number };
+    };
+    const aggregate = (await getJson(handler, '/api/sessions/today/aggregate')) as {
+      forecastEndOfDayUsd: number;
+    };
+    expect(aggregate.forecastEndOfDayUsd).not.toBeNull();
+    expect(cost.forecast.forecastEndOfDayUsd).toBeCloseTo(aggregate.forecastEndOfDayUsd, 2);
   });
 });

@@ -4144,7 +4144,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.cacheHealth.totalSavingsUsd).toBeCloseTo(0.02);
   });
 
-  it('sets forecastEndOfDayUsd (not null) from a live buffer timestamp when no session has been persisted yet', async () => {
+  it('leaves forecastEndOfDayUsd null when the only activity today is a buffered hook event', async () => {
     const now = Date.now();
     const startOfDay = new Date(now);
     startOfDay.setHours(0, 0, 0, 0);
@@ -4170,13 +4170,8 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       totalCostUsd: number;
       forecastEndOfDayUsd: number | null;
     };
-    // No cost anywhere yet, so totalCostUsd is 0 and buildCostForecastFromInputs
-    // takes its deterministic "nothing spent yet" branch (forecastEndOfDayUsd: 0,
-    // not null). Asserting it's 0 rather than null proves a `dailyFirstActivityMs`
-    // anchor WAS established from the buffer event — if it hadn't been, the whole
-    // forecast computation would have been skipped and this would be null.
     expect(parsed.totalCostUsd).toBe(0);
-    expect(parsed.forecastEndOfDayUsd).toBe(0);
+    expect(parsed.forecastEndOfDayUsd).toBeNull();
   });
 
   it("anchors the forecast to a cross-midnight session's first TODAY-scoped timeline entry, not its startTime", async () => {
@@ -4227,6 +4222,153 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     // effectiveBaseUsd is totalCostUsd and the rate is >= 0, so the forecast
     // can never be less than the amount already spent today.
     expect(parsed.forecastEndOfDayUsd as number).toBeGreaterThanOrEqual(parsed.totalCostUsd);
+  });
+
+  describe('forecast anchor', () => {
+    const HOUR = 60 * 60 * 1000;
+    const dayStart = localStartOfDay(Date.now());
+    const todayKey = localDateKey(dayStart + 12 * HOUR);
+    const at = (h: number, m = 0, sec = 0) => dayStart + h * HOUR + m * 60_000 + sec * 1000;
+    const tool = (timestamp: number) => ({ timestamp, durationMs: null, toolName: 'Read' });
+
+    async function forecastAt(
+      nowMs: number,
+      session: Record<string, unknown> | Record<string, unknown>[],
+      buffer: Record<string, unknown>[] = [],
+    ): Promise<number | null> {
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(nowMs);
+      try {
+        const sessions = Array.isArray(session) ? session : [session];
+        const handler = createApiHandler({
+          localStore: { peekAllBuffers: () => buffer },
+          sessionStore: {
+            loadTodaySessions: () => sessions.filter((s) => (s.startTime as number) >= dayStart),
+            loadSessionsOverlappingToday: () => sessions,
+            listSessions: () => [],
+            loadSession: () => null,
+          } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+        });
+        const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+        const { res, status, body } = fakeRes();
+        await handler(req, res);
+        expect(status()).toBe(200);
+        return (JSON.parse(body()) as { forecastEndOfDayUsd: number | null }).forecastEndOfDayUsd;
+      } finally {
+        nowSpy.mockRestore();
+      }
+    }
+
+    it('anchors at the persisted first spend today, matching /api/cost, when spend predates the first tool call', async () => {
+      const forecast = await forecastAt(at(12), {
+        sessionId: 'spend-before-tools',
+        startTime: at(9),
+        endTime: at(12),
+        estimatedCostUsd: 1,
+        costByDayUsd: { [todayKey]: 1 },
+        firstActivityByDayMs: { [todayKey]: at(9) },
+        timeline: [tool(at(9, 29, 47))],
+      });
+      expect(forecast).toBe(5);
+    });
+
+    it('does not dilute the rate with idle time between process start and the first spend', async () => {
+      const forecast = await forecastAt(at(16), {
+        sessionId: 'idle-window',
+        startTime: at(8),
+        endTime: at(16),
+        estimatedCostUsd: 1,
+        costByDayUsd: { [todayKey]: 1 },
+        firstActivityByDayMs: { [todayKey]: at(15) },
+        timeline: [tool(at(15, 10))],
+      });
+      expect(forecast).toBe(9);
+    });
+
+    it('anchors a resumed cross-midnight session at its persisted first spend today, not its first tool call today', async () => {
+      const yesterdayKey = localDateKey(dayStart - 2 * HOUR);
+      const forecast = await forecastAt(at(12), {
+        sessionId: 'resumed-cross-midnight',
+        startTime: dayStart - 2 * HOUR,
+        endTime: at(12),
+        estimatedCostUsd: 5,
+        costByDayUsd: { [yesterdayKey]: 3, [todayKey]: 2 },
+        firstActivityByDayMs: { [yesterdayKey]: dayStart - 2 * HOUR, [todayKey]: at(10) },
+        timeline: [tool(dayStart - HOUR), tool(at(11, 30))],
+      });
+      expect(forecast).toBe(14);
+    });
+
+    const spender = {
+      sessionId: 'spender',
+      startTime: at(9),
+      endTime: at(12),
+      estimatedCostUsd: 1,
+      costByDayUsd: { [todayKey]: 1 },
+      firstActivityByDayMs: { [todayKey]: at(9) },
+      timeline: [tool(at(9, 30))],
+    };
+
+    it('does not anchor the day at a zero-spend session or a buffer event without cost', async () => {
+      const hookOnly = {
+        sessionId: 'hook-only',
+        startTime: at(7),
+        endTime: at(12),
+        estimatedCostUsd: 0,
+        timeline: [tool(at(7))],
+      };
+      const buffer = [
+        { mode: 'pre', sessionId: 'buffered', tool: 'Read', timestamp: at(6) },
+        { mode: 'post', sessionId: 'buffered', tool: 'Read', timestamp: at(6, 1) },
+        { mode: 'token', sessionId: 'buffered', timestamp: at(6, 2), model: 'claude-sonnet-4' },
+      ];
+      expect(await forecastAt(at(12), [spender, hookOnly], buffer)).toBe(5);
+    });
+
+    it('anchors the day at a buffered token event that costs something', async () => {
+      const buffer = [
+        {
+          mode: 'token',
+          sessionId: 'buffered',
+          timestamp: at(6),
+          model: 'claude-sonnet-4',
+          inputTokens: 1000,
+          outputTokens: 100,
+        },
+      ];
+      expect(await forecastAt(at(12), [spender], buffer)).toBe(3);
+    });
+
+    it('falls back to the first tool call today when a merged summary has no key for today', async () => {
+      const yesterdayKey = localDateKey(dayStart - 2 * HOUR);
+      const forecast = await forecastAt(at(12), {
+        ...spender,
+        sessionId: 'merged-legacy',
+        firstActivityByDayMs: { [yesterdayKey]: dayStart - 2 * HOUR },
+        timeline: [tool(at(11))],
+      });
+      expect(forecast).toBe(13);
+    });
+
+    it('clamps a persisted anchor before today to the start of today', async () => {
+      const forecast = await forecastAt(at(12), {
+        ...spender,
+        sessionId: 'skewed-anchor',
+        firstActivityByDayMs: { [todayKey]: dayStart - 3 * HOUR },
+      });
+      expect(forecast).toBe(2);
+    });
+
+    it('keeps the first-tool-call anchor for a legacy summary without firstActivityByDayMs', async () => {
+      const forecast = await forecastAt(at(12), {
+        sessionId: 'legacy',
+        startTime: at(9),
+        endTime: at(12),
+        estimatedCostUsd: 1,
+        costByDayUsd: { [todayKey]: 1 },
+        timeline: [tool(at(11))],
+      });
+      expect(forecast).toBe(13);
+    });
   });
 
   it('returns forecastEndOfDayUsd null when there is no activity today from any source', async () => {
