@@ -4,12 +4,14 @@ import { createLogger } from '../shared/index.js';
 
 const logger = createLogger('retention');
 
+const PURGED_SUFFIXES = ['.json', '.corrupt', '.merged', '.tmp'];
+
 /**
- * Delete every `.json` file in `<storagePath>/<subdir>` whose mtime is older
- * than `retainDays`. Shared by `purgeOldSessions` and
+ * Delete every `PURGED_SUFFIXES` file in `<storagePath>/<subdir>` whose mtime
+ * is older than `retainDays`. Shared by `purgeOldSessions` and
  * `purgeOldWeeklySummaries` — only the subdirectory and log label differ.
  */
-function purgeOldJsonFiles(
+function purgeOldFiles(
   storagePath: string,
   subdir: string,
   retainDays: number,
@@ -28,7 +30,7 @@ function purgeOldJsonFiles(
   }
 
   for (const file of files) {
-    if (!file.endsWith('.json')) continue;
+    if (!PURGED_SUFFIXES.some((suffix) => file.endsWith(suffix))) continue;
     const fullPath = resolve(dir, file);
     try {
       const stat = statSync(fullPath);
@@ -63,9 +65,9 @@ function purgeOldJsonFiles(
 }
 
 export function purgeOldSessions(storagePath: string, retainDays: number): number {
-  return purgeOldJsonFiles(storagePath, 'sessions', retainDays, 'session');
+  return purgeOldFiles(storagePath, 'sessions', retainDays, 'session');
 }
 
 export function purgeOldWeeklySummaries(storagePath: string, retainDays: number): number {
-  return purgeOldJsonFiles(storagePath, 'weekly_summaries', retainDays, 'weekly summary');
+  return purgeOldFiles(storagePath, 'weekly_summaries', retainDays, 'weekly summary');
 }
