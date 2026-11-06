@@ -1,9 +1,9 @@
-import { useId, useRef, useState, type JSX } from 'react';
+import { useId, useRef, useState, type JSX, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Info } from 'lucide-react';
 
 export interface InfoTooltipProps {
-  readonly text: string;
+  readonly text: ReactNode;
 }
 
 interface TooltipPosition {
