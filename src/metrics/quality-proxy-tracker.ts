@@ -236,8 +236,8 @@ export class QualityProxyTracker {
    * now-dead prior process already observed.
    *
    * Adds to current counts rather than overwriting, so callers must invoke
-   * this at most once per (re)adopted session id, before any real activity
-   * for that id has reached this tracker.
+   * this at most once per (re)adopted session id, with totals this tracker
+   * has not already counted — see `rehydrateTrackersIfResumed` in `index.ts`.
    */
   seedFromPersisted(counts: QualityProxyRawCounts): void {
     if (counts.totalSignals === 0) return;
