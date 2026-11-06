@@ -10,7 +10,6 @@ import {
   utimesSync,
   realpathSync,
   readFileSync,
-  appendFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
@@ -2081,16 +2080,13 @@ describe('stdio integration', () => {
         const before = (await readStats()).tool_calls;
         const toolUseId = `toolu_drain_${++toolUseCount}`;
         const ts = Date.now();
-        appendFileSync(
-          resolve(storagePath, `buffer-${bufferSessionId}.jsonl`),
-          [
-            { mode: 'pre', tool: 'Bash', timestamp: ts, sessionId, toolUseId },
-            { mode: 'post', tool: 'Bash', timestamp: ts + 1, sessionId, toolUseId, success: true },
-          ]
-            .map((e) => JSON.stringify(e))
-            .join('\n') + '\n',
-          { mode: 0o600 },
-        );
+        const bufferPath = resolve(storagePath, `buffer-${bufferSessionId}.jsonl`);
+        for (const event of [
+          { mode: 'pre', tool: 'Bash', timestamp: ts, sessionId, toolUseId },
+          { mode: 'post', tool: 'Bash', timestamp: ts + 1, sessionId, toolUseId, success: true },
+        ]) {
+          appendToHookBuffer(bufferPath, JSON.stringify(event) + '\n');
+        }
         for (let i = 0; i < 100; i++) {
           if ((await readStats()).tool_calls > before) return;
           await new Promise((r) => setTimeout(r, 20));
