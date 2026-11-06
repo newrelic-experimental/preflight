@@ -15,7 +15,8 @@
  * does not fail the run. When it starts to pass the run fails with `XPASS`, so
  * the tag cannot outlive the fix.
  */
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcessByStdio } from 'node:child_process';
+import type { Readable, Writable } from 'node:stream';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -124,7 +125,7 @@ function sendTurn(sid: string, turn: { readonly input: string; readonly output: 
 }
 
 class StdioServer {
-  private readonly child: ChildProcessWithoutNullStreams;
+  private readonly child: ChildProcessByStdio<Writable, Readable, null>;
   private readonly pending = new Map<number, (message: unknown) => void>();
   private buffer = '';
   private nextId = 0;
