@@ -109,7 +109,12 @@ interface CursorState {
   readonly outputTokens: number;
   readonly cachedTokens: number;
   readonly reasoningTokens: number;
+  /** Times the counters were re-baselined after shrinking; scopes the usage ids. */
+  readonly epoch?: number;
 }
+
+const counterSum = (c: CursorState): number =>
+  c.inputTokens + c.outputTokens + c.cachedTokens + c.reasoningTokens;
 
 const ZERO_CURSOR: CursorState = {
   inputTokens: 0,
@@ -253,6 +258,7 @@ export class CopilotAppUsageWatcher {
   private processRow(row: SessionTotalsRow): void {
     const sessionId = row.id;
     const cursor = this.readCursor(sessionId);
+    const epoch = cursor.epoch ?? 0;
     const totals: CursorState = {
       inputTokens: num(row.total_input_tokens),
       outputTokens: num(row.total_output_tokens),
@@ -269,8 +275,9 @@ export class CopilotAppUsageWatcher {
       // A total below the cursor means the session id was reused after a
       // fork/reset, or the app's own counters were reset — not a real
       // negative delta. Re-baseline without emitting so the next real growth
-      // reports only its own delta.
-      this.writeCursor(sessionId, totals);
+      // reports only its own delta, in a new epoch so its counter ranges
+      // cannot collide with the old ones.
+      this.writeCursor(sessionId, { ...totals, epoch: epoch + 1 });
       return;
     }
 
@@ -299,7 +306,7 @@ export class CopilotAppUsageWatcher {
         promptTokens: dInput,
         tierThreshold,
       });
-      this.writeCursor(sessionId, totals);
+      this.writeCursor(sessionId, { ...totals, epoch });
       return;
     }
 
@@ -315,11 +322,12 @@ export class CopilotAppUsageWatcher {
       // CostTracker simply can't price them, but the exact token counts
       // still land. Never invent a model mapping here.
       model: row.model ?? 'unknown',
-      // Deterministic from the cumulative totals at emit time (not the
-      // delta), so a crash between this append and the cursor write below
-      // dedups downstream via HookEventProcessor's (sessionId, messageId)
-      // ring instead of double-billing on the next poll's re-read.
-      messageId: `copilot-app:${sessionId}:${totals.inputTokens}:${totals.outputTokens}`,
+      // The app exposes no per-request id, so the delta is named by the
+      // range of the cumulative counters it covers. A re-read after a crash
+      // between this append and the cursor write below repeats the same
+      // range, and the usage ledger counts a range once and refuses one that
+      // overlaps a range it holds (a lost cursor re-emitting from 0).
+      messageId: `copilot-app:${sessionId}#${epoch}:${counterSum(cursor)}-${counterSum(totals)}`,
       // Mirrors CopilotUsageWatcher's verified cache-inclusive inputTokens
       // semantics from the same vendor's VS Code pipeline (see its comment at
       // the equivalent emission site in copilot-usage-watcher.ts) — inferred
@@ -335,7 +343,7 @@ export class CopilotAppUsageWatcher {
     });
     this.linesEmitted += 1;
 
-    this.writeCursor(sessionId, totals);
+    this.writeCursor(sessionId, { ...totals, epoch });
   }
 
   // -------------------------------------------------------------------------
@@ -359,6 +367,7 @@ export class CopilotAppUsageWatcher {
         outputTokens: num(parsed.outputTokens),
         cachedTokens: num(parsed.cachedTokens),
         reasoningTokens: num(parsed.reasoningTokens),
+        epoch: num(parsed.epoch),
       };
     } catch {
       return ZERO_CURSOR;

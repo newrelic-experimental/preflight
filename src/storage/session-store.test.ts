@@ -1132,6 +1132,7 @@ describe('buildSessionSummary', () => {
     };
 
     const mockCostTracker = {
+      getUsageLedger: () => undefined,
       getMetrics: () => ({
         sessionTotalCostUsd: 0.12,
         costPerLineOfCode: null,
@@ -3896,6 +3897,7 @@ describe('attribution field', () => {
         unpricedByModel: {},
         estimatedByModel: {},
       }),
+      getUsageLedger: () => undefined,
     } as unknown as CostTracker;
 
     const summary = buildSessionSummary({

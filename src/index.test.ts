@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import {
   chmodSync,
@@ -1689,10 +1690,17 @@ describe('stdio integration', () => {
           const target = countCheckpoints() + 3;
           expect(await waitUntil(() => countCheckpoints() >= target)).toBe(true);
         },
+        // Each report is its own API call: an id-less one is ignored once the
+        // session holds a watcher's usage (see handleReportTokens).
         reportInputTokens: (inputTokens: number) =>
           client.callTool({
             name: 'nr_observe_report_tokens',
-            arguments: { input_tokens: inputTokens, output_tokens: 0, model: 'claude-sonnet-5' },
+            arguments: {
+              input_tokens: inputTokens,
+              output_tokens: 0,
+              model: 'claude-sonnet-5',
+              request_id: `req_${randomUUID()}`,
+            },
           }),
         close: () => client.close(),
       };
@@ -1723,6 +1731,7 @@ describe('stdio integration', () => {
       projectCwd: string,
       guessId: string,
       inputTokens: number,
+      savedTokens = inputTokens,
     ): Promise<{
       engine: Engine;
       capSaved: SavedTotals;
@@ -1731,7 +1740,7 @@ describe('stdio integration', () => {
       const engine = await startEngine(storagePath, projectCwd);
       await engine.reportInputTokens(inputTokens);
       expect(
-        await waitUntil(() => readSaved(storagePath, guessId)?.tokensInput === inputTokens),
+        await waitUntil(() => readSaved(storagePath, guessId)?.tokensInput === savedTokens),
       ).toBe(true);
       return { engine, capSaved: readSaved(storagePath, guessId)! };
     }
@@ -1782,9 +1791,11 @@ describe('stdio integration', () => {
         ).toBe(true);
         await other.close();
 
+        // The file merges the two writers' calls as a union, so the other
+        // writer's 400 is kept from this engine's first save on.
         await engine.reportInputTokens(1000);
         expect(
-          await waitUntil(() => readSaved(storagePath, 'skipped-first-id')?.tokensInput === 1000),
+          await waitUntil(() => readSaved(storagePath, 'skipped-first-id')?.tokensInput === 1400),
         ).toBe(true);
         await confirmViaPpid(storagePath, engine, 'skipped-first-id');
 
@@ -1803,21 +1814,21 @@ describe('stdio integration', () => {
       const { storagePath, projectCwd, cleanup } = makeDirs();
       try {
         const prior = await savePriorSession(storagePath, projectCwd, 'guess-shared-id', 400);
+        // The first checkpoint already holds both writers' calls (a union).
         const { engine, capSaved } = await startGuessedEngineAndCheckpoint(
           storagePath,
           projectCwd,
           'guess-shared-id',
           1000,
+          1400,
         );
 
         await confirmViaPpid(storagePath, engine, 'guess-shared-id');
 
         const saved = readSaved(storagePath, 'guess-shared-id')!;
         expect(saved.tokensInput).toBe(1400);
-        expect(saved.estimatedCostUsd).toBeCloseTo(
-          prior.estimatedCostUsd + capSaved.estimatedCostUsd,
-          9,
-        );
+        expect(saved.estimatedCostUsd).toBeCloseTo(capSaved.estimatedCostUsd, 9);
+        expect(saved.estimatedCostUsd).toBeCloseTo(prior.estimatedCostUsd * (1400 / 400), 9);
         await engine.close();
       } finally {
         await cleanup();

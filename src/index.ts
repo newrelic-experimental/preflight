@@ -1385,10 +1385,6 @@ async function main(): Promise<void> {
     };
 
     sessionStore = new SessionStore({ storagePath: config.storagePath });
-    // Non-null capture so the aggregator's callback (invoked lazily, long
-    // after this point) doesn't have to re-narrow `sessionStore: SessionStore
-    // | undefined` — same pattern as sessionStoreForCostBaseline below.
-    const sessionStoreForAggregator = sessionStore;
     const currentSessionId = sessionTracker.getMetrics().sessionId;
     let currentRepoName: string | null = null;
 
@@ -1397,13 +1393,7 @@ async function main(): Promise<void> {
     // synthetic id, which persistSession() skips — so without this rollup the
     // sessions it observes are never written to disk at all. See
     // local-session-aggregator.ts for why that hits Copilot but not Claude Code.
-    const localSessionAggregator = new LocalSessionAggregator({
-      // Restart survival: the first subagent turn this process sees for a
-      // session folds in whatever that session's file already says (a
-      // --stdio engine's final write, or this daemon's own last checkpoint)
-      // before adding the tail — see applyPersistedBaseline's doc comment.
-      persistedCostBaseline: (id) => sessionStoreForAggregator.loadSession(id),
-    });
+    const localSessionAggregator = new LocalSessionAggregator();
     const repoNameResolver = new RepoNameResolver();
 
     const budgetTracker = new BudgetTracker({
@@ -2406,16 +2396,23 @@ async function main(): Promise<void> {
         if (!isOwnEvent) {
           breakdown = costTracker.priceUsage(usage, tokenEvent.model);
         } else {
-          breakdown = costTracker.recordTokenUsage(usage, tokenEvent.model, {
+          const result = costTracker.recordUsage(usage, tokenEvent.model, {
             timestampMs: tokenEvent.timestamp,
             replacesEstimates: true,
+            ...(tokenEvent.usageId !== undefined && { usageId: tokenEvent.usageId }),
             ...(tokenEvent.responseMs !== undefined && { responseMs: tokenEvent.responseMs }),
           });
-          modelUsageTracker.recordUsage(tokenEvent.model, usage, breakdown.totalUsd);
+          breakdown = result.breakdown;
+          // A call already in the ledger (a redelivered buffer line after a
+          // restart) is not a new request for the model breakdown either.
+          if (result.recorded) {
+            modelUsageTracker.recordUsage(tokenEvent.model, usage, breakdown.totalUsd);
+          }
         }
         localSessionAggregator.recordTokenUsage(tokenEvent.sessionId, {
           timestamp: tokenEvent.timestamp,
           costUsd: breakdown.totalUsd,
+          ...(tokenEvent.usageId !== undefined && { usageId: tokenEvent.usageId }),
           model: tokenEvent.model,
           inputTokens: tokenEvent.inputTokens,
           outputTokens: tokenEvent.outputTokens,
@@ -2520,16 +2517,17 @@ async function main(): Promise<void> {
             turn.cacheReadTokens +
             turn.cacheCreationTokens,
         };
-        const breakdown = costTracker.recordTokenUsage(usage, turn.model, {
+        const { breakdown, recorded } = costTracker.recordUsage(usage, turn.model, {
           timestampMs: turn.timestampMs,
           workflowRunId: turn.workflowRunId,
           agentId: turn.agentId,
           agentType,
+          usageId: turn.messageId,
         });
         // Subagent turns are real model requests and cost real money, so they
         // belong in the model breakdown too — recording them only in the cost
         // tracker left Model Usage blind to every subagent-only session.
-        modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
+        if (recorded) modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
         // The only line that makes an orphan session's subagent spend durable:
         // without it, an unscoped process's aggregator never learns about this
         // session's subagent cost and persistSession() has nothing to write.
@@ -2545,6 +2543,7 @@ async function main(): Promise<void> {
           cacheCreationTokens: turn.cacheCreationTokens,
           thinkingTokens: turn.reasoningTokens,
           agentId: turn.agentId,
+          usageId: turn.messageId,
         });
         // Pricing miss → usd:null on the wire; we recompute here so
         // the breakdown view distinguishes "0 because pricing absent" from

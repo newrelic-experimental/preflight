@@ -28,7 +28,6 @@ import type { HookEvent, TokenEvent } from '../storage/types.js';
 import { handleReportTokens } from '../tools/cost-tools.js';
 import type { TokenReport } from '../tools/cost-tools.js';
 import { CostTracker } from './cost-tracker.js';
-import type { TokenRecordContext } from './cost-tracker.js';
 import { buildCostTrackerSeed } from './cost-tracker-seed.js';
 import { shouldApplyCostEstimate } from './cost-estimate-gate.js';
 import { LocalSessionAggregator, RepoNameResolver } from './local-session-aggregator.js';
@@ -144,8 +143,6 @@ function usageOf(e: {
   };
 }
 
-const usageIdOf = (e: object): string | undefined => (e as { usageId?: string }).usageId;
-
 /** The `--stdio` engine that owns session P (mirrors src/index.ts's wiring). */
 class Engine {
   readonly ledger: BilledTurnLedger;
@@ -169,12 +166,11 @@ class Engine {
       onTokenEvent: (e: TokenEvent) => {
         if (e.sessionId !== undefined && e.sessionId !== P) return;
         this.sawReplaying = true;
-        const id = usageIdOf(e);
         this.cost.recordTokenUsage(usageOf(e), e.model, {
           timestampMs: e.timestamp,
           replacesEstimates: true,
-          ...(id !== undefined && { usageId: id }),
-        } as TokenRecordContext);
+          ...(e.usageId !== undefined && { usageId: e.usageId }),
+        });
       },
       onSubagentTurn: (t: SubagentTurnEvent) => {
         if (t.parentSessionId !== P) return;
@@ -183,7 +179,7 @@ class Engine {
           workflowRunId: t.workflowRunId,
           agentId: t.agentId,
           usageId: t.messageId,
-        } as TokenRecordContext);
+        });
       },
     });
   }
@@ -214,16 +210,12 @@ class LocalWriter {
   constructor(readonly storagePath: string) {
     this.ledger = new BilledTurnLedger({ storagePath });
     this.store = new LocalStore(storagePath);
-    const sessions = new SessionStore({ storagePath });
-    this.aggregator = new LocalSessionAggregator({
-      persistedCostBaseline: (id) => sessions.loadSession(id),
-    });
+    this.aggregator = new LocalSessionAggregator();
     this.processor = new HookEventProcessor({
       store: this.store,
       drainAllSessions: true,
       onRecord: () => undefined,
       onTokenEvent: (e: TokenEvent) => {
-        const id = usageIdOf(e);
         this.aggregator.recordTokenUsage(e.sessionId, {
           timestamp: e.timestamp,
           costUsd: this.pricer.priceUsage(usageOf(e), e.model).totalUsd,
@@ -232,8 +224,8 @@ class LocalWriter {
           outputTokens: e.outputTokens,
           cacheReadTokens: e.cacheReadTokens,
           cacheCreationTokens: e.cacheCreationTokens,
-          ...(id !== undefined && { usageId: id }),
-        } as Parameters<LocalSessionAggregator['recordTokenUsage']>[1]);
+          ...(e.usageId !== undefined && { usageId: e.usageId }),
+        });
       },
       onSubagentTurn: (t: SubagentTurnEvent) => {
         this.aggregator.recordTokenUsage(t.parentSessionId, {
@@ -247,7 +239,7 @@ class LocalWriter {
           thinkingTokens: t.reasoningTokens,
           agentId: t.agentId,
           usageId: t.messageId,
-        } as Parameters<LocalSessionAggregator['recordTokenUsage']>[1]);
+        });
       },
     });
   }
@@ -365,14 +357,14 @@ class World {
   }
 
   private selfReport(usage: TokenUsage, requestId?: string): void {
-    const args = {
+    const args: TokenReport = {
       input_tokens: usage.inputTokens,
       output_tokens: usage.outputTokens,
       cache_read_tokens: usage.cacheReadTokens,
       cache_creation_tokens: usage.cacheCreationTokens,
       model: MODEL,
       ...(requestId !== undefined && { request_id: requestId }),
-    } as TokenReport;
+    };
     handleReportTokens(this.engine.cost, args);
   }
 

@@ -46,6 +46,24 @@ import type {
   UnpricedModelUsage,
 } from '../metrics/cost-tracker.js';
 import { mergeCallUsageMax, parseCallUsageRecord } from '../metrics/call-usage.js';
+import { legacyEstimateEntries } from '../metrics/cost-tracker.js';
+import {
+  UsageLedger,
+  ZERO_TOTALS,
+  addTotals,
+  decodeUsageLedger,
+  foldUsage,
+  isZeroTotals,
+  maxTotals,
+  parsePersistedUsageLedger,
+  subtractTotals,
+} from '../metrics/usage-ledger.js';
+import type {
+  CostTotals,
+  PersistedUsageLedger,
+  UsageEntry,
+  UsageFold,
+} from '../metrics/usage-ledger.js';
 import type {
   TurnCostAttributor,
   CostAttributionMetrics,
@@ -175,6 +193,13 @@ export interface FullSessionSummary extends SessionSummary {
    * this field, where it is derived as total minus ledger.
    */
   readonly exactTotals?: ExactTotals;
+  /**
+   * Every API call this session's cost comes from, keyed by the call's id (see
+   * usage-ledger.ts). The cost and token fields of a summary that has one are
+   * computed from it, and two copies of the session merge as a union. Absent
+   * on summaries written before the ledger existed; see `usageLedgerOf`.
+   */
+  readonly usageLedger?: PersistedUsageLedger;
   readonly tokensInput: number;
   readonly tokensOutput: number;
   readonly tokensThinking: number;
@@ -477,6 +502,157 @@ export function exactTotalsOf(s: FullSessionSummary): ExactTotals {
   };
 }
 
+/** A session's usage ledger, as stored or recovered from a pre-ledger summary. */
+export interface SessionUsageLedger {
+  readonly entries: readonly UsageEntry[];
+  readonly base: CostTotals;
+  /** The summary had no ledger: `base` is its exact totals, which may overlap another copy's entries. */
+  readonly legacy: boolean;
+}
+
+function costByModelOf(s: FullSessionSummary): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [model, entry] of Object.entries(s.modelBreakdown ?? {})) {
+    if (entry.totalCostUsd > 0) out[model] = entry.totalCostUsd;
+  }
+  return out;
+}
+
+/** The summary's own scalar and day figures, which a ledger-aware writer computes from the ledger. */
+function reconcilableTotalsOf(s: FullSessionSummary, fold: UsageFold): CostTotals {
+  return {
+    ...fold.totals,
+    costUsd: s.estimatedCostUsd ?? 0,
+    subagentCostUsd: s.subagentCostUsd ?? 0,
+    inputTokens: s.tokensInput ?? 0,
+    outputTokens: s.tokensOutput ?? 0,
+    thinkingTokens: s.tokensThinking ?? 0,
+    cacheReadTokens: s.tokensCacheRead ?? 0,
+    cacheCreationTokens: s.tokensCacheCreation ?? 0,
+    cacheSavingsUsd: s.cacheSavingsUsd ?? 0,
+    costByDayUsd: s.costByDayUsd ?? fold.totals.costByDayUsd,
+    subagentCostByDayUsd: s.subagentCostByDayUsd ?? fold.totals.subagentCostByDayUsd,
+  };
+}
+
+/**
+ * The usage ledger of a summary. A summary with a stored ledger whose totals
+ * exceed what the ledger adds up to was last merged by a Preflight that
+ * predates the ledger, which kept the ledger but max-merged its own totals in:
+ * the excess becomes part of `base`. A summary with no ledger recovers one
+ * whose base is its exact totals, plus its unreplaced byte estimates as
+ * provisional entries.
+ */
+export function usageLedgerOf(s: FullSessionSummary): SessionUsageLedger {
+  if (s.usageLedger) {
+    const { entries, base } = decodeUsageLedger(s.usageLedger);
+    const fold = foldUsage(entries, base);
+    const excess = subtractTotals(reconcilableTotalsOf(s, fold), fold.totals);
+    return {
+      entries,
+      base: isZeroTotals(excess) ? base : addTotals(base, excess),
+      legacy: false,
+    };
+  }
+  const exact = exactTotalsOf(s);
+  const est = s.byteEstimates;
+  const base: CostTotals = {
+    costUsd: exact.costUsd,
+    subagentCostUsd: s.subagentCostUsd ?? 0,
+    inputTokens: exact.inputTokens,
+    outputTokens: exact.outputTokens,
+    thinkingTokens: s.tokensThinking ?? 0,
+    cacheReadTokens: s.tokensCacheRead ?? 0,
+    cacheCreationTokens: s.tokensCacheCreation ?? 0,
+    cacheSavingsUsd: s.cacheSavingsUsd ?? 0,
+    costByModel: subtractRecord(costByModelOf(s), est?.costByModel ?? {}),
+    costByDayUsd: exact.costByDayUsd,
+    subagentCostByDayUsd: s.subagentCostByDayUsd ?? {},
+    costByWorkflowRunId: s.costByWorkflowRunId ?? {},
+    unpricedByModel: s.unpricedByModel ?? {},
+    estimatedByModel: s.estimatedByModel ?? {},
+  };
+  return {
+    entries: est ? legacyEstimateEntries(est, s.endTime) : [],
+    base: isZeroTotals(base) ? ZERO_TOTALS : base,
+    legacy: true,
+  };
+}
+
+/** The cost and token fields of a summary, computed from its ledger. */
+export function costFieldsOfLedger(
+  ledger: UsageLedger,
+  nullWhenEmpty: boolean,
+): Pick<
+  FullSessionSummary,
+  | 'estimatedCostUsd'
+  | 'subagentCostUsd'
+  | 'costByDayUsd'
+  | 'subagentCostByDayUsd'
+  | 'unpricedByModel'
+  | 'estimatedByModel'
+  | 'byteEstimates'
+  | 'exactTotals'
+  | 'tokensInput'
+  | 'tokensOutput'
+  | 'tokensThinking'
+  | 'tokensCacheRead'
+  | 'tokensCacheCreation'
+  | 'cacheSavingsUsd'
+  | 'costByWorkflowRunId'
+  | 'usageLedger'
+> {
+  const fold = ledger.fold();
+  const t = fold.totals;
+  const est = fold.byteEstimates;
+  return {
+    estimatedCostUsd: nullWhenEmpty && ledger.isEmpty() ? null : t.costUsd,
+    subagentCostUsd: t.subagentCostUsd,
+    costByDayUsd: { ...t.costByDayUsd },
+    subagentCostByDayUsd: { ...t.subagentCostByDayUsd },
+    unpricedByModel:
+      Object.keys(t.unpricedByModel).length > 0 ? { ...t.unpricedByModel } : undefined,
+    estimatedByModel:
+      Object.keys(t.estimatedByModel).length > 0 ? { ...t.estimatedByModel } : undefined,
+    byteEstimates: est,
+    exactTotals: est
+      ? {
+          costUsd: Math.max(0, t.costUsd - est.costUsd),
+          inputTokens: Math.max(0, t.inputTokens - est.inputTokens),
+          outputTokens: Math.max(0, t.outputTokens - est.outputTokens),
+          costByDayUsd: subtractRecord(t.costByDayUsd, est.costByDayUsd),
+        }
+      : undefined,
+    tokensInput: t.inputTokens,
+    tokensOutput: t.outputTokens,
+    tokensThinking: t.thinkingTokens,
+    tokensCacheRead: t.cacheReadTokens,
+    tokensCacheCreation: t.cacheCreationTokens,
+    cacheSavingsUsd: t.cacheSavingsUsd,
+    costByWorkflowRunId: Object.fromEntries(
+      Object.entries(t.costByWorkflowRunId).map(([run, days]) => [run, { ...days }]),
+    ),
+    usageLedger: ledger.isEmpty() ? undefined : ledger.toPersisted(),
+  };
+}
+
+/**
+ * The union of two copies of one session's ledger. A pre-ledger side's exact
+ * totals may already include calls the other side holds as entries, so those
+ * are taken out of its base before the bases are max-merged.
+ */
+function unionLedgers(a: SessionUsageLedger, b: SessionUsageLedger): UsageLedger {
+  const withoutKeyed = (side: SessionUsageLedger, other: SessionUsageLedger): CostTotals =>
+    side.legacy
+      ? subtractTotals(side.base, foldUsage(other.entries, ZERO_TOTALS, { exactOnly: true }).totals)
+      : side.base;
+  const ledger = new UsageLedger();
+  ledger.union(a.entries);
+  ledger.union(b.entries);
+  ledger.union([], maxTotals(withoutKeyed(a, b), withoutKeyed(b, a)));
+  return ledger;
+}
+
 /** Per-key `a + b` over the union of keys. */
 function addRecord(
   a: Readonly<Record<string, number>>,
@@ -618,6 +794,16 @@ export function mergeSummaries(
       : entry;
   }
 
+  // Once either side carries a usage ledger, every cost and token field is
+  // computed from the union of the two ledgers instead of the rules above.
+  const ledgerCost =
+    existing.usageLedger !== undefined || incoming.usageLedger !== undefined
+      ? costFieldsOfLedger(
+          unionLedgers(usageLedgerOf(existing), usageLedgerOf(incoming)),
+          existing.estimatedCostUsd === null && incoming.estimatedCostUsd === null,
+        )
+      : null;
+
   const qa = existing.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS;
   const qb = incoming.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS;
   const qualityProxy: QualityProxyRawCounts = {
@@ -725,6 +911,7 @@ export function mergeSummaries(
     modelBreakdown,
     qualityProxy,
     attribution: mergeAttribution(existing.attribution, incoming.attribution),
+    ...ledgerCost,
   };
 }
 
@@ -1190,6 +1377,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
 
   const sessionMetrics = sessionTracker.getMetrics();
   const costMetrics = costTracker?.getMetrics() ?? null;
+  const usageLedger = costTracker?.getUsageLedger();
   const turnAttributionMetrics = sources.turnCostAttributor?.getMetrics() ?? null;
   const attribution =
     sources.costTracker || sources.turnCostAttributor
@@ -1386,6 +1574,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     costByWorkflowRunId: costMetrics?.costByWorkflowRunId ?? {},
     qualityProxy: sources.qualityProxyTracker?.getRawCounts() ?? ZERO_QUALITY_PROXY_COUNTS,
     attribution,
+    ...(usageLedger !== undefined && { usageLedger }),
   };
 }
 
@@ -1463,6 +1652,7 @@ interface SerializedFullSessionSummary {
   readonly estimatedByModel?: unknown;
   readonly byteEstimates?: unknown;
   readonly exactTotals?: unknown;
+  readonly usageLedger?: unknown;
   readonly tokensInput?: unknown;
   readonly tokensOutput?: unknown;
   readonly tokensThinking?: unknown;
@@ -1854,6 +2044,7 @@ export function deserializeFullSessionSummary(
     estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
     byteEstimates: parseByteEstimates(obj.byteEstimates),
     exactTotals: parseExactTotals(obj.exactTotals),
+    usageLedger: parsePersistedUsageLedger(obj.usageLedger),
     tokensInput: typeof obj.tokensInput === 'number' ? obj.tokensInput : 0,
     tokensOutput: typeof obj.tokensOutput === 'number' ? obj.tokensOutput : 0,
     tokensThinking: typeof obj.tokensThinking === 'number' ? obj.tokensThinking : 0,

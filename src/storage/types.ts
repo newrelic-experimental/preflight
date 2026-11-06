@@ -274,6 +274,8 @@ export interface TokenEvent {
   readonly cacheCreationTokens: number;
   readonly model: string;
   readonly sessionId?: string;
+  /** The API call's id (`TokenHookEvent.messageId`): the key of its usage-ledger entry. */
+  readonly usageId?: string;
   /** See `TokenHookEvent.responseMs`'s doc comment. */
   readonly responseMs?: number;
   /** The report's platform: the line's own stamp, else its source's (see `TOKEN_SOURCE_PLATFORM`). */

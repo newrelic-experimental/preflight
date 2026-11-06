@@ -39,6 +39,8 @@ export interface TokenReport {
   cache_read_tokens?: number;
   cache_creation_tokens?: number;
   model: string;
+  /** The API response's own id, when the caller has it (e.g. Anthropic's `msg_...`). */
+  request_id?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -49,7 +51,9 @@ export const REPORT_TOKENS_TOOL = {
   name: 'nr_observe_report_tokens',
   description:
     'Report token usage for cost tracking. Call periodically to enable accurate cost metrics. ' +
-    'Provide the model name and token counts from the most recent API response.',
+    'Provide the model name and token counts from the most recent API response, and its ' +
+    'response id as request_id when you have it, so the same response is never counted twice. ' +
+    'Without a request_id, a report is ignored when the session is already costed from its transcript.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -65,6 +69,11 @@ export const REPORT_TOKENS_TOOL = {
         description: 'Number of cache creation tokens (optional)',
       },
       model: { type: 'string', description: 'Model identifier (e.g. claude-sonnet-4-20250514)' },
+      request_id: {
+        type: 'string',
+        description:
+          "The API response's id (e.g. msg_01...), if known. Repeated ids are counted once (optional)",
+      },
     },
     required: ['input_tokens', 'output_tokens', 'model'],
   },
@@ -118,8 +127,50 @@ export function handleReportTokens(
     totalTokens: inputTokens + outputTokens + thinkingTokens,
   };
 
-  const breakdown = costTracker.recordTokenUsage(usage, safeModel);
-  modelUsageTracker?.recordUsage(safeModel, usage, breakdown.totalUsd);
+  const requestId = args.request_id;
+  if (requestId !== undefined && !/^[a-zA-Z0-9._:-]{1,256}$/.test(requestId)) {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            error: 'invalid_request_id',
+            message:
+              'request_id may only contain alphanumerics, dots, underscores, colons, hyphens (max 256).',
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  // A watcher that replays the transcript already counts every response of
+  // this session; an id-less report of one of them cannot be told apart from it.
+  if (requestId === undefined && costTracker.hasReplayingUsage()) {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify(
+            {
+              recorded: false,
+              reason: 'already_counted_from_transcript',
+              message:
+                'This session is costed from its transcript. Pass request_id to report a response the transcript does not contain.',
+              session_total_cost_usd: costTracker.getMetrics().sessionTotalCostUsd,
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  }
+
+  const { breakdown, recorded } = costTracker.recordUsage(usage, safeModel, {
+    ...(requestId !== undefined && { usageId: requestId }),
+  });
+  if (recorded) modelUsageTracker?.recordUsage(safeModel, usage, breakdown.totalUsd);
   const metrics = costTracker.getMetrics();
 
   return {
@@ -128,8 +179,9 @@ export function handleReportTokens(
         type: 'text' as const,
         text: JSON.stringify(
           {
-            recorded: true,
-            cost_this_report_usd: breakdown.totalUsd,
+            recorded,
+            ...(!recorded && { reason: 'duplicate_request_id' }),
+            cost_this_report_usd: recorded ? breakdown.totalUsd : 0,
             session_total_cost_usd: metrics.sessionTotalCostUsd,
             model: safeModel,
           },
@@ -353,6 +405,7 @@ const TokenReportSchema = z.object({
   cache_creation_tokens: z.number().nonnegative().optional(),
   cache_read_tokens: z.number().nonnegative().optional(),
   thinking_tokens: z.number().nonnegative().optional(),
+  request_id: z.string().optional(),
 });
 
 export interface CostToolsDeps {
