@@ -165,7 +165,7 @@ Claude Code has its own built-in OTel export for cost, tokens, lines-of-code, an
 
 Companion mode turns on by itself when Preflight sees Claude Code's OTel metrics export going to New Relic. It checks the environment Claude Code passes to the MCP server: `CLAUDE_CODE_ENABLE_TELEMETRY` is on, `OTEL_METRICS_EXPORTER` includes `otlp`, and the OTLP endpoint (`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT`) is an `nr-data.net` host. An export to any other backend, or through a collector on another host, is not detected. Set companion mode explicitly in those cases.
 
-Detection does not follow Claude Code through Preflight's own OTLP receiver, because the receiver runs only in proxy mode and may not be forwarding. When the config enables the receiver with a New Relic forward endpoint and your shell's Claude Code OTel export points at it, `preflight doctor` warns; set `companionMode: true` (or `NR_AI_COMPANION_MODE=true`) when that proxy actually forwards Claude Code's metrics, or New Relic counts the cost twice. The warning reads the environment of the shell that runs `doctor`, so it does not see `CLAUDE_CODE_ENABLE_TELEMETRY` or `OTEL_*` values that Claude Code gets only from the `env` block of its `settings.json`.
+Detection does not follow Claude Code through Preflight's own OTLP receiver, because the receiver runs only in proxy mode and may not be forwarding. When the config enables the receiver with a New Relic forward endpoint and your shell's Claude Code OTel export points at it, `preflight doctor` warns; set `companionMode: true` (or `NR_AI_COMPANION_MODE=true`) when that proxy actually forwards Claude Code's metrics, or New Relic counts the cost twice. The warning and the `Companion mode` check read the shell environment of the process that runs `doctor`, overlaid with the `env` blocks of Claude Code's user (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`) and managed (`managed-settings.json`, then the `managed-settings.d/*.json` drop-ins in alphabetical order) settings, with the later files winning. Claude Code ignores telemetry variables in a project's `.claude/settings.json` and `.claude/settings.local.json`, so `doctor` skips those too, except for an `OTEL_*_EXPORTER` of `none`, which still turns export off. Server-managed settings, MDM, and registry policy are not read.
 
 An explicit setting always wins over detection. In `~/.newrelic-preflight/config.json`:
 
@@ -401,6 +401,8 @@ The subagent transcript watcher runs in both `--stdio` and `--local` processes. 
 | `NR_AI_ENABLE_SUBAGENT_WATCHER` | Set to `0` to disable subagent cost tracking entirely. | enabled  |
 | `NR_AI_ENABLE_WORKFLOW_WATCHER` | Set to `1` to enable script-workflow tracking.         | disabled |
 | `NR_AI_WATCHER_DISCOVERY_HOURS` | Cold-scan eligibility window for transcript discovery. | `24`     |
+
+The watchers and the dashboard read transcripts from `$CLAUDE_CONFIG_DIR/projects` when that variable is set in the Preflight process's environment, else `~/.claude/projects`. A Claude Code that gets `CLAUDE_CONFIG_DIR` only from its settings `env` block is not detected; set it for Preflight as well.
 
 ---
 
