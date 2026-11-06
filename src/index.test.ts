@@ -1487,6 +1487,92 @@ describe('stdio integration', () => {
       expect(savedCalls(storage, 'own-real-session') ?? 0).toBe(0);
     }, 30000);
 
+    it('counts its own call drained while pending once it adopts its session', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      await drainCalls(storage, 'own-real-session', 1);
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedCalls(storage, 'own-real-session')).toBe(1);
+    }, 30000);
+
+    const adoptedId = async (client: Awaited<ReturnType<typeof startEngine>>): Promise<string> => {
+      for (let i = 0; i < 80; i++) {
+        const result = await client
+          .callTool({ name: 'nr_observe_get_session_stats', arguments: {} })
+          .catch(() => null);
+        const content = result?.content as Array<{ text?: string }> | undefined;
+        const id = content
+          ? (JSON.parse(content[0]?.text ?? '{}') as { session_id?: string }).session_id
+          : '';
+        if (id && !id.startsWith('pending-')) return id;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      throw new Error('engine never adopted a session');
+    };
+
+    it('writes no file for a cwd guess it adopts until the guess is confirmed', async () => {
+      const storage = makeStorage();
+      const cwd = makeCwd();
+      const client = await startEngine(storage, cwd);
+      await drainCalls(storage, 'guessed-session', 1);
+      guessFromCwd(storage, cwd);
+      await waitFor(() => existsSync(resolve(storage, 'active-guessed-session.pid')));
+      const atAdoption = savedCalls(storage, 'guessed-session');
+      await client.close();
+
+      expect(atAdoption).toBeNull();
+    }, 30000);
+
+    it("leaves a live engine's heartbeat alone when it adopts that session from a cwd guess", async () => {
+      const storage = makeStorage();
+      const owner = await startOwner(storage, 'guessed-session');
+      const heartbeat = resolve(storage, 'active-guessed-session.pid');
+      const ownerPid = readFileSync(heartbeat, 'utf-8');
+      const cwd = makeCwd();
+      const guessing = await startEngine(storage, cwd);
+      guessFromCwd(storage, cwd);
+      expect(await adoptedId(guessing)).toBe('guessed-session');
+      const afterAdoption = readFileSync(heartbeat, 'utf-8');
+      await guessing.close();
+      await stopOwner(storage, owner, 'guessed-session');
+
+      expect(afterAdoption).toBe(ownerPid);
+    }, 30000);
+
+    it("keeps a call's id unmarked when the adoption could not save its session", async () => {
+      if (process.getuid?.() === 0) return; // root ignores the mode
+      const storage = makeStorage();
+      const sessions = resolve(storage, 'sessions');
+      mkdirSync(sessions, { mode: 0o500 });
+      const client = await startEngine(storage);
+      writeHook(storage, 'other-real-session', 'pre', 'toolu_unsaved');
+      await waitFor(drained(storage, 'other-real-session'));
+      await adoptAndStop(storage, client, 'own-real-session');
+      chmodSync(sessions, 0o700);
+
+      const counted = resolve(storage, 'counted');
+      expect(existsSync(counted) ? readdirSync(counted) : []).toEqual([]);
+    }, 30000);
+
+    it("seeds the corrected session from its file before this engine's first save", async () => {
+      const storage = makeStorage();
+      const owner = await startOwner(storage, 'real-session');
+      await drainCalls(storage, 'real-session', 1);
+      await stopOwner(storage, owner, 'real-session');
+      expect(savedCalls(storage, 'real-session')).toBe(1);
+
+      const cwd = makeCwd();
+      const client = await startEngine(storage, cwd, { NR_AI_SESSION_PERSIST_INTERVAL_MS: '200' });
+      await drainCalls(storage, 'real-session', 2);
+      await waitFor(() => savedCalls(storage, 'real-session') === 2);
+      guessFromCwd(storage, cwd);
+      await waitFor(() => existsSync(resolve(storage, 'active-guessed-session.pid')));
+      await adoptAndStop(storage, client, 'real-session');
+
+      expect(savedCalls(storage, 'real-session')).toBe(3);
+    }, 30000);
+
     it("lets another process drain the guessed session's buffer after a correction", async () => {
       const storage = makeStorage();
       const cwd = makeCwd();

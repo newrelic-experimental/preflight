@@ -579,6 +579,12 @@ describe('SessionTracker', () => {
       expect(metrics.bashCommandsRun).toBe(0);
     });
 
+    it('counts a record with no session id while pending', () => {
+      const tracker = new SessionTracker('pending-1700000000000');
+      tracker.recordToolCall(makeRecord({ sessionId: undefined }));
+      expect(tracker.getMetrics().toolCallCount).toBe(1);
+    });
+
     it("drops the guessed session's calls when its id is corrected", () => {
       const tracker = new SessionTracker('sess-guess', 10);
       const guessed = makeRecord({ id: 'g1', sessionId: 'sess-guess', durationMs: null });

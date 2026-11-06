@@ -611,7 +611,7 @@ describe('concurrent drainers of one buffer', () => {
       onRecord: outcome,
       onRecordAmend: outcome,
     });
-    fs.writeFileSync(resolve(dir, 'buffer-other.jsonl'), line('A', 'pre', 'other'));
+    appendToHookBuffer(resolve(dir, 'buffer-other.jsonl'), line('A', 'pre', 'other'));
     processor.processEvents(pending.drainAllBuffers());
     const now = Date.now();
     writeClaim(REAL_PID, now - 2_000, line('X', 'pre', 'other'), 'other');
