@@ -1,6 +1,6 @@
 import { createLogger } from '../shared/index.js';
-import { todayPortionOfSessionCost } from '../lib/date.js';
-import type { SessionStore } from './session-store.js';
+import { localDateKey, todayPortionOfSessionCost } from '../lib/date.js';
+import type { FullSessionSummary, SessionStore } from './session-store.js';
 
 const logger = createLogger('historical-costs');
 
@@ -19,6 +19,21 @@ const logger = createLogger('historical-costs');
 //
 // The current in-flight session is excluded from the prior totals so we don't
 // double-count with costTracker.getCostForDay(today) on the caller side.
+// A save folds split files into the file of their earliest day, whose name can
+// fall before the window while its spend is recent. A session that started before
+// the window counts only its days inside it, so older spend is not this week's.
+function weeklyPortion(session: FullSessionSummary, weekAgo: Date): number {
+  const utcDay = (date: Date): string => date.toISOString().slice(0, 10);
+  if (utcDay(new Date(session.startTime)) >= utcDay(weekAgo)) {
+    return session.estimatedCostUsd ?? 0;
+  }
+  const firstDay = localDateKey(weekAgo.getTime());
+  return Object.entries(session.costByDayUsd ?? {}).reduce(
+    (total, [day, cost]) => (day >= firstDay ? total + cost : total),
+    0,
+  );
+}
+
 export function computeHistoricalCosts(
   sessionStore: Pick<SessionStore, 'loadAllSessions'>,
   currentSessionId: string,
@@ -28,12 +43,15 @@ export function computeHistoricalCosts(
   let priorDailyCostUsd = 0;
   let priorWeeklyCostUsd = 0;
   try {
-    const sessions = sessionStore.loadAllSessions({ since: weekAgo });
+    const sessions = sessionStore.loadAllSessions({
+      since: weekAgo,
+      includeModifiedSince: weekAgo,
+    });
     for (const session of sessions) {
       if (session.sessionId === currentSessionId) continue;
       if (session.estimatedCostUsd === null) continue;
       priorDailyCostUsd += todayPortionOfSessionCost(session, refTs);
-      priorWeeklyCostUsd += session.estimatedCostUsd;
+      priorWeeklyCostUsd += weeklyPortion(session, weekAgo);
     }
   } catch (err) {
     // Non-fatal: fall back to session-only costs if history is unreadable

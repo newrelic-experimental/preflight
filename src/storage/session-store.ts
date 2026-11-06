@@ -768,18 +768,20 @@ function mayShareActivity(a: FullSessionSummary, b: FullSessionSummary): boolean
 }
 
 /**
- * A timeline at the cap has dropped entries. `mergeTimeline` drops the oldest,
- * so if `capped` started no later than `other` and `other` ends before its first
- * kept entry, `other` may be a source the combined file absorbed.
+ * A file with more calls than its capped timeline shows has dropped some.
+ * Trackers keep the first entries and `mergeTimeline` keeps the newest, so the
+ * dropped ones lie before or after the kept ones. `other` may be among them if
+ * it fits in that gap, on one side of the kept entries, inside `capped`'s span.
  */
 function mayHoldDroppedEntries(capped: FullSessionSummary, other: FullSessionSummary): boolean {
   const kept = capped.timeline ?? [];
-  const last = other.timeline?.at(-1);
+  const seen = other.timeline ?? [];
+  if (kept.length < MAX_TIMELINE_ENTRIES || seen.length > capped.toolCallCount - kept.length) {
+    return false;
+  }
   return (
-    kept.length >= MAX_TIMELINE_ENTRIES &&
-    capped.startTime <= other.startTime &&
-    last !== undefined &&
-    last.timestamp < kept[0].timestamp
+    (capped.startTime <= other.startTime && seen[seen.length - 1].timestamp < kept[0].timestamp) ||
+    (other.endTime <= capped.endTime && seen[0].timestamp > kept[kept.length - 1].timestamp)
   );
 }
 
