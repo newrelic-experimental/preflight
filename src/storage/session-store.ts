@@ -986,10 +986,9 @@ function addEfficiencyScores(
 
 /** The rate is tests passed over tests run, so those counts rebuild it when they cover both files. */
 function addedTaskSuccessRate(a: FullSessionSummary, b: FullSessionSummary): number | null {
-  const runs = a.testRunCount + b.testRunCount;
-  const covered = [a, b].every((s) => s.taskSuccessRate === null || s.testRunCount > 0);
-  if (runs > 0 && covered) return (a.testPassCount + b.testPassCount) / runs;
-  return weightedRate(a.taskSuccessRate, a.taskCount, b.taskSuccessRate, b.taskCount);
+  return a.testRunCount > 0 && b.testRunCount > 0
+    ? (a.testPassCount + b.testPassCount) / (a.testRunCount + b.testRunCount)
+    : weightedRate(a.taskSuccessRate, a.taskCount, b.taskSuccessRate, b.taskCount);
 }
 
 function weightedRate(
