@@ -866,7 +866,7 @@ interface SessionActivityLike {
   readonly timeline?: readonly { readonly timestamp: number }[];
 }
 
-// One session can be stored across several files (#908). Concatenating their
+// One session can be stored across several files. Concatenating their
 // timelines per session id keeps a session from overlapping itself, matching
 // collectTodayActivityWindows' per-id merge for today.
 function timelinesBySession(
