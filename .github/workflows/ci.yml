@@ -18,9 +18,10 @@ permissions:
   contents: read
 
 env:
-  # The tests must pass in any zone. Both suites run under this one, which
-  # observes DST and is west of UTC, and again under UTC, the runner's default;
-  # Jest also runs under Pacific/Auckland, and the DST test under America/Havana.
+  # The tests must pass in any zone. Both suites run in full under this one, which
+  # observes DST and is west of UTC. The zone-sensitive tests run again under UTC,
+  # the runner's default, and under Pacific/Auckland, and the DST test under
+  # America/Havana.
   # Jest can't pin a zone from inside a test (each file gets a copy of
   # process.env), so a test that needs one has to derive its fixtures from the
   # host's own zone.
@@ -73,19 +74,27 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Every test that reads the host's zone must be in the list the UTC and
+      # Auckland steps run, or it runs under New York only. Ahead of the tests so
+      # a missing entry fails in a second instead of after the zone runs.
+      - name: Check time-zone test list
+        run: npm run check:tz-tests
+
+      # jest.config.ts pins maxWorkers to 1 for local runs, where parallel workers
+      # have deadlocked on stdio. This one step overrides it to find out whether the
+      # runner's cores can be used. If it flakes, go back to `npm test`.
       - name: Test
-        run: npm test
+        run: npm run test:parallel
 
       - name: Test (web)
         run: npm run test:web
 
-      - name: Test (UTC)
-        run: npm test
-        env:
-          TZ: UTC
-
-      - name: Test (web, UTC)
-        run: npm run test:web
+      # Under the zones below, only the tests that read the host's zone run
+      # (test/support/tz-sensitive-tests.json), both suites together. The rest
+      # would only repeat the New York result. The "Check time-zone test list"
+      # step fails when a test that reads the zone is missing from the list.
+      - name: Test (zone-sensitive, UTC)
+        run: npm run test:tz
         env:
           TZ: UTC
 
@@ -93,15 +102,15 @@ jobs:
       # Its first 2026 DST transition makes a 25-hour day, so the dailyPeaks DST
       # test in api-handler.test.ts runs its long-day branch here and its
       # short-day branch under New York.
-      - name: Test (Pacific/Auckland)
-        run: npm test
+      - name: Test (zone-sensitive, Pacific/Auckland)
+        run: npm run test:tz
         env:
           TZ: Pacific/Auckland
 
       # Springs forward at local midnight, a transition the dailyPeaks DST test
       # has to scan past.
       - name: Test (DST, America/Havana)
-        run: npx jest src/dashboard/routes/api-handler.test.ts
+        run: npx jest --runTestsByPath src/dashboard/routes/api-handler.test.ts
         env:
           TZ: America/Havana
 
