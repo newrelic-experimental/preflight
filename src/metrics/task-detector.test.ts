@@ -72,6 +72,41 @@ describe('Idle-based task detection', () => {
     detector.dispose();
   });
 
+  it('notifies the host when the idle timer closes a task so it can drain without another record', () => {
+    let detector: TaskDetector;
+    const emitted: string[] = [];
+    detector = new TaskDetector({
+      onIdleClose: () => {
+        for (const task of detector.drainNewlyCompletedTasks()) emitted.push(task.taskId);
+      },
+    });
+
+    detector.recordToolCall(makeRecord({ toolName: 'Read' }));
+    expect(emitted).toHaveLength(0);
+
+    jest.advanceTimersByTime(30_000);
+
+    expect(emitted).toHaveLength(1);
+    expect(detector.drainNewlyCompletedTasks()).toHaveLength(0);
+
+    detector.dispose();
+  });
+
+  it('keeps the idle close when the host callback throws', () => {
+    const detector = new TaskDetector({
+      onIdleClose: () => {
+        throw new Error('boom');
+      },
+    });
+
+    detector.recordToolCall(makeRecord({ toolName: 'Read' }));
+
+    expect(() => jest.advanceTimersByTime(30_000)).not.toThrow();
+    expect(detector.getCompletedTasks()).toHaveLength(1);
+
+    detector.dispose();
+  });
+
   it('rapid continuous calls -> single long task', () => {
     const detector = new TaskDetector();
 
