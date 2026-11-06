@@ -84,27 +84,43 @@ Apply the same pattern to any user-supplied string that becomes a NR event field
 
 ## Secret Redaction
 
-### `DEFAULT_REDACTION_PATTERNS` — `src/config.ts`
+### `REDACTION_PATTERNS` — `src/redaction-patterns.ts`
 
-A set of compiled regular expressions that cover:
+One list of compiled regular expressions, imported by `src/config.ts` (as `DEFAULT_REDACTION_PATTERNS`) and by `collector-script.ts`. It covers:
 
-| Pattern                                                                        | What it catches                           |
-| ------------------------------------------------------------------------------ | ----------------------------------------- |
-| `API_KEY=`, `SECRET=`, `TOKEN=`, `PASSWORD=`, `PASSPHRASE=`, `PRIVATE_KEY=`, … | Key-value secret assignments              |
-| `sk-`, `ghp_`, `gho_`, `github_pat_`, `Bearer …`                               | Common API token prefixes                 |
-| `-----BEGIN … -----END-----`                                                   | PEM-encoded private keys and certificates |
-| `AKIA[0-9A-Z]{16}`                                                             | AWS access key IDs                        |
-| `AIzaSy…`                                                                      | Google API keys                           |
-| `eyJ…` (three-part)                                                            | JWT tokens                                |
-| `npm_…`                                                                        | npm auth tokens                           |
-| `xox[a-z]-…`                                                                   | All Slack token types                     |
+| Pattern                                                                         | What it catches                           |
+| ------------------------------------------------------------------------------- | ----------------------------------------- |
+| `API_KEY=`, `SECRET=`, `TOKEN=`, `PASSWORD=`, `PASSPHRASE=`, `PRIVATE_KEY=`, …  | Key-value secret assignments              |
+| `sk-`, `ghp_`, `gho_`, `ghs_`, `github_pat_`, `xoxb-`, `xoxp-`, `Bearer …`      | Common API token prefixes                 |
+| `-----BEGIN … -----END-----`                                                    | PEM-encoded private keys and certificates |
+| `AKIA[0-9A-Z]{16}`                                                              | AWS access key IDs                        |
+| `AIzaSy…`                                                                       | Google API keys                           |
+| `eyJ…` (three-part)                                                             | JWT tokens                                |
+| `npm_…`                                                                         | npm auth tokens                           |
+| `xox[a-z]-…`                                                                    | All Slack token types                     |
+| `glpat-…`                                                                       | GitLab personal access tokens             |
+| `sk_live_` / `sk_test_` / `rk_live_` / `rk_test_`                               | Stripe secret and restricted keys         |
+| `pypi-…`                                                                        | PyPI upload tokens                        |
+| `hf_…`                                                                          | Hugging Face tokens                       |
+| `vercel_`, `heroku_`, `dd_`, `pk_`                                              | Vercel, Heroku, Datadog and similar keys  |
+| `AC…` / `SK…` (32 hex characters)                                               | Twilio account SIDs and API keys          |
+| `user:pass@` in `https://`, `mongodb://`, `postgres://`, `mysql://`, `redis://` | Credentials embedded in URLs              |
+| `?sig=`, `?se=`, `?sp=`, `?sv=`, …                                              | Azure SAS token parameters                |
 
 **Where applied:**
 
 - `collector-script.ts` — redacts tool input/output before writing to the hook buffer
-- `src/config.ts` — `redactSensitive()` for config-level redaction
+- `src/config.ts` — `redactSensitive()` for free-form text, `redactIdentifier()` for identifiers
 
 **Rule:** Any string that might contain secrets and is heading to a log or NR event must pass through these patterns first. Use `redact(text, config.redactionPatterns)` (agent) or `redactSensitive(text)` (MCP server).
+
+**Identifiers use `redactIdentifier()`.** `project_id`, `repo_url` and repo names are stamped on events and used to group them, so a false positive renames the entity in NR on upgrade. Several patterns have no leading `\b` (`sk-` matches inside `risk-assessment-…`). `redactIdentifier()` runs the same patterns but skips a match that starts right after a letter or digit. Don't narrow a shared pattern to fix an identifier false positive instead: in recorded content, tokens routinely follow a letter or digit (after a JSON escape like `\n`, an ANSI colour code, or `%3A`), and a lookbehind stops them being redacted.
+
+**Changing a pattern:**
+
+- Test a new pattern on its own: a token inside `https://user:token@host` is already caught by the URL-credentials pattern, so a test that only uses that form passes without the new pattern. Test the bare token too.
+- Run the changed set over ordinary identifiers (repo names, paths, branch names) and over tokens after `\n`, `\t`, an ANSI colour code and `%3A`.
+- Update this table and CLAUDE.md § Security in the same PR. `npm run verify:plugin-hook` (run by the pre-push hook and the release workflow) checks that the plugin's bundled collector picked up the change.
 
 ### Credentials in logs
 
