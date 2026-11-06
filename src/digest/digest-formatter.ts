@@ -96,3 +96,24 @@ export function formatSlackDigest(summary: WeeklySummary): SlackBlockKitPayload 
 
   return { blocks };
 }
+
+function plainMrkdwn(text: string): string {
+  return text.replace(/[*`]/g, '').replace(/\n/g, ' ');
+}
+
+export function digestPlainText(payload: SlackBlockKitPayload): string {
+  return payload.blocks
+    .flatMap((block): string[] => {
+      switch (block.type) {
+        case 'header':
+          return [block.text.text];
+        case 'section':
+          return block.fields.map((field) => plainMrkdwn(field.text));
+        case 'context':
+          return block.elements.map((element) => plainMrkdwn(element.text).replace(/^_|_$/g, ''));
+        case 'divider':
+          return ['---'];
+      }
+    })
+    .join('\n');
+}

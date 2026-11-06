@@ -1939,3 +1939,29 @@ Generate the current weekly AI coding summary and POST it to the configured Slac
 **Requires:** `configFilePath` + `WeeklySummaryGenerator`
 
 Source: `src/tools/cross-session-tools.ts`
+
+---
+
+### `nr_observe_get_digest_preview`
+
+Return the current week's digest as `nr_observe_send_digest` would deliver it, as Block Kit blocks plus plain text. Nothing is sent, and no webhook is needed.
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "week": "2026-W20",
+  "blocks": [
+    { "type": "header", "text": { "type": "plain_text", "text": "🤖 Weekly AI Coding Summary" } }
+  ],
+  "text": "🤖 Weekly AI Coding Summary\nTotal Cost: $12.5000\n..."
+}
+```
+
+**Data source:** `WeeklySummaryGenerator`. The same builder that the send tool uses, so the content matches for the same moment.
+
+**Requires:** `WeeklySummaryGenerator`
+
+Source: `src/tools/cross-session-tools.ts`
