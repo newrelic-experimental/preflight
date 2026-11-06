@@ -149,6 +149,31 @@ describe('SkillActivationTracker', () => {
     ).toBe('eslint');
   });
 
+  it('never closes on a gap once the session has had a prompt', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', null);
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+
+    const stamp = t.recordToolCall(
+      makeRecord({ toolUseId: 'u2', timestamp: 1000 + DEFAULT_IDLE_TIMEOUT_MS * 20 }),
+    );
+
+    expect(stamp?.name).toBe('eslint');
+  });
+
+  it('returns a reset session to gap mode', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', null);
+    t.reset();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+
+    const stamp = t.recordToolCall(
+      makeRecord({ toolUseId: 'u2', timestamp: 1000 + DEFAULT_IDLE_TIMEOUT_MS + 1 }),
+    );
+
+    expect(stamp).toBeNull();
+  });
+
   it('does not count the wait for a prompt to produce its first tool call as an idle gap', () => {
     const t = new SkillActivationTracker();
     t.recordToolCall(makeRecord({ timestamp: 1000 }));

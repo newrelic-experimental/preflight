@@ -21,16 +21,20 @@ export interface SkillActivationMetrics {
  * prompt, an idle gap, or the next skill (last wins: there is no signal for a
  * nested skill returning, so the new run records the one it replaced as its
  * parent instead). The idle gap is the task detector's idle timeout, measured
- * on record timestamps, and ends the main agent's run on installs whose hooks
- * send no prompt events. A subagent keeps whatever run the main agent had open
- * when the subagent first appeared, since that skill is what spawned it; later
- * prompts, idle gaps, and skills on the main agent don't move it.
+ * on record timestamps, and ends the main agent's run only in a session that
+ * has never sent a prompt event. A subagent keeps whatever run the main agent
+ * had open when the subagent first appeared, since that skill is what spawned
+ * it; later prompts, idle gaps, and skills on the main agent don't move it.
  */
 export class SkillActivationTracker implements Resettable {
   /** Per session, per agent; `null` pins a subagent that appeared outside any run. */
   private readonly sessions = new Map<string, Map<string, SkillStamp | null>>();
-  /** Latest record timestamp per session, from any agent, so a subagent's work isn't idle time. */
-  private readonly lastActivity = new Map<string, number>();
+  /**
+   * Latest record timestamp per session, from any agent, so a subagent's work
+   * isn't idle time. `null` marks a session that has sent a prompt: its
+   * prompts close runs accurately, so it never closes on a gap.
+   */
+  private readonly lastActivity = new Map<string, number | null>();
 
   private runsFor(sessionId: string | null | undefined): Map<string, SkillStamp | null> {
     const key = sessionId ?? NULL_SESSION_KEY;
@@ -55,11 +59,13 @@ export class SkillActivationTracker implements Resettable {
     const runs = this.runsFor(record.sessionId);
     const sessionKey = record.sessionId ?? NULL_SESSION_KEY;
     const last = this.lastActivity.get(sessionKey);
-    if (last !== undefined && record.timestamp - last > DEFAULT_IDLE_TIMEOUT_MS) {
-      runs.set(MAIN_AGENT_KEY, null);
+    if (last !== null) {
+      if (last !== undefined && record.timestamp - last > DEFAULT_IDLE_TIMEOUT_MS) {
+        runs.set(MAIN_AGENT_KEY, null);
+      }
+      if (last === undefined || record.timestamp > last)
+        this.lastActivity.set(sessionKey, record.timestamp);
     }
-    if (last === undefined || record.timestamp > last)
-      this.lastActivity.set(sessionKey, record.timestamp);
     const agentKey = record.agentId ?? MAIN_AGENT_KEY;
     if (agentKey !== MAIN_AGENT_KEY && !runs.has(agentKey)) {
       if (runs.size > MAX_AGENTS_PER_SESSION) {
@@ -99,9 +105,7 @@ export class SkillActivationTracker implements Resettable {
       ? { name: slashCommand, source: 'slash', runId: randomUUID() }
       : null;
     this.runsFor(sessionId).set(MAIN_AGENT_KEY, stamp);
-    // The first call after a prompt measures no gap: the model's thinking time
-    // before it would otherwise close the slash run this prompt just opened.
-    this.lastActivity.delete(sessionId ?? NULL_SESSION_KEY);
+    this.lastActivity.set(sessionId ?? NULL_SESSION_KEY, null);
     return stamp;
   }
 
