@@ -2634,7 +2634,6 @@ async function main(): Promise<void> {
       },
       onStop: (frame) => {
         turnTracker.finalizeTurnAt(frame.timestamp);
-        skillActivationTracker.closeRun(frame.sessionId);
         taskDetector!.markBoundary(frame.timestamp);
       },
     });

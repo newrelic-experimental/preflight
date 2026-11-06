@@ -6,6 +6,7 @@ import { MAX_AGENT_TYPE_LENGTH } from '../lib/agent-id.js';
 import { LocalStore } from '../storage/local-store.js';
 import { HookEventProcessor } from './event-processor.js';
 import { SkillActivationTracker } from '../metrics/skill-activation-tracker.js';
+import { DEFAULT_IDLE_TIMEOUT_MS } from '../metrics/task-detector.js';
 import { AntigravityAdapter } from '../platforms/antigravity-adapter.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import {
@@ -2661,6 +2662,46 @@ describe('HookEventProcessor', () => {
         { tool: 'Read', skill: 'simplify' },
         { tool: 'Bash', skill: undefined },
       ]);
+    });
+
+    describe('on an install that sends no prompt or Stop events', () => {
+      function stampsFor(gapMs: number): Array<{ tool: string; skill: string | undefined }> {
+        const tracker = new SkillActivationTracker();
+        const stamped: Array<{ tool: string; skill: string | undefined }> = [];
+        const processor = new HookEventProcessor({
+          store,
+          onRecord: (record) => {
+            stamped.push({ tool: record.toolName, skill: tracker.recordToolCall(record)?.name });
+          },
+        });
+        const t0 = 1700000000000;
+        const pair = (tool: string, id: string, at: number, extra?: Partial<PreHookEvent>) => [
+          makePreEvent({ tool, toolUseId: id, sessionId: 's1', timestamp: at, ...extra }),
+          makePostEvent({ tool, toolUseId: id, sessionId: 's1', timestamp: at + 50 }),
+        ];
+        processor.processEvents([
+          ...pair('Skill', 'k1', t0, { toolInput: { skill: 'review' } }),
+          ...pair('Read', 'r1', t0 + 1000),
+          ...pair('Bash', 'b1', t0 + 1000 + gapMs),
+        ]);
+        return stamped;
+      }
+
+      it('closes the skill run once the session has been idle past the task idle timeout', () => {
+        expect(stampsFor(DEFAULT_IDLE_TIMEOUT_MS + 1000)).toEqual([
+          { tool: 'Skill', skill: 'review' },
+          { tool: 'Read', skill: 'review' },
+          { tool: 'Bash', skill: undefined },
+        ]);
+      });
+
+      it('keeps the run open across a gap under the idle timeout', () => {
+        expect(stampsFor(DEFAULT_IDLE_TIMEOUT_MS - 5000).map((s) => s.skill)).toEqual([
+          'review',
+          'review',
+          'review',
+        ]);
+      });
     });
 
     it('omits slashCommand from onUserPromptSubmit frame when absent', () => {

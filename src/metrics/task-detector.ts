@@ -241,7 +241,7 @@ class ActiveTask {
 // TaskDetector
 // ---------------------------------------------------------------------------
 
-const DEFAULT_IDLE_TIMEOUT_MS = 30_000;
+export const DEFAULT_IDLE_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_COMPLETED_TASKS = 100;
 
 export class TaskDetector implements Resettable {
