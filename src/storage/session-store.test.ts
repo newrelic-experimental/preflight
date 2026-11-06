@@ -26,6 +26,7 @@ import type { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { buildCostTrackerSeed } from '../metrics/cost-tracker-seed.js';
 import { FirstSaveBaselines } from '../metrics/first-save-baselines.js';
+import { localDateKey } from '../lib/date.js';
 import { computeHistoricalCosts } from './historical-costs.js';
 import type { CostMetrics } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
@@ -4629,21 +4630,50 @@ describe('combining a session split across files', () => {
     }
   });
 
+  describe('a ledger through real files', () => {
+    const day = (n: number) => day1 + n * 24 * HOUR;
+    const costed = (n: number, exact: number, estimate: number, withTimeline = true) =>
+      makeSummary({
+        sessionId: id,
+        startTime: day(n),
+        endTime: day(n) + HOUR,
+        timeline: withTimeline ? [entry(day(n))] : undefined,
+        estimatedCostUsd: exact + estimate,
+        exactTotals: { costUsd: exact, inputTokens: 0, outputTokens: 0, costByDayUsd: {} },
+        byteEstimates: { ...first().byteEstimates!, costUsd: estimate },
+      });
+    const cost = () => new SessionStore({ storagePath: tmpDir }).loadSession(id)?.estimatedCostUsd;
+
+    it.each([5, -1])('keeps the sum beside a file with no timeline on day %i', (n) => {
+      [costed(0, 1, 4), costed(1, 1, 4), costed(n, 0, 1, false)].forEach(writeSessionFile);
+      expect(cost()).toBeCloseTo(10);
+    });
+
+    it('keeps the sum beside a source a crashed save left in place', () => {
+      [costed(0, 1, 4), costed(1, 1, 4)].forEach(writeSessionFile);
+      const store = new SessionStore({ storagePath: tmpDir });
+      store.saveSession(store.loadSession(id) as FullSessionSummary);
+      writeSessionFile({ ...costed(1, 1, 4), endTime: day(9) });
+      expect(cost()).toBeCloseTo(10);
+    });
+  });
+
   it('does not add a source again once the combined timeline cap pushed its entries out', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const middle = { ...second(), startTime: day1 + HOUR, endTime: day1 + 2 * HOUR };
     middle.timeline = [entry(day1 + HOUR + 1)];
     const latest = {
       ...second(),
+      toolCallCount: 10_000,
       timeline: Array.from({ length: 10_000 }, (_, i) => entry(day2 + i)),
     };
     const combined = combineSessionFiles([first(), middle, latest]);
-    expect(combined.toolCallCount).toBe(4);
+    expect(combined.toolCallCount).toBe(10_003);
     expect(combined.timeline?.some((e) => e.timestamp === day1 + HOUR + 1)).toBe(false);
 
     writeSessionFile(combined);
     writeFileSync(join(sessionsDir(), `2026-03-02_${id}.json`), JSON.stringify(middle));
-    expect(store.loadSession(id)?.toolCallCount).toBe(4);
+    expect(store.loadSession(id)?.toolCallCount).toBe(10_003);
   });
 
   it('lists one record per id with the split files added together', () => {
@@ -4699,7 +4729,8 @@ describe('combining a session split across files', () => {
       const store = new SessionStore({ storagePath: tmpDir });
       const now = Date.now();
       writeSessionFile({ ...first(), startTime: now - 720 * HOUR, endTime: now - 719 * HOUR });
-      writeSessionFile({ ...recent(now), timeline: [entry(now - 60_000)] });
+      const costByDayUsd = { [localDateKey(now)]: 2 };
+      writeSessionFile({ ...recent(now), timeline: [entry(now - 60_000)], costByDayUsd });
 
       expect(store.loadTodaySessions().map((s) => s.toolCallCount)).toEqual([1]);
       expect(store.loadSessionsOverlappingToday().map((s) => s.toolCallCount)).toEqual([1]);

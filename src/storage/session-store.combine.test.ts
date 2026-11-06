@@ -354,6 +354,13 @@ describe('a ledger, which a combine must not lose or resurrect', () => {
       exactTotals: { costUsd: exact, inputTokens: 0, outputTokens: 0, costByDayUsd: {} },
       byteEstimates: { costUsd: usd, inputTokens: 0, outputTokens: 0 },
     });
+  const tokens = (start: number, count: number, timeline?: Entry[]) =>
+    calls(start, 1, {
+      timeline,
+      tokensInput: count,
+      exactTotals: { costUsd: 0, inputTokens: 0, outputTokens: 0, costByDayUsd: {} },
+      byteEstimates: { costUsd: 0, inputTokens: count, outputTokens: 0 },
+    });
   const [t1, t2, t3] = [START, START + DAY, START + 2 * DAY];
   const [e1, e2, shared] = [[entry(t1)], [entry(t2)], [entry(t1 + 1)]];
   const [a, b] = [file(t1, 1, 4, e1), file(t2, 1, 4, e2)];
@@ -374,36 +381,68 @@ describe('a ledger, which a combine must not lose or resurrect', () => {
   ])('%s', (_, files, usd) => {
     expect(combineInEveryOrder(files).estimatedCostUsd).toBeCloseTo(usd);
   });
+
+  it.each([
+    ['copies', [tokens(t1, 8, shared), tokens(t2, 4, shared)], 8],
+    ['a sum, no timeline', [tokens(t1, 4, e1), tokens(t2, 4, e2), tokens(t3, 1)], 8],
+  ])('ranks by tokens where no cost is known: %s', (_, files, expected) => {
+    expect(combineInEveryOrder(files).tokensInput).toBe(expected);
+  });
 });
 
-describe('a timeline at the cap, which has lost its oldest entries', () => {
+describe('a timeline at the cap, which has dropped entries', () => {
   const firstKept = START + 1000;
-  const capped = (length = TIMELINE_CAP, startTime = START) =>
-    calls(startTime, 100, {
+  const capped = (length = TIMELINE_CAP, startTime = START, count = TIMELINE_CAP + 100) =>
+    calls(startTime, count, {
       timeline: entries(firstKept, length),
       endTime: firstKept + 2 * DAY,
     });
   const other = (startTime: number, timeline: Entry[], endTime = startTime + 1) =>
     calls(startTime, 7, { timeline, endTime });
   const justBeforeKept = other(START + 100, [entry(START + 200)]);
+  const lastKept = firstKept + TIMELINE_CAP - 1;
+  const after = lastKept + 1;
 
   it.each([
-    ['ends before the first kept entry', capped(), justBeforeKept, 100],
-    ['started when the capped file did', capped(), other(START, [entry(START)]), 100],
-    ['started first', capped(TIMELINE_CAP, START + 500), other(START, [entry(START + 700)]), 107],
-    ['ends at the first kept entry', capped(), other(START, [entry(firstKept, 'Bash')]), 107],
+    ['ends before the first kept entry', capped(), justBeforeKept, 10_100],
+    ['started when the capped file did', capped(), other(START, [entry(START)]), 10_100],
+    [
+      'started first',
+      capped(TIMELINE_CAP, START + 500),
+      other(START, [entry(START + 700)]),
+      10_107,
+    ],
+    ['ends at the first kept entry', capped(), other(START, [entry(firstKept, 'Bash')]), 10_107],
+    ['starts after the last kept entry', capped(), other(after, [entry(after)]), 10_100],
+    ['starts at the last kept entry', capped(), other(after, [entry(lastKept, 'Bash')]), 10_107],
+    ['ends after the capped file', capped(), other(after, [entry(after)], after + 3 * DAY), 10_107],
+    [
+      'fills the gap',
+      capped(TIMELINE_CAP, START, TIMELINE_CAP + 1),
+      justBeforeKept,
+      TIMELINE_CAP + 1,
+    ],
+    [
+      'is too long for the gap',
+      capped(TIMELINE_CAP, START, TIMELINE_CAP),
+      justBeforeKept,
+      TIMELINE_CAP + 7,
+    ],
     [
       'ends after the first kept entry',
       capped(),
       other(START + 100, [entry(START + 200), entry(firstKept + 2 * DAY)]),
-      107,
+      10_107,
     ],
-    ['meets a timeline short of the cap', capped(TIMELINE_CAP - 1), justBeforeKept, 107],
+    ['meets a timeline short of the cap', capped(TIMELINE_CAP - 1), justBeforeKept, 10_107],
     [
       'was written after the capped file',
-      calls(START, 100, { timeline: entries(firstKept, TIMELINE_CAP), endTime: firstKept + 1 }),
+      calls(START, TIMELINE_CAP + 100, {
+        timeline: entries(firstKept, TIMELINE_CAP),
+        endTime: firstKept + 1,
+      }),
       other(START + 100, [entry(START + 200)], firstKept + DAY),
-      100,
+      10_100,
     ],
   ])('a file that %s', (_, full, file, expected) => {
     expect(combineInEveryOrder([full, file]).toolCallCount).toBe(expected);

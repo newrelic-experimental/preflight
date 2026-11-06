@@ -308,6 +308,15 @@ describe('SessionStore saves under filesystem faults', () => {
       ).toEqual([30]);
     });
 
+    it("a relist leaves another session's files out of this record", () => {
+      seedSplitFiles();
+      const another = join(tmpDir, 'sessions', '2026-03-03_another-session.json');
+      realFs.writeFileSync(another, split(dayTwo, 7, [dayTwo + 5]).replaceAll(id, 'another'));
+      otherProcessSavesAfterFirstRead();
+      expect(store().saveSession(summary(2))?.previous?.toolCallCount).toBe(30);
+      expect(realFs.existsSync(another)).toBe(true);
+    });
+
     it('a window load relists within its window', () => {
       seedSplitFiles();
       const since = new Date(dayTwo);

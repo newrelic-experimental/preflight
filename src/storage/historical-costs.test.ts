@@ -1,7 +1,8 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { localDateKey } from '../lib/date.js';
 import { computeHistoricalCosts } from './historical-costs.js';
 import { SessionStore } from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
@@ -124,6 +125,24 @@ describe('computeHistoricalCosts', () => {
       priorDailyCostUsd: 4,
       priorWeeklyCostUsd: 7,
     });
+  });
+
+  it('counts a split session the same before and after a save folds it into its earliest file', () => {
+    const place = (start: number, estimatedCostUsd: number) => {
+      const path = resolve(tmpDir, 'sessions', `${localDateKey(start)}_split.json`);
+      const timeline = [{ timestamp: start, toolName: 'Read' }];
+      const costByDayUsd = { [localDateKey(start)]: estimatedCostUsd };
+      const fields = { sessionId: 'split', startTime: start, endTime: start + HOUR };
+      writeFileSync(path, JSON.stringify({ ...fields, estimatedCostUsd, costByDayUsd, timeline }));
+      utimesSync(path, new Date(start), new Date(start));
+    };
+    const weekly = () => computeHistoricalCosts(store, 'current', REF_TS).priorWeeklyCostUsd;
+    place(REF_TS - 30 * DAY, 100);
+    place(REF_TS - 3 * DAY, 200);
+    expect(weekly()).toBe(200);
+    store.saveSession(store.loadSession('split') as FullSessionSummary);
+    expect(store.loadAllSessions({ since: new Date(REF_TS - 7 * DAY) })).toEqual([]);
+    expect(weekly()).toBe(200);
   });
 
   it('falls back to zero when the session store cannot be read', () => {
