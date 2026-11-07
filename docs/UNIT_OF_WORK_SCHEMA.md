@@ -143,7 +143,7 @@ An attribute is stable when a dashboard in `dashboards/` reads it, or when it is
 
 | Event            | Attribute               | Stability    |
 | ---------------- | ----------------------- | ------------ |
-| `AiToolCall`     | `timestamp`             | experimental |
+| `AiToolCall`     | `timestamp`             | stable       |
 | `AiToolCall`     | `tool_use_id`           | experimental |
 | `AiToolCall`     | `developer`             | stable       |
 | `AiToolCall`     | `session_id`            | stable       |

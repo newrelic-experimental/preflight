@@ -148,6 +148,25 @@ describe('unit of agent work schema', () => {
     expect(unread).toEqual([]);
   });
 
+  it('marks no attribute experimental that a dashboard reads from its own event', () => {
+    const queries = readdirSync('dashboards').flatMap((file) =>
+      [
+        ...readFileSync(join('dashboards', file), 'utf8').matchAll(/"query": "((?:[^"\\]|\\.)*)"/g),
+      ].map(([, query]) => query),
+    );
+    expect(queries.length).toBeGreaterThan(0);
+    const read = catalog.filter(
+      (row) =>
+        row.stability === 'experimental' &&
+        queries.some(
+          (query) =>
+            new RegExp(`\\bFROM ${row.event}\\b`).test(query) &&
+            new RegExp(`\\b${row.attribute}\\b`).test(query),
+        ),
+    );
+    expect(read).toEqual([]);
+  });
+
   it('names only cataloged attributes in its NRQL recipes', () => {
     const known = new Set(catalog.flatMap((row) => [row.event, row.attribute]));
     const recipes = [...DOC.matchAll(/```sql\n([\s\S]*?)```/g)].map(([, query]) => query);
@@ -170,7 +189,9 @@ describe('unit of agent work schema', () => {
     it('leaves a response row inside an open slash run without skill attributes', () => {
       const skills = new SkillActivationTracker();
       const attributor = new TurnCostAttributor();
-      expect(skills.recordPrompt('sess-1', 'my-skill')).not.toBeNull();
+      const slashRun = skills.recordPrompt('sess-1', 'my-skill');
+      if (!slashRun) throw new Error('a slash prompt opens a run');
+      attributor.recordSkillRun('sess-1', slashRun);
       const [row] = turnCostToNrEvents(attributor.recordTokenEvent(makeTokenEvent(2000)), ATTRS);
       expect(row.turn_tool_call_count).toBe(0);
       expect(row).not.toHaveProperty('skill_name');
