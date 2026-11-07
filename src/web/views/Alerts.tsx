@@ -33,7 +33,6 @@ const WEBHOOK_OVERRIDE_LABELS = {
 interface SettingsData {
   readonly digestWebhookUrl: string | null;
   readonly digestWebhookUrlSource?: 'env' | 'command' | 'file' | 'unset';
-  readonly digestSchedule: string;
   readonly alerts: { readonly personal: PersonalThresholds };
 }
 
@@ -97,7 +96,6 @@ export function Alerts(): JSX.Element {
   // Slack digest local state
   // undefined = untouched, null = user explicitly cleared, string = user typed a value
   const [webhookUrl, setWebhookUrl] = useState<string | null | undefined>(undefined);
-  const [schedule, setSchedule] = useState<string | null>(null);
   const [digestStatus, setDigestStatus] = useState<string | null>(null);
 
   const saveMutation = useMutation({
@@ -139,7 +137,6 @@ export function Alerts(): JSX.Element {
     const patch: SettingsPatch = {};
     // undefined = untouched (skip), null = cleared (remove), string = new URL (set)
     if (webhookUrl !== undefined) patch.digestWebhookUrl = webhookUrl;
-    if (schedule !== null) patch.digestSchedule = schedule ?? settings?.digestSchedule;
     saveMutation.mutate(patch);
   }
 
@@ -307,22 +304,6 @@ export function Alerts(): JSX.Element {
                 onChange={(e) => setWebhookUrl(e.target.value === '' ? null : e.target.value)}
                 className="text-xs bg-surface-3 border border-border-subtle rounded-md px-2 py-1 w-72 focus:outline-none focus:border-accent-green text-ink-base placeholder:text-ink-muted"
               />
-            </div>
-
-            <div className="flex items-center gap-3 py-1.5">
-              <label className="text-xs text-ink-muted w-28 shrink-0">
-                Schedule
-                <span className="block text-[10px] text-ink-muted font-normal">
-                  (cron, restart req.)
-                </span>
-              </label>
-              <input
-                type="text"
-                value={schedule ?? settings.digestSchedule}
-                onChange={(e) => setSchedule(e.target.value)}
-                className="text-xs bg-surface-3 border border-border-subtle rounded-md px-2 py-1 w-36 focus:outline-none focus:border-accent-green text-ink-base font-mono"
-              />
-              <span className="text-[10px] text-ink-muted">default: Mon 9am</span>
             </div>
 
             <div className="mt-3 flex items-center gap-3 flex-wrap">

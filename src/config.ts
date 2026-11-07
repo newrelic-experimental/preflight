@@ -203,7 +203,6 @@ export interface McpServerConfig {
    */
   readonly dataResidencyPremium: boolean;
   readonly digestWebhookUrl: string | null;
-  readonly digestSchedule: string; // cron expression, default: "0 9 * * 1" (Monday 9am)
   /** Default: 90. `null` disables retention (only reachable via an explicit `null` in config.json). */
   readonly retainSessionsDays: number | null;
   readonly personalAlertThresholds: PersonalAlertThresholds;
@@ -338,7 +337,6 @@ export const ConfigFileSchema = z
     costRateMultiplier: z.number().nullable().optional(),
     dataResidencyPremium: z.boolean().optional(),
     digestWebhookUrl: z.string().nullable().optional(),
-    digestSchedule: z.string().optional(),
     retainSessionsDays: z.number().nullable().optional(),
     // Legacy flat OTLP fields — deprecated in favor of the nested `otlp`
     // object below, but still accepted for backward compatibility (using
@@ -1301,10 +1299,6 @@ export function loadMcpConfig(
     ),
 
     digestWebhookUrl: digestWebhookUrlSecret.value ?? null,
-
-    digestSchedule:
-      process.env.NEW_RELIC_AI_DIGEST_SCHEDULE ??
-      (typeof file.digestSchedule === 'string' ? file.digestSchedule : '0 9 * * 1'),
 
     retainSessionsDays: (() => {
       const raw = process.env.NEW_RELIC_AI_RETAIN_SESSIONS_DAYS;
