@@ -17,6 +17,7 @@ vi.mock('../api/client', () => ({
     dailyBudgetUsd: null,
     weeklyBudgetUsd: null,
     retainSessionsDays: null,
+    reportedSpend: [],
   })),
   fetchDiagnostics: vi.fn(async () => []),
   fetchObservabilityHealth: vi.fn(async () => ({
@@ -146,5 +147,78 @@ describe('Identity & Account save flow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save identity' }));
 
     expect(await screen.findByText(/disk full/)).toBeInTheDocument();
+  });
+});
+
+describe('Reported spend', () => {
+  const settingsWith = (reportedSpend: unknown[]) =>
+    ({
+      developer: 'dev',
+      teamId: null,
+      accountId: null,
+      appName: 'preflight',
+      mode: 'local',
+      storagePath: '~/.newrelic-preflight',
+      highSecurity: false,
+      licenseKey: null,
+      sessionBudgetUsd: null,
+      dailyBudgetUsd: null,
+      weeklyBudgetUsd: null,
+      retainSessionsDays: null,
+      reportedSpend,
+    }) as never;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('saves the typed amount without sending an asOf', async () => {
+    wrap(<Settings />);
+    const input = await screen.findByLabelText('Reported spend today');
+    fireEvent.change(input, { target: { value: '42.5' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Save' })[0]!);
+
+    await waitFor(() =>
+      expect(client.patchSettings).toHaveBeenCalledWith({
+        reportedSpend: { periodKind: 'daily', amountUsd: 42.5 },
+      }),
+    );
+  });
+
+  it('does not offer to save an empty or negative amount', async () => {
+    wrap(<Settings />);
+    const input = await screen.findByLabelText('Reported spend today');
+    const save = screen.getAllByRole('button', { name: 'Save' })[0]!;
+    expect(save).toBeDisabled();
+    fireEvent.change(input, { target: { value: '-3' } });
+    expect(save).toBeDisabled();
+  });
+
+  it('shows a saved value with its as-of time and clears it', async () => {
+    const asOf = new Date().toISOString();
+    vi.mocked(client.fetchSettings).mockResolvedValue(
+      settingsWith([{ periodKind: 'daily', amountUsd: 12, asOf }]),
+    );
+    wrap(<Settings />);
+
+    expect(await screen.findByText(/^\$12\.00 as of /)).toBeInTheDocument();
+    expect(screen.queryByText('stale')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Reported spend today' }));
+
+    await waitFor(() =>
+      expect(client.patchSettings).toHaveBeenCalledWith({
+        reportedSpend: { periodKind: 'daily', amountUsd: null },
+      }),
+    );
+  });
+
+  it('labels a value from a previous period stale', async () => {
+    const asOf = new Date(Date.now() - 3 * 86_400_000).toISOString();
+    vi.mocked(client.fetchSettings).mockResolvedValue(
+      settingsWith([{ periodKind: 'daily', amountUsd: 12, asOf }]),
+    );
+    wrap(<Settings />);
+
+    expect(await screen.findByText('stale')).toBeInTheDocument();
   });
 });

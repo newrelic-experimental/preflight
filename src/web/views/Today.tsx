@@ -8,7 +8,7 @@ import {
   type AlertEvent,
   type AntiPatternEvent,
 } from '../store/liveStore';
-import { Kpi } from '../components/Kpi';
+import { Kpi, type KpiTone } from '../components/Kpi';
 import { AnimatedCard } from '../components/AnimatedCard';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
 import { EmptyState } from '../components/EmptyState';
@@ -29,9 +29,13 @@ import {
   type ModelShareRow,
 } from '../components/UsageContributionPanel';
 import { AttentionList, type AttentionRow } from '../components/AttentionList';
-import { Card, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
+import { Card, EstimateMarker, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
 import {
   fetchRecentAlerts,
+  fetchBudget,
+  fetchSettings,
+  type BudgetPeriod,
+  type BudgetStatus,
   fetchCacheHealth,
   fetchCost,
   fetchCostPerTool,
@@ -92,6 +96,11 @@ import {
   localStartOfDay,
   todayPortionRatio,
 } from '../../lib/date.js';
+import {
+  findReportedSpend,
+  formatReportedAsOf,
+  isReportedSpendStale,
+} from '../../lib/reported-spend.js';
 import { buildWeekForecast } from '../lib/forecast.js';
 
 const HEADER_TIMESTAMP_FORMAT = {
@@ -228,6 +237,14 @@ interface ToolSelectionMetrics {
 
 const QUALITY_REFETCH_MS = 10_000;
 
+// Thresholds match the ones BudgetTracker fires on.
+function budgetKpiTone(period: BudgetPeriod): KpiTone {
+  const pct = period.pctUsed ?? 0;
+  if (period.exceeded || pct >= 100) return 'bad';
+  if (pct >= 50) return 'warn';
+  return 'neutral';
+}
+
 export function Today(): JSX.Element {
   const cost = useLiveStore((s) => s.cost);
   const antiPatterns = useLiveStore((s) => s.antiPatterns);
@@ -243,6 +260,21 @@ export function Today(): JSX.Element {
     queryFn: ({ signal }) => fetchCost(signal),
     refetchInterval: 10_000,
   });
+  const { data: budget } = useQuery<BudgetStatus>({
+    queryKey: qk.budget,
+    queryFn: ({ signal }) => fetchBudget(signal),
+    refetchInterval: 10_000,
+  });
+  const { data: settings } = useQuery({
+    queryKey: qk.settings,
+    queryFn: ({ signal }) => fetchSettings(signal),
+  });
+  const dailyBudget: BudgetPeriod | null = budget?.daily ?? null;
+  const dailyBudgetCap = dailyBudget?.budgetUsd ?? null;
+  const reportedDaily = findReportedSpend(settings?.reportedSpend, 'daily');
+  const reportedDailyStale = reportedDaily !== null && isReportedSpendStale(reportedDaily);
+  const showBudgetKpi = (dailyBudget !== null && dailyBudgetCap !== null) || reportedDaily !== null;
+  const dailyBudgetTone = dailyBudget ? budgetKpiTone(dailyBudget) : 'neutral';
   const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
     queryFn: ({ signal }) => fetchTodayAggregate(signal),
@@ -459,7 +491,7 @@ export function Today(): JSX.Element {
         <>
           <AnimatedCard index={0} className="mb-4">
             <Card padding="lg" tone="elevated" glow="green">
-              <div className="grid grid-cols-5 gap-4">
+              <div className={`grid ${showBudgetKpi ? 'grid-cols-6' : 'grid-cols-5'} gap-4`}>
                 <Kpi
                   label="efficiency"
                   hero
@@ -472,6 +504,7 @@ export function Today(): JSX.Element {
                 <Kpi
                   label="spend today"
                   tone="good"
+                  marker={spendLoading ? undefined : <EstimateMarker />}
                   value={spendLoading ? '…' : formatUsd(todayTotal)}
                   sub={
                     forecastKpiUsd != null && forecastKpiUsd > todayTotal
@@ -510,6 +543,29 @@ export function Today(): JSX.Element {
                   value={flagsLoading ? '…' : String(flagsCount)}
                   {...(flagsLoading ? {} : { animate: true, numericValue: flagsCount })}
                 />
+                {showBudgetKpi && (
+                  <Kpi
+                    label="daily budget"
+                    tone={dailyBudgetTone}
+                    value={formatUsd(dailyBudget?.spentUsd ?? todayTotal)}
+                    marker={<EstimateMarker />}
+                    sub={
+                      <>
+                        {dailyBudget && dailyBudgetCap !== null && (
+                          <span className="block">{`of ${formatUsd(dailyBudgetCap)}${dailyBudget.pctUsed !== null ? ` · ${dailyBudget.pctUsed.toFixed(0)}% used` : ''}${dailyBudget.exceeded ? ' · over budget' : ''}`}</span>
+                        )}
+                        {reportedDaily && (
+                          <span className={`block ${reportedDailyStale ? 'opacity-60' : ''}`}>
+                            {`reported ${formatUsd(reportedDaily.amountUsd)} as of ${formatReportedAsOf(reportedDaily, reportedDailyStale)}`}
+                            {reportedDailyStale && (
+                              <span className="ml-1 text-accent-amber">stale</span>
+                            )}
+                          </span>
+                        )}
+                      </>
+                    }
+                  />
+                )}
               </div>
             </Card>
             {watcherOff && (
