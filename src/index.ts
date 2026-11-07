@@ -2103,6 +2103,10 @@ async function main(): Promise<void> {
     emitCompletedTasks = () => {
       // Runs from the record handler, the idle-close callback, and shutdown,
       // so a task that closes with no following record still reaches ingest.
+      // In a cloud mode with ingest not yet wired (provisional --stdio window)
+      // the queue is left intact; adoptRealSessionId drains it once ingest
+      // exists, so no task is consumed without being sent.
+      if (!capturedNrIngest && capturedConfig.mode !== 'local') return;
       for (const task of capturedTaskDetector.drainNewlyCompletedTasks()) {
         capturedNrIngest?.ingestCodingTask(task);
         taskCompletionTracker.recordTask(task);
@@ -3069,6 +3073,7 @@ async function main(): Promise<void> {
         });
         capturedNrIngest = nrIngest;
         nrIngest.start();
+        emitCompletedTasks?.();
       }
 
       // Re-point the subagent/workflow watchers to the real session id. See
