@@ -1130,7 +1130,9 @@ export class SessionStore {
       // file rewritten since it was read holds data this write lacks, so it
       // stays for the next save to fold in. Superseded files are renamed, not
       // deleted: the add-vs-max choice is a heuristic, and a `*.merged` copy
-      // (which loaders ignore) keeps a wrong combine recoverable by hand.
+      // (which loaders ignore) keeps those files' bytes. It cannot undo a wrong
+      // combine alone, because the earliest file is overwritten by the combined
+      // record and has no copy.
       for (const file of filesRead) {
         if (file.parsed.kind === 'unreadable' || file.filepath === filepath) continue;
         try {
