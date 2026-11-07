@@ -2,7 +2,6 @@ import type { JSX } from 'react';
 
 import { InfoTooltip } from './InfoTooltip';
 
-// Dollar figures that carry an estimate marker share these reasons, so they stay in one place.
 const ESTIMATE_REASONS: readonly string[] = [
   'Priced from list prices unless a rate multiplier, data residency premium, or custom pricing file is configured. Flat subscriptions are not reflected.',
   'Counts this machine and the platforms Preflight hooks into, not your whole org.',
@@ -12,12 +11,11 @@ const ESTIMATE_REASONS: readonly string[] = [
 ];
 
 interface EstimateMarkerProps {
-  /** Omit the info button where the marker sits inside another button. */
-  readonly plain?: boolean;
+  readonly withoutInfoButton?: boolean;
 }
 
-export function EstimateMarker({ plain = false }: EstimateMarkerProps): JSX.Element {
-  if (plain) {
+export function EstimateMarker({ withoutInfoButton = false }: EstimateMarkerProps): JSX.Element {
+  if (withoutInfoButton) {
     return <span className="ml-1 align-middle text-[10px] font-normal text-ink-muted">est.</span>;
   }
   return (

@@ -37,7 +37,6 @@ export interface KpiProps {
    * ignored — the formatter owns the whole string.
    */
   readonly format?: (n: number) => string;
-  /** Rendered right after the value, e.g. the estimate marker on a cost figure. */
   readonly marker?: ReactNode;
 }
 

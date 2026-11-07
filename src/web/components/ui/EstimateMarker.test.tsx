@@ -22,8 +22,8 @@ describe('EstimateMarker', () => {
     expect(tooltip).toHaveTextContent('local time zone');
   });
 
-  it('renders without an info button when plain', () => {
-    render(<EstimateMarker plain />);
+  it('renders without an info button when withoutInfoButton', () => {
+    render(<EstimateMarker withoutInfoButton />);
     expect(screen.getByText('est.')).toBeInTheDocument();
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
