@@ -521,6 +521,31 @@ describe('LocalSessionAggregator panel rehydration', () => {
     expect(toolSelection?.totalCalls).toBe(2);
   });
 
+  it('carries the cache savings of recorded token usage into the summary', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'read_file',
+      timestamp: 1000,
+      success: true,
+    } as never);
+    agg.recordTokenUsage(REAL_ID, {
+      model: 'gpt-5',
+      cacheReadTokens: 5000,
+      costUsd: 0.01,
+      cacheSavingsUsd: 0.0135,
+    });
+    agg.recordTokenUsage(REAL_ID, {
+      model: 'gpt-5',
+      cacheReadTokens: 1000,
+      costUsd: 0.01,
+      cacheSavingsUsd: 0.0027,
+    });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.cacheSavingsUsd).toBeCloseTo(0.0162, 10);
+  });
+
   it('emits a token-only session so its cost is persisted', () => {
     const agg = new LocalSessionAggregator();
     agg.recordTokenUsage(REAL_ID, {

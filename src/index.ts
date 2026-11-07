@@ -2415,6 +2415,7 @@ async function main(): Promise<void> {
           outputTokens: tokenEvent.outputTokens,
           cacheReadTokens: tokenEvent.cacheReadTokens,
           cacheCreationTokens: tokenEvent.cacheCreationTokens,
+          cacheSavingsUsd: breakdown.savingsFromCacheUsd,
         });
         contextCompositionTracker.recordTokenEvent(tokenEvent);
 
@@ -2523,6 +2524,7 @@ async function main(): Promise<void> {
           cacheReadTokens: turn.cacheReadTokens,
           cacheCreationTokens: turn.cacheCreationTokens,
           thinkingTokens: turn.reasoningTokens,
+          cacheSavingsUsd: breakdown.savingsFromCacheUsd,
           agentId: turn.agentId,
         });
         // Pricing miss → usd:null on the wire; we recompute here so
