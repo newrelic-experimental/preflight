@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { localDateKey } from '../lib/date.js';
+import { mergeSummaries, type FullSessionSummary } from '../storage/session-store.js';
 import {
   collectCommitsAcrossRepos,
   LocalSessionAggregator,
@@ -757,6 +758,91 @@ describe('LocalSessionAggregator baseline fold after its own checkpoint', () => 
     const [summary] = summariesOf(agg);
     expect(summary?.estimatedCostUsd).toBe(9);
     expect(summary?.costByDayUsd).toEqual({ '2026-09-10': 9 });
+  });
+});
+
+describe('LocalSessionAggregator baseline fold from a file with a byte-estimate ledger', () => {
+  const DAY = new Date(2026, 8, 10, 12).getTime();
+  const DAY_KEY = localDateKey(DAY);
+
+  function makeSavedFileWithLedger(shape: 'legacy' | 'stored'): FullSessionSummary {
+    const writer = new LocalSessionAggregator();
+    writer.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    writer.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY });
+    const [exact] = summariesOf(writer) as unknown as FullSessionSummary[];
+    const withLedger: FullSessionSummary = {
+      ...exact!,
+      estimatedCostUsd: 1.5,
+      costByDayUsd: { [DAY_KEY]: 1.5 },
+      byteEstimates: {
+        costUsd: 0.5,
+        inputTokens: 0,
+        outputTokens: 0,
+        costByModel: {},
+        costByDayUsd: { [DAY_KEY]: 0.5 },
+      },
+    };
+    if (shape === 'legacy') return withLedger;
+    return {
+      ...withLedger,
+      exactTotals: { costUsd: 1, inputTokens: 0, outputTokens: 0, costByDayUsd: { [DAY_KEY]: 1 } },
+    };
+  }
+
+  it.each(['legacy', 'stored'] as const)(
+    'saves the exact total, the subagent usage and the ledger once (%s file)',
+    (shape) => {
+      const file = makeSavedFileWithLedger(shape);
+      const agg = new LocalSessionAggregator({ persistedCostBaseline: () => file });
+      agg.recordTokenUsage(REAL_ID, { costUsd: 0.25, timestamp: DAY, agentId: 'agent-1' });
+      const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
+      const merged = mergeSummaries(file, incoming!);
+      expect(merged).toMatchObject({
+        estimatedCostUsd: 1.75,
+        subagentCostUsd: 0.25,
+        costByDayUsd: { [DAY_KEY]: 1.75 },
+        subagentCostByDayUsd: { [DAY_KEY]: 0.25 },
+        exactTotals: { costUsd: 1.25, costByDayUsd: { [DAY_KEY]: 1.25 } },
+      });
+      expect(merged.estimatedCostUsd!).toBeGreaterThanOrEqual(merged.subagentCostUsd);
+    },
+  );
+
+  it('never seeds the total or a day under the saved subagent figures when exactTotals is stale-low', () => {
+    const file: FullSessionSummary = {
+      ...makeSavedFileWithLedger('stored'),
+      exactTotals: {
+        costUsd: 0.25,
+        inputTokens: 0,
+        outputTokens: 0,
+        costByDayUsd: { [DAY_KEY]: 0.25 },
+      },
+      subagentCostUsd: 0.5,
+      subagentCostByDayUsd: { [DAY_KEY]: 0.5 },
+    };
+    const agg = new LocalSessionAggregator({ persistedCostBaseline: () => file });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.25, timestamp: DAY, agentId: 'agent-1' });
+    const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
+    expect(incoming!.estimatedCostUsd!).toBeGreaterThanOrEqual(incoming!.subagentCostUsd);
+    expect(incoming!.costByDayUsd![DAY_KEY]!).toBeGreaterThanOrEqual(
+      incoming!.subagentCostByDayUsd![DAY_KEY]!,
+    );
+    const merged = mergeSummaries(file, incoming!);
+    expect(merged.estimatedCostUsd!).toBeGreaterThanOrEqual(merged.subagentCostUsd);
+    expect(merged.subagentCostUsd).toBe(0.75);
+  });
+
+  it('seeds a saved subagent day that the exact per-day costs do not list', () => {
+    const otherDay = localDateKey(new Date(2026, 8, 9, 12).getTime());
+    const file: FullSessionSummary = {
+      ...makeSavedFileWithLedger('stored'),
+      subagentCostUsd: 0.5,
+      subagentCostByDayUsd: { [otherDay]: 0.5 },
+    };
+    const agg = new LocalSessionAggregator({ persistedCostBaseline: () => file });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.25, timestamp: DAY, agentId: 'agent-1' });
+    const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
+    expect(incoming!.costByDayUsd![otherDay]).toBe(0.5);
   });
 });
 
