@@ -10,16 +10,16 @@ import { createLogger } from '../shared/index.js';
 const logger = createLogger('tier-types');
 
 /**
- * Every `eventType` string `NrIngestManager` can emit today (14 values).
+ * Every `eventType` string `NrIngestManager` can emit today (13 values).
  *
  * When a new event type is added to `nr-ingest.ts` (or to the
- * `auditRecordToNrEvent` / `securityAlertToNrEvent` serializers in
- * `src/security/`), add it here AND to `EVENT_TYPE_SENSITIVITY` below —
- * `EVENT_TYPE_SENSITIVITY`'s `Record<KnownEventType, ...>` type makes the
- * second half a compile error if you forget. An event type missing from this
- * list is not silently dropped: `TierRouter` still delivers it to every
- * wildcard (`['*']`) tier, but it cannot be named explicitly in a tier's
- * `eventTypes` array (`validateTiers()` rejects unknown names).
+ * `auditRecordToNrEvent` serializer in `src/security/`), add it here AND to
+ * `EVENT_TYPE_SENSITIVITY` below — `EVENT_TYPE_SENSITIVITY`'s
+ * `Record<KnownEventType, ...>` type makes the second half a compile error if
+ * you forget. An event type missing from this list is not silently dropped:
+ * `TierRouter` still delivers it to every wildcard (`['*']`) tier, but it cannot
+ * be named explicitly in a tier's `eventTypes` array (`validateTiers()` rejects
+ * unknown names).
  */
 export const KNOWN_EVENT_TYPES = [
   'AiToolCall',
@@ -35,7 +35,6 @@ export const KNOWN_EVENT_TYPES = [
   'AiContextSnapshot',
   'AiBudgetWarning',
   'AiAuditEvent',
-  'SecurityAlert',
 ] as const;
 
 export type KnownEventType = (typeof KNOWN_EVENT_TYPES)[number];
@@ -62,7 +61,6 @@ export const EVENT_TYPE_SENSITIVITY: Readonly<Record<KnownEventType, EventSensit
   AiWorkflowRun: 'personal-only',
   AiAntiPattern: 'personal-only',
   AiAuditEvent: 'personal-only',
-  SecurityAlert: 'personal-only',
 };
 
 export const SAFE_SHARED_EVENT_TYPES: readonly KnownEventType[] = KNOWN_EVENT_TYPES.filter(

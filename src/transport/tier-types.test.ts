@@ -11,7 +11,7 @@ import {
 import { resolve } from 'node:path';
 
 describe('KNOWN_EVENT_TYPES', () => {
-  it('enumerates exactly the 14 event types NrIngestManager emits', () => {
+  it('enumerates exactly the 13 event types NrIngestManager emits', () => {
     expect([...KNOWN_EVENT_TYPES].sort()).toEqual(
       [
         'AiAntiPattern',
@@ -27,7 +27,6 @@ describe('KNOWN_EVENT_TYPES', () => {
         'AiToolCall',
         'AiTurnCost',
         'AiWorkflowRun',
-        'SecurityAlert',
       ].sort(),
     );
   });
@@ -62,14 +61,7 @@ describe('EVENT_TYPE_SENSITIVITY', () => {
 
   it('marks raw-detail-bearing event types personal-only (spec categorization table)', () => {
     expect([...PERSONAL_ONLY_EVENT_TYPES].sort()).toEqual(
-      [
-        'AiToolCall',
-        'AiMcpToolCall',
-        'AiWorkflowRun',
-        'AiAntiPattern',
-        'AiAuditEvent',
-        'SecurityAlert',
-      ].sort(),
+      ['AiToolCall', 'AiMcpToolCall', 'AiWorkflowRun', 'AiAntiPattern', 'AiAuditEvent'].sort(),
     );
   });
 
