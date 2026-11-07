@@ -1265,7 +1265,6 @@ export interface SettingsPatch {
   weeklyBudgetUsd?: number | null;
   retainSessionsDays?: number | null;
   digestWebhookUrl?: string | null;
-  digestSchedule?: string;
   alerts?: {
     personal?: {
       dailyCostUsd?: number;
@@ -1322,7 +1321,6 @@ export interface SettingsResponse {
   readonly retainSessionsDays: number | null;
   readonly digestWebhookUrl: string | null;
   readonly digestWebhookUrlSource: 'env' | 'command' | 'file' | 'unset';
-  readonly digestSchedule: string;
   readonly alerts: {
     readonly personal: {
       readonly dailyCostUsd: number;

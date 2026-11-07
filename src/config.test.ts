@@ -1401,6 +1401,17 @@ describe('costRateMultiplier / dataResidencyPremium', () => {
   });
 });
 
+describe('removed digestSchedule key', () => {
+  it('loads a config file that still contains digestSchedule, without the field', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ digestSchedule: '0 8 * * 2', retainSessionsDays: 30 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(30);
+    expect(config).not.toHaveProperty('digestSchedule');
+  });
+});
+
 describe('retainSessionsDays', () => {
   it('defaults to 90 when neither env var nor config file key is set', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
