@@ -76,6 +76,35 @@ describe('LocalSessionAggregator', () => {
     ]);
   });
 
+  it('amends the right timeline entry after older entries were evicted, and skips an evicted one', () => {
+    const agg = new LocalSessionAggregator();
+    const timedOut = (id: string, timestamp: number) => ({
+      id,
+      sessionId: REAL_ID,
+      toolName: 'Agent',
+      toolUseId: `toolu_${id}`,
+      timestamp,
+      durationMs: null,
+      success: false,
+      errorType: 'timeout',
+    });
+    agg.recordToolCall(timedOut('evicted', 1));
+    agg.recordToolCall(timedOut('kept', 2));
+    for (let i = 3; i <= 10_001; i++) {
+      const filler = { id: `f${i}`, sessionId: REAL_ID, toolName: 'Agent', timestamp: i };
+      agg.recordToolCall(filler);
+    }
+
+    agg.amendToolCall({ ...timedOut('evicted', 1), durationMs: 111, success: true });
+    const afterEvicted = summariesOf(agg)[0]?.timeline as Array<Record<string, unknown>>;
+    expect(afterEvicted[0]).toMatchObject({ timestamp: 2, durationMs: null, success: false });
+
+    agg.amendToolCall({ ...timedOut('kept', 2), durationMs: 222, success: true });
+    const timeline = summariesOf(agg)[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]).toMatchObject({ timestamp: 2, durationMs: 222, success: true });
+    expect(timeline[1]).toMatchObject({ timestamp: 3 });
+  });
+
   it('rolls tool calls up under the real session id', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({
@@ -824,4 +853,19 @@ describe('stripHeredocs', () => {
       expect(stripHeredocs(command)).toEqual({ text, unclosed: true, readingsDiffer });
     },
   );
+});
+
+describe('LocalSessionAggregator timeline cap', () => {
+  it('keeps the most recent 10,000 timeline entries once the cap is exceeded', () => {
+    const agg = new LocalSessionAggregator();
+    const total = 10_000 + 25;
+    for (let i = 1; i <= total; i++) {
+      agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: i });
+    }
+
+    const timeline = summariesOf(agg)[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline).toHaveLength(10_000);
+    expect(timeline[0]?.timestamp).toBe(26);
+    expect(timeline[9_999]?.timestamp).toBe(total);
+  });
 });

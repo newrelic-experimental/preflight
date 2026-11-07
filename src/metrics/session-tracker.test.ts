@@ -603,6 +603,27 @@ describe('SessionTracker', () => {
       expect(metrics.bashExitCodes).toEqual({ '2': 1 });
       expect(metrics.toolCallTimeline.map((e) => e.durationMs)).toEqual([null, 5000]);
     });
+    it('amends the right timeline entry after older entries were evicted, and skips an evicted one', () => {
+      const tracker = new SessionTracker('sess-own', 10);
+      const timedOut = (id: string, timestamp: number) => ({
+        ...makeRecord({ id, timestamp }),
+        durationMs: null,
+        success: false,
+        errorType: 'timeout' as const,
+      });
+      tracker.recordToolCall(timedOut('evicted', 1));
+      tracker.recordToolCall(timedOut('kept', 2));
+      for (let i = 3; i <= 10_001; i++) tracker.recordToolCall(makeRecord({ timestamp: i }));
+
+      tracker.amendToolCall({ ...makeRecord({ id: 'evicted', timestamp: 1 }), durationMs: 111 });
+      const afterEvicted = tracker.getMetrics().toolCallTimeline;
+      expect(afterEvicted[0]).toMatchObject({ timestamp: 2, durationMs: null, success: false });
+
+      tracker.amendToolCall({ ...makeRecord({ id: 'kept', timestamp: 2 }), durationMs: 222 });
+      const timeline = tracker.getMetrics().toolCallTimeline;
+      expect(timeline[0]).toMatchObject({ timestamp: 2, durationMs: 222, success: true });
+      expect(timeline[1]).toMatchObject({ timestamp: 3, durationMs: 50 });
+    });
   });
 
   describe('reset()', () => {
@@ -766,5 +787,22 @@ describe('computeP95()', () => {
     // Values 1..100; floor((100-1)*0.95) = floor(94.05) = 94 → sorted[94] = 95
     const values = Array.from({ length: 100 }, (_, i) => i + 1);
     expect(computeP95(values)).toBe(95);
+  });
+});
+
+describe('SessionTracker timeline cap', () => {
+  it('keeps the most recent 10,000 entries once the cap is exceeded', () => {
+    const tracker = new SessionTracker('test-session');
+    const total = 10_000 + 25;
+    for (let i = 1; i <= total; i++) {
+      tracker.recordToolCall(makeRecord({ timestamp: i }));
+    }
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.toolCallTimeline).toHaveLength(10_000);
+    expect(metrics.toolCallTimeline[0]?.timestamp).toBe(26);
+    expect(metrics.toolCallTimeline[9_999]?.timestamp).toBe(total);
+    expect(metrics.timelineTruncated).toBe(true);
+    expect(metrics.timelineEntryCount).toBe(total);
   });
 });
