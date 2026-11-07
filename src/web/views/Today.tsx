@@ -100,6 +100,7 @@ import {
   findReportedSpend,
   formatReportedAsOf,
   isReportedSpendStale,
+  type ReportedSpend,
 } from '../../lib/reported-spend.js';
 import { buildWeekForecast } from '../lib/forecast.js';
 
@@ -237,12 +238,56 @@ interface ToolSelectionMetrics {
 
 const QUALITY_REFETCH_MS = 10_000;
 
-// Thresholds match the ones BudgetTracker fires on.
-function budgetKpiTone(period: BudgetPeriod): KpiTone {
-  const pct = period.pctUsed ?? 0;
-  if (period.exceeded || pct >= 100) return 'bad';
-  if (pct >= 50) return 'warn';
-  return 'neutral';
+// Thresholds match the ones BudgetTracker fires on. The label floors the
+// percent so it never reads past a threshold the tone has not crossed.
+function dailyBudgetKpi(
+  spentUsd: number,
+  capUsd: number | null,
+  apiExceeded: boolean,
+): { tone: KpiTone; pctLabel: number | null; overBudget: boolean } {
+  if (capUsd === null) return { tone: 'neutral', pctLabel: null, overBudget: false };
+  const pct = capUsd > 0 ? (spentUsd / capUsd) * 100 : null;
+  const overBudget = apiExceeded || spentUsd > capUsd;
+  const tone: KpiTone =
+    overBudget || (pct ?? 0) >= 100 ? 'bad' : (pct ?? 0) >= 50 ? 'warn' : 'neutral';
+  return { tone, pctLabel: pct === null ? null : Math.floor(pct), overBudget };
+}
+
+function DailyBudgetKpi({
+  spentUsd,
+  capUsd,
+  apiExceeded,
+  reported,
+  reportedStale,
+}: {
+  spentUsd: number;
+  capUsd: number | null;
+  apiExceeded: boolean;
+  reported: ReportedSpend | null;
+  reportedStale: boolean;
+}): JSX.Element {
+  const { tone, pctLabel, overBudget } = dailyBudgetKpi(spentUsd, capUsd, apiExceeded);
+  return (
+    <Kpi
+      label="daily budget"
+      tone={tone}
+      value={formatUsd(spentUsd)}
+      marker={<EstimateMarker />}
+      sub={
+        <>
+          {capUsd !== null && (
+            <span className="block">{`of ${formatUsd(capUsd)}${pctLabel !== null ? ` · ${pctLabel}% used` : ''}${overBudget ? ' · over budget' : ''}`}</span>
+          )}
+          {reported && (
+            <span className={`block ${reportedStale ? 'opacity-60' : ''}`}>
+              {`reported ${formatUsd(reported.amountUsd)} as of ${formatReportedAsOf(reported, reportedStale)}`}
+              {reportedStale && <span className="ml-1 text-accent-amber">stale</span>}
+            </span>
+          )}
+        </>
+      }
+    />
+  );
 }
 
 export function Today(): JSX.Element {
@@ -273,8 +318,7 @@ export function Today(): JSX.Element {
   const dailyBudgetCap = dailyBudget?.budgetUsd ?? null;
   const reportedDaily = findReportedSpend(settings?.reportedSpend, 'daily');
   const reportedDailyStale = reportedDaily !== null && isReportedSpendStale(reportedDaily);
-  const showBudgetKpi = (dailyBudget !== null && dailyBudgetCap !== null) || reportedDaily !== null;
-  const dailyBudgetTone = dailyBudget ? budgetKpiTone(dailyBudget) : 'neutral';
+  const showBudgetKpi = dailyBudgetCap !== null || reportedDaily !== null;
   const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
     queryFn: ({ signal }) => fetchTodayAggregate(signal),
@@ -544,26 +588,12 @@ export function Today(): JSX.Element {
                   {...(flagsLoading ? {} : { animate: true, numericValue: flagsCount })}
                 />
                 {showBudgetKpi && (
-                  <Kpi
-                    label="daily budget"
-                    tone={dailyBudgetTone}
-                    value={formatUsd(dailyBudget?.spentUsd ?? todayTotal)}
-                    marker={<EstimateMarker />}
-                    sub={
-                      <>
-                        {dailyBudget && dailyBudgetCap !== null && (
-                          <span className="block">{`of ${formatUsd(dailyBudgetCap)}${dailyBudget.pctUsed !== null ? ` · ${dailyBudget.pctUsed.toFixed(0)}% used` : ''}${dailyBudget.exceeded ? ' · over budget' : ''}`}</span>
-                        )}
-                        {reportedDaily && (
-                          <span className={`block ${reportedDailyStale ? 'opacity-60' : ''}`}>
-                            {`reported ${formatUsd(reportedDaily.amountUsd)} as of ${formatReportedAsOf(reportedDaily, reportedDailyStale)}`}
-                            {reportedDailyStale && (
-                              <span className="ml-1 text-accent-amber">stale</span>
-                            )}
-                          </span>
-                        )}
-                      </>
-                    }
+                  <DailyBudgetKpi
+                    spentUsd={todayTotal}
+                    capUsd={dailyBudgetCap}
+                    apiExceeded={dailyBudget?.exceeded ?? false}
+                    reported={reportedDaily}
+                    reportedStale={reportedDailyStale}
                   />
                 )}
               </div>
