@@ -2063,6 +2063,18 @@ describe('stdio integration', () => {
       const content = result.content as Array<{ type: string; text: string }>;
       return JSON.parse(content[0]?.text ?? '{}') as { session_id: string; tool_calls: number };
     };
+    // A reply with no count is not a count of zero: comparing against it is
+    // never true, so a drain made after it would go unseen.
+    const readToolCalls = async (): Promise<number> => {
+      let last = '';
+      for (let i = 0; i < 100; i++) {
+        const stats = await readStats();
+        if (typeof stats.tool_calls === 'number') return stats.tool_calls;
+        last = JSON.stringify(stats);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      throw new Error(`session stats never reported a tool call count: ${last}`);
+    };
     const readSessionId = async (): Promise<string> => (await readStats()).session_id;
     let toolUseCount = 0;
     return {
@@ -2077,7 +2089,7 @@ describe('stdio integration', () => {
         return false;
       },
       drainToolCall: async (sessionId, bufferSessionId = sessionId) => {
-        const before = (await readStats()).tool_calls;
+        const before = await readToolCalls();
         const toolUseId = `toolu_drain_${++toolUseCount}`;
         const ts = Date.now();
         const bufferPath = resolve(storagePath, `buffer-${bufferSessionId}.jsonl`);
@@ -2088,7 +2100,7 @@ describe('stdio integration', () => {
           appendToHookBuffer(bufferPath, JSON.stringify(event) + '\n');
         }
         for (let i = 0; i < 100; i++) {
-          if ((await readStats()).tool_calls > before) return;
+          if ((await readToolCalls()) > before) return;
           await new Promise((r) => setTimeout(r, 20));
         }
         throw new Error(`engine never drained the tool call under ${sessionId}`);
