@@ -1454,6 +1454,7 @@ describe('stdio integration', () => {
       writeHook(storage, 'other-real-session', 'pre', 'toolu_a');
       await waitFor(drained(storage, 'other-real-session'));
       await adoptAndStop(storage, pending, 'own-real-session');
+      expect(savedCalls(storage, 'other-real-session')).toBe(1);
       const owner = await startOwner(storage, 'other-real-session');
       writeHook(storage, 'other-real-session', 'post', 'toolu_a');
       await waitFor(drained(storage, 'other-real-session'));

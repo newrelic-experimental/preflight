@@ -96,12 +96,8 @@ describe('LocalSessionAggregator', () => {
 
   it("writes no success rate over a file's when it leaves out every call", () => {
     const agg = new LocalSessionAggregator();
-    agg.recordToolCall({
-      sessionId: REAL_ID,
-      toolName: 'Read',
-      success: false,
-      errorType: 'timeout',
-    });
+    const timedOut = { success: false, errorType: 'timeout' };
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', ...timedOut });
 
     const kept = agg.withoutCallsOtherProcessesMayCount(summariesOf(agg)[0]!, new Set());
 
