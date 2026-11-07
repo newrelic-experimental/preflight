@@ -1,0 +1,5 @@
+---
+'@newrelic/preflight': patch
+---
+
+**Daily and weekly spend baselines count what a resumed session spent inside the window.** The baselines behind the daily and weekly budget alerts, the budget status, and the dashboard's today total left out a session resumed from an earlier week, because its file is named for the day it started. Preflight now also reads session files changed in the last seven days. For such a session the weekly baseline adds the days of its per-day cost record that fall inside the window, and the daily baseline takes today's entry. A session that started inside the window still counts all its cost for the week. Any session with a per-day cost record now gives the daily baseline today's entry instead of a share worked out from its tool calls. A session that started before the window and has no per-day cost record counts nothing, because its spend cannot be placed on a day. With resumed sessions on disk the baselines can rise a lot, so a budget alert can fire that did not before.

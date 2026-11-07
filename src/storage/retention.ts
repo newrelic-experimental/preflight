@@ -4,7 +4,7 @@ import { createLogger } from '../shared/index.js';
 
 const logger = createLogger('retention');
 
-const PURGED_SUFFIXES = ['.json', '.corrupt', '.tmp'];
+const PURGED_SUFFIXES = ['.json', '.corrupt', '.merged', '.tmp'];
 
 /**
  * Delete every `PURGED_SUFFIXES` file in `<storagePath>/<subdir>` whose mtime

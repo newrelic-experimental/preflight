@@ -213,8 +213,170 @@ describe('SessionStore saves under filesystem faults', () => {
     store.saveSession({ ...summary(41), startTime: dayTwo, developer: 'alice' });
     readFileSync.mockImplementation(realFs.readFileSync as (...args: unknown[]) => unknown);
 
-    const counts = store.loadAllSessions().map((s) => s.toolCallCount);
-    expect(counts).toEqual([41]);
-    expect(store.listSessions({ developer: 'alice' }).length).toBe(counts.length);
+    expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([41]);
+    expect(store.loadSession(id)?.toolCallCount).toBe(41);
+    expect(warnings('cannot be found')).toHaveLength(0);
+  });
+
+  it('keeps a split file another process rewrote after the save read it, and combines it next', () => {
+    const dayTwo = new Date('2026-03-02T10:00:00Z').getTime();
+    const entry = (timestamp: number) => ({
+      timestamp,
+      toolName: 'Read',
+      durationMs: 5,
+      success: true,
+    });
+    const sibling = join(tmpDir, 'sessions', `2026-03-02_${id}.json`);
+    const split = (toolCallCount: number, timestamps: number[]) =>
+      JSON.stringify({
+        ...summary(toolCallCount),
+        startTime: dayTwo,
+        timeline: timestamps.map(entry),
+      });
+    realFs.writeFileSync(
+      target,
+      JSON.stringify({ ...summary(2), timeline: [entry(startTime + 1), entry(startTime + 2)] }),
+    );
+    realFs.writeFileSync(sibling, split(1, [dayTwo + 1]));
+    const store = new SessionStore({ storagePath: tmpDir });
+
+    let reads = 0;
+    readFileSync.mockImplementation((...args: unknown[]) => {
+      const contents = (realFs.readFileSync as (...a: unknown[]) => unknown)(...args);
+      if (args[0] === sibling && ++reads === 1) {
+        realFs.writeFileSync(sibling, split(2, [dayTwo + 1, dayTwo + 2]));
+      }
+      return contents;
+    });
+    store.saveSession(summary(3));
+    readFileSync.mockImplementation(realFs.readFileSync as (...args: unknown[]) => unknown);
+
+    expect(sessionFiles()).toEqual([basename(target), basename(sibling)]);
+    expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([3]);
+    expect(store.loadSession(id)?.timeline).toHaveLength(4);
+  });
+
+  describe('when another process sets a split file aside during a read', () => {
+    const dayTwo = new Date('2026-03-02T10:00:00Z').getTime();
+    const split = (start: number, toolCallCount: number, timestamps: number[]) =>
+      JSON.stringify({
+        ...summary(toolCallCount),
+        startTime: start,
+        timeline: timestamps.map((timestamp) => ({ timestamp, toolName: 'Read' })),
+      });
+    const siblingPath = () => join(tmpDir, 'sessions', `2026-03-02_${id}.json`);
+    const seedSplitFiles = () => {
+      realFs.writeFileSync(target, split(startTime, 10, [startTime + 1]));
+      realFs.writeFileSync(siblingPath(), split(dayTwo, 20, [dayTwo + 1]));
+    };
+    /** The other process finishes its whole save right after this one read the first file. */
+    const otherProcessSavesAfterFirstRead = () => {
+      let done = false;
+      readFileSync.mockImplementation((...args: unknown[]) => {
+        const contents = (realFs.readFileSync as (...a: unknown[]) => unknown)(...args);
+        if (args[0] === target && !done) {
+          done = true;
+          realFs.writeFileSync(target, split(startTime, 30, [startTime + 1, dayTwo + 1]));
+          realFs.renameSync(siblingPath(), `${siblingPath()}.1.merged`);
+        }
+        return contents;
+      });
+    };
+    const store = () => new SessionStore({ storagePath: tmpDir });
+
+    it("a save keeps the other process's combined record and reports it as previous", () => {
+      seedSplitFiles();
+      otherProcessSavesAfterFirstRead();
+      const saved = store().saveSession(summary(2));
+      expect(saved?.previous?.toolCallCount).toBe(30);
+      expect(savedToolCalls()).toBe(30);
+    });
+
+    it('loadSession returns the combined record, not the piece it read first', () => {
+      seedSplitFiles();
+      otherProcessSavesAfterFirstRead();
+      expect(store().loadSession(id)?.toolCallCount).toBe(30);
+    });
+
+    it('loadAllSessions returns the combined record, not the piece it read first', () => {
+      seedSplitFiles();
+      otherProcessSavesAfterFirstRead();
+      expect(
+        store()
+          .loadAllSessions()
+          .map((s) => s.toolCallCount),
+      ).toEqual([30]);
+    });
+
+    it("a relist leaves another session's files out of this record", () => {
+      seedSplitFiles();
+      const another = join(tmpDir, 'sessions', '2026-03-03_another-session.json');
+      realFs.writeFileSync(another, split(dayTwo, 7, [dayTwo + 5]).replaceAll(id, 'another'));
+      otherProcessSavesAfterFirstRead();
+      expect(store().saveSession(summary(2))?.previous?.toolCallCount).toBe(30);
+      expect(realFs.existsSync(another)).toBe(true);
+    });
+
+    it('a window load relists within its window', () => {
+      seedSplitFiles();
+      const since = new Date(dayTwo);
+      realFs.writeFileSync(
+        join(tmpDir, 'sessions', '2026-03-03_another-session.json'),
+        JSON.stringify({ ...summary(1), sessionId: 'another-session', startTime: dayTwo }),
+      );
+      realFs.writeFileSync(
+        join(tmpDir, 'sessions', `2026-03-03_${id}.json`),
+        split(dayTwo + 86_400_000, 5, [dayTwo + 86_400_000]),
+      );
+      readFileSync.mockImplementation((...args: unknown[]) => {
+        if (args[0] === siblingPath()) {
+          realFs.renameSync(siblingPath(), `${siblingPath()}.1.merged`);
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        }
+        return (realFs.readFileSync as (...a: unknown[]) => unknown)(...args);
+      });
+      const loaded = store().loadAllSessions({ since });
+      expect(loaded.map((s) => [s.sessionId, s.toolCallCount])).toEqual([
+        ['another-session', 1],
+        [id, 5],
+      ]);
+    });
+
+    it('rereads when a fresh listing has the same length but other files', () => {
+      seedSplitFiles();
+      const earlier = join(tmpDir, 'sessions', `2026-02-28_${id}.json`);
+      readFileSync.mockImplementation((...args: unknown[]) => {
+        if (args[0] === siblingPath() && realFs.existsSync(siblingPath())) {
+          realFs.writeFileSync(
+            earlier,
+            split(startTime - 86_400_000, 30, [startTime + 1, dayTwo + 1]),
+          );
+          realFs.renameSync(siblingPath(), `${siblingPath()}.1.merged`);
+        }
+        return (realFs.readFileSync as (...a: unknown[]) => unknown)(...args);
+      });
+      expect(store().loadSession(id)?.toolCallCount).toBe(30);
+    });
+
+    it('a save still succeeds when it cannot set a superseded file aside', () => {
+      seedSplitFiles();
+      renameSync.mockImplementation((from, to) => {
+        if (String(to).endsWith('.merged')) heldByAnotherProcess();
+        realFs.renameSync(from, to);
+      });
+      const saved = store().saveSession(summary(31));
+      expect(saved?.previous?.toolCallCount).toBe(30);
+      expect(warnings('Failed to set aside')).not.toHaveLength(0);
+      expect(sessionFiles()).toEqual([basename(target), basename(siblingPath())]);
+    });
+
+    it('skips a listed file that can never be read, and the save still lands', () => {
+      realFs.writeFileSync(target, split(startTime, 10, [startTime + 1]));
+      realFs.symlinkSync(join(tmpDir, 'missing'), siblingPath());
+      const saved = store().saveSession(summary(12));
+      expect(saved?.previous?.toolCallCount).toBe(10);
+      expect(savedToolCalls()).toBe(12);
+      expect(warnings('cannot be found')).not.toHaveLength(0);
+    });
   });
 });

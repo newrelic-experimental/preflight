@@ -1,7 +1,10 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { localDateKey } from '../lib/date.js';
+import { BudgetTracker } from '../metrics/budget-tracker.js';
+import type { BudgetThresholdEvent } from '../metrics/budget-tracker.js';
 import { computeHistoricalCosts } from './historical-costs.js';
 import { SessionStore } from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
@@ -123,6 +126,191 @@ describe('computeHistoricalCosts', () => {
     expect(computeHistoricalCosts(store, 'current', REF_TS)).toEqual({
       priorDailyCostUsd: 4,
       priorWeeklyCostUsd: 7,
+    });
+  });
+
+  it('counts a split session the same before and after a save folds it into its earliest file', () => {
+    const place = (start: number, estimatedCostUsd: number) => {
+      const path = resolve(tmpDir, 'sessions', `${localDateKey(start)}_split.json`);
+      const timeline = [{ timestamp: start, toolName: 'Read' }];
+      const costByDayUsd = { [localDateKey(start)]: estimatedCostUsd };
+      const fields = { sessionId: 'split', startTime: start, endTime: start + HOUR };
+      writeFileSync(path, JSON.stringify({ ...fields, estimatedCostUsd, costByDayUsd, timeline }));
+      utimesSync(path, new Date(start), new Date(start));
+    };
+    const baselines = () => computeHistoricalCosts(store, 'current', REF_TS);
+    const expected = { priorDailyCostUsd: 5, priorWeeklyCostUsd: 208 };
+    place(REF_TS - 30 * DAY, 100);
+    place(REF_TS - 7 * DAY, 3);
+    place(REF_TS - 3 * DAY, 200);
+    place(REF_TS - HOUR, 5);
+    expect(baselines()).toEqual(expected);
+    store.saveSession(store.loadSession('split') as FullSessionSummary);
+    expect(store.loadAllSessions({ since: new Date(REF_TS - 7 * DAY) })).toEqual([]);
+    expect(baselines()).toEqual(expected);
+  });
+
+  describe('sessions with a per-day cost map', () => {
+    interface Placed {
+      readonly startTime: number;
+      readonly endTime: number;
+      readonly estimatedCostUsd: number;
+      readonly costByDayUsd?: Record<string, number>;
+      readonly timeline?: ReadonlyArray<{ timestamp: number; toolName: string }>;
+      readonly modifiedAt?: number;
+    }
+
+    const place = (sessionId: string, fields: Placed): void => {
+      const { modifiedAt = REF_TS - HOUR, ...record } = fields;
+      const date = new Date(record.startTime).toISOString().slice(0, 10);
+      const path = resolve(tmpDir, 'sessions', `${date}_${sessionId}.json`);
+      writeFileSync(path, JSON.stringify({ sessionId, toolCallCount: 1, ...record }));
+      utimesSync(path, new Date(modifiedAt), new Date(modifiedAt));
+    };
+    const baselines = () => computeHistoricalCosts(store, 'current', REF_TS);
+    const day = (n: number): string => localDateKey(local(n, 12));
+    const FIRST_DAY = day(8);
+
+    it('counts only the days of the window for a session resumed from before it', () => {
+      place('resumed', {
+        startTime: WINDOW_START - 3 * DAY,
+        endTime: REF_TS - HOUR,
+        estimatedCostUsd: 100,
+        costByDayUsd: {
+          [localDateKey(WINDOW_START - 3 * DAY)]: 60,
+          [localDateKey(local(7, 12))]: 21,
+          [FIRST_DAY]: 4,
+          [day(12)]: 10,
+          [day(15)]: 6,
+        },
+      });
+
+      expect(baselines()).toEqual({ priorDailyCostUsd: 6, priorWeeklyCostUsd: 20 });
+    });
+
+    it('counts a day of the window from its first day and not the day before', () => {
+      place('edge', {
+        startTime: WINDOW_START - 2 * DAY,
+        endTime: REF_TS - HOUR,
+        estimatedCostUsd: 9,
+        costByDayUsd: { [localDateKey(local(7, 12))]: 5, [FIRST_DAY]: 1 },
+      });
+
+      expect(baselines().priorWeeklyCostUsd).toBe(1);
+    });
+
+    it('ignores a session from before the window that was not modified inside it', () => {
+      place('stale', {
+        startTime: WINDOW_START - 3 * DAY,
+        endTime: WINDOW_START - 3 * DAY + HOUR,
+        estimatedCostUsd: 50,
+        costByDayUsd: { [day(14)]: 50 },
+        modifiedAt: WINDOW_START - 2 * DAY,
+      });
+
+      expect(baselines()).toEqual({ priorDailyCostUsd: 0, priorWeeklyCostUsd: 0 });
+    });
+
+    it('takes the day from the day map instead of pro-rating a session that spans midnight', () => {
+      place('overnight', {
+        startTime: local(14, 23),
+        endTime: local(15, 1),
+        estimatedCostUsd: 10,
+        costByDayUsd: { [day(14)]: 9, [day(15)]: 1 },
+        timeline: [
+          { timestamp: local(14, 23), toolName: 'Read' },
+          { timestamp: local(15, 0), toolName: 'Read' },
+        ],
+      });
+
+      expect(baselines()).toEqual({ priorDailyCostUsd: 1, priorWeeklyCostUsd: 10 });
+    });
+
+    it('counts nothing for the day when the day map has no entry for it', () => {
+      place('yesterday-only', {
+        startTime: local(14, 10),
+        endTime: local(15, 1),
+        estimatedCostUsd: 3,
+        costByDayUsd: { [day(14)]: 3 },
+      });
+
+      expect(baselines()).toEqual({ priorDailyCostUsd: 0, priorWeeklyCostUsd: 3 });
+    });
+
+    it('counts a session from before the window with no day map as nothing, even with activity today', () => {
+      place('legacy', {
+        startTime: WINDOW_START - 3 * DAY,
+        endTime: local(15, 9),
+        estimatedCostUsd: 70,
+        timeline: [
+          { timestamp: local(15, 8), toolName: 'Read' },
+          { timestamp: local(15, 9), toolName: 'Edit' },
+        ],
+      });
+
+      expect(baselines()).toEqual({ priorDailyCostUsd: 0, priorWeeklyCostUsd: 0 });
+    });
+
+    it('keeps the window and the day on calendar days when the hour after midnight follows a clock change', () => {
+      const ref = new Date(2026, 2, 30, 0, 30).getTime();
+      const key = (offsetDays: number): string => {
+        const date = new Date(2026, 2, 30 - offsetDays, 12);
+        return localDateKey(date.getTime());
+      };
+      place('resumed-over-dst', {
+        startTime: Date.UTC(2026, 2, 1),
+        endTime: ref - HOUR,
+        estimatedCostUsd: 100,
+        modifiedAt: ref - HOUR,
+        costByDayUsd: { [key(8)]: 40, [key(7)]: 5, [key(1)]: 2, [key(0)]: 3 },
+      });
+
+      expect(computeHistoricalCosts(store, 'current', ref)).toEqual({
+        priorDailyCostUsd: 3,
+        priorWeeklyCostUsd: 10,
+      });
+    });
+
+    it('fires the weekly budget alert for spend a resumed session made inside the window', () => {
+      place('resumed', {
+        startTime: WINDOW_START - 3 * DAY,
+        endTime: REF_TS - HOUR,
+        estimatedCostUsd: 500,
+        costByDayUsd: { [localDateKey(WINDOW_START - 3 * DAY)]: 450, [day(12)]: 60 },
+      });
+      const events: BudgetThresholdEvent[] = [];
+      const budget = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: null,
+        weeklyBudgetUsd: 100,
+        onThreshold: (event) => events.push(event),
+      });
+
+      const { priorDailyCostUsd, priorWeeklyCostUsd } = baselines();
+      budget.updateCost(0, priorDailyCostUsd, priorWeeklyCostUsd);
+
+      expect(events.map((e) => [e.period, e.thresholdPct, e.spentUsd])).toEqual([
+        ['weekly', 50, 60],
+      ]);
+    });
+
+    it('never counts more for the day than for the week', () => {
+      place('legacy', {
+        startTime: WINDOW_START - 3 * DAY,
+        endTime: local(15, 9),
+        estimatedCostUsd: 70,
+        timeline: [{ timestamp: local(15, 8), toolName: 'Read' }],
+      });
+      place('mapped', {
+        startTime: WINDOW_START - 3 * DAY,
+        endTime: local(15, 9),
+        estimatedCostUsd: 8,
+        costByDayUsd: { [day(15)]: 2 },
+      });
+
+      const { priorDailyCostUsd, priorWeeklyCostUsd } = baselines();
+      expect(priorDailyCostUsd).toBe(2);
+      expect(priorWeeklyCostUsd).toBe(2);
     });
   });
 

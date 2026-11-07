@@ -768,18 +768,20 @@ function mayShareActivity(a: FullSessionSummary, b: FullSessionSummary): boolean
 }
 
 /**
- * A timeline at the cap has dropped entries. `mergeTimeline` drops the oldest,
- * so if `capped` started no later than `other` and `other` ends before its first
- * kept entry, `other` may be a source the combined file absorbed.
+ * A file with more calls than its capped timeline shows has dropped some.
+ * Trackers keep the first entries and `mergeTimeline` keeps the newest, so the
+ * dropped ones lie before or after the kept ones. `other` may be among them if
+ * it fits in that gap, on one side of the kept entries, inside `capped`'s span.
  */
 function mayHoldDroppedEntries(capped: FullSessionSummary, other: FullSessionSummary): boolean {
   const kept = capped.timeline ?? [];
-  const last = other.timeline?.at(-1);
+  const seen = other.timeline ?? [];
+  if (kept.length < MAX_TIMELINE_ENTRIES || seen.length > capped.toolCallCount - kept.length) {
+    return false;
+  }
   return (
-    kept.length >= MAX_TIMELINE_ENTRIES &&
-    capped.startTime <= other.startTime &&
-    last !== undefined &&
-    last.timestamp < kept[0].timestamp
+    (capped.startTime <= other.startTime && seen[seen.length - 1].timestamp < kept[0].timestamp) ||
+    (other.endTime <= capped.endTime && seen[0].timestamp > kept[kept.length - 1].timestamp)
   );
 }
 
@@ -1038,13 +1040,13 @@ export class SessionStore {
     // merged (inflated, since counters take the max) result to a NEW file
     // while leaving the OLD file on disk untouched — the session then
     // appeared twice in history with overlapping, double-counted totals.
-    const { existing: existingWithPath, filesRead } = this.loadSessionWithPath(summary.sessionId);
+    const { existing, filesRead } = this.loadSessionFiles(summary.sessionId);
 
     // Every MCP server process checkpoints every 30s, including windows that
     // never saw a tool call or a token. Writing those first-time files filled
     // history with model-less zero-activity rows that dragged down every
     // per-session average. An existing file is handled by the guard below.
-    if (!existingWithPath && !hasRecordedUsage(summary)) {
+    if (!existing && !hasRecordedUsage(summary)) {
       logger.debug('Skipping first write of a session with no recorded usage', {
         sessionId: summary.sessionId,
       });
@@ -1063,8 +1065,7 @@ export class SessionStore {
     // non-empty one. A summary with cost or tokens but no tool calls, such as
     // a restarted dashboard's parent-only rollup, is not empty: it merges.
     let toWrite: FullSessionSummary = summary;
-    if (existingWithPath) {
-      const { summary: existing } = existingWithPath;
+    if (existing) {
       if (hasRecordedUsage(existing) && !hasRecordedUsage(summary)) {
         logger.warn('Refusing to overwrite recorded session with an empty summary', {
           sessionId: summary.sessionId,
@@ -1081,6 +1082,11 @@ export class SessionStore {
       // modelBreakdown {} and a lower toolCallCount. Merge non-destructively
       // instead: counters take the max (they only ever grow, so max never
       // regresses and never double-counts overlapping views).
+      //
+      // `existing` already combines every split file for this id, and a
+      // resumed process is seeded from that same combined record, so its
+      // counters include the files. It is not classified like a sibling file:
+      // its timeline restarts empty on resume and would look disjoint.
       toWrite = mergeSummaries(existing, summary);
     }
 
@@ -1100,9 +1106,7 @@ export class SessionStore {
     }
 
     const unparsedFilesReplaced = filesRead.filter(
-      (file) =>
-        file.parsed.kind !== 'clean' &&
-        (file.filepath === filepath || file.filepath === existingWithPath?.filepath),
+      (file) => file.parsed.kind !== 'clean' && file.filepath === filepath,
     );
 
     // Write-then-rename so two processes saving the same session id can never
@@ -1122,22 +1126,28 @@ export class SessionStore {
           // Renamed into place, or never written.
         }
       }
-      // The merge landed on a different filename than where the existing
-      // record lived (a date-rollover case) — remove the now-superseded
-      // file so the session isn't left duplicated across two files.
-      if (existingWithPath && existingWithPath.filepath !== filepath) {
+      // Every other file the record was combined from is now superseded. A
+      // file rewritten since it was read holds data this write lacks, so it
+      // stays for the next save to fold in. Superseded files are renamed, not
+      // deleted: the add-vs-max choice is a heuristic, and a `*.merged` copy
+      // (which loaders ignore) keeps those files' bytes. It cannot undo a wrong
+      // combine alone, because the earliest file is overwritten by the combined
+      // record and has no copy.
+      for (const file of filesRead) {
+        if (file.parsed.kind === 'unreadable' || file.filepath === filepath) continue;
         try {
-          unlinkSync(existingWithPath.filepath);
+          if (!readFileSync(file.filepath).equals(file.bytes)) continue;
+          renameSync(file.filepath, `${file.filepath}.${Date.now()}.merged`);
         } catch (err) {
-          logger.warn('Failed to remove superseded session file after merge', {
+          logger.warn('Failed to set aside superseded session file after merge', {
             sessionId: toWrite.sessionId,
-            stalePath: existingWithPath.filepath,
+            stalePath: file.filepath,
             error: err instanceof Error ? err.message : String(err),
           });
         }
       }
       logger.debug('Session saved', { sessionId: toWrite.sessionId, filename });
-      return { previous: existingWithPath?.summary ?? null };
+      return { previous: existing };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn('Failed to save session file', {
@@ -1149,51 +1159,80 @@ export class SessionStore {
     }
   }
 
+  /** Every readable file for the id, combined into one record (see combineSessionFiles). */
   loadSession(sessionId: string): FullSessionSummary | null {
-    return this.loadSessionWithPath(sessionId).existing?.summary ?? null;
+    return this.loadSessionFiles(sessionId).existing;
   }
 
   /**
-   * Like loadSession(), but also returns the file path it was loaded from — used by saveSession() to detect and clean up a stale file after a merge relocates a session to a different filename.
+   * Like loadSession(), but also returns every file it read, so saveSession()
+   * can set aside the ones the combined record supersedes.
    *
    * An unreadable file is skipped rather than ending the search: returning null
    * there made saveSession() treat the session as new and start a fresh file
-   * on every later save. Sibling files for one id are not merged here,
-   * because files split that way hold disjoint activity that mergeSummaries'
-   * per-counter max would drop.
+   * on every later save.
    */
-  private loadSessionWithPath(sessionId: string): {
-    readonly existing: { readonly summary: FullSessionSummary; readonly filepath: string } | null;
+  private loadSessionFiles(sessionId: string): {
+    readonly existing: FullSessionSummary | null;
     readonly filesRead: readonly SessionFileRead[];
   } {
     if (!existsSync(this.sessionsDir)) return { existing: null, filesRead: [] };
 
-    const names = readdirSync(this.sessionsDir)
-      .filter((file) => parseSessionFilename(file)?.sessionId === sessionId)
-      .sort();
-    const filesRead: SessionFileRead[] = [];
-    for (const file of names) {
-      const filepath = resolve(this.sessionsDir, file);
+    const listFiles = () => this.listSessionFiles().filter((f) => f.sessionId === sessionId);
+    const filesRead = this.readListedFiles(listFiles(), listFiles);
+    const summaries = summariesIn(filesRead);
+    return {
+      existing: summaries.length > 0 ? combineSessionFiles(summaries) : null,
+      filesRead,
+    };
+  }
+
+  private listSessionFiles(): SessionFileInfo[] {
+    return readdirSync(this.sessionsDir)
+      .sort()
+      .flatMap((file) => parseSessionFilename(file) ?? []);
+  }
+
+  /**
+   * Reads the listed files. One that vanished after the listing was set aside
+   * by a concurrent save, and the file that save wrote holds its activity, so
+   * what was read so far must not be combined and saved over it. Reads a fresh
+   * listing instead. A listing that does not change names a file that can never
+   * be read, such as a dangling symlink, and that file is skipped.
+   */
+  private readListedFiles(
+    listed: readonly SessionFileInfo[],
+    relist: () => readonly SessionFileInfo[],
+  ): SessionFileRead[] {
+    const reads: SessionFileRead[] = [];
+    let vanished = false;
+    for (const { filename } of listed) {
+      const filepath = resolve(this.sessionsDir, filename);
       try {
         const bytes = readFileSync(filepath);
-        filesRead.push({
+        reads.push({
           filepath,
           bytes,
           parsed: parseSessionFile(bytes.toString('utf-8'), filepath),
         });
-      } catch {
-        logger.warn('Failed to read session file', { file });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') vanished = true;
+        else logger.warn('Failed to read session file', { file: filename });
       }
     }
+    if (!vanished) return reads;
 
-    for (const { filepath, parsed } of filesRead) {
-      const summary = usableSummary(
-        parsed,
-        () => names.length - filesRead.filter((f) => f.parsed.kind === 'unreadable').length,
-      );
-      if (summary) return { existing: { summary, filepath }, filesRead };
+    const fresh = relist();
+    if (
+      fresh.length === listed.length &&
+      fresh.every((f, i) => f.filename === listed[i].filename)
+    ) {
+      logger.warn('Skipping a listed session file that cannot be found', {
+        sessionId: listed[0].sessionId,
+      });
+      return reads;
     }
-    return { existing: null, filesRead };
+    return this.readListedFiles(fresh, relist);
   }
 
   listSessions(options?: ListSessionsOptions): SessionFileInfo[] {
@@ -1202,13 +1241,7 @@ export class SessionStore {
     const sinceDate = options?.since ? formatDate(options.since) : null;
     const results: SessionFileInfo[] = [];
 
-    const names = readdirSync(this.sessionsDir);
-    const parsingFilesForId = parsingFileCounter(
-      this.sessionsDir,
-      names.flatMap((name) => parseSessionFilename(name) ?? []),
-    );
-
-    for (const file of names) {
+    for (const file of readdirSync(this.sessionsDir)) {
       if (!file.endsWith('.json')) continue;
 
       const parsed = parseSessionFilename(file);
@@ -1218,12 +1251,8 @@ export class SessionStore {
 
       if (options?.developer) {
         try {
-          const filepath = join(this.sessionsDir, file);
-          const summary = usableSummary(
-            parseSessionFile(readFileSync(filepath, 'utf-8'), filepath),
-            () => parsingFilesForId(parsed.sessionId),
-          );
-          if (!summary || summary.developer !== options.developer) continue;
+          const summary = readSessionFile(join(this.sessionsDir, file));
+          if (summary?.developer !== options.developer) continue;
         } catch {
           continue;
         }
@@ -1244,46 +1273,48 @@ export class SessionStore {
     const modifiedSinceMs = options?.includeModifiedSince?.getTime() ?? null;
     const results: FullSessionSummary[] = [];
 
-    const sessionFiles = readdirSync(this.sessionsDir).flatMap(
-      (file) => parseSessionFilename(file) ?? [],
-    );
-    const parsingFilesForId = parsingFileCounter(this.sessionsDir, sessionFiles);
-
-    for (const parsed of sessionFiles) {
-      const file = parsed.filename;
-      if (sinceDate && parsed.date < sinceDate) {
-        if (modifiedSinceMs === null) continue;
-        try {
-          if (statSync(join(this.sessionsDir, file)).mtimeMs < modifiedSinceMs) continue;
-        } catch {
-          continue;
-        }
-      }
-
+    const modifiedSince = (file: SessionFileInfo): boolean => {
+      if (modifiedSinceMs === null) return false;
       try {
-        const filepath = join(this.sessionsDir, file);
-        const session = usableSummary(
-          parseSessionFile(readFileSync(filepath, 'utf-8'), filepath),
-          () => parsingFilesForId(parsed.sessionId),
-        );
-        if (!session) continue;
-
-        // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
-        // MCP-internal bookkeeping from --local / proxy modes, never a real
-        // Claude Code session. persistSession() in src/index.ts already
-        // refuses to write new ones; any that still exist on disk are stale
-        // artifacts from before that guard shipped. Filtering them here
-        // means every consumer of this loader (and of loadTodaySessions() /
-        // loadSessionsOverlappingToday(), which both delegate to it) gets
-        // clean data without re-implementing the same check.
-        if (isSyntheticSessionId(session.sessionId)) continue;
-
-        if (options?.developer && session.developer !== options.developer) continue;
-
-        results.push(session);
+        return statSync(join(this.sessionsDir, file.filename)).mtimeMs >= modifiedSinceMs;
       } catch {
-        logger.warn('Failed to read session file', { file });
+        return false;
       }
+    };
+
+    // A `since` load combines only the files in its window. Combining the whole
+    // id would either pull a long session's lifetime totals into a recent
+    // window or drop its recent activity because its first file is old.
+    const inWindow = (file: SessionFileInfo): boolean =>
+      !sinceDate || file.date >= sinceDate || modifiedSince(file);
+
+    const filesById = new Map<string, SessionFileInfo[]>();
+    for (const file of this.listSessionFiles().filter(inWindow)) {
+      const group = filesById.get(file.sessionId);
+      if (group) group.push(file);
+      else filesById.set(file.sessionId, [file]);
+    }
+
+    for (const [sessionId, files] of filesById) {
+      const relist = () =>
+        this.listSessionFiles().filter((f) => f.sessionId === sessionId && inWindow(f));
+      const summaries = summariesIn(this.readListedFiles(files, relist)).filter(
+        (s) => !options?.developer || s.developer === options.developer,
+      );
+      if (summaries.length === 0) continue;
+      const session = combineSessionFiles(summaries);
+
+      // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
+      // MCP-internal bookkeeping from --local / proxy modes, never a real
+      // Claude Code session. persistSession() in src/index.ts already
+      // refuses to write new ones; any that still exist on disk are stale
+      // artifacts from before that guard shipped. Filtering them here
+      // means every consumer of this loader (and of loadTodaySessions() /
+      // loadSessionsOverlappingToday(), which both delegate to it) gets
+      // clean data without re-implementing the same check.
+      if (isSyntheticSessionId(session.sessionId)) continue;
+
+      results.push(session);
     }
 
     return results.sort((a, b) => a.startTime - b.startTime);
@@ -2222,52 +2253,13 @@ function parseSessionFile(raw: string, filepath: string): ParsedSessionFile {
   return { kind: 'unreadable' };
 }
 
-/**
- * A recovered document is used only when its file is the only one of its id
- * that parses. Beside a parsing sibling it may repeat activity the sibling
- * already holds, so adding the two could double count. It stays unread there,
- * as it was before recovery existed, until a session's split files are
- * combined. A sibling that parses as unreadable holds nothing to double count,
- * so it does not hide the recovered file. A sibling that cannot be read at all
- * might hold anything, so it counts as parsing. The count includes the file
- * itself and is only asked for when the file is recovered.
- */
-function usableSummary(
-  parsed: ParsedSessionFile,
-  parsingFilesForId: () => number,
-): FullSessionSummary | null {
-  if (parsed.kind === 'unreadable') return null;
-  return parsed.kind === 'clean' || parsingFilesForId() === 1 ? parsed.summary : null;
+function summariesIn(files: readonly SessionFileRead[]): FullSessionSummary[] {
+  return files.flatMap(({ parsed }) => (parsed.kind === 'unreadable' ? [] : [parsed.summary]));
 }
 
-/**
- * Counts, per session id, the files that parse as clean or recovered. A file
- * that cannot be read at all might hold anything, so it counts as parsing.
- * Reads an id's files once, on first ask.
- */
-function parsingFileCounter(
-  sessionsDir: string,
-  files: readonly SessionFileInfo[],
-): (sessionId: string) => number {
-  const filenamesById = new Map<string, string[]>();
-  for (const { sessionId, filename } of files) {
-    filenamesById.set(sessionId, [...(filenamesById.get(sessionId) ?? []), filename]);
-  }
-  const counts = new Map<string, number>();
-  return (sessionId) => {
-    const known = counts.get(sessionId);
-    if (known !== undefined) return known;
-    const count = (filenamesById.get(sessionId) ?? []).filter((filename) => {
-      const filepath = join(sessionsDir, filename);
-      try {
-        return parseSessionFile(readFileSync(filepath, 'utf-8'), filepath).kind !== 'unreadable';
-      } catch {
-        return true;
-      }
-    }).length;
-    counts.set(sessionId, count);
-    return count;
-  };
+function readSessionFile(filepath: string): FullSessionSummary | null {
+  const parsed = parseSessionFile(readFileSync(filepath, 'utf-8'), filepath);
+  return parsed.kind === 'unreadable' ? null : parsed.summary;
 }
 
 /**

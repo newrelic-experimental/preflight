@@ -9,20 +9,25 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { basename, resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   SessionStore,
   buildSessionSummary,
+  combineSessionFiles,
   deserializeFullSessionSummary,
   hasAttributableActivity,
   mergeSummaries,
   sessionSummaryToDriftRecord,
 } from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
+import type { ReplayTimelineEntry } from './types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { buildCostTrackerSeed } from '../metrics/cost-tracker-seed.js';
+import { FirstSaveBaselines } from '../metrics/first-save-baselines.js';
+import { localDateKey } from '../lib/date.js';
+import { computeHistoricalCosts } from './historical-costs.js';
 import type { CostMetrics } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
@@ -4268,33 +4273,90 @@ describe('SessionStore split and corrupt session files', () => {
     expect(loaded?.developer).toBe(developer);
   });
 
+  function activity(start: number, count: number): ReplayTimelineEntry[] {
+    return Array.from({ length: count }, (_, i) => ({
+      timestamp: start + i + 1,
+      toolName: 'Read',
+      durationMs: 5,
+      success: true,
+    }));
+  }
+
+  function withActivity(
+    startTime: number,
+    toolCallCount: number,
+    timeline = activity(startTime, toolCallCount),
+  ): FullSessionSummary {
+    return makeSummary({ sessionId: id, startTime, toolCallCount, timeline });
+  }
+
   it.each([
     ['older', '2026-03-01', day1, '2026-03-02', day2],
     ['newer', '2026-03-02', day2, '2026-03-01', day1],
   ])(
-    'does not add a recovered %s split file to its readable sibling',
+    'adds a recovered %s split file to a sibling holding separate activity',
     (_, recoveredDate, recoveredStart, readableDate, readableStart) => {
       const store = new SessionStore({ storagePath: tmpDir });
-      const recovered = writeSessionFile(
-        recoveredDate,
-        makeSummary({ sessionId: id, startTime: recoveredStart, toolCallCount: 7 }),
-        tail,
-      );
+      const recovered = writeSessionFile(recoveredDate, withActivity(recoveredStart, 7), tail);
       const recoveredBytes = readFileSync(recovered, 'utf-8');
-      writeSessionFile(
-        readableDate,
-        makeSummary({ sessionId: id, startTime: readableStart, toolCallCount: 4 }),
-      );
+      writeSessionFile(readableDate, withActivity(readableStart, 4));
 
-      expect(totalToolCalls(store)).toBe(4);
-      expect(store.loadSession(id)?.toolCallCount).toBe(4);
+      expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([11]);
+      expect(store.loadSession(id)?.toolCallCount).toBe(11);
 
-      store.saveSession(makeSummary({ sessionId: id, startTime: readableStart, toolCallCount: 6 }));
+      store.saveSession(withActivity(day1, 12, []));
 
-      expect(totalToolCalls(store)).toBe(6);
-      expect(readFileSync(recovered, 'utf-8')).toBe(recoveredBytes);
+      expect(filesEndingIn('.json')).toEqual([`2026-03-01_${id}.json`]);
+      expect(totalToolCalls(store)).toBe(12);
+      expect(
+        [...filesEndingIn('.corrupt'), ...filesEndingIn('.merged')].map((f) =>
+          readFileSync(join(sessionsDir(), f), 'utf-8'),
+        ),
+      ).toContain(recoveredBytes);
     },
   );
+
+  it.each([
+    ['repeats the entries of', activity(day1, 40)],
+    ['has no timeline next to', []],
+  ])('does not add a recovered file that %s its sibling', (_, recoveredTimeline) => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeSessionFile('2026-03-01', withActivity(day1, 40, recoveredTimeline), tail);
+    writeSessionFile('2026-03-02', withActivity(day2, 41, activity(day1, 41)));
+
+    expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([41]);
+    expect(store.loadSession(id)?.toolCallCount).toBe(41);
+  });
+
+  it('combines two recovered files for one id', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeSessionFile('2026-03-01', withActivity(day1, 7), tail);
+    writeSessionFile('2026-03-02', withActivity(day2, 4), tail);
+
+    expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([11]);
+    expect(store.loadSession(id)?.toolCallCount).toBe(11);
+
+    const saved = store.saveSession(withActivity(day1, 12, []));
+
+    expect(saved?.previous?.toolCallCount).toBe(11);
+    expect(filesEndingIn('.json')).toEqual([`2026-03-01_${id}.json`]);
+    expect(filesEndingIn('.corrupt')).toHaveLength(1);
+    expect(filesEndingIn('.merged')).toHaveLength(1);
+    expect(totalToolCalls(store)).toBe(12);
+  });
+
+  it('does not double count once a sibling that was truncated at a save reads whole again', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const whole = JSON.stringify(withActivity(day2, 40, activity(day1, 40)));
+    writeSessionFile('2026-03-01', withActivity(day1, 40), tail);
+    const sibling = join(sessionsDir(), `2026-03-02_${id}.json`);
+    writeFileSync(sibling, whole.slice(0, 40));
+
+    store.saveSession(withActivity(day1, 41));
+    writeFileSync(sibling, whole);
+
+    expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([41]);
+  });
 
   it('skips a corrupt file and finds the good one', () => {
     const store = new SessionStore({ storagePath: tmpDir });
@@ -4307,17 +4369,23 @@ describe('SessionStore split and corrupt session files', () => {
     expect(store.loadSession(id)?.toolCallCount).toBe(4);
   });
 
-  it('never moves or rewrites a file it cannot parse while only reading', () => {
+  it('never moves or rewrites a file while only reading, split or unparsed', () => {
     const store = new SessionStore({ storagePath: tmpDir });
-    const path = join(sessionsDir(), `2026-03-01_${id}.json`);
-    writeFileSync(path, '{ "sessionId": ');
+    const unreadable = join(sessionsDir(), `2026-02-28_${id}.json`);
+    writeFileSync(unreadable, '{ "sessionId": ');
+    const paths = [
+      unreadable,
+      writeSessionFile('2026-03-01', withActivity(day1, 3), tail),
+      writeSessionFile('2026-03-02', withActivity(day2, 8)),
+    ];
+    const before = paths.map((path) => readFileSync(path, 'utf-8'));
 
     store.loadSession(id);
     store.loadAllSessions();
     store.listSessions({ developer: 'alice' });
 
-    expect(readdirSync(sessionsDir())).toEqual([`2026-03-01_${id}.json`]);
-    expect(readFileSync(path, 'utf-8')).toBe('{ "sessionId": ');
+    expect(readdirSync(sessionsDir()).sort()).toEqual(paths.map((path) => basename(path)));
+    expect(paths.map((path) => readFileSync(path, 'utf-8'))).toEqual(before);
   });
 
   it('merges a save past an unreadable sibling into the readable file and leaves the sibling as it was', () => {
@@ -4349,11 +4417,11 @@ describe('SessionStore split and corrupt session files', () => {
   });
 
   it.each([
-    ['in place', day1, `2026-03-01_${id}.json`],
-    ['at an earlier date', day0, `2026-02-28_${id}.json`],
+    ['in place', day1, `2026-03-01_${id}.json`, '.corrupt'],
+    ['at an earlier date', day0, `2026-02-28_${id}.json`, '.merged'],
   ])(
     'keeps the original bytes, tail included, of a recovered file a save replaces %s',
-    (_, startTime, savedAs) => {
+    (_, startTime, savedAs, keptAs) => {
       const store = new SessionStore({ storagePath: tmpDir });
       const recovered = writeSessionFile(
         '2026-03-01',
@@ -4366,7 +4434,7 @@ describe('SessionStore split and corrupt session files', () => {
 
       expect(filesEndingIn('.json')).toEqual([savedAs]);
       expect(
-        filesEndingIn('.corrupt').map((f) => readFileSync(join(sessionsDir(), f), 'utf-8')),
+        filesEndingIn(keptAs).map((f) => readFileSync(join(sessionsDir(), f), 'utf-8')),
       ).toEqual([original]);
       expect(store.loadSession(id)?.toolCallCount).toBe(8);
     },
@@ -4387,22 +4455,16 @@ describe('SessionStore split and corrupt session files', () => {
     expect(warnings).toHaveLength(1);
   });
 
-  it('lists the same files for a developer as loadAllSessions loads when an id has a recovered file and a clean sibling', () => {
+  it('lists every parsing file for a developer, recovered ones too, as one record in loadAllSessions', () => {
     const store = new SessionStore({ storagePath: tmpDir });
-    writeSessionFile(
-      '2026-03-01',
-      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 7 }),
-      tail,
-    );
-    writeSessionFile(
-      '2026-03-02',
-      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 4 }),
-    );
+    writeSessionFile('2026-03-01', withActivity(day1, 7), tail);
+    writeSessionFile('2026-03-02', withActivity(day2, 4));
 
-    const listed = store.listSessions({ developer: 'alice' }).map((f) => f.filename);
-
-    expect(listed).toEqual([`2026-03-02_${id}.json`]);
-    expect(store.loadAllSessions({ developer: 'alice' })).toHaveLength(listed.length);
+    expect(store.listSessions({ developer: 'alice' }).map((f) => f.filename)).toEqual([
+      `2026-03-01_${id}.json`,
+      `2026-03-02_${id}.json`,
+    ]);
+    expect(store.loadAllSessions({ developer: 'alice' })).toHaveLength(1);
   });
 
   it('reads a recovered file whose only sibling is unreadable, in every read path', () => {
@@ -4464,18 +4526,294 @@ describe('SessionStore split and corrupt session files', () => {
     expect(store.loadSession(id)?.toolCallCount).toBe(5);
     expect(filesEndingIn('.corrupt')).toHaveLength(2);
   });
+});
 
-  it('keeps disjoint split files for one id as separate records', () => {
+describe('combining a session split across files', () => {
+  const id = 'split-session-2';
+  const day1 = new Date('2026-03-01T10:00:00Z').getTime();
+  const day2 = new Date('2026-03-02T10:00:00Z').getTime();
+  const HOUR = 3_600_000;
+
+  function entry(timestamp: number, toolName = 'Read'): ReplayTimelineEntry {
+    return { timestamp, toolName, durationMs: 5, success: true };
+  }
+
+  function sessionsDir(): string {
+    return join(tmpDir, 'sessions');
+  }
+
+  function writeSessionFile(summary: FullSessionSummary): void {
+    const date = new Date(summary.startTime).toISOString().slice(0, 10);
+    writeFileSync(
+      join(sessionsDir(), `${date}_${summary.sessionId}.json`),
+      JSON.stringify(summary, null, 2) + '\n',
+    );
+  }
+
+  function jsonFiles(): string[] {
+    return readdirSync(sessionsDir()).filter((f) => f.endsWith('.json'));
+  }
+
+  const first = (): FullSessionSummary =>
+    makeSummary({
+      sessionId: id,
+      startTime: day1,
+      endTime: day1 + HOUR,
+      timeline: [entry(day1 + 1), entry(day1 + 2, 'Bash')],
+      toolCallCount: 2,
+      toolBreakdown: { Read: 1, Bash: 1 },
+      estimatedCostUsd: 1,
+      byteEstimates: {
+        costUsd: 0.4,
+        inputTokens: 100,
+        outputTokens: 0,
+        costByModel: {},
+        costByDayUsd: { '2026-03-01': 0.4 },
+      },
+      costByDayUsd: { '2026-03-01': 1 },
+      tokensInput: 1000,
+      tokensOutput: 500,
+      userMessages: 5,
+      taskCount: 1,
+      taskSuccessRate: 1,
+      efficiencyScore: 0.6,
+      efficiencyScoreSampleCount: 2,
+      efficiencyScoreComponents: {
+        speed: 0.6,
+        correctness: 0.6,
+        autonomy: 0.6,
+        firstAttemptQuality: 0.6,
+      },
+    });
+
+  const second = (): FullSessionSummary =>
+    makeSummary({
+      sessionId: id,
+      startTime: day2,
+      endTime: day2 + HOUR,
+      timeline: [entry(day2 + 1)],
+      toolCallCount: 1,
+      toolBreakdown: { Read: 1 },
+      estimatedCostUsd: 2,
+      costByDayUsd: { '2026-03-02': 2 },
+      tokensInput: 3000,
+      tokensOutput: 700,
+      userMessages: 8,
+      taskCount: 1,
+      taskSuccessRate: 0,
+      efficiencyScore: 0.9,
+      efficiencyScoreSampleCount: 1,
+      efficiencyScoreComponents: {
+        speed: 0.9,
+        correctness: 0.9,
+        autonomy: 0.9,
+        firstAttemptQuality: 0.9,
+      },
+    });
+
+  it('converges when a save wrote the combined file but crashed before setting a source aside', () => {
     const store = new SessionStore({ storagePath: tmpDir });
-    writeSessionFile(
-      '2026-03-01',
-      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 3 }),
-    );
-    writeSessionFile(
-      '2026-03-02',
-      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 8 }),
-    );
+    writeSessionFile(combineSessionFiles([first(), second()]));
+    writeSessionFile(second());
 
-    expect(totalToolCalls(store)).toBe(11);
+    const loaded = store.loadSession(id);
+    expect(loaded?.toolCallCount).toBe(3);
+    expect(loaded?.estimatedCostUsd).toBeCloseTo(3);
+
+    for (let run = 0; run < 2; run++) {
+      store.saveSession(store.loadSession(id)!);
+      expect(jsonFiles()).toEqual([`2026-03-01_${id}.json`]);
+      const healed = store.loadSession(id);
+      expect(healed?.toolCallCount).toBe(3);
+      expect(healed?.estimatedCostUsd).toBeCloseTo(3);
+      expect(healed?.efficiencyScoreSampleCount).toBe(3);
+    }
+  });
+
+  describe('a ledger through real files', () => {
+    const day = (n: number) => day1 + n * 24 * HOUR;
+    const costed = (n: number, exact: number, estimate: number, withTimeline = true) =>
+      makeSummary({
+        sessionId: id,
+        startTime: day(n),
+        endTime: day(n) + HOUR,
+        timeline: withTimeline ? [entry(day(n))] : undefined,
+        estimatedCostUsd: exact + estimate,
+        exactTotals: { costUsd: exact, inputTokens: 0, outputTokens: 0, costByDayUsd: {} },
+        byteEstimates: { ...first().byteEstimates!, costUsd: estimate },
+      });
+    const cost = () => new SessionStore({ storagePath: tmpDir }).loadSession(id)?.estimatedCostUsd;
+
+    it.each([5, -1])('keeps the sum beside a file with no timeline on day %i', (n) => {
+      [costed(0, 1, 4), costed(1, 1, 4), costed(n, 0, 1, false)].forEach(writeSessionFile);
+      expect(cost()).toBeCloseTo(10);
+    });
+
+    it('keeps the sum beside a source a crashed save left in place', () => {
+      [costed(0, 1, 4), costed(1, 1, 4)].forEach(writeSessionFile);
+      const store = new SessionStore({ storagePath: tmpDir });
+      store.saveSession(store.loadSession(id) as FullSessionSummary);
+      writeSessionFile({ ...costed(1, 1, 4), endTime: day(9) });
+      expect(cost()).toBeCloseTo(10);
+    });
+  });
+
+  it('does not add a source again once the combined timeline cap pushed its entries out', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const middle = { ...second(), startTime: day1 + HOUR, endTime: day1 + 2 * HOUR };
+    middle.timeline = [entry(day1 + HOUR + 1)];
+    const latest = {
+      ...second(),
+      toolCallCount: 10_000,
+      timeline: Array.from({ length: 10_000 }, (_, i) => entry(day2 + i)),
+    };
+    const combined = combineSessionFiles([first(), middle, latest]);
+    expect(combined.toolCallCount).toBe(10_003);
+    expect(combined.timeline?.some((e) => e.timestamp === day1 + HOUR + 1)).toBe(false);
+
+    writeSessionFile(combined);
+    writeFileSync(join(sessionsDir(), `2026-03-02_${id}.json`), JSON.stringify(middle));
+    expect(store.loadSession(id)?.toolCallCount).toBe(10_003);
+  });
+
+  it('lists one record per id with the split files added together', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeSessionFile(first());
+    writeSessionFile(second());
+
+    const all = store.loadAllSessions();
+    expect(all).toHaveLength(1);
+    expect(all[0].toolCallCount).toBe(3);
+    expect(all[0].estimatedCostUsd).toBeCloseTo(3);
+    expect(store.loadSession(id)).toEqual(all[0]);
+  });
+
+  describe('a load limited to a window', () => {
+    const recent = (end: number) => ({ ...second(), startTime: end - HOUR, endTime: end });
+    const setMtime = (date: string, ms: number) =>
+      utimesSync(join(sessionsDir(), `${date}_${id}.json`), new Date(ms), new Date(ms));
+
+    it('combines only the files in the window, leaving lifetime totals out', () => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      writeSessionFile(first());
+      writeSessionFile(second());
+      const third = {
+        ...second(),
+        startTime: day2 + 24 * HOUR,
+        endTime: day2 + 25 * HOUR,
+        timeline: [entry(day2 + 24 * HOUR + 1)],
+        toolCallCount: 5,
+        estimatedCostUsd: 4,
+      };
+      writeSessionFile(third);
+
+      const window = store.loadAllSessions({ since: new Date(day2) });
+      expect(window.map((s) => [s.toolCallCount, s.estimatedCostUsd])).toEqual([[6, 6]]);
+      expect(store.loadAllSessions({ since: new Date(day2 + 24 * HOUR) })).toHaveLength(1);
+      expect(store.loadAllSessions({ since: new Date(day2 + 48 * HOUR) })).toEqual([]);
+    });
+
+    it('adds an older file only when it was modified since the cutoff', () => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      writeSessionFile(first());
+      writeSessionFile(second());
+      const options = { since: new Date(day2), includeModifiedSince: new Date(day2) };
+
+      setMtime('2026-03-01', day1);
+      expect(store.loadAllSessions(options).map((s) => s.toolCallCount)).toEqual([1]);
+      setMtime('2026-03-01', day2);
+      expect(store.loadAllSessions(options).map((s) => s.toolCallCount)).toEqual([3]);
+    });
+
+    it('keeps the recent piece of a long session in today and week views', () => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const now = Date.now();
+      writeSessionFile({ ...first(), startTime: now - 720 * HOUR, endTime: now - 719 * HOUR });
+      const costByDayUsd = { [localDateKey(now)]: 2 };
+      writeSessionFile({ ...recent(now), timeline: [entry(now - 60_000)], costByDayUsd });
+
+      expect(store.loadTodaySessions().map((s) => s.toolCallCount)).toEqual([1]);
+      expect(store.loadSessionsOverlappingToday().map((s) => s.toolCallCount)).toEqual([1]);
+      expect(computeHistoricalCosts(store, 'another-session', now).priorWeeklyCostUsd).toBeCloseTo(
+        2,
+      );
+    });
+  });
+
+  it("filters by developer per file, so one developer never gets another one's activity", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeSessionFile({ ...first(), developer: 'alice' });
+    writeSessionFile({ ...second(), developer: 'bob' });
+
+    const calls = (developer: string) =>
+      store.loadAllSessions({ developer }).map((s) => s.toolCallCount);
+    expect(calls('alice')).toEqual([2]);
+    expect(calls('bob')).toEqual([1]);
+    expect(calls('carol')).toEqual([]);
+    expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([3]);
+  });
+
+  it('saves into one file, sets the other split files aside, and leaves unreadable ones in place', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const unreadable = `2026-02-28_${id}.json`;
+    writeFileSync(join(sessionsDir(), unreadable), '{ "sessionId": ');
+    writeSessionFile(first());
+    writeSessionFile(second());
+    const secondBytes = readFileSync(join(sessionsDir(), `2026-03-02_${id}.json`), 'utf-8');
+
+    const resumed = store.loadSession(id)!;
+    store.saveSession({
+      ...resumed,
+      endTime: day2 + 2 * HOUR,
+      timeline: [entry(day2 + HOUR + 1)],
+      toolCallCount: resumed.toolCallCount + 1,
+    });
+
+    expect(jsonFiles()).toEqual([unreadable, `2026-03-01_${id}.json`]);
+    const merged = readdirSync(sessionsDir()).filter((f) => f.endsWith('.merged'));
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatch(new RegExp(`^2026-03-02_${id}\\.json\\.\\d+\\.merged$`));
+    expect(readFileSync(join(sessionsDir(), merged[0]), 'utf-8')).toBe(secondBytes);
+    expect(readFileSync(join(sessionsDir(), unreadable), 'utf-8')).toBe('{ "sessionId": ');
+    const saved = store.loadSession(id);
+    expect(saved?.toolCallCount).toBe(4);
+    expect(saved?.estimatedCostUsd).toBeCloseTo(3);
+    expect(saved?.timeline).toHaveLength(4);
+  });
+
+  it('reports the combined record as previous, so a seeded resume does not double count', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeSessionFile(first());
+    writeSessionFile(second());
+    const baselines = new FirstSaveBaselines();
+    const own = (toolCallCount: number, estimatedCostUsd: number): FullSessionSummary =>
+      makeSummary({
+        sessionId: id,
+        startTime: day2 + HOUR,
+        endTime: day2 + 2 * HOUR,
+        timeline: [entry(day2 + HOUR + 1), entry(day2 + HOUR + 2)],
+        toolCallCount,
+        estimatedCostUsd,
+      });
+
+    const saved = store.saveSession(own(2, 0.5));
+
+    expect(saved?.previous?.toolCallCount).toBe(3);
+    expect(saved?.previous?.estimatedCostUsd).toBeCloseTo(3);
+    baselines.recordSave({ sessionId: id, previous: saved!.previous, ownSession: true });
+
+    const { toolCalls, cost } = baselines.take(id, () => store.loadSession(id));
+    expect(toolCalls?.sessionTracker.toolCallCount).toBe(3);
+    expect(cost?.estimatedCostUsd).toBeCloseTo(3);
+    const seeded = { ...own(3 + 2, 3 + 0.5), byteEstimates: saved!.previous?.byteEstimates };
+    store.saveSession(seeded);
+
+    expect(jsonFiles()).toEqual([`2026-03-01_${id}.json`]);
+    const all = store.loadAllSessions();
+    expect(all).toHaveLength(1);
+    expect(all[0].toolCallCount).toBe(5);
+    expect(all[0].estimatedCostUsd).toBeCloseTo(3.5);
+    expect(store.loadSession(id)).toEqual(all[0]);
+    expect(store.saveSession(seeded)?.previous?.toolCallCount).toBe(5);
   });
 });
