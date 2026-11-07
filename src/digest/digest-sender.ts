@@ -22,8 +22,14 @@ export async function sendSlackDigest(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      redirect: 'manual',
       signal: controller.signal,
     });
+    if (resp.status >= 300 && resp.status < 400) {
+      throw new Error(
+        `Slack webhook returned ${resp.status}; the webhook URL looks invalid or revoked`,
+      );
+    }
     if (!resp.ok) {
       throw new Error(`Slack webhook returned ${resp.status}`);
     }
