@@ -18,6 +18,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { createLogger } from '../shared/index.js';
+import { claudeProjectsDir } from '../lib/claude-config-dir.js';
 import type {
   ObservabilityHealthMetrics,
   ScriptWorkflowRunMetrics,
@@ -28,7 +29,6 @@ const logger = createLogger('workflow-watcher');
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_DISCOVERY_HOURS = 24;
-const PROJECTS_DIR_NAME = '.claude/projects';
 const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const WF_FILE_RE = /^wf_/; // match prefix only (no fixed-suffix-length assumption)
 
@@ -116,7 +116,7 @@ export class WorkflowWatcher {
 
   constructor(options: WorkflowWatcherOptions = {}) {
     this.storagePath = options.storagePath ?? join(homedir(), '.newrelic-preflight');
-    this.projectsDir = options.projectsDir ?? join(homedir(), PROJECTS_DIR_NAME);
+    this.projectsDir = options.projectsDir ?? claudeProjectsDir();
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const envHours = parseInt(process.env.NR_AI_WATCHER_DISCOVERY_HOURS ?? '', 10);
     this.discoveryHours =

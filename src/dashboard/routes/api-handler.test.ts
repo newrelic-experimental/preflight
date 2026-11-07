@@ -23,6 +23,7 @@ import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
 import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
 import { CostTracker } from '../../metrics/cost-tracker.js';
+import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { buildCostTrackerSeed } from '../../metrics/cost-tracker-seed.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../../metrics/quality-proxy-tracker.js';
 
@@ -1172,6 +1173,7 @@ describe('api-handler GET /api/sessions/:sessionId/subagents', () => {
   it('returns the subagent timeline payload as JSON (200)', async () => {
     const payload = {
       window: { startMs: 100, endMs: 200 },
+      peak: { count: 1, atMs: 100 },
       agents: [
         {
           agentId: 'a1111111111111111',
@@ -1236,7 +1238,11 @@ describe('api-handler GET /api/sessions/:sessionId/subagents/:agentId/calls', ()
     let receivedAgent = '';
     const handler = createApiHandler({
       subagentTimeline: {
-        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getSubagentsForSession: () => ({
+          window: { startMs: 0, endMs: 0 },
+          agents: [],
+          peak: { count: 0, atMs: null },
+        }),
         getAgentCalls: (sessionId: string, agentId: string) => {
           receivedSession = sessionId;
           receivedAgent = agentId;
@@ -1263,7 +1269,7 @@ describe('api-handler GET /api/sessions/:sessionId/subagents/:agentId/calls', ()
       subagentTimeline: {
         getSubagentsForSession: () => {
           calledTimeline = true;
-          return { window: { startMs: 0, endMs: 0 }, agents: [] };
+          return { window: { startMs: 0, endMs: 0 }, agents: [], peak: { count: 0, atMs: null } };
         },
         getAgentCalls: () => ({ calls: [] }),
       },
@@ -1313,6 +1319,24 @@ describe('api-handler GET /api/cost', () => {
     const result = JSON.parse(body());
     expect(result.cost).toEqual(fakeCost);
     expect(result.forecast).toEqual(fakeForecast);
+  });
+
+  it('returns heldReason from the real forecast builder', async () => {
+    const nowMs = new Date(2024, 0, 3, 14).getTime();
+    const handler = createApiHandler({
+      costTracker: {
+        getMetrics: () => ({ sessionTotalCostUsd: 0.01 }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+      costForecast: () =>
+        buildCostForecastFromInputs(
+          { sessionSpentUsd: 0.01, sessionStartMs: nowMs - 15_000 },
+          nowMs,
+        ),
+    });
+    const req = { method: 'GET', url: '/api/cost' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body()).forecast.heldReason).toBe("held: under 10 minutes of today's data");
   });
 
   it('returns null forecast when costForecast is missing', async () => {
@@ -4180,53 +4204,58 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
   });
 
   it("anchors the forecast to a cross-midnight session's first TODAY-scoped timeline entry, not its startTime", async () => {
-    const now = Date.now();
-    const startOfDay = new Date(now);
-    startOfDay.setHours(0, 0, 0, 0);
-    const startMs = startOfDay.getTime();
+    jest.useFakeTimers({ now: new Date(2024, 0, 3, 14).getTime(), doNotFake: ['nextTick'] });
+    try {
+      const now = Date.now();
+      const startOfDay = new Date(now);
+      startOfDay.setHours(0, 0, 0, 0);
+      const startMs = startOfDay.getTime();
 
-    // Started 1h before midnight, still active. loadTodaySessions() (file-date
-    // = start date = yesterday) excludes it entirely; only
-    // loadSessionsOverlappingToday() sees it. 1 of its 4 timeline entries is
-    // before midnight, 3 are after -> todayPortionRatio = 0.75 -> today's cost
-    // contribution is 10 * 0.75 = 7.5.
-    const crossMidnightSession = {
-      sessionId: 'cross-midnight-1',
-      startTime: startMs - 60 * 60 * 1000,
-      endTime: startMs + 10_000,
-      estimatedCostUsd: 10,
-      timeline: [
-        { timestamp: startMs - 30 * 60 * 1000 },
-        { timestamp: startMs + 1_000 },
-        { timestamp: startMs + 2_000 },
-        { timestamp: startMs + 3_000 },
-      ],
-    };
+      // Started 1h before midnight, still active. loadTodaySessions() (file-date
+      // = start date = yesterday) excludes it entirely; only
+      // loadSessionsOverlappingToday() sees it. 1 of its 4 timeline entries is
+      // before midnight, 3 are after -> todayPortionRatio = 0.75 -> today's cost
+      // contribution is 10 * 0.75 = 7.5.
+      const crossMidnightSession = {
+        sessionId: 'cross-midnight-1',
+        startTime: startMs - 60 * 60 * 1000,
+        endTime: startMs + 10_000,
+        estimatedCostUsd: 10,
+        timeline: [
+          { timestamp: startMs - 30 * 60 * 1000 },
+          { timestamp: startMs + 1_000 },
+          { timestamp: startMs + 2_000 },
+          { timestamp: startMs + 3_000 },
+        ],
+      };
 
-    const handler = createApiHandler({
-      localStore: { peekAllBuffers: () => [] },
-      sessionStore: {
-        loadTodaySessions: () => [],
-        loadSessionsOverlappingToday: () => [crossMidnightSession],
-        listSessions: () => [],
-        loadSession: () => null,
-      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-    });
-    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
-    const { res, status, body } = fakeRes();
-    await handler(req, res);
-    expect(status()).toBe(200);
-    const parsed = JSON.parse(body()) as {
-      totalCostUsd: number;
-      forecastEndOfDayUsd: number | null;
-    };
-    expect(parsed.totalCostUsd).toBeCloseTo(7.5, 3);
-    // Must not be null: the session has real spend today, so a null forecast
-    // here means dailyFirstActivityMs was never anchored for it.
-    expect(parsed.forecastEndOfDayUsd).not.toBeNull();
-    // effectiveBaseUsd is totalCostUsd and the rate is >= 0, so the forecast
-    // can never be less than the amount already spent today.
-    expect(parsed.forecastEndOfDayUsd as number).toBeGreaterThanOrEqual(parsed.totalCostUsd);
+      const handler = createApiHandler({
+        localStore: { peekAllBuffers: () => [] },
+        sessionStore: {
+          loadTodaySessions: () => [],
+          loadSessionsOverlappingToday: () => [crossMidnightSession],
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+      const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+      const { res, status, body } = fakeRes();
+      await handler(req, res);
+      expect(status()).toBe(200);
+      const parsed = JSON.parse(body()) as {
+        totalCostUsd: number;
+        forecastEndOfDayUsd: number | null;
+      };
+      expect(parsed.totalCostUsd).toBeCloseTo(7.5, 3);
+      // Must not be null: the session has real spend today, so a null forecast
+      // here means dailyFirstActivityMs was never anchored for it.
+      expect(parsed.forecastEndOfDayUsd).not.toBeNull();
+      // effectiveBaseUsd is totalCostUsd and the rate is >= 0, so the forecast
+      // can never be less than the amount already spent today.
+      expect(parsed.forecastEndOfDayUsd as number).toBeGreaterThanOrEqual(parsed.totalCostUsd);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('returns forecastEndOfDayUsd null when there is no activity today from any source', async () => {
@@ -4257,7 +4286,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costTracker: {
         getMetrics: () => ({ sessionTotalCostUsd: 0 }),
         getCostForDay: () => 9,
-        getFirstActivityMsForDay: () => Date.now() - 60_000,
+        getFirstActivityMsForDay: () => Date.now() - 30 * 60_000,
       } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
     });
     const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
@@ -8510,7 +8539,11 @@ describe('api-handler GET /api/workflows/:runId', () => {
         getRun: () => null, // still running → no rollup on disk
       } as unknown as Deps['workflowStore'],
       subagentTimeline: {
-        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getSubagentsForSession: () => ({
+          window: { startMs: 0, endMs: 0 },
+          agents: [],
+          peak: { count: 0, atMs: null },
+        }),
         getAgentCalls: () => ({ calls: [] }),
         getRunLive: (id: string) => {
           expect(id).toBe(RUN_ID);
@@ -8570,7 +8603,11 @@ describe('api-handler GET /api/workflows/:runId', () => {
         getRun: () => null,
       } as unknown as Deps['workflowStore'],
       subagentTimeline: {
-        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getSubagentsForSession: () => ({
+          window: { startMs: 0, endMs: 0 },
+          agents: [],
+          peak: { count: 0, atMs: null },
+        }),
         getAgentCalls: () => ({ calls: [] }),
         getRunLive: () => ({
           runId: RUN_ID,
@@ -8615,7 +8652,11 @@ describe('api-handler GET /api/workflows/:runId', () => {
         getRun: () => null,
       } as unknown as Deps['workflowStore'],
       subagentTimeline: {
-        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getSubagentsForSession: () => ({
+          window: { startMs: 0, endMs: 0 },
+          agents: [],
+          peak: { count: 0, atMs: null },
+        }),
         getAgentCalls: () => ({ calls: [] }),
         getRunLive: () => null,
       } as unknown as Deps['subagentTimeline'],

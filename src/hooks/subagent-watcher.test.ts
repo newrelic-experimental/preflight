@@ -83,6 +83,7 @@ function makeAssistantLine(opts: {
   outputTokens?: number;
   cacheRead?: number;
   cacheCreation?: number;
+  cacheCreation1h?: number;
   reasoning?: number;
   stopReason?: string;
   contentTypes?: string[];
@@ -98,6 +99,9 @@ function makeAssistantLine(opts: {
   };
   if (opts.reasoning !== undefined) {
     usage.output_tokens_details = { reasoning_tokens: opts.reasoning };
+  }
+  if (opts.cacheCreation1h !== undefined) {
+    usage.cache_creation = { ephemeral_1h_input_tokens: opts.cacheCreation1h };
   }
   const content: Array<Record<string, unknown>> = (opts.contentTypes ?? ['text']).map((t) => ({
     type: t,
@@ -176,6 +180,35 @@ describe('SubagentWatcher', () => {
       cacheCreationTokens: 200,
       workflowRunId: null,
     });
+  });
+
+  it('carries 1-hour cache writes from the transcript to the processed subagent turn', () => {
+    writeFileSync(
+      agentJsonl,
+      [
+        makeAssistantLine({ messageId: 'msg_1h', cacheCreation: 5000, cacheCreation1h: 3000 }),
+        makeAssistantLine({ messageId: 'msg_5m', cacheCreation: 5000 }),
+        makeAssistantLine({ messageId: 'msg_over', cacheCreation: 5000, cacheCreation1h: 9000 }),
+      ].join('\n') + '\n',
+    );
+    new SubagentWatcher({ storagePath, projectsDir, parentSessionId: PARENT_SESSION }).poll();
+
+    const turns: SubagentTurnEvent[] = [];
+    const processor = new HookEventProcessor({
+      store: new LocalStore(storagePath, PARENT_SESSION),
+      onRecord: () => undefined,
+      onSubagentTurn: (turn) => turns.push(turn),
+    });
+    processor.start();
+    processor.stop();
+
+    expect(turns.map((t) => [t.messageId, t.cacheCreationTokens, t.cacheCreation1hTokens])).toEqual(
+      [
+        ['msg_1h', 5000, 3000],
+        ['msg_5m', 5000, undefined],
+        ['msg_over', 5000, 5000],
+      ],
+    );
   });
 
   it('includes tool_use ids from the transcript line on the emitted subagent_token event', () => {
@@ -1943,6 +1976,9 @@ describe('SubagentWatcher billing across restarts', () => {
             thinkingTokens: turn.reasoningTokens,
             cacheReadTokens: turn.cacheReadTokens,
             cacheCreationTokens: turn.cacheCreationTokens,
+            ...(turn.cacheCreation1hTokens !== undefined && {
+              cacheCreation1hTokens: turn.cacheCreation1hTokens,
+            }),
             totalTokens:
               turn.inputTokens +
               turn.outputTokens +

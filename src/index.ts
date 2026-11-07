@@ -26,7 +26,7 @@ import { WorkflowStore } from './dashboard/workflow-store.js';
 import { isCopilotSdkExtensionMissing } from './hooks/copilot-sdk-extension-health.js';
 import { CopilotAppUsageWatcher } from './hooks/copilot-app-usage-watcher.js';
 import { CopilotUsageWatcher } from './hooks/copilot-usage-watcher.js';
-import { HookEventProcessor } from './hooks/index.js';
+import { DEFAULT_MAX_PENDING, HookEventProcessor } from './hooks/index.js';
 import { isPlatformDetectionFellBack } from './hooks/platform-detection-health.js';
 import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
 import { BilledTurnLedger, pruneBilledTurns } from './hooks/billed-turn-ledger.js';
@@ -105,6 +105,7 @@ import { TaskDetector } from './metrics/task-detector.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
+import { tokenUsageFromSubagentTurn, tokenUsageFromTokenEvent } from './metrics/token-usage.js';
 import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
 import { TurnTracker } from './metrics/turn-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
@@ -113,7 +114,7 @@ import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 import { createServer } from './server.js';
-import type { CostBreakdown, TokenUsage } from './shared/index.js';
+import type { CostBreakdown } from './shared/index.js';
 import { createLogger } from './shared/index.js';
 import { LocalStore } from './storage/index.js';
 import { computeHistoricalCosts } from './storage/historical-costs.js';
@@ -124,7 +125,7 @@ import {
   SessionStore,
   sessionSummaryToDriftRecord,
 } from './storage/session-store.js';
-import type { ToolCallRecord } from './storage/types.js';
+import { amendRecord, type ToolCallRecord } from './storage/types.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import type { ConfigSummary } from './tools/session-stats.js';
 import { registerPendingTools, registerTools } from './tools/session-stats.js';
@@ -397,6 +398,7 @@ export function runMaintenanceGcPass(deps: MaintenanceGcDeps): void {
   try {
     localStore.gcStaleBreadcrumbs();
     localStore.gcDeadLocalInstances();
+    localStore.gcCountedToolUseIds();
     const live = localStore.getActiveSessionIdsFromHeartbeats();
     if (liveSessionRegistry) {
       for (const id of liveSessionRegistry.getLiveSessions({ includeSynthetic: true })) {
@@ -953,6 +955,7 @@ async function main(): Promise<void> {
     ppidCorrectionAbort?.abort();
     logger.info('Shutting down...');
     try {
+      eventProcessor?.stop();
       persistSession?.();
       if (
         config?.otlp?.transport !== 'nr-events-api' &&
@@ -991,7 +994,6 @@ async function main(): Promise<void> {
         }
         alertRulesWatcher = undefined;
       }
-      eventProcessor?.stop();
       activeSubagentWatcher?.stop();
       activeWorkflowWatcher?.stop();
       activeParentTranscriptWatcher?.stop();
@@ -1212,7 +1214,7 @@ async function main(): Promise<void> {
         retainSessionsDays: config.retainSessionsDays,
       }) ?? undefined;
 
-    sessionTracker = new SessionTracker(sessionTraceId);
+    sessionTracker = new SessionTracker(sessionTraceId, DEFAULT_MAX_PENDING);
     // Combine the two independent correction factors here so CostTracker only
     // ever deals with one number (see its constructor doc comment) — the raw
     // config fields (costRateMultiplier, dataResidencyPremium) stay unmerged
@@ -1422,15 +1424,17 @@ async function main(): Promise<void> {
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
     const firstSaveBaselines = new FirstSaveBaselines();
-    const saveSessionRememberingBaseline = (summary: FullSessionSummary): void => {
+    const saveSessionRememberingBaseline = (summary: FullSessionSummary): boolean => {
       const saved = sessionStore!.saveSession(summary);
       // Only a --stdio engine ever adopts a real session id and seeds it.
-      if (!saved || !options.stdio || rehydratedTrackerSessionIds.has(summary.sessionId)) return;
-      firstSaveBaselines.recordSave({
-        sessionId: summary.sessionId,
-        previous: saved.previous,
-        ownSession: summary.sessionId === sessionTraceId,
-      });
+      if (saved && options.stdio && !rehydratedTrackerSessionIds.has(summary.sessionId)) {
+        firstSaveBaselines.recordSave({
+          sessionId: summary.sessionId,
+          previous: saved.previous,
+          ownSession: summary.sessionId === sessionTraceId,
+        });
+      }
+      return saved !== null;
     };
     const rehydrateTrackersIfResumed = (sessionId: string): void => {
       if (isSyntheticSessionId(sessionId)) return;
@@ -2098,6 +2102,13 @@ async function main(): Promise<void> {
       // live sessions' events. After real session ID resolution the processor
       // is hot-swapped to the scoped store via replaceStore().
       drainAllSessions: !options.stdio || isProvisional,
+      onRecordAmend: (record) => {
+        sessionTracker?.amendToolCall(record);
+        localSessionAggregator.amendToolCall(record);
+        subagentAttribution.recordAgentToolCall(record);
+        const index = toolCallBuffer.findIndex((r) => r.id === record.id);
+        if (index >= 0) toolCallBuffer[index] = amendRecord(toolCallBuffer[index]!, record);
+      },
       onRecord: (incomingRecord) => {
         // Attributed before any consumer (notably auditTrail below) sees the
         // record, so audit/security events carry agentId and agentType.
@@ -2384,14 +2395,7 @@ async function main(): Promise<void> {
         });
         const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
         if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
-        const usage = {
-          inputTokens: tokenEvent.inputTokens,
-          outputTokens: tokenEvent.outputTokens,
-          thinkingTokens: 0,
-          cacheReadTokens: tokenEvent.cacheReadTokens,
-          cacheCreationTokens: tokenEvent.cacheCreationTokens,
-          totalTokens: tokenEvent.inputTokens + tokenEvent.outputTokens,
-        };
+        const usage = tokenUsageFromTokenEvent(tokenEvent);
         let breakdown: CostBreakdown;
         if (!isOwnEvent) {
           breakdown = costTracker.priceUsage(usage, tokenEvent.model);
@@ -2494,22 +2498,7 @@ async function main(): Promise<void> {
         // the buffer.
         subagentAttribution.recordSubagentTurn(turn);
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
-        const usage: TokenUsage = {
-          inputTokens: turn.inputTokens,
-          outputTokens: turn.outputTokens,
-          // Subagent reasoning tokens (extended thinking) live under
-          // `output_tokens_details.reasoning_tokens`; map to `thinkingTokens`
-          // so the existing `thinkingPerMTok` rate column charges correctly.
-          thinkingTokens: turn.reasoningTokens,
-          cacheReadTokens: turn.cacheReadTokens,
-          cacheCreationTokens: turn.cacheCreationTokens,
-          totalTokens:
-            turn.inputTokens +
-            turn.outputTokens +
-            turn.reasoningTokens +
-            turn.cacheReadTokens +
-            turn.cacheCreationTokens,
-        };
+        const usage = tokenUsageFromSubagentTurn(turn);
         const breakdown = costTracker.recordTokenUsage(usage, turn.model, {
           timestampMs: turn.timestampMs,
           workflowRunId: turn.workflowRunId,
@@ -2705,9 +2694,10 @@ async function main(): Promise<void> {
             toolSelectionScorer,
             repoResolver: repoNameResolver,
           });
-          for (const rollup of rollups) {
-            saveSessionRememberingBaseline(rollup as unknown as FullSessionSummary);
-          }
+          const saved = rollups.filter((rollup) =>
+            saveSessionRememberingBaseline(rollup as unknown as FullSessionSummary),
+          );
+          eventProcessor?.persistCountedIdsOfSavedSessions(saved.map((r) => String(r.sessionId)));
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
@@ -2716,7 +2706,9 @@ async function main(): Promise<void> {
           }
           return;
         }
-        saveSessionRememberingBaseline(summary);
+        if (saveSessionRememberingBaseline(summary)) {
+          eventProcessor?.persistCountedIdsOfSavedSessions([summary.sessionId]);
+        }
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
         // any real work), so calling it on every periodic checkpoint too is
         // cheap — and necessary: it otherwise only ran on the clean-shutdown
