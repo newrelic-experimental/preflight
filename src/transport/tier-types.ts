@@ -37,11 +37,6 @@ export const KNOWN_EVENT_TYPES = [
   'AiAuditEvent',
 ] as const;
 
-/**
- * Event types Preflight used to send. A tier that still lists one keeps
- * loading: `validateTiers()` drops the name and warns, so a config written for
- * an earlier release does not fail at startup.
- */
 const RETIRED_EVENT_TYPES: ReadonlySet<string> = new Set(['SecurityAlert']);
 
 export type KnownEventType = (typeof KNOWN_EVENT_TYPES)[number];
@@ -208,7 +203,6 @@ function validateEventTypes(
     );
   }
   const out: string[] = [];
-  let droppedRetired = false;
   for (const entry of raw) {
     if (typeof entry !== 'string' || entry.trim() === '') {
       throw new Error(`Tier "${tierName}" eventTypes entries must be non-empty strings.`);
@@ -219,7 +213,6 @@ function validateEventTypes(
           'sent as AiAuditEvent, which is personal-only. Add AiAuditEvent to this tier to receive them.',
         { tier: tierName, eventType: entry },
       );
-      droppedRetired = true;
       continue;
     }
     if (entry !== WILDCARD_EVENT_TYPE && !known.has(entry)) {
@@ -231,15 +224,10 @@ function validateEventTypes(
     if (!out.includes(entry)) out.push(entry);
   }
   if (out.length === 0) {
-    if (droppedRetired) {
-      throw new Error(
-        `Tier "${tierName}" lists only SecurityAlert, which no longer exists. ` +
-          'Security alerts are sent as AiAuditEvent, which is personal-only. ' +
-          'List AiAuditEvent in this tier to receive them.',
-      );
-    }
     throw new Error(
-      `Tier "${tierName}" requires a non-empty eventTypes array (use ["*"] to route every event type).`,
+      `Tier "${tierName}" lists only SecurityAlert, which no longer exists. ` +
+        'Security alerts are sent as AiAuditEvent, which is personal-only. ' +
+        'List AiAuditEvent in this tier to receive them.',
     );
   }
   return out;

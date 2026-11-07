@@ -911,7 +911,6 @@ describe('NrIngestManager', () => {
       const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
         Record<string, unknown>
       >;
-      // AiToolCall + AiAuditEvent
       expect(sentEvents.map((e) => e.eventType).sort()).toEqual(['AiAuditEvent', 'AiToolCall']);
       const auditEvent = sentEvents.find((e) => e.eventType === 'AiAuditEvent')!;
       expect(auditEvent).toMatchObject({
