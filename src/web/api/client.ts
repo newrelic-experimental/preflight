@@ -1,3 +1,5 @@
+import type { ReportedSpend, ReportedSpendPeriod } from '../../lib/reported-spend.js';
+
 // Distinct error class for 404 responses so callers can treat
 // "feature unavailable" differently from a real server error. Used by the
 // recent-alerts panel: in cloud mode the alert engine is not constructed,
@@ -1265,6 +1267,7 @@ export interface SettingsPatch {
   dailyBudgetUsd?: number | null;
   weeklyBudgetUsd?: number | null;
   retainSessionsDays?: number | null;
+  reportedSpend?: { periodKind: ReportedSpendPeriod; amountUsd: number | null };
   digestWebhookUrl?: string | null;
   digestSchedule?: string;
   alerts?: {
@@ -1321,6 +1324,7 @@ export interface SettingsResponse {
   readonly dailyBudgetUsd: number | null;
   readonly weeklyBudgetUsd: number | null;
   readonly retainSessionsDays: number | null;
+  readonly reportedSpend: readonly ReportedSpend[];
   readonly digestWebhookUrl: string | null;
   readonly digestWebhookUrlSource: 'env' | 'command' | 'file' | 'unset';
   readonly digestSchedule: string;

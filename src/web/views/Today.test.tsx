@@ -11,6 +11,7 @@ import {
 } from './Today';
 import { useLiveStore } from '../store/liveStore';
 import { qk } from '../api/client';
+import type { ReportedSpend } from '../../lib/reported-spend.js';
 import { localEndOfDay, localStartOfDay, todayPortionRatio } from '../../lib/date.js';
 import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 
@@ -3053,18 +3054,23 @@ describe('Today view — loading states', () => {
 });
 
 describe('Today view — daily budget KPI', () => {
-  function stubBudget(daily: {
-    budgetUsd: number | null;
-    spentUsd: number;
-    pctUsed: number | null;
-    exceeded: boolean;
-  }): void {
+  function stubBudget(
+    daily: {
+      budgetUsd: number | null;
+      spentUsd: number;
+      pctUsed: number | null;
+      exceeded: boolean;
+    },
+    reportedSpend: readonly ReportedSpend[] = [],
+  ): void {
     const period = { budgetUsd: null, spentUsd: 0, pctUsed: null, exceeded: false };
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       const body = url.startsWith('/api/budget')
         ? { session: period, daily, weekly: period, alerts: [] }
-        : [];
+        : url.startsWith('/api/settings')
+          ? { reportedSpend }
+          : [];
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -3088,6 +3094,73 @@ describe('Today view — daily budget KPI', () => {
     expect(screen.getByText('of $10.00 · 40% used')).toBeInTheDocument();
     expect(screen.getByText('$4.00')).not.toHaveClass('text-accent-amber');
     expect(screen.getByText('$4.00')).not.toHaveClass('text-accent-red');
+  });
+
+  const capped = { budgetUsd: 10, spentUsd: 4, pctUsed: 40, exceeded: false };
+  const uncapped = { budgetUsd: null, spentUsd: 4, pctUsed: null, exceeded: false };
+  const reportedAt = (periodKind: 'daily' | 'weekly', ms: number): ReportedSpend => ({
+    periodKind,
+    amountUsd: 7.25,
+    asOf: new Date(ms).toISOString(),
+  });
+  const asOfTime = (ms: number): string =>
+    new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+  it('shows a current reported value beside the estimate with its as-of time', async () => {
+    const now = Date.now();
+    stubBudget(capped, [reportedAt('daily', now)]);
+    renderToday();
+
+    const reported = await screen.findByText(`reported $7.25 as of ${asOfTime(now)}`);
+    expect(reported).not.toHaveClass('opacity-60');
+    expect(screen.queryByText('stale')).toBeNull();
+    expect(screen.getByText('of $10.00 · 40% used')).toBeInTheDocument();
+    expect(screen.getByText('$4.00')).toBeInTheDocument();
+    expect(within(screen.getByText('daily budget').parentElement!).getByText('est.')).toBeTruthy();
+  });
+
+  it('greys and labels a reported value from a previous day instead of hiding it', async () => {
+    const twoDaysAgo = Date.now() - 2 * 86_400_000;
+    stubBudget(capped, [reportedAt('daily', twoDaysAgo)]);
+    renderToday();
+
+    const reported = await screen.findByText(/^reported \$7\.25 as of /);
+    expect(reported).toHaveClass('opacity-60');
+    expect(within(reported).getByText('stale')).toBeInTheDocument();
+  });
+
+  it('shows no reported line when none is saved', async () => {
+    stubBudget(capped);
+    renderToday();
+
+    expect(await screen.findByText('daily budget')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(globalThis.fetch).toHaveBeenCalledWith('/api/settings', expect.anything()),
+    );
+    expect(screen.queryByText(/^reported /)).toBeNull();
+  });
+
+  it('shows the estimate and reported value without a percent when no cap is set', async () => {
+    const now = Date.now();
+    stubBudget(uncapped, [reportedAt('daily', now)]);
+    renderToday();
+
+    expect(await screen.findByText('daily budget')).toBeInTheDocument();
+    expect(screen.getByText(`reported $7.25 as of ${asOfTime(now)}`)).toBeInTheDocument();
+    expect(screen.getByText('$4.00')).toBeInTheDocument();
+    expect(screen.queryByText(/% used/)).toBeNull();
+    expect(screen.queryByText(/^of \$/)).toBeNull();
+  });
+
+  it('does not show a weekly reported value on the daily tile', async () => {
+    stubBudget(uncapped, [reportedAt('weekly', Date.now())]);
+    renderToday();
+
+    expect(await screen.findByText('spend today')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(globalThis.fetch).toHaveBeenCalledWith('/api/settings', expect.anything()),
+    );
+    expect(screen.queryByText('daily budget')).toBeNull();
   });
 
   it('renders no budget KPI and no budget hint when no daily budget is set', async () => {

@@ -13,6 +13,8 @@ import {
 } from '../api/client';
 import type { SettingsPatch } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
+import { ReportedSpendField } from '../components/ReportedSpendField';
+import { findReportedSpend, type ReportedSpend } from '../../lib/reported-spend.js';
 import { Button, Card, Eyebrow, SectionHeader } from '../components/ui';
 
 interface SettingsData {
@@ -28,6 +30,7 @@ interface SettingsData {
   readonly dailyBudgetUsd: number | null;
   readonly weeklyBudgetUsd: number | null;
   readonly retainSessionsDays: number | null;
+  readonly reportedSpend: readonly ReportedSpend[];
 }
 
 function ReadOnlyField({ label, value }: { label: string; value: string | null | undefined }) {
@@ -339,6 +342,29 @@ export function Settings(): JSX.Element {
           </Button>
         </div>
         {restartBanner('budgets')}
+      </Card>
+
+      <Card padding="md" className="mt-4">
+        <SectionHeader
+          title="Reported spend"
+          subtitle="Type in the figure your organization reports. It is shown beside Preflight's estimate and never changes it or its budget alerts. Takes effect immediately."
+        />
+        <ReportedSpendField
+          label="Reported spend today"
+          entry={findReportedSpend(data.reportedSpend, 'daily')}
+          pending={mutation.isPending}
+          onSave={(amountUsd) =>
+            mutation.mutate({ reportedSpend: { periodKind: 'daily', amountUsd } })
+          }
+        />
+        <ReportedSpendField
+          label="Reported spend this week"
+          entry={findReportedSpend(data.reportedSpend, 'weekly')}
+          pending={mutation.isPending}
+          onSave={(amountUsd) =>
+            mutation.mutate({ reportedSpend: { periodKind: 'weekly', amountUsd } })
+          }
+        />
       </Card>
 
       {/* Observability */}
