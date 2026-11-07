@@ -37,6 +37,7 @@ import type { CostTracker } from '../metrics/cost-tracker.js';
 import type { GitEfficiencyTracker } from '../metrics/git-efficiency-tracker.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
 import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
+import type { RetryDetector } from '../metrics/retry-detector.js';
 import { classifyProvider } from '../metrics/model-provider.js';
 import type { FeedbackCollector } from '../tools/workflow-tools.js';
 import type { BudgetThresholdEvent } from '../metrics/budget-tracker.js';
@@ -118,6 +119,8 @@ export interface NrIngestOptions {
   feedbackCollector?: FeedbackCollector;
   /** API failure tracker for emitting ai.api.* metrics. */
   apiFailureTracker?: ApiFailureTracker;
+  /** Retry detector for emitting ai.retry.* thrashing metrics. */
+  retryDetector?: RetryDetector;
   /** Git efficiency tracker for emitting ai.git.* metrics. */
   gitEfficiencyTracker?: GitEfficiencyTracker;
   teamId?: string | null;
@@ -1043,6 +1046,7 @@ export class NrIngestManager {
   private readonly efficiencyScorer?: EfficiencyScorer;
   private readonly feedbackCollector?: FeedbackCollector;
   private readonly apiFailureTracker?: ApiFailureTracker;
+  private readonly retryDetector?: RetryDetector;
   private readonly gitEfficiencyTracker?: GitEfficiencyTracker;
   readonly auditTrail: AuditTrailManager;
   private readonly developer: string;
@@ -1078,6 +1082,7 @@ export class NrIngestManager {
     this.efficiencyScorer = options.efficiencyScorer;
     this.feedbackCollector = options.feedbackCollector;
     this.apiFailureTracker = options.apiFailureTracker;
+    this.retryDetector = options.retryDetector;
     this.gitEfficiencyTracker = options.gitEfficiencyTracker;
     this.turnCostAttributor = options.turnCostAttributor;
     this.auditTrail =
@@ -1757,6 +1762,7 @@ export class NrIngestManager {
       this.efficiencyScorer ||
       this.feedbackCollector ||
       this.apiFailureTracker ||
+      this.retryDetector ||
       this.gitEfficiencyTracker
     ) {
       const developer = this.developer;
@@ -1783,6 +1789,7 @@ export class NrIngestManager {
       this.efficiencyScorer?.emitMetrics(devAggregator);
       this.feedbackCollector?.emitMetrics(devAggregator);
       this.apiFailureTracker?.emitMetrics(devAggregator);
+      this.retryDetector?.emitMetrics(devAggregator);
       this.gitEfficiencyTracker?.emitMetrics(devAggregator);
     }
 
