@@ -231,19 +231,8 @@ interface ToolSelectionMetrics {
 
 const QUALITY_REFETCH_MS = 10_000;
 
-// Thresholds match the ones BudgetTracker fires on. The label floors the
-// percent so it never reads past a threshold the tone has not crossed.
-function dailyBudgetKpi(
-  spentUsd: number,
-  capUsd: number,
-  apiExceeded: boolean,
-): { tone: KpiTone; pctLabel: number | null; overBudget: boolean } {
-  const pct = capUsd > 0 ? (spentUsd / capUsd) * 100 : null;
-  const overBudget = apiExceeded || spentUsd > capUsd;
-  const tone: KpiTone =
-    overBudget || (pct ?? 0) >= 100 ? 'bad' : (pct ?? 0) >= 50 ? 'warn' : 'neutral';
-  return { tone, pctLabel: pct === null ? null : Math.floor(pct), overBudget };
-}
+const BUDGET_WARN_PCT = 50;
+const BUDGET_DANGER_PCT = 100;
 
 function DailyBudgetKpi({
   spentUsd,
@@ -254,13 +243,16 @@ function DailyBudgetKpi({
   capUsd: number;
   apiExceeded: boolean;
 }): JSX.Element {
-  const { tone, pctLabel, overBudget } = dailyBudgetKpi(spentUsd, capUsd, apiExceeded);
+  const pct = (spentUsd / capUsd) * 100;
+  const overBudget = apiExceeded || spentUsd > capUsd;
+  const tone: KpiTone =
+    overBudget || pct >= BUDGET_DANGER_PCT ? 'bad' : pct >= BUDGET_WARN_PCT ? 'warn' : 'neutral';
   return (
     <Kpi
       label="daily budget"
       tone={tone}
       value={formatUsd(spentUsd)}
-      sub={`of ${formatUsd(capUsd)}${pctLabel !== null ? ` · ${pctLabel}% used` : ''}${overBudget ? ' · over budget' : ''}`}
+      sub={`of ${formatUsd(capUsd)} · ${Math.floor(pct)}% used${overBudget ? ' · over budget' : ''}`}
     />
   );
 }
