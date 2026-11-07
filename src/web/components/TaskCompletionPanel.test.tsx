@@ -48,4 +48,15 @@ describe('TaskCompletionPanel', () => {
     expect(await screen.findByText(/No completed tasks yet/)).toBeTruthy();
     expect(screen.queryByText('avg duration')).toBeNull();
   });
+
+  it('shows an unavailable state, not the empty state, when the route returns 503', async () => {
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response('{}', { status: 503, headers: { 'content-type': 'application/json' } }),
+    ) as typeof fetch;
+    renderPanel();
+
+    expect(await screen.findByText(/Task stats unavailable/)).toBeTruthy();
+    expect(screen.queryByText(/No completed tasks yet/)).toBeNull();
+  });
 });
