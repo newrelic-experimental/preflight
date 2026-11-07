@@ -201,6 +201,9 @@ export interface SessionListEntry {
     readonly agentCount?: number;
   }>;
   readonly model?: string | null;
+  /** Per-model usage for the session; `model` alone collapses a mid-session
+   *  switch. Absent on live-session stub entries. */
+  readonly modelBreakdown?: Readonly<Record<string, { readonly requestCount?: number }>>;
   readonly toolSuccessRate?: number | null;
   readonly efficiencyScore?: number | null;
   readonly tokensInput?: number;

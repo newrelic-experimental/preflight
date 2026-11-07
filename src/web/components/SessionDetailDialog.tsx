@@ -42,7 +42,9 @@ function formatSessionMarkdown(s: SessionListEntry): string {
   if (s.durationMs != null) lines.push(`- Duration: ${formatDuration(s.durationMs)}`);
   lines.push(`- Cost: ${formatUsdOrDash(s.estimatedCostUsd)}`);
   lines.push(`- Tool calls: ${s.toolCallCount ?? 0}`);
-  if (s.model) lines.push(`- Model: ${s.model}`);
+  const models = Object.keys(s.modelBreakdown ?? {});
+  if (models.length > 0) lines.push(`- Models: ${models.join(', ')}`);
+  else if (s.model) lines.push(`- Model: ${s.model}`);
   if (s.tokensInput != null || s.tokensOutput != null) {
     lines.push(
       `- Tokens: ${formatTokensCompact(s.tokensInput ?? 0)} in / ${formatTokensCompact(s.tokensOutput ?? 0)} out / ${formatTokensCompact(s.tokensCacheRead ?? 0)} cache read`,
@@ -110,7 +112,7 @@ export function SessionDetailDialog({
       }
       if (e.key === 'Tab' && drawerRef.current) {
         const focusable = drawerRef.current.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]):not([disabled])',
         );
         const first = focusable[0];
         const last = focusable[focusable.length - 1];

@@ -369,4 +369,55 @@ describe('SessionDetailDialog — copy session', () => {
     expect(screen.getByRole('button', { name: /copy as markdown/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /copy as json/i })).toBeDisabled();
   });
+
+  it('lists every model from the breakdown in the Markdown copy within fifteen lines', async () => {
+    const writeText = installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary({
+          modelBreakdown: {
+            'claude-sonnet-5': { requestCount: 3 },
+            'claude-opus-5': { requestCount: 1 },
+          },
+        })}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as markdown/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const text = writeText.mock.calls[0]![0];
+    expect(text).toContain('claude-sonnet-5');
+    expect(text).toContain('claude-opus-5');
+    expect(text.split('\n').length).toBeLessThan(15);
+  });
+});
+
+describe('SessionDetailDialog — focus trap with copy buttons disabled', () => {
+  function renderWithoutSummary(): HTMLElement {
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        onClose={() => {}}
+      />,
+    );
+    return screen.getByRole('button', { name: /close session detail/i });
+  }
+
+  it('wraps Shift+Tab on Close instead of letting focus escape', () => {
+    const close = renderWithoutSummary();
+    expect(document.activeElement).toBe(close);
+    const notPrevented = fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(notPrevented).toBe(false);
+    expect(document.activeElement).toBe(close);
+  });
+
+  it('wraps Tab on Close back to the first enabled control', () => {
+    const close = renderWithoutSummary();
+    const notPrevented = fireEvent.keyDown(document, { key: 'Tab' });
+    expect(notPrevented).toBe(false);
+    expect(document.activeElement).toBe(close);
+  });
 });
