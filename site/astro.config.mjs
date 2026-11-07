@@ -25,6 +25,7 @@ export default defineConfig({
             { label: 'Kiro Power', slug: 'kiro-power' },
             { label: 'MCP Commands Reference', slug: 'commands-table' },
             { label: 'Metrics Reference', slug: 'metrics-table' },
+            { label: 'Unit of Agent Work Schema', slug: 'unit-of-work-schema' },
             { label: 'Advanced Configuration', slug: 'advanced' },
             { label: 'New Relic Scorecard Rules', slug: 'scorecards' },
             { label: 'Test Patterns', slug: 'test-patterns' },
