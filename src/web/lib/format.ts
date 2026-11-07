@@ -53,6 +53,11 @@ export function fmtTimeOfDay(value: number): string {
   });
 }
 
+export function fmtReportedAsOf(asOf: string, stale: boolean): string {
+  const ms = Date.parse(asOf);
+  return stale ? fmtDateTime(ms) : fmtTimeOfDay(ms);
+}
+
 /**
  * Compact elapsed-time label: "1:05" (minutes:seconds, zero-padded seconds).
  * Does not include a leading "+"; callers add that in JSX if desired.

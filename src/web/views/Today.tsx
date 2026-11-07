@@ -80,6 +80,7 @@ import {
   type UsageInsightsReport,
 } from '../api/client';
 import {
+  fmtReportedAsOf,
   fmtTimeOfDay,
   formatMs,
   formatNumber,
@@ -98,7 +99,6 @@ import {
 } from '../../lib/date.js';
 import {
   findReportedSpend,
-  formatReportedAsOf,
   isReportedSpendStale,
   type ReportedSpend,
 } from '../../lib/reported-spend.js';
@@ -270,7 +270,7 @@ function DailyBudgetKpi({
           )}
           {reported && (
             <span className={`block ${reportedStale ? 'opacity-60' : ''}`}>
-              {`reported ${formatUsd(reported.amountUsd)} as of ${formatReportedAsOf(reported, reportedStale)}`}
+              {`reported ${formatUsd(reported.amountUsd)} as of ${fmtReportedAsOf(reported.asOf, reportedStale)}`}
               {reportedStale && <span className="ml-1 text-accent-amber">stale</span>}
             </span>
           )}

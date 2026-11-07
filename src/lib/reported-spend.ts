@@ -18,7 +18,6 @@ export function isValidReportedAmountUsd(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= MAX_REPORTED_SPEND_USD;
 }
 
-/** Keeps the well-formed entries of a hand-edited or older config file. */
 export function parseStoredReportedSpend(raw: unknown): ReportedSpend[] {
   if (!Array.isArray(raw)) return [];
   const byPeriod = new Map<ReportedSpendPeriod, ReportedSpend>();
@@ -45,23 +44,14 @@ export function findReportedSpend(
   return entries?.find((e) => e.periodKind === periodKind) ?? null;
 }
 
-function startOfLocalWeek(nowMs: number): number {
+function startOfLocalMondayWeek(nowMs: number): number {
   const day = new Date(localStartOfDay(nowMs));
   day.setDate(day.getDate() - ((day.getDay() + 6) % 7));
   return day.getTime();
 }
 
-/** A value is stale once its period (local day, or local Monday-based week) has ended. */
 export function isReportedSpendStale(entry: ReportedSpend, nowMs: number = Date.now()): boolean {
   const periodStart =
-    entry.periodKind === 'daily' ? localStartOfDay(nowMs) : startOfLocalWeek(nowMs);
+    entry.periodKind === 'daily' ? localStartOfDay(nowMs) : startOfLocalMondayWeek(nowMs);
   return Date.parse(entry.asOf) < periodStart;
-}
-
-/** "3:42 PM" for a current value, "Nov 6, 3:42 PM" once it is stale. */
-export function formatReportedAsOf(entry: ReportedSpend, stale: boolean): string {
-  const d = new Date(entry.asOf);
-  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  if (!stale) return time;
-  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${time}`;
 }

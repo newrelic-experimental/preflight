@@ -3,11 +3,10 @@ import type { JSX } from 'react';
 
 import {
   MAX_REPORTED_SPEND_USD,
-  formatReportedAsOf,
   isReportedSpendStale,
   type ReportedSpend,
 } from '../../lib/reported-spend.js';
-import { formatUsd } from '../lib/format';
+import { fmtReportedAsOf, formatUsd } from '../lib/format';
 import { Button } from './ui';
 
 export interface ReportedSpendFieldProps {
@@ -71,7 +70,7 @@ export function ReportedSpendField({
       {entry && (
         <div className={`mt-1 ml-[9.75rem] text-xs ${stale ? 'text-ink-muted' : 'text-ink-base'}`}>
           <span className={stale ? 'opacity-60' : ''}>
-            {formatUsd(entry.amountUsd)} as of {formatReportedAsOf(entry, stale)}
+            {formatUsd(entry.amountUsd)} as of {fmtReportedAsOf(entry.asOf, stale)}
           </span>
           {stale && <span className="ml-2 text-accent-amber">stale</span>}
         </div>
