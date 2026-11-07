@@ -1432,9 +1432,16 @@ describe('Sessions view — subagent peak label', () => {
     const atMs = Date.parse('2026-05-28T17:35:00Z');
     renderWithSubagents({ window: SUBAGENT_WINDOW, agents: [], peak: { count: 9, atMs } });
     await openSession();
+    const clock = new Date(atMs).toLocaleString(undefined, { hour: 'numeric', minute: '2-digit' });
     await waitFor(() =>
-      expect(screen.getByText(/^Peak 9 parallel at \d{1,2}:\d{2}\s?[AP]M$/)).toBeInTheDocument(),
+      expect(screen.getByText(`Peak 9 parallel at ${clock}`)).toBeInTheDocument(),
     );
+  });
+
+  it('omits the clock time when the peak has no timestamp', async () => {
+    renderWithSubagents({ window: SUBAGENT_WINDOW, agents: [], peak: { count: 4, atMs: null } });
+    await openSession();
+    await waitFor(() => expect(screen.getByText('Peak 4 parallel')).toBeInTheDocument());
   });
 
   it('shows a plain single-agent label when the peak is one', async () => {
@@ -1456,5 +1463,6 @@ describe('Sessions view — subagent peak label', () => {
     await openSession();
     await waitFor(() => expect(screen.queryByText('Loading subagents')).toBeNull());
     expect(screen.queryByText(/Peak/)).toBeNull();
+    expect(screen.getByText('Session trace').parentElement?.children).toHaveLength(1);
   });
 });

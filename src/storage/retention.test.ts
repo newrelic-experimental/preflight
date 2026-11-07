@@ -6,6 +6,7 @@ import {
   symlinkSync,
   writeFileSync,
   existsSync,
+  readdirSync,
   rmSync,
   utimesSync,
 } from 'node:fs';
@@ -86,6 +87,23 @@ describe('purgeOldSessions', () => {
     const deleted = purgeOldSessions(dir, 30);
     expect(deleted).toBe(1);
     expect(existsSync(filePath)).toBe(false);
+  });
+
+  it('deletes .corrupt copies and orphaned .tmp files older than retainDays', () => {
+    const dir = makeTempDir();
+    const oldDate = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+    for (const name of [
+      '2026-01-01_s1.json.1767268800000.corrupt',
+      '2026-01-01_s1.json.4242.0a1b2c3d.tmp',
+    ]) {
+      const filePath = resolve(dir, 'sessions', name);
+      writeFileSync(filePath, '{', { mode: 0o600 });
+      utimesSync(filePath, oldDate, oldDate);
+    }
+    writeFileSync(resolve(dir, 'sessions', '2026-02-01_s2.json.4242.0a1b2c3d.tmp'), '{');
+
+    expect(purgeOldSessions(dir, 30)).toBe(2);
+    expect(readdirSync(resolve(dir, 'sessions'))).toEqual(['2026-02-01_s2.json.4242.0a1b2c3d.tmp']);
   });
 
   it('keeps files younger than retainDays', () => {

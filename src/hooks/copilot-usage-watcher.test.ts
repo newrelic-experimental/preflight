@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getLogOutput } from '../__test-utils__/log-output.js';
@@ -88,12 +99,42 @@ describe('CopilotUsageWatcher', () => {
       .filter((l) => l.mode === 'token');
   }
 
-  function makeWatcher(overrides?: { parentSessionId?: string }): CopilotUsageWatcher {
+  /** `parentSessionId: null` builds an unscoped (--local) watcher. */
+  function makeWatcher(overrides?: { parentSessionId?: string | null }): CopilotUsageWatcher {
+    const parentSessionId =
+      overrides?.parentSessionId === null ? undefined : (overrides?.parentSessionId ?? SESSION_ID);
     return new CopilotUsageWatcher({
       storagePath,
       workspaceStorageRoots: [workspaceStorageRoot],
-      parentSessionId: overrides?.parentSessionId ?? SESSION_ID,
+      parentSessionId,
     });
+  }
+
+  function makeOversizeLine(
+    responseId: string,
+    layout: 'tokens-at-end' | 'tokens-in-middle',
+  ): string {
+    const pad = 'x'.repeat(3 * 1024 * 1024);
+    const attrs =
+      layout === 'tokens-at-end'
+        ? {
+            model: 'claude-opus-4-7',
+            responseId,
+            inputMessages: pad + pad,
+            inputTokens: 1000,
+            outputTokens: 100,
+            cachedTokens: 0,
+          }
+        : {
+            model: 'claude-opus-4-7',
+            responseId,
+            padBefore: pad,
+            inputTokens: 1000,
+            outputTokens: 100,
+            cachedTokens: 0,
+            padAfter: pad,
+          };
+    return JSON.stringify({ ts: 1786151170779, sid: SESSION_ID, type: 'llm_request', attrs });
   }
 
   it('emits a token line for each llm_request record', () => {
@@ -300,6 +341,257 @@ describe('CopilotUsageWatcher', () => {
     expect(events[0]).toMatchObject({ messageId: 'resp_big', inputTokens: 10 });
   });
 
+  it('counts an llm_request whose single line exceeds the 4 MiB partial-line cap', () => {
+    writeFileSync(logPath, makeOversizeLine('resp_big', 'tokens-at-end') + '\n');
+    const watcher = makeWatcher();
+    for (let i = 0; i < 12; i++) watcher.poll();
+    expect(readTokenEvents()).toHaveLength(1);
+    expect(readTokenEvents()[0]).toMatchObject({
+      messageId: 'resp_big',
+      inputTokens: 1000,
+      outputTokens: 100,
+    });
+  });
+
+  it('emits no record, and counts a parse error, when an oversize line hides its token fields', () => {
+    writeFileSync(logPath, makeOversizeLine('resp_hidden', 'tokens-in-middle') + '\n');
+    const watcher = makeWatcher();
+    for (let i = 0; i < 12; i++) watcher.poll();
+    expect(readTokenEvents()).toEqual([]);
+    expect(watcher.getHealth().parseErrors).toBe(1);
+  });
+
+  it('reads a session log untouched for longer than discoveryHours when it has unread bytes', () => {
+    writeFileSync(logPath, makeLlmRequestLine({ responseId: 'resp_1' }) + '\n');
+    makeWatcher().poll();
+
+    writeFileSync(
+      logPath,
+      makeLlmRequestLine({ responseId: 'resp_1' }) +
+        '\n' +
+        makeLlmRequestLine({ responseId: 'resp_2' }) +
+        '\n',
+    );
+    const twoDaysAgo = (Date.now() - 48 * 3_600_000) / 1000;
+    utimesSync(logPath, twoDaysAgo, twoDaysAgo);
+
+    makeWatcher({ parentSessionId: null }).poll();
+
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual(['resp_1', 'resp_2']);
+  });
+
+  it('does not corrupt the first line of a truncated log with a carried partial line', () => {
+    const line1 = makeLlmRequestLine({ responseId: 'resp_1' });
+    const line2 = makeLlmRequestLine({ responseId: 'resp_2' });
+    writeFileSync(logPath, line1 + '\n' + line2.slice(0, line2.length - 20));
+    const watcher = makeWatcher();
+    watcher.poll();
+
+    writeFileSync(logPath, makeLlmRequestLine({ responseId: 'resp_3' }) + '\n');
+    watcher.poll();
+
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual(['resp_1', 'resp_3']);
+  });
+
+  it('reads the whole head of a replacement log that is larger than the old cursor', () => {
+    const line1 = makeLlmRequestLine({ responseId: 'resp_1' });
+    const line2 = makeLlmRequestLine({ responseId: 'resp_2' });
+    writeFileSync(logPath, line1 + '\n' + line2.slice(0, line2.length - 20));
+    const watcher = makeWatcher();
+    watcher.poll();
+
+    const replacement = ['resp_a', 'resp_b', 'resp_c', 'resp_d']
+      .map((responseId, i) => makeLlmRequestLine({ responseId, ts: 1786151180000 + i }) + '\n')
+      .join('');
+    writeFileSync(logPath, replacement);
+    watcher.poll();
+
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual([
+      'resp_1',
+      'resp_a',
+      'resp_b',
+      'resp_c',
+      'resp_d',
+    ]);
+  });
+
+  it('keeps reading a log whose cursor predates the head fingerprint', () => {
+    const line1 = makeLlmRequestLine({ responseId: 'resp_1' });
+    writeFileSync(logPath, line1 + '\n');
+    writeFileSync(
+      join(storagePath, `.copilot-usage-pos-${SESSION_ID}`),
+      JSON.stringify({ bytePos: line1.length + 1, partialLine: '' }),
+    );
+    writeFileSync(logPath, line1 + '\n' + makeLlmRequestLine({ responseId: 'resp_2' }) + '\n');
+    makeWatcher().poll();
+
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual(['resp_2']);
+  });
+
+  it('reads a log whose first line was still growing when it was first polled', () => {
+    const line1 = makeLlmRequestLine({ responseId: 'resp_1' });
+    writeFileSync(logPath, line1.slice(0, 40));
+    const watcher = makeWatcher();
+    watcher.poll();
+    writeFileSync(logPath, line1 + '\n' + makeLlmRequestLine({ responseId: 'resp_2' }) + '\n');
+    watcher.poll();
+
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual(['resp_1', 'resp_2']);
+  });
+
+  it('picks up a cursor that another process creates after the first discovery', () => {
+    const line1 = makeLlmRequestLine({ responseId: 'resp_1' });
+    writeFileSync(logPath, line1 + '\n');
+    const twoDaysAgo = (Date.now() - 48 * 3_600_000) / 1000;
+    utimesSync(logPath, twoDaysAgo, twoDaysAgo);
+    const watcher = makeWatcher({ parentSessionId: null });
+    watcher.poll();
+    expect(readTokenEvents()).toEqual([]);
+
+    writeFileSync(
+      join(storagePath, `.copilot-usage-pos-${SESSION_ID}`),
+      JSON.stringify({ bytePos: 0, partialLine: '' }),
+    );
+    watcher.poll();
+
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual(['resp_1']);
+  });
+
+  describe('oversize lines', () => {
+    const PAD = 'x'.repeat(5 * 1024 * 1024);
+    const HEAD_CHARS = 64 * 1024;
+
+    function pollOversize(line: string): CopilotUsageWatcher {
+      writeFileSync(logPath, line + '\n');
+      const watcher = makeWatcher();
+      for (let i = 0; i < 12; i++) watcher.poll();
+      return watcher;
+    }
+
+    it('does not record a token count cut by the head boundary', () => {
+      const lead =
+        '{"ts":1786151170779,"sid":"' +
+        SESSION_ID +
+        '","type":"llm_request","attrs":{"model":"claude-opus-4-7","responseId":"resp_cut","padA":"';
+      const key = '","inputTokens":';
+      const filler = 'x'.repeat(HEAD_CHARS - lead.length - key.length - 2);
+      const line = `${lead}${filler}${key}62362,"padB":"${PAD}","outputTokens":5,"cachedTokens":0}}`;
+      expect(line.slice(0, HEAD_CHARS).endsWith('"inputTokens":62')).toBe(true);
+
+      const watcher = pollOversize(line);
+
+      expect(readTokenEvents()).toEqual([]);
+      expect(watcher.getHealth().parseErrors).toBe(1);
+    });
+
+    it('defaults cachedTokens to 0 when the oversize line never states it', () => {
+      const line = JSON.stringify({
+        ts: 1786151170779,
+        sid: SESSION_ID,
+        type: 'llm_request',
+        attrs: {
+          model: 'claude-opus-4-7',
+          responseId: 'resp_nocache',
+          inputMessages: PAD,
+          inputTokens: 1000,
+          outputTokens: 100,
+        },
+      });
+
+      pollOversize(line);
+
+      expect(readTokenEvents()[0]).toMatchObject({
+        messageId: 'resp_nocache',
+        inputTokens: 1000,
+        outputTokens: 100,
+        cacheReadTokens: 0,
+      });
+    });
+
+    it('recovers an llm_request whose type sits beyond the head window', () => {
+      const line = JSON.stringify({
+        attrs: {
+          inputMessages: PAD,
+          model: 'claude-opus-4-7',
+          responseId: 'resp_late_type',
+          inputTokens: 1000,
+          outputTokens: 100,
+          cachedTokens: 0,
+        },
+        ts: 1786151170779,
+        sid: SESSION_ID,
+        type: 'llm_request',
+      });
+
+      pollOversize(line);
+
+      expect(readTokenEvents().map((e) => e.messageId)).toEqual(['resp_late_type']);
+    });
+
+    it('counts a parse error for an llm_request that hides its usage and its type', () => {
+      const line = JSON.stringify({
+        attrs: { model: 'claude-opus-4-7', responseId: 'resp_hidden', padA: PAD, inputTokens: 1 },
+        padB: PAD,
+        type: 'llm_request',
+      });
+
+      const watcher = pollOversize(line);
+
+      expect(readTokenEvents()).toEqual([]);
+      expect(watcher.getHealth().parseErrors).toBe(1);
+    });
+
+    it('refuses an oversize line whose head and tail disagree on the model', () => {
+      const line = JSON.stringify({
+        ts: 1786151170779,
+        sid: SESSION_ID,
+        type: 'llm_request',
+        attrs: {
+          model: 'claude-opus-4-7',
+          responseId: 'resp_ambiguous',
+          inputMessages: PAD,
+          inputTokens: 1000,
+          outputTokens: 100,
+        },
+        routing: { model: 'gpt-5' },
+      });
+
+      const watcher = pollOversize(line);
+
+      expect(readTokenEvents()).toEqual([]);
+      expect(watcher.getHealth().parseErrors).toBe(1);
+    });
+
+    it('accepts an oversize line whose head and tail repeat the same model', () => {
+      const line = JSON.stringify({
+        ts: 1786151170779,
+        sid: SESSION_ID,
+        type: 'llm_request',
+        attrs: {
+          model: 'claude-opus-4-7',
+          responseId: 'resp_repeat',
+          inputMessages: PAD,
+          inputTokens: 1000,
+          outputTokens: 100,
+        },
+        routing: { model: 'claude-opus-4-7' },
+      });
+
+      pollOversize(line);
+
+      expect(readTokenEvents().map((e) => e.messageId)).toEqual(['resp_repeat']);
+    });
+
+    it('does not count a parse error for an oversize record that is not an llm_request', () => {
+      const line = JSON.stringify({ attrs: { payload: PAD }, type: 'tool_call' });
+
+      const watcher = pollOversize(line);
+
+      expect(readTokenEvents()).toEqual([]);
+      expect(watcher.getHealth().parseErrors).toBe(0);
+    });
+  });
+
   it('includes VS Code Remote server roots so WSL/SSH/dev-container sessions are found', () => {
     const roots = defaultWorkspaceStorageRoots();
     const home = homedir();
@@ -371,5 +663,231 @@ describe('CopilotUsageWatcher', () => {
       errorSpy.mockRestore();
       rmSync(emptyRoot, { recursive: true, force: true });
     }
+  });
+
+  describe('across crashes and write failures', () => {
+    let cursorPath: string;
+
+    beforeEach(() => {
+      cursorPath = join(storagePath, `.copilot-usage-pos-${SESSION_ID}`);
+    });
+
+    const emittedMessageIds = () => readTokenEvents().map((e) => e.messageId);
+
+    it('does not re-emit already-emitted records when the cursor file is left empty by a crash', () => {
+      writeFileSync(
+        logPath,
+        makeLlmRequestLine({ responseId: 'resp_1' }) +
+          '\n' +
+          makeLlmRequestLine({ responseId: 'resp_2' }) +
+          '\n',
+      );
+      makeWatcher().poll();
+      expect(emittedMessageIds()).toEqual(['resp_1', 'resp_2']);
+
+      // writeFileSync truncates before writing; a kill in between leaves an empty cursor.
+      writeFileSync(cursorPath, '');
+      makeWatcher().poll();
+
+      expect(emittedMessageIds()).toEqual(['resp_1', 'resp_2']);
+    });
+
+    it('claims a record under the session whose buffer it is appended to', () => {
+      const otherSid = '11111111-2222-3333-4444-555555555555';
+      writeFileSync(
+        logPath,
+        makeLlmRequestLine({ responseId: 'resp_dir' }) +
+          '\n' +
+          makeLlmRequestLine({ responseId: 'resp_other', sid: otherSid }) +
+          '\n',
+      );
+      makeWatcher().poll();
+
+      expect(readTokenEvents(SESSION_ID).map((e) => e.messageId)).toEqual(['resp_dir']);
+      expect(readTokenEvents(otherSid).map((e) => e.messageId)).toEqual(['resp_other']);
+      const ledgerDir = join(storagePath, 'billed-turns');
+      const claims = readdirSync(ledgerDir)
+        .flatMap((f) => readFileSync(join(ledgerDir, f), 'utf8').split('\n'))
+        .filter((l) => l.trim() !== '')
+        .map((l) => JSON.parse(l) as { m: string; s: string });
+      expect(claims.find((c) => c.m === 'resp_dir')?.s).toBe(SESSION_ID);
+      expect(claims.find((c) => c.m === 'resp_other')?.s).toBe(otherSid);
+
+      rmSync(cursorPath);
+      makeWatcher().poll();
+      expect(readTokenEvents(SESSION_ID)).toHaveLength(1);
+      expect(readTokenEvents(otherSid)).toHaveLength(1);
+    });
+
+    it('does not re-emit already-emitted records when the cursor file is truncated JSON', () => {
+      writeFileSync(
+        logPath,
+        makeLlmRequestLine({ responseId: 'resp_1' }) +
+          '\n' +
+          makeLlmRequestLine({ responseId: 'resp_2' }) +
+          '\n',
+      );
+      makeWatcher().poll();
+
+      writeFileSync(cursorPath, '{"bytePos":');
+      makeWatcher().poll();
+
+      expect(emittedMessageIds()).toEqual(['resp_1', 'resp_2']);
+    });
+
+    it('retries a read whose buffer append failed and emits each record once', () => {
+      writeFileSync(
+        logPath,
+        makeLlmRequestLine({ responseId: 'resp_1' }) +
+          '\n' +
+          makeLlmRequestLine({ responseId: 'resp_2' }) +
+          '\n',
+      );
+      const bufPath = join(storagePath, `buffer-${SESSION_ID}.jsonl`);
+      mkdirSync(bufPath);
+      const watcher = makeWatcher();
+
+      watcher.poll();
+      rmSync(bufPath, { recursive: true });
+      watcher.poll();
+      watcher.poll();
+
+      expect(emittedMessageIds()).toEqual(['resp_1', 'resp_2']);
+    });
+
+    it('warns once a minute, with a count, while the buffer stays unwritable', () => {
+      writeFileSync(logPath, makeLlmRequestLine({ responseId: 'resp_1' }) + '\n');
+      mkdirSync(join(storagePath, `buffer-${SESSION_ID}.jsonl`));
+      const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const warnings = () =>
+        logged.mock.calls
+          .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+          .filter((l) => l.level === 'warn' && l.component === 'copilot-usage-watcher');
+      const watcher = makeWatcher();
+      const start = Date.now();
+      const now = jest.spyOn(Date, 'now');
+      try {
+        now.mockReturnValue(start);
+        for (let i = 0; i < 5; i++) watcher.poll();
+        expect(warnings()).toHaveLength(1);
+
+        now.mockReturnValue(start + 61_000);
+        watcher.poll();
+        expect(warnings()).toHaveLength(2);
+        expect(warnings()[1]).toMatchObject({ suppressed: 4 });
+      } finally {
+        now.mockRestore();
+        logged.mockRestore();
+      }
+    });
+
+    it('warns once a minute while the cursor file stays unwritable, and buffers each record once', () => {
+      writeFileSync(logPath, makeLlmRequestLine({ responseId: 'resp_1' }) + '\n');
+      mkdirSync(cursorPath);
+      const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const now = jest.spyOn(Date, 'now').mockReturnValue(Date.now());
+      try {
+        const watcher = makeWatcher();
+        for (let i = 0; i < 5; i++) watcher.poll();
+        const warnings = logged.mock.calls
+          .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+          .filter((l) => l.level === 'warn' && l.component === 'copilot-usage-watcher');
+        expect(warnings).toHaveLength(1);
+      } finally {
+        now.mockRestore();
+        logged.mockRestore();
+      }
+      expect(emittedMessageIds()).toEqual(['resp_1']);
+    });
+
+    it('counts the lines and bytes of a redone read once', () => {
+      const log =
+        makeLlmRequestLine({ responseId: 'resp_1' }) +
+        '\n' +
+        makeLlmRequestLine({ responseId: 'resp_2' }) +
+        '\n';
+      writeFileSync(logPath, log);
+      const bufPath = join(storagePath, `buffer-${SESSION_ID}.jsonl`);
+      mkdirSync(bufPath);
+      const watcher = makeWatcher();
+
+      watcher.poll();
+      rmSync(bufPath, { recursive: true });
+      watcher.poll();
+
+      expect(watcher.getHealth()).toMatchObject({
+        linesRead: 2,
+        bytesRead: Buffer.byteLength(log),
+      });
+    });
+
+    describe('when the cursor write fails on the poll that completes an oversize line', () => {
+      function catchUpOnUnfinishedLine(line: string): CopilotUsageWatcher {
+        writeFileSync(logPath, line);
+        const watcher = makeWatcher();
+        for (let i = 0; i < 12; i++) watcher.poll();
+        appendFileSync(logPath, '\n' + makeLlmRequestLine({ responseId: 'resp_after' }) + '\n');
+        return watcher;
+      }
+
+      function pollWithReadOnlyCursor(watcher: CopilotUsageWatcher): void {
+        chmodSync(cursorPath, 0o400);
+        try {
+          watcher.poll();
+        } finally {
+          chmodSync(cursorPath, 0o600);
+        }
+      }
+
+      it('bills the oversize record once and counts its lines once', () => {
+        if (process.getuid?.() === 0) return; // root bypasses permission checks
+        const watcher = catchUpOnUnfinishedLine(makeOversizeLine('resp_big', 'tokens-at-end'));
+
+        pollWithReadOnlyCursor(watcher);
+        expect(emittedMessageIds()).toEqual(['resp_big', 'resp_after']);
+        expect(watcher.getHealth().linesRead).toBe(0);
+
+        watcher.poll();
+        expect(emittedMessageIds()).toEqual(['resp_big', 'resp_after']);
+        expect(readTokenEvents()[0]).toMatchObject({ inputTokens: 1000, outputTokens: 100 });
+        expect(watcher.getHealth().linesRead).toBe(2);
+      });
+
+      it('counts the parse error of an unrecoverable oversize line once', () => {
+        if (process.getuid?.() === 0) return; // root bypasses permission checks
+        const watcher = catchUpOnUnfinishedLine(
+          makeOversizeLine('resp_hidden', 'tokens-in-middle'),
+        );
+
+        pollWithReadOnlyCursor(watcher);
+        expect(watcher.getHealth().parseErrors).toBe(0);
+
+        watcher.poll();
+        expect(emittedMessageIds()).toEqual(['resp_after']);
+        expect(watcher.getHealth().parseErrors).toBe(1);
+      });
+    });
+
+    it('bills a record with no ts once, when it is read again on a later day', () => {
+      const { ts: _dropped, ...undated } = JSON.parse(
+        makeLlmRequestLine({ responseId: 'resp_1' }),
+      ) as Record<string, unknown>;
+      writeFileSync(logPath, JSON.stringify(undated) + '\n');
+      const realNow = Date.now();
+      const later = realNow + 5 * 24 * 60 * 60 * 1000;
+      const now = jest.spyOn(Date, 'now');
+      try {
+        now.mockReturnValue(realNow);
+        makeWatcher().poll();
+        writeFileSync(cursorPath, '');
+        utimesSync(logPath, new Date(later), new Date(later));
+        now.mockReturnValue(later);
+        makeWatcher().poll();
+      } finally {
+        now.mockRestore();
+      }
+
+      expect(emittedMessageIds()).toEqual(['resp_1']);
+    });
   });
 });

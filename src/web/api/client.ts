@@ -258,6 +258,7 @@ export interface CostForecast {
   readonly forecastEndOfWeekUsd: number | null;
   readonly forecastSessionEndUsd: number | null;
   readonly confidenceNote: string;
+  readonly heldReason?: string | null;
 }
 
 export interface CostResponse {
@@ -1321,6 +1322,7 @@ export interface SettingsResponse {
   readonly weeklyBudgetUsd: number | null;
   readonly retainSessionsDays: number | null;
   readonly digestWebhookUrl: string | null;
+  readonly digestWebhookUrlSource: 'env' | 'command' | 'file' | 'unset';
   readonly digestSchedule: string;
   readonly alerts: {
     readonly personal: {

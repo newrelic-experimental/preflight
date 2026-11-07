@@ -11,6 +11,7 @@ import { Readable } from 'node:stream';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { loadMcpConfig } from '../../config.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import {
   ToolSelectionScorer,
@@ -22,6 +23,7 @@ import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
 import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
 import { CostTracker } from '../../metrics/cost-tracker.js';
+import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { buildCostTrackerSeed } from '../../metrics/cost-tracker-seed.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../../metrics/quality-proxy-tracker.js';
 
@@ -205,6 +207,26 @@ describe('api-handler GET /api/sessions', () => {
     expect(result[0].sessionId).toBe('sess-90'); // Most recent (highest index)
   });
 
+  it('lists a chat-only session with cost but no tool calls, and hides an idle one', async () => {
+    const fakeSessions = [
+      { sessionId: 'chat-only', toolCallCount: 0, estimatedCostUsd: 1.5 },
+      { sessionId: 'idle', toolCallCount: 0, estimatedCostUsd: 0 },
+      { sessionId: 'tools', toolCallCount: 3 },
+    ];
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => fakeSessions,
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const ids = (JSON.parse(body()) as Array<{ sessionId: string }>).map((s) => s.sessionId);
+    expect(ids).toEqual(['chat-only', 'tools']);
+  });
+
   it('uses default limit of 50 when not specified', async () => {
     const fakeSessions = Array.from({ length: 100 }, (_v, i) => ({
       filename: `2026-05-${String(i + 1).padStart(2, '0')}_sess-${i}.json`,
@@ -344,6 +366,43 @@ describe('api-handler GET /api/sessions', () => {
     const live = result.find((s) => s.sessionId === 'live-session-with-model');
     expect(live).toBeDefined();
     expect(live?.model).toBe('claude-sonnet-4-20250514');
+  });
+
+  it('lists a live chat-only session with cost but no tool calls, and hides an idle one', async () => {
+    const makeHandler = (sessionId: string, cost: number) =>
+      createApiHandler({
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => [],
+          loadAllSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+        sessionTracker: {
+          getMetrics: () => ({
+            sessionId,
+            sessionName: null,
+            sessionStartTime: 1000,
+            sessionDurationMs: 500,
+            toolCallCount: 0,
+            toolCallCountByTool: {},
+            uniqueFilesRead: 0,
+            uniqueFilesWritten: 0,
+            toolCallTimeline: [],
+          }),
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+        costTracker: {
+          getMetrics: () => ({ sessionTotalCostUsd: cost, model: 'claude-sonnet-4-20250514' }),
+        } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+      });
+    const listIds = async (sessionId: string, cost: number): Promise<string[]> => {
+      const req = { method: 'GET', url: '/api/sessions' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler(sessionId, cost)(req, res);
+      return (JSON.parse(body()) as Array<{ sessionId: string }>).map((s) => s.sessionId);
+    };
+
+    expect(await listIds('live-chat-only', 0.3)).toEqual(['live-chat-only']);
+    expect(await listIds('live-idle', 0)).toEqual([]);
   });
 
   it('defaults model to null on the live-session stub when costTracker has none', async () => {
@@ -1260,6 +1319,24 @@ describe('api-handler GET /api/cost', () => {
     const result = JSON.parse(body());
     expect(result.cost).toEqual(fakeCost);
     expect(result.forecast).toEqual(fakeForecast);
+  });
+
+  it('returns heldReason from the real forecast builder', async () => {
+    const nowMs = new Date(2024, 0, 3, 14).getTime();
+    const handler = createApiHandler({
+      costTracker: {
+        getMetrics: () => ({ sessionTotalCostUsd: 0.01 }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+      costForecast: () =>
+        buildCostForecastFromInputs(
+          { sessionSpentUsd: 0.01, sessionStartMs: nowMs - 15_000 },
+          nowMs,
+        ),
+    });
+    const req = { method: 'GET', url: '/api/cost' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body()).forecast.heldReason).toBe("held: under 10 minutes of today's data");
   });
 
   it('returns null forecast when costForecast is missing', async () => {
@@ -4127,53 +4204,58 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
   });
 
   it("anchors the forecast to a cross-midnight session's first TODAY-scoped timeline entry, not its startTime", async () => {
-    const now = Date.now();
-    const startOfDay = new Date(now);
-    startOfDay.setHours(0, 0, 0, 0);
-    const startMs = startOfDay.getTime();
+    jest.useFakeTimers({ now: new Date(2024, 0, 3, 14).getTime(), doNotFake: ['nextTick'] });
+    try {
+      const now = Date.now();
+      const startOfDay = new Date(now);
+      startOfDay.setHours(0, 0, 0, 0);
+      const startMs = startOfDay.getTime();
 
-    // Started 1h before midnight, still active. loadTodaySessions() (file-date
-    // = start date = yesterday) excludes it entirely; only
-    // loadSessionsOverlappingToday() sees it. 1 of its 4 timeline entries is
-    // before midnight, 3 are after -> todayPortionRatio = 0.75 -> today's cost
-    // contribution is 10 * 0.75 = 7.5.
-    const crossMidnightSession = {
-      sessionId: 'cross-midnight-1',
-      startTime: startMs - 60 * 60 * 1000,
-      endTime: startMs + 10_000,
-      estimatedCostUsd: 10,
-      timeline: [
-        { timestamp: startMs - 30 * 60 * 1000 },
-        { timestamp: startMs + 1_000 },
-        { timestamp: startMs + 2_000 },
-        { timestamp: startMs + 3_000 },
-      ],
-    };
+      // Started 1h before midnight, still active. loadTodaySessions() (file-date
+      // = start date = yesterday) excludes it entirely; only
+      // loadSessionsOverlappingToday() sees it. 1 of its 4 timeline entries is
+      // before midnight, 3 are after -> todayPortionRatio = 0.75 -> today's cost
+      // contribution is 10 * 0.75 = 7.5.
+      const crossMidnightSession = {
+        sessionId: 'cross-midnight-1',
+        startTime: startMs - 60 * 60 * 1000,
+        endTime: startMs + 10_000,
+        estimatedCostUsd: 10,
+        timeline: [
+          { timestamp: startMs - 30 * 60 * 1000 },
+          { timestamp: startMs + 1_000 },
+          { timestamp: startMs + 2_000 },
+          { timestamp: startMs + 3_000 },
+        ],
+      };
 
-    const handler = createApiHandler({
-      localStore: { peekAllBuffers: () => [] },
-      sessionStore: {
-        loadTodaySessions: () => [],
-        loadSessionsOverlappingToday: () => [crossMidnightSession],
-        listSessions: () => [],
-        loadSession: () => null,
-      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-    });
-    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
-    const { res, status, body } = fakeRes();
-    await handler(req, res);
-    expect(status()).toBe(200);
-    const parsed = JSON.parse(body()) as {
-      totalCostUsd: number;
-      forecastEndOfDayUsd: number | null;
-    };
-    expect(parsed.totalCostUsd).toBeCloseTo(7.5, 3);
-    // Must not be null: the session has real spend today, so a null forecast
-    // here means dailyFirstActivityMs was never anchored for it.
-    expect(parsed.forecastEndOfDayUsd).not.toBeNull();
-    // effectiveBaseUsd is totalCostUsd and the rate is >= 0, so the forecast
-    // can never be less than the amount already spent today.
-    expect(parsed.forecastEndOfDayUsd as number).toBeGreaterThanOrEqual(parsed.totalCostUsd);
+      const handler = createApiHandler({
+        localStore: { peekAllBuffers: () => [] },
+        sessionStore: {
+          loadTodaySessions: () => [],
+          loadSessionsOverlappingToday: () => [crossMidnightSession],
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+      const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+      const { res, status, body } = fakeRes();
+      await handler(req, res);
+      expect(status()).toBe(200);
+      const parsed = JSON.parse(body()) as {
+        totalCostUsd: number;
+        forecastEndOfDayUsd: number | null;
+      };
+      expect(parsed.totalCostUsd).toBeCloseTo(7.5, 3);
+      // Must not be null: the session has real spend today, so a null forecast
+      // here means dailyFirstActivityMs was never anchored for it.
+      expect(parsed.forecastEndOfDayUsd).not.toBeNull();
+      // effectiveBaseUsd is totalCostUsd and the rate is >= 0, so the forecast
+      // can never be less than the amount already spent today.
+      expect(parsed.forecastEndOfDayUsd as number).toBeGreaterThanOrEqual(parsed.totalCostUsd);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('returns forecastEndOfDayUsd null when there is no activity today from any source', async () => {
@@ -4204,7 +4286,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costTracker: {
         getMetrics: () => ({ sessionTotalCostUsd: 0 }),
         getCostForDay: () => 9,
-        getFirstActivityMsForDay: () => Date.now() - 60_000,
+        getFirstActivityMsForDay: () => Date.now() - 30 * 60_000,
       } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
     });
     const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
@@ -5663,6 +5745,25 @@ describe('GET /api/diagnostics', () => {
   });
 });
 
+describe('GET /api/diagnostics secret helpers', () => {
+  it('never lets diagnostics run secret helpers, on every request', async () => {
+    mockedRunDiagnostics.mockClear();
+    mockedRunDiagnostics.mockResolvedValue([]);
+    const handler = createApiHandler({});
+
+    for (let i = 0; i < 3; i++) {
+      const req = { method: 'GET', url: '/api/diagnostics' } as IncomingMessage;
+      const { res } = fakeRes();
+      await handler(req, res);
+    }
+
+    expect(mockedRunDiagnostics).toHaveBeenCalledTimes(3);
+    for (const [opts] of mockedRunDiagnostics.mock.calls) {
+      expect(opts).toMatchObject({ resolveSecrets: false });
+    }
+  });
+});
+
 describe('GET /api/diagnostics platform forwarding', () => {
   it("forwards getActivePlatform()'s return value as the platform option to runDiagnostics", async () => {
     mockedRunDiagnostics.mockResolvedValue([]);
@@ -6089,8 +6190,124 @@ describe('api-handler GET /api/settings', () => {
       storagePath: '/tmp/does-not-matter',
       highSecurity: false,
       licenseKey: 'NRAK-ABCDEFGHIJKLMNOP1234',
+      secretSources: { licenseKey: 'file', nrApiKey: 'unset', digestWebhookUrl: 'file' },
     } as unknown as Parameters<typeof createApiHandler>[0]['config'];
   }
+
+  async function getSettings(
+    config: Parameters<typeof createApiHandler>[0]['config'],
+    configFilePath: string,
+  ): Promise<Record<string, unknown>> {
+    const handler = createApiHandler({ config, configFilePath });
+    const req = { method: 'GET', url: '/api/settings' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    return JSON.parse(body()) as Record<string, unknown>;
+  }
+
+  it('reports the file as the webhook source when nothing overrides it', async () => {
+    const configFilePath = makeConfigFile({
+      digestWebhookUrl: 'https://hooks.slack.com/services/T/B/FILE',
+    });
+
+    const result = await getSettings(fakeStartupConfig(), configFilePath);
+
+    expect(result.digestWebhookUrl).toBe('https://hooks.slack.com/services/T/B/FILE');
+    expect(result.digestWebhookUrlSource).toBe('file');
+  });
+
+  it.each(['env', 'command'] as const)(
+    'reports %s as the source and keeps its value out of the response when it overrides the file',
+    async (source) => {
+      const OVERRIDE = 'https://hooks.slack.com/services/T/B/OVERRIDE';
+      const config = {
+        ...fakeStartupConfig(),
+        digestWebhookUrl: OVERRIDE,
+        secretSources: { licenseKey: 'file', nrApiKey: 'unset', digestWebhookUrl: source },
+      } as unknown as Parameters<typeof createApiHandler>[0]['config'];
+      const configFilePath = makeConfigFile({
+        digestWebhookUrl: 'https://hooks.slack.com/services/T/B/FILE',
+      });
+
+      const result = await getSettings(config, configFilePath);
+
+      expect(result.digestWebhookUrlSource).toBe(source);
+      expect(result.digestWebhookUrl).toBe('https://hooks.slack.com/services/T/B/FILE');
+      expect(JSON.stringify(result)).not.toContain(OVERRIDE);
+    },
+  );
+
+  it('does not fall back to the override value when the file has no URL', async () => {
+    const OVERRIDE = 'https://hooks.slack.com/services/T/B/OVERRIDE';
+    const config = {
+      ...fakeStartupConfig(),
+      digestWebhookUrl: OVERRIDE,
+      secretSources: { licenseKey: 'file', nrApiKey: 'unset', digestWebhookUrl: 'env' },
+    } as unknown as Parameters<typeof createApiHandler>[0]['config'];
+
+    const result = await getSettings(config, makeConfigFile({}));
+
+    expect(result.digestWebhookUrl).toBeNull();
+    expect(result.digestWebhookUrlSource).toBe('env');
+    expect(JSON.stringify(result)).not.toContain(OVERRIDE);
+  });
+
+  describe('with a config loaded from disk', () => {
+    const FILE_URL = 'https://hooks.slack.com/services/T/B/FILE';
+    let savedEnv: string | undefined;
+
+    beforeEach(() => {
+      savedEnv = process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL;
+      delete process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL;
+    });
+
+    afterEach(() => {
+      if (savedEnv === undefined) delete process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL;
+      else process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL = savedEnv;
+    });
+
+    function loadFrom(content: Record<string, unknown>) {
+      const configFilePath = makeConfigFile({ mode: 'local', ...content });
+      return { configFilePath, config: loadMcpConfig({ config: configFilePath }) };
+    }
+
+    it('reports a failing command, not the file, when the command outranks the file URL', async () => {
+      const { config, configFilePath } = loadFrom({
+        digestWebhookUrl: FILE_URL,
+        digestWebhookUrlCommand: ['/usr/bin/false'],
+      });
+
+      const result = await getSettings(config, configFilePath);
+
+      expect(result.digestWebhookUrlSource).toBe('command');
+    });
+
+    it('reports a command added to the file after startup', async () => {
+      const { config, configFilePath } = loadFrom({ digestWebhookUrl: FILE_URL });
+      fs.writeFileSync(
+        configFilePath,
+        JSON.stringify({
+          mode: 'local',
+          digestWebhookUrl: FILE_URL,
+          digestWebhookUrlCommand: ['/usr/bin/false'],
+        }),
+      );
+
+      const result = await getSettings(config, configFilePath);
+
+      expect(result.digestWebhookUrlSource).toBe('command');
+    });
+
+    it('reports unset after the URL is cleared from the file', async () => {
+      const { config, configFilePath } = loadFrom({ digestWebhookUrl: FILE_URL });
+      fs.writeFileSync(configFilePath, JSON.stringify({ mode: 'local' }));
+
+      const result = await getSettings(config, configFilePath);
+
+      expect(result.digestWebhookUrl).toBeNull();
+      expect(result.digestWebhookUrlSource).toBe('unset');
+    });
+  });
 
   it('returns 503 when config is missing', async () => {
     const handler = createApiHandler({});
@@ -6117,7 +6334,8 @@ describe('api-handler GET /api/settings', () => {
     expect(result.dailyBudgetUsd).toBe(50);
     expect(result.weeklyBudgetUsd).toBe(200);
     expect(result.retainSessionsDays).toBe(30);
-    expect(result.digestWebhookUrl).toBe('https://hooks.slack.com/services/T/B/STARTUP');
+    expect(result.digestWebhookUrl).toBeNull();
+    expect(result.digestWebhookUrlSource).toBe('unset');
     expect(result.digestSchedule).toBe('0 9 * * 1');
     expect(result.alerts.personal).toEqual({
       dailyCostUsd: 2,

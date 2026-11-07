@@ -34,6 +34,7 @@ function assistantLine(opts: {
   input?: number;
   output?: number;
   cacheCreation?: number;
+  cacheCreation1h?: number;
   cacheRead?: number;
 }): string {
   return JSON.stringify({
@@ -49,6 +50,9 @@ function assistantLine(opts: {
         output_tokens: opts.output ?? 0,
         cache_creation_input_tokens: opts.cacheCreation ?? 0,
         cache_read_input_tokens: opts.cacheRead ?? 0,
+        ...(opts.cacheCreation1h !== undefined && {
+          cache_creation: { ephemeral_1h_input_tokens: opts.cacheCreation1h },
+        }),
       },
     },
   });
@@ -68,6 +72,30 @@ describe('SubagentTimelineStore', () => {
   afterEach(() => {
     process.stderr.write = STDERR_WRITE;
     rmSync(projectsDir, { recursive: true, force: true });
+  });
+
+  it('prices 1-hour cache writes at the 1-hour rate', () => {
+    writeFileSync(
+      join(subDir, `agent-${AGENT_A}.jsonl`),
+      [
+        assistantLine({
+          timestamp: '2026-06-16T12:00:00.000Z',
+          model: 'claude-fable-5',
+          cacheCreation: 1_000_000,
+          cacheCreation1h: 400_000,
+        }),
+        assistantLine({
+          timestamp: '2026-06-16T12:00:10.000Z',
+          model: 'claude-fable-5',
+          cacheCreation: 1_000_000,
+        }),
+      ].join('\n') + '\n',
+    );
+
+    const agent = new SubagentTimelineStore({ projectsDir }).getSubagentsForSession(SESSION)
+      .agents[0]!;
+
+    expect(agent.usd).toBeCloseTo(28, 10);
   });
 
   it('computes an ad-hoc agent span (start/end/turnCount/tokens) with usd', () => {
