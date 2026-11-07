@@ -3053,12 +3053,18 @@ describe('Today view — loading states', () => {
 });
 
 describe('Today view — daily budget KPI', () => {
-  function stubBudget(daily: {
-    budgetUsd: number | null;
-    spentUsd: number;
-    pctUsed: number | null;
-    exceeded: boolean;
-  }): void {
+  function stubBudget(
+    daily: {
+      budgetUsd: number | null;
+      spentUsd: number;
+      pctUsed: number | null;
+      exceeded: boolean;
+    },
+    todayTotalUsd: number = daily.spentUsd,
+  ): void {
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: todayTotalUsd, todayTotalUsd, forecastEodUsd: null },
+    });
     const period = { budgetUsd: null, spentUsd: 0, pctUsed: null, exceeded: false };
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
@@ -3072,6 +3078,11 @@ describe('Today view — daily budget KPI', () => {
     }) as typeof fetch;
   }
 
+  async function budgetTile(): Promise<HTMLElement> {
+    const label = await screen.findByText('daily budget');
+    return label.parentElement as HTMLElement;
+  }
+
   beforeEach(() => {
     resetStore();
   });
@@ -3079,15 +3090,24 @@ describe('Today view — daily budget KPI', () => {
     vi.restoreAllMocks();
   });
 
+  async function expectTile(
+    value: string,
+    sub: string,
+    tone: 'neutral' | 'amber' | 'red',
+  ): Promise<void> {
+    const tile = await budgetTile();
+    await waitFor(() => expect(within(tile).getByText(sub)).toBeInTheDocument());
+    const v = within(tile).getByText(value);
+    for (const t of ['amber', 'red'] as const) {
+      if (t === tone) expect(v).toHaveClass(`text-accent-${t}`);
+      else expect(v).not.toHaveClass(`text-accent-${t}`);
+    }
+  }
+
   it('shows spend against the daily cap and the percent used when a daily budget is set', async () => {
     stubBudget({ budgetUsd: 10, spentUsd: 4, pctUsed: 40, exceeded: false });
     renderToday();
-
-    expect(await screen.findByText('daily budget')).toBeInTheDocument();
-    expect(screen.getByText('$4.00')).toBeInTheDocument();
-    expect(screen.getByText('of $10.00 · 40% used')).toBeInTheDocument();
-    expect(screen.getByText('$4.00')).not.toHaveClass('text-accent-amber');
-    expect(screen.getByText('$4.00')).not.toHaveClass('text-accent-red');
+    await expectTile('$4.00', 'of $10.00 · 40% used', 'neutral');
   });
 
   it('renders no budget KPI and no budget hint when no daily budget is set', async () => {
@@ -3100,42 +3120,53 @@ describe('Today view — daily budget KPI', () => {
     );
     expect(screen.queryByText('daily budget')).toBeNull();
     expect(screen.queryByText(/No daily budget set/)).toBeNull();
-    expect(screen.queryByText('$1.50')).toBeNull();
   });
 
   it('switches the budget value to the warning tone at 50 percent used', async () => {
     stubBudget({ budgetUsd: 10, spentUsd: 5, pctUsed: 50, exceeded: false });
     renderToday();
-
-    const value = await screen.findByText('$5.00');
-    expect(value).toHaveClass('text-accent-amber');
-    expect(screen.getByText('of $10.00 · 50% used')).toBeInTheDocument();
+    await expectTile('$5.00', 'of $10.00 · 50% used', 'amber');
   });
 
   it('keeps the budget value out of the warning tone below 50 percent used', async () => {
     stubBudget({ budgetUsd: 10, spentUsd: 4.9, pctUsed: 49, exceeded: false });
     renderToday();
-
-    const value = await screen.findByText('$4.90');
-    expect(value).not.toHaveClass('text-accent-amber');
-    expect(value).not.toHaveClass('text-accent-red');
+    await expectTile('$4.90', 'of $10.00 · 49% used', 'neutral');
   });
 
   it('switches the budget value to the warning tone at 80 percent used', async () => {
     stubBudget({ budgetUsd: 10, spentUsd: 8, pctUsed: 80, exceeded: false });
     renderToday();
-
-    const value = await screen.findByText('$8.00');
-    expect(value).toHaveClass('text-accent-amber');
-    expect(screen.getByText('of $10.00 · 80% used')).toBeInTheDocument();
+    await expectTile('$8.00', 'of $10.00 · 80% used', 'amber');
   });
 
   it('switches the budget value to the danger tone and says over budget once the cap is passed', async () => {
     stubBudget({ budgetUsd: 10, spentUsd: 12.5, pctUsed: 125, exceeded: true });
     renderToday();
+    await expectTile('$12.50', 'of $10.00 · 125% used · over budget', 'red');
+  });
 
-    const value = await screen.findByText('$12.50');
-    expect(value).toHaveClass('text-accent-red');
-    expect(screen.getByText('of $10.00 · 125% used · over budget')).toBeInTheDocument();
+  it('shows the spend today total and red when the API reports zero spent after a restart', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 0, pctUsed: 0, exceeded: false }, 15);
+    renderToday();
+    await expectTile('$15.00', 'of $10.00 · 150% used · over budget', 'red');
+  });
+
+  it('stays neutral and labels 49.6 percent as 49', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 4.96, pctUsed: 49.6, exceeded: false });
+    renderToday();
+    await expectTile('$4.96', 'of $10.00 · 49% used', 'neutral');
+  });
+
+  it('stays amber and labels 99.96 percent as 99', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 9.996, pctUsed: 99.96, exceeded: false });
+    renderToday();
+    await expectTile('$10.00', 'of $10.00 · 99% used', 'amber');
+  });
+
+  it('goes red when the API says exceeded even if the local total is under the cap', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 11, pctUsed: 110, exceeded: true }, 4);
+    renderToday();
+    await expectTile('$4.00', 'of $10.00 · 40% used · over budget', 'red');
   });
 });

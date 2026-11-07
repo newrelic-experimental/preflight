@@ -231,12 +231,38 @@ interface ToolSelectionMetrics {
 
 const QUALITY_REFETCH_MS = 10_000;
 
-// Thresholds match the ones BudgetTracker fires on.
-function budgetKpiTone(period: BudgetPeriod): KpiTone {
-  const pct = period.pctUsed ?? 0;
-  if (period.exceeded || pct >= 100) return 'bad';
-  if (pct >= 50) return 'warn';
-  return 'neutral';
+// Thresholds match the ones BudgetTracker fires on. The label floors the
+// percent so it never reads past a threshold the tone has not crossed.
+function dailyBudgetKpi(
+  spentUsd: number,
+  capUsd: number,
+  apiExceeded: boolean,
+): { tone: KpiTone; pctLabel: number | null; overBudget: boolean } {
+  const pct = capUsd > 0 ? (spentUsd / capUsd) * 100 : null;
+  const overBudget = apiExceeded || spentUsd > capUsd;
+  const tone: KpiTone =
+    overBudget || (pct ?? 0) >= 100 ? 'bad' : (pct ?? 0) >= 50 ? 'warn' : 'neutral';
+  return { tone, pctLabel: pct === null ? null : Math.floor(pct), overBudget };
+}
+
+function DailyBudgetKpi({
+  spentUsd,
+  capUsd,
+  apiExceeded,
+}: {
+  spentUsd: number;
+  capUsd: number;
+  apiExceeded: boolean;
+}): JSX.Element {
+  const { tone, pctLabel, overBudget } = dailyBudgetKpi(spentUsd, capUsd, apiExceeded);
+  return (
+    <Kpi
+      label="daily budget"
+      tone={tone}
+      value={formatUsd(spentUsd)}
+      sub={`of ${formatUsd(capUsd)}${pctLabel !== null ? ` · ${pctLabel}% used` : ''}${overBudget ? ' · over budget' : ''}`}
+    />
+  );
 }
 
 export function Today(): JSX.Element {
@@ -261,7 +287,6 @@ export function Today(): JSX.Element {
   });
   const dailyBudget: BudgetPeriod | null = budget?.daily ?? null;
   const dailyBudgetCap = dailyBudget?.budgetUsd ?? null;
-  const dailyBudgetTone = dailyBudget ? budgetKpiTone(dailyBudget) : 'neutral';
   const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
     queryFn: ({ signal }) => fetchTodayAggregate(signal),
@@ -532,11 +557,10 @@ export function Today(): JSX.Element {
                   {...(flagsLoading ? {} : { animate: true, numericValue: flagsCount })}
                 />
                 {dailyBudget && dailyBudgetCap !== null && (
-                  <Kpi
-                    label="daily budget"
-                    tone={dailyBudgetTone}
-                    value={formatUsd(dailyBudget.spentUsd)}
-                    sub={`of ${formatUsd(dailyBudgetCap)}${dailyBudget.pctUsed !== null ? ` · ${dailyBudget.pctUsed.toFixed(0)}% used` : ''}${dailyBudget.exceeded ? ' · over budget' : ''}`}
+                  <DailyBudgetKpi
+                    spentUsd={todayTotal}
+                    capUsd={dailyBudgetCap}
+                    apiExceeded={dailyBudget.exceeded}
                   />
                 )}
               </div>
