@@ -34,8 +34,6 @@ const OUTCOME_TONE: Record<'unknown' | 'success' | 'failure', PillTone> = {
 
 const MARKDOWN_ANTI_PATTERN_LIMIT = 3;
 
-// Anti-pattern commands are left out on purpose: they are raw shell text and can
-// carry secrets, while the type and file path are enough for a standup or bug report.
 function formatSessionMarkdown(s: SessionListEntry): string {
   const lines = [`## Session ${s.sessionName ?? s.sessionId}`, ''];
   if (s.startTime != null) lines.push(`- Started: ${new Date(s.startTime).toISOString()}`);
