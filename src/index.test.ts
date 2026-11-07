@@ -1221,6 +1221,7 @@ describe('stdio integration', () => {
     afterEach(() => {
       for (const dir of storages.splice(0)) rmSync(dir, { recursive: true, force: true });
     });
+    const CHECKPOINT_OFTEN = { NR_AI_SESSION_PERSIST_INTERVAL_MS: '200' };
     const makeStorage = (): string => {
       const dir = mkdtempSync(join(tmpdir(), 'nr-adopt-'));
       storages.push(dir);
@@ -1290,9 +1291,7 @@ describe('stdio integration', () => {
 
     it('counts its own calls once when it saved them before adopting their session', async () => {
       const storage = makeStorage();
-      const client = await startEngine(storage, undefined, {
-        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
-      });
+      const client = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
       await drainCalls(storage, 'own-real-session', 2);
       await waitFor(() => savedCalls(storage, 'own-real-session') === 2);
       await adoptAndStop(storage, client, 'own-real-session');
@@ -1407,8 +1406,7 @@ describe('stdio integration', () => {
       expect(savedCalls(storage, 'other-real-session')).toBe(1);
     }, 30000);
 
-    it("counts another session's call once when a second process drains its post after the swap", async () => {
-      const storage = makeStorage();
+    const splitCallAcrossSwap = async (storage: string): Promise<unknown> => {
       const breadcrumb = resolve(storage, 'session-by-ppid', `${process.pid}.txt`);
       const adopted = await startEngine(storage);
       writeHook(storage, 'other-real-session', 'pre', 'toolu_x');
@@ -1416,11 +1414,18 @@ describe('stdio integration', () => {
       writeFileSync(breadcrumb, 'own-real-session');
       await waitFor(() => existsSync(resolve(storage, 'active-own-real-session.pid')));
       rmSync(breadcrumb);
+      const atSwap = savedCalls(storage, 'other-real-session');
       const drainer = await startEngine(storage);
       writeHook(storage, 'other-real-session', 'post', 'toolu_x');
       await waitFor(drained(storage, 'other-real-session'));
       await adoptAndStop(storage, drainer, 'other-real-session');
       await stopOwner(storage, adopted, 'own-real-session');
+      return atSwap;
+    };
+
+    it("counts another session's call once when a second process drains its post after the swap", async () => {
+      const storage = makeStorage();
+      await splitCallAcrossSwap(storage);
 
       expect(savedCalls(storage, 'other-real-session')).toBe(1);
       expect(savedCalls(storage, 'own-real-session') ?? 0).toBe(0);
@@ -1446,20 +1451,8 @@ describe('stdio integration', () => {
     it("counts another session's call in flight once when that session has a file", async () => {
       const storage = makeStorage();
       await saveCalls(storage, 'other-real-session', 3);
-      const breadcrumb = resolve(storage, 'session-by-ppid', `${process.pid}.txt`);
-      const adopted = await startEngine(storage);
-      writeHook(storage, 'other-real-session', 'pre', 'toolu_x');
-      await waitFor(drained(storage, 'other-real-session'));
-      writeFileSync(breadcrumb, 'own-real-session');
-      await waitFor(() => existsSync(resolve(storage, 'active-own-real-session.pid')));
-      rmSync(breadcrumb);
-      expect(savedCalls(storage, 'other-real-session')).toBe(3);
-      const drainer = await startEngine(storage);
-      writeHook(storage, 'other-real-session', 'post', 'toolu_x');
-      await waitFor(drained(storage, 'other-real-session'));
-      await adoptAndStop(storage, drainer, 'other-real-session');
-      await stopOwner(storage, adopted, 'own-real-session');
 
+      expect(await splitCallAcrossSwap(storage)).toBe(3);
       expect(savedCalls(storage, 'other-real-session')).toBe(4);
     }, 30000);
 
@@ -1470,10 +1463,7 @@ describe('stdio integration', () => {
       writeHook(storage, 'other-real-session', 'post', 'toolu_x');
       await waitFor(drained(storage, 'other-real-session'));
       mkdirSync(resolve(storage, 'counted'), { recursive: true });
-      writeFileSync(
-        resolve(storage, 'counted', 'other-real-session.1.json'),
-        JSON.stringify(['toolu_x']),
-      );
+      writeFileSync(resolve(storage, 'counted', 'other-real-session.1.json'), '["toolu_x"]');
       await adoptAndStop(storage, client, 'own-real-session');
 
       expect(savedCalls(storage, 'other-real-session')).toBe(1);
@@ -1501,6 +1491,30 @@ describe('stdio integration', () => {
       await adoptAndStop(storage, client, 'own-real-session');
 
       expect(savedCalls(storage, 'own-real-session')).toBe(1);
+    }, 30000);
+
+    it("keeps adding to a session's file across its later checkpoints", async () => {
+      const storage = makeStorage();
+      await saveCalls(storage, 'other-real-session', 3);
+      const client = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
+      await drainCalls(storage, 'other-real-session', 1);
+      await waitFor(() => savedCalls(storage, 'other-real-session') === 4);
+      await drainCalls(storage, 'other-real-session', 1);
+      await waitFor(() => savedCalls(storage, 'other-real-session') === 5);
+      await adoptAndStop(storage, client, 'own-real-session');
+    }, 30000);
+
+    it('adds to the file after a checkpoint that failed to write it', async () => {
+      if (process.getuid?.() === 0) return; // root ignores the mode
+      const storage = makeStorage();
+      await saveCalls(storage, 'other-real-session', 3);
+      const client = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
+      chmodSync(resolve(storage, 'sessions'), 0o500);
+      await drainCalls(storage, 'other-real-session', 1);
+      await new Promise((r) => setTimeout(r, 500));
+      chmodSync(resolve(storage, 'sessions'), 0o700);
+      await waitFor(() => savedCalls(storage, 'other-real-session') === 4);
+      await adoptAndStop(storage, client, 'own-real-session');
     }, 30000);
 
     it('writes no file for a cwd guess it adopts until the guess is confirmed', async () => {
@@ -1533,13 +1547,10 @@ describe('stdio integration', () => {
 
     it("seeds the corrected session from its file before this engine's first save", async () => {
       const storage = makeStorage();
-      const owner = await startOwner(storage, 'real-session');
-      await drainCalls(storage, 'real-session', 1);
-      await stopOwner(storage, owner, 'real-session');
-      expect(savedCalls(storage, 'real-session')).toBe(1);
+      await saveCalls(storage, 'real-session', 1);
 
       const cwd = makeCwd();
-      const client = await startEngine(storage, cwd, { NR_AI_SESSION_PERSIST_INTERVAL_MS: '200' });
+      const client = await startEngine(storage, cwd, CHECKPOINT_OFTEN);
       await drainCalls(storage, 'real-session', 2);
       await waitFor(() => savedCalls(storage, 'real-session') === 3);
       guessFromCwd(storage, cwd);
