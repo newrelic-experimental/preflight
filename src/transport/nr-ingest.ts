@@ -119,7 +119,6 @@ export interface NrIngestOptions {
   feedbackCollector?: FeedbackCollector;
   /** API failure tracker for emitting ai.api.* metrics. */
   apiFailureTracker?: ApiFailureTracker;
-  /** Retry detector for emitting ai.retry.* thrashing metrics. */
   retryDetector?: RetryDetector;
   /** Git efficiency tracker for emitting ai.git.* metrics. */
   gitEfficiencyTracker?: GitEfficiencyTracker;
