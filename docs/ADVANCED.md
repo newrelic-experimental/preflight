@@ -307,7 +307,7 @@ Omit `tiers` entirely and nothing changes: the flat `licenseKey`/`accountId` bec
 
 The following throw at config load with a specific message, following the same fail-fast convention as the `licenseKey`/`accountId`/`homelabServerUrl` checks: an empty `tiers` array, a duplicate tier name, a blank name, an unknown `destination.type`, an `nr` destination missing both `licenseKey` and `licenseKeyCommand` or with a malformed `accountId`, a `local` destination missing `path`, an empty or unknown-valued `eventTypes`, and an array with no `nr`-type tier.
 
-A tier that names the retired `SecurityAlert` event type keeps working and logs a warning, and its alerts then need `AiAuditEvent` routed to it explicitly.
+A tier that lists the retired `SecurityAlert` event type alongside other event types loads, logs a warning, and drops the name, so its alerts then need `AiAuditEvent` routed to it explicitly. A tier that lists only `SecurityAlert` fails at startup with an error that names the tier, because a silent gap in security alerts is worse than a failed start. Edit it to list `AiAuditEvent`, which is `personal-only`.
 
 ### Not covered
 

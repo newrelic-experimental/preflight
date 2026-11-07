@@ -198,10 +198,20 @@ describe('validateTiers()', () => {
     ).toThrow(/lists unknown event type "SecurityAlrt"/);
   });
 
-  it('throws the empty-eventTypes error when only retired names were listed', () => {
-    expect(() => validateTiers([makeNrTier({ eventTypes: ['SecurityAlert'] })])).toThrow(
-      /requires a non-empty eventTypes array/,
-    );
+  it('names the tier and the retired event when SecurityAlert is the only entry', () => {
+    let message = '';
+    try {
+      validateTiers([makeNrTier({ name: 'team', eventTypes: ['SecurityAlert'] })]);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain('Tier "team"');
+    expect(message).toContain('SecurityAlert');
+    expect(message).toContain('no longer exists');
+    expect(message).toContain('AiAuditEvent');
+    expect(message).toContain('personal-only');
+    expect(message).not.toContain('non-empty eventTypes');
+    expect(message).not.toContain('["*"]');
   });
 
   it('throws on an empty eventTypes array', () => {
