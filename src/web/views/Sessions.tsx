@@ -27,7 +27,7 @@ import {
 import { ContextBar } from '../components/ContextBar';
 import type { ContextResponse } from '../api/client';
 import type { AgentRow } from '../components/AgentTable';
-import { Card, Eyebrow, LiveBadge, Pill, Tabs } from '../components/ui';
+import { Card, EstimateMarker, Eyebrow, LiveBadge, Pill, Tabs } from '../components/ui';
 import type { PillTone } from '../components/ui';
 import {
   fmtDateTime,
@@ -512,6 +512,7 @@ export function Sessions(): JSX.Element {
           <div className="px-3">
             <Kpi
               label="Workflow spend"
+              marker={kpis.totalSpend !== null ? <EstimateMarker /> : undefined}
               value={formatUsdOrDash(kpis.totalSpend) + (kpis.spendIsPartial ? '*' : '')}
               tone={kpis.totalSpend !== null ? 'warn' : 'neutral'}
               sub={
@@ -845,7 +846,10 @@ function SessionListRow({
                   ? fmtDateTime(lastActiveMs(row))
                   : fmtDateTime(row.startTime)}
             </span>
-            <span>{formatUsdOrDash(row.estimatedCostUsd)}</span>
+            <span>
+              {formatUsdOrDash(row.estimatedCostUsd)}
+              {row.estimatedCostUsd != null && <EstimateMarker />}
+            </span>
           </div>
         </button>
       </div>

@@ -37,6 +37,8 @@ export interface KpiProps {
    * ignored — the formatter owns the whole string.
    */
   readonly format?: (n: number) => string;
+  /** Rendered right after the value, e.g. the estimate marker on a cost figure. */
+  readonly marker?: ReactNode;
 }
 
 export function Kpi({
@@ -51,6 +53,7 @@ export function Kpi({
   suffix = '',
   decimals = 0,
   format,
+  marker,
 }: KpiProps): JSX.Element {
   // `null` means "genuinely unknown", same as `undefined` — neither should
   // coalesce to a rendered `0`. Only a real number reaches the animate branch.
@@ -72,7 +75,10 @@ export function Kpi({
   return (
     <div className="px-1">
       <div className="text-[10px] text-ink-muted uppercase tracking-wider font-medium">{label}</div>
-      <div className={valueClass}>{display}</div>
+      <div className={valueClass}>
+        {display}
+        {marker}
+      </div>
       {sub && <div className="text-[10px] text-ink-muted mt-0.5">{sub}</div>}
     </div>
   );
