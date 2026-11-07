@@ -56,6 +56,7 @@ export default [
     // go through appendToHookBuffer in src/storage/hook-buffer.ts.
     files: [
       'src/hooks/collector-script.ts',
+      'src/hooks/copilot-sdk-extension.ts',
       'src/hooks/copilot-app-usage-watcher.ts',
       'src/hooks/copilot-usage-watcher.ts',
       'src/hooks/parent-transcript-watcher.ts',
