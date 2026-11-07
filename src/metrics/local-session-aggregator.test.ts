@@ -105,6 +105,15 @@ describe('LocalSessionAggregator', () => {
     expect(kept.timeline).toBeUndefined();
   });
 
+  it('keeps a call with no tool use id when a counted id is empty', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1, success: true });
+
+    const kept = agg.withoutCallsOtherProcessesMayCount(summariesOf(agg)[0]!, new Set(['']));
+
+    expect(kept.toolCallCount).toBe(1);
+  });
+
   it('rolls tool calls up under the real session id', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({
