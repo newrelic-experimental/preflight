@@ -51,6 +51,8 @@
     "build:clean": "tsc --build --clean && rimraf dist/web",
     "build:plugin-hook": "esbuild src/hooks/collector-script.ts --bundle --platform=node --target=node22 --format=esm --outfile=plugin/.claude-plugin/scripts/collector-script.js",
     "verify:plugin-hook": "npm run build:plugin-hook && git diff --exit-code plugin/.claude-plugin/scripts/collector-script.js",
+    "build:copilot-extension": "esbuild src/hooks/copilot-sdk-extension.ts --bundle --platform=node --target=node22 --format=esm --external:@github/copilot-sdk/extension --outfile=copilot-sdk-extension/extension.mjs",
+    "verify:copilot-extension": "npm run build:copilot-extension && git diff --exit-code copilot-sdk-extension/extension.mjs",
     "dev:web": "vite",
     "test": "jest",
     "test:parallel": "jest --maxWorkers=100%",
