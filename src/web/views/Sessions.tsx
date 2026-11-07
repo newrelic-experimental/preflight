@@ -1426,14 +1426,7 @@ function SessionTraceSection({
     <div className="mb-4">
       <div className="mb-2 flex items-baseline justify-between gap-2">
         <Eyebrow>Session trace</Eyebrow>
-        {peakLabel !== null && (
-          <span
-            className="text-xs text-ink-muted"
-            title="Counts each subagent from its first to its last model turn, so this can read slightly low"
-          >
-            {peakLabel}
-          </span>
-        )}
+        {peakLabel !== null && <span className="text-xs text-ink-muted">{peakLabel}</span>}
       </div>
       <Card tone="static" padding="sm">
         {isLoading ? (
