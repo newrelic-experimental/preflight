@@ -12,6 +12,11 @@ import { DEFAULT_PERSONAL_THRESHOLDS } from './alerts/types.js';
 import { REDACTION_PATTERNS as DEFAULT_REDACTION_PATTERNS } from './redaction-patterns.js';
 import { resolveRecordContent } from './record-content-gate.js';
 import { projectIdFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
+import {
+  MAX_REPORTED_SPEND_USD,
+  isPeriodKind,
+  isValidReportedAmountUsd,
+} from './lib/reported-spend.js';
 import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
 import type { ResolvedTier } from './transport/tier-types.js';
 import {
@@ -340,6 +345,17 @@ export const ConfigFileSchema = z
     digestWebhookUrl: z.string().nullable().optional(),
     digestSchedule: z.string().optional(),
     retainSessionsDays: z.number().nullable().optional(),
+    reportedSpend: z
+      .array(
+        z.object({
+          periodKind: z.string().refine(isPeriodKind, "must be 'daily' or 'weekly'"),
+          amountUsd: z
+            .number()
+            .refine(isValidReportedAmountUsd, `must be from 0 to ${MAX_REPORTED_SPEND_USD}`),
+          asOf: z.string().refine((v) => !Number.isNaN(Date.parse(v)), 'must be a timestamp'),
+        }),
+      )
+      .optional(),
     // Legacy flat OTLP fields — deprecated in favor of the nested `otlp`
     // object below, but still accepted for backward compatibility (using
     // one logs a deprecation warning; see pickOtlpValue() in loadMcpConfig).

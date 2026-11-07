@@ -3,6 +3,8 @@ import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
 import {
   MAX_REPORTED_SPEND_USD,
+  isPeriodKind,
+  isValidReportedAmountUsd,
   parseStoredReportedSpend,
   type ReportedSpend,
 } from '../../lib/reported-spend.js';
@@ -3273,15 +3275,9 @@ export function createApiHandler(
         errors.push('reportedSpend must be an object');
       } else if (unknownKeys.length > 0) {
         errors.push(`reportedSpend.${unknownKeys[0]} is set by the server and cannot be sent`);
-      } else if (rs.periodKind !== 'daily' && rs.periodKind !== 'weekly') {
+      } else if (!isPeriodKind(rs.periodKind)) {
         errors.push("reportedSpend.periodKind must be 'daily' or 'weekly'");
-      } else if (
-        rs.amountUsd !== null &&
-        (typeof rs.amountUsd !== 'number' ||
-          !Number.isFinite(rs.amountUsd) ||
-          rs.amountUsd < 0 ||
-          rs.amountUsd > MAX_REPORTED_SPEND_USD)
-      ) {
+      } else if (rs.amountUsd !== null && !isValidReportedAmountUsd(rs.amountUsd)) {
         errors.push(
           `reportedSpend.amountUsd must be a number from 0 to ${MAX_REPORTED_SPEND_USD}, or null to clear`,
         );

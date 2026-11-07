@@ -10,8 +10,12 @@ export interface ReportedSpend {
 
 export const MAX_REPORTED_SPEND_USD = 1_000_000_000;
 
-function isPeriodKind(v: unknown): v is ReportedSpendPeriod {
+export function isPeriodKind(v: unknown): v is ReportedSpendPeriod {
   return v === 'daily' || v === 'weekly';
+}
+
+export function isValidReportedAmountUsd(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= MAX_REPORTED_SPEND_USD;
 }
 
 /** Keeps the well-formed entries of a hand-edited or older config file. */
@@ -23,10 +27,7 @@ export function parseStoredReportedSpend(raw: unknown): ReportedSpend[] {
     const { periodKind, amountUsd, asOf } = item as Record<string, unknown>;
     if (
       !isPeriodKind(periodKind) ||
-      typeof amountUsd !== 'number' ||
-      !Number.isFinite(amountUsd) ||
-      amountUsd < 0 ||
-      amountUsd > MAX_REPORTED_SPEND_USD ||
+      !isValidReportedAmountUsd(amountUsd) ||
       typeof asOf !== 'string' ||
       Number.isNaN(Date.parse(asOf))
     ) {
