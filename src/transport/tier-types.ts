@@ -37,6 +37,13 @@ export const KNOWN_EVENT_TYPES = [
   'AiAuditEvent',
 ] as const;
 
+/**
+ * Event types Preflight used to send. A tier that still lists one keeps
+ * loading: `validateTiers()` drops the name and warns, so a config written for
+ * an earlier release does not fail at startup.
+ */
+const RETIRED_EVENT_TYPES: ReadonlySet<string> = new Set(['SecurityAlert']);
+
 export type KnownEventType = (typeof KNOWN_EVENT_TYPES)[number];
 
 /**
@@ -205,6 +212,14 @@ function validateEventTypes(
     if (typeof entry !== 'string' || entry.trim() === '') {
       throw new Error(`Tier "${tierName}" eventTypes entries must be non-empty strings.`);
     }
+    if (RETIRED_EVENT_TYPES.has(entry)) {
+      logger.warn(
+        'Tier lists an event type that no longer exists and was ignored. Security alerts are ' +
+          'sent as AiAuditEvent, which is personal-only. Add AiAuditEvent to this tier to receive them.',
+        { tier: tierName, eventType: entry },
+      );
+      continue;
+    }
     if (entry !== WILDCARD_EVENT_TYPE && !known.has(entry)) {
       throw new Error(
         `Tier "${tierName}" lists unknown event type "${entry}". ` +
@@ -212,6 +227,11 @@ function validateEventTypes(
       );
     }
     if (!out.includes(entry)) out.push(entry);
+  }
+  if (out.length === 0) {
+    throw new Error(
+      `Tier "${tierName}" requires a non-empty eventTypes array (use ["*"] to route every event type).`,
+    );
   }
   return out;
 }
