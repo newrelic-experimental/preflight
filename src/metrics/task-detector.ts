@@ -114,12 +114,7 @@ export interface TaskDetectorOptions {
    */
   readonly costTracker?: CostTracker;
   readonly maxCompletedTasks?: number;
-  /**
-   * Called after the idle timer closes a task. The idle close happens with no
-   * incoming record, so the host uses this to drain
-   * `drainNewlyCompletedTasks()` instead of waiting for the next record.
-   */
-  readonly onIdleClose?: () => void;
+  readonly onClose?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +249,7 @@ export class TaskDetector implements Resettable {
   private readonly idleTimeoutMs: number;
   private readonly costTracker: CostTracker | null;
   private readonly maxCompletedTasks: number;
-  private readonly onIdleClose: (() => void) | null;
+  private readonly onClose: (() => void) | null;
 
   private activeTask: ActiveTask | null = null;
   private completedTasks: AiCodingTask[] = [];
@@ -283,7 +278,7 @@ export class TaskDetector implements Resettable {
     this.idleTimeoutMs = options?.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.costTracker = options?.costTracker ?? null;
     this.maxCompletedTasks = options?.maxCompletedTasks ?? DEFAULT_MAX_COMPLETED_TASKS;
-    this.onIdleClose = options?.onIdleClose ?? null;
+    this.onClose = options?.onClose ?? null;
   }
 
   recordToolCall(record: ToolCallRecord): void {
@@ -354,7 +349,9 @@ export class TaskDetector implements Resettable {
    * toolCallCount === 0 branch in `closeCurrentTask()`.
    */
   markBoundary(timestamp: number): AiCodingTask | null {
-    return this.closeCurrentTask(timestamp);
+    const closed = this.closeCurrentTask(timestamp);
+    this.notifyClosed();
+    return closed;
   }
 
   /**
@@ -590,15 +587,19 @@ export class TaskDetector implements Resettable {
     };
   }
 
+  private notifyClosed(): void {
+    try {
+      this.onClose?.();
+    } catch (err) {
+      logger.warn('TaskDetector: onClose handler failed', { error: String(err) });
+    }
+  }
+
   private resetIdleTimer(): void {
     this.clearIdleTimer();
     this.idleTimer = setTimeout(() => {
       this.closeCurrentTask(Date.now());
-      try {
-        this.onIdleClose?.();
-      } catch (err) {
-        logger.warn('TaskDetector: onIdleClose handler failed', { error: String(err) });
-      }
+      this.notifyClosed();
     }, this.idleTimeoutMs);
     this.idleTimer.unref();
   }

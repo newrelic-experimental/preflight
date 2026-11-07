@@ -101,7 +101,12 @@ import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
-import { TaskDetector } from './metrics/task-detector.js';
+import { TaskDetector, type AiCodingTask } from './metrics/task-detector.js';
+import {
+  holdTaskSend,
+  heldTaskSendsOwnedBy,
+  type HeldTaskSend,
+} from './metrics/held-task-sends.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
@@ -1225,7 +1230,7 @@ async function main(): Promise<void> {
     const rateMultiplier =
       (config.costRateMultiplier ?? 1) * (config.dataResidencyPremium ? 1.1 : 1);
     const costTracker = new CostTracker(sessionTracker, { rateMultiplier });
-    taskDetector = new TaskDetector({ costTracker, onIdleClose: () => emitCompletedTasks?.() });
+    taskDetector = new TaskDetector({ costTracker, onClose: () => emitCompletedTasks?.() });
     const antiPatternDetector = new AntiPatternDetector();
     const efficiencyScorer = new EfficiencyScorer({ costTracker });
     const feedbackCollector = new FeedbackCollector();
@@ -2100,13 +2105,34 @@ async function main(): Promise<void> {
     const subagentAttribution = new SubagentAttributionIndex();
     const capturedTaskDetector = taskDetector;
     const capturedConfig = config;
+    let heldTaskSends: HeldTaskSend[] = [];
+    const antiPatternContext = (task: AiCodingTask) => {
+      const firstRecord = task.toolCalls[0];
+      // sessionTraceId is the resolved Claude Code session_id and is
+      // shared across the whole MCP, so we use it directly rather than
+      // peeking at the first record's sessionId (which may be null).
+      return {
+        sessionId: sessionTraceId,
+        platform: typeof firstRecord?.platform === 'string' ? firstRecord.platform : undefined,
+        taskId: task.taskId,
+      };
+    };
+    const sendHeldTasksOwnedBy = (sessionId: string, ingest: NrIngestManager): void => {
+      const owned = heldTaskSendsOwnedBy(heldTaskSends, sessionId);
+      if (owned.length < heldTaskSends.length) {
+        logger.debug('Dropped held tasks not wholly from the adopted session', {
+          dropped: heldTaskSends.length - owned.length,
+        });
+      }
+      heldTaskSends = [];
+      for (const { task, patterns } of owned) {
+        ingest.ingestCodingTask(task);
+        const context = antiPatternContext(task);
+        for (const pattern of patterns) ingest.ingestAntiPattern(pattern, context);
+      }
+    };
     emitCompletedTasks = () => {
-      // Runs from the record handler, the idle-close callback, and shutdown,
-      // so a task that closes with no following record still reaches ingest.
-      // In a cloud mode with ingest not yet wired (provisional --stdio window)
-      // the queue is left intact; adoptRealSessionId drains it once ingest
-      // exists, so no task is consumed without being sent.
-      if (!capturedNrIngest && capturedConfig.mode !== 'local') return;
+      const cloudIngestNotWiredYet = !capturedNrIngest && capturedConfig.mode !== 'local';
       for (const task of capturedTaskDetector.drainNewlyCompletedTasks()) {
         capturedNrIngest?.ingestCodingTask(task);
         taskCompletionTracker.recordTask(task);
@@ -2114,15 +2140,7 @@ async function main(): Promise<void> {
         if (capturedConfig.otlp.transport !== 'nr-events-api' && taskSpanTracker) {
           taskSpanTracker.closeTask(task.taskId, task.toolCallCount);
         }
-        const firstRecord = task.toolCalls[0];
-        // sessionTraceId is the resolved Claude Code session_id and is
-        // shared across the whole MCP, so we use it directly rather than
-        // peeking at the first record's sessionId (which may be null).
-        const context = {
-          sessionId: sessionTraceId,
-          platform: typeof firstRecord?.platform === 'string' ? firstRecord.platform : undefined,
-          taskId: task.taskId,
-        };
+        const context = antiPatternContext(task);
         const enrichedToolCalls = task.toolCalls.map((r) => subagentAttribution.backfill(r));
         const { patterns } = antiPatternDetector.analyze(enrichedToolCalls);
         efficiencyScorer.computeScore(task, patterns);
@@ -2149,6 +2167,7 @@ async function main(): Promise<void> {
             ts: Date.now(),
           });
         }
+        if (cloudIngestNotWiredYet) heldTaskSends = holdTaskSend(heldTaskSends, { task, patterns });
       }
     };
 
@@ -2648,7 +2667,6 @@ async function main(): Promise<void> {
       onStop: (frame) => {
         turnTracker.finalizeTurnAt(frame.timestamp);
         taskDetector!.markBoundary(frame.timestamp);
-        emitCompletedTasks?.();
       },
     });
 
@@ -3073,7 +3091,7 @@ async function main(): Promise<void> {
         });
         capturedNrIngest = nrIngest;
         nrIngest.start();
-        emitCompletedTasks?.();
+        sendHeldTasksOwnedBy(realId, nrIngest);
       }
 
       // Re-point the subagent/workflow watchers to the real session id. See
@@ -3103,7 +3121,6 @@ async function main(): Promise<void> {
       };
       registerTools(mcpServer!.server, {
         headlessInstaller: buildHeadlessInstaller(),
-        onTaskClosed: () => emitCompletedTasks?.(),
         sessionTracker: sessionTracker!,
         costTracker,
         budgetTracker,
@@ -3352,7 +3369,6 @@ async function main(): Promise<void> {
         };
         registerTools(mcpServer!.server, {
           headlessInstaller: buildHeadlessInstaller(),
-          onTaskClosed: () => emitCompletedTasks?.(),
           sessionTracker,
           costTracker,
           budgetTracker,

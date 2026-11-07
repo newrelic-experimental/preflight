@@ -868,18 +868,4 @@ describe('registerWorkflowTools — mark_task_boundary', () => {
     const { tools } = registerWorkflowTools({});
     expect(tools.some((t) => t.name === 'nr_observe_mark_task_boundary')).toBe(false);
   });
-
-  it('notifies onTaskClosed after the boundary closes a task', async () => {
-    const taskDetector = new TaskDetector();
-    taskDetector.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/a.ts' }));
-    const drainedAtNotify: number[] = [];
-    const { handlers } = registerWorkflowTools({
-      taskDetector,
-      onTaskClosed: () => drainedAtNotify.push(taskDetector.drainNewlyCompletedTasks().length),
-    });
-
-    await handlers.nr_observe_mark_task_boundary!(undefined);
-
-    expect(drainedAtNotify).toEqual([1]);
-  });
 });
