@@ -38,8 +38,6 @@ export async function joinSession() {
 }
 `;
 
-// Runs a full drain (rename into a claim, seal, read, unlink) the moment the buffer is opened for
-// writing, so the drain lands between the writer's open and its write.
 const DRAIN_ON_OPEN = `
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
