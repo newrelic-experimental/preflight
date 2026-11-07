@@ -174,29 +174,7 @@ Emitted for every tool call as a security audit record.
 
 Source: `src/security/audit-trail.ts` — `auditRecordToNrEvent()`
 
-#### `SecurityAlert`
-
-Emitted only when a security alert is triggered (subset of audit events).
-
-| Field           | Type   | Description                                                                                                            |
-| --------------- | ------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `eventType`     | string | Always `"SecurityAlert"`                                                                                               |
-| `event_version` | number | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                            |
-| `timestamp`     | number | Unix epoch seconds                                                                                                     |
-| `severity`      | string | `critical`, `high`, or `medium`                                                                                        |
-| `alert_type`    | string | `destructive_command`, `sensitive_file`, `external_network`, or `file_deletion`                                        |
-| `description`   | string | Human-readable alert description                                                                                       |
-| `tool`          | string | Tool that triggered the alert                                                                                          |
-| `developer`     | string | Developer identifier                                                                                                   |
-| `session_id`    | string | Session identifier (if available)                                                                                      |
-| `agent_id`      | string | Same as `AiAuditEvent.agent_id`.                                                                                       |
-| `agent_type`    | string | Same as `AiAuditEvent.agent_type`, so a populated value does not by itself mean a subagent raised the alert.           |
-| `team_id`       | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
-| `project_id`    | string | Project identifier (derived from git remote or configured)                                                             |
-| `repo_url`      | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
-| `org_id`        | string | Organization identifier (if configured)                                                                                |
-| `file_path`     | string | File path (if sensitive file alert)                                                                                    |
-| `command`       | string | Command (if destructive command alert)                                                                                 |
+An audit record that triggers a security alert carries `audit.security_alert = true`, `audit.severity`, and `audit.alert_type`. Query alerts with `FROM AiAuditEvent WHERE audit.security_alert = true`.
 
 Security alert triggers:
 
@@ -204,8 +182,6 @@ Security alert triggers:
 - **`sensitive_file`** (high): `.env`, `.pem`, `.key`, `credentials`, `secret`, `.ssh`, `.npmrc`, `.pypirc`, `password`, `token` (path-boundary anchored)
 - **`external_network`** (medium): `curl`, `wget`, `nc`, `ssh` commands. Detection is the OR of the bash classifier (`record.bashNetwork`) and the regex pattern list.
 - **`file_deletion`** (medium): `rm` or `unlink` in command position (start of line, after `;`, `&`, `|`, or `(`, optionally with `sudo`), OR-ed with the bash classifier's leading token (`record.bashLeading`), which also strips env-var prefixes. Anchoring keeps `git rm`, `npm rm`, `docker rm`, and quoted text like `echo "rm foo"` out of scope. Recursive forms match too but lose to `destructive_command` by severity.
-
-Source: `src/security/audit-trail.ts` — `securityAlertToNrEvent()`
 
 #### `AiCodingTask`
 

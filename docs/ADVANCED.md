@@ -276,7 +276,7 @@ There is no environment variable or CLI flag for `tiers` — config file only.
 | Category                                                                                                                   | Event types                                                                                                                                       |
 | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `safe-shared` — aggregated counts/durations/costs, no raw paths/commands/user text                                         | `AiProxyRequest`, `AiCodingTask`, `AiSubagentTurn`, `AiRetryAlert`, `AiTurnCost`, `AiContextSnapshot`, `AiBudgetWarning`, `AiObservabilityHealth` |
-| `personal-only` — raw or lightly-redacted per-call detail (bash commands, file paths, agent descriptions, audit specifics) | `AiToolCall`, `AiMcpToolCall`, `AiWorkflowRun`, `AiAntiPattern`, `AiAuditEvent`, `SecurityAlert`                                                  |
+| `personal-only` — raw or lightly-redacted per-call detail (bash commands, file paths, agent descriptions, audit specifics) | `AiToolCall`, `AiMcpToolCall`, `AiWorkflowRun`, `AiAntiPattern`, `AiAuditEvent`                                                                   |
 
 Routing a `personal-only` type to a tier other than `default` logs a warning on stderr and proceeds — it is a deliberate, informed operator choice, not an error. Routing is **event-type-level only**: there is no per-tier field redaction or projection, so a tier that receives `AiToolCall` receives the whole event.
 
@@ -306,6 +306,8 @@ Omit `tiers` entirely and nothing changes: the flat `licenseKey`/`accountId` bec
 ### Misconfiguration is fatal at startup
 
 The following throw at config load with a specific message, following the same fail-fast convention as the `licenseKey`/`accountId`/`homelabServerUrl` checks: an empty `tiers` array, a duplicate tier name, a blank name, an unknown `destination.type`, an `nr` destination missing both `licenseKey` and `licenseKeyCommand` or with a malformed `accountId`, a `local` destination missing `path`, an empty or unknown-valued `eventTypes`, and an array with no `nr`-type tier.
+
+A tier that names the retired `SecurityAlert` event type keeps working and logs a warning, and its alerts then need `AiAuditEvent` routed to it explicitly.
 
 ### Not covered
 

@@ -3,7 +3,6 @@ import {
   AuditTrailManager,
   attachAuditAttribution,
   auditRecordToNrEvent,
-  securityAlertToNrEvent,
   DEFAULT_SENSITIVE_FILE_PATTERNS,
 } from './audit-trail.js';
 import type { ToolCallRecord } from '../storage/types.js';
@@ -1063,22 +1062,6 @@ describe('AuditTrailManager subagent attribution', () => {
     expect(event.agent_id).toBe('a9f8');
     expect(event.agent_type).toBe('workflow');
   });
-
-  it('emits agent_id and agent_type on securityAlertToNrEvent when present', () => {
-    const mgr = makeManager();
-    const audit = mgr.recordToolCall(
-      makeRecord({
-        toolName: 'Bash',
-        command: 'rm -rf /tmp/x',
-        agentId: 'a9f8',
-        agentType: 'workflow',
-      }),
-    );
-    const event = securityAlertToNrEvent(audit);
-
-    expect(event.agent_id).toBe('a9f8');
-    expect(event.agent_type).toBe('workflow');
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1122,31 +1105,6 @@ describe('auditRecordToNrEvent', () => {
   });
 });
 
-describe('securityAlertToNrEvent', () => {
-  it('produces SecurityAlert event with severity', () => {
-    const mgr = makeManager();
-    const record = makeRecord({ toolName: 'Bash', command: 'rm -rf /' });
-    const audit = mgr.recordToolCall(record);
-    const event = securityAlertToNrEvent(audit);
-
-    expect(event.eventType).toBe('SecurityAlert');
-    expect(event.severity).toBe('critical');
-    expect(event.alert_type).toBe('destructive_command');
-    expect(event.tool).toBe('Bash');
-    expect(event.command).toBe('rm -rf /');
-    expect(event.developer).toBe('alice');
-  });
-
-  it('includes event_version: 1 on SecurityAlert', () => {
-    const mgr = makeManager();
-    const record = makeRecord({ toolName: 'Bash', command: 'rm -rf /' });
-    const audit = mgr.recordToolCall(record);
-    const event = securityAlertToNrEvent(audit);
-
-    expect(event.event_version).toBe(1);
-  });
-});
-
 // redaction in NR event file_path and command fields
 describe('NR event field redaction', () => {
   it('auditRecordToNrEvent redacts secrets in file_path', () => {
@@ -1173,7 +1131,7 @@ describe('NR event field redaction', () => {
     expect(event.command).toContain('[REDACTED]');
   });
 
-  it('securityAlertToNrEvent redacts secrets in file_path', () => {
+  it('auditRecordToNrEvent redacts secrets in file_path for an alert record', () => {
     const mgr = makeManager();
     const audit = mgr.recordToolCall(
       makeRecord({
@@ -1181,12 +1139,12 @@ describe('NR event field redaction', () => {
         filePath: '/secrets/.env.TOKEN=ghp_xyz987abc123def456ghi789jkl012',
       }),
     );
-    const event = securityAlertToNrEvent(audit);
+    const event = auditRecordToNrEvent(audit);
     expect(event.file_path).not.toContain('ghp_xyz987abc123def456ghi789jkl012');
     expect(event.file_path).toContain('[REDACTED]');
   });
 
-  it('securityAlertToNrEvent redacts secrets in command', () => {
+  it('auditRecordToNrEvent redacts secrets in command for an alert record', () => {
     const mgr = makeManager();
     const audit = mgr.recordToolCall(
       makeRecord({
@@ -1194,7 +1152,7 @@ describe('NR event field redaction', () => {
         command: 'rm -rf / && TOKEN=sk_live_abc123xyz123abc456def789abc1 deploy.sh',
       }),
     );
-    const event = securityAlertToNrEvent(audit);
+    const event = auditRecordToNrEvent(audit);
     expect(event.command).not.toContain('sk_live_abc123xyz123abc456def789abc1');
     expect(event.command).toContain('[REDACTED]');
   });

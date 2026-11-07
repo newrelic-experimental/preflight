@@ -99,7 +99,6 @@ describe.each(dashboards)('Dashboard: $file', ({ dashboard }) => {
       'AiCodingTask',
       'AiAntiPattern',
       'AiAuditEvent',
-      'SecurityAlert',
       'AiMcpToolCall',
       'AiTurnCost',
     ]);

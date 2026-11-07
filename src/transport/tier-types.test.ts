@@ -11,7 +11,7 @@ import {
 import { resolve } from 'node:path';
 
 describe('KNOWN_EVENT_TYPES', () => {
-  it('enumerates exactly the 14 event types NrIngestManager emits', () => {
+  it('enumerates exactly the 13 event types NrIngestManager emits', () => {
     expect([...KNOWN_EVENT_TYPES].sort()).toEqual(
       [
         'AiAntiPattern',
@@ -27,7 +27,6 @@ describe('KNOWN_EVENT_TYPES', () => {
         'AiToolCall',
         'AiTurnCost',
         'AiWorkflowRun',
-        'SecurityAlert',
       ].sort(),
     );
   });
@@ -62,14 +61,7 @@ describe('EVENT_TYPE_SENSITIVITY', () => {
 
   it('marks raw-detail-bearing event types personal-only (spec categorization table)', () => {
     expect([...PERSONAL_ONLY_EVENT_TYPES].sort()).toEqual(
-      [
-        'AiToolCall',
-        'AiMcpToolCall',
-        'AiWorkflowRun',
-        'AiAntiPattern',
-        'AiAuditEvent',
-        'SecurityAlert',
-      ].sort(),
+      ['AiToolCall', 'AiMcpToolCall', 'AiWorkflowRun', 'AiAntiPattern', 'AiAuditEvent'].sort(),
     );
   });
 
@@ -176,6 +168,39 @@ describe('validateTiers()', () => {
   it('throws on an unknown event type', () => {
     expect(() => validateTiers([makeNrTier({ eventTypes: ['AiNotARealEvent'] })])).toThrow(
       /lists unknown event type "AiNotARealEvent"/,
+    );
+  });
+
+  it('drops a retired SecurityAlert name with a warning instead of throwing', () => {
+    const resolved = validateTiers([
+      makeNrTier({ name: 'team', eventTypes: ['SecurityAlert', 'AiCodingTask'] }),
+    ]);
+
+    expect(resolved[0].eventTypes).toEqual(['AiCodingTask']);
+    const calls = stderrSpy.mock.calls.map((call: unknown[]) => JSON.stringify(call[0]));
+    const warning = calls.find((c: string) => c.includes('SecurityAlert'));
+    expect(warning).toBeDefined();
+    expect(warning).toContain('team');
+    expect(warning).toContain('AiAuditEvent');
+    expect(warning).toContain('personal-only');
+  });
+
+  it('does not add AiAuditEvent when it drops SecurityAlert', () => {
+    const resolved = validateTiers([
+      makeNrTier({ name: 'team', eventTypes: ['SecurityAlert', 'AiCodingTask'] }),
+    ]);
+    expect(resolved[0].eventTypes).not.toContain('AiAuditEvent');
+  });
+
+  it('still throws on a typo near a retired name', () => {
+    expect(() =>
+      validateTiers([makeNrTier({ eventTypes: ['SecurityAlrt', 'AiCodingTask'] })]),
+    ).toThrow(/lists unknown event type "SecurityAlrt"/);
+  });
+
+  it('throws the empty-eventTypes error when only retired names were listed', () => {
+    expect(() => validateTiers([makeNrTier({ eventTypes: ['SecurityAlert'] })])).toThrow(
+      /requires a non-empty eventTypes array/,
     );
   });
 

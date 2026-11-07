@@ -1,0 +1,5 @@
+---
+'@newrelic/preflight': minor
+---
+
+**Preflight no longer sends the `SecurityAlert` event. Each security alert is an `AiAuditEvent` only.** Every triggered alert was sent twice, as an `AiAuditEvent` and as a `SecurityAlert` event, and no shipped dashboard or alert read the second one. Preflight now sends the `AiAuditEvent` alone, with `audit.security_alert = true`, `audit.severity`, and `audit.alert_type` set on it. The `SecurityAlert` `description` field has no counterpart on `AiAuditEvent`. If you have a custom query or alert condition on `SecurityAlert`, move it to `FROM AiAuditEvent WHERE audit.security_alert = true`, and filter on `audit.severity` and `audit.alert_type` in place of `severity` and `alert_type`. The local audit trail and its alert classification are unchanged. A tier that names `SecurityAlert` in `eventTypes` keeps working and logs a warning, and its alerts then need `AiAuditEvent` routed to it explicitly.
