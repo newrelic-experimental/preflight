@@ -271,6 +271,62 @@ describe('SubagentTimelineStore', () => {
     expect(agent.turnCount).toBe(1);
   });
 
+  it('ignores lines with no timestamp or an unparseable one when bounding the span', () => {
+    writeFileSync(
+      join(subDir, `agent-${AGENT_A}.jsonl`),
+      [
+        JSON.stringify({ type: 'user', message: { role: 'user', content: 'no clock' } }),
+        JSON.stringify({ type: 'system', timestamp: 'not-a-date' }),
+        assistantLine({ timestamp: '2026-06-16T12:00:05.000Z', input: 1 }),
+        JSON.stringify({ type: 'user', timestamp: '2026-06-16T12:00:09.000Z' }),
+      ].join('\n') + '\n',
+    );
+
+    const agent = new SubagentTimelineStore({ projectsDir }).getSubagentsForSession(SESSION)
+      .agents[0]!;
+
+    expect(agent.startMs).toBe(Date.parse('2026-06-16T12:00:05.000Z'));
+    expect(agent.endMs).toBe(Date.parse('2026-06-16T12:00:09.000Z'));
+  });
+
+  it('does not bound the span by a half-written final line', () => {
+    writeFileSync(
+      join(subDir, `agent-${AGENT_A}.jsonl`),
+      [
+        assistantLine({ timestamp: '2026-06-16T12:00:05.000Z', input: 1 }),
+        JSON.stringify({ type: 'user', timestamp: '2026-06-16T12:00:09.000Z' }),
+        '{"type":"user","timestamp":"2026-06-16T13:00:00.000',
+      ].join('\n'),
+    );
+
+    const agent = new SubagentTimelineStore({ projectsDir }).getSubagentsForSession(SESSION)
+      .agents[0]!;
+
+    expect(agent.startMs).toBe(Date.parse('2026-06-16T12:00:05.000Z'));
+    expect(agent.endMs).toBe(Date.parse('2026-06-16T12:00:09.000Z'));
+  });
+
+  it('counts a single-turn agent as overlapping an agent that ran during its life', () => {
+    writeFileSync(
+      join(subDir, `agent-${AGENT_A}.jsonl`),
+      [
+        JSON.stringify({ type: 'user', timestamp: '2026-06-16T12:00:00.000Z' }),
+        assistantLine({ timestamp: '2026-06-16T12:01:00.000Z', input: 1 }),
+      ].join('\n') + '\n',
+    );
+    writeFileSync(
+      join(subDir, `agent-${AGENT_B}.jsonl`),
+      [
+        assistantLine({ timestamp: '2026-06-16T12:00:10.000Z', input: 1 }),
+        assistantLine({ timestamp: '2026-06-16T12:00:20.000Z', input: 1 }),
+      ].join('\n') + '\n',
+    );
+
+    const result = new SubagentTimelineStore({ projectsDir }).getSubagentsForSession(SESSION);
+
+    expect(result.peak).toEqual({ count: 2, atMs: Date.parse('2026-06-16T12:00:10.000Z') });
+  });
+
   it('skips assistant lines without a message.id (matches the CostTracker feed)', () => {
     const noId = JSON.stringify({
       type: 'assistant',
