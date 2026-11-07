@@ -3133,7 +3133,7 @@ describe('Today view — daily budget KPI', () => {
     expect(reported).not.toHaveClass('opacity-60');
     expect(screen.queryByText('stale')).toBeNull();
     expect(screen.getByText('of $10.00 · 40% used')).toBeInTheDocument();
-    expect(screen.getByText('$4.00')).toBeInTheDocument();
+    expect(within(await budgetTile()).getByText('$4.00')).toBeInTheDocument();
     expect(within(screen.getByText('daily budget').parentElement!).getByText('est.')).toBeTruthy();
   });
 
@@ -3165,7 +3165,7 @@ describe('Today view — daily budget KPI', () => {
 
     expect(await screen.findByText('daily budget')).toBeInTheDocument();
     expect(screen.getByText(`reported $7.25 as of ${asOfTime(now)}`)).toBeInTheDocument();
-    expect(screen.getByText('$4.00')).toBeInTheDocument();
+    expect(within(await budgetTile()).getByText('$4.00')).toBeInTheDocument();
     expect(screen.queryByText(/% used/)).toBeNull();
     expect(screen.queryByText(/^of \$/)).toBeNull();
   });
