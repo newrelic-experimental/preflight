@@ -26,6 +26,7 @@ import type { ToolCallRecord, SubagentTokenEvent } from '../storage/types.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
+import { RetryDetector } from '../metrics/retry-detector.js';
 import type { ThrashingAlert } from '../metrics/retry-detector.js';
 import type { ClosedTurn, TurnCostAttribution } from '../metrics/turn-cost-attributor.js';
 import type { ContextTurnSnapshot, ToolContextContribution } from '../metrics/context-tracker.js';
@@ -1244,6 +1245,84 @@ describe('NrIngestManager', () => {
       >;
       const failureMetrics = sentMetrics.filter((m) => m.name === 'ai.api.failures_total');
       expect(failureMetrics).toHaveLength(1);
+    });
+
+    describe('ai.retry.* thrashing metrics', () => {
+      const thrash = (detector: RetryDetector, n: number): void => {
+        for (let i = 0; i < n; i++) {
+          detector.recordToolCall(
+            makeRecord({ id: `r${i}`, toolName: 'Bash', success: false, command: 'npm test' }),
+          );
+        }
+      };
+      const harvested = (callIndex: number, name: string): Array<Record<string, unknown>> => {
+        const sent = (mockSendMetrics.mock.calls[callIndex] as unknown[])[0] as Array<
+          Record<string, unknown>
+        >;
+        return sent.filter((m) => m.name === name);
+      };
+
+      it('sends both metrics after a thrashing alert, and the second harvest reports the same total instead of adding it again', async () => {
+        jest.useFakeTimers();
+        try {
+          const retryDetector = new RetryDetector();
+          thrash(retryDetector, 3);
+          const { totalAlertsEmitted, totalTokensWasted } = retryDetector.getMetrics();
+          expect(totalAlertsEmitted).toBe(1);
+
+          const manager = new NrIngestManager(
+            makeIngestOptions({ retryDetector, metricHarvestIntervalMs: 1_000 }),
+          );
+          manager.start();
+          await jest.advanceTimersByTimeAsync(1_000);
+          await jest.advanceTimersByTimeAsync(1_000);
+          await manager.stop();
+
+          const callsWithAlerts = mockSendMetrics.mock.calls.filter(
+            (_c, i) => harvested(i, 'ai.retry.alerts_total').length > 0,
+          );
+          expect(callsWithAlerts.length).toBeGreaterThanOrEqual(2);
+          for (let i = 0; i < mockSendMetrics.mock.calls.length; i++) {
+            const alerts = harvested(i, 'ai.retry.alerts_total');
+            const wasted = harvested(i, 'ai.retry.tokens_wasted');
+            if (alerts.length === 0) continue;
+            expect(alerts).toHaveLength(1);
+            expect(alerts[0].value).toMatchObject({
+              min: totalAlertsEmitted,
+              max: totalAlertsEmitted,
+            });
+            expect(wasted).toHaveLength(1);
+            expect(wasted[0].value).toMatchObject({
+              min: totalTokensWasted,
+              max: totalTokensWasted,
+            });
+          }
+        } finally {
+          jest.useRealTimers();
+        }
+      });
+
+      it('sends nothing before an alert has fired', async () => {
+        const manager = new NrIngestManager(
+          makeIngestOptions({ retryDetector: new RetryDetector() }),
+        );
+        manager.start();
+        await manager.stop();
+
+        expect(harvested(0, 'ai.retry.alerts_total')).toHaveLength(0);
+      });
+
+      it('still sends in companionMode, since tool-call thrashing is not a cost gauge', async () => {
+        const retryDetector = new RetryDetector();
+        thrash(retryDetector, 3);
+        const manager = new NrIngestManager(
+          makeIngestOptions({ retryDetector, companionMode: true }),
+        );
+        manager.start();
+        await manager.stop();
+
+        expect(harvested(0, 'ai.retry.alerts_total')).toHaveLength(1);
+      });
     });
 
     it('emits the five ai.git.* metrics on stop when a gitEfficiencyTracker is provided, tagged with developer/session attrs', async () => {
