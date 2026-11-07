@@ -776,6 +776,17 @@ describe('Sessions view — workflow consolidation', () => {
     expect(screen.queryByText(/partial/i)).not.toBeInTheDocument();
   });
 
+  it('shows the est. marker in a session row without nesting a button in the row button', async () => {
+    const { container } = renderSessionsFull(SESSIONS, RUNS);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    const rowButton = within(container)
+      .getByText(/sess-a/)
+      .closest('button');
+    expect(rowButton).not.toBeNull();
+    expect(rowButton).toHaveTextContent('est.');
+    expect(rowButton?.querySelector('button')).toBeNull();
+  });
+
   it('scopes the visible session list to the run-source filter', async () => {
     renderSessionsFull(SESSIONS, RUNS);
     await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());

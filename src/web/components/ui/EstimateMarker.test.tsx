@@ -13,12 +13,18 @@ describe('EstimateMarker', () => {
     fireEvent.mouseEnter(screen.getByRole('button', { name: 'What is this?' }));
 
     const tooltip = screen.getByRole('tooltip');
-    expect(tooltip).toHaveTextContent(
-      'list prices, not your negotiated rate or a flat subscription',
-    );
+    expect(tooltip).toHaveTextContent('unless a rate multiplier, data residency premium');
+    expect(tooltip).not.toHaveTextContent('not your negotiated rate');
     expect(tooltip).toHaveTextContent('this machine and the platforms Preflight hooks into');
     expect(tooltip).toHaveTextContent('Copilot in VS Code');
+    expect(tooltip).toHaveTextContent('estimated from text length');
     expect(tooltip).toHaveTextContent('Invoices can post later');
     expect(tooltip).toHaveTextContent('local time zone');
+  });
+
+  it('renders without an info button when plain', () => {
+    render(<EstimateMarker plain />);
+    expect(screen.getByText('est.')).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 });
