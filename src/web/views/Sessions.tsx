@@ -848,7 +848,7 @@ function SessionListRow({
             </span>
             <span>
               {formatUsdOrDash(row.estimatedCostUsd)}
-              {row.estimatedCostUsd != null && <EstimateMarker plain />}
+              {row.estimatedCostUsd != null && <EstimateMarker withoutInfoButton />}
             </span>
           </div>
         </button>
