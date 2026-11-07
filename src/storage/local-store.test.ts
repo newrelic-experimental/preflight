@@ -1551,6 +1551,8 @@ describe('LocalStore', () => {
       expect(store.hasCountedToolUseId('sess-1', 'toolu_mine')).toBe(true);
       expect(store.hasCountedToolUseId('sess-1', 'toolu_theirs')).toBe(true);
       expect(store.hasCountedToolUseId('sess-2', 'toolu_theirs')).toBe(false);
+      writeFileSync(resolve(tmpDir, 'counted', 'sess-12.999999.json'), '["toolu_longer_id"]');
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_longer_id')).toBe(false);
     });
 
     it('keeps an id saved again among the newest 256', () => {
