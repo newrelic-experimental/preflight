@@ -3051,3 +3051,91 @@ describe('Today view — loading states', () => {
     expect(screen.queryByText('Loading…', { selector: 'div' })).toBeNull();
   });
 });
+
+describe('Today view — daily budget KPI', () => {
+  function stubBudget(daily: {
+    budgetUsd: number | null;
+    spentUsd: number;
+    pctUsed: number | null;
+    exceeded: boolean;
+  }): void {
+    const period = { budgetUsd: null, spentUsd: 0, pctUsed: null, exceeded: false };
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      const body = url.startsWith('/api/budget')
+        ? { session: period, daily, weekly: period, alerts: [] }
+        : [];
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+  }
+
+  beforeEach(() => {
+    resetStore();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows spend against the daily cap and the percent used when a daily budget is set', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 4, pctUsed: 40, exceeded: false });
+    renderToday();
+
+    expect(await screen.findByText('daily budget')).toBeInTheDocument();
+    expect(screen.getByText('$4.00')).toBeInTheDocument();
+    expect(screen.getByText('of $10.00 · 40% used')).toBeInTheDocument();
+    expect(screen.getByText('$4.00')).not.toHaveClass('text-accent-amber');
+    expect(screen.getByText('$4.00')).not.toHaveClass('text-accent-red');
+  });
+
+  it('renders no budget KPI and no budget hint when no daily budget is set', async () => {
+    stubBudget({ budgetUsd: null, spentUsd: 1.5, pctUsed: null, exceeded: false });
+    renderToday();
+
+    expect(await screen.findByText('spend today')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(globalThis.fetch).toHaveBeenCalledWith('/api/budget', expect.anything()),
+    );
+    expect(screen.queryByText('daily budget')).toBeNull();
+    expect(screen.queryByText(/No daily budget set/)).toBeNull();
+    expect(screen.queryByText('$1.50')).toBeNull();
+  });
+
+  it('switches the budget value to the warning tone at 50 percent used', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 5, pctUsed: 50, exceeded: false });
+    renderToday();
+
+    const value = await screen.findByText('$5.00');
+    expect(value).toHaveClass('text-accent-amber');
+    expect(screen.getByText('of $10.00 · 50% used')).toBeInTheDocument();
+  });
+
+  it('keeps the budget value out of the warning tone below 50 percent used', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 4.9, pctUsed: 49, exceeded: false });
+    renderToday();
+
+    const value = await screen.findByText('$4.90');
+    expect(value).not.toHaveClass('text-accent-amber');
+    expect(value).not.toHaveClass('text-accent-red');
+  });
+
+  it('switches the budget value to the warning tone at 80 percent used', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 8, pctUsed: 80, exceeded: false });
+    renderToday();
+
+    const value = await screen.findByText('$8.00');
+    expect(value).toHaveClass('text-accent-amber');
+    expect(screen.getByText('of $10.00 · 80% used')).toBeInTheDocument();
+  });
+
+  it('switches the budget value to the danger tone and says over budget once the cap is passed', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 12.5, pctUsed: 125, exceeded: true });
+    renderToday();
+
+    const value = await screen.findByText('$12.50');
+    expect(value).toHaveClass('text-accent-red');
+    expect(screen.getByText('of $10.00 · 125% used · over budget')).toBeInTheDocument();
+  });
+});
