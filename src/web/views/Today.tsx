@@ -238,35 +238,25 @@ interface ToolSelectionMetrics {
 
 const QUALITY_REFETCH_MS = 10_000;
 
-// Thresholds match the ones BudgetTracker fires on. The label floors the
-// percent so it never reads past a threshold the tone has not crossed.
-function dailyBudgetKpi(
-  spentUsd: number,
-  capUsd: number | null,
-  apiExceeded: boolean,
-): { tone: KpiTone; pctLabel: number | null; overBudget: boolean } {
-  if (capUsd === null) return { tone: 'neutral', pctLabel: null, overBudget: false };
-  const pct = capUsd > 0 ? (spentUsd / capUsd) * 100 : null;
-  const overBudget = apiExceeded || spentUsd > capUsd;
-  const tone: KpiTone =
-    overBudget || (pct ?? 0) >= 100 ? 'bad' : (pct ?? 0) >= 50 ? 'warn' : 'neutral';
-  return { tone, pctLabel: pct === null ? null : Math.floor(pct), overBudget };
-}
+const BUDGET_WARN_PCT = 50;
+const BUDGET_DANGER_PCT = 100;
 
 function DailyBudgetKpi({
   spentUsd,
   capUsd,
   apiExceeded,
   reported,
-  reportedStale,
 }: {
   spentUsd: number;
   capUsd: number | null;
   apiExceeded: boolean;
   reported: ReportedSpend | null;
-  reportedStale: boolean;
 }): JSX.Element {
-  const { tone, pctLabel, overBudget } = dailyBudgetKpi(spentUsd, capUsd, apiExceeded);
+  const reportedStale = reported !== null && isReportedSpendStale(reported);
+  const pct = capUsd === null ? 0 : (spentUsd / capUsd) * 100;
+  const overBudget = capUsd !== null && (apiExceeded || spentUsd > capUsd);
+  const tone: KpiTone =
+    overBudget || pct >= BUDGET_DANGER_PCT ? 'bad' : pct >= BUDGET_WARN_PCT ? 'warn' : 'neutral';
   return (
     <Kpi
       label="daily budget"
@@ -276,7 +266,7 @@ function DailyBudgetKpi({
       sub={
         <>
           {capUsd !== null && (
-            <span className="block">{`of ${formatUsd(capUsd)}${pctLabel !== null ? ` · ${pctLabel}% used` : ''}${overBudget ? ' · over budget' : ''}`}</span>
+            <span className="block">{`of ${formatUsd(capUsd)} · ${Math.floor(pct)}% used${overBudget ? ' · over budget' : ''}`}</span>
           )}
           {reported && (
             <span className={`block ${reportedStale ? 'opacity-60' : ''}`}>
@@ -317,7 +307,6 @@ export function Today(): JSX.Element {
   const dailyBudget: BudgetPeriod | null = budget?.daily ?? null;
   const dailyBudgetCap = dailyBudget?.budgetUsd ?? null;
   const reportedDaily = findReportedSpend(settings?.reportedSpend, 'daily');
-  const reportedDailyStale = reportedDaily !== null && isReportedSpendStale(reportedDaily);
   const showBudgetKpi = dailyBudgetCap !== null || reportedDaily !== null;
   const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
@@ -593,7 +582,6 @@ export function Today(): JSX.Element {
                     capUsd={dailyBudgetCap}
                     apiExceeded={dailyBudget?.exceeded ?? false}
                     reported={reportedDaily}
-                    reportedStale={reportedDailyStale}
                   />
                 )}
               </div>
