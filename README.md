@@ -22,6 +22,8 @@ Your AI coding assistant makes hundreds of decisions every session — what to r
 
 **Local-first by design.** Preflight runs entirely on your machine and sends your data nowhere by default. A live dashboard at `localhost:7777` shows your sessions in real time, fully offline. Connect a New Relic account only when you want more — team rollups, alerting, and cross-session history. You choose: **local-only**, **New Relic**, or **both**.
 
+**Cost and efficiency, not productivity.** Preflight measures what AI coding costs and how efficiently the assistant works. It does not measure developer or team productivity, such as throughput, cycle time, or velocity. A session has no link to a ticket, and Preflight sees a PR only when the assistant runs the PR command or tool, so it misses a merge done on GitHub. The nearest answer is `nr_observe_get_cost_per_outcome`, which splits cost by inferred task type, such as bug fix or feature. Its ROI estimate comes from fixed hours-saved assumptions, not measured time. In New Relic mode, the Adoption & Cost dashboard also shows cost per PR created. The maintainers revisit this scope after the work-item linkage in [#40](https://github.com/newrelic-experimental/preflight/issues/40) exists.
+
 ---
 
 ## Demo
