@@ -2656,7 +2656,7 @@ async function main(): Promise<void> {
         repoResolver: repoNameResolver,
         ...(savesSession !== undefined && { savesSession }),
       });
-      const savedSessionIds: string[] = [];
+      let saved = 0;
       for (const rollup of rollups) {
         const sessionId = String(rollup.sessionId);
         try {
@@ -2666,31 +2666,22 @@ async function main(): Promise<void> {
             0;
           // A file with calls adds this rollup to them, since a max-merge would drop it. It leaves
           // out a call another process may count, and marks no ids, so that process still can.
-          const summary =
+          const kept =
             prior === 0
               ? rollup
-              : {
-                  ...rollup,
-                  toolCallCount:
-                    prior +
-                    Number(rollup.toolCallCount) -
-                    localSessionAggregator.callsOtherProcessesMayCount(
-                      sessionId,
-                      localStoreForShutdown?.countedToolUseIds(sessionId) ?? new Set<string>(),
-                    ),
-                };
-          if (
-            saveSessionRememberingBaseline(summary as unknown as FullSessionSummary) &&
-            prior === 0
-          ) {
-            savedSessionIds.push(sessionId);
-          }
+              : localSessionAggregator.withoutCallsOtherProcessesMayCount(
+                  rollup,
+                  localStoreForShutdown?.countedToolUseIds(sessionId) ?? new Set<string>(),
+                );
+          const summary = { ...kept, toolCallCount: prior + Number(kept.toolCallCount) };
+          if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary)) continue;
+          saved += 1;
+          if (prior === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
         } catch (err) {
           logger.warn('Failed to save observed session', { sessionId, error: String(err) });
         }
       }
-      eventProcessor?.persistCountedIdsOfSavedSessions(savedSessionIds);
-      return savedSessionIds.length;
+      return saved;
     };
 
     persistSession = (opts?: { periodic?: boolean }) => {
@@ -3015,7 +3006,6 @@ async function main(): Promise<void> {
       opts?: { isCorrection?: boolean; viaCwdOnly?: boolean },
     ): Promise<void> => {
       const staleId = sessionTraceId;
-      const savesOtherSessions = opts?.isCorrection || isSyntheticSessionId(staleId);
       if (opts?.isCorrection) {
         // A real correction means the previously-adopted id was wrong, and
         // anything these four trackers accumulated since startWatchers()
@@ -3068,14 +3058,12 @@ async function main(): Promise<void> {
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
       if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
 
-      if (savesOtherSessions) {
-        try {
-          saveObservedSessions('in progress', (id) =>
-            opts?.isCorrection ? id === staleId : id !== realId,
-          );
-        } catch (err) {
-          logger.warn('Failed to save observed sessions on adoption', { error: String(err) });
-        }
+      try {
+        saveObservedSessions('in progress', (id) =>
+          opts?.isCorrection ? id === staleId : id !== realId,
+        );
+      } catch (err) {
+        logger.warn('Failed to save observed sessions on adoption', { error: String(err) });
       }
 
       // Replace the span with a real-ID span. End the previous one first
