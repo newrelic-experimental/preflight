@@ -38,6 +38,7 @@ beforeEach(() => {
   delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   delete process.env.NEW_RELIC_AI_MCP_PORT;
   delete process.env.NEW_RELIC_AI_MCP_LOG_LEVEL;
+  delete process.env.NEW_RELIC_AI_LOG_LEVEL;
   delete process.env.NEW_RELIC_AI_MCP_HARVEST_EVENTS_MS;
   delete process.env.NEW_RELIC_AI_MCP_HARVEST_METRICS_MS;
   delete process.env.NEW_RELIC_HOST;
@@ -216,6 +217,37 @@ describe('loadMcpConfig()', () => {
     });
     expect(config.port).toBe(7777);
     expect(config.logLevel).toBe('error');
+  });
+
+  it('uses NEW_RELIC_AI_LOG_LEVEL when no flag or NEW_RELIC_AI_MCP_LOG_LEVEL is set', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'error';
+    const configPath = writeConfigFile({ logLevel: 'warn' });
+
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.logLevel).toBe('error');
+  });
+
+  it('prefers NEW_RELIC_AI_MCP_LOG_LEVEL over NEW_RELIC_AI_LOG_LEVEL', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_MCP_LOG_LEVEL = 'debug';
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'error';
+    const configPath = writeConfigFile({});
+
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.logLevel).toBe('debug');
+  });
+
+  it('uses the config file logLevel only when no flag or environment variable sets it', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ logLevel: 'warn' });
+    expect(loadMcpConfig({ config: configPath }).logLevel).toBe('warn');
+
+    process.env.NEW_RELIC_AI_MCP_LOG_LEVEL = 'debug';
+    expect(loadMcpConfig({ config: configPath }).logLevel).toBe('debug');
   });
 
   it('uses correct default values', () => {

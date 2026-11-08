@@ -102,9 +102,9 @@ describe('parseArgs()', () => {
     expect(opts.config).toBe('/etc/nr.json');
   });
 
-  it('defaults log-level to info', () => {
+  it('leaves log-level unset when no flag is passed', () => {
     const opts = parseArgs([...base]);
-    expect(opts.logLevel).toBe('info');
+    expect(opts.logLevel).toBeUndefined();
   });
 
   it('parses --log-level flag', () => {
