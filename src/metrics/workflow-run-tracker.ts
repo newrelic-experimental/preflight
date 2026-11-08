@@ -10,13 +10,16 @@
  *      workflow_run_id = wf_<hex>-<hex>.
  *      Entry point: recordScriptRun(event).
  *
- * For agent_tool runs, non-Agent tool calls that fall within a run's
- * [started_at, started_at + duration_ms] window are attributed to it via
- * tool_call_count and child_agent_count heuristics (best-effort, because hook
- * payloads do not distinguish inner-subagent calls from parent calls).
+ * For agent_tool runs, tool_call_count and child_agent_count count the calls
+ * whose hook `agentId` is the subagent the Agent call spawned
+ * (`spawnedAgentId`). A foreground subagent's calls are recorded before its
+ * Agent call returns, so they are counted as they arrive and claimed when the
+ * Agent record closes the run. A background Agent call returns at launch, so
+ * its run counts only the calls that finished before that, usually none.
  */
 
 import { createLogger } from '../shared/index.js';
+import { BoundedMap } from '../lib/bounded-map.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { Resettable } from './tracker-contracts.js';
 
@@ -81,8 +84,8 @@ export interface WorkflowRunMetrics {
 export interface WorkflowRunTrackerOptions {
   /** Max characters of agent_description retained on the metrics row. */
   readonly descriptionMaxLength?: number;
-  /** Hard cap on simultaneously-tracked open runs to prevent unbounded growth. */
-  readonly maxOpenRuns?: number;
+  /** Hard cap on subagents whose calls are counted while their Agent call is open. */
+  readonly maxPendingSubagents?: number;
   /** Hard cap on drainable completed runs awaiting consumption. */
   readonly maxCompletedRuns?: number;
 }
@@ -92,7 +95,7 @@ export interface WorkflowRunTrackerOptions {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_DESCRIPTION_MAX_LENGTH = 256;
-const DEFAULT_MAX_OPEN_RUNS = 256;
+const DEFAULT_MAX_PENDING_SUBAGENTS = 256;
 const DEFAULT_MAX_COMPLETED_RUNS = 1024;
 
 /** Statuses from script runs that indicate the run did not finish cleanly. */
@@ -121,6 +124,11 @@ interface MutableRun {
   agent_description: string | null;
   run_in_background: boolean | null;
   exit_error: string | null;
+  tool_call_count: number;
+  child_agent_count: number;
+}
+
+interface ChildCounts {
   tool_call_count: number;
   child_agent_count: number;
 }
@@ -166,19 +174,20 @@ function readBoolean(record: ToolCallRecord, key: string): boolean {
 
 export class WorkflowRunTracker implements Resettable {
   private readonly descriptionMaxLength: number;
-  private readonly maxOpenRuns: number;
   private readonly maxCompletedRuns: number;
 
-  /** Open runs keyed by workflow_run_id. Insertion order = arrival order. */
-  private readonly openRuns = new Map<string, MutableRun>();
+  /** Calls made by each subagent whose spawning Agent call has not been recorded yet. */
+  private readonly pendingChildCounts: BoundedMap<string, ChildCounts>;
 
   /** Completed (drainable) runs in arrival order. */
   private readonly completed: MutableRun[] = [];
 
   constructor(options?: WorkflowRunTrackerOptions) {
     this.descriptionMaxLength = options?.descriptionMaxLength ?? DEFAULT_DESCRIPTION_MAX_LENGTH;
-    this.maxOpenRuns = options?.maxOpenRuns ?? DEFAULT_MAX_OPEN_RUNS;
     this.maxCompletedRuns = options?.maxCompletedRuns ?? DEFAULT_MAX_COMPLETED_RUNS;
+    this.pendingChildCounts = new BoundedMap({
+      maxEntries: options?.maxPendingSubagents ?? DEFAULT_MAX_PENDING_SUBAGENTS,
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -198,7 +207,7 @@ export class WorkflowRunTracker implements Resettable {
       this.recordAgentToolCall(record);
       return;
     }
-    this.attributeChildToolCall(record);
+    this.countChildCall(record, 'tool_call_count');
   }
 
   /**
@@ -217,12 +226,11 @@ export class WorkflowRunTracker implements Resettable {
     const description = readString(record, 'agentDescription').slice(0, this.descriptionMaxLength);
     const sessionId = record.sessionId ?? '';
     const durationMs = record.durationMs ?? 0;
-    const startedAt = record.timestamp - durationMs;
 
-    // Attribute this Agent call as a child of an enclosing parent run, if any.
-    // Done before opening the new run so we don't accidentally count a run as
-    // its own child when started_at == enclosing.started_at.
-    this.incrementParentChildAgentCount(sessionId, startedAt);
+    this.countChildCall(record, 'child_agent_count');
+    const spawnedAgentId = readString(record, 'spawnedAgentId');
+    const children = this.pendingChildCounts.get(spawnedAgentId);
+    this.pendingChildCounts.delete(spawnedAgentId);
 
     const status = record.success ? 'completed' : 'errored';
     const exitError = !record.success && typeof record.error === 'string' ? record.error : null;
@@ -236,7 +244,7 @@ export class WorkflowRunTracker implements Resettable {
       session_id: sessionId,
       workflow_name: workflowName,
       status,
-      started_at: startedAt,
+      started_at: record.timestamp,
       duration_ms: durationMs,
       agent_count: 1,
       total_tokens: 0,
@@ -249,20 +257,11 @@ export class WorkflowRunTracker implements Resettable {
       agent_description: description || null,
       run_in_background: readBoolean(record, 'runInBackground'),
       exit_error: exitError,
-      tool_call_count: 0,
-      child_agent_count: 0,
+      tool_call_count: children?.tool_call_count ?? 0,
+      child_agent_count: children?.child_agent_count ?? 0,
     };
 
-    // ToolCallRecord is only emitted post-pair, so we move directly to
-    // completed for draining/NR emission. We ALSO keep the same run object in
-    // openRuns (rather than deleting it) so attributeChildToolCall() can still
-    // find it via findEnclosingRun() for child tool calls that arrive after
-    // this run is drained — e.g. a run_in_background agent whose own Agent
-    // call completes (and gets drained) before its background work finishes
-    // emitting further tool-call records. enforceOpenRunsCap() bounds growth.
     this.pushCompleted(run);
-    this.openRuns.set(workflowRunId, run);
-    this.enforceOpenRunsCap();
   }
 
   // ---------------------------------------------------------------------------
@@ -339,25 +338,11 @@ export class WorkflowRunTracker implements Resettable {
   }
 
   /**
-   * Snapshot of all currently-tracked runs (open + completed-but-not-drained),
-   * primarily for tests and MCP tool inspection. Does not clear the buffer.
-   *
-   * A completed agent_tool run is kept in BOTH `openRuns` (for attribution
-   * lookups by late-arriving child tool calls) and `completed` (until
-   * drained) — dedupe by workflow_run_id so it isn't double-counted here.
+   * Snapshot of the completed-but-not-drained runs, primarily for tests and
+   * MCP tool inspection. Does not clear the buffer.
    */
   getMetrics(): readonly WorkflowRunMetrics[] {
-    const seen = new Set<string>();
-    const snapshot: WorkflowRunMetrics[] = [];
-    for (const run of this.openRuns.values()) {
-      seen.add(run.workflow_run_id);
-      snapshot.push(freezeRun(run));
-    }
-    for (const run of this.completed) {
-      if (seen.has(run.workflow_run_id)) continue;
-      snapshot.push(freezeRun(run));
-    }
-    return snapshot;
+    return this.completed.map(freezeRun);
   }
 
   /**
@@ -365,49 +350,23 @@ export class WorkflowRunTracker implements Resettable {
    * for interface consistency with other trackers.
    */
   reset(_sessionId: string): void {
-    this.openRuns.clear();
+    this.pendingChildCounts.clear();
     this.completed.length = 0;
   }
 
   // ---------------------------------------------------------------------------
-  // Private — attribution heuristics (agent_tool source only)
+  // Private — child attribution (agent_tool source only)
   // ---------------------------------------------------------------------------
 
-  private attributeChildToolCall(record: ToolCallRecord): void {
-    const sessionId = record.sessionId ?? '';
-    const target = this.findEnclosingRun(sessionId, record.timestamp);
-    if (target) target.tool_call_count += 1;
-  }
-
-  private incrementParentChildAgentCount(sessionId: string, timestamp: number): void {
-    const target = this.findEnclosingRun(sessionId, timestamp);
-    if (target) target.child_agent_count += 1;
-  }
-
-  /**
-   * Find the most-recently-started run in the same session whose
-   * [started_at, started_at + duration_ms] window encloses `timestamp`.
-   * Returns null (no attribution) when no run's window encloses it — this is
-   * a strict window check, not a nearest-run fallback.
-   */
-  private findEnclosingRun(sessionId: string, timestamp: number): MutableRun | null {
-    let best: MutableRun | null = null;
-    let bestStart = -Infinity;
-
-    const consider = (run: MutableRun): void => {
-      if (run.session_id !== sessionId) return;
-      const end = run.started_at + run.duration_ms;
-      if (timestamp < run.started_at) return;
-      if (timestamp > end) return;
-      if (run.started_at > bestStart) {
-        best = run;
-        bestStart = run.started_at;
-      }
+  private countChildCall(record: ToolCallRecord, field: keyof ChildCounts): void {
+    const agentId = readString(record, 'agentId');
+    if (agentId.length === 0) return;
+    const counts = this.pendingChildCounts.get(agentId) ?? {
+      tool_call_count: 0,
+      child_agent_count: 0,
     };
-
-    for (const run of this.openRuns.values()) consider(run);
-    for (const run of this.completed) consider(run);
-    return best;
+    counts[field] += 1;
+    this.pendingChildCounts.set(agentId, counts);
   }
 
   private pushCompleted(run: MutableRun): void {
@@ -415,17 +374,6 @@ export class WorkflowRunTracker implements Resettable {
     if (this.completed.length > this.maxCompletedRuns) {
       // Drop the oldest to keep memory bounded; consumers drain in arrival order.
       this.completed.shift();
-    }
-  }
-
-  private enforceOpenRunsCap(): void {
-    if (this.openRuns.size <= this.maxOpenRuns) return;
-    const overflow = this.openRuns.size - this.maxOpenRuns;
-    const it = this.openRuns.keys();
-    for (let i = 0; i < overflow; i++) {
-      const next = it.next();
-      if (next.done === true) break;
-      this.openRuns.delete(next.value);
     }
   }
 }

@@ -2142,6 +2142,9 @@ async function main(): Promise<void> {
         // transcript has no meta sidecar (see onSubagentTurn). Its PostToolUse
         // normally fires only after a foreground subagent returns.
         subagentAttribution.recordAgentToolCall(rawRecord);
+        // Agent records reach the tracker through onWorkflowAgent, which also
+        // covers the late-post amend path that skips onRecord.
+        if (rawRecord.toolName !== 'Agent') workflowRunTracker.recordToolCall(rawRecord);
 
         if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
           // Emit tool call span — parent is the active task span (or session span if no task)
