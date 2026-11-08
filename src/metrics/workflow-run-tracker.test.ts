@@ -1,6 +1,7 @@
 import { describe, expect, it, afterEach, jest } from '@jest/globals';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { WorkflowRunEvent } from './workflow-run-tracker.js';
+import { SubagentAttributionIndex } from './subagent-attribution.js';
 import { WorkflowRunTracker } from './workflow-run-tracker.js';
 
 const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -194,6 +195,44 @@ describe('WorkflowRunTracker', () => {
     expect(byId.get('outer_call')?.tool_call_count).toBe(0);
     expect(byId.get('inner_1')?.tool_call_count).toBe(1);
     expect(byId.get('inner_1')?.child_agent_count).toBe(0);
+  });
+
+  it('counts a nested Agent call whose record lacked agent_id once it is backfilled from the transcript join', () => {
+    const attribution = new SubagentAttributionIndex();
+    attribution.recordSubagentToolUses('outer', ['inner_1']);
+    const tracker = new WorkflowRunTracker();
+    tracker.recordToolCall(
+      attribution.backfill(
+        makeAgentRecord({ toolUseId: 'inner_1', timestamp: 2_000, spawnedAgentId: 'in1' }),
+      ),
+    );
+    tracker.recordToolCall(
+      makeAgentRecord({ toolUseId: 'outer_call', timestamp: 0, spawnedAgentId: 'outer' }),
+    );
+
+    const byId = new Map(tracker.drainCompleted().map((r) => [r.workflow_run_id, r]));
+    expect(byId.get('outer_call')?.child_agent_count).toBe(1);
+  });
+
+  it('counts a nested Agent call once when it arrives as a timeout and again as the late result', () => {
+    const tracker = new WorkflowRunTracker();
+    const nested = { toolUseId: 'inner_1', agentId: 'outer' };
+    tracker.recordToolCall(makeAgentRecord({ ...nested, success: false, error: 'timeout' }));
+    tracker.recordToolCall(makeAgentRecord({ ...nested, spawnedAgentId: 'in1' }));
+    tracker.recordToolCall(makeAgentRecord({ toolUseId: 'outer_call', spawnedAgentId: 'outer' }));
+
+    const byId = tracker.drainCompleted().filter((r) => r.workflow_run_id === 'outer_call');
+    expect(byId[0]?.child_agent_count).toBe(1);
+  });
+
+  it('bounds the memory of counted Agent calls', () => {
+    const tracker = new WorkflowRunTracker();
+    for (let i = 0; i < 5_000; i++) {
+      tracker.recordToolCall(makeAgentRecord({ toolUseId: `t${i}`, agentId: 'outer' }));
+    }
+    tracker.recordToolCall(makeAgentRecord({ toolUseId: 'outer_call', spawnedAgentId: 'outer' }));
+    const last = tracker.drainCompleted().at(-1);
+    expect(last?.child_agent_count).toBe(5_000);
   });
 
   it('truncates agent_description to descriptionMaxLength', () => {

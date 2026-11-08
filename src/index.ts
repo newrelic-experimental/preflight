@@ -2480,8 +2480,10 @@ async function main(): Promise<void> {
       },
       // Feed each Agent-tool ToolCallRecord into the workflow tracker
       // so AiWorkflowRun events ship for `run_source='agent_tool'`.
-      onWorkflowAgent: (record) => {
-        workflowRunTracker.recordToolCall(record);
+      onWorkflowAgent: (incomingRecord) => {
+        // onRecord's intake read already populated the index for this record,
+        // so a plain backfill gives the tracker the same agentId.
+        workflowRunTracker.recordToolCall(subagentAttribution.backfill(incomingRecord));
         // Drain immediately — recordToolCall already pushes the completed run
         // into the drainable queue, so each Agent call yields exactly one
         // AiWorkflowRun event with no harvest-tick latency.

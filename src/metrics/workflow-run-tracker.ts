@@ -97,6 +97,7 @@ export interface WorkflowRunTrackerOptions {
 const DEFAULT_DESCRIPTION_MAX_LENGTH = 256;
 const DEFAULT_MAX_PENDING_SUBAGENTS = 256;
 const DEFAULT_MAX_COMPLETED_RUNS = 1024;
+const DEFAULT_MAX_COUNTED_AGENT_CALLS = 1024;
 
 /** Statuses from script runs that indicate the run did not finish cleanly. */
 const INCOMPLETE_STATUSES = new Set(['killed', 'progress']);
@@ -179,6 +180,15 @@ export class WorkflowRunTracker implements Resettable {
   /** Calls made by each subagent whose spawning Agent call has not been recorded yet. */
   private readonly pendingChildCounts: BoundedMap<string, ChildCounts>;
 
+  /**
+   * toolUseIds of Agent calls already counted toward their parent's
+   * child_agent_count. A call that outlives the processor's orphan TTL arrives
+   * twice (timeout record, then the late result), and counts once.
+   */
+  private readonly countedAgentCalls = new BoundedMap<string, true>({
+    maxEntries: DEFAULT_MAX_COUNTED_AGENT_CALLS,
+  });
+
   /** Completed (drainable) runs in arrival order. */
   private readonly completed: MutableRun[] = [];
 
@@ -227,7 +237,10 @@ export class WorkflowRunTracker implements Resettable {
     const sessionId = record.sessionId ?? '';
     const durationMs = record.durationMs ?? 0;
 
-    this.countChildCall(record, 'child_agent_count');
+    if (!this.countedAgentCalls.has(workflowRunId)) {
+      this.countedAgentCalls.set(workflowRunId, true);
+      this.countChildCall(record, 'child_agent_count');
+    }
     const spawnedAgentId = readString(record, 'spawnedAgentId');
     const children = this.pendingChildCounts.get(spawnedAgentId);
     this.pendingChildCounts.delete(spawnedAgentId);
@@ -351,6 +364,7 @@ export class WorkflowRunTracker implements Resettable {
    */
   reset(_sessionId: string): void {
     this.pendingChildCounts.clear();
+    this.countedAgentCalls.clear();
     this.completed.length = 0;
   }
 
