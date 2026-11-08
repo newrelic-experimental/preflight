@@ -20,6 +20,7 @@ PF=.claude/skills/verify-preflight/scripts/pf-verify   # run from the repo or wo
 - The helper overrides `HOME`. Without that, the transcript watchers read the real `~/.claude/projects` and import the developer's real sessions and cost into the run. The doctor checks this.
 - The helper drops every inherited `CLAUDE*` variable. Without that, a stdio server started from inside Claude Code binds to the calling agent's own session through `CLAUDE_JOB_DIR`.
 - It pins `NR_AI_MODE=local` and blanks the NR license key and account, so nothing reaches New Relic.
+- It drops any caller `NEW_RELIC_AI_LOG_LEVEL` or `NEW_RELIC_AI_MCP_LOG_LEVEL` and pins `NEW_RELIC_AI_LOG_LEVEL=info`, because `doctor` reads info-level log lines.
 
 ## Launch
 
