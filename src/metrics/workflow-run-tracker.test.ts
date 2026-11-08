@@ -82,7 +82,7 @@ describe('WorkflowRunTracker', () => {
     expect(run.agent_description).toBe('do the thing');
     expect(run.run_in_background).toBe(false);
     expect(run.duration_ms).toBe(1_000);
-    expect(run.started_at).toBe(1_700_000_001_000 - 1_000);
+    expect(run.started_at).toBe(1_700_000_001_000);
     expect(run.status).toBe('completed');
     expect(run.exit_error).toBeNull();
     expect(run.tool_call_count).toBe(0);
@@ -113,80 +113,87 @@ describe('WorkflowRunTracker', () => {
     expect(tracker.drainCompleted()).toEqual([]);
   });
 
-  it('attributes non-Agent tool calls to the enclosing run via recency window', () => {
+  it('counts the calls a foreground subagent made before its Agent call returned', () => {
     const tracker = new WorkflowRunTracker();
-    // Agent ran from 1000 .. 1500 (started_at=1000, duration_ms=500, timestamp=1500)
+    // Processor order: each record carries its call's start, and the
+    // subagent's calls finish, so are emitted, before the parent Agent call.
     tracker.recordToolCall(
-      makeAgentRecord({ toolUseId: 'parent', timestamp: 1_500, durationMs: 500 }),
+      makeRecord({ toolName: 'Read', timestamp: 1_200, toolUseId: 'child_read', agentId: 'a1' }),
     );
     tracker.recordToolCall(
-      makeRecord({ toolName: 'Read', timestamp: 1_200, toolUseId: 'child_read_1' }),
+      makeRecord({ toolName: 'Bash', timestamp: 1_400, toolUseId: 'child_bash', agentId: 'a1' }),
     );
     tracker.recordToolCall(
-      makeRecord({ toolName: 'Bash', timestamp: 1_400, toolUseId: 'child_bash_1' }),
+      makeAgentRecord({
+        toolUseId: 'parent',
+        timestamp: 1_000,
+        durationMs: 500,
+        spawnedAgentId: 'a1',
+      }),
     );
 
     const [run] = tracker.drainCompleted();
+    expect(run.started_at).toBe(1_000);
+    expect(run.duration_ms).toBe(500);
     expect(run.tool_call_count).toBe(2);
   });
 
-  it('does not attribute tool calls outside the enclosing window', () => {
+  it("does not count main-thread calls or another subagent's calls", () => {
     const tracker = new WorkflowRunTracker();
+    tracker.recordToolCall(makeRecord({ toolName: 'Read', timestamp: 1_100, toolUseId: 'main' }));
     tracker.recordToolCall(
-      makeAgentRecord({ toolUseId: 'parent', timestamp: 1_500, durationMs: 500 }),
+      makeRecord({ toolName: 'Read', timestamp: 1_200, toolUseId: 'sibling', agentId: 'a2' }),
     );
-    tracker.recordToolCall(
-      makeRecord({ toolName: 'Read', timestamp: 5_000, toolUseId: 'late_read' }),
-    );
-    tracker.recordToolCall(makeRecord({ toolName: 'Read', timestamp: 100, toolUseId: 'pre_read' }));
-
-    const [run] = tracker.drainCompleted();
-    expect(run.tool_call_count).toBe(0);
-  });
-
-  it('counts nested Agent calls as child_agent_count of their parent', () => {
-    const tracker = new WorkflowRunTracker();
-    // Outer agent: started_at=0 (timestamp=10000, durationMs=10000), window [0..10000]
-    tracker.recordToolCall(
-      makeAgentRecord({ toolUseId: 'outer', timestamp: 10_000, durationMs: 10_000 }),
-    );
-    // Inner agent #1: started_at=2000 (timestamp=3000, durationMs=1000)
-    tracker.recordToolCall(
-      makeAgentRecord({ toolUseId: 'inner_1', timestamp: 3_000, durationMs: 1_000 }),
-    );
-    // Inner agent #2: started_at=5000 (timestamp=6000, durationMs=1000)
-    tracker.recordToolCall(
-      makeAgentRecord({ toolUseId: 'inner_2', timestamp: 6_000, durationMs: 1_000 }),
-    );
-
-    const all = tracker.drainCompleted();
-    const byId = new Map(all.map((r) => [r.workflow_run_id, r]));
-    expect(byId.get('outer')?.child_agent_count).toBe(2);
-    expect(byId.get('inner_1')?.child_agent_count).toBe(0);
-    expect(byId.get('inner_2')?.child_agent_count).toBe(0);
-  });
-
-  it('does not attribute child tool calls across sessions', () => {
-    const tracker = new WorkflowRunTracker();
     tracker.recordToolCall(
       makeAgentRecord({
-        sessionId: 'sess-A',
-        toolUseId: 'parent_a',
-        timestamp: 1_500,
+        toolUseId: 'parent',
+        timestamp: 1_000,
         durationMs: 500,
-      }),
-    );
-    tracker.recordToolCall(
-      makeRecord({
-        sessionId: 'sess-B',
-        toolName: 'Read',
-        timestamp: 1_200,
-        toolUseId: 'child_other_session',
+        spawnedAgentId: 'a1',
       }),
     );
 
     const [run] = tracker.drainCompleted();
     expect(run.tool_call_count).toBe(0);
+  });
+
+  it('counts nested Agent calls as child_agent_count of the subagent that made them', () => {
+    const tracker = new WorkflowRunTracker();
+    tracker.recordToolCall(
+      makeRecord({ toolName: 'Read', timestamp: 2_500, toolUseId: 'grandchild', agentId: 'in1' }),
+    );
+    tracker.recordToolCall(
+      makeAgentRecord({
+        toolUseId: 'inner_1',
+        timestamp: 2_000,
+        durationMs: 1_000,
+        agentId: 'outer',
+        spawnedAgentId: 'in1',
+      }),
+    );
+    tracker.recordToolCall(
+      makeAgentRecord({
+        toolUseId: 'inner_2',
+        timestamp: 5_000,
+        durationMs: 1_000,
+        agentId: 'outer',
+        spawnedAgentId: 'in2',
+      }),
+    );
+    tracker.recordToolCall(
+      makeAgentRecord({
+        toolUseId: 'outer_call',
+        timestamp: 0,
+        durationMs: 10_000,
+        spawnedAgentId: 'outer',
+      }),
+    );
+
+    const byId = new Map(tracker.drainCompleted().map((r) => [r.workflow_run_id, r]));
+    expect(byId.get('outer_call')?.child_agent_count).toBe(2);
+    expect(byId.get('outer_call')?.tool_call_count).toBe(0);
+    expect(byId.get('inner_1')?.tool_call_count).toBe(1);
+    expect(byId.get('inner_1')?.child_agent_count).toBe(0);
   });
 
   it('truncates agent_description to descriptionMaxLength', () => {
@@ -227,34 +234,21 @@ describe('WorkflowRunTracker', () => {
     expect(drained.map((r) => r.workflow_run_id)).toEqual(['b', 'c']);
   });
 
-  it('enforceOpenRunsCap evicts the oldest open run once maxOpenRuns is exceeded', () => {
-    const tracker = new WorkflowRunTracker({ maxOpenRuns: 2 });
+  it("forgets the oldest subagent's calls once maxPendingSubagents is exceeded", () => {
+    const tracker = new WorkflowRunTracker({ maxPendingSubagents: 2 });
+    for (const agentId of ['a', 'b', 'c']) {
+      tracker.recordToolCall(makeRecord({ toolUseId: `child_${agentId}`, agentId }));
+    }
+    for (const agentId of ['a', 'b', 'c']) {
+      tracker.recordToolCall(
+        makeAgentRecord({ toolUseId: `run_${agentId}`, spawnedAgentId: agentId }),
+      );
+    }
 
-    // Three non-overlapping run windows: a=[1000,1100], b=[2000,2100], c=[3000,3100].
-    tracker.recordToolCall(makeAgentRecord({ toolUseId: 'a', timestamp: 1_100, durationMs: 100 }));
-    tracker.recordToolCall(makeAgentRecord({ toolUseId: 'b', timestamp: 2_100, durationMs: 100 }));
-    tracker.recordToolCall(makeAgentRecord({ toolUseId: 'c', timestamp: 3_100, durationMs: 100 }));
-
-    // Drain so `completed` no longer holds these runs -- only openRuns (now
-    // capped to the 2 most-recently-opened) can serve attribution below.
-    tracker.drainCompleted();
-
-    // A child call inside the evicted run 'a's window finds no enclosing run.
-    tracker.recordToolCall(
-      makeRecord({ toolName: 'Read', timestamp: 1_050, toolUseId: 'child_a' }),
-    );
-    // Child calls inside the two retained runs' windows still attribute correctly.
-    tracker.recordToolCall(
-      makeRecord({ toolName: 'Read', timestamp: 2_050, toolUseId: 'child_b' }),
-    );
-    tracker.recordToolCall(
-      makeRecord({ toolName: 'Bash', timestamp: 3_050, toolUseId: 'child_c' }),
-    );
-
-    const byId = new Map(tracker.getMetrics().map((r) => [r.workflow_run_id, r]));
-    expect(byId.has('a')).toBe(false);
-    expect(byId.get('b')?.tool_call_count).toBe(1);
-    expect(byId.get('c')?.tool_call_count).toBe(1);
+    const byId = new Map(tracker.drainCompleted().map((r) => [r.workflow_run_id, r]));
+    expect(byId.get('run_a')?.tool_call_count).toBe(0);
+    expect(byId.get('run_b')?.tool_call_count).toBe(1);
+    expect(byId.get('run_c')?.tool_call_count).toBe(1);
   });
 
   it('getMetrics returns a snapshot without clearing', () => {
@@ -267,26 +261,14 @@ describe('WorkflowRunTracker', () => {
     expect(tracker.drainCompleted()).toHaveLength(1);
   });
 
-  it('attributes a child tool call that arrives after the run is drained (e.g. a background agent)', () => {
+  it("reports a background run at launch, before its subagent's calls arrive", () => {
     const tracker = new WorkflowRunTracker();
-    tracker.recordToolCall(makeAgentRecord({ runInBackground: true }));
+    tracker.recordToolCall(makeAgentRecord({ runInBackground: true, spawnedAgentId: 'bg' }));
+    const [run] = tracker.drainCompleted();
+    expect(run?.tool_call_count).toBe(0);
 
-    // Simulate the immediate NR emission right after the Agent call's own
-    // record is processed — this used to permanently zero out attribution
-    // for anything arriving afterward (the run was deleted from openRuns).
-    const [drained] = tracker.drainCompleted();
-    expect(drained?.tool_call_count).toBe(0);
-
-    // A child tool call within the agent's window, arriving after drain.
-    tracker.recordToolCall(
-      makeRecord({ sessionId: 'sess-001', toolName: 'Read', timestamp: 1_700_000_000_500 }),
-    );
-
-    const [run] = tracker.getMetrics();
-    expect(run?.tool_call_count).toBe(1);
-    // The run is not double-counted despite living in both openRuns and
-    // completed until it's next drained.
-    expect(tracker.getMetrics()).toHaveLength(1);
+    tracker.recordToolCall(makeRecord({ toolName: 'Read', agentId: 'bg' }));
+    expect(tracker.drainCompleted()).toEqual([]);
   });
 
   // ---------------------------------------------------------------------------
