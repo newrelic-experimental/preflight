@@ -16,6 +16,7 @@ import {
   digestWebhookUrlOverride,
   loadMcpConfig,
   redactSensitive,
+  resolveStartupLogLevel,
 } from './config.js';
 import { checkBasicAuthToken } from './dashboard/basic-auth.js';
 import { DashboardServer } from './dashboard/dashboard-server.js';
@@ -116,6 +117,7 @@ import { AuditTrailManager } from './security/audit-trail.js';
 import { createServer } from './server.js';
 import type { CostBreakdown } from './shared/index.js';
 import { createLogger } from './shared/index.js';
+import { __resetLogLevelCache } from './shared/logger.js';
 import { LocalStore } from './storage/index.js';
 import { computeHistoricalCosts } from './storage/historical-costs.js';
 import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.js';
@@ -767,7 +769,7 @@ export function parseArgs(argv: string[]): CliOptions {
     .version(VERSION)
     .option('-p, --port <number>', 'HTTP port for proxy mode', '9847')
     .option('-c, --config <path>', 'path to config file')
-    .option('-l, --log-level <level>', 'log level (debug|info|warn|error)', 'info')
+    .option('-l, --log-level <level>', 'log level (debug|info|warn|error, default: info)')
     .option('--stdio', 'use stdio transport (for Claude Code MCP connection)')
     .option('--local', 'start dashboard and event processor without MCP stdio transport')
     .option(
@@ -825,15 +827,17 @@ async function main(): Promise<void> {
 
   const options = parseArgs(process.argv);
 
-  // Propagate --log-level into the env var that createLogger() reads.
-  // Must be set before any subsystem loggers are constructed.
-  process.env.NEW_RELIC_AI_LOG_LEVEL = options.logLevel;
+  // The shared logger reads NEW_RELIC_AI_LOG_LEVEL, so point it at the resolved level.
+  // Child processes inherit the variable, so they see the same level.
+  const logLevel = resolveStartupLogLevel(options.logLevel, options.config);
+  process.env.NEW_RELIC_AI_LOG_LEVEL = logLevel;
+  __resetLogLevelCache();
 
   logger.info('Starting preflight', {
     version: VERSION,
     stdio: options.stdio,
     port: options.port,
-    logLevel: options.logLevel,
+    logLevel,
   });
 
   if (options.validate) {
