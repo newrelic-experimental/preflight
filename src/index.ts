@@ -1423,6 +1423,8 @@ async function main(): Promise<void> {
     // below can call this again for a *different* id after a pending->real
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
+    // Assigned once the prior-cost cache exists; the first rehydrate runs before then.
+    let seedBudgetPeriods: () => void = () => {};
     const firstSaveBaselines = new FirstSaveBaselines();
     const saveSessionRememberingBaseline = (summary: FullSessionSummary): boolean => {
       const saved = sessionStore!.saveSession(summary);
@@ -1447,6 +1449,7 @@ async function main(): Promise<void> {
         if (cost) {
           costTracker.seedFromPersisted(cost.costTracker);
           budgetTracker.seedFiredThresholdsFromSessionTotal(cost.estimatedCostUsd ?? 0);
+          seedBudgetPeriods();
           modelUsageTracker.seedFromPersisted(cost.modelBreakdown);
         }
         if (toolCalls) {
@@ -1668,6 +1671,14 @@ async function main(): Promise<void> {
       if (dayChanged || expired) refreshPriorCostBaseline();
     };
     refreshPriorCostBaseline();
+    seedBudgetPeriods = (): void => {
+      refreshPriorCostBaselineIfStale();
+      budgetTracker.seedPeriodSpend(
+        priorCostCache.priorDailyCostUsd + costTracker.getCostForDay(localDateKey()),
+        priorCostCache.priorWeeklyCostUsd + (costTracker.getMetrics().sessionTotalCostUsd ?? 0),
+      );
+    };
+    seedBudgetPeriods();
     weeklySummaryGenerator = new WeeklySummaryGenerator({
       storagePath: config.storagePath,
       sessionStore,

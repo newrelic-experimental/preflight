@@ -166,10 +166,8 @@ export class BudgetTracker {
    * one already in `firedThresholds`, so calling it again is idempotent-safe
    * regardless of how the total has moved between calls.
    *
-   * Scoped to the `session` period only: `dailySpentUsd`/`weeklySpentUsd`
-   * are computed elsewhere from cross-session aggregation, not from a single
-   * restart-recoverable checkpoint, so there's no equivalent restored total
-   * to seed against yet for those two periods.
+   * Scoped to the `session` period only. The daily and weekly periods are
+   * seeded by `seedPeriodSpend` from the cross-session totals.
    *
    * Deliberately does not call `onThreshold` or push onto `alerts` — these
    * thresholds were already alerted on (or silently passed, on an older
@@ -178,12 +176,34 @@ export class BudgetTracker {
    * told about yet.
    */
   seedFiredThresholdsFromSessionTotal(sessionSpentUsd: number): void {
-    if (this.sessionBudgetUsd === null || this.sessionBudgetUsd <= 0) return;
-    const pctUsed = (sessionSpentUsd / this.sessionBudgetUsd) * 100;
-    const currentPeriod = this.currentPeriodId('session');
+    this.markCrossedThresholdsFired('session', sessionSpentUsd, this.sessionBudgetUsd);
+  }
+
+  /**
+   * Restores the daily and weekly spend recorded before this process started,
+   * so `getStatus()` reads it before the first cost event, and marks the
+   * thresholds that spend already crossed as fired without alerting on them.
+   * Takes the same totals `updateCost` is given. Like the session seed, it
+   * never un-marks a fired threshold and does not touch the session spend.
+   */
+  seedPeriodSpend(dailySpentUsd: number, weeklySpentUsd: number): void {
+    this.dailySpentUsd = dailySpentUsd;
+    this.weeklySpentUsd = weeklySpentUsd;
+    this.markCrossedThresholdsFired('daily', dailySpentUsd, this.dailyBudgetUsd);
+    this.markCrossedThresholdsFired('weekly', weeklySpentUsd, this.weeklyBudgetUsd);
+  }
+
+  private markCrossedThresholdsFired(
+    period: BudgetPeriod,
+    spentUsd: number,
+    budgetUsd: number | null,
+  ): void {
+    if (budgetUsd === null || budgetUsd <= 0) return;
+    const pctUsed = (spentUsd / budgetUsd) * 100;
+    const currentPeriod = this.currentPeriodId(period);
     for (const level of THRESHOLD_LEVELS) {
       if (pctUsed >= level) {
-        this.firedThresholds.set(`session_${level}`, currentPeriod);
+        this.firedThresholds.set(`${period}_${level}`, currentPeriod);
       }
     }
   }
