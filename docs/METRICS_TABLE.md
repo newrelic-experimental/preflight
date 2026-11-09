@@ -520,6 +520,29 @@ Rows come in two shapes. A tool row has `tool` and `tool_use_id` and measures th
 
 Source: `src/transport/nr-ingest.ts` — `turnCostToNrEvents()` and `ingestTurnCost()`
 
+#### `AiSkillRun`
+
+Emitted once, when a skill run opens, for every run. A run opens on a named `Skill` call or on a `/<skill>` prompt. A run whose replies made no tool calls has no `AiToolCall` or `AiTurnCost` rows, so this event is what counts it. Runs are counted across both event types with `FROM AiToolCall, AiSkillRun SELECT uniqueCount(skill_run_id)`. The event carries no tool, duration, or cost data. Those stay on `AiToolCall` and `AiTurnCost`, which carry the same `skill_run_id`.
+
+| Field                 | Type   | Description                                                                                                        |
+| --------------------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
+| `eventType`           | string | Always `"AiSkillRun"`                                                                                              |
+| `event_version`       | number | Always `1`                                                                                                         |
+| `timestamp`           | number | Unix epoch milliseconds when the run opened (the `Skill` call's record time, or the prompt's time for a slash run) |
+| `skill_name`          | string | Skill whose run this is (redacted, as on `AiToolCall`)                                                             |
+| `skill_source`        | string | `tool` or `slash`                                                                                                  |
+| `skill_run_id`        | string | One id per run; matches `skill_run_id` on the run's `AiToolCall` and `AiTurnCost` rows                             |
+| `skill_parent_run_id` | string | The run that was open when this one started; absent when none was                                                  |
+| `developer`           | string | Developer identifier                                                                                               |
+| `app_name`            | string | Application name                                                                                                   |
+| `platform`            | string | Originating platform (defaults to `"claude-code"`)                                                                 |
+| `session_id`          | string | Session the run belongs to; falls back to the engine's session when the run has none                               |
+| `team_id`             | string | User-defined team label (if configured)                                                                            |
+| `project_id`          | string | Project identifier (if configured)                                                                                 |
+| `org_id`              | string | Organization identifier (if configured)                                                                            |
+
+Source: `src/transport/nr-ingest.ts` — `skillRunToNrEvent()` and `ingestSkillRun()`
+
 ### Setup Validation
 
 #### `NrAiObserveSetupCheck`

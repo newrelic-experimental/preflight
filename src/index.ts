@@ -1337,7 +1337,25 @@ async function main(): Promise<void> {
     // window is named later via adoptRealSessionId once its real id resolves.
     if (options.stdio) applyAuthoritativeSessionName(sessionTraceId);
     const turnCostAttributor = new TurnCostAttributor({ rateMultiplier });
-    const skillActivationTracker = new SkillActivationTracker();
+    const skillActivationTracker = new SkillActivationTracker({
+      onRunOpened: (stamp, ctx) => {
+        // Same own-session rule as AiTurnCost: a --stdio engine drains other
+        // sessions' records while its own id is still provisional.
+        if (
+          !isTokenEventForThisProcess({
+            stdio: options.stdio === true,
+            eventSessionId: ctx.sessionId,
+            ownSessionId: sessionTraceId,
+          })
+        ) {
+          return;
+        }
+        capturedNrIngest?.ingestSkillRun(stamp, {
+          timestamp: ctx.timestamp ?? Date.now(),
+          sessionId: ctx.sessionId,
+        });
+      },
+    });
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
     const gitWorkspaceReporter = new GitWorkspaceReporter();
@@ -2628,6 +2646,7 @@ async function main(): Promise<void> {
         const slashRun = skillActivationTracker.recordPrompt(
           frame.sessionId,
           frame.slashCommand ?? null,
+          frame.timestamp,
         );
         if (slashRun) turnCostAttributor.recordSkillRun(frame.sessionId, slashRun);
         taskDetector!.startTaskIfNone(frame.timestamp);

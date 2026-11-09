@@ -13,6 +13,19 @@ export interface SkillActivationMetrics {
   readonly openRuns: readonly SkillStamp[];
 }
 
+export interface SkillRunOpenContext {
+  readonly sessionId: string | null;
+  readonly timestamp: number | undefined;
+}
+
+export interface SkillActivationTrackerOptions {
+  /**
+   * Called once for each newly created run. Not called when a same-skill
+   * slash run absorbs its Skill call, nor when a subagent pins an existing run.
+   */
+  readonly onRunOpened?: (stamp: SkillStamp, ctx: SkillRunOpenContext) => void;
+}
+
 /**
  * Tracks the open skill run per session and per agent, so every tool call can
  * be stamped with the skill whose work it is. A run opens on a successful,
@@ -26,6 +39,8 @@ export interface SkillActivationMetrics {
 export class SkillActivationTracker implements Resettable {
   /** Per session, per agent; `null` pins a subagent that appeared outside any run. */
   private readonly sessions = new Map<string, Map<string, SkillStamp | null>>();
+
+  constructor(private readonly options: SkillActivationTrackerOptions = {}) {}
 
   private runsFor(sessionId: string | null | undefined): Map<string, SkillStamp | null> {
     const key = sessionId ?? NULL_SESSION_KEY;
@@ -70,6 +85,10 @@ export class SkillActivationTracker implements Resettable {
         ...(open && { parentRunId: open.runId }),
       };
       runs.set(agentKey, stamp);
+      this.options.onRunOpened?.(stamp, {
+        sessionId: record.sessionId ?? null,
+        timestamp: record.timestamp,
+      });
       return stamp;
     }
     return open;
@@ -79,11 +98,13 @@ export class SkillActivationTracker implements Resettable {
   recordPrompt(
     sessionId: string | null | undefined,
     slashCommand: string | null,
+    timestamp?: number,
   ): SkillStamp | null {
     const stamp: SkillStamp | null = slashCommand
       ? { name: slashCommand, source: 'slash', runId: randomUUID() }
       : null;
     this.runsFor(sessionId).set(MAIN_AGENT_KEY, stamp);
+    if (stamp) this.options.onRunOpened?.(stamp, { sessionId: sessionId ?? null, timestamp });
     return stamp;
   }
 

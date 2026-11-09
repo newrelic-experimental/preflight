@@ -273,10 +273,10 @@ There is no environment variable or CLI flag for `tiers` — config file only.
 
 ### Event-type sensitivity
 
-| Category                                                                                                                   | Event types                                                                                                                                       |
-| -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `safe-shared` — aggregated counts/durations/costs, no raw paths/commands/user text                                         | `AiProxyRequest`, `AiCodingTask`, `AiSubagentTurn`, `AiRetryAlert`, `AiTurnCost`, `AiContextSnapshot`, `AiBudgetWarning`, `AiObservabilityHealth` |
-| `personal-only` — raw or lightly-redacted per-call detail (bash commands, file paths, agent descriptions, audit specifics) | `AiToolCall`, `AiMcpToolCall`, `AiWorkflowRun`, `AiAntiPattern`, `AiAuditEvent`, `SecurityAlert`                                                  |
+| Category                                                                                                                   | Event types                                                                                                                                                     |
+| -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `safe-shared` — aggregated counts/durations/costs, no raw paths/commands/user text                                         | `AiProxyRequest`, `AiCodingTask`, `AiSubagentTurn`, `AiRetryAlert`, `AiTurnCost`, `AiSkillRun`, `AiContextSnapshot`, `AiBudgetWarning`, `AiObservabilityHealth` |
+| `personal-only` — raw or lightly-redacted per-call detail (bash commands, file paths, agent descriptions, audit specifics) | `AiToolCall`, `AiMcpToolCall`, `AiWorkflowRun`, `AiAntiPattern`, `AiAuditEvent`, `SecurityAlert`                                                                |
 
 Routing a `personal-only` type to a tier other than `default` logs a warning on stderr and proceeds — it is a deliberate, informed operator choice, not an error. Routing is **event-type-level only**: there is no per-tier field redaction or projection, so a tier that receives `AiToolCall` receives the whole event.
 
