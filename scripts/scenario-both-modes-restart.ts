@@ -7,8 +7,10 @@
  *
  *   npm run test:scenario
  *
- * Two scenarios, each in a fresh isolated run (see .claude/skills/verify-preflight):
+ * Three scenarios, each in a fresh isolated run (see .claude/skills/verify-preflight):
  *   local-only   `--local` tails the transcript alone, then restarts.
+ *   stdio-only   `--stdio` bills both turns alone, then restarts. It is the control that
+ *                shows the split-turns failure comes from splitting turns across processes.
  *   split-turns  `--stdio` bills turn A, `--local` bills turn B, then both restart.
  *
  * A check tagged with a `knownBug` is expected to fail. It prints `xfail` and
@@ -231,6 +233,38 @@ async function localOnly(): Promise<void> {
   }
 }
 
+async function stdioOnly(): Promise<void> {
+  console.log('\n-- stdio-only');
+  pf('up');
+  pf('stop');
+  let stdio: StdioServer | null = null;
+  try {
+    const sid = pf('sid');
+    const run = runDir();
+    stdio = new StdioServer(run, sid);
+    await stdio.start();
+    sendHooks(sid);
+    sendTurn(sid, TURN_A);
+    sendTurn(sid, TURN_B);
+    const first = stdio;
+    const cost = await waitFor(
+      () => first.costUsd(),
+      (usd) => usd >= BOTH_TURNS_USD,
+    );
+    check('stdio bills both turns', cost, BOTH_TURNS_USD);
+    await delay(SETTLE_MS);
+    await stdio.stop();
+
+    stdio = new StdioServer(run, sid);
+    await stdio.start();
+    await delay(SETTLE_MS);
+    check('stdio restart does not bill again', await stdio.costUsd(), BOTH_TURNS_USD);
+  } finally {
+    await stdio?.stop();
+    pf('down');
+  }
+}
+
 async function splitTurns(): Promise<void> {
   console.log('\n-- split-turns');
   pf('up');
@@ -288,6 +322,7 @@ async function splitTurns(): Promise<void> {
 
 try {
   await localOnly();
+  await stdioOnly();
   await splitTurns();
 } catch (error) {
   checks.push({ name: 'scenario ran to completion', outcome: 'FAIL', detail: String(error) });
