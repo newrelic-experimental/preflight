@@ -748,7 +748,7 @@ export function pageVersion(
 
 // --- Server ---------------------------------------------------------------------------------
 
-interface ServeOptions {
+export interface ServeOptions {
   readonly original: string;
   readonly proposed: string;
   readonly labels: string | undefined;
@@ -757,7 +757,7 @@ interface ServeOptions {
 }
 
 /** The status, content type and body for a request. */
-function route(
+export function route(
   method: string | undefined,
   path: string,
   options: ServeOptions,
