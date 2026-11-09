@@ -1173,6 +1173,7 @@ describe('api-handler GET /api/sessions/:sessionId/subagents', () => {
   it('returns the subagent timeline payload as JSON (200)', async () => {
     const payload = {
       window: { startMs: 100, endMs: 200 },
+      peak: { count: 1, atMs: 100 },
       agents: [
         {
           agentId: 'a1111111111111111',
@@ -1237,7 +1238,11 @@ describe('api-handler GET /api/sessions/:sessionId/subagents/:agentId/calls', ()
     let receivedAgent = '';
     const handler = createApiHandler({
       subagentTimeline: {
-        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getSubagentsForSession: () => ({
+          window: { startMs: 0, endMs: 0 },
+          agents: [],
+          peak: { count: 0, atMs: null },
+        }),
         getAgentCalls: (sessionId: string, agentId: string) => {
           receivedSession = sessionId;
           receivedAgent = agentId;
@@ -1264,7 +1269,7 @@ describe('api-handler GET /api/sessions/:sessionId/subagents/:agentId/calls', ()
       subagentTimeline: {
         getSubagentsForSession: () => {
           calledTimeline = true;
-          return { window: { startMs: 0, endMs: 0 }, agents: [] };
+          return { window: { startMs: 0, endMs: 0 }, agents: [], peak: { count: 0, atMs: null } };
         },
         getAgentCalls: () => ({ calls: [] }),
       },
@@ -8670,7 +8675,11 @@ describe('api-handler GET /api/workflows/:runId', () => {
         getRun: () => null, // still running → no rollup on disk
       } as unknown as Deps['workflowStore'],
       subagentTimeline: {
-        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getSubagentsForSession: () => ({
+          window: { startMs: 0, endMs: 0 },
+          agents: [],
+          peak: { count: 0, atMs: null },
+        }),
         getAgentCalls: () => ({ calls: [] }),
         getRunLive: (id: string) => {
           expect(id).toBe(RUN_ID);
@@ -8730,7 +8739,11 @@ describe('api-handler GET /api/workflows/:runId', () => {
         getRun: () => null,
       } as unknown as Deps['workflowStore'],
       subagentTimeline: {
-        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getSubagentsForSession: () => ({
+          window: { startMs: 0, endMs: 0 },
+          agents: [],
+          peak: { count: 0, atMs: null },
+        }),
         getAgentCalls: () => ({ calls: [] }),
         getRunLive: () => ({
           runId: RUN_ID,
@@ -8775,7 +8788,11 @@ describe('api-handler GET /api/workflows/:runId', () => {
         getRun: () => null,
       } as unknown as Deps['workflowStore'],
       subagentTimeline: {
-        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getSubagentsForSession: () => ({
+          window: { startMs: 0, endMs: 0 },
+          agents: [],
+          peak: { count: 0, atMs: null },
+        }),
         getAgentCalls: () => ({ calls: [] }),
         getRunLive: () => null,
       } as unknown as Deps['subagentTimeline'],
