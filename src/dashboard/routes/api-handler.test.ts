@@ -26,8 +26,10 @@ import { CostTracker } from '../../metrics/cost-tracker.js';
 import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { buildCostTrackerSeed } from '../../metrics/cost-tracker-seed.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../../metrics/quality-proxy-tracker.js';
+import { SessionStore, buildSessionSummary } from '../../storage/session-store.js';
 
 import type { ToolCallRecord } from '../../storage/types.js';
+import type { SessionTracker } from '../../metrics/session-tracker.js';
 import type { FullSessionSummary } from '../../storage/session-store.js';
 import type { GitWorkspaceReport } from '../../metrics/git-workspace-report.js';
 import type { GitWorkspaceReportWithWindow } from '../../metrics/git-workspace-reporter.js';
@@ -3581,6 +3583,57 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     };
     expect(parsed.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 1, tokens: 100 } });
     expect(parsed.estimatedByModel).toEqual({});
+  });
+
+  it('counts none of a session whose unpriced calls all arrived late, before and after a restart', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-late-calls-'));
+    try {
+      const store = new SessionStore({ storagePath: dir });
+      const sessionTracker = {
+        getMetrics: () => ({
+          sessionId: 'sess-late-calls',
+          sessionName: null,
+          sessionStartTime: Date.now(),
+          toolCallCount: 0,
+          toolCallCountByTool: {},
+          bashCommandsRun: 0,
+          toolSuccessRate: null,
+        }),
+      } as unknown as SessionTracker;
+      const save = (costTracker: CostTracker): void => {
+        store.saveSession(buildSessionSummary({ sessionTracker, costTracker, developer: 'd' }));
+      };
+      const todayUnpriced = async (): Promise<unknown> => {
+        const handler = createApiHandler({
+          localStore: { peekAllBuffers: () => [] },
+          sessionStore: store,
+        } as unknown as Parameters<typeof createApiHandler>[0]);
+        const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+        const { res, body } = fakeRes();
+        await handler(req, res);
+        return (JSON.parse(body()) as { unpricedByModel: unknown }).unpricedByModel;
+      };
+
+      const before = new CostTracker();
+      before.recordTokenUsage(makeUsage({ inputTokens: 10, totalTokens: 10 }), 'claude-foo-9-9', {
+        timestampMs: Date.now() - 72 * 60 * 60 * 1000,
+      });
+      save(before);
+      expect(await todayUnpriced()).toEqual({});
+
+      const persisted = store.loadSession('sess-late-calls');
+      if (persisted === null) throw new Error('session was not persisted');
+      const after = new CostTracker();
+      after.seedFromPersisted(buildCostTrackerSeed(persisted));
+      expect(after.getMetrics().unpricedByDay).toEqual({});
+      save(after);
+      expect(await todayUnpriced()).toEqual({});
+      expect(store.loadSession('sess-late-calls')?.unpricedByModel).toEqual({
+        'claude-foo-9-9': { calls: 1, tokens: 10 },
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('sums estimated calls per model across persisted sessions and the live tracker', async () => {

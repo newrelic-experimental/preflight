@@ -1949,10 +1949,87 @@ describe('call counts and the byte-estimate ledger', () => {
   it('removes the calls after a restart that restored the ledger', () => {
     const first = new CostTracker();
     first.recordEstimatedTokens(4_000, 2_000, UNPRICED);
-    const before = first.getMetrics();
 
     const second = new CostTracker();
-    second.seedFromPersisted({
+    second.seedFromPersisted(seedOf(first.getMetrics()));
+    expect(second.getMetrics().unpricedByModel[UNPRICED]?.calls).toBe(1);
+
+    second.recordTokenUsage(real, 'claude-sonnet-4', { replacesEstimates: true });
+
+    expect(second.getMetrics().unpricedByModel).toEqual({});
+  });
+
+  it('removes the estimated-price calls after a restart that restored the ledger', () => {
+    const first = new CostTracker();
+    first.recordEstimatedTokens(4_000, 2_000, 'claude-opus-5-9');
+    const second = new CostTracker();
+    second.seedFromPersisted(seedOf(first.getMetrics()));
+    expect(Object.keys(second.getMetrics().estimatedByModel)).toEqual(['claude-opus-5-9']);
+
+    second.recordTokenUsage(real, 'claude-sonnet-4', { replacesEstimates: true });
+
+    expect(second.getMetrics().estimatedByModel).toEqual({});
+    expect(second.getMetrics().estimatedByDay).toEqual({});
+  });
+
+  it('takes back an unpriced estimate that counted no input tokens', () => {
+    const tracker = new CostTracker();
+    tracker.recordEstimatedTokens(1, 4_000, UNPRICED);
+
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10, outputTokens: 10, totalTokens: 20 }),
+      UNPRICED,
+      { replacesEstimates: true },
+    );
+
+    const m = tracker.getMetrics();
+    expect(m.unpricedByModel).toEqual({ [UNPRICED]: { calls: 1, tokens: 20 } });
+    expect(m.totalOutputTokens).toBe(10);
+  });
+
+  it('keeps totals and days in step for a ledger with counts but no day split', () => {
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted({
+      totalCostUsd: 0,
+      subagentCostUsd: 0,
+      parentCostUsd: 0,
+      totalInputTokens: 200,
+      totalOutputTokens: 0,
+      totalThinkingTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheCreationTokens: 0,
+      totalCacheSavingsUsd: 0,
+      costByModel: {},
+      costByWorkflowRunId: {},
+      dayKey: todayKey,
+      dayCostUsd: 0,
+      daySubagentCostUsd: 0,
+      unpricedByModel: { [UNPRICED]: { calls: 3, tokens: 300 } },
+      unpricedByDay: { [todayKey]: { [UNPRICED]: { calls: 3, tokens: 300 } } },
+      byteEstimates: {
+        costUsd: 0,
+        inputTokens: 200,
+        outputTokens: 0,
+        costByModel: {},
+        costByDayUsd: {},
+        unpricedByModel: { [UNPRICED]: { calls: 2, tokens: 200 } },
+      },
+      hadExactReport: false,
+    });
+
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10, outputTokens: 10, totalTokens: 20 }),
+      UNPRICED,
+      { replacesEstimates: true },
+    );
+
+    const m = tracker.getMetrics();
+    expect(m.unpricedByModel).toEqual({ [UNPRICED]: { calls: 2, tokens: 120 } });
+    expect(m.unpricedByDay).toEqual({ [todayKey]: { [UNPRICED]: { calls: 2, tokens: 120 } } });
+  });
+
+  function seedOf(before: ReturnType<CostTracker['getMetrics']>): CostTrackerSeed {
+    return {
       totalCostUsd: 0,
       subagentCostUsd: 0,
       parentCostUsd: 0,
@@ -1968,16 +2045,13 @@ describe('call counts and the byte-estimate ledger', () => {
       daySubagentCostUsd: 0,
       costByWorkflowRunId: {},
       unpricedByModel: before.unpricedByModel,
+      estimatedByModel: before.estimatedByModel,
       unpricedByDay: before.unpricedByDay,
+      estimatedByDay: before.estimatedByDay,
       ...(before.byteEstimates !== undefined && { byteEstimates: before.byteEstimates }),
       hadExactReport: false,
-    });
-    expect(second.getMetrics().unpricedByModel[UNPRICED]?.calls).toBe(1);
-
-    second.recordTokenUsage(real, 'claude-sonnet-4', { replacesEstimates: true });
-
-    expect(second.getMetrics().unpricedByModel).toEqual({});
-  });
+    };
+  }
 });
 
 describe('call counts by day', () => {

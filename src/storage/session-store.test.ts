@@ -23,6 +23,7 @@ import type { FullSessionSummary } from './session-store.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { buildCostTrackerSeed } from '../metrics/cost-tracker-seed.js';
+import { makeUsage } from '../__test-utils__/token-usage.js';
 import type { CostMetrics } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
@@ -1836,6 +1837,127 @@ describe('buildSessionSummary', () => {
 
       expect(merged.unpricedByModel).toEqual({ a: { calls: 3, tokens: 30 } });
       expect(merged.unpricedByDay).toEqual({ '2026-11-06': { a: { calls: 3, tokens: 30 } } });
+    });
+
+    it('mergeSummaries drops the estimated-price calls of byte estimates a later write replaced', () => {
+      const e = (calls: number, tokens: number) => ({
+        b: { calls, tokens, estimatedFrom: 'claude-opus-5' },
+      });
+      const existing = makeSummary({
+        estimatedByModel: e(3, 30),
+        estimatedByDay: { '2026-11-06': e(3, 30) },
+        byteEstimates: {
+          ...ledger(0, 0),
+          unpricedByModel: {},
+          unpricedByDay: {},
+          estimatedByModel: e(2, 20),
+          estimatedByDay: { '2026-11-06': e(2, 20) },
+        },
+      });
+      const incoming = makeSummary({
+        estimatedByModel: e(1, 10),
+        estimatedByDay: { '2026-11-06': e(1, 10) },
+        byteEstimates: {
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByModel: {},
+          costByDayUsd: {},
+        },
+      });
+
+      const merged = mergeSummaries(existing, incoming);
+
+      expect(merged.estimatedByModel).toEqual(e(1, 10));
+      expect(merged.estimatedByDay).toEqual({ '2026-11-06': e(1, 10) });
+    });
+
+    it('mergeSummaries keeps an empty day map beside counts that have no day', () => {
+      const lateOnly = {
+        unpricedByModel: { a: { calls: 1, tokens: 10 } },
+        unpricedByDay: {},
+      };
+      const merged = mergeSummaries(makeSummary(lateOnly), makeSummary(lateOnly));
+      expect(merged.unpricedByModel).toEqual({ a: { calls: 1, tokens: 10 } });
+      expect(merged.unpricedByDay).toEqual({});
+    });
+
+    it('mergeSummaries drops the day split when a legacy side holds calls the other side lacks', () => {
+      const legacy = makeSummary({
+        unpricedByModel: { a: { calls: 5, tokens: 50 } },
+        estimatedByModel: { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } },
+        estimatedByDay: { '2026-11-06': { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } } },
+      });
+      const current = makeSummary({
+        unpricedByModel: { a: { calls: 1, tokens: 10 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 1, tokens: 10 } } },
+        estimatedByModel: { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } },
+        estimatedByDay: { '2026-11-06': { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } } },
+      });
+
+      for (const merged of [mergeSummaries(legacy, current), mergeSummaries(current, legacy)]) {
+        expect(merged.unpricedByModel).toEqual({ a: { calls: 5, tokens: 50 } });
+        expect(merged.unpricedByDay).toBeUndefined();
+        expect(merged.estimatedByDay).toEqual({
+          '2026-11-06': { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } },
+        });
+      }
+    });
+
+    it('mergeSummaries keeps the day split of a resumed session over its legacy file', () => {
+      const legacy = makeSummary({ unpricedByModel: { a: { calls: 5, tokens: 50 } } });
+      const resumed = makeSummary({
+        unpricedByModel: { a: { calls: 6, tokens: 60 } },
+        unpricedByDay: {
+          '2026-11-05': { a: { calls: 5, tokens: 50 } },
+          '2026-11-06': { a: { calls: 1, tokens: 10 } },
+        },
+      });
+
+      const merged = mergeSummaries(legacy, resumed);
+
+      expect(merged.unpricedByModel).toEqual({ a: { calls: 6, tokens: 60 } });
+      expect(merged.unpricedByDay).toEqual({
+        '2026-11-05': { a: { calls: 5, tokens: 50 } },
+        '2026-11-06': { a: { calls: 1, tokens: 10 } },
+      });
+    });
+
+    it('buildSessionSummary writes an empty day map when every counted call is a late arrival', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(makeUsage({ inputTokens: 10, totalTokens: 10 }), 'claude-foo-9-9', {
+        timestampMs: Date.now() - 72 * 60 * 60 * 1000,
+      });
+      const sessionTracker = {
+        getMetrics: () => ({
+          sessionId: 'sess-late',
+          sessionName: null,
+          sessionStartTime: Date.now(),
+          toolCallCount: 0,
+          toolCallCountByTool: {},
+          bashCommandsRun: 0,
+          toolSuccessRate: null,
+        }),
+      } as unknown as SessionTracker;
+
+      const summary = buildSessionSummary({ sessionTracker, costTracker: tracker, developer: 'd' });
+      const roundTripped = deserializeFullSessionSummary(
+        JSON.parse(JSON.stringify(summary)) as Parameters<typeof deserializeFullSessionSummary>[0],
+      );
+
+      expect(roundTripped.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 1, tokens: 10 } });
+      expect(roundTripped.unpricedByDay).toEqual({});
+      expect(roundTripped.estimatedByModel).toBeUndefined();
+      expect(roundTripped.estimatedByDay).toBeUndefined();
+    });
+
+    it('deserializeFullSessionSummary leaves the day counts undefined for a file written before them', () => {
+      const result = deserializeFullSessionSummary({
+        ...makeSummary(),
+        unpricedByModel: { a: { calls: 2, tokens: 4 } },
+      } as unknown as Parameters<typeof deserializeFullSessionSummary>[0]);
+      expect(result.unpricedByModel).toEqual({ a: { calls: 2, tokens: 4 } });
+      expect(result.unpricedByDay).toBeUndefined();
     });
 
     it('mergeSummaries leaves the day counts undefined when neither side has them', () => {

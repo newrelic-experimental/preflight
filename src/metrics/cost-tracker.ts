@@ -278,9 +278,14 @@ export interface CostTrackerSeed {
   readonly costByWorkflowRunId: Readonly<Record<string, Readonly<Record<string, number>>>>;
   readonly unpricedByModel?: Readonly<Record<string, UnpricedModelUsage>>;
   readonly estimatedByModel?: Readonly<Record<string, EstimatedModelUsage>>;
-  /** Absent on a checkpoint written before day buckets existed; its counts then book to `dayKey`. */
+  /**
+   * Absent on a checkpoint written before day buckets existed; its counts then
+   * book to `legacyCallsDayKey`.
+   */
   readonly unpricedByDay?: Readonly<CallUsageByDay<UnpricedModelUsage>>;
   readonly estimatedByDay?: Readonly<CallUsageByDay<EstimatedModelUsage>>;
+  /** The checkpoint's own latest day, so a resumed legacy session's calls stay off today. Defaults to `dayKey`. */
+  readonly legacyCallsDayKey?: string;
   /** Restored separately so the seed can tell exact tokens from estimated ones. See `ByteEstimateLedger`. */
   readonly byteEstimates?: ByteEstimateLedger;
   /**
@@ -456,7 +461,6 @@ export class CostTracker implements Resettable {
    * bucketed differently.
    */
   private discardByteEstimates(): void {
-    if (this.byteEstimateCostUsd === 0 && this.byteEstimateInputTokens === 0) return;
     this.totalCostUsd = Math.max(0, this.totalCostUsd - this.byteEstimateCostUsd);
     this.parentCostUsd = Math.max(0, this.parentCostUsd - this.byteEstimateCostUsd);
     this.totalInputTokens = Math.max(0, this.totalInputTokens - this.byteEstimateInputTokens);
@@ -673,6 +677,7 @@ export class CostTracker implements Resettable {
     this.totalCacheSavingsUsd += seed.totalCacheSavingsUsd;
     if (seed.hadExactReport === false) this.estimationCount += 1;
     else this.reportCount += 1;
+    const legacyCallsDayKey = seed.legacyCallsDayKey ?? seed.dayKey;
     if (seed.byteEstimates !== undefined) {
       this.hasByteEstimateHistory = true;
       this.byteEstimateCostUsd += seed.byteEstimates.costUsd;
@@ -689,13 +694,13 @@ export class CostTracker implements Resettable {
       }
       this.byteEstimateUnpriced.addRecords(
         seed.byteEstimates.unpricedByModel,
-        seed.byteEstimates.unpricedByDay ?? {},
-        seed.dayKey,
+        seed.byteEstimates.unpricedByDay,
+        legacyCallsDayKey,
       );
       this.byteEstimateEstimated.addRecords(
         seed.byteEstimates.estimatedByModel,
-        seed.byteEstimates.estimatedByDay ?? {},
-        seed.dayKey,
+        seed.byteEstimates.estimatedByDay,
+        legacyCallsDayKey,
       );
     }
 
@@ -703,8 +708,8 @@ export class CostTracker implements Resettable {
       this.costByModel.set(model, (this.costByModel.get(model) ?? 0) + usd);
     }
 
-    this.unpriced.addRecords(seed.unpricedByModel, seed.unpricedByDay, seed.dayKey);
-    this.estimated.addRecords(seed.estimatedByModel, seed.estimatedByDay, seed.dayKey);
+    this.unpriced.addRecords(seed.unpricedByModel, seed.unpricedByDay, legacyCallsDayKey);
+    this.estimated.addRecords(seed.estimatedByModel, seed.estimatedByDay, legacyCallsDayKey);
 
     if (seed.dayCostUsd !== 0) {
       this.costByDayUsd.set(

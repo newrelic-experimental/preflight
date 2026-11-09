@@ -203,7 +203,7 @@ export function parseCallUsageRecord<T extends CallUsage>(
   parseExtra: (entry: Record<string, unknown>) => Omit<T, keyof CallUsage> | null,
 ): Record<string, T> | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
-  const out: Record<string, T> = {};
+  const out = Object.create(null) as Record<string, T>;
   for (const [model, v] of Object.entries(value as Record<string, unknown>)) {
     if (typeof v !== 'object' || v === null || Array.isArray(v)) continue;
     const entry = v as Record<string, unknown>;
@@ -215,16 +215,20 @@ export function parseCallUsageRecord<T extends CallUsage>(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/** Parses an untrusted persisted per-day record; days that parse to nothing are dropped. */
+/**
+ * Parses an untrusted persisted per-day record; days that parse to nothing are
+ * dropped. An object that keeps no day is `{}`, not undefined: undefined means
+ * a summary written before day buckets existed.
+ */
 export function parseCallUsageByDay<T extends CallUsage>(
   value: unknown,
   parseExtra: (entry: Record<string, unknown>) => Omit<T, keyof CallUsage> | null,
 ): CallUsageByDay<T> | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
-  const out: CallUsageByDay<T> = {};
+  const out = Object.create(null) as CallUsageByDay<T>;
   for (const [dayKey, perModel] of Object.entries(value as Record<string, unknown>)) {
     const parsed = parseCallUsageRecord<T>(perModel, parseExtra);
     if (parsed !== undefined) out[dayKey] = parsed;
   }
-  return Object.keys(out).length > 0 ? out : undefined;
+  return out;
 }

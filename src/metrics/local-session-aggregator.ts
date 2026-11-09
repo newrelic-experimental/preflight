@@ -884,7 +884,11 @@ function modelBreakdownOf(rollup: {
   return out;
 }
 
-/** Only the non-empty call-usage fields: an absent day map tells readers to fall back to whole-session counts. */
+/**
+ * The call-usage fields of a session that has counts. A day map rides with its
+ * counts even when empty: an absent one tells readers the summary predates day
+ * buckets and to fall back to whole-session counts.
+ */
 function callUsageFields(
   rollup: LocalSessionRollup,
 ): Pick<
@@ -893,12 +897,12 @@ function callUsageFields(
 > {
   const unpricedByModel = rollup.unpriced.byModel();
   const estimatedByModel = rollup.estimated.byModel();
-  const unpricedByDay = rollup.unpriced.byDay();
-  const estimatedByDay = rollup.estimated.byDay();
   return {
-    ...(Object.keys(unpricedByModel).length > 0 ? { unpricedByModel } : {}),
-    ...(Object.keys(estimatedByModel).length > 0 ? { estimatedByModel } : {}),
-    ...(Object.keys(unpricedByDay).length > 0 ? { unpricedByDay } : {}),
-    ...(Object.keys(estimatedByDay).length > 0 ? { estimatedByDay } : {}),
+    ...(Object.keys(unpricedByModel).length > 0
+      ? { unpricedByModel, unpricedByDay: rollup.unpriced.byDay() }
+      : {}),
+    ...(Object.keys(estimatedByModel).length > 0
+      ? { estimatedByModel, estimatedByDay: rollup.estimated.byDay() }
+      : {}),
   };
 }

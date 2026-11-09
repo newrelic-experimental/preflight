@@ -540,23 +540,41 @@ function mergeCallUsageWithLedger<T extends CallUsage>(
 }
 
 type CallUsageByDaySide<T extends CallUsage> = readonly [
+  byModel: Readonly<Record<string, T>> | undefined,
   total: Readonly<CallUsageByDay<T>> | undefined,
   ledger: Readonly<CallUsageByDay<T>> | undefined,
 ];
+
+/**
+ * True when `side` was written before day buckets (counts but no day split) and
+ * holds calls `other`'s totals lack. No day can be named for those calls, so the
+ * merged file keeps only whole-session counts, as a legacy file does. A resumed
+ * session was seeded from its legacy file, so its own totals already cover it.
+ */
+function legacySideAddsCalls<T extends CallUsage>(
+  [byModel, byDay]: CallUsageByDaySide<T>,
+  other: Readonly<Record<string, T>> | undefined,
+): boolean {
+  if (byModel === undefined || byDay !== undefined) return false;
+  return Object.entries(byModel).some(
+    ([model, usage]) => usage.calls > (other?.[model]?.calls ?? 0),
+  );
+}
 
 function mergeCallUsageByDayWithLedger<T extends CallUsage>(
   existing: CallUsageByDaySide<T>,
   incoming: CallUsageByDaySide<T>,
   mergedLedger: Readonly<CallUsageByDay<T>> | undefined,
 ): CallUsageByDay<T> | undefined {
-  if (existing[0] === undefined && incoming[0] === undefined) return undefined;
+  if (existing[1] === undefined && incoming[1] === undefined) return undefined;
+  if (legacySideAddsCalls(existing, incoming[0]) || legacySideAddsCalls(incoming, existing[0]))
+    return undefined;
   const exact = combineCallUsageByDay(
-    combineCallUsageByDay(existing[0], existing[1], subtractCallUsage),
-    combineCallUsageByDay(incoming[0], incoming[1], subtractCallUsage),
+    combineCallUsageByDay(existing[1], existing[2], subtractCallUsage),
+    combineCallUsageByDay(incoming[1], incoming[2], subtractCallUsage),
     mergeCallUsageMax,
   );
-  const merged = combineCallUsageByDay(exact, mergedLedger, addCallUsageRecords);
-  return Object.keys(merged).length > 0 ? merged : undefined;
+  return combineCallUsageByDay(exact, mergedLedger, addCallUsageRecords);
 }
 
 export function mergeSummaries(
@@ -655,13 +673,13 @@ export function mergeSummaries(
     mergedLedger?.estimatedByModel,
   );
   const unpricedByDay = mergeCallUsageByDayWithLedger(
-    [existing.unpricedByDay, existing.byteEstimates?.unpricedByDay],
-    [incoming.unpricedByDay, incoming.byteEstimates?.unpricedByDay],
+    [existing.unpricedByModel, existing.unpricedByDay, existing.byteEstimates?.unpricedByDay],
+    [incoming.unpricedByModel, incoming.unpricedByDay, incoming.byteEstimates?.unpricedByDay],
     mergedLedger?.unpricedByDay,
   );
   const estimatedByDay = mergeCallUsageByDayWithLedger(
-    [existing.estimatedByDay, existing.byteEstimates?.estimatedByDay],
-    [incoming.estimatedByDay, incoming.byteEstimates?.estimatedByDay],
+    [existing.estimatedByModel, existing.estimatedByDay, existing.byteEstimates?.estimatedByDay],
+    [incoming.estimatedByModel, incoming.estimatedByDay, incoming.byteEstimates?.estimatedByDay],
     mergedLedger?.estimatedByDay,
   );
   // Latest writer wins, not max: the ledger shrinks to zero when a real report
@@ -771,8 +789,8 @@ export function mergeSummaries(
     ...(subagentCostByDayUsd !== undefined ? { subagentCostByDayUsd } : {}),
     ...(unpricedByModel !== undefined ? { unpricedByModel } : {}),
     ...(estimatedByModel !== undefined ? { estimatedByModel } : {}),
-    ...(unpricedByDay !== undefined ? { unpricedByDay } : {}),
-    ...(estimatedByDay !== undefined ? { estimatedByDay } : {}),
+    unpricedByDay,
+    estimatedByDay,
     ...(byteEstimates !== undefined ? { byteEstimates } : {}),
     exactTotals,
     tokensInput: exactTotals.inputTokens + (mergedLedger?.inputTokens ?? 0),
@@ -1410,17 +1428,16 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     subagentCostUsd: costMetrics?.subagentCostUsd ?? 0,
     costByDayUsd: costMetrics?.costByDayUsd ?? {},
     subagentCostByDayUsd: costMetrics?.subagentCostByDayUsd ?? {},
+    // A day map rides with its counts even when empty (all late arrivals):
+    // readers treat an absent one as a summary written before day buckets.
     ...(costMetrics && Object.keys(costMetrics.unpricedByModel).length > 0
-      ? { unpricedByModel: costMetrics.unpricedByModel }
+      ? { unpricedByModel: costMetrics.unpricedByModel, unpricedByDay: costMetrics.unpricedByDay }
       : {}),
     ...(costMetrics && Object.keys(costMetrics.estimatedByModel).length > 0
-      ? { estimatedByModel: costMetrics.estimatedByModel }
-      : {}),
-    ...(costMetrics && Object.keys(costMetrics.unpricedByDay).length > 0
-      ? { unpricedByDay: costMetrics.unpricedByDay }
-      : {}),
-    ...(costMetrics && Object.keys(costMetrics.estimatedByDay).length > 0
-      ? { estimatedByDay: costMetrics.estimatedByDay }
+      ? {
+          estimatedByModel: costMetrics.estimatedByModel,
+          estimatedByDay: costMetrics.estimatedByDay,
+        }
       : {}),
     ...(costMetrics?.byteEstimates !== undefined
       ? { byteEstimates: costMetrics.byteEstimates }
