@@ -595,8 +595,14 @@ export class LocalSessionAggregator {
         ...(Object.keys(cost.subagentCostByDayUsd ?? {}).length > 0 && {
           subagentCostByDayUsd: cost.subagentCostByDayUsd,
         }),
-        ...(cost.unpricedByModel && { unpricedByModel: cost.unpricedByModel }),
-        ...(cost.estimatedByModel && { estimatedByModel: cost.estimatedByModel }),
+        ...(cost.unpricedByModel && {
+          unpricedByModel: cost.unpricedByModel,
+          unpricedByDay: cost.unpricedByDay,
+        }),
+        ...(cost.estimatedByModel && {
+          estimatedByModel: cost.estimatedByModel,
+          estimatedByDay: cost.estimatedByDay,
+        }),
         tokensInput: cost.tokensInput,
         tokensOutput: cost.tokensOutput,
         tokensThinking: cost.tokensThinking,

@@ -101,7 +101,17 @@ export interface CostTotals {
   readonly costByWorkflowRunId: Readonly<Record<string, Readonly<Record<string, number>>>>;
   readonly unpricedByModel: Readonly<Record<string, UnpricedModelUsage>>;
   readonly estimatedByModel: Readonly<Record<string, EstimatedModelUsage>>;
+  /**
+   * `unpricedByModel` split by the local day each call was recorded in, like
+   * `costByDayUsd`. A late arrival counts in `unpricedByModel` but in no day.
+   */
+  readonly unpricedByDay: Readonly<CallUsageByDay<UnpricedModelUsage>>;
+  /** `estimatedByModel` split by local day; see `unpricedByDay`. */
+  readonly estimatedByDay: Readonly<CallUsageByDay<EstimatedModelUsage>>;
 }
+
+/** Call usage per local-day key, then per model: `{ [dayKey]: { [model]: usage } }`. */
+export type CallUsageByDay<T extends UnpricedModelUsage> = Record<string, Record<string, T>>;
 
 export const ZERO_TOTALS: CostTotals = {
   costUsd: 0,
@@ -118,6 +128,8 @@ export const ZERO_TOTALS: CostTotals = {
   costByWorkflowRunId: {},
   unpricedByModel: {},
   estimatedByModel: {},
+  unpricedByDay: {},
+  estimatedByDay: {},
 };
 
 /** The ledger's totals: `base` plus every exact entry and every live estimate. */
@@ -177,6 +189,12 @@ function addTo(map: Map<string, number>, key: string, usd: number): void {
   map.set(key, (map.get(key) ?? 0) + usd);
 }
 
+function dayRecords<T>(days: Map<string, Map<string, T>>): Record<string, Record<string, T>> {
+  return Object.fromEntries(
+    [...days].map(([day, perModel]) => [day, Object.fromEntries(perModel)]),
+  );
+}
+
 function recordOf(map: Map<string, number>): Record<string, number> {
   return Object.fromEntries(map);
 }
@@ -211,6 +229,19 @@ function mapCallUsage<T extends UnpricedModelUsage>(
   return out;
 }
 
+function mapCallUsageByDay<T extends UnpricedModelUsage>(
+  a: Readonly<CallUsageByDay<T>>,
+  b: Readonly<CallUsageByDay<T>>,
+  op: (x: number, y: number) => number,
+): CallUsageByDay<T> {
+  const out: CallUsageByDay<T> = {};
+  for (const day of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    const perModel = mapCallUsage(a[day] ?? {}, b[day] ?? {}, op);
+    if (Object.keys(perModel).length > 0) out[day] = perModel;
+  }
+  return out;
+}
+
 function combineTotals(
   a: CostTotals,
   b: CostTotals,
@@ -236,6 +267,8 @@ function combineTotals(
   out.costByWorkflowRunId = runs;
   out.unpricedByModel = mapCallUsage(a.unpricedByModel, b.unpricedByModel, op);
   out.estimatedByModel = mapCallUsage(a.estimatedByModel, b.estimatedByModel, op);
+  out.unpricedByDay = mapCallUsageByDay(a.unpricedByDay, b.unpricedByDay, op);
+  out.estimatedByDay = mapCallUsageByDay(a.estimatedByDay, b.estimatedByDay, op);
   return out as unknown as CostTotals;
 }
 
@@ -253,7 +286,9 @@ export function isZeroTotals(t: CostTotals): boolean {
     DAY_MAP_KEYS.every((k) => Object.keys(t[k]).length === 0) &&
     Object.keys(t.costByWorkflowRunId).length === 0 &&
     Object.keys(t.unpricedByModel).length === 0 &&
-    Object.keys(t.estimatedByModel).length === 0
+    Object.keys(t.estimatedByModel).length === 0 &&
+    Object.keys(t.unpricedByDay).length === 0 &&
+    Object.keys(t.estimatedByDay).length === 0
   );
 }
 
@@ -286,6 +321,19 @@ export function foldUsage(
   const runs = new Map<string, Map<string, number>>();
   const unpricedByModel = new Map<string, UnpricedModelUsage>();
   const estimatedByModel = new Map<string, EstimatedModelUsage>();
+  const unpricedByDay = new Map<string, Map<string, UnpricedModelUsage>>();
+  const estimatedByDay = new Map<string, Map<string, EstimatedModelUsage>>();
+  const dayBook = <T extends UnpricedModelUsage>(
+    days: Map<string, Map<string, T>>,
+    day: string,
+  ): Map<string, T> => {
+    let perModel = days.get(day);
+    if (!perModel) {
+      perModel = new Map();
+      days.set(day, perModel);
+    }
+    return perModel;
+  };
   const byAgentType = new Map<string, AttributionBucket>();
   const est = { costUsd: 0, inputTokens: 0, outputTokens: 0 };
   const estByModel = new Map<string, number>();
@@ -328,13 +376,14 @@ export function foldUsage(
     }
     const tokens = tokensOf(e);
     if (tokens > 0 && e.pricing) {
-      if ('kind' in e.pricing) addCallUsage(unpricedByModel, e.model, { calls: 1, tokens });
-      else {
-        addCallUsage(estimatedByModel, e.model, {
-          calls: 1,
-          tokens,
-          estimatedFrom: e.pricing.estimatedFrom,
-        });
+      if ('kind' in e.pricing) {
+        const call = { calls: 1, tokens };
+        addCallUsage(unpricedByModel, e.model, call);
+        if (e.day !== null) addCallUsage(dayBook(unpricedByDay, e.day), e.model, call);
+      } else {
+        const call = { calls: 1, tokens, estimatedFrom: e.pricing.estimatedFrom };
+        addCallUsage(estimatedByModel, e.model, call);
+        if (e.day !== null) addCallUsage(dayBook(estimatedByDay, e.day), e.model, call);
       }
     }
     if (e.inputTokens + e.cacheReadTokens + e.cacheCreationTokens > HIGH_CONTEXT_TOKENS) {
@@ -368,6 +417,8 @@ export function foldUsage(
     costByWorkflowRunId,
     unpricedByModel: Object.fromEntries(unpricedByModel),
     estimatedByModel: Object.fromEntries(estimatedByModel),
+    unpricedByDay: dayRecords(unpricedByDay),
+    estimatedByDay: dayRecords(estimatedByDay),
   };
   return {
     totals: isZeroTotals(base) ? own : addTotals(base, own),
@@ -679,6 +730,31 @@ function parseCallUsage(v: unknown, estimated: boolean): Record<string, Estimate
   return out;
 }
 
+function parseCallUsageByDay(v: unknown, estimated: boolean): CallUsageByDay<EstimatedModelUsage> {
+  const out: CallUsageByDay<EstimatedModelUsage> = {};
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return out;
+  for (const [day, perModel] of Object.entries(v as Record<string, unknown>)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+    const parsed = parseCallUsage(perModel, estimated);
+    if (Object.keys(parsed).length === 0) continue;
+    out[day] = estimated
+      ? parsed
+      : (Object.fromEntries(
+          Object.entries(parsed).map(([k, e]) => [k, { calls: e.calls, tokens: e.tokens }]),
+        ) as CallUsageByDay<EstimatedModelUsage>[string]);
+  }
+  return out;
+}
+
+/** Validates an untrusted per-day call-usage map from a session file. */
+export function parseSessionCallUsageByDay<T extends UnpricedModelUsage>(
+  v: unknown,
+  estimated: boolean,
+): CallUsageByDay<T> | undefined {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  return parseCallUsageByDay(v, estimated) as unknown as CallUsageByDay<T>;
+}
+
 function parseCostTotals(v: unknown): CostTotals | undefined {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
   const o = v as Record<string, unknown>;
@@ -699,6 +775,8 @@ function parseCostTotals(v: unknown): CostTotals | undefined {
     ]),
   );
   out.estimatedByModel = parseCallUsage(o.estimatedByModel, true);
+  out.unpricedByDay = parseCallUsageByDay(o.unpricedByDay, false);
+  out.estimatedByDay = parseCallUsageByDay(o.estimatedByDay, true);
   return out as unknown as CostTotals;
 }
 

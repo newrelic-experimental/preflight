@@ -166,6 +166,70 @@ describe('UsageLedger', () => {
   });
 });
 
+describe('per-day call counts', () => {
+  const unpriced = { kind: 'unpriced' } as const;
+
+  it('splits unpriced and estimated-price calls by the day each was recorded', () => {
+    const fold = foldUsage([
+      makeEntry({ id: 'a', model: 'u', pricing: unpriced }),
+      makeEntry({ id: 'b', model: 'u', day: '2026-09-11', pricing: unpriced }),
+      makeEntry({ id: 'c', model: 'e', pricing: { estimatedFrom: 'base' } }),
+    ]);
+    expect(fold.totals.unpricedByDay).toEqual({
+      [DAY]: { u: { calls: 1, tokens: 110 } },
+      '2026-09-11': { u: { calls: 1, tokens: 110 } },
+    });
+    expect(fold.totals.estimatedByDay).toEqual({
+      [DAY]: { e: { calls: 1, tokens: 110, estimatedFrom: 'base' } },
+    });
+  });
+
+  it('counts a late arrival in the totals but in no day', () => {
+    const fold = foldUsage([makeEntry({ model: 'u', day: null, pricing: unpriced })]);
+    expect(fold.totals.unpricedByModel).toEqual({ u: { calls: 1, tokens: 110 } });
+    expect(fold.totals.unpricedByDay).toEqual({});
+  });
+
+  it('drops a retired estimate from the totals and its day', () => {
+    const est = makeEntry({
+      id: 'est:a:1',
+      provisional: true,
+      replaces: false,
+      ts: 1_000,
+      model: 'u',
+      pricing: unpriced,
+    });
+    const report = makeEntry({ id: 'msg_x', ts: 2_000 });
+    const fold = foldUsage([est, report]);
+    expect(fold.totals.unpricedByModel).toEqual({});
+    expect(fold.totals.unpricedByDay).toEqual({});
+  });
+
+  it('writes the day map with its counts, even when every call arrived late', () => {
+    const late = withLedger([makeEntry({ model: 'u', day: null, pricing: unpriced })]);
+    const merged = mergeSummaries(late, late);
+    expect(merged.unpricedByModel).toEqual({ u: { calls: 1, tokens: 110 } });
+    expect(merged.unpricedByDay).toEqual({});
+  });
+
+  it("books a pre-ledger summary's calls to its own latest day on merge", () => {
+    const legacy = makeSummary({
+      estimatedCostUsd: 1,
+      costByDayUsd: { '2026-09-08': 0.5, '2026-09-09': 0.5 },
+      unpricedByModel: { u: { calls: 2, tokens: 20 } },
+    });
+    const keyed = withLedger([makeEntry({ id: 'msg_new', model: 'u', pricing: unpriced })]);
+    const merged = mergeSummaries(legacy, keyed);
+    // The legacy count may already include the keyed call, so one call is
+    // taken out of the legacy share, and its day bucket follows.
+    expect(merged.unpricedByModel).toEqual({ u: { calls: 2, tokens: 110 } });
+    expect(merged.unpricedByDay).toEqual({
+      '2026-09-09': { u: { calls: 1, tokens: 0 } },
+      [DAY]: { u: { calls: 1, tokens: 110 } },
+    });
+  });
+});
+
 describe('session files and the ledger', () => {
   it('merges two writers of one session as a union', () => {
     const a = withLedger([makeEntry({ id: 'msg_a' }), makeEntry({ id: 'msg_shared' })]);

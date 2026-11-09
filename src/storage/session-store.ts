@@ -25,6 +25,7 @@ import {
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
+import { localDateKey } from '../lib/date.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
 import { isSyntheticSessionId, type SessionNameSource } from '../hooks/session-resolver.js';
@@ -56,9 +57,11 @@ import {
   isZeroTotals,
   maxTotals,
   parsePersistedUsageLedger,
+  parseSessionCallUsageByDay,
   subtractTotals,
 } from '../metrics/usage-ledger.js';
 import type {
+  CallUsageByDay,
   CostTotals,
   PersistedUsageLedger,
   UsageEntry,
@@ -180,6 +183,15 @@ export interface FullSessionSummary extends SessionSummary {
   readonly unpricedByModel?: Record<string, UnpricedModelUsage>;
   /** Calls priced from a sibling model; their cost is in the totals as an estimate. */
   readonly estimatedByModel?: Record<string, EstimatedModelUsage>;
+  /**
+   * `unpricedByModel` split by local day, like `costByDayUsd`, so a today-scoped
+   * reader counts only that day's calls. Written whenever `unpricedByModel` is,
+   * even empty (every call a late arrival). Absent on summaries written before
+   * this field; readers then fall back to the whole-session counts.
+   */
+  readonly unpricedByDay?: CallUsageByDay<UnpricedModelUsage>;
+  /** `estimatedByModel` split by local day; see `unpricedByDay`. */
+  readonly estimatedByDay?: CallUsageByDay<EstimatedModelUsage>;
   /**
    * Byte-estimated share of the cost and token totals that a real token report
    * has not yet replaced (see `ByteEstimateLedger`). Written all-zero once the
@@ -508,6 +520,11 @@ export interface SessionUsageLedger {
   readonly base: CostTotals;
   /** The summary had no ledger: `base` is its exact totals, which may overlap another copy's entries. */
   readonly legacy: boolean;
+  /**
+   * Set when the summary had calls but no day split, so `base`'s per-day call
+   * counts are its per-model ones booked to this day (see `legacyCallsByDay`).
+   */
+  readonly legacyCallsDay?: string;
 }
 
 function costByModelOf(s: FullSessionSummary): Record<string, number> {
@@ -571,12 +588,47 @@ export function usageLedgerOf(s: FullSessionSummary): SessionUsageLedger {
     costByWorkflowRunId: s.costByWorkflowRunId ?? {},
     unpricedByModel: s.unpricedByModel ?? {},
     estimatedByModel: s.estimatedByModel ?? {},
+    // No day split on a summary this old: its calls book to its own latest day,
+    // so a resumed or merged session keeps them without putting them on today.
+    unpricedByDay: s.unpricedByDay ?? legacyCallsByDay(s, s.unpricedByModel),
+    estimatedByDay: s.estimatedByDay ?? legacyCallsByDay(s, s.estimatedByModel),
   };
+  const hasCalls =
+    Object.keys(s.unpricedByModel ?? {}).length > 0 ||
+    Object.keys(s.estimatedByModel ?? {}).length > 0;
+  const syntheticDay =
+    hasCalls && (s.unpricedByDay === undefined || s.estimatedByDay === undefined)
+      ? latestActivityDayKey(s)
+      : null;
   return {
     entries: est ? legacyEstimateEntries(est, s.endTime) : [],
     base: isZeroTotals(base) ? ZERO_TOTALS : base,
     legacy: true,
+    ...(syntheticDay !== null && { legacyCallsDay: syntheticDay }),
   };
+}
+
+// Day keys are zero-padded YYYY-MM-DD, so the string max is the latest day.
+function latestActivityDayKey(s: FullSessionSummary): string | null {
+  const days = Object.keys(s.costByDayUsd ?? {});
+  if (days.length > 0) return days.reduce((latest, day) => (day > latest ? day : latest));
+  return s.endTime > 0 ? localDateKey(s.endTime) : null;
+}
+
+function legacyCallsByDay<T extends UnpricedModelUsage>(
+  s: FullSessionSummary,
+  byModel: Readonly<Record<string, T>> | undefined,
+): CallUsageByDay<T> {
+  const day = latestActivityDayKey(s);
+  return byModel && day !== null && Object.keys(byModel).length > 0
+    ? { [day]: { ...byModel } }
+    : {};
+}
+
+function copyByDay<T>(
+  byDay: Readonly<Record<string, Readonly<Record<string, T>>>>,
+): Record<string, Record<string, T>> {
+  return Object.fromEntries(Object.entries(byDay).map(([day, m]) => [day, { ...m }]));
 }
 
 /** The cost and token fields of a summary, computed from its ledger. */
@@ -591,6 +643,8 @@ export function costFieldsOfLedger(
   | 'subagentCostByDayUsd'
   | 'unpricedByModel'
   | 'estimatedByModel'
+  | 'unpricedByDay'
+  | 'estimatedByDay'
   | 'byteEstimates'
   | 'exactTotals'
   | 'tokensInput'
@@ -614,6 +668,12 @@ export function costFieldsOfLedger(
       Object.keys(t.unpricedByModel).length > 0 ? { ...t.unpricedByModel } : undefined,
     estimatedByModel:
       Object.keys(t.estimatedByModel).length > 0 ? { ...t.estimatedByModel } : undefined,
+    // A day map rides with its counts even when empty (all late arrivals):
+    // readers treat an absent one as a summary written before day buckets.
+    unpricedByDay:
+      Object.keys(t.unpricedByModel).length > 0 ? copyByDay(t.unpricedByDay) : undefined,
+    estimatedByDay:
+      Object.keys(t.estimatedByModel).length > 0 ? copyByDay(t.estimatedByDay) : undefined,
     byteEstimates: est,
     exactTotals: est
       ? {
@@ -642,10 +702,25 @@ export function costFieldsOfLedger(
  * are taken out of its base before the bases are max-merged.
  */
 function unionLedgers(a: SessionUsageLedger, b: SessionUsageLedger): UsageLedger {
-  const withoutKeyed = (side: SessionUsageLedger, other: SessionUsageLedger): CostTotals =>
-    side.legacy
-      ? subtractTotals(side.base, foldUsage(other.entries, ZERO_TOTALS, { exactOnly: true }).totals)
-      : side.base;
+  const withoutKeyed = (side: SessionUsageLedger, other: SessionUsageLedger): CostTotals => {
+    if (!side.legacy) return side.base;
+    const rest = subtractTotals(
+      side.base,
+      foldUsage(other.entries, ZERO_TOTALS, { exactOnly: true }).totals,
+    );
+    const day = side.legacyCallsDay;
+    if (day === undefined) return rest;
+    // The keyed calls taken out may be from any day, so the synthesized day
+    // bucket follows the reduced per-model counts instead.
+    const booked = <T extends UnpricedModelUsage>(
+      byModel: Readonly<Record<string, T>>,
+    ): CallUsageByDay<T> => (Object.keys(byModel).length > 0 ? { [day]: { ...byModel } } : {});
+    return {
+      ...rest,
+      unpricedByDay: booked(rest.unpricedByModel),
+      estimatedByDay: booked(rest.estimatedByModel),
+    };
+  };
   const ledger = new UsageLedger();
   ledger.union(a.entries);
   ledger.union(b.entries);
@@ -1517,10 +1592,13 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     costByDayUsd: costMetrics?.costByDayUsd ?? {},
     subagentCostByDayUsd: costMetrics?.subagentCostByDayUsd ?? {},
     ...(costMetrics && Object.keys(costMetrics.unpricedByModel).length > 0
-      ? { unpricedByModel: costMetrics.unpricedByModel }
+      ? { unpricedByModel: costMetrics.unpricedByModel, unpricedByDay: costMetrics.unpricedByDay }
       : {}),
     ...(costMetrics && Object.keys(costMetrics.estimatedByModel).length > 0
-      ? { estimatedByModel: costMetrics.estimatedByModel }
+      ? {
+          estimatedByModel: costMetrics.estimatedByModel,
+          estimatedByDay: costMetrics.estimatedByDay,
+        }
       : {}),
     ...(costMetrics?.byteEstimates !== undefined
       ? { byteEstimates: costMetrics.byteEstimates }
@@ -1650,6 +1728,8 @@ interface SerializedFullSessionSummary {
   readonly subagentCostByDayUsd?: unknown;
   readonly unpricedByModel?: unknown;
   readonly estimatedByModel?: unknown;
+  readonly unpricedByDay?: unknown;
+  readonly estimatedByDay?: unknown;
   readonly byteEstimates?: unknown;
   readonly exactTotals?: unknown;
   readonly usageLedger?: unknown;
@@ -2042,6 +2122,8 @@ export function deserializeFullSessionSummary(
     subagentCostByDayUsd: parseNumberRecord(obj.subagentCostByDayUsd),
     unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
     estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
+    unpricedByDay: parseSessionCallUsageByDay<UnpricedModelUsage>(obj.unpricedByDay, false),
+    estimatedByDay: parseSessionCallUsageByDay<EstimatedModelUsage>(obj.estimatedByDay, true),
     byteEstimates: parseByteEstimates(obj.byteEstimates),
     exactTotals: parseExactTotals(obj.exactTotals),
     usageLedger: parsePersistedUsageLedger(obj.usageLedger),

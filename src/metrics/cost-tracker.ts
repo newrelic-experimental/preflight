@@ -23,6 +23,7 @@ import type { AttributionBucket } from '../storage/types.js';
 import { UsageLedger, dayOf, isZeroTotals } from './usage-ledger.js';
 import type {
   ByteEstimateLedger,
+  CallUsageByDay,
   CostTotals,
   EstimatedModelUsage,
   PersistedUsageLedger,
@@ -122,7 +123,7 @@ function scaleCostBreakdown(breakdown: CostBreakdown, factor: number): CostBreak
 // Types
 // ---------------------------------------------------------------------------
 
-export type { UnpricedModelUsage, EstimatedModelUsage, ByteEstimateLedger };
+export type { UnpricedModelUsage, EstimatedModelUsage, ByteEstimateLedger, CallUsageByDay };
 
 export interface CostMetrics {
   readonly sessionTotalCostUsd: number | null;
@@ -185,6 +186,14 @@ export interface CostMetrics {
    * totals but is an estimate.
    */
   readonly estimatedByModel: Record<string, EstimatedModelUsage>;
+  /**
+   * `unpricedByModel` split by the local day each call was recorded in, the way
+   * `costByDayUsd` splits cost, so a consumer scoped to one day counts only that
+   * day's calls. A late arrival counts in `unpricedByModel` but in no day.
+   */
+  readonly unpricedByDay: CallUsageByDay<UnpricedModelUsage>;
+  /** `estimatedByModel` split by local day; see `unpricedByDay`. */
+  readonly estimatedByDay: CallUsageByDay<EstimatedModelUsage>;
   /**
    * Subagent-attributed spend bucketed by `ctx.agentType` (best-effort — see
    * `TokenRecordContext.agentType`). Only token events whose `agentId` had a
@@ -532,6 +541,9 @@ export class CostTracker implements Resettable {
       costByWorkflowRunId: seed.costByWorkflowRunId,
       unpricedByModel: seed.unpricedByModel ?? {},
       estimatedByModel: seed.estimatedByModel ?? {},
+      // A hand-built seed has no day split; its calls book to its day.
+      unpricedByDay: seed.unpricedByModel ? { [seed.dayKey]: { ...seed.unpricedByModel } } : {},
+      estimatedByDay: seed.estimatedByModel ? { [seed.dayKey]: { ...seed.estimatedByModel } } : {},
     };
     this.ledger.addToBase(base);
     if (est !== undefined) {
@@ -706,6 +718,8 @@ export class CostTracker implements Resettable {
       costByDayUsd: { ...t.costByDayUsd },
       unpricedByModel: { ...t.unpricedByModel },
       estimatedByModel: { ...t.estimatedByModel },
+      unpricedByDay: copyByDay(t.unpricedByDay),
+      estimatedByDay: copyByDay(t.estimatedByDay),
       subagentCostByDayUsd: { ...t.subagentCostByDayUsd },
       subagentByAgentType: { ...fold.subagentByAgentType },
       highContextCostUsd: fold.highContextCostUsd,
@@ -782,6 +796,12 @@ export class CostTracker implements Resettable {
     this.lastMutationMsByDay = new Map();
     this.totalLinesChanged = 0;
   }
+}
+
+function copyByDay<T>(
+  byDay: Readonly<Record<string, Readonly<Record<string, T>>>>,
+): Record<string, Record<string, T>> {
+  return Object.fromEntries(Object.entries(byDay).map(([day, m]) => [day, { ...m }]));
 }
 
 /** Per-key `a - b`, clamped at zero. */
