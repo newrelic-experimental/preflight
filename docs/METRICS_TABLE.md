@@ -522,7 +522,7 @@ Source: `src/transport/nr-ingest.ts` — `turnCostToNrEvents()` and `ingestTurnC
 
 #### `AiSkillRun`
 
-Emitted once, when a skill run opens, for every run. A run opens on a named `Skill` call or on a `/<skill>` prompt. A run whose replies made no tool calls has no `AiToolCall` or `AiTurnCost` rows, so this event is what counts it. Runs are counted across both event types with `FROM AiToolCall, AiSkillRun SELECT uniqueCount(skill_run_id)`. The event carries no tool, duration, or cost data. Those stay on `AiToolCall` and `AiTurnCost`, which carry the same `skill_run_id`.
+Emitted once, when a skill run opens, for every run. A run opens on a named `Skill` call or on a `/<skill>` prompt. A `slash` run is any prompt Claude Code receives that starts with `/`, so it also covers built-in commands that send a prompt to the model, such as `/init`. Built-ins Claude Code handles locally (`/clear`, `/compact`, `/context`, `/cost`) and unknown commands never reach Preflight. A run whose replies made no tool calls has no `AiToolCall` or `AiTurnCost` rows, so this event is what counts it. Runs are counted across both event types with `FROM AiToolCall, AiSkillRun SELECT uniqueCount(skill_run_id)`. The event carries no tool, duration, or cost data. Those stay on `AiToolCall` and `AiTurnCost`, which carry the same `skill_run_id`.
 
 | Field                 | Type   | Description                                                                                                        |
 | --------------------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
