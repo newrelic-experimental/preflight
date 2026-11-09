@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 
 import type { McpServerConfig } from '../config.js';
 import { applyPricingOverlay } from './pricing-overlay.js';
-import { startPricingRefresh } from './pricing-refresh.js';
+import { schedulePricingRecheck, startPricingRefresh } from './pricing-refresh.js';
 
 export interface InitModelPricingOptions {
   /** `false` skips the LiteLLM refresh, for short-lived commands like `doctor`. */
@@ -21,8 +21,10 @@ export function initModelPricing(
 ): void {
   applyPricingOverlay(config.customPricingFile);
   if (options.refresh === false) return;
-  void startPricingRefresh({
+  const refreshOptions = {
     enabled: config.pricingRefresh,
     cachePath: resolve(config.storagePath, 'pricing-cache.json'),
-  });
+  };
+  void startPricingRefresh(refreshOptions);
+  schedulePricingRecheck(refreshOptions);
 }

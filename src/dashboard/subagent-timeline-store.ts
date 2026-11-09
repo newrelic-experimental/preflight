@@ -103,9 +103,36 @@ export interface SubagentTimelineWindow {
   readonly endMs: number;
 }
 
+export interface SubagentPeak {
+  readonly count: number;
+  readonly atMs: number | null;
+}
+
 export interface SubagentTimeline {
   readonly window: SubagentTimelineWindow;
   readonly agents: readonly AgentSpan[];
+  readonly peak: SubagentPeak;
+}
+
+/**
+ * Maximum number of agents running at the same instant. Opens sort before
+ * closes at equal timestamps, so a zero-length agent and spans that merely
+ * touch both count as overlapping.
+ */
+export function computeSubagentPeak(agents: readonly AgentSpan[]): SubagentPeak {
+  const events: { readonly ts: number; readonly delta: 1 | -1 }[] = [];
+  for (const a of agents) {
+    events.push({ ts: a.startMs, delta: 1 }, { ts: a.endMs, delta: -1 });
+  }
+  events.sort((a, b) => a.ts - b.ts || b.delta - a.delta);
+
+  let active = 0;
+  let peak: SubagentPeak = { count: 0, atMs: null };
+  for (const e of events) {
+    active += e.delta;
+    if (active > peak.count) peak = { count: active, atMs: e.ts };
+  }
+  return peak;
 }
 
 /**
@@ -286,7 +313,11 @@ export class SubagentTimelineStore {
    * session has no subagent transcripts (or anything goes wrong).
    */
   getSubagentsForSession(sessionId: string): SubagentTimeline {
-    const empty: SubagentTimeline = { window: { startMs: 0, endMs: 0 }, agents: [] };
+    const empty: SubagentTimeline = {
+      window: { startMs: 0, endMs: 0 },
+      agents: [],
+      peak: { count: 0, atMs: null },
+    };
     if (!SESSION_ID_RE.test(sessionId)) return empty;
 
     let files: DiscoveredAgentFile[];
@@ -360,6 +391,7 @@ export class SubagentTimelineStore {
         endMs: Number.isFinite(windowEnd) ? windowEnd : 0,
       },
       agents,
+      peak: computeSubagentPeak(agents),
     };
   }
 
@@ -761,6 +793,9 @@ export class SubagentTimelineStore {
           thinkingTokens: 0,
           cacheReadTokens: turn.cacheReadTokens,
           cacheCreationTokens: turn.cacheCreationTokens,
+          ...(turn.cacheCreation1hTokens > 0 && {
+            cacheCreation1hTokens: turn.cacheCreation1hTokens,
+          }),
           totalTokens:
             turn.inputTokens + turn.outputTokens + turn.cacheReadTokens + turn.cacheCreationTokens,
         },
@@ -907,6 +942,7 @@ interface AssistantTurn {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  readonly cacheCreation1hTokens: number;
 }
 
 /**
@@ -941,6 +977,7 @@ function parseAssistantTurn(line: string): AssistantTurn | null {
     outputTokens: fields.outputTokens,
     cacheReadTokens: fields.cacheReadTokens,
     cacheCreationTokens: fields.cacheCreationTokens,
+    cacheCreation1hTokens: fields.cacheCreation1hTokens,
   };
 }
 

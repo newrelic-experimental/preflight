@@ -44,6 +44,7 @@ describe('parseAssistantTurnLine', () => {
       outputTokens: 50,
       cacheReadTokens: 1000,
       cacheCreationTokens: 200,
+      cacheCreation1hTokens: 0,
       reasoningTokens: 0,
       stopReason: 'end_turn',
       usageKeysFingerprint: expect.any(String),
@@ -270,6 +271,68 @@ describe('parseAssistantTurnLine', () => {
     const { fields } = parseAssistantTurnLine(line);
 
     expect(fields?.toolUseIds).toEqual([]);
+  });
+});
+
+describe('parseAssistantTurnLine cache-write split', () => {
+  function parseCacheWrites(usage: Record<string, unknown>): {
+    readonly total: number | undefined;
+    readonly oneHour: number | undefined;
+  } {
+    const { fields } = parseAssistantTurnLine(
+      makeLine({ message: { id: 'msg_c', model: 'claude-opus-4-7', usage } }),
+    );
+    return { total: fields?.cacheCreationTokens, oneHour: fields?.cacheCreation1hTokens };
+  }
+
+  it('reads 1h-only writes', () => {
+    expect(
+      parseCacheWrites({
+        cache_creation_input_tokens: 5000,
+        cache_creation: { ephemeral_1h_input_tokens: 5000, ephemeral_5m_input_tokens: 0 },
+      }),
+    ).toEqual({ total: 5000, oneHour: 5000 });
+  });
+
+  it('reads 5m-only writes as zero 1h tokens', () => {
+    expect(
+      parseCacheWrites({
+        cache_creation_input_tokens: 5000,
+        cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 5000 },
+      }),
+    ).toEqual({ total: 5000, oneHour: 0 });
+  });
+
+  it('reads the 1h share of mixed writes', () => {
+    expect(
+      parseCacheWrites({
+        cache_creation_input_tokens: 5000,
+        cache_creation: { ephemeral_1h_input_tokens: 2000, ephemeral_5m_input_tokens: 3000 },
+      }),
+    ).toEqual({ total: 5000, oneHour: 2000 });
+  });
+
+  it('reads zero 1h tokens when cache_creation is absent', () => {
+    expect(parseCacheWrites({ cache_creation_input_tokens: 5000 })).toEqual({
+      total: 5000,
+      oneHour: 0,
+    });
+  });
+
+  it('clamps 1h tokens to the cache-write total', () => {
+    expect(
+      parseCacheWrites({
+        cache_creation_input_tokens: 5000,
+        cache_creation: { ephemeral_1h_input_tokens: 9000 },
+      }),
+    ).toEqual({ total: 5000, oneHour: 5000 });
+  });
+
+  it('reads zero 1h tokens when cache_creation is not an object', () => {
+    expect(parseCacheWrites({ cache_creation_input_tokens: 5000, cache_creation: 7 })).toEqual({
+      total: 5000,
+      oneHour: 0,
+    });
   });
 });
 

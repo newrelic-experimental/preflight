@@ -87,6 +87,8 @@ export interface TokenHookEvent extends HookEventBase {
   readonly outputTokens?: number;
   readonly cacheReadTokens?: number;
   readonly cacheCreationTokens?: number;
+  /** Subset of `cacheCreationTokens` written to the 1-hour cache. Omitted when zero. */
+  readonly cacheCreation1hTokens?: number;
   readonly model?: string;
   readonly sessionId?: string;
   /** Anthropic message id (msg_...) — used to dedupe replayed turns after a cursor-based re-read. */
@@ -113,6 +115,8 @@ export interface SubagentTokenHookEvent extends HookEventBase {
   readonly outputTokens?: number;
   readonly cacheReadTokens?: number;
   readonly cacheCreationTokens?: number;
+  /** See `TokenHookEvent.cacheCreation1hTokens`. */
+  readonly cacheCreation1hTokens?: number;
   readonly reasoningTokens?: number;
   readonly stopReason?: string | null;
   readonly schemaFingerprint?: string;
@@ -272,6 +276,8 @@ export interface TokenEvent {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  /** See `TokenHookEvent.cacheCreation1hTokens`. */
+  readonly cacheCreation1hTokens?: number;
   readonly model: string;
   readonly sessionId?: string;
   /** The API call's id (`TokenHookEvent.messageId`): the key of its usage-ledger entry. */

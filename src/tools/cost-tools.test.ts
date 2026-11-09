@@ -5,6 +5,7 @@ import {
   handleGetPromptCacheHealth,
   handleGetBudgetStatus,
   handleGetCostForecast,
+  COST_FORECAST_TOOL,
   handleGetCostBreakdown,
   registerCostTools,
 } from './cost-tools.js';
@@ -559,12 +560,7 @@ describe('handleGetBudgetStatus()', () => {
 
 describe('handleGetCostForecast()', () => {
   it('anchors the end-of-day forecast to getCostForDay()/getFirstActivityMsForDay(), not the full session spend', () => {
-    // Freeze the clock. The handler and the `expected` computation below each
-    // read Date.now() independently, and today's day-bucket anchor is only
-    // milliseconds old here, so the projected rate is dailySpend / (a few ms):
-    // even single-digit ms of drift between the two reads moves a five-figure
-    // end-of-day forecast past toBeCloseTo(…, 2). Seen failing on CI runners.
-    jest.useFakeTimers({ now: Date.now() });
+    jest.useFakeTimers({ now: new Date(2024, 0, 3, 12).getTime() });
     try {
       runAnchoredForecastCase();
     } finally {
@@ -591,7 +587,6 @@ describe('handleGetCostForecast()', () => {
       { timestampMs: yesterday },
     );
 
-    // "Today's" spend — small, and reported with no ctx so it lands in today's bucket.
     tracker.recordTokenUsage(
       {
         inputTokens: 1_000,
@@ -602,6 +597,7 @@ describe('handleGetCostForecast()', () => {
         totalTokens: 1_200,
       },
       'claude-sonnet-4',
+      { timestampMs: Date.now() - 60 * 60_000 },
     );
 
     const sessionStartMs = yesterday;
@@ -621,9 +617,59 @@ describe('handleGetCostForecast()', () => {
     // session spend instead of today's day-bucket, `expected` (computed here
     // from the correct daily-anchored inputs) would diverge sharply from
     // `body` given the huge backdated "yesterday" spend above.
-    expect(body.forecastEndOfDayUsd).toBeCloseTo(expected.forecastEndOfDayUsd ?? 0, 2);
+    expect(expected.forecastEndOfDayUsd).not.toBeNull();
+    expect(body.forecastEndOfDayUsd).toBeCloseTo(expected.forecastEndOfDayUsd as number, 2);
     expect(sessionTotalCostUsd).toBeGreaterThan(tracker.getCostForDay(todayKey));
   }
+
+  function recordSmallSpend(tracker: CostTracker): void {
+    tracker.recordTokenUsage(
+      {
+        inputTokens: 1_000,
+        outputTokens: 200,
+        thinkingTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalTokens: 1_200,
+      },
+      'claude-sonnet-4',
+    );
+  }
+
+  it('returns heldReason while end-of-day is held', () => {
+    jest.useFakeTimers({ now: new Date(2024, 0, 3, 12).getTime() });
+    try {
+      const tracker = new CostTracker();
+      recordSmallSpend(tracker);
+      const body = JSON.parse(handleGetCostForecast(tracker, Date.now() - 60_000).content[0].text);
+      expect(body.heldReason).toBe("held: under 10 minutes of today's data");
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('returns heldReason alongside resumeContext', () => {
+    jest.useFakeTimers({ now: new Date(2024, 0, 3, 12).getTime() });
+    try {
+      const tracker = new CostTracker();
+      recordSmallSpend(tracker);
+      const body = JSON.parse(
+        handleGetCostForecast(tracker, Date.now() - 60_000, new SessionResumeTracker()).content[0]
+          .text,
+      );
+      expect(body.heldReason).toBe("held: under 10 minutes of today's data");
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('describes heldReason in the tool description', () => {
+    expect(COST_FORECAST_TOOL.description).toContain('heldReason');
+  });
+
+  it('states the 10-minute hold in the tool description', () => {
+    expect(COST_FORECAST_TOOL.description).toContain('need 10 minutes of');
+  });
 
   it('omits resumeContext when no sessionResumeTracker is passed', () => {
     const tracker = new CostTracker();
