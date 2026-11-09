@@ -1,13 +1,18 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
-import { digestWebhookUrlOverride, normalizeDeveloperName, redactSensitive } from '../../config.js';
+import {
+  digestWebhookUrlOverrideSource,
+  digestWebhookUrlOverride,
+  normalizeDeveloperName,
+  redactSensitive,
+} from '../../config.js';
 import {
   isSyntheticSessionId,
   isUnscopedAggregatorSessionId,
   type SessionNameSource,
 } from '../../hooks/session-resolver.js';
-import { localDateKey, localStartOfDay, todayPortionRatio } from '../../lib/date.js';
+import { localDateKey, localEndOfDay, localStartOfDay, todayPortionRatio } from '../../lib/date.js';
 import { todayCostOfSummary } from '../../metrics/cost-tracker-seed.js';
 import type { AntiPattern } from '../../metrics/anti-patterns.js';
 import { AntiPatternDetector } from '../../metrics/anti-patterns.js';
@@ -77,7 +82,11 @@ import type {
   PersistedAntiPattern,
   SessionFileInfo,
 } from '../../storage/session-store.js';
-import { toPersistedAntiPatterns } from '../../storage/session-store.js';
+import {
+  hasRecordedUsage,
+  toPersistedAntiPatterns,
+  type RecordedUsage,
+} from '../../storage/session-store.js';
 import type {
   AttributionBucket,
   HookEvent,
@@ -86,7 +95,11 @@ import type {
 } from '../../storage/types.js';
 import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
-import { digestWebhookUrlShadowedBy, handleSendDigest } from '../../tools/cross-session-tools.js';
+import {
+  digestWebhookUrlShadowedBy,
+  handleSendDigest,
+  isDigestWebhookCommandConfigured,
+} from '../../tools/cross-session-tools.js';
 import type { AlertEvent } from '../live-event-bus.js';
 import type {
   AgentCall,
@@ -853,7 +866,7 @@ interface SessionActivityLike {
   readonly timeline?: readonly { readonly timestamp: number }[];
 }
 
-// One session can be stored across several files (#908). Concatenating their
+// One session can be stored across several files. Concatenating their
 // timelines per session id keeps a session from overlapping itself, matching
 // collectTodayActivityWindows' per-id merge for today.
 function timelinesBySession(
@@ -874,9 +887,8 @@ function timelinesBySession(
   return [...byId.values(), ...anonymous];
 }
 
-interface SessionIdentityLike {
+interface SessionIdentityLike extends RecordedUsage {
   readonly sessionId?: string;
-  readonly toolCallCount?: number;
 }
 
 interface ReplaySessionResponse {
@@ -1086,9 +1098,9 @@ function rawQualityCountsFromEvents(events: readonly QualityEvent[]): QualityPro
 }
 
 /**
- * Today's 15-minute concurrency grid (96 buckets, 92 or 100 on DST days) and its peak. Shared by the Today and
- * History views of GET /api/concurrency so today's History bar cannot drift
- * from the Today headline.
+ * Today's 15-minute concurrency grid (96 buckets, 92 or 100 on DST days) and
+ * its peak. Shared by the Today and History views of GET /api/concurrency so
+ * today's History bar cannot drift from the Today headline.
  */
 function computeTodayConcurrency(deps: ApiHandlerDeps): {
   startTimestamp: number;
@@ -1132,14 +1144,7 @@ function computeDailyPeakConcurrency(
     const dayStart = new Date(todayStart);
     dayStart.setDate(dayStart.getDate() - d);
     const dayStartMs = dayStart.getTime();
-    // `dayEnd` must be derived via the same local-date arithmetic as
-    // `dayStart`, not `dayStartMs + 86_400_000` — a local calendar day is
-    // 23h or 25h long on the ~2 DST-transition days/year, so the fixed-ms
-    // offset lands an hour into (or short of) the next/previous local day,
-    // misattributing entries near the boundary on those days.
-    const dayEnd = new Date(dayStart);
-    dayEnd.setDate(dayEnd.getDate() + 1);
-    const dayEndMs = dayEnd.getTime();
+    const dayEndMs = localEndOfDay(dayStartMs);
     const dateKey = localDateKey(dayStartMs);
 
     // Find sessions that overlap with this day and have timeline data
@@ -1564,10 +1569,7 @@ export function createApiHandler(
     // MCP-internal bookkeeping from --local / proxy modes that would
     // otherwise appear as confusing "duplicate" rows next to real Claude
     // Code sessions.
-    const withActivity = (allSessions as readonly SessionIdentityLike[]).filter((s) => {
-      const calls = s.toolCallCount ?? 0;
-      return calls > 0;
-    });
+    const withActivity = (allSessions as readonly SessionIdentityLike[]).filter(hasRecordedUsage);
     const sliced = withActivity.slice(-limit);
 
     // Append the current live session so it appears in the list before
@@ -1584,7 +1586,12 @@ export function createApiHandler(
       const alreadyPersisted = sliced.some(
         (s) => (s as { sessionId?: string }).sessionId === live.sessionId,
       );
-      if (!alreadyPersisted && live.toolCallCount > 0 && !isSyntheticSessionId(live.sessionId)) {
+      const liveCostUsd = deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null;
+      const liveHasUsage = hasRecordedUsage({
+        toolCallCount: live.toolCallCount,
+        estimatedCostUsd: liveCostUsd,
+      });
+      if (!alreadyPersisted && liveHasUsage && !isSyntheticSessionId(live.sessionId)) {
         sliced.push({
           sessionId: live.sessionId,
           sessionName: live.sessionName ?? null,
@@ -1592,7 +1599,7 @@ export function createApiHandler(
           startTime: live.sessionStartTime,
           durationMs: live.sessionDurationMs,
           toolCallCount: live.toolCallCount,
-          estimatedCostUsd: deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null,
+          estimatedCostUsd: liveCostUsd,
           // costTracker.getMetrics() also exposes the model this live
           // session is actually using; without it, aggregateModelPerformance
           // (History.tsx) buckets this session's real-time cost/count under
@@ -3132,6 +3139,13 @@ export function createApiHandler(
       }
     }
 
+    // Sends read the file at call time and skip its URL when a command is
+    // configured there, so follow the disk rather than the startup snapshot.
+    const overrideSource =
+      digestWebhookUrlOverrideSource(c) ??
+      (isDigestWebhookCommandConfigured(disk) ? 'command' : undefined);
+    const fileWebhookUrl = typeof disk.digestWebhookUrl === 'string' ? disk.digestWebhookUrl : null;
+
     const diskAlerts = (disk.alerts ?? {}) as Record<string, unknown>;
     const diskPersonal = (diskAlerts['personal'] ?? {}) as Record<string, unknown>;
 
@@ -3149,8 +3163,10 @@ export function createApiHandler(
         'retainSessionsDays' in disk
           ? (disk.retainSessionsDays as number | null)
           : c.retainSessionsDays,
-      digestWebhookUrl:
-        'digestWebhookUrl' in disk ? (disk.digestWebhookUrl as string | null) : c.digestWebhookUrl,
+      digestWebhookUrl: fileWebhookUrl,
+      // Where sends actually read the URL from. The value above is only the
+      // file's; env or a command outranks it, and its value is never returned.
+      digestWebhookUrlSource: overrideSource ?? (fileWebhookUrl ? 'file' : 'unset'),
       digestSchedule:
         typeof disk.digestSchedule === 'string' ? disk.digestSchedule : c.digestSchedule,
       alerts: {

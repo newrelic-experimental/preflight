@@ -89,6 +89,11 @@ jest.mock('../config.js', () => ({
 jest.mock('./setup-wizard.js', () => ({
   runSetupWizard: jest.fn(),
 }));
+jest.mock('./target-user.js', () => ({
+  EXPLICIT_CREDENTIALS_ENV: 'PREFLIGHT_INSTALL_CREDENTIALS_EXPLICIT',
+  lookupUser: jest.fn(),
+  runInstallAsUser: jest.fn(() => 0),
+}));
 
 import { LocalStore } from '../storage/index.js';
 import * as scheduleMod from './schedule.js';
@@ -98,6 +103,7 @@ import * as installHelperMod from './install-helper.js';
 import * as copilotInstallHelperMod from './copilot-install-helper.js';
 import * as configMod from '../config.js';
 import * as setupWizardMod from './setup-wizard.js';
+import * as targetUserMod from './target-user.js';
 import * as pricingInitMod from '../metrics/pricing-init.js';
 
 const mockedRunDiagnostics = diagnostics.runDiagnostics as jest.MockedFunction<
@@ -138,6 +144,11 @@ const mockedHelper = installHelperMod as unknown as {
   mergeMcpConfig: jest.Mock;
   detectSettingsPath: jest.Mock;
   detectMcpConfigPath: jest.Mock;
+  generateNrConfig: jest.Mock;
+};
+const mockedTargetUser = targetUserMod as unknown as {
+  lookupUser: jest.Mock;
+  runInstallAsUser: jest.Mock;
 };
 const mockedConfig = configMod as unknown as { loadMcpConfig: jest.Mock };
 const mockedSetupWizard = {
@@ -1317,6 +1328,290 @@ describe('platform transition matrix', () => {
     expect(configWrites).toHaveLength(0);
   });
 
+  it('install takes the license key and account id from the environment', async () => {
+    const saved = {
+      key: process.env.NEW_RELIC_LICENSE_KEY,
+      account: process.env.NEW_RELIC_ACCOUNT_ID,
+    };
+    process.env.NEW_RELIC_LICENSE_KEY = 'NRLIC-from-env';
+    process.env.NEW_RELIC_ACCOUNT_ID = '4242';
+    mFs.readFileSync.mockReturnValue('{}');
+    try {
+      await runInstallCli(['install']);
+    } finally {
+      if (saved.key === undefined) delete process.env.NEW_RELIC_LICENSE_KEY;
+      else process.env.NEW_RELIC_LICENSE_KEY = saved.key;
+      if (saved.account === undefined) delete process.env.NEW_RELIC_ACCOUNT_ID;
+      else process.env.NEW_RELIC_ACCOUNT_ID = saved.account;
+    }
+
+    expect(mockedHelper.generateNrConfig).toHaveBeenCalledWith('NRLIC-from-env', '4242');
+  });
+
+  async function installWithAmbientEnv(storedConfig: string): Promise<string> {
+    const saved = {
+      key: process.env.NEW_RELIC_LICENSE_KEY,
+      account: process.env.NEW_RELIC_ACCOUNT_ID,
+    };
+    process.env.NEW_RELIC_LICENSE_KEY = 'NRLIC-ambient';
+    process.env.NEW_RELIC_ACCOUNT_ID = '222';
+    mFs.readFileSync.mockReturnValue(storedConfig);
+    try {
+      await runInstallCli(['install']);
+    } finally {
+      if (saved.key === undefined) delete process.env.NEW_RELIC_LICENSE_KEY;
+      else process.env.NEW_RELIC_LICENSE_KEY = saved.key;
+      if (saved.account === undefined) delete process.env.NEW_RELIC_ACCOUNT_ID;
+      else process.env.NEW_RELIC_ACCOUNT_ID = saved.account;
+    }
+    return stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+  }
+
+  it('install does not let ambient env overwrite a stored license key', async () => {
+    const stdout = await installWithAmbientEnv('{"licenseKey":"KEY-A","accountId":"111"}');
+    expect(mockedHelper.generateNrConfig).not.toHaveBeenCalled();
+    expect(stdout).not.toContain('New Relic config written');
+  });
+
+  it('install as a target-user child applies the key it was handed over a stored one', async () => {
+    process.env.PREFLIGHT_INSTALL_CREDENTIALS_EXPLICIT = '1';
+    try {
+      await installWithAmbientEnv('{"licenseKey":"KEY-A","accountId":"111"}');
+    } finally {
+      delete process.env.PREFLIGHT_INSTALL_CREDENTIALS_EXPLICIT;
+    }
+    expect(mockedHelper.generateNrConfig).toHaveBeenCalledWith('NRLIC-ambient', '222');
+  });
+
+  it('install does not add a plaintext key next to a stored licenseKeyCommand', async () => {
+    await installWithAmbientEnv('{"licenseKeyCommand":{"command":"/usr/bin/security","args":[]}}');
+    expect(mockedHelper.generateNrConfig).not.toHaveBeenCalled();
+  });
+
+  it('install does not let ambient env overwrite a key stored in the pre-rename directory', async () => {
+    const legacyConfig = join(homedir(), '.nr-ai-observe', 'config.json');
+    const saved = {
+      key: process.env.NEW_RELIC_LICENSE_KEY,
+      account: process.env.NEW_RELIC_ACCOUNT_ID,
+    };
+    process.env.NEW_RELIC_LICENSE_KEY = 'NRLIC-ambient';
+    process.env.NEW_RELIC_ACCOUNT_ID = '222';
+    mFs.readFileSync.mockImplementation((p: unknown) => {
+      if (String(p) === legacyConfig) return '{"licenseKey":"KEY-A","accountId":"111"}';
+      return '{}';
+    });
+    try {
+      await runInstallCli(['install']);
+    } finally {
+      if (saved.key === undefined) delete process.env.NEW_RELIC_LICENSE_KEY;
+      else process.env.NEW_RELIC_LICENSE_KEY = saved.key;
+      if (saved.account === undefined) delete process.env.NEW_RELIC_ACCOUNT_ID;
+      else process.env.NEW_RELIC_ACCOUNT_ID = saved.account;
+    }
+    expect(mockedHelper.generateNrConfig).not.toHaveBeenCalled();
+  });
+
+  it('install says where an env-sourced key came from', async () => {
+    const stdout = await installWithAmbientEnv('{}');
+    expect(stdout).toContain('License key read from NEW_RELIC_LICENSE_KEY');
+  });
+
+  it('install with only an ambient env key does not print the missing-credentials hint', async () => {
+    const saved = process.env.NEW_RELIC_LICENSE_KEY;
+    const savedAccount = process.env.NEW_RELIC_ACCOUNT_ID;
+    process.env.NEW_RELIC_LICENSE_KEY = 'NRLIC-ambient';
+    delete process.env.NEW_RELIC_ACCOUNT_ID;
+    mFs.readFileSync.mockReturnValue('{}');
+    try {
+      await runInstallCli(['install']);
+    } finally {
+      if (saved === undefined) delete process.env.NEW_RELIC_LICENSE_KEY;
+      else process.env.NEW_RELIC_LICENSE_KEY = saved;
+      if (savedAccount !== undefined) process.env.NEW_RELIC_ACCOUNT_ID = savedAccount;
+    }
+    const stdout = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stdout).not.toContain('are both required to save NR config');
+  });
+
+  describe('--target-user', () => {
+    const dev = { name: 'dev', uid: 501, gid: 20, home: '/Users/dev' };
+    let uidSpy: ReturnType<typeof jest.spyOn>;
+    let stderrSpy: ReturnType<typeof jest.spyOn>;
+    let exitSpy: ReturnType<typeof jest.spyOn>;
+
+    function asUid(uid: number): void {
+      uidSpy = jest.spyOn(process, 'getuid').mockReturnValue(uid);
+    }
+
+    beforeEach(() => {
+      mFs.readFileSync.mockReturnValue('{}');
+      mockedTargetUser.lookupUser.mockReset().mockReturnValue(dev);
+      mockedTargetUser.runInstallAsUser.mockReset().mockReturnValue(0);
+      stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      exitSpy = jest.spyOn(process, 'exit').mockImplementation((() => {
+        throw new Error('process.exit');
+      }) as never);
+    });
+
+    afterEach(() => {
+      uidSpy?.mockRestore();
+      stderrSpy.mockRestore();
+      exitSpy.mockRestore();
+      process.exitCode = undefined;
+    });
+
+    it('as root re-runs the install as the user and writes nothing itself', async () => {
+      asUid(0);
+
+      await runInstallCli([
+        'install',
+        '--target-user',
+        'dev',
+        '--license-key',
+        'NRLIC-k',
+        '--account-id',
+        '9',
+      ]);
+
+      expect(mockedTargetUser.lookupUser).toHaveBeenCalledWith('dev');
+      expect(mockedTargetUser.runInstallAsUser).toHaveBeenCalledWith(
+        dev,
+        process.argv.slice(1),
+        expect.objectContaining({ licenseKey: 'NRLIC-k', accountId: '9' }),
+      );
+      expect(mockedHelper.mergeSettings).not.toHaveBeenCalled();
+    });
+
+    it('marks the credentials explicit only when the caller passed them', async () => {
+      asUid(0);
+      await runInstallCli(['install', '--target-user', 'dev', '--license-key', 'NRLIC-k']);
+      await runInstallCli(['install', '--target-user', 'dev']);
+
+      const calls = mockedTargetUser.runInstallAsUser.mock.calls;
+      expect(calls[0]?.[2]).toMatchObject({ explicit: true });
+      expect(calls[1]?.[2]).toMatchObject({ explicit: false });
+    });
+
+    it('does not mark an account ID alone as an explicit key replacement', async () => {
+      asUid(0);
+      await runInstallCli(['install', '--target-user', 'dev', '--account-id', '123']);
+
+      const credentials = mockedTargetUser.runInstallAsUser.mock.calls[0]?.[2];
+      expect(credentials).toMatchObject({ accountId: '123', explicit: false });
+    });
+
+    it('rejects --kiro', async () => {
+      asUid(0);
+
+      await expect(runInstallCli(['install', '--target-user', 'dev', '--kiro'])).rejects.toThrow(
+        'process.exit',
+      );
+
+      const stderr = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(stderr).toContain('--kiro cannot be combined with --target-user');
+      expect(mockedTargetUser.runInstallAsUser).not.toHaveBeenCalled();
+    });
+
+    it('hands the resolved key to the child so it never goes through argv', async () => {
+      asUid(0);
+      process.env.NEW_RELIC_LICENSE_KEY = 'NRLIC-env';
+      try {
+        await runInstallCli(['install', '--target-user', 'dev']);
+      } finally {
+        delete process.env.NEW_RELIC_LICENSE_KEY;
+      }
+
+      expect(mockedTargetUser.runInstallAsUser).toHaveBeenCalledWith(
+        dev,
+        process.argv.slice(1),
+        expect.objectContaining({ licenseKey: 'NRLIC-env' }),
+      );
+    });
+
+    it('passes the child exit status through', async () => {
+      asUid(0);
+      mockedTargetUser.runInstallAsUser.mockReturnValue(3);
+
+      await runInstallCli(['install', '--target-user', 'dev']);
+
+      expect(process.exitCode).toBe(3);
+    });
+
+    it('reports a spawn failure and exits 1', async () => {
+      asUid(0);
+      mockedTargetUser.runInstallAsUser.mockImplementation(() => {
+        throw new Error('spawn /nonexistent/node ENOENT');
+      });
+
+      await expect(runInstallCli(['install', '--target-user', 'dev'])).rejects.toThrow(
+        'process.exit',
+      );
+
+      const stderr = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(stderr).toContain('Could not run the install as dev: spawn /nonexistent/node ENOENT');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('refuses when not root', async () => {
+      asUid(777);
+
+      await expect(runInstallCli(['install', '--target-user', 'dev'])).rejects.toThrow(
+        'process.exit',
+      );
+
+      const stderr = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(stderr).toContain('--target-user dev requires running as root');
+      expect(mockedTargetUser.runInstallAsUser).not.toHaveBeenCalled();
+    });
+
+    it('installs in place when the target is the current user', async () => {
+      asUid(501);
+
+      await runInstallCli(['install', '--target-user', 'dev']);
+
+      expect(mockedTargetUser.runInstallAsUser).not.toHaveBeenCalled();
+      expect(mockedHelper.mergeSettings).toHaveBeenCalled();
+    });
+
+    it('exits 1 on an unknown user', async () => {
+      asUid(0);
+      mockedTargetUser.lookupUser.mockImplementation(() => {
+        throw new Error('User not found: ghost');
+      });
+
+      await expect(runInstallCli(['install', '--target-user', 'ghost'])).rejects.toThrow(
+        'process.exit',
+      );
+
+      const stderr = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(stderr).toContain('User not found: ghost');
+    });
+
+    it('rejects --project', async () => {
+      asUid(0);
+
+      await expect(runInstallCli(['install', '--target-user', 'dev', '--project'])).rejects.toThrow(
+        'process.exit',
+      );
+
+      const stderr = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(stderr).toContain('--project cannot be combined with --target-user');
+      expect(mockedTargetUser.lookupUser).not.toHaveBeenCalled();
+      expect(mockedTargetUser.runInstallAsUser).not.toHaveBeenCalled();
+    });
+
+    it('warns which home a root install without a target will configure', async () => {
+      asUid(0);
+
+      await runInstallCli(['install']);
+
+      const stdout = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(stdout).toContain('Running as root');
+      expect(stdout).toContain('--target-user <name>');
+      expect(mockedHelper.mergeSettings).toHaveBeenCalled();
+    });
+  });
+
   // Bug fix: !nrConfigWriteFailed guard was suppressing the "Both required" hint when
   // a partial credential was passed AND the platformTarget write failed. Both messages
   // carry independent information and must both fire.
@@ -1335,7 +1630,7 @@ describe('platform transition matrix', () => {
     await runInstallCli(['install', '--license-key', 'NRLIC-partial']); // non-fatal
 
     const stdout = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
-    expect(stdout).toContain('Both --license-key and --account-id are required');
+    expect(stdout).toContain('are both required to save NR config');
     stderrSpy.mockRestore();
   });
 
@@ -2834,6 +3129,134 @@ describe('copilot install/uninstall', () => {
       (c: unknown[]) => Array.isArray(c[1]) && (c[1] as unknown[]).includes('add'),
     );
     expect(addCall![1]).toContain(`NEW_RELIC_LICENSE_KEY=${dangerousKey}`);
+  });
+
+  describe('with an npm-installed copilot.cmd on Windows', () => {
+    const originalPlatform = process.platform;
+    const originalComSpec = process.env.ComSpec;
+    const copilotCmd = 'C:\\Users\\Jo Doe\\AppData\\Roaming\\npm\\copilot.cmd';
+
+    beforeEach(() => {
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      process.env.ComSpec = 'C:\\Windows\\system32\\cmd.exe';
+      mockedSchedule.resolveNamedBinaryOnPath.mockReturnValue(copilotCmd);
+      mockedSchedule.resolveBinaryPath.mockReturnValue('C:\\Users\\Jo Doe\\npm\\preflight.cmd');
+      // Node >= 18.20.2 refuses to spawn a .cmd without a shell (CVE-2024-27980).
+      mExec.execFileSync.mockImplementation((file: unknown) => {
+        if (/\.(?:cmd|bat)$/i.test(String(file))) throw new Error('spawnSync EINVAL');
+        return Buffer.from('');
+      });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      if (originalComSpec === undefined) delete process.env.ComSpec;
+      else process.env.ComSpec = originalComSpec;
+    });
+
+    it('registers the MCP server through cmd.exe with every argument quoted', async () => {
+      await runInstallCli([
+        'install',
+        '--copilot',
+        '--license-key',
+        'k&ey|^()',
+        '--account-id',
+        '456',
+      ]);
+
+      expect(mExec.execFileSync).toHaveBeenCalledWith(
+        'C:\\Windows\\system32\\cmd.exe',
+        [
+          '/d',
+          '/v:off',
+          '/s',
+          '/c',
+          `""${copilotCmd}" "mcp" "add" "preflight" "--env" "MCP_CLIENT=copilot-sdk" "--env" "NEW_RELIC_LICENSE_KEY=k&ey|^()" "--env" "NEW_RELIC_ACCOUNT_ID=456" "--" "C:\\Users\\Jo Doe\\npm\\preflight.cmd" "--stdio""`,
+        ],
+        { stdio: 'pipe', windowsVerbatimArguments: true },
+      );
+      const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(output).toContain('Registered preflight with `copilot mcp add`');
+    });
+
+    it.each([
+      ['a %', '%PATH%'],
+      ['a "', 'k"ey'],
+    ])(
+      'refuses an argument holding %s instead of passing it to cmd.exe',
+      async (_label, licenseKey) => {
+        const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        await runInstallCli([
+          'install',
+          '--copilot',
+          '--license-key',
+          licenseKey,
+          '--account-id',
+          '456',
+        ]);
+
+        const cmdExeAdds = mExec.execFileSync.mock.calls.filter(
+          (c: unknown[]) =>
+            /cmd\.exe$/i.test(String(c[0])) && String((c[1] as string[])[4]).includes(' "add" '),
+        );
+        expect(cmdExeAdds).toEqual([]);
+        const stderr = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+        expect(stderr).toContain('Could not register MCP server with the copilot CLI');
+        stderrSpy.mockRestore();
+      },
+    );
+
+    it('doubles a trailing backslash so it does not escape the closing quote', async () => {
+      await runInstallCli([
+        'install',
+        '--copilot',
+        '--license-key',
+        'key\\',
+        '--account-id',
+        '456',
+      ]);
+
+      expect(mExec.execFileSync).toHaveBeenCalledWith(
+        'C:\\Windows\\system32\\cmd.exe',
+        [
+          '/d',
+          '/v:off',
+          '/s',
+          '/c',
+          `""${copilotCmd}" "mcp" "add" "preflight" "--env" "MCP_CLIENT=copilot-sdk" "--env" "NEW_RELIC_LICENSE_KEY=key\\\\" "--env" "NEW_RELIC_ACCOUNT_ID=456" "--" "C:\\Users\\Jo Doe\\npm\\preflight.cmd" "--stdio""`,
+        ],
+        { stdio: 'pipe', windowsVerbatimArguments: true },
+      );
+    });
+
+    it('runs a copilot.bat through cmd.exe too', async () => {
+      const copilotBat = 'C:\\tools\\copilot.bat';
+      mockedSchedule.resolveNamedBinaryOnPath.mockReturnValue(copilotBat);
+      await runInstallCli(['uninstall', '--copilot', '--yes']);
+
+      expect(mExec.execFileSync).toHaveBeenCalledWith(
+        'C:\\Windows\\system32\\cmd.exe',
+        ['/d', '/v:off', '/s', '/c', `""${copilotBat}" "mcp" "remove" "preflight""`],
+        { stdio: 'pipe', windowsVerbatimArguments: true },
+      );
+      expect(mExec.execFileSync).not.toHaveBeenCalledWith(
+        copilotBat,
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('unregisters through cmd.exe on uninstall', async () => {
+      await runInstallCli(['uninstall', '--copilot', '--yes']);
+
+      expect(mExec.execFileSync).toHaveBeenCalledWith(
+        'C:\\Windows\\system32\\cmd.exe',
+        ['/d', '/v:off', '/s', '/c', `""${copilotCmd}" "mcp" "remove" "preflight""`],
+        { stdio: 'pipe', windowsVerbatimArguments: true },
+      );
+      const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(output).toContain('Removed preflight from `copilot mcp list`');
+    });
   });
 
   it('skips VS Code steps gracefully when the VS Code user directory is not found', async () => {

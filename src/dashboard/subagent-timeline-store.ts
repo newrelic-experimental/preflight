@@ -32,12 +32,12 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { createLogger, type TokenUsage } from '../shared/index.js';
 import { calculateModelCost } from '../metrics/pricing-overlay.js';
 import { AGENT_ID_RE } from '../lib/agent-id.js';
+import { claudeProjectsDir } from '../lib/claude-config-dir.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
 import { findWorkflowScriptPath, WorkflowStore } from './workflow-store.js';
 import { parseWorkflowScript, type DeclaredTopology } from '../hooks/workflow-script-parser.js';
@@ -49,7 +49,6 @@ const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]
 // AGENT_ID_RE imported from ../lib/agent-id.js — see its doc comment for the
 // two valid agentId shapes.
 const WORKFLOW_RUN_ID_RE = /^wf_[A-Za-z0-9_-]{1,128}$/;
-const PROJECTS_DIR_NAME = '.claude/projects';
 
 /** Skip agent files larger than this — a transcript this big is pathological. */
 const MAX_AGENT_FILE_BYTES = 64 * 1024 * 1024; // 64 MiB
@@ -104,9 +103,36 @@ export interface SubagentTimelineWindow {
   readonly endMs: number;
 }
 
+export interface SubagentPeak {
+  readonly count: number;
+  readonly atMs: number | null;
+}
+
 export interface SubagentTimeline {
   readonly window: SubagentTimelineWindow;
   readonly agents: readonly AgentSpan[];
+  readonly peak: SubagentPeak;
+}
+
+/**
+ * Maximum number of agents running at the same instant. Opens sort before
+ * closes at equal timestamps, so a zero-length agent and spans that merely
+ * touch both count as overlapping.
+ */
+export function computeSubagentPeak(agents: readonly AgentSpan[]): SubagentPeak {
+  const events: { readonly ts: number; readonly delta: 1 | -1 }[] = [];
+  for (const a of agents) {
+    events.push({ ts: a.startMs, delta: 1 }, { ts: a.endMs, delta: -1 });
+  }
+  events.sort((a, b) => a.ts - b.ts || b.delta - a.delta);
+
+  let active = 0;
+  let peak: SubagentPeak = { count: 0, atMs: null };
+  for (const e of events) {
+    active += e.delta;
+    if (active > peak.count) peak = { count: active, atMs: e.ts };
+  }
+  return peak;
 }
 
 /**
@@ -172,7 +198,7 @@ export interface AgentCall {
 }
 
 export interface SubagentTimelineStoreOptions {
-  /** `~/.claude/projects` directory; defaults to homedir-relative. */
+  /** Claude Code projects directory; defaults to `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`. */
   readonly projectsDir?: string;
   /**
    * Optional injected workflow reader (tests). When omitted, a `WorkflowStore`
@@ -264,7 +290,7 @@ export class SubagentTimelineStore {
   private readonly runLocationCache = new Map<string, RunLocation>();
 
   constructor(options: SubagentTimelineStoreOptions = {}) {
-    this.projectsDir = options.projectsDir ?? join(homedir(), PROJECTS_DIR_NAME);
+    this.projectsDir = options.projectsDir ?? claudeProjectsDir();
     this.injectedWorkflowStore = options.workflowStore;
   }
 
@@ -287,7 +313,11 @@ export class SubagentTimelineStore {
    * session has no subagent transcripts (or anything goes wrong).
    */
   getSubagentsForSession(sessionId: string): SubagentTimeline {
-    const empty: SubagentTimeline = { window: { startMs: 0, endMs: 0 }, agents: [] };
+    const empty: SubagentTimeline = {
+      window: { startMs: 0, endMs: 0 },
+      agents: [],
+      peak: { count: 0, atMs: null },
+    };
     if (!SESSION_ID_RE.test(sessionId)) return empty;
 
     let files: DiscoveredAgentFile[];
@@ -361,6 +391,7 @@ export class SubagentTimelineStore {
         endMs: Number.isFinite(windowEnd) ? windowEnd : 0,
       },
       agents,
+      peak: computeSubagentPeak(agents),
     };
   }
 
@@ -762,6 +793,9 @@ export class SubagentTimelineStore {
           thinkingTokens: 0,
           cacheReadTokens: turn.cacheReadTokens,
           cacheCreationTokens: turn.cacheCreationTokens,
+          ...(turn.cacheCreation1hTokens > 0 && {
+            cacheCreation1hTokens: turn.cacheCreation1hTokens,
+          }),
           totalTokens:
             turn.inputTokens + turn.outputTokens + turn.cacheReadTokens + turn.cacheCreationTokens,
         },
@@ -908,6 +942,7 @@ interface AssistantTurn {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  readonly cacheCreation1hTokens: number;
 }
 
 /**
@@ -942,6 +977,7 @@ function parseAssistantTurn(line: string): AssistantTurn | null {
     outputTokens: fields.outputTokens,
     cacheReadTokens: fields.cacheReadTokens,
     cacheCreationTokens: fields.cacheCreationTokens,
+    cacheCreation1hTokens: fields.cacheCreation1hTokens,
   };
 }
 

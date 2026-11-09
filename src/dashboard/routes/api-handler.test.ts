@@ -11,6 +11,7 @@ import { Readable } from 'node:stream';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { loadMcpConfig } from '../../config.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import {
   ToolSelectionScorer,
@@ -22,6 +23,7 @@ import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
 import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
 import { CostTracker } from '../../metrics/cost-tracker.js';
+import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { buildCostTrackerSeed } from '../../metrics/cost-tracker-seed.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../../metrics/quality-proxy-tracker.js';
 
@@ -205,6 +207,26 @@ describe('api-handler GET /api/sessions', () => {
     expect(result[0].sessionId).toBe('sess-90'); // Most recent (highest index)
   });
 
+  it('lists a chat-only session with cost but no tool calls, and hides an idle one', async () => {
+    const fakeSessions = [
+      { sessionId: 'chat-only', toolCallCount: 0, estimatedCostUsd: 1.5 },
+      { sessionId: 'idle', toolCallCount: 0, estimatedCostUsd: 0 },
+      { sessionId: 'tools', toolCallCount: 3 },
+    ];
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => fakeSessions,
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const ids = (JSON.parse(body()) as Array<{ sessionId: string }>).map((s) => s.sessionId);
+    expect(ids).toEqual(['chat-only', 'tools']);
+  });
+
   it('uses default limit of 50 when not specified', async () => {
     const fakeSessions = Array.from({ length: 100 }, (_v, i) => ({
       filename: `2026-05-${String(i + 1).padStart(2, '0')}_sess-${i}.json`,
@@ -344,6 +366,43 @@ describe('api-handler GET /api/sessions', () => {
     const live = result.find((s) => s.sessionId === 'live-session-with-model');
     expect(live).toBeDefined();
     expect(live?.model).toBe('claude-sonnet-4-20250514');
+  });
+
+  it('lists a live chat-only session with cost but no tool calls, and hides an idle one', async () => {
+    const makeHandler = (sessionId: string, cost: number) =>
+      createApiHandler({
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => [],
+          loadAllSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+        sessionTracker: {
+          getMetrics: () => ({
+            sessionId,
+            sessionName: null,
+            sessionStartTime: 1000,
+            sessionDurationMs: 500,
+            toolCallCount: 0,
+            toolCallCountByTool: {},
+            uniqueFilesRead: 0,
+            uniqueFilesWritten: 0,
+            toolCallTimeline: [],
+          }),
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+        costTracker: {
+          getMetrics: () => ({ sessionTotalCostUsd: cost, model: 'claude-sonnet-4-20250514' }),
+        } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+      });
+    const listIds = async (sessionId: string, cost: number): Promise<string[]> => {
+      const req = { method: 'GET', url: '/api/sessions' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler(sessionId, cost)(req, res);
+      return (JSON.parse(body()) as Array<{ sessionId: string }>).map((s) => s.sessionId);
+    };
+
+    expect(await listIds('live-chat-only', 0.3)).toEqual(['live-chat-only']);
+    expect(await listIds('live-idle', 0)).toEqual([]);
   });
 
   it('defaults model to null on the live-session stub when costTracker has none', async () => {
@@ -1114,6 +1173,7 @@ describe('api-handler GET /api/sessions/:sessionId/subagents', () => {
   it('returns the subagent timeline payload as JSON (200)', async () => {
     const payload = {
       window: { startMs: 100, endMs: 200 },
+      peak: { count: 1, atMs: 100 },
       agents: [
         {
           agentId: 'a1111111111111111',
@@ -1178,7 +1238,11 @@ describe('api-handler GET /api/sessions/:sessionId/subagents/:agentId/calls', ()
     let receivedAgent = '';
     const handler = createApiHandler({
       subagentTimeline: {
-        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getSubagentsForSession: () => ({
+          window: { startMs: 0, endMs: 0 },
+          agents: [],
+          peak: { count: 0, atMs: null },
+        }),
         getAgentCalls: (sessionId: string, agentId: string) => {
           receivedSession = sessionId;
           receivedAgent = agentId;
@@ -1205,7 +1269,7 @@ describe('api-handler GET /api/sessions/:sessionId/subagents/:agentId/calls', ()
       subagentTimeline: {
         getSubagentsForSession: () => {
           calledTimeline = true;
-          return { window: { startMs: 0, endMs: 0 }, agents: [] };
+          return { window: { startMs: 0, endMs: 0 }, agents: [], peak: { count: 0, atMs: null } };
         },
         getAgentCalls: () => ({ calls: [] }),
       },
@@ -1255,6 +1319,24 @@ describe('api-handler GET /api/cost', () => {
     const result = JSON.parse(body());
     expect(result.cost).toEqual(fakeCost);
     expect(result.forecast).toEqual(fakeForecast);
+  });
+
+  it('returns heldReason from the real forecast builder', async () => {
+    const nowMs = new Date(2024, 0, 3, 14).getTime();
+    const handler = createApiHandler({
+      costTracker: {
+        getMetrics: () => ({ sessionTotalCostUsd: 0.01 }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+      costForecast: () =>
+        buildCostForecastFromInputs(
+          { sessionSpentUsd: 0.01, sessionStartMs: nowMs - 15_000 },
+          nowMs,
+        ),
+    });
+    const req = { method: 'GET', url: '/api/cost' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body()).forecast.heldReason).toBe("held: under 10 minutes of today's data");
   });
 
   it('returns null forecast when costForecast is missing', async () => {
@@ -4122,53 +4204,58 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
   });
 
   it("anchors the forecast to a cross-midnight session's first TODAY-scoped timeline entry, not its startTime", async () => {
-    const now = Date.now();
-    const startOfDay = new Date(now);
-    startOfDay.setHours(0, 0, 0, 0);
-    const startMs = startOfDay.getTime();
+    jest.useFakeTimers({ now: new Date(2024, 0, 3, 14).getTime(), doNotFake: ['nextTick'] });
+    try {
+      const now = Date.now();
+      const startOfDay = new Date(now);
+      startOfDay.setHours(0, 0, 0, 0);
+      const startMs = startOfDay.getTime();
 
-    // Started 1h before midnight, still active. loadTodaySessions() (file-date
-    // = start date = yesterday) excludes it entirely; only
-    // loadSessionsOverlappingToday() sees it. 1 of its 4 timeline entries is
-    // before midnight, 3 are after -> todayPortionRatio = 0.75 -> today's cost
-    // contribution is 10 * 0.75 = 7.5.
-    const crossMidnightSession = {
-      sessionId: 'cross-midnight-1',
-      startTime: startMs - 60 * 60 * 1000,
-      endTime: startMs + 10_000,
-      estimatedCostUsd: 10,
-      timeline: [
-        { timestamp: startMs - 30 * 60 * 1000 },
-        { timestamp: startMs + 1_000 },
-        { timestamp: startMs + 2_000 },
-        { timestamp: startMs + 3_000 },
-      ],
-    };
+      // Started 1h before midnight, still active. loadTodaySessions() (file-date
+      // = start date = yesterday) excludes it entirely; only
+      // loadSessionsOverlappingToday() sees it. 1 of its 4 timeline entries is
+      // before midnight, 3 are after -> todayPortionRatio = 0.75 -> today's cost
+      // contribution is 10 * 0.75 = 7.5.
+      const crossMidnightSession = {
+        sessionId: 'cross-midnight-1',
+        startTime: startMs - 60 * 60 * 1000,
+        endTime: startMs + 10_000,
+        estimatedCostUsd: 10,
+        timeline: [
+          { timestamp: startMs - 30 * 60 * 1000 },
+          { timestamp: startMs + 1_000 },
+          { timestamp: startMs + 2_000 },
+          { timestamp: startMs + 3_000 },
+        ],
+      };
 
-    const handler = createApiHandler({
-      localStore: { peekAllBuffers: () => [] },
-      sessionStore: {
-        loadTodaySessions: () => [],
-        loadSessionsOverlappingToday: () => [crossMidnightSession],
-        listSessions: () => [],
-        loadSession: () => null,
-      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-    });
-    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
-    const { res, status, body } = fakeRes();
-    await handler(req, res);
-    expect(status()).toBe(200);
-    const parsed = JSON.parse(body()) as {
-      totalCostUsd: number;
-      forecastEndOfDayUsd: number | null;
-    };
-    expect(parsed.totalCostUsd).toBeCloseTo(7.5, 3);
-    // Must not be null: the session has real spend today, so a null forecast
-    // here means dailyFirstActivityMs was never anchored for it.
-    expect(parsed.forecastEndOfDayUsd).not.toBeNull();
-    // effectiveBaseUsd is totalCostUsd and the rate is >= 0, so the forecast
-    // can never be less than the amount already spent today.
-    expect(parsed.forecastEndOfDayUsd as number).toBeGreaterThanOrEqual(parsed.totalCostUsd);
+      const handler = createApiHandler({
+        localStore: { peekAllBuffers: () => [] },
+        sessionStore: {
+          loadTodaySessions: () => [],
+          loadSessionsOverlappingToday: () => [crossMidnightSession],
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+      const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+      const { res, status, body } = fakeRes();
+      await handler(req, res);
+      expect(status()).toBe(200);
+      const parsed = JSON.parse(body()) as {
+        totalCostUsd: number;
+        forecastEndOfDayUsd: number | null;
+      };
+      expect(parsed.totalCostUsd).toBeCloseTo(7.5, 3);
+      // Must not be null: the session has real spend today, so a null forecast
+      // here means dailyFirstActivityMs was never anchored for it.
+      expect(parsed.forecastEndOfDayUsd).not.toBeNull();
+      // effectiveBaseUsd is totalCostUsd and the rate is >= 0, so the forecast
+      // can never be less than the amount already spent today.
+      expect(parsed.forecastEndOfDayUsd as number).toBeGreaterThanOrEqual(parsed.totalCostUsd);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('returns forecastEndOfDayUsd null when there is no activity today from any source', async () => {
@@ -4199,7 +4286,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costTracker: {
         getMetrics: () => ({ sessionTotalCostUsd: 0 }),
         getCostForDay: () => 9,
-        getFirstActivityMsForDay: () => Date.now() - 60_000,
+        getFirstActivityMsForDay: () => Date.now() - 30 * 60_000,
       } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
     });
     const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
@@ -5536,6 +5623,82 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     expect(JSON.parse(body()).dailyPeaks[1].peak).toBe(1);
   });
 
+  async function getConcurrency(
+    url: string,
+    store: { loadTodaySessions: () => unknown[]; loadAllSessions: () => unknown[] },
+  ): Promise<{
+    peak: number;
+    allTimePeak: number;
+    dailyPeaks: Array<{ date: string; peak: number }>;
+  }> {
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        ...store,
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const { res, body } = fakeRes();
+    await handler({ method: 'GET', url } as IncomingMessage, res);
+    return JSON.parse(body());
+  }
+
+  it("view=history keeps both files of a split session when another session overlaps only the first file's activity", async () => {
+    const yesterday = midnightToday() - 86_400_000;
+    const at = (hour: number) => yesterday + hour * 3_600_000;
+    const sessions = [
+      { sessionId: 'split', timeline: [{ timestamp: at(10) }] },
+      { sessionId: 'other', timeline: [{ timestamp: at(10) }] },
+      { sessionId: 'split', timeline: [{ timestamp: at(14) }] },
+    ];
+    const result = await getConcurrency('/api/concurrency?view=history&days=3', {
+      loadTodaySessions: () => [],
+      loadAllSessions: () => sessions,
+    });
+    expect(result.dailyPeaks[1].peak).toBe(2);
+  });
+
+  it.each([
+    ['no sessionId', undefined],
+    ['an empty sessionId', ''],
+  ])('view=history counts overlapping sessions with %s separately', async (_label, sessionId) => {
+    const yesterday = midnightToday() - 86_400_000;
+    const sessions = [
+      { sessionId, timeline: [{ timestamp: yesterday + 5 * 60_000 }] },
+      { sessionId, timeline: [{ timestamp: yesterday + 6 * 60_000 }] },
+    ];
+    const result = await getConcurrency('/api/concurrency?view=history&days=3', {
+      loadTodaySessions: () => [],
+      loadAllSessions: () => sessions,
+    });
+    expect(result.dailyPeaks[1].peak).toBe(2);
+  });
+
+  it('allTimePeak counts a session split across two files once', async () => {
+    const split = [
+      { sessionId: 'split', timeline: makeTimeline(5, 6) },
+      { sessionId: 'split', timeline: makeTimeline(7, 8) },
+    ];
+    const result = await getConcurrency('/api/concurrency', {
+      loadTodaySessions: () => [],
+      loadAllSessions: () => split,
+    });
+    expect(result.allTimePeak).toBe(1);
+  });
+
+  it("view=history's today value is the Today view's peak even when the disk pass sees a higher one", async () => {
+    const result = await getConcurrency('/api/concurrency?view=history&days=3', {
+      loadTodaySessions: () => [{ sessionId: 'a', timeline: makeTimeline(5, 10) }],
+      loadAllSessions: () => [
+        { sessionId: 'a', timeline: makeTimeline(5, 10) },
+        { sessionId: 'b', timeline: makeTimeline(5, 10) },
+      ],
+    });
+    expect(result.dailyPeaks[2].peak).toBe(1);
+  });
+
   it("view=history keys each day's dailyPeaks entry by local date, not UTC", async () => {
     const handler = createApiHandler({
       concurrencyTracker: makeConcurrencyTracker(),
@@ -5683,14 +5846,11 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
   const fallBackDay = findDstDay(90_000_000);
   const springForwardDay = findDstDay(82_800_000);
 
-  const fetchTodayConcurrency = async (
+  const fetchConcurrency = async <T>(
     atMs: number,
     timestamps: readonly number[],
-  ): Promise<{
-    peak: number;
-    startTimestamp: number;
-    buckets: Array<{ timestamp: number; count: number }>;
-  }> => {
+    url = '/api/concurrency',
+  ): Promise<T> => {
     jest.useFakeTimers();
     try {
       jest.setSystemTime(new Date(atMs));
@@ -5708,7 +5868,7 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
           loadSession: () => null,
         } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
       });
-      const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
+      const req = { method: 'GET', url } as IncomingMessage;
       const { res, status, body } = fakeRes();
       await handler(req, res);
       expect(status()).toBe(200);
@@ -5717,6 +5877,14 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
       jest.useRealTimers();
     }
   };
+
+  interface TodayConcurrency {
+    peak: number;
+    startTimestamp: number;
+    buckets: Array<{ timestamp: number; count: number }>;
+  }
+  const fetchTodayConcurrency = (atMs: number, timestamps: readonly number[]) =>
+    fetchConcurrency<TodayConcurrency>(atMs, timestamps);
 
   (fallBackDay === null ? it.skip : it)(
     'sizes the Today concurrency grid to 100 buckets on a fall-back day and counts 23:30 activity',
@@ -5729,6 +5897,23 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
       const lateBucket = result.buckets.find((b) => b.timestamp === next - 30 * 60_000)!;
       expect(lateBucket.count).toBe(2);
       expect(result.peak).toBe(2);
+    },
+  );
+
+  (fallBackDay === null ? it.skip : it)(
+    "reports the same peak in History's today bar as the Today view on a fall-back day",
+    async () => {
+      const { next } = fallBackDay as { start: number; next: number };
+      const at = next - 20 * 60_000;
+      const overlap = [next - 40 * 60_000];
+      const today = await fetchTodayConcurrency(at, overlap);
+      const history = await fetchConcurrency<{ dailyPeaks: Array<{ peak: number }> }>(
+        at,
+        overlap,
+        '/api/concurrency?view=history&days=2',
+      );
+      expect(today.peak).toBe(2);
+      expect(history.dailyPeaks[history.dailyPeaks.length - 1]!.peak).toBe(today.peak);
     },
   );
 
@@ -5793,6 +5978,25 @@ describe('GET /api/diagnostics', () => {
 
     expect(status()).toBe(200);
     expect(JSON.parse(body())).toEqual(expected);
+  });
+});
+
+describe('GET /api/diagnostics secret helpers', () => {
+  it('never lets diagnostics run secret helpers, on every request', async () => {
+    mockedRunDiagnostics.mockClear();
+    mockedRunDiagnostics.mockResolvedValue([]);
+    const handler = createApiHandler({});
+
+    for (let i = 0; i < 3; i++) {
+      const req = { method: 'GET', url: '/api/diagnostics' } as IncomingMessage;
+      const { res } = fakeRes();
+      await handler(req, res);
+    }
+
+    expect(mockedRunDiagnostics).toHaveBeenCalledTimes(3);
+    for (const [opts] of mockedRunDiagnostics.mock.calls) {
+      expect(opts).toMatchObject({ resolveSecrets: false });
+    }
   });
 });
 
@@ -6222,8 +6426,124 @@ describe('api-handler GET /api/settings', () => {
       storagePath: '/tmp/does-not-matter',
       highSecurity: false,
       licenseKey: 'NRAK-ABCDEFGHIJKLMNOP1234',
+      secretSources: { licenseKey: 'file', nrApiKey: 'unset', digestWebhookUrl: 'file' },
     } as unknown as Parameters<typeof createApiHandler>[0]['config'];
   }
+
+  async function getSettings(
+    config: Parameters<typeof createApiHandler>[0]['config'],
+    configFilePath: string,
+  ): Promise<Record<string, unknown>> {
+    const handler = createApiHandler({ config, configFilePath });
+    const req = { method: 'GET', url: '/api/settings' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    return JSON.parse(body()) as Record<string, unknown>;
+  }
+
+  it('reports the file as the webhook source when nothing overrides it', async () => {
+    const configFilePath = makeConfigFile({
+      digestWebhookUrl: 'https://hooks.slack.com/services/T/B/FILE',
+    });
+
+    const result = await getSettings(fakeStartupConfig(), configFilePath);
+
+    expect(result.digestWebhookUrl).toBe('https://hooks.slack.com/services/T/B/FILE');
+    expect(result.digestWebhookUrlSource).toBe('file');
+  });
+
+  it.each(['env', 'command'] as const)(
+    'reports %s as the source and keeps its value out of the response when it overrides the file',
+    async (source) => {
+      const OVERRIDE = 'https://hooks.slack.com/services/T/B/OVERRIDE';
+      const config = {
+        ...fakeStartupConfig(),
+        digestWebhookUrl: OVERRIDE,
+        secretSources: { licenseKey: 'file', nrApiKey: 'unset', digestWebhookUrl: source },
+      } as unknown as Parameters<typeof createApiHandler>[0]['config'];
+      const configFilePath = makeConfigFile({
+        digestWebhookUrl: 'https://hooks.slack.com/services/T/B/FILE',
+      });
+
+      const result = await getSettings(config, configFilePath);
+
+      expect(result.digestWebhookUrlSource).toBe(source);
+      expect(result.digestWebhookUrl).toBe('https://hooks.slack.com/services/T/B/FILE');
+      expect(JSON.stringify(result)).not.toContain(OVERRIDE);
+    },
+  );
+
+  it('does not fall back to the override value when the file has no URL', async () => {
+    const OVERRIDE = 'https://hooks.slack.com/services/T/B/OVERRIDE';
+    const config = {
+      ...fakeStartupConfig(),
+      digestWebhookUrl: OVERRIDE,
+      secretSources: { licenseKey: 'file', nrApiKey: 'unset', digestWebhookUrl: 'env' },
+    } as unknown as Parameters<typeof createApiHandler>[0]['config'];
+
+    const result = await getSettings(config, makeConfigFile({}));
+
+    expect(result.digestWebhookUrl).toBeNull();
+    expect(result.digestWebhookUrlSource).toBe('env');
+    expect(JSON.stringify(result)).not.toContain(OVERRIDE);
+  });
+
+  describe('with a config loaded from disk', () => {
+    const FILE_URL = 'https://hooks.slack.com/services/T/B/FILE';
+    let savedEnv: string | undefined;
+
+    beforeEach(() => {
+      savedEnv = process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL;
+      delete process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL;
+    });
+
+    afterEach(() => {
+      if (savedEnv === undefined) delete process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL;
+      else process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL = savedEnv;
+    });
+
+    function loadFrom(content: Record<string, unknown>) {
+      const configFilePath = makeConfigFile({ mode: 'local', ...content });
+      return { configFilePath, config: loadMcpConfig({ config: configFilePath }) };
+    }
+
+    it('reports a failing command, not the file, when the command outranks the file URL', async () => {
+      const { config, configFilePath } = loadFrom({
+        digestWebhookUrl: FILE_URL,
+        digestWebhookUrlCommand: ['/usr/bin/false'],
+      });
+
+      const result = await getSettings(config, configFilePath);
+
+      expect(result.digestWebhookUrlSource).toBe('command');
+    });
+
+    it('reports a command added to the file after startup', async () => {
+      const { config, configFilePath } = loadFrom({ digestWebhookUrl: FILE_URL });
+      fs.writeFileSync(
+        configFilePath,
+        JSON.stringify({
+          mode: 'local',
+          digestWebhookUrl: FILE_URL,
+          digestWebhookUrlCommand: ['/usr/bin/false'],
+        }),
+      );
+
+      const result = await getSettings(config, configFilePath);
+
+      expect(result.digestWebhookUrlSource).toBe('command');
+    });
+
+    it('reports unset after the URL is cleared from the file', async () => {
+      const { config, configFilePath } = loadFrom({ digestWebhookUrl: FILE_URL });
+      fs.writeFileSync(configFilePath, JSON.stringify({ mode: 'local' }));
+
+      const result = await getSettings(config, configFilePath);
+
+      expect(result.digestWebhookUrl).toBeNull();
+      expect(result.digestWebhookUrlSource).toBe('unset');
+    });
+  });
 
   it('returns 503 when config is missing', async () => {
     const handler = createApiHandler({});
@@ -6250,7 +6570,8 @@ describe('api-handler GET /api/settings', () => {
     expect(result.dailyBudgetUsd).toBe(50);
     expect(result.weeklyBudgetUsd).toBe(200);
     expect(result.retainSessionsDays).toBe(30);
-    expect(result.digestWebhookUrl).toBe('https://hooks.slack.com/services/T/B/STARTUP');
+    expect(result.digestWebhookUrl).toBeNull();
+    expect(result.digestWebhookUrlSource).toBe('unset');
     expect(result.digestSchedule).toBe('0 9 * * 1');
     expect(result.alerts.personal).toEqual({
       dailyCostUsd: 2,
@@ -8454,7 +8775,11 @@ describe('api-handler GET /api/workflows/:runId', () => {
         getRun: () => null, // still running → no rollup on disk
       } as unknown as Deps['workflowStore'],
       subagentTimeline: {
-        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getSubagentsForSession: () => ({
+          window: { startMs: 0, endMs: 0 },
+          agents: [],
+          peak: { count: 0, atMs: null },
+        }),
         getAgentCalls: () => ({ calls: [] }),
         getRunLive: (id: string) => {
           expect(id).toBe(RUN_ID);
@@ -8514,7 +8839,11 @@ describe('api-handler GET /api/workflows/:runId', () => {
         getRun: () => null,
       } as unknown as Deps['workflowStore'],
       subagentTimeline: {
-        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getSubagentsForSession: () => ({
+          window: { startMs: 0, endMs: 0 },
+          agents: [],
+          peak: { count: 0, atMs: null },
+        }),
         getAgentCalls: () => ({ calls: [] }),
         getRunLive: () => ({
           runId: RUN_ID,
@@ -8559,7 +8888,11 @@ describe('api-handler GET /api/workflows/:runId', () => {
         getRun: () => null,
       } as unknown as Deps['workflowStore'],
       subagentTimeline: {
-        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getSubagentsForSession: () => ({
+          window: { startMs: 0, endMs: 0 },
+          agents: [],
+          peak: { count: 0, atMs: null },
+        }),
         getAgentCalls: () => ({ calls: [] }),
         getRunLive: () => null,
       } as unknown as Deps['subagentTimeline'],
