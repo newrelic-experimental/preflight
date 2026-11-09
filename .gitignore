@@ -11,6 +11,8 @@ docs/superpowers/
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/verify-preflight/
+!.claude/skills/review-pr/
+!.claude/skills/self-review/
 test-results/
 playwright-report/
 .playwright-mcp/
