@@ -100,6 +100,7 @@ import { RecommendationEngine } from './metrics/recommendation-engine.js';
 import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
+import { createSkillRunEmitter } from './metrics/skill-run-emitter.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
 import { TaskDetector } from './metrics/task-detector.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
@@ -1338,23 +1339,11 @@ async function main(): Promise<void> {
     if (options.stdio) applyAuthoritativeSessionName(sessionTraceId);
     const turnCostAttributor = new TurnCostAttributor({ rateMultiplier });
     const skillActivationTracker = new SkillActivationTracker({
-      onRunOpened: (stamp, ctx) => {
-        // Same own-session rule as AiTurnCost: a --stdio engine drains other
-        // sessions' records while its own id is still provisional.
-        if (
-          !isTokenEventForThisProcess({
-            stdio: options.stdio === true,
-            eventSessionId: ctx.sessionId,
-            ownSessionId: sessionTraceId,
-          })
-        ) {
-          return;
-        }
-        capturedNrIngest?.ingestSkillRun(stamp, {
-          timestamp: ctx.timestamp ?? Date.now(),
-          sessionId: ctx.sessionId,
-        });
-      },
+      onRunOpened: createSkillRunEmitter({
+        stdio: options.stdio === true,
+        getOwnSessionId: () => sessionTraceId,
+        getSink: () => capturedNrIngest,
+      }),
     });
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
