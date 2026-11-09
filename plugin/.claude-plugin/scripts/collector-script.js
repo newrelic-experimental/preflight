@@ -1,16 +1,7 @@
 #!/usr/bin/env node
 
 // src/hooks/collector-script.ts
-import {
-  readFileSync,
-  writeFileSync,
-  openSync,
-  closeSync,
-  mkdirSync,
-  existsSync,
-  utimesSync,
-  constants as fsConstants
-} from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync, mkdirSync, existsSync, utimesSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
@@ -73,6 +64,86 @@ function hookEventFromArg(arg) {
   );
 }
 
+// src/storage/hook-buffer.ts
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+  unlinkSync,
+  writeSync
+} from "node:fs";
+var DRAIN_SEAL = "\0preflight-drain-seal\n";
+var MAX_WRITES = 5;
+var MAX_OPENS = 100;
+var TORN_LINE_END = "\n";
+function readRange(fd, start, end) {
+  const buf = Buffer.alloc(Math.max(0, end - start));
+  let read = 0;
+  while (read < buf.length) {
+    const n = readSync(fd, buf, read, buf.length - read, start + read);
+    if (n === 0) break;
+    read += n;
+  }
+  return buf.subarray(0, read);
+}
+function readToEnd(fd, scratch) {
+  let total = 0;
+  for (let n; (n = readSync(fd, scratch, 0, scratch.length, null)) > 0; ) total += n;
+  return total;
+}
+function offsetAfterWrite(fd) {
+  const scratch = Buffer.alloc(64 * 1024);
+  let after = readToEnd(fd, scratch);
+  for (; ; ) {
+    const size = fstatSync(fd).size;
+    const more = readToEnd(fd, scratch);
+    if (more === 0) return size - after;
+    after += more;
+  }
+}
+function isAt(path, file) {
+  const now = statSync(path, { bigint: true, throwIfNoEntry: false });
+  return now !== void 0 && now.ino === file.ino && now.dev === file.dev;
+}
+function appendOnce(path, data) {
+  const fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_APPEND, 384);
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    if (!isAt(path, opened)) return "moved";
+    const sealFloor = Number(opened.size);
+    const written = writeSync(fd, data);
+    if (written < data.length) {
+      writeSync(fd, TORN_LINE_END);
+      return "redo";
+    }
+    if (isAt(path, opened)) return "kept";
+    const start = offsetAfterWrite(fd) - data.length;
+    return readRange(fd, sealFloor, start).includes(DRAIN_SEAL) ? "redo" : "kept";
+  } finally {
+    closeSync(fd);
+  }
+}
+function appendToHookBuffer(path, text) {
+  if (text.includes("\0")) {
+    throw new Error(`Hook buffer text contains NUL, which marks a drain seal: ${path}`);
+  }
+  if (!text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) {
+    throw new Error(`Hook buffer text must be exactly one newline-terminated line: ${path}`);
+  }
+  const data = Buffer.from(text);
+  let writes = 0;
+  for (let opens = 0; opens < MAX_OPENS; opens++) {
+    const landing = appendOnce(path, data);
+    if (landing === "kept") return;
+    if (landing === "redo" && ++writes === MAX_WRITES) break;
+  }
+  throw new Error(`Hook buffer write raced a drain on all attempts and was not kept: ${path}`);
+}
+
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
 var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -90,7 +161,7 @@ var HIGH_SECURITY_FROM_FILE = (() => {
     try {
       const configPath = resolve(homedir(), dir, "config.json");
       if (existsSync(configPath)) {
-        const config = JSON.parse(readFileSync(configPath, "utf-8"));
+        const config = JSON.parse(readFileSync2(configPath, "utf-8"));
         return config.highSecurity === true;
       }
     } catch {
@@ -156,7 +227,7 @@ function hasStringText(block) {
   return typeof block === "object" && block !== null && "text" in block && typeof block.text === "string";
 }
 var _procFs = {
-  readFile: (path) => readFileSync(path, "utf-8")
+  readFile: (path) => readFileSync2(path, "utf-8")
 };
 function getLinuxAncestorPids(startPpid, maxDepth = 5) {
   const pids = [startPpid];
@@ -192,7 +263,7 @@ function writePpidBreadcrumb(sessionId) {
       const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
       if (existsSync(breadcrumbPath)) {
         try {
-          if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
+          if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
             const now = /* @__PURE__ */ new Date();
             try {
               utimesSync(breadcrumbPath, now, now);
@@ -230,7 +301,7 @@ function writeCwdBreadcrumb(sessionId, cwd) {
     const breadcrumbPath = resolve(breadcrumbDir, `${sanitizedCwd}.txt`);
     if (existsSync(breadcrumbPath)) {
       try {
-        if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
+        if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
           _cwdBreadcrumbWriteFailed = false;
           return;
         }
@@ -472,6 +543,7 @@ function extractOutputMeta(toolName, output, input) {
 function getWindsurfToolInfo(data) {
   return data.tool_info !== null && typeof data.tool_info === "object" ? data.tool_info : {};
 }
+var stderrSinkInstalled = false;
 function processHook(raw, cliEvent) {
   let data;
   try {
@@ -820,17 +892,17 @@ function processHook(raw, cliEvent) {
       mkdirSync(bufferDir, { recursive: true, mode: 448 });
     }
     const line = JSON.stringify(event) + "\n";
-    const fd = openSync(
-      bufferPath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND,
-      384
-    );
-    try {
-      writeFileSync(fd, line);
-    } finally {
-      closeSync(fd);
+    appendToHookBuffer(bufferPath, line);
+  } catch (err) {
+    if (!stderrSinkInstalled) {
+      stderrSinkInstalled = true;
+      process.stderr.on("error", () => void 0);
     }
-  } catch {
+    try {
+      process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}
+`);
+    } catch {
+    }
   }
   if (isGeminiCli) {
     try {
@@ -859,7 +931,7 @@ var _resolvedScript = (() => {
 })();
 var _isDirectExecution = _resolvedScript != null && /collector-script\.[jt]s$/.test(_resolvedScript);
 var _stdinFs = {
-  readFileSync: (pathOrFd) => readFileSync(pathOrFd, "utf-8")
+  readFileSync: (pathOrFd) => readFileSync2(pathOrFd, "utf-8")
 };
 function readStdinSync() {
   if (process.platform === "win32") {

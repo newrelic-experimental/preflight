@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 import { CopilotSdkAdapter } from './copilot-sdk-adapter.js';
+import { generateCopilotHooksFile } from '../install/copilot-install-helper.js';
 
 const ENV_KEYS = ['NEW_RELIC_AI_PLATFORM', 'MCP_CLIENT'];
 const savedEnv: Record<string, string | undefined> = {};
@@ -230,6 +231,11 @@ describe('CopilotSdkAdapter', () => {
     it('embeds NEW_RELIC_AI_PLATFORM=copilot directly in the hook commands', () => {
       const instructions = adapter.getHookInstallInstructions();
       expect(instructions).toContain('NEW_RELIC_AI_PLATFORM=copilot');
+    });
+
+    it('gives Windows the same PowerShell hook command the installer writes', () => {
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain(generateCopilotHooksFile().hooks.PreToolUse[0]!.powershell);
     });
 
     it('mentions the automated installer', () => {
