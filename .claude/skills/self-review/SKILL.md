@@ -15,6 +15,8 @@ You are the author's second pair of eyes. Every blocker a reviewer finds that th
 
 Some steps use tools only the Claude desktop app has, such as the file pane (`mcp__ccd_view__show_pane`). Use them when they're available. Otherwise print the path.
 
+`$TREE` and `$BASE` below are placeholders. Each Bash call starts a fresh shell, so a variable set in one call is empty in the next: write the literal path and sha into every command.
+
 ## 1. Scope the change
 
 ```bash
@@ -25,7 +27,7 @@ git status --short
 git diff --stat "$BASE"
 ```
 
-- **The diff under review** is `git diff "$BASE"`: the branch's commits plus uncommitted changes. Untracked files from `git status` count too, and a new file nobody added is easy to leave out of the PR.
+- **The diff under review** is `git diff "$BASE"`: the branch's commits plus uncommitted changes. Untracked files (`??` in `git status`) count too, but `git diff` leaves them out, so list their paths alongside the diff wherever this skill passes the diff on. A new file nobody added is also easy to leave out of the PR.
 - **Write the claim:** what the branch fixes or adds, and how, in three sentences at most. Take it from the linked issue and the commits, then check it against the diff. It becomes the PR's Summary, and it's the claim [lenses.md](../review-pr/lenses.md) judges everything against. If it won't fit in three sentences, the branch probably does more than one thing.
 - **One logical change.** Unrelated edits, such as a drive-by refactor or a second fix, belong on their own branch. Past roughly 400 changed lines of non-test code, propose a split to the user before going on.
 - **Staleness.** `git log --oneline HEAD..origin/main` lists what `main` has that the branch doesn't. If that touches the same files, suggest merging `main` first (the user's call) and reviewing the result, since otherwise you're checking code that won't be what merges. Also check whether `main` already fixed the same thing.
@@ -35,26 +37,28 @@ git diff --stat "$BASE"
 
 Answer the two questions in [lenses.md](../review-pr/lenses.md) § 1 about your own change: should it exist in this form, and is it in the right place?
 
-Then look for recurrence. `git log --oneline origin/main --grep "<the bug's key words>"` and `git log -L` on the changed function show whether this class of bug has been fixed before. If this is the second or third fix of the same class, the change is probably patching a symptom. Say so to the user, and ask whether a structural fix should come first or as a follow-up. For example, about 40 commits on `main` each fix one way cost or tokens got counted twice.
+Then look for recurrence. `git log --oneline origin/main --grep "<the bug's key words>"` and `git log -L` on the changed function show whether this class of bug has been fixed before. If this is the second or third fix of the same class, the change is probably patching a symptom. Say so to the user, and ask whether a structural fix should come first or as a follow-up. For example, dozens of commits on `main` each fix one way cost or tokens got counted twice.
 
 If the approach is wrong, stop and tell the user. Don't polish code that should be rewritten.
 
 ## 3. Run the repo's checks
 
-Run the items in `CONTRIBUTING.md` § Before opening a PR that the diff calls for, choosing by the paths it touches. For example:
+Go through every item in `CONTRIBUTING.md` § Before opening a PR, and run each one whose condition the diff meets. That list is the authority. The usual triggers are:
 
-- `src/web` → `npm run test:web` and `npx tsc -p tsconfig.web.json`
-- `scripts/`, `e2e/` or a root config → `npx tsc -p tsconfig.tools.json`
+- always: `npm run build`, `npm test`, `npm run lint`, `npm run format:check`, and the lockfile check (`npm install --package-lock-only` leaves `package-lock.json` unchanged unless you changed dependencies)
+- `src/web` → `npm run test:web` and `npx tsc -p tsconfig.web.json`, plus `npm run test:e2e` for a dashboard UI change
+- `scripts/`, `e2e/` or a root `*.config.ts` → `npx tsc -p tsconfig.tools.json`
 - a script under `.claude/skills/` → `npm run lint:shell`
-- a new, moved or renamed test file → `npm run check:test-ownership`
+- an added, moved or renamed test file, or a change to `jest.config.ts`, `vitest.config.ts` or a `test:*` script → `npm run check:test-ownership`
+- a test using local-time APIs → `npm run check:tz-tests`
 
-`npm run build`, `npm test`, `npm run lint` and `npm run format:check` always apply. Start the long ones as background commands and keep going.
+Start the long ones as background commands and keep going.
 
 Record each command with its actual result. A check you didn't run is "not run", never "passes". These records become the PR's test plan (step 7). A failure is a blocking finding for step 5, unless it also fails on `$BASE`. In that case it's pre-existing: note it and move on.
 
 ## 4. Hunt and prove
 
-Follow [lenses.md](../review-pr/lenses.md) with `TREE`, `REV` set to `HEAD` plus the working tree, `BASE`, the claim from step 1, and the diff `git diff "$BASE"`. Give each lens subagent the diff and the claim, never this session's reasoning or plan, and tell it to judge the change as a reviewer would. There are two additions for your own change:
+Follow [lenses.md](../review-pr/lenses.md) with `TREE`, `REV` set to `HEAD` plus the working tree, `BASE`, the claim from step 1, and the diff `git diff "$BASE"` plus the paths of any untracked files. Give each lens subagent the diff and the claim, never this session's reasoning or plan, and tell it to judge the change as a reviewer would. There are two additions for your own change:
 
 - **Claims** also covers what you're about to publish: the PR body draft, the changeset, and any doc you changed. A reviewer reads those first.
 - **Tests** checks that every behaviour change has a test that fails on `$BASE`. You can run that check, so run it rather than infer it.

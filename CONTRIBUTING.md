@@ -369,7 +369,7 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 
 ### AI-authored pull requests
 
-An AI agent opens every pull request as a draft (`gh pr create --draft`), after running the `self-review` skill on the branch. A human marks it ready for review once they have read, proofread and tested the changes.
+An AI agent opens every pull request as a draft (`gh pr create --draft`), after reviewing its own diff (in Claude Code, with the `self-review` skill). A human marks it ready for review once they have read, proofread and tested the changes.
 
 ### Reviewing pull requests
 
@@ -409,7 +409,7 @@ What to look for, roughly in order:
 **A person writes and posts every review comment and reply.** AI tools can draft them, but a human
 reads, edits and posts each one, and decides whether to approve or request changes. The
 `review-pr` project skill drafts a review this way: it reproduces each finding against the branch
-and writes the comments to a file for you to edit and post. It never writes to GitHub.
+and writes the comments to a file for you to edit and post. It never posts or edits anything on the PR.
 
 ### Branches
 

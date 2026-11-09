@@ -133,6 +133,15 @@ save_seen() {
   jq --argjson cur "$cur" '.seen = $cur' "$file" >"$tmp" && mv "$tmp" "$file"
 }
 
+# A review request the reviewer has since answered isn't news, but it has to be remembered:
+# otherwise the snapshot's "requested" state hides a later re-request.
+remember_answered_request() {
+  local file="$1" seen="$2" cur="$3"
+  if [ "$(jq -r .rereq <<<"$seen")" = "true" ] && [ "$(jq -r .rereq <<<"$cur")" = "false" ]; then
+    save_seen "$file" "$cur"
+  fi
+}
+
 cmd_snapshot() {
   local n="$1" reviewed="${2:-}" since="${3:-}" cur file
   mkdir -p "$STATE_DIR"
@@ -153,7 +162,10 @@ cmd_check() {
   seen=$(jq .seen "$file")
   cur=$(fetch_state "$n") || die "could not read PR #$n from $REPO"
   d=$(delta "$seen" "$cur")
-  [ "$d" != "{}" ] || exit 3
+  if [ "$d" = "{}" ]; then
+    remember_answered_request "$file" "$seen" "$cur"
+    exit 3
+  fi
   report "$n" "$d"
   save_seen "$file" "$cur"
 }
@@ -188,6 +200,8 @@ cmd_wait() {
           save_seen "$file" "$cur"
           exit 0
         fi
+      else
+        remember_answered_request "$file" "$seen" "$cur"
       fi
     else
       failures=$((failures + 1))

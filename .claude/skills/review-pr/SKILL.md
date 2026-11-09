@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: Review a teammate's or contributor's Preflight pull request with the user. Gathers the PR's intent and history, checks out the branch in its own worktree, hunts for defects with parallel subagents, reproduces every finding against the branch before raising it, checks the repo's written rules, and drafts inline comments for the user to edit and post. It only drafts and never writes to GitHub. Afterwards it watches the PR in the background and tells the user when the author pushes, replies or re-requests review. Use when the user says "review PR 123", pastes a newrelic-experimental/preflight PR URL, or asks for a re-review after the author pushed fixes. Not for your own branch (use self-review) or for proving a change on Preflight's real surfaces (use verify-preflight).
+description: Review a teammate's or contributor's Preflight pull request with the user. Gathers the PR's intent and history, checks out the branch in its own worktree, hunts for defects with parallel subagents, reproduces every finding against the branch before raising it, checks the repo's written rules, and drafts inline comments for the user to edit and post. It only drafts: it never posts, comments, labels or edits anything on the PR or its issues. Afterwards it watches the PR in the background and tells the user when the author pushes, replies or re-requests review. Use when the user says "review PR 123", pastes a newrelic-experimental/preflight PR URL, or asks for a re-review after the author pushed fixes. Not for your own branch (use self-review) or for proving a change on Preflight's real surfaces (use verify-preflight).
 argument-hint: '<PR number or URL> [re-review]'
 ---
 
@@ -9,10 +9,12 @@ argument-hint: '<PR number or URL> [re-review]'
 You partner with the user, the human reviewer, to evaluate a change someone else submitted, the way a pragmatic principal engineer would.
 
 - **The bar is the team's.** Read `CONTRIBUTING.md` § Reviewing pull requests before the first review in a session. In short: approve once the PR improves the code overall, even if it isn't perfect; look at the design before the lines; label anything that isn't blocking.
-- **A person writes and posts every comment.** You draft. You never write to GitHub (step 6).
+- **A person writes and posts every comment.** You draft. You never write anything to the PR or its issues (step 6).
 - **Precision beats recall.** [lenses.md](lenses.md) says how to find and prove each finding.
 
 Repo: `newrelic-experimental/preflight`. Run `gh` with `-R newrelic-experimental/preflight`.
+
+`<N>`, `$PR`, `$BASE`, `$WT` and `$WATCH` below are placeholders. Each Bash call starts a fresh shell, so a variable set in one call is empty in the next, and an empty `$PR` or `$BASE` makes `git diff` silently show nothing. Write the literal value (the PR number, the ref, the sha, the absolute path) into every command.
 
 Some steps use tools only the Claude desktop app has: a file pane (`mcp__ccd_view__show_pane`), a wrap-up question with buttons, and a browser pane (`mcp__Claude_Browser__*`). Use them when they're available. Otherwise print the path or URL, and ask your question in plain text.
 
@@ -30,7 +32,7 @@ gh pr view <N> -R newrelic-experimental/preflight --comments
 - Note CI state. Do not report what CI already reports (lint, format, type errors, failing tests). If CI is red, say so in one line and move on. If a check didn't run (fork PRs get no secrets), run it locally in step 2.
 - **Read the existing reviews in full**, human and bot (`gh api repos/newrelic-experimental/preflight/pulls/<N>/reviews` and `.../pulls/<N>/comments --paginate`). A reviewer's own runtime testing can catch what a diff-only read misses. Treat every claim in them as an unverified candidate for [lenses.md](lenses.md) § 3. Never raise a finding because someone else asserted it, and credit the reviewer by name when one holds.
 - Size: past roughly 400 changed lines of non-test code, tell the user the review will be shallower per line and ask whether the PR should be split. Keep going unless they say stop.
-- Set `WATCH=<this skill's base directory>/scripts/watch-pr`. A re-review first reads the head you reviewed last time with `"$WATCH" reviewed <N>`. Then every review, first or not, records its starting point with `"$WATCH" snapshot <N> <headRefOid>`, so step 7 reports only what happens after this point.
+- The watcher, `$WATCH` below, is `<this skill's base directory>/scripts/watch-pr`. Run it by its absolute path: the desktop hook refuses a command whose path comes from a variable. A re-review first reads the head you reviewed last time with `"$WATCH" reviewed <N>`. Then every review, first or not, records its starting point with `"$WATCH" snapshot <N> <headRefOid>`, so step 7 reports only what happens after this point.
 - **Re-review** (the user said so, they already have a review on this PR, or step 7 woke you): fetch their earlier threads with `gh api repos/newrelic-experimental/preflight/pulls/<N>/comments --paginate`, then review only what changed since their last review (after step 2's fetch, `git diff <last-reviewed-sha>.."$PR"`, using the sha from `watch-pr reviewed`, or the commit of their last review if there's no snapshot). If the review worktree from last time still exists, move it to the new head by removing it (`git worktree remove --force <WT path>`) and adding it again in step 2. Moving it in place would need git inside it. For each earlier thread, check that the reply's claim ("fixed in abc123") is true in the code. Replies are often right about the case raised and wrong about a neighbouring one.
   - Aim to keep new feedback to what the new commits changed or made newly reachable.
 
@@ -47,7 +49,7 @@ All of this goes in the draft (step 5). The user applies whatever they agree wit
 Never review in the user's main checkout or switch its branch.
 
 ```bash
-git fetch origin "pull/<N>/head:refs/remotes/pr/<N>" main
+git fetch origin "+pull/<N>/head:refs/remotes/pr/<N>" main   # + lets a re-review follow a force-push
 PR=refs/remotes/pr/<N>
 BASE=$(git merge-base origin/main "$PR")
 git diff --stat "$BASE...$PR"
@@ -108,9 +110,9 @@ Write the drafts to `.claude/reviews/preflight-pr-<N>.md` (or `preflight-pr-<N>-
    - The findings you dropped while proving them, one line each, so the user can overrule you.
    - A **Not checked** list of what you deliberately left out or could not assess, each with its reason: files you only skimmed, paths you could not reproduce, areas needing knowledge you lack.
 
-## 6. The user posts. You never write to GitHub
+## 6. The user posts. You never write to the PR
 
-Every comment on a PR is written and posted by a person. Never post, submit, approve, request changes, reply to a thread, react, resolve a conversation, or edit anything on GitHub. That includes metadata: never create an issue, set a label or assignee, or edit the PR body. Never ask whether to do any of that, and never offer a button or question that would. Whatever the review finds, the hand-off is the draft file. Mark each inline comment's anchor (`path`, right-side `line`, or a range) so the user can place it. If a comment's line is outside the diff, say so in the draft: GitHub won't accept an inline comment there, so it belongs in the review body.
+Every comment on a PR is written and posted by a person. Never post, submit, approve, request changes, reply to a thread, react, resolve a conversation, or edit anything on the PR or its issues. That includes metadata: never create an issue, set a label or assignee, or edit the PR body. Never ask whether to do any of that, and never offer a button or question that would. (The only thing this skill ever opens on GitHub is a separate PR of approved skill edits from a retro, and only when the user asks: step 8.) Whatever the review finds, the hand-off is the draft file. Mark each inline comment's anchor (`path`, right-side `line`, or a range) so the user can place it. If a comment's line is outside the diff, say so in the draft: GitHub won't accept an inline comment there, so it belongs in the review body.
 
 If the user mentions posting later and the head has moved since you reviewed, tell them which findings the new commits touch, so they can check those before posting.
 
@@ -119,10 +121,10 @@ If the user mentions posting later and the head has moved since you reviewed, te
 Once the drafts are in the user's hands (step 5), start the watcher as a **background** Bash command (`run_in_background: true`) and tell the user in one line that you'll let them know when the author replies or pushes:
 
 ```bash
-"$WATCH" wait <N>
+<this skill's base directory>/scripts/watch-pr wait <N>
 ```
 
-It needs `bash`, `gh` and `jq`. It polls every 5 minutes (four `gh api` calls, no model tokens) and exits only when something is new since the snapshot: new commits (including a force-push), a comment or review from someone other than the user or a bot, a review re-request, or the PR closing or merging. It waits for 10 minutes of quiet before reporting, so a burst of pushes and replies is one alert. A re-request or a close or merge is reported at once. When it exits, this session wakes with its output.
+It needs `bash`, `gh` and `jq`. It polls every 5 minutes (five `gh api` calls, no model tokens) and exits only when something is new since the snapshot: new commits (including a force-push), a comment or review from someone other than the user or a bot, a review re-request, or the PR closing or merging. It waits for 10 minutes of quiet before reporting, so a burst of pushes and replies is one alert. A re-request or a close or merge is reported at once. When it exits, this session wakes with its output.
 
 When it wakes you:
 
@@ -162,9 +164,9 @@ Each reviewer can keep a personal overlay in `~/.claude/review-pr/`:
    - Practice the whole team should follow goes in this skill's files: tone in [comment-style.md](comment-style.md), process in this file or [lenses.md](lenses.md), and repo rules in the doc [checklist.md](checklist.md) points to (not in the checklist itself).
    - Prefer changing an existing rule to adding a new one.
 7. **Propose edits as a real diff.**
-   - Copy the files you'd change into `.claude/reviews/skill-proposal/` in this session's checkout and edit the copies. Overlay files go in a `personal/` subdirectory there.
+   - Copy the files you'd change into `.claude/reviews/skill-proposal/` in this session's checkout and edit the copies. Copies of overlay files go in a separate `.claude/reviews/overlay-proposal/`, since `word-diff` compares a proposal folder against one original folder.
    - Write `diff -u` against the originals to `.claude/reviews/preflight-pr-<N>-retro.diff`, with the reasoning in `preflight-pr-<N>-retro.md`, and open the reasoning file for the user.
-   - Show the edits to the user as a word-level diff with highlighting, never as raw `[-…-]{+…+}` markers. From the root of this session's checkout, with `npm ci` done, start `npx tsx scripts/word-diff.ts serve <this skill's base directory> .claude/reviews/skill-proposal --labels .claude/reviews/skill-proposal/.labels.json --title "PR <N> retro: proposed skill edits"` as a background command. Read the port from its `word-diff: serving http://127.0.0.1:<port>/` line. Open that URL in the browser pane if there is one (`mcp__Claude_Browser__preview_start`); otherwise give the user the URL.
+   - Show the edits to the user as a word-level diff with highlighting, never as raw `[-…-]{+…+}` markers. From the root of this session's checkout, with `npm ci` done, start `npx tsx scripts/word-diff.ts serve <this skill's base directory> .claude/reviews/skill-proposal --labels .claude/reviews/skill-proposal/.labels.json --title "PR <N> retro: proposed skill edits"` as a background command. Read the port from its `word-diff: serving http://127.0.0.1:<port>/` line. Open that URL in the browser pane if there is one (`mcp__Claude_Browser__preview_start`); otherwise give the user the URL. For overlay edits, start a second server the same way, comparing `~/.claude/review-pr` (spelled out as an absolute path) with `.claude/reviews/overlay-proposal`. A file the overlay doesn't have yet shows as all-new text.
      - `.labels.json` tags each edit with the number the reasoning file uses: `[{"label": "Edit 2", "match": "<text unique to that edit>"}]`. Labels match on text, so they survive line shifts. A label is only the edit's number: put recommendations, evidence and caveats in the chat and the reasoning file, never on the page.
      - The page reloads itself whenever a proposal copy or the labels file changes. So as the user asks for revisions, edit the copies and the page follows; regenerate the `.diff` file too.
      - Stop the server once the user has approved or rejected every edit.
