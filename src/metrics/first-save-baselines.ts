@@ -93,12 +93,6 @@ export class FirstSaveBaselines {
       this.cost.set(sessionId, previous && costSeedOf(previous));
   }
 
-  /** Drops a session id that a correction showed was a wrong guess. */
-  forget(sessionId: string): void {
-    this.toolCalls.delete(sessionId);
-    this.cost.delete(sessionId);
-  }
-
   /** Seeds for `sessionId`, falling back to `loadCurrent()` per family, and forgets it. */
   take(sessionId: string, loadCurrent: () => FullSessionSummary | null): RehydrationSeeds {
     const current =
