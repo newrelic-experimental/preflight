@@ -1462,6 +1462,24 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
     });
   }
 
+  function endTurnLine(messageId: string): string {
+    return JSON.stringify({
+      type: 'assistant',
+      isSidechain: true,
+      sessionId: PARENT_SESSION,
+      uuid: `uuid-${messageId}-end`,
+      timestamp: '2026-06-15T12:00:02.000Z',
+      message: {
+        id: messageId,
+        role: 'assistant',
+        model: 'claude-opus-4-7',
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'Done.' }],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+  }
+
   function makeWatcher(): SubagentWatcher {
     return new SubagentWatcher({
       storagePath,
@@ -1675,6 +1693,42 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
     watcher.readLiveTails(PARENT_SESSION);
 
     expect(mockStatSync).toHaveBeenCalledTimes(MAX_ON_DEMAND_FILES);
+  });
+
+  it('spends no stat on finished transcripts, so a running subagent behind them is still read', () => {
+    for (let i = 0; i < MAX_ON_DEMAND_FILES + 3; i++) {
+      const agentId = `a${i.toString(16).padStart(16, '0')}`;
+      writeFileSync(
+        join(subagentsDir, `agent-${agentId}.jsonl`),
+        promptLine() + '\n' + endTurnLine(`msg_done_${i}`) + '\n',
+      );
+    }
+    const watcher = makeWatcher();
+    watcher.poll();
+    appendFileSync(agentJsonl, toolUseLine('msg_live', 'toolu_live') + '\n');
+    turnsRead = [];
+    mockStatSync.mockClear();
+
+    expect(watcher.readLiveTails(PARENT_SESSION)).toBe(1);
+
+    expect(turnsRead.map((t) => t.agentId)).toEqual([AGENT_ID]);
+    expect(stattedPaths().filter((p) => p !== agentJsonl && p.includes('agent-a0'))).toEqual([]);
+  });
+
+  it('stats a finished transcript again once the poll reads it resuming', () => {
+    const resumedId = 'a00000000000000ff';
+    const resumed = join(subagentsDir, `agent-${resumedId}.jsonl`);
+    writeFileSync(resumed, promptLine() + '\n' + endTurnLine('msg_done') + '\n');
+    const watcher = makeWatcher();
+    watcher.poll();
+    appendFileSync(resumed, toolUseLine('msg_again', 'toolu_again') + '\n');
+    watcher.poll();
+    appendFileSync(resumed, toolUseLine('msg_more', 'toolu_more') + '\n');
+    turnsRead = [];
+
+    expect(watcher.readLiveTails(PARENT_SESSION)).toBe(1);
+
+    expect(turnsRead.map((t) => t.toolUseIds)).toEqual([['toolu_more']]);
   });
 
   it('checks at most MAX_ON_DEMAND_FILES transcripts per call', () => {

@@ -344,6 +344,12 @@ export class SubagentWatcher {
   // an unreadable file is left to the poll instead of being retried on every
   // hook record. Bounded by the live file set via evictStalePartials().
   private readonly consumedBytesByPath = new Map<string, number>();
+  // Transcripts whose last turn read was a final answer (`end_turn`, no
+  // `tool_use`), so readLiveTails() spends no stat on them. A turn that is not a
+  // final answer, read by the poll or an on-demand read, takes the path back
+  // out, for a subagent that is continued after it returned. Bounded by the live
+  // file set via evictStalePartials().
+  private readonly finishedPaths = new Set<string>();
   // The transcripts readLiveTails() stats: any it found since the last poll,
   // then every one that poll discovered, most recently modified first. No
   // mtime window applies, since a subagent's transcript stays unmodified for
@@ -469,7 +475,7 @@ export class SubagentWatcher {
    * A session whose subagents directory the last poll did not list, and that
    * has no tracked transcript, costs no syscall. Otherwise this lists the
    * session's `subagents/` directory once for transcripts spawned since the
-   * poll, then stats the tracked transcripts of `sessionId` (of every session
+   * poll, then stats the unfinished tracked transcripts of `sessionId` (of every session
    * when undefined), at most MAX_ON_DEMAND_FILES stats in all, and reads only
    * from one that has grown past what was already consumed, up to
    * MAX_ON_DEMAND_BYTES in total. Not found before the next poll: a session's
@@ -500,6 +506,7 @@ export class SubagentWatcher {
         const tracked = this.trackedFiles[i];
         if (tracked === undefined) break;
         if (sessionId !== undefined && tracked.parentSessionId !== sessionId) continue;
+        if (this.finishedPaths.has(tracked.path)) continue;
         const consumed = this.consumedBytesByPath.get(tracked.path);
         if (consumed === undefined) continue;
         statsLeft -= 1;
@@ -1035,6 +1042,14 @@ export class SubagentWatcher {
     // Keep the in-memory mirror in sync; when the partial is empty, drop the
     // key entirely so a fully-consumed file leaves no residual entry in the map.
     this.consumedBytesByPath.set(file.path, nextBytePos);
+    const lastTurn = turns[turns.length - 1];
+    if (lastTurn !== undefined) {
+      if (lastTurn.stopReason === 'end_turn' && lastTurn.toolUseIds.length === 0) {
+        this.finishedPaths.add(file.path);
+      } else {
+        this.finishedPaths.delete(file.path);
+      }
+    }
     if (newPartial.length > 0) {
       this.partialByPath.set(file.path, newPartial);
     } else {
@@ -1080,7 +1095,8 @@ export class SubagentWatcher {
       this.partialByPath.size === 0 &&
       this.decoderByPath.size === 0 &&
       this.agentTypeByPath.size === 0 &&
-      this.consumedBytesByPath.size === 0
+      this.consumedBytesByPath.size === 0 &&
+      this.finishedPaths.size === 0
     ) {
       return;
     }
@@ -1097,6 +1113,9 @@ export class SubagentWatcher {
     }
     for (const path of this.consumedBytesByPath.keys()) {
       if (!live.has(path)) this.consumedBytesByPath.delete(path);
+    }
+    for (const path of this.finishedPaths) {
+      if (!live.has(path)) this.finishedPaths.delete(path);
     }
   }
 
