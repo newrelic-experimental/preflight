@@ -5886,7 +5886,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
         { sessionId: 's2', timeline: timestamps.map((timestamp) => ({ timestamp })) },
       ];
       const handler = createApiHandler({
-        concurrencyTracker: makeConcurrencyTracker(),
         liveSessionRegistry: makeLiveRegistry(),
         sessionStore: {
           loadTodaySessions: () => sessions,
