@@ -1822,6 +1822,68 @@ describe('buildSessionSummary', () => {
       expect(merged.unpricedByDay).toEqual({ '2026-11-06': { a: { calls: 1, tokens: 10 } } });
     });
 
+    it('mergeSummaries drops every call when the later write replaced them all', () => {
+      const existing = makeSummary({
+        unpricedByModel: { a: { calls: 2, tokens: 200 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 2, tokens: 200 } } },
+        byteEstimates: ledger(2, 200),
+      });
+      const incoming = makeSummary({
+        byteEstimates: {
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByModel: {},
+          costByDayUsd: {},
+        },
+      });
+
+      const merged = mergeSummaries(existing, incoming);
+
+      expect(merged.unpricedByModel).toBeUndefined();
+      expect(merged.unpricedByDay).toEqual({});
+    });
+
+    it('saves, reloads, restarts and merges the calls of a replaced byte estimate once', () => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const startTime = new Date('2026-11-06T10:00:00Z').getTime();
+      const unpriced = 'claude-foo-9-9';
+      const summarize = (tracker: CostTracker): FullSessionSummary => ({
+        ...buildSessionSummary({
+          sessionTracker: makeSessionTracker(),
+          costTracker: tracker,
+          developer: 'alice',
+        }),
+        sessionId: 'sess-e2e',
+        startTime,
+      });
+
+      const first = new CostTracker();
+      first.recordEstimatedTokens(4_000, 2_000, unpriced);
+      first.recordEstimatedTokens(4_000, 2_000, unpriced);
+      store.saveSession(summarize(first));
+      const saved = store.loadSession('sess-e2e')!;
+      expect(saved.unpricedByModel?.[unpriced]?.calls).toBe(2);
+
+      const restarted = new CostTracker();
+      restarted.seedFromPersisted(buildCostTrackerSeed(saved));
+      expect(restarted.getMetrics().unpricedByModel[unpriced]?.calls).toBe(2);
+      restarted.recordTokenUsage(
+        makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 }),
+        'claude-sonnet-4',
+        { replacesEstimates: true },
+      );
+      expect(restarted.getMetrics().unpricedByModel).toEqual({});
+      store.saveSession(summarize(restarted));
+
+      const reloaded = store.loadSession('sess-e2e')!;
+      expect(reloaded.unpricedByModel).toBeUndefined();
+      expect(reloaded.unpricedByDay).toEqual({});
+      const afterSecondRestart = new CostTracker();
+      afterSecondRestart.seedFromPersisted(buildCostTrackerSeed(reloaded));
+      expect(afterSecondRestart.getMetrics().unpricedByModel).toEqual({});
+    });
+
     it('mergeSummaries keeps the calls of byte estimates the latest write still holds', () => {
       const existing = makeSummary({
         unpricedByModel: { a: { calls: 1, tokens: 10 } },

@@ -3550,6 +3550,41 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     });
   });
 
+  it('counts only the live tracker calls recorded today', async () => {
+    const todayKey = localDateKey(Date.now());
+    const yesterdayKey = localDateKey(localStartOfDay() - 1);
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      costTracker: {
+        getMetrics: () => ({
+          sessionTotalCostUsd: 0,
+          unpricedByDay: {
+            [yesterdayKey]: { 'claude-foo-9-9': { calls: 4, tokens: 400 } },
+            [todayKey]: { 'claude-foo-9-9': { calls: 1, tokens: 100 } },
+          },
+          estimatedByDay: {
+            [yesterdayKey]: { 'claude-opus-5-9': { calls: 3, tokens: 30, estimatedFrom: 'x' } },
+          },
+        }),
+        getCostForDay: () => 0,
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const parsed = JSON.parse(body()) as {
+      unpricedByModel: Record<string, unknown>;
+      estimatedByModel: Record<string, unknown>;
+    };
+    expect(parsed.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 1, tokens: 100 } });
+    expect(parsed.estimatedByModel).toEqual({});
+  });
+
   it('counts only the calls recorded today for a session that crossed midnight', async () => {
     const todayKey = localDateKey(Date.now());
     const yesterdayKey = localDateKey(localStartOfDay() - 1);
