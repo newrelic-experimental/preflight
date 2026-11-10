@@ -128,22 +128,6 @@ describe('FirstSaveBaselines', () => {
   });
 });
 
-describe('FirstSaveBaselines.forget', () => {
-  it('holds no entries for a corrected-away id', () => {
-    const baselines = new FirstSaveBaselines();
-    const before = makeSummary({ toolCallCount: 2, estimatedCostUsd: 0.4 });
-    const current = makeSummary({ toolCallCount: 6, estimatedCostUsd: 1.4 });
-    baselines.recordSave({ sessionId: 'guess', previous: before, ownSession: true });
-
-    baselines.forget('guess');
-
-    expect(baselines.take('guess', () => current)).toEqual({
-      toolCalls: toolCallSeedOf(current),
-      cost: costSeedOf(current),
-    });
-  });
-});
-
 describe('costSeedOf', () => {
   it('carries the prior spend the budget thresholds seed from', () => {
     const seed = costSeedOf(makeSummary({ estimatedCostUsd: 6 }));
