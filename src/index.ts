@@ -2980,7 +2980,6 @@ async function main(): Promise<void> {
         // path, which is keyed by whatever id the hook collector script
         // wrote — never the wrong guess — so toolCallCount/timeline stay
         // clean through the whole unconfirmed window regardless.
-        firstSaveBaselines.forget(sessionTraceId);
         costTracker.reset(realId);
         modelUsageTracker.reset(realId);
         contextCompositionTracker.reset(realId);
