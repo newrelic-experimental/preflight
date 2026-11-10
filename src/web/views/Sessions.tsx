@@ -1420,7 +1420,7 @@ function SessionTraceSection({
     [parentEntries],
   );
 
-  const peakLabel = subagentPeakLabel(data?.peak);
+  const peakLabel = isError ? null : subagentPeakLabel(data?.peak);
 
   return (
     <div className="mb-4">
