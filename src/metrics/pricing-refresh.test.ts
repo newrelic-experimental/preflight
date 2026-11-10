@@ -395,7 +395,7 @@ describe('schedulePricingRecheck', () => {
     await startPricingRefresh(opts);
     // The write stamps mtime from the real filesystem clock, which on Linux is
     // coarse and can trail the faked Date.now() by a few ms. Pin it half an
-    // hour back so the cache goes stale on the 24h tick, never on either side.
+    // hour back so the cache is still fresh at the 23h tick and stale at the 24h tick.
     const writtenAt = new Date(Date.now() - 30 * 60 * 1000);
     utimesSync(cachePath, writtenAt, writtenAt);
     schedulePricingRecheck(opts);
