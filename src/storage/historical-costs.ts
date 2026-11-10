@@ -1,5 +1,6 @@
 import { createLogger } from '../shared/index.js';
-import { localDateKey, todayPortionOfSessionCost } from '../lib/date.js';
+import { localDateKey } from '../lib/date.js';
+import { todayCostOfSummary } from '../metrics/cost-tracker-seed.js';
 import type { FullSessionSummary, SessionStore } from './session-store.js';
 
 const logger = createLogger('historical-costs');
@@ -31,14 +32,14 @@ function weeklyPortion(session: FullSessionSummary, weekAgo: Date, refTs: number
   );
 }
 
-// The day map is the cost the session recorded on each day, so it decides when
-// present. Pro-rating by tool calls is the fallback for sessions without one.
-// A session that started before the window and has no day map counts 0, the
-// same as in weeklyPortion, so it adds nothing to the day that it left out of the week.
+// todayCostOfSummary decides, so the budget baseline, Spend Today and the cost
+// seed agree on one number: the day map when present, else a pro-rate that
+// counts 0 for a session with no attributable activity. A session that started
+// before the window and has no day map counts 0 here too, the same as in
+// weeklyPortion, so it adds nothing to the day that it left out of the week.
 function dailyPortion(session: FullSessionSummary, weekAgo: Date, refTs: number): number {
-  if (session.costByDayUsd) return session.costByDayUsd[localDateKey(refTs)] ?? 0;
-  if (startedBeforeWindow(session, weekAgo)) return 0;
-  return todayPortionOfSessionCost(session, refTs);
+  if (!session.costByDayUsd && startedBeforeWindow(session, weekAgo)) return 0;
+  return todayCostOfSummary(session, localDateKey(refTs), refTs).costUsd;
 }
 
 // Compute cost baselines from prior sessions for daily/weekly budget tracking.

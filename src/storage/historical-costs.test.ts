@@ -6,6 +6,7 @@ import { localDateKey } from '../lib/date.js';
 import { BudgetTracker } from '../metrics/budget-tracker.js';
 import type { BudgetThresholdEvent } from '../metrics/budget-tracker.js';
 import { computeHistoricalCosts } from './historical-costs.js';
+import { todayCostOfSummary } from '../metrics/cost-tracker-seed.js';
 import { SessionStore } from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
 
@@ -136,6 +137,7 @@ describe('computeHistoricalCosts', () => {
       readonly estimatedCostUsd: number;
       readonly costByDayUsd?: Record<string, number>;
       readonly timeline?: ReadonlyArray<{ timestamp: number; toolName: string }>;
+      readonly toolCallCount?: number;
       readonly modifiedAt?: number;
     }
 
@@ -149,6 +151,20 @@ describe('computeHistoricalCosts', () => {
     const baselines = () => computeHistoricalCosts(store, 'current', REF_TS);
     const day = (n: number): string => localDateKey(local(n, 12));
     const FIRST_DAY = day(8);
+
+    it('counts 0 for a day-map-less session with no attributable activity, as Spend Today does', () => {
+      const idle = {
+        startTime: local(14, 22),
+        endTime: local(15, 2),
+        estimatedCostUsd: 8,
+        toolCallCount: 0,
+      };
+      place('idle', idle);
+
+      expect(todayCostOfSummary(idle, localDateKey(REF_TS), REF_TS).costUsd).toBe(0);
+      expect(baselines().priorDailyCostUsd).toBe(0);
+      expect(baselines().priorWeeklyCostUsd).toBe(8);
+    });
 
     it('counts only the days of the window for a session resumed from before it', () => {
       place('resumed', {
