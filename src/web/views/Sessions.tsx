@@ -1383,7 +1383,7 @@ function SessionTraceSection({
   // fallback (isError/no-data) and success render branches below consume it,
   // each with a different fallback value.
   const sharedWindow = useMemo<{ startMs: number; endMs: number } | null>(() => {
-    const hasAgents = data !== undefined && (data.agents?.length ?? 0) > 0;
+    const hasAgents = !isError && data !== undefined && (data.agents?.length ?? 0) > 0;
     const subStart = hasAgents ? data!.window.startMs : null;
     const subEnd = hasAgents ? data!.window.endMs : null;
 
@@ -1401,7 +1401,7 @@ function SessionTraceSection({
     if (starts.length === 0 || ends.length === 0) return null;
 
     return { startMs: Math.min(...starts), endMs: Math.max(...ends) };
-  }, [data, parentEntries]);
+  }, [data, isError, parentEntries]);
 
   // The parent timeline entries shaped for the SessionTrace parent lane — the
   // ReplayTimelineEntry fields (timestamp / toolName / durationMs / success /
