@@ -266,6 +266,22 @@ describe('HookEventProcessor', () => {
       expect(record.agentType).toBe('Explore');
     });
 
+    it('drops a malformed or oversized agentId and falls back to the post event', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent({ agentId: 'x'.repeat(500) }),
+        makePostEvent({ agentId: 'agent-def456' }),
+      ]);
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'toolu_2', agentId: 'agent\nforged' }),
+        makePostEvent({ toolUseId: 'toolu_2' }),
+      ]);
+
+      expect(records[0]!.agentId).toBe('agent-def456');
+      expect(records[1]!.agentId).toBeUndefined();
+    });
+
     it('falls back to the post event transcriptPath/permissionMode when the pre event has none', () => {
       const processor = new HookEventProcessor({ store, onRecord });
 

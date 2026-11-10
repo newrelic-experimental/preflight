@@ -9,6 +9,7 @@
  * parsing error is caught and returns {}.
  */
 
+import { normalizeAgentType } from '../lib/agent-id.js';
 import { classifyBash } from './bash-classifier.js';
 
 type ToolFields = Record<string, string | number | boolean>;
@@ -125,7 +126,8 @@ function parseGlob(input: Record<string, unknown>): ToolFields {
 function parseAgent(input: Record<string, unknown>): ToolFields {
   const fields: ToolFields = {};
   if (typeof input.description === 'string') fields.agentDescription = input.description;
-  if (typeof input.subagent_type === 'string') fields.subagentType = input.subagent_type;
+  const subagentType = normalizeAgentType(input.subagent_type);
+  if (subagentType !== undefined) fields.subagentType = subagentType;
   if (typeof input.promptLength === 'number') {
     fields.promptLength = input.promptLength;
   } else if (typeof input.prompt === 'string') {
