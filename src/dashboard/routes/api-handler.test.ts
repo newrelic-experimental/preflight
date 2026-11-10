@@ -5641,10 +5641,45 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     expect(result.allTimePeak).toBe(5);
   });
 
-  it("view=history overrides today's dailyPeaks bucket with the live peak when it exceeds the disk-derived peak", async () => {
+  it("view=history's today value equals the Today view's peak and ignores a large getPeakConcurrent()", async () => {
+    const sessions = [
+      { sessionId: 'd-1', timeline: makeTimeline(5, 10) },
+      { sessionId: 'd-2', timeline: makeTimeline(5, 10) },
+    ];
     const handler = createApiHandler({
       concurrencyTracker: { ...makeConcurrencyTracker(), getPeakConcurrent: () => 9 },
       liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        loadTodaySessions: () => sessions,
+        loadAllSessions: () => sessions,
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const today = fakeRes();
+    await handler({ method: 'GET', url: '/api/concurrency' } as IncomingMessage, today.res);
+    const history = fakeRes();
+    await handler(
+      { method: 'GET', url: '/api/concurrency?view=history&days=3' } as IncomingMessage,
+      history.res,
+    );
+    const todayPeak = JSON.parse(today.body()).peak;
+    const { dailyPeaks } = JSON.parse(history.body());
+    expect(todayPeak).toBe(2);
+    expect(dailyPeaks).toHaveLength(3);
+    expect(dailyPeaks[2].peak).toBe(todayPeak);
+  });
+
+  it("view=history's today value counts a live session's buffered activity that is not on disk", async () => {
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: {
+        ...makeLiveRegistry(),
+        getTodaySessionIds: () => ['live-1', 'live-2'],
+      },
+      toolCallBuffer: {
+        getRecords: () => [makeBufferRecord('live-1', 30), makeBufferRecord('live-2', 30)],
+      } as unknown as Parameters<typeof createApiHandler>[0]['toolCallBuffer'],
       sessionStore: {
         loadTodaySessions: () => [],
         loadAllSessions: () => [],
@@ -5652,42 +5687,143 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
         loadSession: () => null,
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
     });
-    const req = { method: 'GET', url: '/api/concurrency?view=history&days=3' } as IncomingMessage;
-    const { res, status, body } = fakeRes();
-    await handler(req, res);
-    expect(status()).toBe(200);
-    const result = JSON.parse(body());
-    expect(result.dailyPeaks).toHaveLength(3);
-    expect(result.dailyPeaks[2].peak).toBe(9);
+    const { res, body } = fakeRes();
+    await handler(
+      { method: 'GET', url: '/api/concurrency?view=history&days=3' } as IncomingMessage,
+      res,
+    );
+    expect(JSON.parse(body()).dailyPeaks[2].peak).toBe(2);
   });
 
-  it("view=history leaves today's dailyPeaks bucket alone when the disk-derived peak already meets the live peak", async () => {
-    // Local (not UTC) midnight — computeDailyPeakConcurrency buckets by the
-    // dashboard server's local day, so the overlap timestamp used
-    // here to land in "today"'s bucket must be anchored the same way.
-    const todayStart = localStartOfDay();
-    const todayOverlapTs = todayStart + 5 * 60_000;
-    const allSessions = [
-      { sessionId: 'd-1', timeline: [{ timestamp: todayOverlapTs }] },
-      { sessionId: 'd-2', timeline: [{ timestamp: todayOverlapTs }] },
-    ];
+  it('view=history includes a session whose file date predates the window but has in-window activity', async () => {
+    const yesterday = midnightToday() - 86_400_000;
+    const resumed = {
+      sessionId: 'resumed',
+      timeline: [{ timestamp: yesterday + 5 * 60_000 }, { timestamp: yesterday + 6 * 60_000 }],
+    };
+    const loadAllSessions = jest.fn((opts?: { includeModifiedSince?: Date }) =>
+      opts?.includeModifiedSince ? [resumed] : [],
+    );
     const handler = createApiHandler({
-      concurrencyTracker: { ...makeConcurrencyTracker(), getPeakConcurrent: () => 1 },
+      concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
       sessionStore: {
         loadTodaySessions: () => [],
-        loadAllSessions: () => allSessions,
+        loadAllSessions,
         listSessions: () => [],
         loadSession: () => null,
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
     });
-    const req = { method: 'GET', url: '/api/concurrency?view=history&days=3' } as IncomingMessage;
-    const { res, status, body } = fakeRes();
-    await handler(req, res);
-    expect(status()).toBe(200);
-    const result = JSON.parse(body());
-    expect(result.dailyPeaks).toHaveLength(3);
-    expect(result.dailyPeaks[2].peak).toBe(2);
+    const { res, body } = fakeRes();
+    await handler(
+      { method: 'GET', url: '/api/concurrency?view=history&days=3' } as IncomingMessage,
+      res,
+    );
+    const { dailyPeaks } = JSON.parse(body());
+    const since = new Date(localStartOfDay());
+    since.setDate(since.getDate() - 3);
+    expect(loadAllSessions).toHaveBeenCalledWith({ since, includeModifiedSince: since });
+    expect(dailyPeaks[1].peak).toBe(1);
+  });
+
+  it('view=history counts a session split across two files once', async () => {
+    const yesterday = midnightToday() - 86_400_000;
+    const split = [
+      { sessionId: 'split', timeline: [{ timestamp: yesterday + 5 * 60_000 }] },
+      { sessionId: 'split', timeline: [{ timestamp: yesterday + 6 * 60_000 }] },
+    ];
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => split,
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const { res, body } = fakeRes();
+    await handler(
+      { method: 'GET', url: '/api/concurrency?view=history&days=3' } as IncomingMessage,
+      res,
+    );
+    expect(JSON.parse(body()).dailyPeaks[1].peak).toBe(1);
+  });
+
+  async function getConcurrency(
+    url: string,
+    store: { loadTodaySessions: () => unknown[]; loadAllSessions: () => unknown[] },
+  ): Promise<{
+    peak: number;
+    allTimePeak: number;
+    dailyPeaks: Array<{ date: string; peak: number }>;
+  }> {
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        ...store,
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const { res, body } = fakeRes();
+    await handler({ method: 'GET', url } as IncomingMessage, res);
+    return JSON.parse(body());
+  }
+
+  it("view=history keeps both files of a split session when another session overlaps only the first file's activity", async () => {
+    const yesterday = midnightToday() - 86_400_000;
+    const at = (hour: number) => yesterday + hour * 3_600_000;
+    const sessions = [
+      { sessionId: 'split', timeline: [{ timestamp: at(10) }] },
+      { sessionId: 'other', timeline: [{ timestamp: at(10) }] },
+      { sessionId: 'split', timeline: [{ timestamp: at(14) }] },
+    ];
+    const result = await getConcurrency('/api/concurrency?view=history&days=3', {
+      loadTodaySessions: () => [],
+      loadAllSessions: () => sessions,
+    });
+    expect(result.dailyPeaks[1].peak).toBe(2);
+  });
+
+  it.each([
+    ['no sessionId', undefined],
+    ['an empty sessionId', ''],
+  ])('view=history counts overlapping sessions with %s separately', async (_label, sessionId) => {
+    const yesterday = midnightToday() - 86_400_000;
+    const sessions = [
+      { sessionId, timeline: [{ timestamp: yesterday + 5 * 60_000 }] },
+      { sessionId, timeline: [{ timestamp: yesterday + 6 * 60_000 }] },
+    ];
+    const result = await getConcurrency('/api/concurrency?view=history&days=3', {
+      loadTodaySessions: () => [],
+      loadAllSessions: () => sessions,
+    });
+    expect(result.dailyPeaks[1].peak).toBe(2);
+  });
+
+  it('allTimePeak counts a session split across two files once', async () => {
+    const split = [
+      { sessionId: 'split', timeline: makeTimeline(5, 6) },
+      { sessionId: 'split', timeline: makeTimeline(7, 8) },
+    ];
+    const result = await getConcurrency('/api/concurrency', {
+      loadTodaySessions: () => [],
+      loadAllSessions: () => split,
+    });
+    expect(result.allTimePeak).toBe(1);
+  });
+
+  it("view=history's today value is the Today view's peak even when the disk pass sees a higher one", async () => {
+    const result = await getConcurrency('/api/concurrency?view=history&days=3', {
+      loadTodaySessions: () => [{ sessionId: 'a', timeline: makeTimeline(5, 10) }],
+      loadAllSessions: () => [
+        { sessionId: 'a', timeline: makeTimeline(5, 10) },
+        { sessionId: 'b', timeline: makeTimeline(5, 10) },
+      ],
+    });
+    expect(result.dailyPeaks[2].peak).toBe(1);
   });
 
   it("view=history keys each day's dailyPeaks entry by local date, not UTC", async () => {
@@ -5789,7 +5925,7 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
           concurrencyTracker: makeConcurrencyTracker(),
           liveSessionRegistry: makeLiveRegistry(),
           sessionStore: {
-            loadTodaySessions: () => [],
+            loadTodaySessions: () => sessions,
             loadAllSessions: () => sessions,
             listSessions: () => [],
             loadSession: () => null,

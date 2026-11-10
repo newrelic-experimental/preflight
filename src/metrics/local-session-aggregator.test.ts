@@ -76,6 +76,31 @@ describe('LocalSessionAggregator', () => {
     ]);
   });
 
+  it('keeps a failing post as a failure, with the error type it carries', () => {
+    const agg = new LocalSessionAggregator();
+    const timedOut = { id: 'r1', sessionId: REAL_ID, toolName: 'Agent', timestamp: 1000 };
+    agg.recordToolCall({ ...timedOut, durationMs: null, success: false, errorType: 'timeout' });
+    agg.amendToolCall({
+      ...timedOut,
+      toolUseId: 'toolu_1',
+      durationMs: 5000,
+      success: false,
+      errorType: 'interrupted',
+    });
+
+    const [summary] = summariesOf(agg, 'in progress');
+    expect(summary?.toolSuccessRate).toBe(0);
+    expect(summary?.timeline).toEqual([
+      {
+        timestamp: 1000,
+        toolName: 'Agent',
+        durationMs: 5000,
+        success: false,
+        errorType: 'interrupted',
+      },
+    ]);
+  });
+
   it('rolls tool calls up under the real session id', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({
