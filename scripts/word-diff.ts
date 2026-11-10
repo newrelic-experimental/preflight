@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 /**
  * Render proposed edits as a word-level diff with highlighting. See
- * .claude/skills/review-pr/SKILL.md § 8.
+ * .claude/skills/preflight-review-pr/SKILL.md § 8.
  *
  *   npx tsx scripts/word-diff.ts serve  <original> <proposed> [--labels FILE] [--port N] [--title T]
  *   npx tsx scripts/word-diff.ts render <original> <proposed> [--labels FILE] [--title T] [-o OUT.html]

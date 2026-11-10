@@ -267,11 +267,11 @@ your real `~/.newrelic-preflight`, or your Claude Code and Copilot transcripts. 
 
 Three project skills are tracked in git, under `.claude/skills/`:
 
-- `verify-preflight` launches an isolated Preflight from your checkout and drives it through the
+- `preflight-verify` launches an isolated Preflight from your checkout and drives it through the
   collector, the dashboard, and the stdio MCP tools.
-- `self-review` reviews your own branch before you open a PR or mark it ready (see
+- `preflight-self-review` reviews your own branch before you open a PR or mark it ready (see
   [Reviewing pull requests](#reviewing-pull-requests)).
-- `review-pr` drafts a review of someone else's PR for you to edit and post. Its retro renders
+- `preflight-review-pr` drafts a review of someone else's PR for you to edit and post. Its retro renders
   proposed edits to the skill with `scripts/word-diff.ts`.
 
 Any other skill in `.claude/skills/`, including symlinks to skills kept elsewhere, stays ignored. To
@@ -339,7 +339,7 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 - [ ] `npm run check:tz-tests` passes (if you added or changed a test that uses local-time APIs such as `getHours`, `new Date(y, m, d)` or `toLocale*`; see [Time-zone-dependent tests](./docs/TEST_PATTERNS.md#time-zone-dependent-tests))
 - [ ] `package-lock.json` is unchanged by `npm install --package-lock-only` unless you changed dependencies
 - [ ] You added a changeset if the PR changes anything that ships, and left the version, `CHANGELOG.md`, and other PRs' pending changesets alone (see [Changesets](#changesets); CI's `changeset` job checks all three)
-- [ ] You've reviewed your own diff (the `self-review` skill does this; see [Reviewing pull requests](#reviewing-pull-requests))
+- [ ] You've reviewed your own diff (the `preflight-self-review` skill does this; see [Reviewing pull requests](#reviewing-pull-requests))
 
 ---
 
@@ -369,13 +369,13 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 
 ### AI-authored pull requests
 
-An AI agent opens every pull request as a draft (`gh pr create --draft`), after reviewing its own diff (in Claude Code, with the `self-review` skill). A human marks it ready for review once they have read, proofread and tested the changes.
+An AI agent opens every pull request as a draft (`gh pr create --draft`), after reviewing its own diff (in Claude Code, with the `preflight-self-review` skill). A human marks it ready for review once they have read, proofread and tested the changes.
 
 ### Reviewing pull requests
 
 **As the author**, review your own diff before you ask anyone else to. Run the checks in
 [Before opening a PR](#before-opening-a-pr), and show your evidence in the PR body: a test plan you
-ran, a repro, a screenshot for a UI change. For an AI-assisted change, the `self-review` project
+ran, a repro, a screenshot for a UI change. For an AI-assisted change, the `preflight-self-review` project
 skill does this. It reviews the branch with the same lenses a reviewer's agent uses, fixes what's
 blocking, and drafts a test plan that lists only what actually ran.
 
@@ -408,7 +408,7 @@ What to look for, roughly in order:
 
 **A person writes and posts every review comment and reply.** AI tools can draft them, but a human
 reads, edits and posts each one, and decides whether to approve or request changes. The
-`review-pr` project skill drafts a review this way: it reproduces each finding against the branch
+`preflight-review-pr` project skill drafts a review this way: it reproduces each finding against the branch
 and writes the comments to a file for you to edit and post. It never posts or edits anything on the PR.
 
 ### Branches

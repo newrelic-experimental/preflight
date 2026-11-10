@@ -2,7 +2,7 @@
 
 The comments go out under the user's name, so write them the way the user already reviews in this repo: plain prose, specific, and backed by something they ran. The author is a teammate who knows the code and the platforms it targets. Write for that reader.
 
-This file is the team's default. If `~/.claude/review-pr/comment-style.md` exists, read it after this one: it holds the user's own voice, and it wins where the two disagree.
+This file is the team's default. If `~/.claude/preflight-review-pr/comment-style.md` exists, read it after this one: it holds the user's own voice, and it wins where the two disagree.
 
 ## Each comment
 

@@ -282,5 +282,5 @@ Save it as `.changeset/<short-descriptive-name>.md`, or run `npx changeset --pat
 - Title: short, under 72 characters
 - Body: Summary (bullet points), Test plan (checklist)
 - Always run the checks in CONTRIBUTING.md's "Before opening a PR" first
-- Review your own diff before opening a PR or marking one ready: in Claude Code, run the `self-review` skill; elsewhere, follow its steps. Draft review comments and replies, never post them. See CONTRIBUTING.md's "Reviewing pull requests"
+- Review your own diff before opening a PR or marking one ready: in Claude Code, run the `preflight-self-review` skill; elsewhere, follow its steps. Draft review comments and replies, never post them. See CONTRIBUTING.md's "Reviewing pull requests"
 - Open it as a draft; see [AI-authored pull requests](./CONTRIBUTING.md#ai-authored-pull-requests)

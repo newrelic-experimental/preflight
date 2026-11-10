@@ -6,9 +6,9 @@ node_modules/
 .claude/*
 !.claude/skills/
 .claude/skills/*
-!.claude/skills/verify-preflight/
-!.claude/skills/review-pr/
-!.claude/skills/self-review/
+!.claude/skills/preflight-verify/
+!.claude/skills/preflight-review-pr/
+!.claude/skills/preflight-self-review/
 package-lock.json
 *.tsbuildinfo
 *_IDEATION.md

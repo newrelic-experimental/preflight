@@ -1,9 +1,9 @@
 # Hunting and proving findings
 
-Both review skills use this file: `review-pr` on a teammate's PR, and `self-review` on your own branch, so an author catches what a reviewer would. The calling skill supplies:
+Both review skills use this file: `preflight-review-pr` on a teammate's PR, and `preflight-self-review` on your own branch, so an author catches what a reviewer would. The calling skill supplies:
 
-- `$TREE`, the checkout whose files you read and where you run npm and node. For `review-pr` that's the review worktree. For `self-review` it's the author's own checkout.
-- `$REV`, the commit under review: `refs/remotes/pr/<N>` for `review-pr`, or `HEAD` plus the working tree for `self-review`. For `self-review`, diff with `git diff "$BASE"`, which includes uncommitted changes, and list untracked files separately.
+- `$TREE`, the checkout whose files you read and where you run npm and node. For `preflight-review-pr` that's the review worktree. For `preflight-self-review` it's the author's own checkout.
+- `$REV`, the commit under review: `refs/remotes/pr/<N>` for `preflight-review-pr`, or `HEAD` plus the working tree for `preflight-self-review`. For `preflight-self-review`, diff with `git diff "$BASE"`, which includes uncommitted changes, and list untracked files separately.
 - `$BASE`, the merge base with `origin/main`.
 - The claim: what the change says it fixes and how, in three sentences at most. Everything below is judged against it.
 
@@ -48,7 +48,7 @@ This is the step that makes the review worth reading. LLM reviewers over-flag an
 - **One-command claims: reproduce them yourself.** If a candidate is a direct input → output fact ("`redactSensitive('acme/risk-assessment-pipeline-v2')` returns `acme/ri[REDACTED]`"), run it against the built `dist/` on the branch and against `$BASE`, then move on. The reproduction is the check.
 - **Multi-step claims: check them independently first.** A claim that chains consequences ("this mismatch makes replay skip, so the dashboard loses commits") is where finders overreach. For each one, launch one subagent in parallel. Give it the candidate, `$TREE` and the diff range, but not the finder's reasoning. It restates the claim as a concrete trigger and outcome ("when X happens, Y is wrong because Z"), traces the path through the code, then argues the case that it is _not_ a bug. It returns `confirmed`, `refuted` (with the reason) or `unclear`. Many candidates fall apart at the restatement.
 - **Reproduce the confirmed ones.** Write the smallest test or script that shows the wrong behaviour on the branch, run it, and run it on `$BASE` as well. Report numbers: "5 estimated turns then 1 self-report leaves $0.021; main gives $0.126". Standalone Jest probes against the built code suit suspected aggregation and double-counting bugs. Keep scratch tests out of the change (a scratch file you delete, or under `/tmp`).
-- **User-visible surfaces** (dashboard, `/api/*`, hook capture, MCP tool output, token cost): use the `verify-preflight` skill against `$TREE` rather than reasoning about what the UI would show.
+- **User-visible surfaces** (dashboard, `/api/*`, hook capture, MCP tool output, token cost): use the `preflight-verify` skill against `$TREE` rather than reasoning about what the UI would show.
 - **Test any fix you suggest the way you tested the bug.** A suggested fix is a claim too. Run it against a matrix of inputs: the case that was raised, the contexts the code really sees (for redaction, JSON-escaped, ANSI-coloured and percent-encoded text), and real formats close to the edge. Before trusting a pass, check that every case's marker actually appears in the input. A check that can't fail proves nothing, in your harness as much as in the author's tests.
 - **Can't reproduce it?** Downgrade it to a question that states what you would expect. Never present an unreproduced bug as a bug.
 - **Drop it** if it is pre-existing and not made worse, intended by the change, already caught by CI, or a style preference no repo rule backs.

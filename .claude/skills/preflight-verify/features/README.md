@@ -5,7 +5,7 @@ This directory is the maintained source for verifying Preflight's user-facing be
 ## Baseline preconditions
 
 - Build this checkout with `npm ci && npm run build`.
-- Set `PF=.claude/skills/verify-preflight/scripts/pf-verify` from the repo root.
+- Set `PF=.claude/skills/preflight-verify/scripts/pf-verify` from the repo root.
 - Start a dashboard with `$PF up` on the default port 7791, or use `PF_PORT=<port>`.
 - Run `$PF doctor` and require four `ok` lines before any drive.
 - Mint every session id with `SID=$($PF sid)`. Only UUID ids carry transcript cost.

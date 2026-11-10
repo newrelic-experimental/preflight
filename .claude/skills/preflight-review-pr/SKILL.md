@@ -1,6 +1,6 @@
 ---
-name: review-pr
-description: Review a teammate's or contributor's Preflight pull request with the user. Gathers the PR's intent and history, checks out the branch in its own worktree, hunts for defects with parallel subagents, reproduces every finding against the branch before raising it, checks the repo's written rules, and drafts inline comments for the user to edit and post. It only drafts: it never posts, comments, labels or edits anything on the PR or its issues. Afterwards it watches the PR in the background and tells the user when the author pushes, replies or re-requests review. Use when the user says "review PR 123", pastes a newrelic-experimental/preflight PR URL, or asks for a re-review after the author pushed fixes. Not for your own branch (use self-review) or for proving a change on Preflight's real surfaces (use verify-preflight).
+name: preflight-review-pr
+description: Review a teammate's or contributor's Preflight pull request with the user. Gathers the PR's intent and history, checks out the branch in its own worktree, hunts for defects with parallel subagents, reproduces every finding against the branch before raising it, checks the repo's written rules, and drafts inline comments for the user to edit and post. It only drafts: it never posts, comments, labels or edits anything on the PR or its issues. Afterwards it watches the PR in the background and tells the user when the author pushes, replies or re-requests review. Use when the user says "review PR 123", pastes a newrelic-experimental/preflight PR URL, or asks for a re-review after the author pushed fixes. Not for your own branch (use preflight-self-review) or for proving a change on Preflight's real surfaces (use preflight-verify).
 argument-hint: '<PR number or URL> [re-review]'
 ---
 
@@ -141,7 +141,7 @@ Tracking lasts only as long as this session is running. Ending or archiving the 
 
 Run this when the user asks for a retro, or offer it once their review shows up on the PR. It measures how far the draft was from what the user posted and turns that gap into skill edits. It never edits the skill unasked.
 
-Each reviewer can keep a personal overlay in `~/.claude/review-pr/`:
+Each reviewer can keep a personal overlay in `~/.claude/preflight-review-pr/`:
 
 - `comment-style.md` holds their own voice. It's read after the team's [comment-style.md](comment-style.md) and wins where the two disagree.
 - `retro-log.md` lists edits they rejected, with their reasons.
@@ -166,13 +166,13 @@ Each reviewer can keep a personal overlay in `~/.claude/review-pr/`:
 7. **Propose edits as a real diff.**
    - Copy the files you'd change into `.claude/reviews/skill-proposal/` in this session's checkout and edit the copies. Copies of overlay files go in a separate `.claude/reviews/overlay-proposal/`, since `word-diff` compares a proposal folder against one original folder.
    - Write `diff -u` against the originals to `.claude/reviews/preflight-pr-<N>-retro.diff`, with the reasoning in `preflight-pr-<N>-retro.md`, and open the reasoning file for the user.
-   - Show the edits to the user as a word-level diff with highlighting, never as raw `[-…-]{+…+}` markers. From the root of this session's checkout, with `npm ci` done, start `npx tsx scripts/word-diff.ts serve <this skill's base directory> .claude/reviews/skill-proposal --labels .claude/reviews/skill-proposal/.labels.json --title "PR <N> retro: proposed skill edits"` as a background command. Read the port from its `word-diff: serving http://127.0.0.1:<port>/` line. Open that URL in the browser pane if there is one (`mcp__Claude_Browser__preview_start`); otherwise give the user the URL. For overlay edits, start a second server the same way, comparing `~/.claude/review-pr` (spelled out as an absolute path) with `.claude/reviews/overlay-proposal`. A file the overlay doesn't have yet shows as all-new text.
+   - Show the edits to the user as a word-level diff with highlighting, never as raw `[-…-]{+…+}` markers. From the root of this session's checkout, with `npm ci` done, start `npx tsx scripts/word-diff.ts serve <this skill's base directory> .claude/reviews/skill-proposal --labels .claude/reviews/skill-proposal/.labels.json --title "PR <N> retro: proposed skill edits"` as a background command. Read the port from its `word-diff: serving http://127.0.0.1:<port>/` line. Open that URL in the browser pane if there is one (`mcp__Claude_Browser__preview_start`); otherwise give the user the URL. For overlay edits, start a second server the same way, comparing `~/.claude/preflight-review-pr` (spelled out as an absolute path) with `.claude/reviews/overlay-proposal`. A file the overlay doesn't have yet shows as all-new text.
      - `.labels.json` tags each edit with the number the reasoning file uses: `[{"label": "Edit 2", "match": "<text unique to that edit>"}]`. Labels match on text, so they survive line shifts. A label is only the edit's number: put recommendations, evidence and caveats in the chat and the reasoning file, never on the page.
      - The page reloads itself whenever a proposal copy or the labels file changes. So as the user asks for revisions, edit the copies and the page follows; regenerate the `.diff` file too.
      - Stop the server once the user has approved or rejected every edit.
    - In the reasoning file, number each edit and tag it with its evidence: how many reviews show the pattern, and which ones. A rule backed by a single instance is marked as such, so the user can weigh it before approving.
    - If you can't tell whether a change in the posted review was deliberate (an anchor move, one dropped word), ask the user before turning it into a rule.
 8. **Apply nothing until the user approves each edit**, then apply only the approved edits.
-   - Overlay edits go straight into `~/.claude/review-pr/`.
+   - Overlay edits go straight into `~/.claude/preflight-review-pr/`.
    - Team edits change tracked files, so they reach everyone through a PR like any other change. Make them on a branch, and open the PR only if the user asks (as a draft, per `CONTRIBUTING.md` § AI-authored pull requests).
-   - Append the rejected edits to `~/.claude/review-pr/retro-log.md`, one line each with the reason the user gave. Read that log before proposing anything in the next retro.
+   - Append the rejected edits to `~/.claude/preflight-review-pr/retro-log.md`, one line each with the reason the user gave. Read that log before proposing anything in the next retro.
