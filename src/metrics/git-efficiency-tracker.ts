@@ -11,7 +11,7 @@ import {
   type GitEvent,
 } from './git-event-classifier.js';
 import { RepoNameResolver } from './local-session-aggregator.js';
-import { mcpPrToolAction } from './mcp-pr-tools.js';
+import { mcpPrEvent } from './mcp-pr-tools.js';
 
 /**
  * Parse `git symbolic-ref --short refs/remotes/<remoteName>/HEAD`'s stdout
@@ -305,15 +305,12 @@ export class GitEfficiencyTracker {
       this.lastBuildOrTestTimestamp = record.timestamp;
     }
 
-    // MCP tool calls (e.g. the GitHub MCP server's create_pull_request /
-    // update_pull_request, bare or as Claude Code's mcp__<server>__<tool>)
+    // GitHub MCP PR tool calls (create_pull_request, update_pull_request,
+    // merge_pull_request, bare or as Claude Code's mcp__<server>__<tool>)
     // carry no `command` field, so they'd otherwise be silently dropped by the
-    // guard below. prNumber is null here, unlike the gh-CLI path below which
-    // extracts it from command text.
-    const mcpPrAction = mcpPrToolAction(record.toolName);
-    if (mcpPrAction) {
-      this.prEvents.push({ timestamp: record.timestamp, action: mcpPrAction, prNumber: null });
-    }
+    // guard below.
+    const mcpPr = mcpPrEvent(record.toolName, record, record.timestamp);
+    if (mcpPr) this.prEvents.push(mcpPr);
 
     const rawCommand = record.command as string | undefined;
     if (!rawCommand) return;
@@ -495,6 +492,8 @@ export class GitEfficiencyTracker {
         errorType: entry.errorType,
         isTestCommand: entry.isTestCommand,
         isBuildCommand: entry.isBuildCommand,
+        createdPrNumber: entry.createdPrNumber,
+        mcpPrNumber: entry.mcpPrNumber,
       };
       this.recordToolCall(syntheticRecord);
     }

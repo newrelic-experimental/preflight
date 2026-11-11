@@ -147,7 +147,8 @@ function appendToHookBuffer(path, text) {
 // src/metrics/mcp-pr-tools.ts
 var MCP_PR_TOOL_ACTION = {
   create_pull_request: "create",
-  update_pull_request: "edit"
+  update_pull_request: "edit",
+  merge_pull_request: "merge"
 };
 function bareMcpToolName(toolName) {
   const parts = toolName.split("__");
@@ -335,12 +336,27 @@ function writeCwdBreadcrumb(sessionId, cwd) {
     }
   }
 }
+var GITHUB_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
+function mcpPrInputMeta(input, action) {
+  const meta = {};
+  const { owner, repo, pullNumber } = input;
+  if (typeof owner === "string" && typeof repo === "string" && GITHUB_NAME_RE.test(owner) && GITHUB_NAME_RE.test(repo)) {
+    meta.prRepo = `${owner}/${repo}`;
+  }
+  if (action !== "create") {
+    const number = typeof pullNumber === "number" ? String(pullNumber) : pullNumber;
+    if (typeof number === "string" && /^[1-9]\d{0,8}$/.test(number)) meta.prNumber = number;
+  }
+  return meta;
+}
 function extractInputMeta(toolName, input) {
   if (input === null || input === void 0 || typeof input !== "object") return void 0;
   const obj = input;
   const meta = {};
   if (typeof obj.file_path === "string") meta.file_path = obj.file_path;
   else if (typeof obj.filePath === "string") meta.file_path = obj.filePath;
+  const prAction = mcpPrToolAction(toolName);
+  if (prAction !== void 0) Object.assign(meta, mcpPrInputMeta(obj, prAction));
   switch (toolName) {
     case "Read":
       if (typeof obj.offset === "number") meta.offset = obj.offset;

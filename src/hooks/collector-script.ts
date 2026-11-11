@@ -457,6 +457,33 @@ interface HookInput {
   [key: string]: unknown;
 }
 
+// GitHub owner and repo names: letters, digits, `.`, `_` and `-`.
+const GITHUB_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
+
+/** The target of a GitHub MCP PR call (`owner`, `repo`, and for an update or
+ *  merge `pullNumber`; see mcp-pr-tools.ts), as `prRepo` (`owner/repo`) and
+ *  `prNumber` (digits). A value that isn't a plain name or number is dropped. */
+function mcpPrInputMeta(
+  input: Record<string, unknown>,
+  action: ReturnType<typeof mcpPrToolAction>,
+): Record<string, string> {
+  const meta: Record<string, string> = {};
+  const { owner, repo, pullNumber } = input;
+  if (
+    typeof owner === 'string' &&
+    typeof repo === 'string' &&
+    GITHUB_NAME_RE.test(owner) &&
+    GITHUB_NAME_RE.test(repo)
+  ) {
+    meta.prRepo = `${owner}/${repo}`;
+  }
+  if (action !== 'create') {
+    const number = typeof pullNumber === 'number' ? String(pullNumber) : pullNumber;
+    if (typeof number === 'string' && /^[1-9]\d{0,8}$/.test(number)) meta.prNumber = number;
+  }
+  return meta;
+}
+
 /**
  * Extract only the metadata fields from tool_input that the tool-specific
  * parsers need. Full content strings are replaced with their lengths to
@@ -472,6 +499,9 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
   // (https://code.visualstudio.com/docs/copilot/customization/hooks).
   if (typeof obj.file_path === 'string') meta.file_path = obj.file_path;
   else if (typeof obj.filePath === 'string') meta.file_path = obj.filePath;
+
+  const prAction = mcpPrToolAction(toolName);
+  if (prAction !== undefined) Object.assign(meta, mcpPrInputMeta(obj, prAction));
 
   switch (toolName) {
     case 'Read':

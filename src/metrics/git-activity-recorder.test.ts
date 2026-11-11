@@ -282,10 +282,17 @@ describe('GitActivityRecorder', () => {
 
   // Claude Code names an MCP tool `mcp__<server>__<tool>`; #833.
   describe('MCP PR tools under Claude Code names', () => {
-    /** Pairs one Claude Code pre/post hook per tool through HookEventProcessor
+    interface HookCall {
+      readonly tool: string;
+      readonly toolInput?: Record<string, unknown>;
+      readonly success?: boolean;
+    }
+
+    /** Pairs one Claude Code pre/post hook per call through HookEventProcessor
      *  and feeds the records to the recorder. `toolOutput` is what the
-     *  collector writes for a create_pull_request result naming PR 57. */
-    function recordThroughHooks(toolNames: readonly string[]): void {
+     *  collector writes for a create_pull_request result naming PR 57;
+     *  `toolInput` is what it writes for the call's owner/repo/pullNumber. */
+    function recordThroughHooks(calls: readonly (string | HookCall)[]): void {
       const bufferDir = mkdtempSync(join('/tmp', 'git-activity-hooks-'));
       try {
         const localStore = new LocalStore(bufferDir);
@@ -296,19 +303,33 @@ describe('GitActivityRecorder', () => {
           platformAdapter: new ClaudeCodeAdapter(),
         });
         processor.processEvents(
-          toolNames.flatMap((tool, i): HookEvent[] => [
-            { mode: 'pre', tool, timestamp: 1000 + i * 10, toolUseId: `tu-${i}`, sessionId: 's' },
-            {
-              mode: 'post',
+          calls.flatMap((call, i): HookEvent[] => {
+            const {
               tool,
-              timestamp: 1005 + i * 10,
-              success: true,
-              toolUseId: `tu-${i}`,
-              sessionId: 's',
-              cwd: repoDir,
-              toolOutput: { createdPrNumber: '57' },
-            },
-          ]),
+              toolInput,
+              success = true,
+            } = typeof call === 'string' ? { tool: call } : call;
+            return [
+              {
+                mode: 'pre',
+                tool,
+                timestamp: 1000 + i * 10,
+                toolUseId: `tu-${i}`,
+                sessionId: 's',
+                ...(toolInput && { toolInput }),
+              },
+              {
+                mode: 'post',
+                tool,
+                timestamp: 1005 + i * 10,
+                success,
+                toolUseId: `tu-${i}`,
+                sessionId: 's',
+                cwd: repoDir,
+                toolOutput: { createdPrNumber: '57' },
+              },
+            ];
+          }),
         );
       } finally {
         rmSync(bufferDir, { recursive: true, force: true });
@@ -330,6 +351,67 @@ describe('GitActivityRecorder', () => {
       recordThroughHooks(['mcp__plugin_github_github__update_pull_request']);
 
       expect(prEvents()).toEqual([expect.objectContaining({ action: 'edit', prNumber: null })]);
+    });
+
+    it('records merge_pull_request with the PR number it named', () => {
+      recordThroughHooks([
+        { tool: 'mcp__github__merge_pull_request', toolInput: { prNumber: '12' } },
+      ]);
+
+      expect(prEvents()).toEqual([expect.objectContaining({ action: 'merge', prNumber: '12' })]);
+    });
+
+    it('records update_pull_request with the PR number it named', () => {
+      recordThroughHooks([
+        { tool: 'mcp__github__update_pull_request', toolInput: { prNumber: '12' } },
+      ]);
+
+      expect(prEvents()).toEqual([expect.objectContaining({ action: 'edit', prNumber: '12' })]);
+    });
+
+    it('skips a failed create or merge, but keeps a failed edit', () => {
+      recordThroughHooks([
+        { tool: 'mcp__github__create_pull_request', success: false },
+        { tool: 'mcp__github__merge_pull_request', toolInput: { prNumber: '12' }, success: false },
+        { tool: 'mcp__github__update_pull_request', toolInput: { prNumber: '12' }, success: false },
+      ]);
+
+      expect(prEvents()).toEqual([expect.objectContaining({ action: 'edit' })]);
+    });
+
+    describe('in a repo whose remote is acme/app', () => {
+      beforeEach(() => {
+        spawnSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/app.git'], {
+          cwd: repoDir,
+          stdio: 'ignore',
+        });
+      });
+
+      it('drops the number of a PR in another repo, keeping the event', () => {
+        recordThroughHooks([
+          {
+            tool: 'mcp__github__merge_pull_request',
+            toolInput: { prRepo: 'acme/other', prNumber: '12' },
+          },
+          { tool: 'mcp__github__create_pull_request', toolInput: { prRepo: 'acme/other' } },
+        ]);
+
+        expect(prEvents()).toEqual([
+          expect.objectContaining({ action: 'merge', prNumber: null }),
+          expect.objectContaining({ action: 'create', prNumber: null }),
+        ]);
+      });
+
+      it("keeps the number of a PR in the cwd's repo, whatever its case", () => {
+        recordThroughHooks([
+          {
+            tool: 'mcp__github__merge_pull_request',
+            toolInput: { prRepo: 'Acme/App', prNumber: '12' },
+          },
+        ]);
+
+        expect(prEvents()).toEqual([expect.objectContaining({ action: 'merge', prNumber: '12' })]);
+      });
     });
 
     it('ignores GitHub MCP tools whose names only start like a PR tool', () => {

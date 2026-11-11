@@ -1381,6 +1381,55 @@ describe('GitEfficiencyTracker', () => {
       expect(metrics.prMetrics.prsUpdated).toBe(1);
     });
 
+    it('counts a GitHub MCP merge with the PR number it named, but not a failed one', () => {
+      tracker.recordToolCall(
+        makeRecord({ toolName: 'mcp__github__merge_pull_request', mcpPrNumber: '12' }),
+      );
+      tracker.recordToolCall(
+        makeRecord({
+          toolName: 'mcp__github__merge_pull_request',
+          mcpPrNumber: '13',
+          success: false,
+        }),
+      );
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.prMetrics.merged).toBe(1);
+      expect(metrics.prMetrics.prActivity).toEqual([
+        expect.objectContaining({ action: 'merge', prNumber: '12' }),
+      ]);
+    });
+
+    it('gives GitHub MCP creates and edits their PR numbers', () => {
+      tracker.recordToolCall(
+        makeRecord({ toolName: 'mcp__github__create_pull_request', createdPrNumber: '57' }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ toolName: 'mcp__github__update_pull_request', mcpPrNumber: '57' }),
+      );
+
+      expect(tracker.getMetrics().prMetrics.prActivity).toEqual([
+        expect.objectContaining({ action: 'create', prNumber: '57' }),
+        expect.objectContaining({ action: 'edit', prNumber: '57' }),
+      ]);
+    });
+
+    it('keeps a GitHub MCP PR number through replayTimeline()', () => {
+      tracker.replayTimeline([
+        {
+          timestamp: 1000,
+          toolName: 'mcp__github__merge_pull_request',
+          durationMs: null,
+          success: true,
+          mcpPrNumber: '12',
+        },
+      ]);
+
+      expect(tracker.getMetrics().prMetrics.prActivity).toEqual([
+        expect.objectContaining({ action: 'merge', prNumber: '12' }),
+      ]);
+    });
+
     it('does not count a GitHub MCP tool whose name only starts like a PR tool', () => {
       for (const record of recordsFromClaudeCodeHooks([
         'mcp__github__create_pull_request_with_copilot',

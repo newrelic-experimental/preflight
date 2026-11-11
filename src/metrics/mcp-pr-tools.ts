@@ -1,19 +1,19 @@
 import type { PrEvent } from './git-efficiency-tracker.js';
 
 /**
- * GitHub MCP server PR tools, keyed by the tool's own name. Both names are
- * listed in the server's tool reference
- * (https://github.com/github/github-mcp-server#tools, "Pull Requests":
- * `create_pull_request` "Open new pull request", `update_pull_request` "Edit
- * pull request"), and live-account NRQL evidence shows both reaching Preflight
- * as `AiToolCall` events with these bare `tool` values. Deliberately limited
- * to those two; the server's other PR tools (`merge_pull_request`,
- * `update_pull_request_branch`, ...) are out of scope pending their own
- * evidence of how they should count.
+ * GitHub MCP server PR tools, keyed by the tool's own name, from the server's
+ * tool reference (https://github.com/github/github-mcp-server#tools, "Pull
+ * Requests": `create_pull_request` "Open new pull request",
+ * `update_pull_request` "Edit pull request", `merge_pull_request` "Merge pull
+ * request"). Each takes `owner` and `repo`; update and merge also take
+ * `pullNumber`. The server's other PR tools stay out:
+ * `update_pull_request_branch` merges the base into the PR's branch, which is
+ * neither an edit of the PR nor a merge of it.
  */
 const MCP_PR_TOOL_ACTION: Readonly<Record<string, PrEvent['action']>> = {
   create_pull_request: 'create',
   update_pull_request: 'edit',
+  merge_pull_request: 'merge',
 };
 
 /**
@@ -40,4 +40,29 @@ function bareMcpToolName(toolName: string): string {
 export function mcpPrToolAction(toolName: string): PrEvent['action'] | undefined {
   const bare = bareMcpToolName(toolName);
   return Object.hasOwn(MCP_PR_TOOL_ACTION, bare) ? MCP_PR_TOOL_ACTION[bare] : undefined;
+}
+
+/** The PR fields a GitHub MCP tool call carries on its `ToolCallRecord`. */
+export interface McpPrFields {
+  readonly success?: boolean;
+  readonly createdPrNumber?: string;
+  readonly mcpPrNumber?: string;
+}
+
+/**
+ * The PR event a GitHub MCP tool call denotes, or undefined when it denotes
+ * none: not a PR tool, or a create or merge that failed and so changed
+ * nothing. The number is the one a create opened (from its output) or the one
+ * an edit or merge named (its `pullNumber` input).
+ */
+export function mcpPrEvent(
+  toolName: string,
+  record: McpPrFields,
+  timestamp: number,
+): PrEvent | undefined {
+  const action = mcpPrToolAction(toolName);
+  if (action === undefined) return undefined;
+  if ((action === 'create' || action === 'merge') && record.success === false) return undefined;
+  const prNumber = action === 'create' ? record.createdPrNumber : record.mcpPrNumber;
+  return { timestamp, action, prNumber: prNumber ?? null };
 }

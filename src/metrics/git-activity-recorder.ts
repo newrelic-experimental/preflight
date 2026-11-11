@@ -17,7 +17,7 @@ import {
 } from './git-event-classifier.js';
 import { UNATTRIBUTED_WORKSPACE_KEY, WorktreeIdentityResolver } from './git-workspace-identity.js';
 import { stripHeredocs } from './local-session-aggregator.js';
-import { mcpPrToolAction } from './mcp-pr-tools.js';
+import { mcpPrEvent } from './mcp-pr-tools.js';
 import type { PrEvent } from './git-efficiency-tracker.js';
 
 /** `sessionId` used for commit records hydrated from `git log` rather than
@@ -97,18 +97,20 @@ export class GitActivityRecorder {
       });
     }
 
-    // MCP tool calls (e.g. the GitHub MCP server's create_pull_request /
-    // update_pull_request), bare or as Claude Code's mcp__<server>__<tool>
-    const mcpPrAction = mcpPrToolAction(record.toolName);
-    if (mcpPrAction) {
+    // GitHub MCP PR tool calls (create_pull_request, update_pull_request,
+    // merge_pull_request), bare or as Claude Code's mcp__<server>__<tool>.
+    // The call names its own owner/repo; the activity is keyed to the cwd's
+    // repo, so as on the gh path below a number for another repo is dropped.
+    const mcpPr = mcpPrEvent(record.toolName, record, record.timestamp);
+    if (mcpPr) {
+      const prEvent =
+        mcpPr.prNumber !== null && this.namesOtherRepo(record.mcpPrRepo, cwd)
+          ? { ...mcpPr, prNumber: null }
+          : mcpPr;
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',
         kind: 'pr',
-        prEvent: {
-          timestamp: record.timestamp,
-          action: mcpPrAction,
-          prNumber: mcpPrAction === 'create' ? (record.createdPrNumber ?? null) : null,
-        },
+        prEvent,
         timestamp: record.timestamp,
         recordId: this.makeRecordId(record, 'pr-mcp'),
         workspaceKey: this.resolveWorkspaceKey(cwd),
@@ -199,6 +201,16 @@ export class GitActivityRecorder {
 
   private ingestActivity(activity: GitActivityRecord): void {
     this.store.ingest(activity);
+  }
+
+  /** True when an MCP PR call's `owner/repo` is known and isn't the cwd's
+   *  repo. GitHub names are case-insensitive. An unknown cwd repo can't
+   *  contradict it, which matches the gh path keeping a number that nothing
+   *  points elsewhere. */
+  private namesOtherRepo(callRepo: string | undefined, cwd: string | undefined): boolean {
+    if (callRepo === undefined) return false;
+    const cwdRepo = this.identityResolver.resolve(cwd)?.repoName;
+    return cwdRepo != null && cwdRepo.toLowerCase() !== callRepo.toLowerCase();
   }
 
   /** True when `segment`, run before a gh call, may have pointed that call

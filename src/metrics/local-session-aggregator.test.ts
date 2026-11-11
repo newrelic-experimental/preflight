@@ -526,6 +526,19 @@ describe('LocalSessionAggregator timeline persistence', () => {
     expect(timeline[0]?.createdPrNumber).toBe('42');
   });
 
+  it('persists the PR target of a GitHub MCP PR call', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'mcp__github__merge_pull_request',
+      timestamp: 100,
+      mcpPrNumber: '12',
+      mcpPrRepo: 'acme/app',
+    });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]).toMatchObject({ mcpPrNumber: '12', mcpPrRepo: 'acme/app' });
+  });
+
   it('persists a background run, whose success predates the command finishing', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({

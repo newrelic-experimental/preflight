@@ -4611,6 +4611,36 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
   });
 
+  it('clears ready_for_review when the PR is opened and merged through the GitHub MCP server', async () => {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const mcpSession = (sessionId: string, offsetMs: number, entry: Record<string, unknown>) => ({
+      sessionId,
+      repoName: 'acme/app',
+      timeline: [
+        {
+          timestamp: startOfDay.getTime() + offsetMs,
+          durationMs: 500,
+          success: true,
+          ...entry,
+        },
+      ],
+    });
+    const parsed = await statusFor([
+      mcpSession('creator', 10_000, {
+        toolName: 'mcp__github__create_pull_request',
+        createdPrNumber: '42',
+        mcpPrRepo: 'acme/app',
+      }),
+      mcpSession('merger', 20_000, {
+        toolName: 'mcp__github__merge_pull_request',
+        mcpPrNumber: '42',
+        mcpPrRepo: 'acme/app',
+      }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+  });
+
   it('keeps ready_for_review when the same PR number is merged in a different repo', async () => {
     const parsed = await statusFor([
       prSession('creator', 10_000, 'gh pr create --fill', {

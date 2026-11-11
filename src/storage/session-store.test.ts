@@ -3500,6 +3500,33 @@ describe('SessionStore deserialization', () => {
     expect(session!.timeline![1]!.createdPrNumber).toBeUndefined();
   });
 
+  it('keeps a GitHub MCP PR target on timeline entries and drops a malformed one', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const raw = JSON.stringify({
+      sessionId: 'mcp-pr',
+      startTime: 1000,
+      endTime: 2000,
+      durationMs: 1000,
+      toolCallCount: 2,
+      developer: 'alice',
+      timeline: [
+        {
+          timestamp: 1100,
+          toolName: 'merge_pull_request',
+          mcpPrNumber: '12',
+          mcpPrRepo: 'acme/app',
+        },
+        { timestamp: 1200, toolName: 'merge_pull_request', mcpPrNumber: '1x', mcpPrRepo: 'a/b/c' },
+      ],
+    });
+    writeFileSync(join(tmpDir, 'sessions', '2026-01-01_mcp-pr.json'), raw + '\n');
+
+    const session = store.loadSession('mcp-pr');
+    expect(session!.timeline![0]).toMatchObject({ mcpPrNumber: '12', mcpPrRepo: 'acme/app' });
+    expect(session!.timeline![1]!.mcpPrNumber).toBeUndefined();
+    expect(session!.timeline![1]!.mcpPrRepo).toBeUndefined();
+  });
+
   it('keeps runInBackground on timeline entries only when it is true', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const raw = JSON.stringify({
