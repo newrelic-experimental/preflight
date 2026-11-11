@@ -1656,12 +1656,24 @@ async function main(): Promise<void> {
       lastDayKey: localDateKey(),
       lastRefreshMs: 0,
     };
-    // Excludes the session this process owns now, not the one it started with:
-    // a --stdio engine that adopts or corrects its id seeds that session's saved
-    // cost into CostTracker, so its file must leave the baseline at the same time.
+    // Excludes the session this process owns now once its saved cost is seeded
+    // into CostTracker, which for a --stdio engine happens when it adopts or
+    // confirms the id, not at startup. An unconfirmed cwd guess is not seeded
+    // yet, so its file stays in, as it stood before this process's own cost
+    // reached it.
     const refreshPriorCostBaseline = (): void => {
       const now = Date.now();
-      const baseline = computeHistoricalCosts(sessionStoreForCostBaseline, sessionTraceId, now);
+      const ownIsSeeded =
+        isSyntheticSessionId(sessionTraceId) || rehydratedTrackerSessionIds.has(sessionTraceId);
+      const ownFile = firstSaveBaselines.costFileBeforeOwnSave(sessionTraceId);
+      const baseline = computeHistoricalCosts(
+        sessionStoreForCostBaseline,
+        ownIsSeeded ? sessionTraceId : null,
+        now,
+        !ownIsSeeded && ownFile !== undefined
+          ? { sessionId: sessionTraceId, summary: ownFile }
+          : undefined,
+      );
       priorCostCache.priorDailyCostUsd = baseline.priorDailyCostUsd;
       priorCostCache.priorWeeklyCostUsd = baseline.priorWeeklyCostUsd;
       priorCostCache.lastDayKey = localDateKey(now);
@@ -3230,6 +3242,7 @@ async function main(): Promise<void> {
             // first call site) precisely because it wasn't confirmed yet —
             // seed it now that it is.
             rehydrateTrackersIfResumed(staleId);
+            refreshPriorCostBaseline();
             clearPendingConfirmation();
             return;
           }
