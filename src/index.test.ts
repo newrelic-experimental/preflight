@@ -3246,6 +3246,111 @@ describe('--local with cloud export configured but no credentials (#479)', () =>
   }, 30000);
 });
 
+describe('--local Today cache savings', () => {
+  it('persists the savings of parent and subagent turns so Today matches /api/cost', async () => {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+    const { mkdirSync } = await import('node:fs');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpHome = mkdtempSync(join(tmpdir(), 'nr-local-savings-home-'));
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-local-savings-storage-'));
+    const configPath = resolve(tmpStoragePath, 'config.json');
+    writeFileSync(configPath, JSON.stringify({ mode: 'local' }));
+
+    const sessionId = 'a143754c-f742-40b7-bf1a-7dc01ad1932f';
+    const agentId = 'a1b2c3d4e5f607189';
+    const projectDir = resolve(tmpHome, '.claude', 'projects', '-tmp-savings');
+    const subagentsDir = resolve(projectDir, sessionId, 'subagents');
+    mkdirSync(subagentsDir, { recursive: true });
+    const turn = (messageId: string, cacheRead: number, sidechain: boolean): string =>
+      JSON.stringify({
+        type: 'assistant',
+        sessionId,
+        ...(sidechain && { agentId }),
+        isSidechain: sidechain,
+        uuid: `uuid-${messageId}`,
+        timestamp: new Date().toISOString(),
+        message: {
+          id: messageId,
+          model: 'claude-sonnet-4-5-20250929',
+          role: 'assistant',
+          stop_reason: 'end_turn',
+          content: [{ type: 'text', text: 'ok' }],
+          usage: {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_input_tokens: cacheRead,
+            cache_creation_input_tokens: 0,
+          },
+        },
+      }) + '\n';
+    writeFileSync(resolve(projectDir, `${sessionId}.jsonl`), turn('msg_parent', 50_000, false));
+    writeFileSync(resolve(subagentsDir, `agent-${agentId}.jsonl`), turn('msg_sub', 20_000, true));
+
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: tmpHome,
+      USERPROFILE: tmpHome,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_MODE: 'local',
+      NR_AI_ALERTS_ENABLED: 'false',
+      NR_AI_SESSION_PERSIST_INTERVAL_MS: '500',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+    };
+    for (const key of Object.keys(env)) if (key.startsWith('CLAUDE')) delete env[key];
+
+    const child = spawn(process.execPath, [binPath, '--local', '--config', configPath], {
+      env,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+
+    interface CacheHealthBody {
+      cacheHealth?: { totalCacheReadTokens: number; totalSavingsUsd: number };
+      cost?: { totalCacheSavingsUsd: number };
+    }
+    const getJson = async (path: string): Promise<CacheHealthBody> =>
+      (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as CacheHealthBody;
+
+    try {
+      let cacheHealth: CacheHealthBody['cacheHealth'];
+      const deadline = Date.now() + 25_000;
+      while (Date.now() < deadline) {
+        try {
+          const body = await getJson('/api/sessions/today/aggregate');
+          if (body.cacheHealth?.totalCacheReadTokens === 70_000) {
+            cacheHealth = body.cacheHealth;
+            break;
+          }
+        } catch {
+          // Not listening yet.
+        }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
+      expect(cacheHealth).toBeDefined();
+      const cost = await getJson('/api/cost');
+      expect(cost.cost?.totalCacheSavingsUsd).toBeGreaterThan(0);
+      expect(cacheHealth?.totalSavingsUsd).toBeCloseTo(cost.cost?.totalCacheSavingsUsd ?? 0, 6);
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+    }
+  }, 40000);
+});
+
 describe('deploy-dashboards/deploy-alerts --staging is hidden from --help', () => {
   async function expectHelpHidesStaging(sub: 'deploy-dashboards' | 'deploy-alerts'): Promise<void> {
     const exitSpy = jest
