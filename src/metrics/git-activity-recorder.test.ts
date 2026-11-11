@@ -280,7 +280,7 @@ describe('GitActivityRecorder', () => {
     });
   });
 
-  // Claude Code names an MCP tool `mcp__<server>__<tool>`; #833.
+  // Claude Code names an MCP tool `mcp__<server>__<tool>`.
   describe('MCP PR tools under Claude Code names', () => {
     interface HookCall {
       readonly tool: string;

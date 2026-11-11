@@ -1367,7 +1367,7 @@ describe('GitEfficiencyTracker', () => {
       expect(metrics.prMetrics.prsUpdated).toBe(1);
     });
 
-    // Claude Code names an MCP tool `mcp__<server>__<tool>`; #833.
+    // Claude Code names an MCP tool `mcp__<server>__<tool>`.
     it('counts GitHub MCP PR tools under their Claude Code mcp__<server>__ names', () => {
       for (const record of recordsFromClaudeCodeHooks([
         'mcp__github__create_pull_request',
