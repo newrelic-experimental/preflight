@@ -1730,7 +1730,7 @@ describe('stdio integration', () => {
         stderr += chunk.toString('utf8');
       });
       const client = new Client({ name: 'test-client', version: '1.0.0' });
-      await client.connect(transport);
+      await connectToConfiguredEngine(client, transport);
       await drainCalls(storage, 'other-real-session', 1);
       await client.close();
       await waitFor(() => stderr.includes('Persisted observed sessions'));
