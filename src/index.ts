@@ -2408,6 +2408,9 @@ async function main(): Promise<void> {
             ...(tokenEvent.responseMs !== undefined && { responseMs: tokenEvent.responseMs }),
           });
           modelUsageTracker.recordUsage(tokenEvent.model, usage, breakdown.totalUsd);
+          // A token-only session never reaches touch(), but the live trackers
+          // now hold its usage, so its persisted copy must be skipped.
+          if (tokenEvent.sessionId) liveSessionRegistry?.hold(tokenEvent.sessionId);
         }
         localSessionAggregator.recordTokenUsage(tokenEvent.sessionId, {
           timestamp: tokenEvent.timestamp,
@@ -2511,6 +2514,7 @@ async function main(): Promise<void> {
         // belong in the model breakdown too — recording them only in the cost
         // tracker left Model Usage blind to every subagent-only session.
         modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
+        if (turn.parentSessionId) liveSessionRegistry?.hold(turn.parentSessionId);
         // The only line that makes an orphan session's subagent spend durable:
         // without it, an unscoped process's aggregator never learns about this
         // session's subagent cost and persistSession() has nothing to write.

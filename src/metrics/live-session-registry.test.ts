@@ -134,6 +134,57 @@ describe('LiveSessionRegistry', () => {
     });
   });
 
+  describe('hold and getHeldSessionIds', () => {
+    it('hold() does not make a session live, seen today, or named', () => {
+      const reg = new LiveSessionRegistry();
+      reg.hold('sess-tokens');
+      expect(reg.isLive('sess-tokens')).toBe(false);
+      expect(reg.getLiveSessions({ includeSynthetic: true })).toEqual([]);
+      expect(reg.getTodaySessionIds({ includeSynthetic: true })).toEqual([]);
+      expect(reg.getSessionName('sess-tokens')).toBeNull();
+      expect(reg.getHeldSessionIds()).toEqual(['sess-tokens']);
+    });
+
+    it('touch() also holds the session', () => {
+      const reg = new LiveSessionRegistry();
+      reg.touch('sess-a');
+      expect(reg.getHeldSessionIds()).toEqual(['sess-a']);
+    });
+
+    it('includes synthetic session IDs', () => {
+      const reg = new LiveSessionRegistry();
+      reg.hold('local-1234567890');
+      expect(reg.getHeldSessionIds()).toEqual(['local-1234567890']);
+    });
+
+    it('survives staleness eviction in getLiveSessions and isLive', () => {
+      const reg = new LiveSessionRegistry(5000);
+      reg.touch('sess-a');
+      reg.hold('sess-tokens');
+      jest.advanceTimersByTime(6000);
+      expect(reg.getLiveSessions()).toEqual([]);
+      expect(reg.isLive('sess-a')).toBe(false);
+      expect(reg.getHeldSessionIds()).toEqual(expect.arrayContaining(['sess-a', 'sess-tokens']));
+    });
+
+    it('survives the local-midnight rollover that expires getTodaySessionIds', () => {
+      jest.setSystemTime(new Date(2026, 0, 15, 23, 59, 0));
+      const reg = new LiveSessionRegistry();
+      reg.hold('sess-tokens');
+      jest.setSystemTime(new Date(2026, 0, 16, 0, 1, 0));
+      expect(reg.getTodaySessionIds({ includeSynthetic: true })).toEqual([]);
+      expect(reg.getHeldSessionIds()).toEqual(['sess-tokens']);
+    });
+
+    it('is cleared on reset()', () => {
+      const reg = new LiveSessionRegistry();
+      reg.hold('sess-tokens');
+      reg.touch('sess-a');
+      reg.reset();
+      expect(reg.getHeldSessionIds()).toEqual([]);
+    });
+  });
+
   describe('setAuthoritativeName', () => {
     it('sets the display name for a session', () => {
       const reg = new LiveSessionRegistry();

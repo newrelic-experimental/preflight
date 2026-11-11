@@ -17,6 +17,7 @@ import {
   ToolSelectionScorer,
   toToolSelectionSummary,
 } from '../../metrics/tool-selection-scorer.js';
+import { LiveSessionRegistry } from '../../metrics/live-session-registry.js';
 import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
 import { makeUsage } from '../../__test-utils__/token-usage.js';
 import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
@@ -4385,6 +4386,78 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     }
   });
 
+  it("counts only today's cost of a session resumed from an older start date (loadSessionsWithActivityToday)", async () => {
+    const todayStart = localStartOfDay();
+    const todayKey = localDateKey(todayStart);
+    const olderKey = localDateKey(todayStart - 2 * 24 * 60 * 60 * 1000);
+    // Started three days ago and resumed today, so its filename date is older
+    // than the 2-day overlap window. Only loadSessionsWithActivityToday() returns it.
+    const resumed = {
+      sessionId: 'resumed-1',
+      startTime: todayStart - 3 * 24 * 60 * 60 * 1000,
+      endTime: todayStart + 10_000,
+      estimatedCostUsd: 8.25,
+      costByDayUsd: { [olderKey]: 7, [todayKey]: 1.25 },
+      antiPatterns: [{}, {}, {}],
+      timeline: [
+        { timestamp: todayStart - 3 * 24 * 60 * 60 * 1000 },
+        { timestamp: todayStart - 24 * 60 * 60 * 1000 },
+        { timestamp: todayStart + 1_000 },
+      ],
+    };
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadSessionsOverlappingToday: () => [],
+        loadSessionsWithActivityToday: () => [resumed],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { totalCostUsd: number; antiPatternCount: number };
+    // Today's bucket only: 1.25, not the lifetime 8.25 nor the older day's 7.
+    expect(parsed.totalCostUsd).toBeCloseTo(1.25, 6);
+    expect(parsed.antiPatternCount).toBe(0);
+  });
+
+  it('keeps the lifetime anti-pattern count of a session that started within the last day', async () => {
+    const todayStart = localStartOfDay();
+    const todayKey = localDateKey(todayStart);
+    const recent = {
+      sessionId: 'resumed-recent',
+      startTime: todayStart - 12 * 60 * 60 * 1000,
+      endTime: todayStart + 10_000,
+      estimatedCostUsd: 2,
+      costByDayUsd: { [todayKey]: 2 },
+      antiPatterns: [{}, {}],
+      timeline: [
+        { timestamp: todayStart - 12 * 60 * 60 * 1000 },
+        { timestamp: todayStart + 1_000 },
+      ],
+    };
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadSessionsOverlappingToday: () => [],
+        loadSessionsWithActivityToday: () => [recent],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { antiPatternCount: number };
+    expect(parsed.antiPatternCount).toBe(2);
+  });
+
   it('returns forecastEndOfDayUsd null when there is no activity today from any source', async () => {
     const handler = createApiHandler({
       localStore: { peekAllBuffers: () => [] },
@@ -7953,6 +8026,75 @@ describe('api-handler GET /api/model-usage', () => {
     expect(parsed.byModel['model-a'].requestCount).toBe(10);
   });
 
+  it('does not double-count a token-only session the live trackers hold via hold(), which never made it a tool-call session', async () => {
+    const tracker = new ModelUsageTracker();
+    // The live trackers recorded model usage for sess-tokens, a chat-only
+    // session with no tool call, so it was never touched: $1 / 100 output tokens.
+    tracker.recordUsage('model-a', makeUsage({ inputTokens: 0, outputTokens: 100 }), 1);
+    const liveSessionRegistry = new LiveSessionRegistry();
+    liveSessionRegistry.hold('sess-tokens');
+    const persistedToday = [
+      {
+        // Persisted copy of the same token-only session. Its usage is already
+        // in the live tracker above, so it must not be added again.
+        sessionId: 'sess-tokens',
+        modelBreakdown: {
+          'model-a': {
+            requestCount: 1,
+            totalInputTokens: 0,
+            totalOutputTokens: 100,
+            totalCostUsd: 1,
+            totalCacheReadTokens: 0,
+            totalCacheCreationTokens: 0,
+            totalThinkingTokens: 0,
+          },
+        },
+      },
+      {
+        // Not held by any live tracker, so its persisted usage is added.
+        sessionId: 'sess-other',
+        modelBreakdown: {
+          'model-a': {
+            requestCount: 9,
+            totalInputTokens: 0,
+            totalOutputTokens: 900,
+            totalCostUsd: 1,
+            totalCacheReadTokens: 0,
+            totalCacheCreationTokens: 0,
+            totalThinkingTokens: 0,
+          },
+        },
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
+    >;
+    const handler = createApiHandler({
+      modelUsageTracker: tracker,
+      sessionTracker: {
+        getMetrics: () =>
+          ({ sessionId: 'this-process-live' }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+      liveSessionRegistry,
+      sessionStore: {
+        loadTodaySessions: () => persistedToday,
+        listSessions: () => [],
+        loadSession: () => null,
+      },
+    });
+    const req = { method: 'GET', url: '/api/model-usage' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    // 100 (live, token-only) + 900 (sess-other) = 1000 output tokens, $2 total.
+    // sess-tokens' persisted $1 / 100 tokens would make 1100 and $3 if not skipped.
+    expect(parsed.byModel['model-a'].totalOutputTokens).toBe(1000);
+    expect(parsed.byModel['model-a'].totalCostUsd).toBeCloseTo(2);
+    expect(parsed.byModel['model-a'].requestCount).toBe(10);
+  });
+
   it('ignores persisted-today sessions with no modelBreakdown field (legacy files)', async () => {
     const tracker = new ModelUsageTracker();
     tracker.recordUsage('model-a', makeUsage({ inputTokens: 100, outputTokens: 50 }), 0.5);
@@ -8539,6 +8681,41 @@ describe('api-handler GET /api/activity-heatmap', () => {
     const result = JSON.parse(body());
     // Only the post-midnight entry counts.
     expect(result.buckets[0]).toBe(1);
+  });
+
+  it("buckets only today's timeline entries of a session resumed from an older start date (loadSessionsWithActivityToday)", async () => {
+    const startMs = localStartOfDay();
+    const handler = createApiHandler({
+      toolCallBuffer: { getRecords: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        // Only loadSessionsWithActivityToday() returns it: its filename date is
+        // older than the 2-day overlap window. Entries before local midnight
+        // must not count; the two entries in the first 15-minute bucket must.
+        loadSessionsOverlappingToday: () => [],
+        loadSessionsWithActivityToday: () => [
+          {
+            sessionId: 'resumed-heatmap',
+            timeline: [
+              { timestamp: startMs - 3 * 24 * 60 * 60 * 1000, toolName: 'Read', success: true },
+              { timestamp: startMs - 60_000, toolName: 'Read', success: true },
+              { timestamp: startMs + 60_000, toolName: 'Edit', success: true },
+              { timestamp: startMs + 61_000, toolName: 'Edit', success: true },
+            ],
+          },
+        ],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/activity-heatmap?view=today' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body()) as { buckets: number[] };
+    expect(result.buckets[0]).toBe(2);
+    expect(result.buckets.reduce((sum, n) => sum + n, 0)).toBe(2);
   });
 
   it('returns view=history days aggregated by local date, walking each timeline entry rather than attributing the whole toolCallCount to the start day', async () => {

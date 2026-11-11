@@ -104,6 +104,8 @@ const HEADER_TIMESTAMP_FORMAT = {
 
 const RECENT_ALERTS_REFETCH_MS = 30_000;
 
+const CONCURRENCY_CHART_MAX_LEVELS = 8;
+
 const SEVERITY_DOT: Record<AlertEvent['severity'], string> = {
   info: 'text-ink-muted',
   warning: 'text-accent-amber',
@@ -1286,6 +1288,7 @@ function ActivityTodayPanel({
             {hasConcurrencyData ? (
               <DiscreteBlockChart
                 data={concurrencyItems}
+                maxLevels={CONCURRENCY_CHART_MAX_LEVELS}
                 ariaLabel={`Concurrency over time, peak ${concurrency?.peak ?? 0}`}
               />
             ) : concurrencyLoading ? (
