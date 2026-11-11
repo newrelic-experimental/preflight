@@ -105,6 +105,15 @@ describe('LocalSessionAggregator', () => {
     expect(kept.timeline).toBeUndefined();
   });
 
+  it('keeps a call with no tool use id when a counted id is empty', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1, success: true });
+
+    const kept = agg.withoutCallsOtherProcessesMayCount(summariesOf(agg)[0]!, new Set(['']));
+
+    expect(kept.toolCallCount).toBe(1);
+  });
+
   it('keeps a failing post as a failure, with the error type it carries', () => {
     const agg = new LocalSessionAggregator();
     const timedOut = { id: 'r1', sessionId: REAL_ID, toolName: 'Agent', timestamp: 1000 };
