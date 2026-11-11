@@ -80,8 +80,8 @@ reflect the whole session instead of just the `nr_observe_*` calls.
 ## Step 3: Set the environment variables, one question at a time
 
 This power's `mcp.json` reads every setting from an environment variable, so
-nothing is stored in the power itself. Do not edit `mcp.json` to put values in
-it. The user sets each variable in the environment Kiro is launched from (for
+nothing is stored in the power itself. Never put real values in `mcp.json`;
+the only edit it ever needs is the pair of `${VAR}` references in Step 3c. The user sets each variable in the environment Kiro is launched from (for
 example their shell profile). Walk through these in order and don't skip ahead.
 
 **3a. Platform (always).** Ask the user to set:
@@ -115,8 +115,9 @@ If they still want it, two things are needed, because `mcp.json` ships with
 only the mode and platform variables:
 
 1. Ask them to add these two lines to the `env` block of this power's
-   `mcp.json`. They are `${VAR}` references, not values, so no secret goes in
-   the file:
+   installed `mcp.json`. They are `${VAR}` references, not values, so no secret
+   goes in the file. Tell them an edit to the Power's own `mcp.json` is replaced
+   when the Power updates, so they need to re-add the two lines after an update:
 
    ```json
    "NEW_RELIC_LICENSE_KEY": "${NEW_RELIC_LICENSE_KEY}",

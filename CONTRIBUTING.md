@@ -444,8 +444,8 @@ fixes or removes it.
    [`release-pr.yml`](./.github/workflows/release-pr.yml) keeps a **Chore: Release x.y.z** PR
    open. It runs `npm run version-packages`, which bumps `package.json`, adds the CHANGELOG
    entry, and deletes the changesets it used. Then `scripts/release-files.ts` copies the new
-   version into `package-lock.json`, `server.json`, both plugin manifests, and the plugin's
-   `npx` pin in `plugin/.mcp.json`, and dates the entry. Each push to `main` rebuilds the PR,
+   version into `package-lock.json`, `server.json`, both plugin manifests, and the `npx` pins in
+   `plugin/.mcp.json` and `kiro-power/mcp.json`, and dates the entry. Each push to `main` rebuilds the PR,
    so to change an entry, edit its changeset on `main` instead of pushing to the PR's branch.
    The entry's date is the day the PR was last rebuilt. If that's stale, start the Release PR
    workflow on `main` from the Actions tab (Run workflow) before merging. Don't use Re-run on
