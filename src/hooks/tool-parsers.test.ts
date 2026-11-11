@@ -296,6 +296,20 @@ describe('parseToolSpecificFields', () => {
       );
     });
 
+    it('drops a malformed or oversized subagent_type', () => {
+      expect(
+        parseToolSpecificFields('Agent', { subagent_type: 'x'.repeat(500) }, undefined)
+          .subagentType,
+      ).toBeUndefined();
+      expect(
+        parseToolSpecificFields('Agent', { subagent_type: 'Explore\nforged' }, undefined)
+          .subagentType,
+      ).toBeUndefined();
+      expect(
+        parseToolSpecificFields('Agent', { subagent_type: '' }, undefined).subagentType,
+      ).toBeUndefined();
+    });
+
     it('extracts runInBackground flag', () => {
       const input = {
         description: 'Background task',

@@ -105,6 +105,15 @@ export const MAX_META_SIDECAR_BYTES = 16 * 1024;
 export const MAX_ON_DEMAND_FILES = 32;
 /** Most transcript bytes one `readLiveTails()` call reads in total; the poll reads the rest. */
 export const MAX_ON_DEMAND_BYTES = 1024 * 1024;
+/**
+ * How long a transcript that ends on an unanswered user line (a tool result the
+ * model owes a reply to) may sit unmodified before `readLiveTails()` stops
+ * stating it. A model reply does not take this long, so the subagent was killed
+ * or abandoned. The poll still reads it if it grows.
+ */
+export const STALLED_REPLY_MS = 15 * 60 * 1000;
+/** Bytes read from the end of a transcript at first sight, to learn how it ended. */
+const TAIL_PROBE_BYTES = 64 * 1024;
 const HEALTH_INTERVAL_MS = 60_000;
 const SCHEMA_FINGERPRINT_REEMIT_MS = 60 * 60 * 1000; // 1h
 const COST_SELF_CHECK_MS = 60 * 60 * 1000; // 1h
@@ -202,6 +211,21 @@ interface SubagentWatcherBaseOptions {
    * sees every line. Errors are caught and recorded.
    */
   readonly onTurnRead?: (turn: SubagentTokenEvent) => void;
+}
+
+/**
+ * How a transcript's last line left it. `final`: an assistant answer that ended
+ * its turn with no tool call. `reply-owed`: a user line (a tool result) the
+ * model has yet to answer. `open`: anything else, such as a tool call running.
+ */
+type TailKind = 'final' | 'reply-owed' | 'open';
+
+function lastNonEmpty(lines: readonly string[]): string | undefined {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line !== undefined && line !== '') return line;
+  }
+  return undefined;
 }
 
 type CostSelfCheck = () => { trackedUsd: number; groundTruthUsd: number };
@@ -344,6 +368,15 @@ export class SubagentWatcher {
   // an unreadable file is left to the poll instead of being retried on every
   // hook record. Bounded by the live file set via evictStalePartials().
   private readonly consumedBytesByPath = new Map<string, number>();
+  // How each transcript's last line left it, once a read reached its end, so
+  // readLiveTails() can leave the settled ones unstated. A later read of a new
+  // last line replaces the entry, for a subagent continued after it returned.
+  // Absent means unknown, which readLiveTails() treats as open. Bounded by the
+  // live file set via evictStalePartials().
+  private readonly tailKindByPath = new Map<string, TailKind>();
+  // Where the stat budget resumes among the open candidates past the newest
+  // half, so a crowd of them cannot starve one for good.
+  private openRotation = 0;
   // The transcripts readLiveTails() stats: any it found since the last poll,
   // then every one that poll discovered, most recently modified first. No
   // mtime window applies, since a subagent's transcript stays unmodified for
@@ -469,10 +502,14 @@ export class SubagentWatcher {
    * A session whose subagents directory the last poll did not list, and that
    * has no tracked transcript, costs no syscall. Otherwise this lists the
    * session's `subagents/` directory once for transcripts spawned since the
-   * poll, then stats the tracked transcripts of `sessionId` (of every session
-   * when undefined), at most MAX_ON_DEMAND_FILES stats in all, and reads only
-   * from one that has grown past what was already consumed, up to
-   * MAX_ON_DEMAND_BYTES in total. Not found before the next poll: a session's
+   * poll, then stats the unsettled tracked transcripts of `sessionId` (of every
+   * session when undefined), at most MAX_ON_DEMAND_FILES stats in all, and reads
+   * only from one that has grown past what was already consumed, up to
+   * MAX_ON_DEMAND_BYTES in total. Settled: a final answer, or a tool result left
+   * unanswered for STALLED_REPLY_MS. Only the poll notices such a transcript
+   * growing again. When more transcripts remain than the stat budget, the newest
+   * half is always stated and the rest take turns. Not found before the next
+   * poll: a session's
    * first subagent, whose transcript creates that directory, and a workflow's
    * subagents, whose transcripts sit in per-run directories below it. Never
    * throws.
@@ -495,11 +532,10 @@ export class SubagentWatcher {
         turns += read.turns;
         byteBudget -= read.bytes;
       }
-      for (let i = spawned.files.length; i < this.trackedFiles.length; i++) {
+      for (const i of this.pickOpenCandidates(sessionId, spawned.files.length, statsLeft)) {
         if (statsLeft <= 0 || byteBudget <= 0) break;
         const tracked = this.trackedFiles[i];
         if (tracked === undefined) break;
-        if (sessionId !== undefined && tracked.parentSessionId !== sessionId) continue;
         const consumed = this.consumedBytesByPath.get(tracked.path);
         if (consumed === undefined) continue;
         statsLeft -= 1;
@@ -520,6 +556,43 @@ export class SubagentWatcher {
       this.recordError(err);
     }
     return turns;
+  }
+
+  /**
+   * Indexes into `trackedFiles`, from `from`, of the transcripts worth a stat:
+   * of `sessionId` (every session when undefined), read once, and not settled.
+   * Within `budget` all of them. Beyond it the newest half, then a window of the
+   * rest that moves on with each call.
+   */
+  private pickOpenCandidates(
+    sessionId: string | undefined,
+    from: number,
+    budget: number,
+  ): readonly number[] {
+    const now = Date.now();
+    const open: number[] = [];
+    for (let i = from; i < this.trackedFiles.length; i++) {
+      const tracked = this.trackedFiles[i];
+      if (tracked === undefined) break;
+      if (sessionId !== undefined && tracked.parentSessionId !== sessionId) continue;
+      if (!this.consumedBytesByPath.has(tracked.path)) continue;
+      const kind = this.tailKindByPath.get(tracked.path);
+      if (kind === 'final') continue;
+      if (kind === 'reply-owed' && now - tracked.stat.mtimeMs > STALLED_REPLY_MS) continue;
+      open.push(i);
+    }
+    if (open.length <= budget) return open;
+    const newest = Math.ceil(budget / 2);
+    const rest = open.slice(newest);
+    const window = budget - newest;
+    const start = this.openRotation % rest.length;
+    this.openRotation = (start + window) % rest.length;
+    const rotated: number[] = [];
+    for (let k = 0; k < window; k++) {
+      const index = rest[(start + k) % rest.length];
+      if (index !== undefined) rotated.push(index);
+    }
+    return [...open.slice(0, newest), ...rotated];
   }
 
   /**
@@ -880,6 +953,7 @@ export class SubagentWatcher {
     if (switchedFile) this.partialByPath.delete(file.path);
 
     if (startCursor.bytePos >= st.size) {
+      if (!this.consumedBytesByPath.has(file.path)) this.probeTail(file.path, st.size);
       this.consumedBytesByPath.set(file.path, startCursor.bytePos);
       return nothingRead;
     }
@@ -1035,6 +1109,11 @@ export class SubagentWatcher {
     // Keep the in-memory mirror in sync; when the partial is empty, drop the
     // key entirely so a fully-consumed file leaves no residual entry in the map.
     this.consumedBytesByPath.set(file.path, nextBytePos);
+    const lastLine = lastNonEmpty(lines);
+    if (lastLine !== undefined) {
+      if (nextBytePos >= st.size) this.tailKindByPath.set(file.path, this.tailKind(lastLine));
+      else this.tailKindByPath.delete(file.path);
+    }
     if (newPartial.length > 0) {
       this.partialByPath.set(file.path, newPartial);
     } else {
@@ -1080,7 +1159,8 @@ export class SubagentWatcher {
       this.partialByPath.size === 0 &&
       this.decoderByPath.size === 0 &&
       this.agentTypeByPath.size === 0 &&
-      this.consumedBytesByPath.size === 0
+      this.consumedBytesByPath.size === 0 &&
+      this.tailKindByPath.size === 0
     ) {
       return;
     }
@@ -1097,6 +1177,9 @@ export class SubagentWatcher {
     }
     for (const path of this.consumedBytesByPath.keys()) {
       if (!live.has(path)) this.consumedBytesByPath.delete(path);
+    }
+    for (const path of this.tailKindByPath.keys()) {
+      if (!live.has(path)) this.tailKindByPath.delete(path);
     }
   }
 
@@ -1138,6 +1221,58 @@ export class SubagentWatcher {
     }
     if (agentType !== undefined) this.agentTypeByPath.set(transcriptPath, agentType);
     return agentType;
+  }
+
+  /** How a transcript whose last complete line is `line` stands. */
+  private tailKind(line: string): TailKind {
+    const { parsed } = this.tryParseLine(line);
+    if (parsed !== null) {
+      return parsed.stopReason === 'end_turn' && parsed.toolUseIds.length === 0 ? 'final' : 'open';
+    }
+    try {
+      const entry: unknown = JSON.parse(line);
+      if (
+        typeof entry === 'object' &&
+        entry !== null &&
+        (entry as { type?: unknown }).type === 'user'
+      ) {
+        return 'reply-owed';
+      }
+    } catch {
+      /* not JSON, so not a reply owed */
+    }
+    return 'open';
+  }
+
+  /**
+   * Learns how a transcript the cursor already sits at the end of (after a
+   * restart, or one the poll first meets fully read) ended, from its last
+   * TAIL_PROBE_BYTES. A last line longer than that leaves it unknown.
+   */
+  private probeTail(path: string, size: number): void {
+    if (size <= 0) return;
+    let fd: number | null = null;
+    try {
+      fd = openSync(path, 'r');
+      const length = Math.min(size, TAIL_PROBE_BYTES);
+      const buf = Buffer.allocUnsafe(length);
+      const read = readSync(fd, buf, 0, length, size - length);
+      const lines = buf.subarray(0, read).toString('utf-8').split('\n');
+      if (length < size) lines.shift();
+      lines.pop();
+      const lastLine = lastNonEmpty(lines);
+      if (lastLine !== undefined) this.tailKindByPath.set(path, this.tailKind(lastLine));
+    } catch (err) {
+      this.recordError(err);
+    } finally {
+      if (fd !== null) {
+        try {
+          closeSync(fd);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
   }
 
   /** Parse a JSONL line; `parsed` is non-null only for a valid assistant turn with usage. */

@@ -1,7 +1,9 @@
 import {
   AGENT_ID_PATTERN,
   AGENT_ID_RE,
+  MAX_AGENT_ID_LENGTH,
   MAX_AGENT_TYPE_LENGTH,
+  normalizeAgentId,
   normalizeAgentType,
 } from './agent-id.js';
 
@@ -54,5 +56,28 @@ describe('normalizeAgentType', () => {
     );
     expect(normalizeAgentType('Explore\nInjected')).toBeUndefined();
     expect(normalizeAgentType('Explore\u007f')).toBeUndefined();
+  });
+});
+
+describe('normalizeAgentId', () => {
+  it('accepts Claude Code ids and the looser ids other platforms send', () => {
+    expect(normalizeAgentId('a1234567890abcde0')).toBe('a1234567890abcde0');
+    expect(normalizeAgentId('aconfluence-investigator-ca0143b626a86424')).toBe(
+      'aconfluence-investigator-ca0143b626a86424',
+    );
+    expect(normalizeAgentId('agent-abc123')).toBe('agent-abc123');
+    expect(normalizeAgentId('3f2b9c1e-7d4a-4e8b-9a61-0c5d2e8f7b13')).toBe(
+      '3f2b9c1e-7d4a-4e8b-9a61-0c5d2e8f7b13',
+    );
+  });
+
+  it('rejects non-strings, empty, oversized, and control-character values', () => {
+    expect(normalizeAgentId(undefined)).toBeUndefined();
+    expect(normalizeAgentId(7)).toBeUndefined();
+    expect(normalizeAgentId('')).toBeUndefined();
+    expect(normalizeAgentId('x'.repeat(MAX_AGENT_ID_LENGTH + 1))).toBeUndefined();
+    expect(normalizeAgentId('x'.repeat(MAX_AGENT_ID_LENGTH))).toHaveLength(MAX_AGENT_ID_LENGTH);
+    expect(normalizeAgentId('a1234567890abcde0\nInjected')).toBeUndefined();
+    expect(normalizeAgentId('a1234567890abcde0\u007f')).toBeUndefined();
   });
 });

@@ -17,7 +17,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createLogger } from '../shared/index.js';
-import { normalizeAgentType } from '../lib/agent-id.js';
+import { normalizeAgentId, normalizeAgentType } from '../lib/agent-id.js';
 import { createDefaultRegistry, GENERIC_MCP_PLATFORM_NAME } from '../platforms/index.js';
 import type { PlatformAdapter } from '../platforms/types.js';
 import type { LocalStore } from '../storage/local-store.js';
@@ -224,15 +224,16 @@ function numAttr(v: unknown): number {
  * `transcriptPath`, `permissionMode`, `cwd`, `agentId`, `agentType`, and
  * `platform`: the collector stamps both, and pre is the event that observed
  * the call start. The collector copies the
- * envelope's `agent_type` raw, so it passes `normalizeAgentType()` here like
- * every other type source; an invalid value counts as absent, which leaves it
- * for `backfillAgentType()` to fill.
+ * envelope's `agent_id` and `agent_type` raw, so they pass `normalizeAgentId()`
+ * and `normalizeAgentType()` here like every other id and type source; an
+ * invalid value counts as absent, which leaves it for `backfillAgentId()` /
+ * `backfillAgentType()` to fill.
  */
 function attributionFields(pre: PreHookEvent | undefined, post?: PostHookEvent) {
   const transcriptPath = pre?.transcriptPath ?? post?.transcriptPath;
   const permissionMode = pre?.permissionMode ?? post?.permissionMode;
   const cwd = pre?.cwd ?? post?.cwd;
-  const agentId = pre?.agentId ?? post?.agentId;
+  const agentId = normalizeAgentId(pre?.agentId) ?? normalizeAgentId(post?.agentId);
   const agentType = normalizeAgentType(pre?.agentType) ?? normalizeAgentType(post?.agentType);
   const platform = pre?.platform ?? post?.platform;
   return {
