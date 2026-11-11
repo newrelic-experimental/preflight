@@ -407,6 +407,26 @@ describe('parseToolSpecificFields', () => {
       ).toBe('57');
     });
 
+    it('reads the repo and PR number the collector kept from a GitHub MCP PR call', () => {
+      const fields = parseToolSpecificFields(
+        'mcp__github__merge_pull_request',
+        { prRepo: 'acme/app', prNumber: '57' },
+        undefined,
+      );
+      expect(fields.mcpPrRepo).toBe('acme/app');
+      expect(fields.mcpPrNumber).toBe('57');
+    });
+
+    it('ignores PR target fields on a tool that is not a GitHub MCP PR tool', () => {
+      const fields = parseToolSpecificFields(
+        'mcp__github__get_issue',
+        { prRepo: 'acme/app', prNumber: '57' },
+        undefined,
+      );
+      expect(fields.mcpPrRepo).toBeUndefined();
+      expect(fields.mcpPrNumber).toBeUndefined();
+    });
+
     it('extracts non-zero exitCode', () => {
       const fields = parseToolSpecificFields('Bash', { command: 'false' }, { exitCode: 1 });
       expect(fields.exitCode).toBe(1);

@@ -26,9 +26,11 @@ import { CostTracker } from '../../metrics/cost-tracker.js';
 import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { buildCostTrackerSeed } from '../../metrics/cost-tracker-seed.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../../metrics/quality-proxy-tracker.js';
+import { SessionStore, buildSessionSummary } from '../../storage/session-store.js';
 
 import type { ToolCallRecord } from '../../storage/types.js';
-import { SessionStore, type FullSessionSummary } from '../../storage/session-store.js';
+import type { SessionTracker } from '../../metrics/session-tracker.js';
+import type { FullSessionSummary } from '../../storage/session-store.js';
 import type { GitWorkspaceReport } from '../../metrics/git-workspace-report.js';
 import type { GitWorkspaceReportWithWindow } from '../../metrics/git-workspace-reporter.js';
 
@@ -3528,7 +3530,9 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costTracker: {
         getMetrics: () => ({
           sessionTotalCostUsd: 0,
-          unpricedByModel: { 'claude-bar-1': { calls: 1, tokens: 5 } },
+          unpricedByDay: {
+            [localDateKey(Date.now())]: { 'claude-bar-1': { calls: 1, tokens: 5 } },
+          },
         }),
         getCostForDay: () => 0,
       } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
@@ -3544,6 +3548,127 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       'claude-foo-9-9': { calls: 3, tokens: 350 },
       'claude-bar-1': { calls: 5, tokens: 75 },
     });
+  });
+
+  it('counts only the live tracker calls recorded today', async () => {
+    const todayKey = localDateKey(Date.now());
+    const yesterdayKey = localDateKey(localStartOfDay() - 1);
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      costTracker: {
+        getMetrics: () => ({
+          sessionTotalCostUsd: 0,
+          unpricedByDay: {
+            [yesterdayKey]: { 'claude-foo-9-9': { calls: 4, tokens: 400 } },
+            [todayKey]: { 'claude-foo-9-9': { calls: 1, tokens: 100 } },
+          },
+          estimatedByDay: {
+            [yesterdayKey]: { 'claude-opus-5-9': { calls: 3, tokens: 30, estimatedFrom: 'x' } },
+          },
+        }),
+        getCostForDay: () => 0,
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const parsed = JSON.parse(body()) as {
+      unpricedByModel: Record<string, unknown>;
+      estimatedByModel: Record<string, unknown>;
+    };
+    expect(parsed.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 1, tokens: 100 } });
+    expect(parsed.estimatedByModel).toEqual({});
+  });
+
+  it('counts only the calls recorded today for a session that crossed midnight', async () => {
+    const todayKey = localDateKey(Date.now());
+    const yesterdayKey = localDateKey(localStartOfDay() - 1);
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'crossed',
+            unpricedByModel: { 'claude-foo-9-9': { calls: 5, tokens: 500 } },
+            unpricedByDay: {
+              [yesterdayKey]: { 'claude-foo-9-9': { calls: 4, tokens: 400 } },
+              [todayKey]: { 'claude-foo-9-9': { calls: 1, tokens: 100 } },
+            },
+            estimatedByModel: { 'claude-opus-5-9': { calls: 3, tokens: 30, estimatedFrom: 'x' } },
+            estimatedByDay: {
+              [yesterdayKey]: { 'claude-opus-5-9': { calls: 3, tokens: 30, estimatedFrom: 'x' } },
+            },
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const parsed = JSON.parse(body()) as {
+      unpricedByModel: Record<string, unknown>;
+      estimatedByModel: Record<string, unknown>;
+    };
+    expect(parsed.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 1, tokens: 100 } });
+    expect(parsed.estimatedByModel).toEqual({});
+  });
+
+  it('counts none of a session whose unpriced calls all arrived late, before and after a restart', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-late-calls-'));
+    try {
+      const store = new SessionStore({ storagePath: dir });
+      const sessionTracker = {
+        getMetrics: () => ({
+          sessionId: 'sess-late-calls',
+          sessionName: null,
+          sessionStartTime: Date.now(),
+          toolCallCount: 0,
+          toolCallCountByTool: {},
+          bashCommandsRun: 0,
+          toolSuccessRate: null,
+        }),
+      } as unknown as SessionTracker;
+      const save = (costTracker: CostTracker): void => {
+        store.saveSession(buildSessionSummary({ sessionTracker, costTracker, developer: 'd' }));
+      };
+      const todayUnpriced = async (): Promise<unknown> => {
+        const handler = createApiHandler({
+          localStore: { peekAllBuffers: () => [] },
+          sessionStore: store,
+        } as unknown as Parameters<typeof createApiHandler>[0]);
+        const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+        const { res, body } = fakeRes();
+        await handler(req, res);
+        return (JSON.parse(body()) as { unpricedByModel: unknown }).unpricedByModel;
+      };
+
+      const before = new CostTracker();
+      before.recordTokenUsage(makeUsage({ inputTokens: 10, totalTokens: 10 }), 'claude-foo-9-9', {
+        timestampMs: Date.now() - 72 * 60 * 60 * 1000,
+      });
+      save(before);
+      expect(await todayUnpriced()).toEqual({});
+
+      const persisted = store.loadSession('sess-late-calls');
+      if (persisted === null) throw new Error('session was not persisted');
+      const after = new CostTracker();
+      after.seedFromPersisted(buildCostTrackerSeed(persisted));
+      expect(after.getMetrics().unpricedByDay).toEqual({});
+      save(after);
+      expect(await todayUnpriced()).toEqual({});
+      expect(store.loadSession('sess-late-calls')?.unpricedByModel).toEqual({
+        'claude-foo-9-9': { calls: 1, tokens: 10 },
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('sums estimated calls per model across persisted sessions and the live tracker', async () => {
@@ -3571,8 +3696,10 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costTracker: {
         getMetrics: () => ({
           sessionTotalCostUsd: 0,
-          estimatedByModel: {
-            'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+          estimatedByDay: {
+            [localDateKey(Date.now())]: {
+              'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+            },
           },
         }),
         getCostForDay: () => 0,
@@ -4482,6 +4609,73 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     ]);
     expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
     expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+  });
+
+  const mcpPrSession = (
+    sessionId: string,
+    offsetMs: number,
+    entry: Record<string, unknown>,
+    cwd?: string,
+  ) => {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    return {
+      sessionId,
+      repoName: 'acme/app',
+      timeline: [
+        {
+          timestamp: startOfDay.getTime() + offsetMs,
+          durationMs: 500,
+          success: true,
+          cwd,
+          ...entry,
+        },
+      ],
+    };
+  };
+  const mcpCreate = { toolName: 'mcp__github__create_pull_request', createdPrNumber: '42' };
+  const mcpMerge = { toolName: 'mcp__github__merge_pull_request', mcpPrNumber: '42' };
+
+  it('clears ready_for_review when the PR is opened and merged through the GitHub MCP server', async () => {
+    const parsed = await statusFor([
+      mcpPrSession('creator', 10_000, { ...mcpCreate, mcpPrRepo: 'acme/app' }),
+      mcpPrSession('merger', 20_000, { ...mcpMerge, mcpPrRepo: 'acme/app' }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+  });
+
+  describe('GitHub MCP PRs in a fork clone (origin fork/app, upstream acme/app)', () => {
+    let root: string;
+    beforeEach(() => {
+      root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pr-1088-')));
+      const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+      const git = (...args: string[]) =>
+        spawnSync('git', args, { cwd: root, env, stdio: 'ignore' });
+      git('init', '-q');
+      git('remote', 'add', 'origin', 'https://github.com/fork/app.git');
+      git('remote', 'add', 'upstream', 'https://github.com/acme/app.git');
+    });
+    afterEach(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('clears ready_for_review when the merge names the upstream repo', async () => {
+      const parsed = await statusFor([
+        mcpPrSession('creator', 10_000, { ...mcpCreate, mcpPrRepo: 'acme/app' }, root),
+        mcpPrSession('merger', 20_000, { ...mcpMerge, mcpPrRepo: 'acme/app' }, root),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+      expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+    });
+
+    it('keeps ready_for_review when the merge names a repo that is not one of its remotes', async () => {
+      const parsed = await statusFor([
+        mcpPrSession('creator', 10_000, { ...mcpCreate, mcpPrRepo: 'acme/app' }, root),
+        mcpPrSession('merger', 20_000, { ...mcpMerge, mcpPrRepo: 'acme/other' }, root),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
   });
 
   it('keeps ready_for_review when the same PR number is merged in a different repo', async () => {
