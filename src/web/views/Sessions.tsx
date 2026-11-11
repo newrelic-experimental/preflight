@@ -31,6 +31,7 @@ import { Card, Eyebrow, LiveBadge, Pill, Tabs } from '../components/ui';
 import type { PillTone } from '../components/ui';
 import {
   fmtDateTime,
+  fmtTimeOfDay,
   formatDuration,
   formatUsd,
   formatUsdOrDash,
@@ -1301,6 +1302,15 @@ function SessionTimeline({
   );
 }
 
+// Null when the session ran no subagents, so the label stays hidden. A single
+// agent gets no clock time because there was no parallel moment to point at.
+function subagentPeakLabel(peak: SessionSubagentsResponse['peak'] | undefined): string | null {
+  if (peak === undefined || peak.count === 0) return null;
+  if (peak.count === 1) return '1 subagent at a time';
+  const when = peak.atMs === null ? '' : ` at ${fmtTimeOfDay(peak.atMs)}`;
+  return `Peak ${peak.count} parallel${when}`;
+}
+
 // Unified session trace (parent tool calls + subagents on one shared axis).
 // Sits directly beneath the per-session workflows list and replaces the two
 // formerly-redundant cards (the AgentSwimlanes "Session timeline" card and the
@@ -1373,7 +1383,7 @@ function SessionTraceSection({
   // fallback (isError/no-data) and success render branches below consume it,
   // each with a different fallback value.
   const sharedWindow = useMemo<{ startMs: number; endMs: number } | null>(() => {
-    const hasAgents = data !== undefined && (data.agents?.length ?? 0) > 0;
+    const hasAgents = !isError && data !== undefined && (data.agents?.length ?? 0) > 0;
     const subStart = hasAgents ? data!.window.startMs : null;
     const subEnd = hasAgents ? data!.window.endMs : null;
 
@@ -1391,7 +1401,7 @@ function SessionTraceSection({
     if (starts.length === 0 || ends.length === 0) return null;
 
     return { startMs: Math.min(...starts), endMs: Math.max(...ends) };
-  }, [data, parentEntries]);
+  }, [data, isError, parentEntries]);
 
   // The parent timeline entries shaped for the SessionTrace parent lane — the
   // ReplayTimelineEntry fields (timestamp / toolName / durationMs / success /
@@ -1410,9 +1420,14 @@ function SessionTraceSection({
     [parentEntries],
   );
 
+  const peakLabel = isError ? null : subagentPeakLabel(data?.peak);
+
   return (
     <div className="mb-4">
-      <Eyebrow className="mb-2">Session trace</Eyebrow>
+      <div className="mb-2 flex items-baseline justify-between gap-2">
+        <Eyebrow>Session trace</Eyebrow>
+        {peakLabel !== null && <span className="text-xs text-ink-muted">{peakLabel}</span>}
+      </div>
       <Card tone="static" padding="sm">
         {isLoading ? (
           <EmptyState variant="loading" icon="radar" title="Loading subagents" />
