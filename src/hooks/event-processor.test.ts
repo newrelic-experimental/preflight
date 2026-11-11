@@ -1153,6 +1153,26 @@ describe('HookEventProcessor', () => {
       expect(records).toMatchObject([{ success: true, durationMs: 720_000 }]);
     });
 
+    it.each([
+      ['Agent', true, 33],
+      ['Task', true, 33],
+      ['Task', false, 25],
+    ])(
+      'waits out a %s call (prompted: %s) whose post comes after %i minutes',
+      (tool, prompted, minutes) => {
+        const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
+        processor.start();
+        const call = { tool, toolUseId: 'toolu_long', timestamp: Date.now() };
+        processor.processEvents([makePreEvent(call)]);
+        if (prompted) processor.processEvents([{ mode: 'permission_request', ...call }]);
+        jest.advanceTimersByTime(minutes * 60_000);
+        processor.processEvents([makePostEvent({ ...call, timestamp: Date.now() })]);
+        processor.stop();
+
+        expect(records).toMatchObject([{ success: true, durationMs: minutes * 60_000 }]);
+      },
+    );
+
     it('records a 3-minute Agent call once, as a success with its duration', () => {
       const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
       processor.start();
@@ -1282,6 +1302,28 @@ describe('HookEventProcessor', () => {
       restarted.stop();
 
       expect(records).toHaveLength(1);
+    });
+
+    it('amends the record of a call once, however many posts repeat', () => {
+      const onRecordAmend = jest.fn();
+      const processor = new HookEventProcessor({ store, onRecord, onRecordAmend });
+      processor.processEvents([makePreEvent({ toolUseId: 'toolu_twice', timestamp: 1000 })]);
+      processor.stop();
+      processor.processEvents([makePostEvent({ toolUseId: 'toolu_twice', timestamp: 2000 })]);
+      processor.processEvents([makePostEvent({ toolUseId: 'toolu_twice', timestamp: 2000 })]);
+
+      expect(onRecordAmend).toHaveBeenCalledTimes(1);
+    });
+
+    it('writes a counted id to disk at one save, not again at the next', () => {
+      const remember = jest.spyOn(store, 'rememberCountedToolUseIds');
+      const processor = new HookEventProcessor({ store, onRecord });
+      processor.processEvents([makePreEvent({ toolUseId: 'toolu_once' })]);
+      processor.stop();
+      processor.persistCountedIdsOfSavedSessions(['sess-001']);
+      processor.persistCountedIdsOfSavedSessions(['sess-001']);
+
+      expect(remember.mock.calls.map(([, ids]) => ids)).toEqual([['toolu_once'], []]);
     });
 
     it('marks every call it counted unpaired for a restart, past its in-memory cap', () => {
