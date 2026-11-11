@@ -449,6 +449,8 @@ export class LocalSessionAggregator {
     platform?: string | null;
     agentId?: unknown;
     createdPrNumber?: unknown;
+    mcpPrNumber?: unknown;
+    mcpPrRepo?: unknown;
     runInBackground?: unknown;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
@@ -508,6 +510,8 @@ export class LocalSessionAggregator {
         ...(typeof record.createdPrNumber === 'string' && {
           createdPrNumber: record.createdPrNumber,
         }),
+        ...(typeof record.mcpPrNumber === 'string' && { mcpPrNumber: record.mcpPrNumber }),
+        ...(typeof record.mcpPrRepo === 'string' && { mcpPrRepo: record.mcpPrRepo }),
         ...(record.runInBackground === true && { runInBackground: true }),
       });
     }
