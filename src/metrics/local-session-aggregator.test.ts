@@ -267,6 +267,56 @@ describe('LocalSessionAggregator', () => {
     expect(byId.get(other)?.unpricedByModel).toBeUndefined();
   });
 
+  it('buckets unpriced-model calls by the local day of each usage timestamp', () => {
+    const agg = new LocalSessionAggregator();
+    const dayOne = new Date(2026, 10, 5, 12).getTime();
+    const dayTwo = new Date(2026, 10, 6, 12).getTime();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: dayOne });
+    agg.recordTokenUsage(REAL_ID, { model: 'claude-foo-9-9', inputTokens: 100, timestamp: dayOne });
+    agg.recordTokenUsage(REAL_ID, { model: 'claude-foo-9-9', inputTokens: 30, timestamp: dayTwo });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.unpricedByDay).toEqual({
+      '2026-11-05': { 'claude-foo-9-9': { calls: 1, tokens: 100 } },
+      '2026-11-06': { 'claude-foo-9-9': { calls: 1, tokens: 30 } },
+    });
+  });
+
+  it('buckets family-priced calls by day beside their session total', () => {
+    const agg = new LocalSessionAggregator();
+    const dayOne = new Date(2026, 10, 5, 12).getTime();
+    const dayTwo = new Date(2026, 10, 6, 12).getTime();
+    const estimatedFrom = estimatedFromOf('claude-opus-5-9');
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: dayOne });
+    agg.recordTokenUsage(REAL_ID, {
+      model: 'claude-opus-5-9',
+      inputTokens: 100,
+      timestamp: dayOne,
+    });
+    agg.recordTokenUsage(REAL_ID, { model: 'claude-opus-5-9', inputTokens: 30, timestamp: dayTwo });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.estimatedByModel).toEqual({
+      'claude-opus-5-9': { calls: 2, tokens: 130, estimatedFrom },
+    });
+    expect(summary?.estimatedByDay).toEqual({
+      '2026-11-05': { 'claude-opus-5-9': { calls: 1, tokens: 100, estimatedFrom } },
+      '2026-11-06': { 'claude-opus-5-9': { calls: 1, tokens: 30, estimatedFrom } },
+    });
+  });
+
+  it('omits every call-count field for a session with only priced calls', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.01, model: 'claude-sonnet-5', inputTokens: 100 });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.tokensInput).toBe(100);
+    expect(
+      Object.keys(summary ?? {}).filter((k) => /^(unpriced|estimated)By(Model|Day)$/.test(k)),
+    ).toEqual([]);
+  });
+
   it('counts family-priced calls on the session that made them', () => {
     const other = 'b0000000-0000-4000-8000-000000000000';
     const agg = new LocalSessionAggregator();
