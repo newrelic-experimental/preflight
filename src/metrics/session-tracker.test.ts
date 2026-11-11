@@ -676,6 +676,53 @@ describe('SessionTracker', () => {
       expect(metrics.bashExitCodes).toEqual({ '2': 1 });
       expect(metrics.toolCallTimeline.map((e) => e.durationMs)).toEqual([null, 5000]);
     });
+
+    it('amends the timeline entry of its own record when a newer entry follows', () => {
+      const tracker = new SessionTracker('sess-own', 10);
+      const call = { ...makeRecord({ durationMs: null, success: false }), errorType: 'timeout' };
+      tracker.recordToolCall({ ...call, id: 'first' });
+      tracker.recordToolCall({ ...call, id: 'second' });
+      tracker.amendToolCall({ ...call, id: 'first', durationMs: 5000, success: true });
+
+      expect(tracker.getMetrics().toolCallTimeline.map((e) => e.durationMs)).toEqual([5000, null]);
+    });
+
+    it('amends a rejected call that the user approved after all', () => {
+      const tracker = new SessionTracker('sess-own', 10);
+      const call = { ...makeRecord({ durationMs: null, success: false }), errorType: 'rejected' };
+      tracker.recordToolCall(call);
+      tracker.amendToolCall({ ...call, durationMs: 700_000, success: true, errorType: undefined });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolSuccessRate).toBe(1);
+      expect(metrics.toolErrorsByType).toEqual({});
+    });
+
+    it('amends only the newest timeouts, up to its cap', () => {
+      const tracker = new SessionTracker('sess-own', 1);
+      const call = { ...makeRecord({ durationMs: null, success: false }), errorType: 'timeout' };
+      tracker.recordToolCall({ ...call, id: 'first' });
+      tracker.recordToolCall({ ...call, id: 'second' });
+      tracker.amendToolCall({ ...call, id: 'first', durationMs: 5000, success: true });
+      tracker.amendToolCall({ ...call, id: 'second', durationMs: 6000, success: true });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallTimeline.map((e) => e.durationMs)).toEqual([null, 6000]);
+      expect(metrics.toolErrorsByType).toEqual({ timeout: 1 });
+    });
+
+    it('leaves the last timeline entry alone when the amended call did not fit the timeline', () => {
+      const tracker = new SessionTracker('sess-own', 10);
+      for (let i = 0; i < 10_000; i++) tracker.recordToolCall(makeRecord({ timestamp: i }));
+      const call = { ...makeRecord({ durationMs: null, success: false }), errorType: 'timeout' };
+      tracker.recordToolCall(call);
+      const lastBefore = tracker.getMetrics().toolCallTimeline.at(-1);
+      tracker.amendToolCall({ ...call, durationMs: 5000, success: true });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallTimeline.at(-1)).toEqual(lastBefore);
+      expect(metrics.toolErrorCount).toBe(0);
+    });
   });
 
   describe('reset()', () => {
