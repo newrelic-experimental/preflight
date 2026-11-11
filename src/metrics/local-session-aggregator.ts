@@ -25,6 +25,7 @@ import { spawnSync } from 'node:child_process';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
+import { isAwaitingLatePost } from './session-tracker.js';
 import { hasRecordedUsage, type FullSessionSummary } from '../storage/session-store.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
 import { CallUsageBook } from './call-usage.js';
@@ -383,6 +384,37 @@ export class LocalSessionAggregator {
     return rollup;
   }
 
+  recordsOf(sessionId: string): readonly ToolCallRecord[] {
+    return this.sessions.get(sessionId)?.records ?? [];
+  }
+
+  /**
+   * A rollup's summary for a session whose file has calls, without what another process may count:
+   * a timeout, whose post may land elsewhere, and a call another process marked counted.
+   */
+  withoutCallsOtherProcessesMayCount(
+    summary: Record<string, unknown>,
+    countedIds: ReadonlySet<string>,
+  ): Record<string, unknown> {
+    const rollup = this.sessions.get(String(summary.sessionId))!;
+    const isLeftOut = (r: ToolCallRecord): boolean =>
+      isAwaitingLatePost(r) || (r.toolUseId !== undefined && countedIds.has(r.toolUseId));
+    const leftOut = rollup.records.filter(isLeftOut);
+    const calls = rollup.toolCallCount - leftOut.length;
+    const successes = rollup.successCount - leftOut.filter((r) => r.success).length;
+    const tools = new Map(Object.entries(rollup.toolBreakdown));
+    for (const { toolName } of leftOut) tools.set(toolName, tools.get(toolName)! - 1);
+    const timeline = rollup.timeline.filter((_, i) => !isLeftOut(rollup.records[i]!));
+    return {
+      ...summary,
+      toolCallCount: calls,
+      toolBreakdown: Object.fromEntries([...tools].filter(([, count]) => count > 0)),
+      timeline: timeline.length > 0 ? timeline : undefined,
+      // A null rate keeps the file's own.
+      toolSuccessRate: calls > 0 ? successes / calls : null,
+    };
+  }
+
   amendToolCall(record: ToolCallRecord): void {
     const rollup = record.sessionId ? this.sessions.get(record.sessionId) : undefined;
     if (!rollup) return;
@@ -632,9 +664,11 @@ export class LocalSessionAggregator {
     outcome: string;
     repoResolver: RepoNameResolver;
     toolSelectionScorer: ToolSelectionScorer;
+    savesSession?: (sessionId: string) => boolean;
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
+      if (context.savesSession?.(rollup.sessionId) === false) continue;
       if (
         !hasRecordedUsage({
           toolCallCount: rollup.toolCallCount,
