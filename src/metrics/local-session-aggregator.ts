@@ -389,6 +389,8 @@ export class LocalSessionAggregator {
     platform?: string | null;
     agentId?: unknown;
     createdPrNumber?: unknown;
+    mcpPrNumber?: unknown;
+    mcpPrRepo?: unknown;
     runInBackground?: unknown;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
@@ -448,6 +450,8 @@ export class LocalSessionAggregator {
         ...(typeof record.createdPrNumber === 'string' && {
           createdPrNumber: record.createdPrNumber,
         }),
+        ...(typeof record.mcpPrNumber === 'string' && { mcpPrNumber: record.mcpPrNumber }),
+        ...(typeof record.mcpPrRepo === 'string' && { mcpPrRepo: record.mcpPrRepo }),
         ...(record.runInBackground === true && { runInBackground: true }),
       });
     }
@@ -470,6 +474,7 @@ export class LocalSessionAggregator {
       cacheReadTokens?: number;
       cacheCreationTokens?: number;
       thinkingTokens?: number;
+      cacheSavingsUsd?: number;
       /**
        * Present iff this usage came from a subagent transcript turn — the SAME
        * discriminator `CostTracker.recordTokenUsage`'s `ctx.agentId` uses, so
@@ -514,7 +519,7 @@ export class LocalSessionAggregator {
       cacheReadTokens: usage.cacheReadTokens ?? 0,
       cacheCreationTokens: usage.cacheCreationTokens ?? 0,
       costUsd: usage.costUsd ?? 0,
-      cacheSavingsUsd: 0,
+      cacheSavingsUsd: usage.cacheSavingsUsd ?? 0,
       ...(usage.agentId !== undefined && { agentId: usage.agentId }),
       ...(pricing && { pricing }),
     });
@@ -643,7 +648,7 @@ export class LocalSessionAggregator {
         tokensThinking: cost.tokensThinking,
         tokensCacheRead: cost.tokensCacheRead,
         tokensCacheCreation: cost.tokensCacheCreation,
-        cacheSavingsUsd: 0,
+        cacheSavingsUsd: cost.cacheSavingsUsd,
         ...(cost.usageLedger && { usageLedger: cost.usageLedger }),
         efficiencyScore: null,
         antiPatterns: [],

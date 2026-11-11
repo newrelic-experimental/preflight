@@ -57,6 +57,7 @@ export function recordTokenEventUsage(
     outputTokens: event.outputTokens,
     cacheReadTokens: event.cacheReadTokens,
     cacheCreationTokens: event.cacheCreationTokens,
+    cacheSavingsUsd: breakdown.savingsFromCacheUsd,
   });
   return breakdown;
 }
@@ -93,6 +94,7 @@ export function recordSubagentTurnUsage(
     cacheReadTokens: turn.cacheReadTokens,
     cacheCreationTokens: turn.cacheCreationTokens,
     thinkingTokens: turn.reasoningTokens,
+    cacheSavingsUsd: breakdown.savingsFromCacheUsd,
     agentId: turn.agentId,
     usageId: turn.messageId,
   });
