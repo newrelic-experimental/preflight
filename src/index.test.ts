@@ -2606,6 +2606,123 @@ describe('stdio integration', () => {
       }
     }, 60000);
 
+    const crossedBudget = (period: string, pct: number): RegExp =>
+      new RegExp(`"period":"${period}","pct":${pct}[^\\n]*Budget threshold reached`, 'g');
+
+    function appendTokenEvent(
+      storagePath: string,
+      sessionId: string,
+      messageId: string,
+      inputTokens: number,
+    ): void {
+      appendToHookBuffer(
+        resolve(storagePath, `buffer-${sessionId}.jsonl`),
+        JSON.stringify({
+          mode: 'token',
+          tool: 'copilot-sdk-usage',
+          timestamp: Date.now(),
+          sessionId,
+          messageId,
+          model: 'claude-sonnet-5',
+          inputTokens,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+        }) + '\n',
+      );
+    }
+
+    // Prior spend is 60% of each budget and this engine adds about 15%: counting
+    // each once crosses 50% and not 80%, double counting either crosses 80%, and
+    // dropping the prior spend never crosses 50%.
+    async function expectPriorAndOwnSpendCountedOnce(engine: Engine): Promise<void> {
+      expect(await waitUntil(() => engine.count(crossedBudget('daily', 50)) > 0)).toBe(true);
+      expect(await waitUntil(() => engine.count(crossedBudget('weekly', 50)) > 0)).toBe(true);
+      await engine.settle();
+      expect(engine.count(crossedBudget('daily', 80))).toBe(0);
+      expect(engine.count(crossedBudget('weekly', 80))).toBe(0);
+    }
+
+    it("counts an adopted session's saved cost once in daily and weekly spend", async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(storagePath, projectCwd, 'adopted-budget-id', 400);
+        const budgetUsd = String(prior.estimatedCostUsd / 0.6);
+        const engine = await startEngine(storagePath, projectCwd, {
+          NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
+          NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
+        });
+        writeFileSync(ppidBreadcrumb(storagePath), 'adopted-budget-id');
+        expect(await engine.logged(ADOPTED)).toBe(true);
+        appendTokenEvent(storagePath, 'adopted-budget-id', 'msg_after_adopt', 100);
+
+        await expectPriorAndOwnSpendCountedOnce(engine);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
+    it("counts a confirmed cwd guess's saved cost once in daily and weekly spend", async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(storagePath, projectCwd, 'guess-budget-id', 400);
+        const budgetUsd = String(prior.estimatedCostUsd / 0.6);
+        const engine = await startEngine(storagePath, projectCwd, {
+          NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
+          NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
+          // Keep checkpoints suppressed until the ppid breadcrumb confirms.
+          NR_AI_PENDING_CONFIRMATION_CAP_MS: '120000',
+        });
+        writeCwdBreadcrumb(storagePath, projectCwd, 'guess-budget-id');
+        expect(await engine.logged(ADOPTED)).toBe(true);
+        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_before_confirm', 50);
+
+        await confirmViaPpid(storagePath, engine, 'guess-budget-id');
+        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_after_confirm', 50);
+
+        await expectPriorAndOwnSpendCountedOnce(engine);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
+    it("counts a never-confirmed cwd guess's saved cost once after it checkpoints its own", async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(storagePath, projectCwd, 'unconfirmed-budget-id', 400);
+        // Prior spend is 30% of each budget and this engine adds 42%: 72% counted
+        // once, 42% if the prior is dropped, and 84% if the checkpointed file,
+        // which holds the larger of the two, is counted next to the live total.
+        const budgetUsd = String(prior.estimatedCostUsd / 0.3);
+        writeCwdBreadcrumb(storagePath, projectCwd, 'unconfirmed-budget-id');
+        const engine = await startEngine(storagePath, projectCwd, {
+          NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
+          NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
+        });
+        appendTokenEvent(storagePath, 'unconfirmed-budget-id', 'msg_own', 560);
+        expect(await waitUntil(() => engine.count(crossedBudget('daily', 50)) > 0)).toBe(true);
+        expect(await waitUntil(() => engine.count(crossedBudget('weekly', 50)) > 0)).toBe(true);
+
+        // The cap has expired, so a checkpoint writes the guessed session's file.
+        expect(
+          await waitUntil(
+            () => readSaved(storagePath, 'unconfirmed-budget-id')?.tokensInput === 560,
+          ),
+        ).toBe(true);
+        // Past the 30 s baseline cache, so the next update rereads that file.
+        await sleep(31_000);
+        appendTokenEvent(storagePath, 'unconfirmed-budget-id', 'msg_after_cache', 1);
+        await engine.settle();
+        expect(engine.count(crossedBudget('daily', 80))).toBe(0);
+        expect(engine.count(crossedBudget('weekly', 80))).toBe(0);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 90000);
+
     it('keeps the tool calls a provisional engine saved when it adopts their session', async () => {
       const { storagePath, projectCwd, cleanup } = makeDirs();
       try {

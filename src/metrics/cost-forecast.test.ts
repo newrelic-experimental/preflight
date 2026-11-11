@@ -1,5 +1,6 @@
 import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals';
 import { buildCostForecast, buildCostForecastFromInputs } from './cost-forecast.js';
+import { localEndOfDay, localStartOfDay } from '../lib/date.js';
 
 describe('buildCostForecast', () => {
   // Local 14:00 so no test depends on how close the real clock is to midnight.
@@ -370,4 +371,40 @@ describe('buildCostForecast', () => {
       });
     }
   });
+
+  // Jest can't pin `process.env.TZ` per test (see the matching scan in
+  // api-handler.test.ts), so find a DST change in the host's own zone. CI runs
+  // this file under America/New_York, Pacific/Auckland and America/Havana; in a
+  // zone without DST every local day is 86_400_000ms and the test is skipped.
+  const dstWeek = ((): { nowMs: number; daysRemaining: number } | null => {
+    for (let i = 1; i < 366; i++) {
+      const dayStart = localStartOfDay(new Date(2026, 0, 1 + i).getTime());
+      if (localEndOfDay(dayStart) - dayStart === 86_400_000) continue;
+      // Noon the day before the DST day, unless that falls in the previous ISO week.
+      const before = new Date(2026, 0, i, 12);
+      const isoDay = before.getDay() === 0 ? 7 : before.getDay();
+      if (isoDay === 7) continue;
+      return { nowMs: before.getTime(), daysRemaining: 7 - isoDay };
+    }
+    return null;
+  })();
+
+  (dstWeek === null ? it.skip : it)(
+    'projects to the real end of a week that contains a DST change',
+    () => {
+      const { nowMs, daysRemaining } = dstWeek!;
+      const f = buildCostForecast(1.0, nowMs - 60 * 60_000, nowMs);
+
+      // Walk the remaining local days by their real lengths (23h or 25h on the DST day).
+      let end = localEndOfDay(localStartOfDay(nowMs));
+      for (let d = 0; d < daysRemaining; d++) end = localEndOfDay(end);
+      const expected = end - nowMs;
+
+      const remaining = (f.forecastEndOfWeekUsd! - f.spentUsd) / f.rateUsdPerMs;
+      expect(remaining).toBeCloseTo(expected, -1);
+      // A fixed 24h per remaining day is off by the DST shift.
+      const fixedMs = localEndOfDay(localStartOfDay(nowMs)) - nowMs + daysRemaining * 86_400_000;
+      expect(Math.abs(expected - fixedMs)).toBeGreaterThanOrEqual(30 * 60_000);
+    },
+  );
 });
