@@ -100,7 +100,8 @@ export class GitActivityRecorder {
     // GitHub MCP PR tool calls (create_pull_request, update_pull_request,
     // merge_pull_request), bare or as Claude Code's mcp__<server>__<tool>.
     // The call names its own owner/repo; the activity is keyed to the cwd's
-    // repo, so as on the gh path below a number for another repo is dropped.
+    // repo, so as on the gh path below a number for a repo that isn't one of
+    // the cwd's remotes is dropped.
     const mcpPr = mcpPrEvent(record.toolName, record, record.timestamp);
     if (mcpPr) {
       const prEvent =
@@ -203,14 +204,15 @@ export class GitActivityRecorder {
     this.store.ingest(activity);
   }
 
-  /** True when an MCP PR call's `owner/repo` is known and isn't the cwd's
-   *  repo. GitHub names are case-insensitive. An unknown cwd repo can't
-   *  contradict it, which matches the gh path keeping a number that nothing
-   *  points elsewhere. */
+  /** True when an MCP PR call's `owner/repo` is known and names none of the
+   *  cwd repo's remotes. Every remote counts, not just `origin`: in a fork
+   *  clone `origin` is the fork while the PR lives in `upstream`. A repo with
+   *  no remotes can't contradict the call, which matches the gh path keeping
+   *  a number that nothing points elsewhere. */
   private namesOtherRepo(callRepo: string | undefined, cwd: string | undefined): boolean {
     if (callRepo === undefined) return false;
-    const cwdRepo = this.identityResolver.resolve(cwd)?.repoName;
-    return cwdRepo != null && cwdRepo.toLowerCase() !== callRepo.toLowerCase();
+    const remotes = this.identityResolver.remoteRepoNames(cwd);
+    return remotes.length > 0 && !remotes.includes(callRepo.toLowerCase());
   }
 
   /** True when `segment`, run before a gh call, may have pointed that call

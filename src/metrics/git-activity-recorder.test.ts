@@ -412,6 +412,26 @@ describe('GitActivityRecorder', () => {
 
         expect(prEvents()).toEqual([expect.objectContaining({ action: 'merge', prNumber: '12' })]);
       });
+
+      // A fork clone: origin is the fork, the PR lives in upstream.
+      it('keeps the number of a PR in another remote of the clone', () => {
+        spawnSync('git', ['remote', 'add', 'upstream', 'https://github.com/upstream-org/app.git'], {
+          cwd: repoDir,
+          stdio: 'ignore',
+        });
+        recordThroughHooks([
+          { tool: 'mcp__github__create_pull_request', toolInput: { prRepo: 'upstream-org/app' } },
+          {
+            tool: 'mcp__github__merge_pull_request',
+            toolInput: { prRepo: 'upstream-org/app', prNumber: '57' },
+          },
+        ]);
+
+        expect(prEvents()).toEqual([
+          expect.objectContaining({ action: 'create', prNumber: '57' }),
+          expect.objectContaining({ action: 'merge', prNumber: '57' }),
+        ]);
+      });
     });
 
     it('ignores GitHub MCP tools whose names only start like a PR tool', () => {

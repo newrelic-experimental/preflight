@@ -3426,6 +3426,17 @@ describe('buildSessionSummary timeline', () => {
                 createdPrNumber: '42',
                 runInBackground: true,
               },
+              {
+                id: 'tc4',
+                sessionId: 'skill-agent-session',
+                toolName: 'mcp__github__merge_pull_request',
+                toolUseId: 'tu4',
+                timestamp: 1700000025000,
+                durationMs: 700,
+                success: true,
+                mcpPrNumber: '42',
+                mcpPrRepo: 'acme/app',
+              },
             ],
           },
         ],
@@ -3438,8 +3449,17 @@ describe('buildSessionSummary timeline', () => {
       developer: 'alice',
     });
 
-    expect(summary.timeline).toHaveLength(3);
+    expect(summary.timeline).toHaveLength(4);
     expect(summary.timeline![2]!.createdPrNumber).toBe('42');
+    expect(summary.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
+    expect(summary.timeline![0]!.mcpPrNumber).toBeUndefined();
+    expect(summary.timeline![0]!.mcpPrRepo).toBeUndefined();
+
+    // And through a save and reload.
+    const store = new SessionStore({ storagePath: tmpDir });
+    store.saveSession(summary);
+    const reloaded = store.loadSession(summary.sessionId);
+    expect(reloaded!.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
     expect(summary.timeline![0]!.createdPrNumber).toBeUndefined();
     expect(summary.timeline![2]!.runInBackground).toBe(true);
     expect(summary.timeline![0]!.runInBackground).toBeUndefined();

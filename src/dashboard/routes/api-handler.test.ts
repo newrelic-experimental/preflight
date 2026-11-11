@@ -4611,10 +4611,15 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
   });
 
-  it('clears ready_for_review when the PR is opened and merged through the GitHub MCP server', async () => {
+  const mcpPrSession = (
+    sessionId: string,
+    offsetMs: number,
+    entry: Record<string, unknown>,
+    cwd?: string,
+  ) => {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
-    const mcpSession = (sessionId: string, offsetMs: number, entry: Record<string, unknown>) => ({
+    return {
       sessionId,
       repoName: 'acme/app',
       timeline: [
@@ -4622,23 +4627,55 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
           timestamp: startOfDay.getTime() + offsetMs,
           durationMs: 500,
           success: true,
+          cwd,
           ...entry,
         },
       ],
-    });
+    };
+  };
+  const mcpCreate = { toolName: 'mcp__github__create_pull_request', createdPrNumber: '42' };
+  const mcpMerge = { toolName: 'mcp__github__merge_pull_request', mcpPrNumber: '42' };
+
+  it('clears ready_for_review when the PR is opened and merged through the GitHub MCP server', async () => {
     const parsed = await statusFor([
-      mcpSession('creator', 10_000, {
-        toolName: 'mcp__github__create_pull_request',
-        createdPrNumber: '42',
-        mcpPrRepo: 'acme/app',
-      }),
-      mcpSession('merger', 20_000, {
-        toolName: 'mcp__github__merge_pull_request',
-        mcpPrNumber: '42',
-        mcpPrRepo: 'acme/app',
-      }),
+      mcpPrSession('creator', 10_000, { ...mcpCreate, mcpPrRepo: 'acme/app' }),
+      mcpPrSession('merger', 20_000, { ...mcpMerge, mcpPrRepo: 'acme/app' }),
     ]);
     expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+  });
+
+  describe('GitHub MCP PRs in a fork clone (origin fork/app, upstream acme/app)', () => {
+    let root: string;
+    beforeEach(() => {
+      root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pr-1088-')));
+      const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+      const git = (...args: string[]) =>
+        spawnSync('git', args, { cwd: root, env, stdio: 'ignore' });
+      git('init', '-q');
+      git('remote', 'add', 'origin', 'https://github.com/fork/app.git');
+      git('remote', 'add', 'upstream', 'https://github.com/acme/app.git');
+    });
+    afterEach(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('clears ready_for_review when the merge names the upstream repo', async () => {
+      const parsed = await statusFor([
+        mcpPrSession('creator', 10_000, { ...mcpCreate, mcpPrRepo: 'acme/app' }, root),
+        mcpPrSession('merger', 20_000, { ...mcpMerge, mcpPrRepo: 'acme/app' }, root),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+      expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+    });
+
+    it('keeps ready_for_review when the merge names a repo that is not one of its remotes', async () => {
+      const parsed = await statusFor([
+        mcpPrSession('creator', 10_000, { ...mcpCreate, mcpPrRepo: 'acme/app' }, root),
+        mcpPrSession('merger', 20_000, { ...mcpMerge, mcpPrRepo: 'acme/other' }, root),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
   });
 
   it('keeps ready_for_review when the same PR number is merged in a different repo', async () => {
