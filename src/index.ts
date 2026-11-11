@@ -105,7 +105,7 @@ import { TaskDetector } from './metrics/task-detector.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
-import { tokenUsageFromSubagentTurn, tokenUsageFromTokenEvent } from './metrics/token-usage.js';
+import { recordSubagentTurnUsage, recordTokenEventUsage } from './metrics/usage-recording.js';
 import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
 import { TurnTracker } from './metrics/turn-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
@@ -114,7 +114,6 @@ import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 import { createServer } from './server.js';
-import type { CostBreakdown } from './shared/index.js';
 import { createLogger } from './shared/index.js';
 import { LocalStore } from './storage/index.js';
 import { computeHistoricalCosts } from './storage/historical-costs.js';
@@ -1393,6 +1392,7 @@ async function main(): Promise<void> {
     // sessions it observes are never written to disk at all. See
     // local-session-aggregator.ts for why that hits Copilot but not Claude Code.
     const localSessionAggregator = new LocalSessionAggregator();
+    const usageSinks = { costTracker, modelUsageTracker, localSessionAggregator };
     const repoNameResolver = new RepoNameResolver();
 
     const budgetTracker = new BudgetTracker({
@@ -2382,34 +2382,7 @@ async function main(): Promise<void> {
         });
         const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
         if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
-        const usage = tokenUsageFromTokenEvent(tokenEvent);
-        let breakdown: CostBreakdown;
-        if (!isOwnEvent) {
-          breakdown = costTracker.priceUsage(usage, tokenEvent.model);
-        } else {
-          const result = costTracker.recordUsage(usage, tokenEvent.model, {
-            timestampMs: tokenEvent.timestamp,
-            replacesEstimates: true,
-            ...(tokenEvent.usageId !== undefined && { usageId: tokenEvent.usageId }),
-            ...(tokenEvent.responseMs !== undefined && { responseMs: tokenEvent.responseMs }),
-          });
-          breakdown = result.breakdown;
-          // A call already in the ledger (a redelivered buffer line after a
-          // restart) is not a new request for the model breakdown either.
-          if (result.recorded) {
-            modelUsageTracker.recordUsage(tokenEvent.model, usage, breakdown.totalUsd);
-          }
-        }
-        localSessionAggregator.recordTokenUsage(tokenEvent.sessionId, {
-          timestamp: tokenEvent.timestamp,
-          costUsd: breakdown.totalUsd,
-          ...(tokenEvent.usageId !== undefined && { usageId: tokenEvent.usageId }),
-          model: tokenEvent.model,
-          inputTokens: tokenEvent.inputTokens,
-          outputTokens: tokenEvent.outputTokens,
-          cacheReadTokens: tokenEvent.cacheReadTokens,
-          cacheCreationTokens: tokenEvent.cacheCreationTokens,
-        });
+        recordTokenEventUsage(usageSinks, tokenEvent, isOwnEvent);
         contextCompositionTracker.recordTokenEvent(tokenEvent);
 
         const ctxSnapshot = contextTracker.recordTurn(tokenEvent);
@@ -2492,35 +2465,7 @@ async function main(): Promise<void> {
         // the buffer.
         subagentAttribution.recordSubagentTurn(turn);
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
-        const usage = tokenUsageFromSubagentTurn(turn);
-        const { breakdown, recorded } = costTracker.recordUsage(usage, turn.model, {
-          timestampMs: turn.timestampMs,
-          workflowRunId: turn.workflowRunId,
-          agentId: turn.agentId,
-          agentType,
-          usageId: turn.messageId,
-        });
-        // Subagent turns are real model requests and cost real money, so they
-        // belong in the model breakdown too — recording them only in the cost
-        // tracker left Model Usage blind to every subagent-only session.
-        if (recorded) modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
-        // The only line that makes an orphan session's subagent spend durable:
-        // without it, an unscoped process's aggregator never learns about this
-        // session's subagent cost and persistSession() has nothing to write.
-        // `agentId` is the same discriminator costTracker.recordTokenUsage
-        // splits parent-vs-subagent on above, so the two trackers can't drift.
-        localSessionAggregator.recordTokenUsage(turn.parentSessionId, {
-          timestamp: turn.timestampMs,
-          costUsd: breakdown.totalUsd,
-          model: turn.model,
-          inputTokens: turn.inputTokens,
-          outputTokens: turn.outputTokens,
-          cacheReadTokens: turn.cacheReadTokens,
-          cacheCreationTokens: turn.cacheCreationTokens,
-          thinkingTokens: turn.reasoningTokens,
-          agentId: turn.agentId,
-          usageId: turn.messageId,
-        });
+        const breakdown = recordSubagentTurnUsage(usageSinks, turn, agentType);
         // Pricing miss → usd:null on the wire; we recompute here so
         // the breakdown view distinguishes "0 because pricing absent" from
         // "0 because the turn truly had zero cost".

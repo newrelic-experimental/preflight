@@ -6,6 +6,7 @@
  *
  * It drives the real pieces a running Preflight wires together — the billed
  * turn ledger the watchers claim through, the hook buffer, HookEventProcessor,
+ * the token-usage sinks src/index.ts routes reports into (usage-recording.ts),
  * CostTracker, SessionStore's save/load/merge, the restart seed, and a
  * `--local` LocalSessionAggregator writing the same session file — with a
  * seeded PRNG so a failure prints a replayable action trace.
@@ -30,8 +31,11 @@ import type { UnpricedModelUsage } from './usage-ledger.js';
 import { handleReportTokens } from '../tools/cost-tools.js';
 import type { TokenReport } from '../tools/cost-tools.js';
 import { CostTracker } from './cost-tracker.js';
-import { buildCostTrackerSeed } from './cost-tracker-seed.js';
-import { shouldApplyCostEstimate } from './cost-estimate-gate.js';
+import { costSeedOf } from './first-save-baselines.js';
+import { ModelUsageTracker } from './model-usage-tracker.js';
+import { recordSubagentTurnUsage, recordTokenEventUsage } from './usage-recording.js';
+import type { UsageSinks } from './usage-recording.js';
+import { isTokenEventForThisProcess, shouldApplyCostEstimate } from './cost-estimate-gate.js';
 import { LocalSessionAggregator, RepoNameResolver } from './local-session-aggregator.js';
 import type { SessionTracker } from './session-tracker.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
@@ -111,6 +115,14 @@ interface Call {
 }
 
 interface Estimate {
+  /**
+   * The model turn this estimate stands in for: the first parent turn of the
+   * session made after it, the one that reads the tool payload it was sized
+   * from. The estimate counts until a watcher reports that turn. This is how
+   * the oracle decides replacement; the implementation's own rule is by
+   * timestamp, so the two are checked against each other.
+   */
+  standIn?: Call;
   readonly ts: number;
   readonly usd: number;
   readonly inputTokens: number;
@@ -183,6 +195,7 @@ class Engine {
   readonly ledger: BilledTurnLedger;
   readonly store: LocalStore;
   readonly cost = new CostTracker();
+  readonly models = new ModelUsageTracker();
   readonly processor: HookEventProcessor;
   /** This process has recorded a replaying token event for P. */
   sawReplaying = false;
@@ -194,27 +207,31 @@ class Engine {
     this.ledger = new BilledTurnLedger({ storagePath });
     this.store = new LocalStore(storagePath, P);
     const persisted = new SessionStore({ storagePath }).loadSession(P);
-    if (persisted) this.cost.seedFromPersisted(buildCostTrackerSeed(persisted));
+    if (persisted) {
+      const seed = costSeedOf(persisted);
+      this.cost.seedFromPersisted(seed.costTracker);
+      this.models.seedFromPersisted(seed.modelBreakdown);
+    }
+    // The same sinks src/index.ts builds for a --stdio engine.
+    const sinks: UsageSinks = {
+      costTracker: this.cost,
+      modelUsageTracker: this.models,
+      localSessionAggregator: new LocalSessionAggregator(),
+    };
     this.processor = new HookEventProcessor({
       store: this.store,
       onRecord: () => undefined,
       onTokenEvent: (e: TokenEvent) => {
-        if (e.sessionId !== undefined && e.sessionId !== P) return;
-        this.sawReplaying = true;
-        this.cost.recordTokenUsage(usageOf(e), e.model, {
-          timestampMs: e.timestamp,
-          replacesEstimates: true,
-          ...(e.usageId !== undefined && { usageId: e.usageId }),
+        const own = isTokenEventForThisProcess({
+          stdio: true,
+          eventSessionId: e.sessionId ?? null,
+          ownSessionId: P,
         });
+        if (own) this.sawReplaying = true;
+        recordTokenEventUsage(sinks, e, own);
       },
       onSubagentTurn: (t: SubagentTurnEvent) => {
-        if (t.parentSessionId !== P) return;
-        this.cost.recordTokenUsage(usageOf(t), t.model, {
-          timestampMs: t.timestampMs,
-          workflowRunId: t.workflowRunId,
-          agentId: t.agentId,
-          usageId: t.messageId,
-        });
+        recordSubagentTurnUsage(sinks, t, undefined);
       },
     });
   }
@@ -228,53 +245,47 @@ class Engine {
       buildSessionSummary({
         sessionTracker: sessionTrackerFor(P, this.startMs),
         costTracker: this.cost,
+        modelUsageTracker: this.models,
         developer: 'dev',
       }),
     );
   }
 }
 
-/** A `--local` dashboard draining every buffer and writing rollups (mirrors src/index.ts). */
+/** A `--local` dashboard draining every buffer and writing each session's rollup. */
 class LocalWriter {
   readonly ledger: BilledTurnLedger;
   readonly store: LocalStore;
-  readonly aggregator: LocalSessionAggregator;
+  readonly aggregator = new LocalSessionAggregator();
   readonly processor: HookEventProcessor;
-  private readonly pricer = new CostTracker();
 
   constructor(readonly storagePath: string) {
     this.ledger = new BilledTurnLedger({ storagePath });
     this.store = new LocalStore(storagePath);
-    this.aggregator = new LocalSessionAggregator();
+    // The same sinks src/index.ts builds for --local, whose own CostTracker
+    // belongs to its synthetic session and is never saved.
+    const sinks: UsageSinks = {
+      costTracker: new CostTracker(),
+      modelUsageTracker: new ModelUsageTracker(),
+      localSessionAggregator: this.aggregator,
+    };
     this.processor = new HookEventProcessor({
       store: this.store,
       drainAllSessions: true,
       onRecord: () => undefined,
       onTokenEvent: (e: TokenEvent) => {
-        this.aggregator.recordTokenUsage(e.sessionId, {
-          timestamp: e.timestamp,
-          costUsd: this.pricer.priceUsage(usageOf(e), e.model).totalUsd,
-          model: e.model,
-          inputTokens: e.inputTokens,
-          outputTokens: e.outputTokens,
-          cacheReadTokens: e.cacheReadTokens,
-          cacheCreationTokens: e.cacheCreationTokens,
-          ...(e.usageId !== undefined && { usageId: e.usageId }),
-        });
+        recordTokenEventUsage(
+          sinks,
+          e,
+          isTokenEventForThisProcess({
+            stdio: false,
+            eventSessionId: e.sessionId ?? null,
+            ownSessionId: 'local-1',
+          }),
+        );
       },
       onSubagentTurn: (t: SubagentTurnEvent) => {
-        this.aggregator.recordTokenUsage(t.parentSessionId, {
-          timestamp: t.timestampMs,
-          costUsd: this.pricer.priceUsage(usageOf(t), t.model).totalUsd,
-          model: t.model,
-          inputTokens: t.inputTokens,
-          outputTokens: t.outputTokens,
-          cacheReadTokens: t.cacheReadTokens,
-          cacheCreationTokens: t.cacheCreationTokens,
-          thinkingTokens: t.reasoningTokens,
-          agentId: t.agentId,
-          usageId: t.messageId,
-        });
+        recordSubagentTurnUsage(sinks, t, undefined);
       },
     });
   }
@@ -422,6 +433,12 @@ class World {
       replaying: false,
     };
     this.calls.push(call);
+    // An id-less self-report only happens where no watcher reports turns, and
+    // by design a self-report never replaces an estimate; such a turn is not
+    // what a later watcher report is compared against.
+    if (session === P && !subagent && (kind === 'turn' || kind === 'req') && ts === this.clock) {
+      for (const e of this.estimates) e.standIn ??= call;
+    }
     return call;
   }
 
@@ -488,10 +505,10 @@ class World {
     this.trace.push(action);
     switch (action) {
       case 'turn': {
-        const pending = this.calls.filter((c) => c.kind === 'req' && c.line === undefined);
-        // Now and then the transcript reports a response already self-reported by id.
-        const call =
-          pending.length > 0 && this.rand() < 0.5 ? this.pick(pending) : this.newCall(P, false);
+        // A transcript reports turns in order, so a response already
+        // self-reported by id comes before any newer turn.
+        const pending = this.calls.find((c) => c.kind === 'req' && c.line === undefined);
+        const call = pending ?? this.newCall(P, false);
         this.emit(call, this.rand() < 0.5 ? this.engine.ledger : this.local.ledger);
         break;
       }
@@ -502,7 +519,9 @@ class World {
         break;
       }
       case 'turnBoth': {
-        const call = this.newCall(P, false);
+        const call =
+          this.calls.find((c) => c.kind === 'req' && c.line === undefined) ??
+          this.newCall(P, false);
         this.emit(call, this.engine.ledger);
         this.emit(call, this.local.ledger);
         break;
@@ -658,8 +677,7 @@ class World {
     }
     if (session === P) {
       for (const e of this.estimates) {
-        const replaced = calls.some((c) => c.replaying && !c.subagent && c.ts >= e.ts);
-        if (replaced) continue;
+        if (e.standIn?.replaying) continue;
         want.costUsd += e.usd;
         want.inputTokens += e.inputTokens;
         want.outputTokens += e.outputTokens;
