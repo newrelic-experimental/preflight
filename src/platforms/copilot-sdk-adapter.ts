@@ -132,7 +132,7 @@ export class CopilotSdkAdapter implements PlatformAdapter {
       '.github/copilot-instructions.md',
     ] as const,
     // The documented hook command stamps NEW_RELIC_AI_PLATFORM=copilot, which
-    // commands documented before #557 (2026-09-04) lack. The desktop app's
+    // commands documented before 2026-09-04 lack. The desktop app's
     // setup stamps MCP_CLIENT=copilot-app into ~/.copilot/hooks/preflight.json,
     // which this CLI reads too.
     sessionBreadcrumbWriters: [
