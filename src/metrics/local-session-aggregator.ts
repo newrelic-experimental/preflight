@@ -22,11 +22,10 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
 import { costFieldsOfLedger, hasRecordedUsage } from '../storage/session-store.js';
-import { UsageLedger } from './usage-ledger.js';
+import { UsageLedger, dayOf } from './usage-ledger.js';
 import type { PricingMark } from './usage-ledger.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import { resolvePricingDetail } from './pricing-overlay.js';
@@ -473,7 +472,9 @@ export class LocalSessionAggregator {
       provisional: false,
       replaces: usage.agentId === undefined,
       ts: timestamp,
-      day: localDateKey(timestamp),
+      // The same late-arrival rule as CostTracker, so both writers' copies of
+      // a call agree on its day.
+      day: dayOf(timestamp, Date.now()),
       model,
       inputTokens: usage.inputTokens ?? 0,
       outputTokens: usage.outputTokens ?? 0,

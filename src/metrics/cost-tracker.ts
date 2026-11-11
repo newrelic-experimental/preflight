@@ -20,7 +20,7 @@ import { localDateKey } from '../lib/date.js';
 import type { SessionTracker } from './session-tracker.js';
 import type { Resettable } from './tracker-contracts.js';
 import type { AttributionBucket } from '../storage/types.js';
-import { UsageLedger, dayOf, isZeroTotals } from './usage-ledger.js';
+import { LATE_ARRIVAL_MS, UsageLedger, dayOf, isZeroTotals } from './usage-ledger.js';
 import type {
   ByteEstimateLedger,
   CallUsageByDay,
@@ -97,7 +97,7 @@ export interface TokenRecordContext {
   readonly usageId?: string;
 }
 
-const LATE_ARRIVAL_REJECTION_MS = 48 * 60 * 60 * 1000;
+const LATE_ARRIVAL_REJECTION_MS = LATE_ARRIVAL_MS;
 
 /**
  * Scales every dollar field of a `CostBreakdown` by `factor`, leaving token

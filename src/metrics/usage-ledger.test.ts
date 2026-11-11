@@ -254,6 +254,13 @@ describe('session files and the ledger', () => {
     expect(merged.usageLedger).toBeDefined();
   });
 
+  it('adds calls made after a pre-ledger file was last written to its totals', () => {
+    const legacy = makeSummary({ endTime: 5_000, estimatedCostUsd: 5, tokensInput: 500 });
+    const later = withLedger([makeEntry({ id: 'msg_new', ts: 6_000, costUsd: 2 })]);
+    expect(mergeSummaries(legacy, later).estimatedCostUsd).toBe(7);
+    expect(mergeSummaries(later, legacy).estimatedCostUsd).toBe(7);
+  });
+
   it('turns a pre-ledger byte-estimate ledger into estimates the next report retires', () => {
     const legacy = makeSummary({
       endTime: 5_000,

@@ -22,6 +22,7 @@
     "src/metrics/recommendation-engine.test.ts",
     "src/metrics/task-detector.test.ts",
     "src/metrics/trend-analyzer.test.ts",
+    "src/metrics/usage-ledger.property.test.ts",
     "src/storage/historical-costs.test.ts",
     "src/storage/session-store.test.ts",
     "src/storage/weekly-summary.test.ts",

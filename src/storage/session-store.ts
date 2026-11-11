@@ -525,6 +525,8 @@ export interface SessionUsageLedger {
    * counts are its per-model ones booked to this day (see `legacyCallsByDay`).
    */
   readonly legacyCallsDay?: string;
+  /** For a pre-ledger summary, its last write: a call after it cannot be in `base`. */
+  readonly legacyEndTime?: number;
 }
 
 function costByModelOf(s: FullSessionSummary): Record<string, number> {
@@ -604,6 +606,7 @@ export function usageLedgerOf(s: FullSessionSummary): SessionUsageLedger {
     entries: est ? legacyEstimateEntries(est, s.endTime) : [],
     base: isZeroTotals(base) ? ZERO_TOTALS : base,
     legacy: true,
+    legacyEndTime: s.endTime,
     ...(syntheticDay !== null && { legacyCallsDay: syntheticDay }),
   };
 }
@@ -698,15 +701,19 @@ export function costFieldsOfLedger(
 
 /**
  * The union of two copies of one session's ledger. A pre-ledger side's exact
- * totals may already include calls the other side holds as entries, so those
- * are taken out of its base before the bases are max-merged.
+ * totals may already include calls the other side holds as entries, from
+ * before its last write, so those are taken out of its base before the bases
+ * are max-merged.
  */
 function unionLedgers(a: SessionUsageLedger, b: SessionUsageLedger): UsageLedger {
   const withoutKeyed = (side: SessionUsageLedger, other: SessionUsageLedger): CostTotals => {
     if (!side.legacy) return side.base;
+    // Only a call the older writer could have seen may already be in its totals.
+    const end = side.legacyEndTime ?? Infinity;
+    const seen = other.entries.filter((e) => e.ts <= end);
     const rest = subtractTotals(
       side.base,
-      foldUsage(other.entries, ZERO_TOTALS, { exactOnly: true }).totals,
+      foldUsage(seen, ZERO_TOTALS, { exactOnly: true }).totals,
     );
     const day = side.legacyCallsDay;
     if (day === undefined) return rest;

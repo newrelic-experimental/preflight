@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import {
   spawnSync as nodeSpawnSync,
@@ -565,6 +565,16 @@ describe('LocalSessionAggregator cross-repo git discovery', () => {
 });
 
 describe('LocalSessionAggregator subagent cost', () => {
+  // A usage older than 48 hours stays out of the day buckets, so the clock is
+  // pinned near the fixed dates below.
+  const NOW = Date.parse('2026-09-12T12:00:00Z');
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(NOW);
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   it('routes agentId-tagged usage into subagentCostUsd and subagentCostByDayUsd, while also counting it in costByDayUsd', () => {
     const agg = new LocalSessionAggregator();
     const ts = Date.parse('2026-09-11T12:00:00Z');
@@ -579,7 +589,7 @@ describe('LocalSessionAggregator subagent cost', () => {
 
   it('does not touch subagent fields for agentId-less (parent) usage', () => {
     const agg = new LocalSessionAggregator();
-    agg.recordTokenUsage(REAL_ID, { costUsd: 3, timestamp: 1000 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 3, timestamp: NOW - 1000 });
     // Parent-token-only usage has no tool calls, so it still doesn't emit —
     // add a tool call so the summary is inspectable.
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
@@ -587,7 +597,7 @@ describe('LocalSessionAggregator subagent cost', () => {
     const [summary] = summariesOf(agg);
     expect(summary?.subagentCostUsd).toBe(0);
     expect(summary?.subagentCostByDayUsd).toBeUndefined();
-    expect(summary?.costByDayUsd).toEqual({ [localDateKey(1000)]: 3 });
+    expect(summary?.costByDayUsd).toEqual({ [localDateKey(NOW - 1000)]: 3 });
   });
 
   it('emits a summary for a subagent-only rollup with zero tool calls', () => {
@@ -633,8 +643,21 @@ describe('LocalSessionAggregator usage ids and the session file', () => {
   const DAY = new Date(2026, 8, 10, 12).getTime();
   const dirs: string[] = [];
 
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(DAY + 60 * 60 * 1000);
+  });
+
   afterEach(() => {
+    jest.restoreAllMocks();
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('keeps a usage recorded more than 48 hours late out of the day buckets', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { costUsd: 2, timestamp: DAY - 49 * 60 * 60 * 1000 });
+    const [summary] = summariesOf(agg);
+    expect(summary?.estimatedCostUsd).toBe(2);
+    expect(summary?.costByDayUsd).toBeUndefined();
   });
 
   function storeIn(): SessionStore {

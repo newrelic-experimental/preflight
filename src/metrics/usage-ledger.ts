@@ -176,7 +176,11 @@ function preferred(a: UsageEntry, b: UsageEntry): UsageEntry {
   if (ta !== tb) return ta > tb ? a : b;
   if (a.provisional !== b.provisional) return a.provisional ? b : a;
   if (a.replaces !== b.replaces) return a.replaces ? a : b;
-  return a.costUsd >= b.costUsd ? a : b;
+  if (a.costUsd !== b.costUsd) return a.costUsd > b.costUsd ? a : b;
+  // One writer recorded the call late and another did not: out of the day
+  // buckets wins, whichever copy arrived first.
+  if (a.day !== b.day) return a.day === null ? a : b.day === null ? b : a.day < b.day ? a : b;
+  return a;
 }
 
 function rangeOf(id: string): { readonly scope: string; from: number; to: number } | null {
@@ -798,7 +802,14 @@ export function parsePersistedUsageLedger(v: unknown): PersistedUsageLedger | un
   };
 }
 
+/**
+ * A usage recorded more than this long after its own timestamp is a late
+ * arrival: it counts in the session totals but in no day bucket, so a backlog
+ * read days later cannot rewrite an old day's spend.
+ */
+export const LATE_ARRIVAL_MS = 48 * 60 * 60 * 1000;
+
 /** The local-day key of `ts`, or null when it is a late arrival at `nowMs`. */
-export function dayOf(ts: number, nowMs: number, lateAfterMs: number): string | null {
+export function dayOf(ts: number, nowMs: number, lateAfterMs = LATE_ARRIVAL_MS): string | null {
   return nowMs - ts > lateAfterMs ? null : localDateKey(ts);
 }

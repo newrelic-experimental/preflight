@@ -22,9 +22,11 @@ import { BilledTurnLedger } from '../hooks/billed-turn-ledger.js';
 import { HookEventProcessor } from '../hooks/event-processor.js';
 import type { SubagentTurnEvent } from '../hooks/event-processor.js';
 import { LocalStore } from '../storage/local-store.js';
+import { localDateKey } from '../lib/date.js';
 import { SessionStore, buildSessionSummary } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import type { HookEvent, TokenEvent } from '../storage/types.js';
+import type { UnpricedModelUsage } from './usage-ledger.js';
 import { handleReportTokens } from '../tools/cost-tools.js';
 import type { TokenReport } from '../tools/cost-tools.js';
 import { CostTracker } from './cost-tracker.js';
@@ -37,11 +39,20 @@ import { ToolSelectionScorer } from './tool-selection-scorer.js';
 const P = '11111111-2222-4333-8444-555555555555';
 const FORK = '66666666-7777-4888-9999-aaaaaaaaaaaa';
 const MODEL = 'claude-sonnet-4-5';
+/** No price in the table: recorded at $0 and counted in `unpricedByModel`. */
+const UNPRICED = 'claude-foo-9-9';
+/** Priced from a sibling: counted in `estimatedByModel`. */
+const SIBLING = 'claude-opus-5-9';
+const MODELS = [MODEL, MODEL, MODEL, UNPRICED, SIBLING] as const;
+const HOUR_MS = 60 * 60 * 1000;
+/** CostTracker keeps a call this much older than now out of the day buckets. */
+const LATE_MS = 49 * HOUR_MS;
 const AGENT = 'agent-a1';
 const TOOLS = ['transcript', 'copilot-usage', 'copilot-sdk-usage'] as const;
 
 type Action =
   | 'turn'
+  | 'lateTurn'
   | 'turnBoth'
   | 'subagentTurn'
   | 'redeliver'
@@ -60,6 +71,7 @@ type Action =
 const ACTIONS: readonly Action[] = [
   'turn',
   'turn',
+  'lateTurn',
   'turnBoth',
   'subagentTurn',
   'redeliver',
@@ -83,11 +95,15 @@ interface Call {
   readonly id: string;
   readonly session: string;
   readonly ts: number;
+  readonly model: string;
   readonly usage: TokenUsage;
   readonly usd: number;
   readonly subagent: boolean;
-  /** `req`: self-reported with an id first; `self`: self-reported with no id. */
-  readonly kind: 'turn' | 'req' | 'self';
+  /**
+   * `req`: self-reported with an id first; `self`: self-reported with no id;
+   * `legacy`: in the session file a pre-ledger Preflight wrote before the run.
+   */
+  readonly kind: 'turn' | 'req' | 'self' | 'legacy';
   /** Reported by a watcher that replays history (so it replaces estimates). */
   replaying: boolean;
   /** The buffer line a watcher wrote for it, once one has. */
@@ -98,6 +114,25 @@ interface Estimate {
   readonly ts: number;
   readonly usd: number;
   readonly inputTokens: number;
+  readonly outputTokens: number;
+}
+
+type CallCounts = Record<string, { calls: number; tokens: number }>;
+
+/** Every additive figure of a session, computed from the calls without the ledger. */
+interface Expected {
+  costUsd: number;
+  subagentUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costByDay: Record<string, number>;
+  subagentByDay: Record<string, number>;
+  unpriced: CallCounts;
+  unpricedByDay: Record<string, CallCounts>;
+  estimated: CallCounts;
+  estimatedByDay: Record<string, CallCounts>;
 }
 
 function mulberry32(seed: number): () => number {
@@ -276,11 +311,82 @@ class World {
     readonly storagePath: string,
     private readonly rand: () => number,
     private readonly setNow: (ms: number) => void,
+    withLegacyFile = false,
   ) {
     this.clock = Date.now();
     this.startMs = this.clock;
+    if (withLegacyFile) this.writeLegacyFile();
     this.engine = new Engine(storagePath, this.startMs);
     this.local = new LocalWriter(storagePath);
+  }
+
+  /**
+   * A session file written by a Preflight that predates the ledger: totals
+   * only, for calls made before the run, plus a byte-estimate share no report
+   * has replaced yet. Its calls were never reported again.
+   */
+  private writeLegacyFile(): void {
+    const ts = this.clock - 2 * HOUR_MS;
+    const day = localDateKey(ts);
+    const legacy = [
+      this.newCall(P, false, 'legacy', ts),
+      this.newCall(P, false, 'legacy', ts),
+      this.newCall(P, true, 'legacy', ts),
+    ];
+    const estUsage = usageOf({
+      inputTokens: 400,
+      outputTokens: 100,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    });
+    const estUsd = this.pricer.priceUsage(estUsage, MODEL).totalUsd;
+    this.estimates.push({ ts, usd: estUsd, inputTokens: 400, outputTokens: 100 });
+    const sum = (f: (c: Call) => number): number => legacy.reduce((n, c) => n + f(c), 0);
+    const costUsd = sum((c) => c.usd) + estUsd;
+    const counts = (want: (m: string) => boolean): CallCounts | undefined => {
+      const out: CallCounts = {};
+      for (const c of legacy.filter((x) => want(x.model))) {
+        const prior = out[c.model] ?? { calls: 0, tokens: 0 };
+        out[c.model] = { calls: prior.calls + 1, tokens: prior.tokens + tokensOf(c.usage) };
+      }
+      return Object.keys(out).length > 0 ? out : undefined;
+    };
+    const unpriced = counts((m) => m === UNPRICED);
+    const estimated = counts((m) => m === SIBLING);
+    const subagentUsd = sum((c) => (c.subagent ? c.usd : 0));
+    new SessionStore({ storagePath: this.storagePath }).saveSession({
+      sessionId: P,
+      startTime: ts,
+      endTime: ts,
+      durationMs: 0,
+      toolCallCount: 1,
+      developer: 'dev',
+      estimatedCostUsd: costUsd,
+      subagentCostUsd: subagentUsd,
+      costByDayUsd: { [day]: costUsd },
+      subagentCostByDayUsd: subagentUsd > 0 ? { [day]: subagentUsd } : {},
+      byteEstimates: {
+        costUsd: estUsd,
+        inputTokens: 400,
+        outputTokens: 100,
+        costByModel: { [MODEL]: estUsd },
+        costByDayUsd: { [day]: estUsd },
+      },
+      tokensInput: sum((c) => c.usage.inputTokens) + 400,
+      tokensOutput: sum((c) => c.usage.outputTokens) + 100,
+      tokensThinking: 0,
+      tokensCacheRead: sum((c) => c.usage.cacheReadTokens),
+      tokensCacheCreation: sum((c) => c.usage.cacheCreationTokens),
+      cacheSavingsUsd: 0,
+      modelBreakdown: {},
+      costByWorkflowRunId: {},
+      ...(unpriced && { unpricedByModel: unpriced }),
+      ...(estimated && {
+        estimatedByModel: Object.fromEntries(
+          Object.entries(estimated).map(([m, c]) => [m, { ...c, estimatedFrom: 'x' }]),
+        ),
+      }),
+    } as unknown as FullSessionSummary);
   }
 
   private pick<T>(xs: readonly T[]): T {
@@ -291,7 +397,13 @@ class World {
     return min + Math.floor(this.rand() * (max - min + 1));
   }
 
-  private newCall(session: string, subagent: boolean, kind: Call['kind'] = 'turn'): Call {
+  private newCall(
+    session: string,
+    subagent: boolean,
+    kind: Call['kind'] = 'turn',
+    ts = this.clock,
+  ): Call {
+    const model = this.pick(MODELS);
     const usage = usageOf({
       inputTokens: this.int(1, 5_000),
       outputTokens: this.int(1, 2_000),
@@ -301,9 +413,10 @@ class World {
     const call: Call = {
       id: `${kind}_${++this.seq}_${Math.floor(this.rand() * 1e9).toString(36)}`,
       session,
-      ts: this.clock,
+      ts,
+      model,
       usage,
-      usd: this.pricer.priceUsage(usage, MODEL).totalUsd,
+      usd: this.pricer.priceUsage(usage, model).totalUsd,
       subagent,
       kind,
       replaying: false,
@@ -322,7 +435,7 @@ class World {
         agentId: AGENT,
         messageId: call.id,
         workflowRunId: null,
-        model: MODEL,
+        model: call.model,
         inputTokens: call.usage.inputTokens,
         outputTokens: call.usage.outputTokens,
         cacheReadTokens: call.usage.cacheReadTokens,
@@ -336,7 +449,7 @@ class World {
       timestamp: call.ts,
       sessionId: session,
       messageId: call.id,
-      model: MODEL,
+      model: call.model,
       inputTokens: call.usage.inputTokens,
       outputTokens: call.usage.outputTokens,
       cacheReadTokens: call.usage.cacheReadTokens,
@@ -356,13 +469,14 @@ class World {
     }
   }
 
-  private selfReport(usage: TokenUsage, requestId?: string): void {
+  private selfReport(call: Call, requestId?: string): void {
+    const { usage } = call;
     const args: TokenReport = {
       input_tokens: usage.inputTokens,
       output_tokens: usage.outputTokens,
       cache_read_tokens: usage.cacheReadTokens,
       cache_creation_tokens: usage.cacheCreationTokens,
-      model: MODEL,
+      model: call.model,
       ...(requestId !== undefined && { request_id: requestId }),
     };
     handleReportTokens(this.engine.cost, args);
@@ -378,6 +492,12 @@ class World {
         // Now and then the transcript reports a response already self-reported by id.
         const call =
           pending.length > 0 && this.rand() < 0.5 ? this.pick(pending) : this.newCall(P, false);
+        this.emit(call, this.rand() < 0.5 ? this.engine.ledger : this.local.ledger);
+        break;
+      }
+      case 'lateTurn': {
+        // A transcript line read more than 48 hours after it was written.
+        const call = this.newCall(P, false, 'turn', this.clock - LATE_MS);
         this.emit(call, this.rand() < 0.5 ? this.engine.ledger : this.local.ledger);
         break;
       }
@@ -415,19 +535,22 @@ class World {
           ts: this.clock,
           usd: est.totalUsd,
           inputTokens: Math.round(inputChars / 4),
+          outputTokens: Math.round(outputChars / 4),
         });
         break;
       }
       case 'selfReportKnownId': {
-        const known = this.calls.filter((c) => c.session === P && !c.subagent && c.kind !== 'self');
+        const known = this.calls.filter(
+          (c) => c.session === P && !c.subagent && (c.kind === 'turn' || c.kind === 'req'),
+        );
         if (known.length === 0) return;
         const call = this.pick(known);
-        this.selfReport(call.usage, call.id);
+        this.selfReport(call, call.id);
         break;
       }
       case 'selfReportFreshId': {
         const call = this.newCall(P, false, 'req');
-        this.selfReport(call.usage, call.id);
+        this.selfReport(call, call.id);
         break;
       }
       case 'selfReportNoId': {
@@ -435,10 +558,10 @@ class World {
           // The same response the transcript already reported, with no id.
           const seen = this.calls.filter((c) => c.session === P && c.replaying);
           if (seen.length === 0) return;
-          this.selfReport(this.pick(seen).usage);
+          this.selfReport(this.pick(seen));
         } else if (!this.calls.some((c) => c.session === P && c.replaying)) {
           // A platform with no watcher: the self-report is the only record.
-          this.selfReport(this.newCall(P, false, 'self').usage);
+          this.selfReport(this.newCall(P, false, 'self'));
         }
         break;
       }
@@ -485,31 +608,70 @@ class World {
     this.step('restartE');
   }
 
-  expected(session: string): { costUsd: number; subagentUsd: number; inputTokens: number } {
+  expected(session: string): Expected {
+    const want: Expected = {
+      costUsd: 0,
+      subagentUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      costByDay: {},
+      subagentByDay: {},
+      unpriced: {},
+      unpricedByDay: {},
+      estimated: {},
+      estimatedByDay: {},
+    };
+    const add = (rec: Record<string, number>, key: string, v: number): void => {
+      rec[key] = (rec[key] ?? 0) + v;
+    };
+    const count = (rec: CallCounts, model: string, tokens: number): void => {
+      const prior = rec[model] ?? { calls: 0, tokens: 0 };
+      rec[model] = { calls: prior.calls + 1, tokens: prior.tokens + tokens };
+    };
     const calls = this.calls.filter((c) => c.session === session);
-    let costUsd = 0;
-    let subagentUsd = 0;
-    let inputTokens = 0;
     for (const c of calls) {
-      costUsd += c.usd;
-      inputTokens += c.usage.inputTokens;
-      if (c.subagent) subagentUsd += c.usd;
+      // Late by the time any process records it: the run lasts minutes.
+      const day = c.ts < this.startMs - 48 * HOUR_MS ? null : localDateKey(c.ts);
+      want.costUsd += c.usd;
+      want.inputTokens += c.usage.inputTokens;
+      want.outputTokens += c.usage.outputTokens;
+      want.cacheReadTokens += c.usage.cacheReadTokens;
+      want.cacheCreationTokens += c.usage.cacheCreationTokens;
+      if (c.subagent) want.subagentUsd += c.usd;
+      if (day !== null) {
+        add(want.costByDay, day, c.usd);
+        if (c.subagent) add(want.subagentByDay, day, c.usd);
+      }
+      const tokens = tokensOf(c.usage);
+      const [byModel, byDay] =
+        c.model === UNPRICED
+          ? [want.unpriced, want.unpricedByDay]
+          : c.model === SIBLING
+            ? [want.estimated, want.estimatedByDay]
+            : [null, null];
+      if (byModel && byDay) {
+        count(byModel, c.model, tokens);
+        if (day !== null) count((byDay[day] ??= {}), c.model, tokens);
+      }
     }
     if (session === P) {
       for (const e of this.estimates) {
         const replaced = calls.some((c) => c.replaying && !c.subagent && c.ts >= e.ts);
         if (replaced) continue;
-        costUsd += e.usd;
-        inputTokens += e.inputTokens;
+        want.costUsd += e.usd;
+        want.inputTokens += e.inputTokens;
+        want.outputTokens += e.outputTokens;
+        add(want.costByDay, localDateKey(e.ts), e.usd);
       }
     }
-    return { costUsd, subagentUsd, inputTokens };
+    return want;
   }
 
   check(): string[] {
     const problems: string[] = [];
     const store = new SessionStore({ storagePath: this.storagePath });
-    const close = (a: number, b: number): boolean => Math.abs(a - b) <= 1e-9 + 1e-9 * Math.abs(b);
     for (const session of [P, FORK]) {
       const want = this.expected(session);
       const file = store.loadSession(session);
@@ -517,23 +679,101 @@ class World {
         if (want.costUsd > 0) problems.push(`${session}: no session file, want $${want.costUsd}`);
         continue;
       }
-      const fileCost = file.estimatedCostUsd ?? 0;
-      if (!close(fileCost, want.costUsd)) {
-        problems.push(`${session}: file cost ${fileCost} != want ${want.costUsd}`);
-      }
-      if (!close(file.subagentCostUsd, want.subagentUsd)) {
-        problems.push(
-          `${session}: file subagent ${file.subagentCostUsd} != want ${want.subagentUsd}`,
-        );
-      }
-      if (file.tokensInput !== want.inputTokens) {
-        problems.push(`${session}: file input tokens ${file.tokensInput} != ${want.inputTokens}`);
-      }
+      compare(problems, `${session} file`, want, {
+        costUsd: file.estimatedCostUsd ?? 0,
+        subagentUsd: file.subagentCostUsd,
+        inputTokens: file.tokensInput,
+        outputTokens: file.tokensOutput,
+        cacheReadTokens: file.tokensCacheRead,
+        cacheCreationTokens: file.tokensCacheCreation,
+        costByDay: file.costByDayUsd ?? {},
+        subagentByDay: file.subagentCostByDayUsd ?? {},
+        unpriced: callCounts(file.unpricedByModel),
+        unpricedByDay: callCountsByDay(file.unpricedByDay),
+        estimated: callCounts(file.estimatedByModel),
+        estimatedByDay: callCountsByDay(file.estimatedByDay),
+      });
     }
-    const live = this.engine.cost.getMetrics().sessionTotalCostUsd ?? 0;
-    const wantP = this.expected(P).costUsd;
-    if (!close(live, wantP)) problems.push(`engine live total ${live} != want ${wantP}`);
+    const m = this.engine.cost.getMetrics();
+    compare(problems, 'engine live', this.expected(P), {
+      costUsd: m.sessionTotalCostUsd ?? 0,
+      subagentUsd: m.subagentCostUsd,
+      inputTokens: m.totalInputTokens,
+      outputTokens: m.totalOutputTokens,
+      cacheReadTokens: m.totalCacheReadTokens,
+      cacheCreationTokens: m.totalCacheCreationTokens,
+      costByDay: m.costByDayUsd,
+      subagentByDay: m.subagentCostByDayUsd,
+      unpriced: callCounts(m.unpricedByModel),
+      unpricedByDay: callCountsByDay(m.unpricedByDay),
+      estimated: callCounts(m.estimatedByModel),
+      estimatedByDay: callCountsByDay(m.estimatedByDay),
+    });
     return problems;
+  }
+}
+
+function tokensOf(u: TokenUsage): number {
+  return (
+    u.inputTokens + u.outputTokens + u.thinkingTokens + u.cacheReadTokens + u.cacheCreationTokens
+  );
+}
+
+function callCounts(rec: Readonly<Record<string, UnpricedModelUsage>> | undefined): CallCounts {
+  return Object.fromEntries(
+    Object.entries(rec ?? {}).map(([m, c]) => [m, { calls: c.calls, tokens: c.tokens }]),
+  );
+}
+
+function callCountsByDay(
+  rec: Readonly<Record<string, Readonly<Record<string, UnpricedModelUsage>>>> | undefined,
+): Record<string, CallCounts> {
+  return Object.fromEntries(Object.entries(rec ?? {}).map(([d, m]) => [d, callCounts(m)]));
+}
+
+const closeTo = (a: number, b: number): boolean => Math.abs(a - b) <= 1e-9 + 1e-9 * Math.abs(b);
+
+function sameNumbers(a: Record<string, number>, b: Record<string, number>): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  return [...keys].every((k) => closeTo(a[k] ?? 0, b[k] ?? 0));
+}
+
+function sameCounts(a: Record<string, CallCounts>, b: Record<string, CallCounts>): boolean {
+  const days = new Set([...Object.keys(a), ...Object.keys(b)]);
+  return [...days].every(
+    (d) => JSON.stringify(sortKeys(a[d] ?? {})) === JSON.stringify(sortKeys(b[d] ?? {})),
+  );
+}
+
+function sortKeys<T>(o: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(Object.entries(o).sort(([x], [y]) => x.localeCompare(y)));
+}
+
+function compare(problems: string[], where: string, want: Expected, got: Expected): void {
+  for (const k of [
+    'costUsd',
+    'subagentUsd',
+    'inputTokens',
+    'outputTokens',
+    'cacheReadTokens',
+    'cacheCreationTokens',
+  ] as const) {
+    if (!closeTo(got[k], want[k])) problems.push(`${where} ${k}: ${got[k]} != ${want[k]}`);
+  }
+  for (const k of ['costByDay', 'subagentByDay'] as const) {
+    if (!sameNumbers(got[k], want[k])) {
+      problems.push(`${where} ${k}: ${JSON.stringify(got[k])} != ${JSON.stringify(want[k])}`);
+    }
+  }
+  for (const k of ['unpriced', 'estimated'] as const) {
+    if (!sameCounts({ all: got[k] }, { all: want[k] })) {
+      problems.push(`${where} ${k}: ${JSON.stringify(got[k])} != ${JSON.stringify(want[k])}`);
+    }
+  }
+  for (const k of ['unpricedByDay', 'estimatedByDay'] as const) {
+    if (!sameCounts(got[k], want[k])) {
+      problems.push(`${where} ${k}: ${JSON.stringify(got[k])} != ${JSON.stringify(want[k])}`);
+    }
   }
 }
 
@@ -551,11 +791,21 @@ describe('usage ledger: one API call is counted once', () => {
     jest.restoreAllMocks();
   });
 
-  function run(rand: () => number, actions: readonly Action[] | null, length = 0): World {
+  function run(
+    rand: () => number,
+    actions: readonly Action[] | null,
+    length = 0,
+    withLegacyFile = false,
+  ): World {
     storagePath = mkdtempSync(join(tmpdir(), 'usage-ledger-'));
-    const world = new World(storagePath, rand, (ms) => {
-      clock = ms;
-    });
+    const world = new World(
+      storagePath,
+      rand,
+      (ms) => {
+        clock = ms;
+      },
+      withLegacyFile,
+    );
     if (actions) for (const a of actions) world.step(a);
     else for (let i = 0; i < length; i++) world.step(ACTIONS[Math.floor(rand() * ACTIONS.length)]!);
     world.settle();
@@ -570,8 +820,9 @@ describe('usage ledger: one API call is counted once', () => {
 
   it('random interleavings', () => {
     const failures: Array<{ seed: number; trace: string[]; problems: string[] }> = [];
-    for (let seed = 1; seed <= 150; seed++) {
-      const world = run(mulberry32(seed), null, 28);
+    for (let seed = 1; seed <= 200; seed++) {
+      // Every third run starts from a session file a pre-ledger Preflight wrote.
+      const world = run(mulberry32(seed), null, 28, seed % 3 === 0);
       const problems = world.check();
       rmSync(storagePath, { recursive: true, force: true });
       if (problems.length > 0) failures.push({ seed, trace: world.trace, problems });
@@ -607,6 +858,35 @@ describe('usage ledger: one API call is counted once', () => {
     expectCountedOnce(
       run(mulberry32(17), ['turn', 'pumpW', 'saveW', 'subagentTurn', 'pumpW', 'saveW', 'saveW']),
     );
+  });
+
+  it('a turn read more than 48 hours late, drained by either writer', () => {
+    expectCountedOnce(run(mulberry32(23), ['lateTurn', 'pumpW', 'saveW', 'lateTurn', 'pumpE']));
+  });
+
+  it('a pre-ledger session file, then new turns the dashboard saves first', () => {
+    expectCountedOnce(run(mulberry32(29), ['turn', 'pumpW', 'saveW', 'turn', 'pumpE'], 0, true));
+  });
+
+  it('a pre-ledger session file the dashboard saves new turns into', () => {
+    // No settle: the engine's own save would otherwise restore the old totals.
+    storagePath = mkdtempSync(join(tmpdir(), 'usage-ledger-'));
+    const world = new World(
+      storagePath,
+      mulberry32(37),
+      (ms) => {
+        clock = ms;
+      },
+      true,
+    );
+    for (const a of ['turn', 'pumpW', 'saveW'] as const) world.step(a);
+    const problems = world.check().filter((p) => !p.startsWith('engine live'));
+    rmSync(storagePath, { recursive: true, force: true });
+    expect({ trace: world.trace, problems }).toEqual({ trace: world.trace, problems: [] });
+  });
+
+  it('a pre-ledger byte estimate replaced by a new turn', () => {
+    expectCountedOnce(run(mulberry32(31), ['restartE', 'turn', 'pumpE', 'saveE'], 0, true));
   });
 
   it('a fork copying the parent lines', () => {
