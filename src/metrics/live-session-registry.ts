@@ -22,6 +22,10 @@ export class LiveSessionRegistry {
   // protection, the dashboard session list, and today's aggregate counts.
   // Expires at local midnight via getTodaySessionIds() so it stays bounded.
   private readonly seenToday = new Map<string, number>();
+  // Sessions the live trackers hold data for, including token-only sessions
+  // that never produce a tool call. Unlike `seenToday`, this is not expired at
+  // midnight, because the trackers it mirrors are never reset then.
+  private readonly heldByTrackers = new Set<string>();
   private readonly sessionNames = new Map<string, string>();
   // Sessions whose name was set authoritatively (job-state title / transcript
   // ai-title). `touch()` must never overwrite these with a cwd basename.
@@ -40,6 +44,7 @@ export class LiveSessionRegistry {
   touch(sessionId: string, cwd?: string): void {
     this.lastActivity.set(sessionId, Date.now());
     this.seenToday.set(sessionId, Date.now());
+    this.heldByTrackers.add(sessionId);
     // Streaming FALLBACK naming: skip when an authoritative name is set, and
     // (as before) only fill the first time we see a cwd for this session.
     if (cwd && !this.authoritativeNames.has(sessionId) && !this.sessionNames.has(sessionId)) {
@@ -55,6 +60,15 @@ export class LiveSessionRegistry {
         this.authoritativeSources.set(sessionId, 'cwd');
       }
     }
+  }
+
+  /**
+   * Record that the live trackers hold data for this session without marking
+   * it live or seen today. Used for token-only events (model usage with no
+   * tool call), which must not make a session look active.
+   */
+  hold(sessionId: string): void {
+    this.heldByTrackers.add(sessionId);
   }
 
   /**
@@ -150,9 +164,18 @@ export class LiveSessionRegistry {
     return options?.includeSynthetic ? today : today.filter((id) => !isSyntheticSessionId(id));
   }
 
+  /**
+   * Session IDs the live trackers hold data for, including synthetic IDs and
+   * sessions outside the staleness window. Only `reset()` removes entries.
+   */
+  getHeldSessionIds(): string[] {
+    return [...this.heldByTrackers];
+  }
+
   reset(): void {
     this.lastActivity.clear();
     this.seenToday.clear();
+    this.heldByTrackers.clear();
     this.sessionNames.clear();
     this.authoritativeNames.clear();
     this.authoritativeSources.clear();
