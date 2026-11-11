@@ -148,6 +148,15 @@ describe('UsageLedger', () => {
       makeEntry({ id: 'est:x:1', provisional: true, replaces: false, day: null }),
       makeEntry({ id: 'msg_3', pricing: { estimatedFrom: 'claude-opus-5' } }),
       makeEntry({ id: 'msg_4', model: 'mystery', pricing: { kind: 'unpriced' } }),
+      makeEntry({
+        id: 'legacy-est:2026-09-10',
+        provisional: true,
+        replaces: false,
+        calls: {
+          unpriced: { u: { calls: 2, tokens: 20 } },
+          estimated: { e: { calls: 1, tokens: 5, estimatedFrom: 'base' } },
+        },
+      }),
     ];
     const parsed = parsePersistedUsageLedger(
       JSON.parse(JSON.stringify(encodeUsageLedger(entries))),

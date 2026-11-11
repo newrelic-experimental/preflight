@@ -20,11 +20,20 @@ import { localDateKey } from '../lib/date.js';
 import type { SessionTracker } from './session-tracker.js';
 import type { Resettable } from './tracker-contracts.js';
 import type { AttributionBucket } from '../storage/types.js';
-import { LATE_ARRIVAL_MS, UsageLedger, dayOf, isZeroTotals } from './usage-ledger.js';
+import {
+  LATE_ARRIVAL_MS,
+  UsageLedger,
+  ZERO_TOTALS,
+  dayOf,
+  foldUsage,
+  isZeroTotals,
+  subtractTotals,
+} from './usage-ledger.js';
 import type {
   ByteEstimateLedger,
   CallUsageByDay,
   CostTotals,
+  EntryCalls,
   EstimatedModelUsage,
   PersistedUsageLedger,
   PricingMark,
@@ -256,6 +265,14 @@ export interface CostTrackerSeed {
   readonly costByWorkflowRunId: Readonly<Record<string, Readonly<Record<string, number>>>>;
   readonly unpricedByModel?: Readonly<Record<string, UnpricedModelUsage>>;
   readonly estimatedByModel?: Readonly<Record<string, EstimatedModelUsage>>;
+  /**
+   * Absent on a checkpoint written before day buckets existed; its counts then
+   * book to `legacyCallsDayKey`.
+   */
+  readonly unpricedByDay?: Readonly<CallUsageByDay<UnpricedModelUsage>>;
+  readonly estimatedByDay?: Readonly<CallUsageByDay<EstimatedModelUsage>>;
+  /** The checkpoint's own latest day, so a resumed legacy session's calls stay off today. Defaults to `dayKey`. */
+  readonly legacyCallsDayKey?: string;
   /** Restored separately so the seed can tell exact tokens from estimated ones. See `ByteEstimateLedger`. */
   readonly byteEstimates?: ByteEstimateLedger;
   /**
@@ -520,6 +537,7 @@ export class CostTracker implements Resettable {
 
   private seedFlatTotals(seed: CostTrackerSeed, nowMs: number): void {
     const est = seed.byteEstimates;
+    const legacyDay = seed.legacyCallsDayKey ?? seed.dayKey;
     const base: CostTotals = {
       costUsd: Math.max(0, seed.totalCostUsd - (est?.costUsd ?? 0)),
       subagentCostUsd: seed.subagentCostUsd,
@@ -541,14 +559,17 @@ export class CostTracker implements Resettable {
       costByWorkflowRunId: seed.costByWorkflowRunId,
       unpricedByModel: seed.unpricedByModel ?? {},
       estimatedByModel: seed.estimatedByModel ?? {},
-      // A hand-built seed has no day split; its calls book to its day.
-      unpricedByDay: seed.unpricedByModel ? { [seed.dayKey]: { ...seed.unpricedByModel } } : {},
-      estimatedByDay: seed.estimatedByModel ? { [seed.dayKey]: { ...seed.estimatedByModel } } : {},
+      // A seed with no day split books its calls to its own latest day.
+      unpricedByDay:
+        seed.unpricedByDay ??
+        (seed.unpricedByModel ? { [legacyDay]: { ...seed.unpricedByModel } } : {}),
+      estimatedByDay:
+        seed.estimatedByDay ??
+        (seed.estimatedByModel ? { [legacyDay]: { ...seed.estimatedByModel } } : {}),
     };
-    this.ledger.addToBase(base);
-    if (est !== undefined) {
-      for (const e of legacyEstimateEntries(est, nowMs, this.instanceId)) this.ledger.insert(e);
-    }
+    const estimates = est === undefined ? [] : legacyEstimateEntries(est, nowMs, this.instanceId);
+    this.ledger.addToBase(withoutEstimateCalls(base, estimates));
+    for (const e of estimates) this.ledger.insert(e);
     if (seed.dayCostUsd !== 0) this.noteActivity(seed.dayKey, nowMs, nowMs);
   }
 
@@ -822,27 +843,53 @@ function subtractRecord(
  * usage ledger existed: one per day, timestamped `ts`, so the next exact
  * report retires them. The ledger has no per-entry split of model and day, so
  * each day's entry carries the ledger's costliest model and a share of its
- * tokens in proportion to that day's cost.
+ * tokens in proportion to that day's cost. The unpriced and estimated-price
+ * calls the estimates counted ride on the entry of their day (`calls`); calls
+ * with no day split ride on the last entry.
  */
 export function legacyEstimateEntries(
   est: ByteEstimateLedger,
   ts: number,
   scope = 'legacy',
 ): UsageEntry[] {
-  if (est.costUsd <= 0 && est.inputTokens <= 0 && est.outputTokens <= 0) return [];
+  const callsByDay = new Map<string, EntryCalls>();
+  const addCalls = (day: string, key: 'unpriced' | 'estimated', perModel: object): void => {
+    if (Object.keys(perModel).length === 0) return;
+    callsByDay.set(day, { ...callsByDay.get(day), [key]: perModel });
+  };
+  for (const [day, perModel] of Object.entries(est.unpricedByDay ?? {})) {
+    addCalls(day, 'unpriced', perModel);
+  }
+  for (const [day, perModel] of Object.entries(est.estimatedByDay ?? {})) {
+    addCalls(day, 'estimated', perModel);
+  }
+  const hasCalls =
+    Object.keys(est.unpricedByModel ?? {}).length > 0 ||
+    Object.keys(est.estimatedByModel ?? {}).length > 0;
+  if (est.costUsd <= 0 && est.inputTokens <= 0 && est.outputTokens <= 0 && !hasCalls) return [];
   const model = Object.entries(est.costByModel).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'unknown';
-  const days = Object.entries(est.costByDayUsd).filter(([, usd]) => usd > 0);
-  if (days.length === 0) days.push([localDateKey(ts), est.costUsd]);
-  const totalUsd = days.reduce((sum, [, usd]) => sum + usd, 0);
+  const costDays = new Map(Object.entries(est.costByDayUsd).filter(([, usd]) => usd > 0));
+  const dayKeys = [...new Set([...costDays.keys(), ...callsByDay.keys()])].sort();
+  if (dayKeys.length === 0) dayKeys.push(localDateKey(ts));
+  const lastDay = dayKeys[dayKeys.length - 1]!;
+  if (est.unpricedByDay === undefined && est.unpricedByModel) {
+    addCalls(lastDay, 'unpriced', est.unpricedByModel);
+  }
+  if (est.estimatedByDay === undefined && est.estimatedByModel) {
+    addCalls(lastDay, 'estimated', est.estimatedByModel);
+  }
+  const totalUsd = [...costDays.values()].reduce((sum, usd) => sum + usd, 0);
   let inputLeft = est.inputTokens;
   let outputLeft = est.outputTokens;
-  return days.map(([day, usd], i) => {
-    const last = i === days.length - 1;
-    const share = totalUsd > 0 ? usd / totalUsd : 1 / days.length;
+  return dayKeys.map((day) => {
+    const last = day === lastDay;
+    const usd = costDays.get(day) ?? (costDays.size === 0 && last ? est.costUsd : 0);
+    const share = totalUsd > 0 ? usd / totalUsd : last ? 1 : 0;
     const inputTokens = last ? inputLeft : Math.round(est.inputTokens * share);
     const outputTokens = last ? outputLeft : Math.round(est.outputTokens * share);
     inputLeft -= inputTokens;
     outputLeft -= outputTokens;
+    const calls = callsByDay.get(day);
     return {
       id: `legacy-est:${scope === 'legacy' ? '' : `${scope}:`}${day}`,
       provisional: true,
@@ -857,6 +904,34 @@ export function legacyEstimateEntries(
       cacheCreationTokens: 0,
       costUsd: usd,
       cacheSavingsUsd: 0,
+      ...(calls && { calls }),
     };
   });
+}
+
+/**
+ * `base` without the unpriced and estimated-price calls `estimates` stand for:
+ * a pre-ledger total counted the estimates' calls, which now ride on the
+ * provisional entries so they retire with them.
+ */
+export function withoutEstimateCalls(
+  base: CostTotals,
+  estimates: readonly UsageEntry[],
+): CostTotals {
+  if (!estimates.some((e) => e.calls)) return base;
+  const calls = foldUsage(estimates).totals;
+  const rest = subtractTotals(base, {
+    ...ZERO_TOTALS,
+    unpricedByModel: calls.unpricedByModel,
+    estimatedByModel: calls.estimatedByModel,
+    unpricedByDay: calls.unpricedByDay,
+    estimatedByDay: calls.estimatedByDay,
+  });
+  return {
+    ...base,
+    unpricedByModel: rest.unpricedByModel,
+    estimatedByModel: rest.estimatedByModel,
+    unpricedByDay: rest.unpricedByDay,
+    estimatedByDay: rest.estimatedByDay,
+  };
 }

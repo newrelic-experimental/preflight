@@ -46,8 +46,16 @@ import type {
   EstimatedModelUsage,
   UnpricedModelUsage,
 } from '../metrics/cost-tracker.js';
-import { mergeCallUsageMax, parseCallUsageRecord } from '../metrics/call-usage.js';
-import { legacyEstimateEntries } from '../metrics/cost-tracker.js';
+import {
+  addCallUsageRecords,
+  combineCallUsageByDay,
+  mergeCallUsageMax,
+  parseCallUsageByDay,
+  parseCallUsageRecord,
+  subtractCallUsage,
+  type CallUsage,
+} from '../metrics/call-usage.js';
+import { legacyEstimateEntries, withoutEstimateCalls } from '../metrics/cost-tracker.js';
 import {
   UsageLedger,
   ZERO_TOTALS,
@@ -57,7 +65,6 @@ import {
   isZeroTotals,
   maxTotals,
   parsePersistedUsageLedger,
-  parseSessionCallUsageByDay,
   subtractTotals,
 } from '../metrics/usage-ledger.js';
 import type {
@@ -602,9 +609,11 @@ export function usageLedgerOf(s: FullSessionSummary): SessionUsageLedger {
     hasCalls && (s.unpricedByDay === undefined || s.estimatedByDay === undefined)
       ? latestActivityDayKey(s)
       : null;
+  const estimates = est ? legacyEstimateEntries(est, s.endTime) : [];
+  const exactBase = withoutEstimateCalls(base, estimates);
   return {
-    entries: est ? legacyEstimateEntries(est, s.endTime) : [],
-    base: isZeroTotals(base) ? ZERO_TOTALS : base,
+    entries: estimates,
+    base: isZeroTotals(exactBase) ? ZERO_TOTALS : exactBase,
     legacy: true,
     legacyEndTime: s.endTime,
     ...(syntheticDay !== null && { legacyCallsDay: syntheticDay }),
@@ -755,6 +764,69 @@ function subtractRecord(
   return out;
 }
 
+type CallUsageSide<T extends CallUsage> = readonly [
+  total: Readonly<Record<string, T>> | undefined,
+  ledger: Readonly<Record<string, T>> | undefined,
+];
+
+/**
+ * Merges one session's call counts the way `mergeSummaries` merges its cost: the
+ * exact share (total minus the writer's ledger) is max-merged and the merged
+ * ledger is added back. A max over the estimate-laden totals would keep the
+ * calls of byte estimates a real report has since replaced.
+ */
+function mergeCallUsageWithLedger<T extends CallUsage>(
+  existing: CallUsageSide<T>,
+  incoming: CallUsageSide<T>,
+  mergedLedger: Readonly<Record<string, T>> | undefined,
+): Record<string, T> | undefined {
+  if (existing[0] === undefined && incoming[0] === undefined) return undefined;
+  const exact = mergeCallUsageMax(
+    subtractCallUsage(existing[0], existing[1]),
+    subtractCallUsage(incoming[0], incoming[1]),
+  );
+  const merged = addCallUsageRecords(exact, mergedLedger);
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+type CallUsageByDaySide<T extends CallUsage> = readonly [
+  byModel: Readonly<Record<string, T>> | undefined,
+  total: Readonly<CallUsageByDay<T>> | undefined,
+  ledger: Readonly<CallUsageByDay<T>> | undefined,
+];
+
+/**
+ * True when `side` was written before day buckets (counts but no day split) and
+ * holds calls `other`'s totals lack. No day can be named for those calls, so the
+ * merged file keeps only whole-session counts, as a legacy file does. A resumed
+ * session was seeded from its legacy file, so its own totals already cover it.
+ */
+function legacySideAddsCalls<T extends CallUsage>(
+  [byModel, byDay]: CallUsageByDaySide<T>,
+  other: Readonly<Record<string, T>> | undefined,
+): boolean {
+  if (byModel === undefined || byDay !== undefined) return false;
+  return Object.entries(byModel).some(
+    ([model, usage]) => usage.calls > (other?.[model]?.calls ?? 0),
+  );
+}
+
+function mergeCallUsageByDayWithLedger<T extends CallUsage>(
+  existing: CallUsageByDaySide<T>,
+  incoming: CallUsageByDaySide<T>,
+  mergedLedger: Readonly<CallUsageByDay<T>> | undefined,
+): CallUsageByDay<T> | undefined {
+  if (existing[1] === undefined && incoming[1] === undefined) return undefined;
+  if (legacySideAddsCalls(existing, incoming[0]) || legacySideAddsCalls(incoming, existing[0]))
+    return undefined;
+  const exact = combineCallUsageByDay(
+    combineCallUsageByDay(existing[1], existing[2], subtractCallUsage),
+    combineCallUsageByDay(incoming[1], incoming[2], subtractCallUsage),
+    mergeCallUsageMax,
+  );
+  return combineCallUsageByDay(exact, mergedLedger, addCallUsageRecords);
+}
+
 export function mergeSummaries(
   existing: FullSessionSummary,
   incoming: FullSessionSummary,
@@ -840,8 +912,26 @@ export function mergeSummaries(
     incoming.subagentCostByDayUsd,
   );
 
-  const unpricedByModel = mergeCallUsageMax(existing.unpricedByModel, incoming.unpricedByModel);
-  const estimatedByModel = mergeCallUsageMax(existing.estimatedByModel, incoming.estimatedByModel);
+  const unpricedByModel = mergeCallUsageWithLedger(
+    [existing.unpricedByModel, existing.byteEstimates?.unpricedByModel],
+    [incoming.unpricedByModel, incoming.byteEstimates?.unpricedByModel],
+    mergedLedger?.unpricedByModel,
+  );
+  const estimatedByModel = mergeCallUsageWithLedger(
+    [existing.estimatedByModel, existing.byteEstimates?.estimatedByModel],
+    [incoming.estimatedByModel, incoming.byteEstimates?.estimatedByModel],
+    mergedLedger?.estimatedByModel,
+  );
+  const unpricedByDay = mergeCallUsageByDayWithLedger(
+    [existing.unpricedByModel, existing.unpricedByDay, existing.byteEstimates?.unpricedByDay],
+    [incoming.unpricedByModel, incoming.unpricedByDay, incoming.byteEstimates?.unpricedByDay],
+    mergedLedger?.unpricedByDay,
+  );
+  const estimatedByDay = mergeCallUsageByDayWithLedger(
+    [existing.estimatedByModel, existing.estimatedByDay, existing.byteEstimates?.estimatedByDay],
+    [incoming.estimatedByModel, incoming.estimatedByDay, incoming.byteEstimates?.estimatedByDay],
+    mergedLedger?.estimatedByDay,
+  );
   // Latest writer wins, not max: the ledger shrinks to zero when a real report
   // replaces it, and a max-merge would resurrect the stale estimate.
   const byteEstimates = mergedLedger;
@@ -957,8 +1047,10 @@ export function mergeSummaries(
     subagentCostUsd: maxNum(existing.subagentCostUsd, incoming.subagentCostUsd),
     ...(costByDayUsd !== undefined ? { costByDayUsd } : {}),
     ...(subagentCostByDayUsd !== undefined ? { subagentCostByDayUsd } : {}),
-    ...(unpricedByModel !== undefined ? { unpricedByModel } : {}),
-    ...(estimatedByModel !== undefined ? { estimatedByModel } : {}),
+    unpricedByModel,
+    estimatedByModel,
+    unpricedByDay,
+    estimatedByDay,
     ...(byteEstimates !== undefined ? { byteEstimates } : {}),
     exactTotals,
     tokensInput: exactTotals.inputTokens + (mergedLedger?.inputTokens ?? 0),
@@ -1598,6 +1690,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     subagentCostUsd: costMetrics?.subagentCostUsd ?? 0,
     costByDayUsd: costMetrics?.costByDayUsd ?? {},
     subagentCostByDayUsd: costMetrics?.subagentCostByDayUsd ?? {},
+    // A day map rides with its counts even when empty (all late arrivals):
+    // readers treat an absent one as a summary written before day buckets.
     ...(costMetrics && Object.keys(costMetrics.unpricedByModel).length > 0
       ? { unpricedByModel: costMetrics.unpricedByModel, unpricedByDay: costMetrics.unpricedByDay }
       : {}),
@@ -1888,6 +1982,13 @@ function parseByteEstimates(value: unknown): ByteEstimateLedger | undefined {
     outputTokens: finite(obj.outputTokens),
     costByModel: parseNumberRecord(obj.costByModel) ?? {},
     costByDayUsd: parseNumberRecord(obj.costByDayUsd) ?? {},
+    unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
+    estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
+    unpricedByDay: parseCallUsageByDay<UnpricedModelUsage>(obj.unpricedByDay, parseUnpricedExtra),
+    estimatedByDay: parseCallUsageByDay<EstimatedModelUsage>(
+      obj.estimatedByDay,
+      parseEstimatedExtra,
+    ),
   };
 }
 
@@ -1903,18 +2004,26 @@ function parseExactTotals(value: unknown): ExactTotals | undefined {
   };
 }
 
+function parseUnpricedExtra(): Omit<UnpricedModelUsage, keyof CallUsage> {
+  return {};
+}
+
+function parseEstimatedExtra({
+  estimatedFrom,
+}: Record<string, unknown>): Omit<EstimatedModelUsage, keyof CallUsage> | null {
+  return typeof estimatedFrom === 'string' &&
+    estimatedFrom.length > 0 &&
+    estimatedFrom.length <= MAX_MODEL_ID_LENGTH
+    ? { estimatedFrom }
+    : null;
+}
+
 function parseUnpricedByModel(value: unknown): Record<string, UnpricedModelUsage> | undefined {
-  return parseCallUsageRecord<UnpricedModelUsage>(value, () => ({}));
+  return parseCallUsageRecord<UnpricedModelUsage>(value, parseUnpricedExtra);
 }
 
 function parseEstimatedByModel(value: unknown): Record<string, EstimatedModelUsage> | undefined {
-  return parseCallUsageRecord<EstimatedModelUsage>(value, ({ estimatedFrom }) =>
-    typeof estimatedFrom === 'string' &&
-    estimatedFrom.length > 0 &&
-    estimatedFrom.length <= MAX_MODEL_ID_LENGTH
-      ? { estimatedFrom }
-      : null,
-  );
+  return parseCallUsageRecord<EstimatedModelUsage>(value, parseEstimatedExtra);
 }
 
 /**
@@ -2129,8 +2238,11 @@ export function deserializeFullSessionSummary(
     subagentCostByDayUsd: parseNumberRecord(obj.subagentCostByDayUsd),
     unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
     estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
-    unpricedByDay: parseSessionCallUsageByDay<UnpricedModelUsage>(obj.unpricedByDay, false),
-    estimatedByDay: parseSessionCallUsageByDay<EstimatedModelUsage>(obj.estimatedByDay, true),
+    unpricedByDay: parseCallUsageByDay<UnpricedModelUsage>(obj.unpricedByDay, parseUnpricedExtra),
+    estimatedByDay: parseCallUsageByDay<EstimatedModelUsage>(
+      obj.estimatedByDay,
+      parseEstimatedExtra,
+    ),
     byteEstimates: parseByteEstimates(obj.byteEstimates),
     exactTotals: parseExactTotals(obj.exactTotals),
     usageLedger: parsePersistedUsageLedger(obj.usageLedger),

@@ -50,6 +50,16 @@ export interface ByteEstimateLedger {
   readonly outputTokens: number;
   readonly costByModel: Readonly<Record<string, number>>;
   readonly costByDayUsd: Readonly<Record<string, number>>;
+  /**
+   * The unpriced and estimated-price calls those estimates counted. Written by
+   * the Preflight releases between per-day call counts and the usage ledger, so
+   * a merge of two such files can take them out with the estimates. The ledger
+   * derives them from its own entries instead.
+   */
+  readonly unpricedByModel?: Readonly<Record<string, UnpricedModelUsage>>;
+  readonly estimatedByModel?: Readonly<Record<string, EstimatedModelUsage>>;
+  readonly unpricedByDay?: Readonly<CallUsageByDay<UnpricedModelUsage>>;
+  readonly estimatedByDay?: Readonly<CallUsageByDay<EstimatedModelUsage>>;
 }
 
 /** How a usage's model was priced: absent when it had a price of its own. */
@@ -81,8 +91,19 @@ export interface UsageEntry {
   readonly agentType?: string;
   readonly workflowRunId?: string;
   readonly pricing?: PricingMark;
+  /**
+   * Unpriced and estimated-price calls this entry stands for, replacing the
+   * one call `pricing` would count. Only an entry recovered from a pre-ledger
+   * byte-estimate total carries it: that total covered several calls.
+   */
+  readonly calls?: EntryCalls;
   /** In memory only: not persisted. */
   readonly responseMs?: number;
+}
+
+export interface EntryCalls {
+  readonly unpriced?: Readonly<Record<string, UnpricedModelUsage>>;
+  readonly estimated?: Readonly<Record<string, EstimatedModelUsage>>;
 }
 
 /** Every additive cost figure of a session. */
@@ -181,6 +202,17 @@ function preferred(a: UsageEntry, b: UsageEntry): UsageEntry {
   // buckets wins, whichever copy arrived first.
   if (a.day !== b.day) return a.day === null ? a : b.day === null ? b : a.day < b.day ? a : b;
   return a;
+}
+
+/** The unpriced and estimated-price calls an entry counts. */
+function callsOf(e: UsageEntry, tokens: number): Required<EntryCalls> {
+  if (e.calls) return { unpriced: e.calls.unpriced ?? {}, estimated: e.calls.estimated ?? {} };
+  if (tokens === 0 || !e.pricing) return { unpriced: {}, estimated: {} };
+  if ('kind' in e.pricing) return { unpriced: { [e.model]: { calls: 1, tokens } }, estimated: {} };
+  return {
+    unpriced: {},
+    estimated: { [e.model]: { calls: 1, tokens, estimatedFrom: e.pricing.estimatedFrom } },
+  };
 }
 
 function rangeOf(id: string): { readonly scope: string; from: number; to: number } | null {
@@ -342,6 +374,10 @@ export function foldUsage(
   const est = { costUsd: 0, inputTokens: 0, outputTokens: 0 };
   const estByModel = new Map<string, number>();
   const estByDay = new Map<string, number>();
+  const estUnpriced = new Map<string, UnpricedModelUsage>();
+  const estEstimated = new Map<string, EstimatedModelUsage>();
+  const estUnpricedByDay = new Map<string, Map<string, UnpricedModelUsage>>();
+  const estEstimatedByDay = new Map<string, Map<string, EstimatedModelUsage>>();
   let sawEstimate = false;
   let hasExact = !isZeroTotals(base);
   let highContextCostUsd = 0;
@@ -379,15 +415,21 @@ export function foldUsage(
       }
     }
     const tokens = tokensOf(e);
-    if (tokens > 0 && e.pricing) {
-      if ('kind' in e.pricing) {
-        const call = { calls: 1, tokens };
-        addCallUsage(unpricedByModel, e.model, call);
-        if (e.day !== null) addCallUsage(dayBook(unpricedByDay, e.day), e.model, call);
-      } else {
-        const call = { calls: 1, tokens, estimatedFrom: e.pricing.estimatedFrom };
-        addCallUsage(estimatedByModel, e.model, call);
-        if (e.day !== null) addCallUsage(dayBook(estimatedByDay, e.day), e.model, call);
+    const { unpriced, estimated } = callsOf(e, tokens);
+    for (const [model, call] of Object.entries(unpriced)) {
+      addCallUsage(unpricedByModel, model, call);
+      if (e.day !== null) addCallUsage(dayBook(unpricedByDay, e.day), model, call);
+      if (e.provisional) {
+        addCallUsage(estUnpriced, model, call);
+        if (e.day !== null) addCallUsage(dayBook(estUnpricedByDay, e.day), model, call);
+      }
+    }
+    for (const [model, call] of Object.entries(estimated)) {
+      addCallUsage(estimatedByModel, model, call);
+      if (e.day !== null) addCallUsage(dayBook(estimatedByDay, e.day), model, call);
+      if (e.provisional) {
+        addCallUsage(estEstimated, model, call);
+        if (e.day !== null) addCallUsage(dayBook(estEstimatedByDay, e.day), model, call);
       }
     }
     if (e.inputTokens + e.cacheReadTokens + e.cacheCreationTokens > HIGH_CONTEXT_TOKENS) {
@@ -431,6 +473,10 @@ export function foldUsage(
         ...est,
         costByModel: recordOf(estByModel),
         costByDayUsd: recordOf(estByDay),
+        unpricedByModel: Object.fromEntries(estUnpriced),
+        estimatedByModel: Object.fromEntries(estEstimated),
+        unpricedByDay: dayRecords(estUnpricedByDay),
+        estimatedByDay: dayRecords(estEstimatedByDay),
       },
     }),
     highContextCostUsd,
@@ -636,6 +682,7 @@ export function encodeUsageLedger(
       e.agentType ?? null,
       e.workflowRunId ?? null,
       pricing,
+      e.calls ?? null,
     ];
     while (tuple.length > 0 && tuple[tuple.length - 1] === null) tuple.pop();
     encoded.push(JSON.stringify(tuple));
@@ -660,8 +707,25 @@ function decodeEntry(raw: string, models: readonly string[]): UsageEntry | null 
     return null;
   }
   if (!Array.isArray(t)) return null;
-  const [id, flags, ts, day, modelIdx, i, o, th, cr, cc, usd, sav, agentId, agentType, run, pr] =
-    t as unknown[];
+  const [
+    id,
+    flags,
+    ts,
+    day,
+    modelIdx,
+    i,
+    o,
+    th,
+    cr,
+    cc,
+    usd,
+    sav,
+    agentId,
+    agentType,
+    run,
+    pr,
+    ec,
+  ] = t as unknown[];
   if (typeof id !== 'string' || id.length === 0 || id.length > MAX_ID) return null;
   if (typeof flags !== 'number' || !Number.isInteger(flags) || flags < 0 || flags > 3) return null;
   if (typeof ts !== 'number' || !Number.isFinite(ts)) return null;
@@ -677,6 +741,7 @@ function decodeEntry(raw: string, models: readonly string[]): UsageEntry | null 
   else if (typeof pr === 'string' && pr.startsWith('e:') && pr.length > 2) {
     pricing = { estimatedFrom: pr.slice(2) };
   }
+  const calls = parseEntryCalls(ec);
   return {
     id,
     provisional: (flags & 1) !== 0,
@@ -695,7 +760,23 @@ function decodeEntry(raw: string, models: readonly string[]): UsageEntry | null 
     ...(agentType ? { agentType } : {}),
     ...(run ? { workflowRunId: run } : {}),
     ...(pricing && { pricing }),
+    ...(calls && { calls }),
   };
+}
+
+function parseEntryCalls(v: unknown): EntryCalls | undefined {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const o = v as Record<string, unknown>;
+  const unpriced = Object.fromEntries(
+    Object.entries(parseCallUsage(o.unpriced, false)).map(([k, e]) => [
+      k,
+      { calls: e.calls, tokens: e.tokens },
+    ]),
+  );
+  const estimated = parseCallUsage(o.estimated, true);
+  const has = (r: object): boolean => Object.keys(r).length > 0;
+  if (!has(unpriced) && !has(estimated)) return undefined;
+  return { ...(has(unpriced) && { unpriced }), ...(has(estimated) && { estimated }) };
 }
 
 export function decodeUsageLedger(ledger: PersistedUsageLedger): {
@@ -748,15 +829,6 @@ function parseCallUsageByDay(v: unknown, estimated: boolean): CallUsageByDay<Est
         ) as CallUsageByDay<EstimatedModelUsage>[string]);
   }
   return out;
-}
-
-/** Validates an untrusted per-day call-usage map from a session file. */
-export function parseSessionCallUsageByDay<T extends UnpricedModelUsage>(
-  v: unknown,
-  estimated: boolean,
-): CallUsageByDay<T> | undefined {
-  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
-  return parseCallUsageByDay(v, estimated) as unknown as CallUsageByDay<T>;
 }
 
 function parseCostTotals(v: unknown): CostTotals | undefined {

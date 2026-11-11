@@ -430,8 +430,6 @@ export interface ApiHandlerDeps {
       totalCacheCreationTokens?: number;
       totalCacheSavingsUsd?: number;
       totalInputTokens?: number;
-      unpricedByModel?: Record<string, UnpricedModelUsage>;
-      estimatedByModel?: Record<string, EstimatedModelUsage>;
       unpricedByDay?: Record<string, Record<string, UnpricedModelUsage>>;
       estimatedByDay?: Record<string, Record<string, EstimatedModelUsage>>;
     };
@@ -2057,18 +2055,8 @@ export function createApiHandler(
 
     if (!liveIsUnscopedAggregator) {
       const liveMetrics = deps.costTracker?.getMetrics();
-      sumCallUsageInto(
-        unpricedByModel,
-        liveMetrics?.unpricedByDay === undefined
-          ? liveMetrics?.unpricedByModel
-          : liveMetrics.unpricedByDay[todayKey],
-      );
-      sumCallUsageInto(
-        estimatedByModel,
-        liveMetrics?.estimatedByDay === undefined
-          ? liveMetrics?.estimatedByModel
-          : liveMetrics.estimatedByDay[todayKey],
-      );
+      sumCallUsageInto(unpricedByModel, liveMetrics?.unpricedByDay?.[todayKey]);
+      sumCallUsageInto(estimatedByModel, liveMetrics?.estimatedByDay?.[todayKey]);
       // Reuses `todayKey` from the enclosing scope (declared above the
       // persisted-session loop) so the persisted-loop and this live top-up can
       // never split onto two independently-derived day keys.
