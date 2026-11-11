@@ -1386,6 +1386,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     skillName: tc.toolName === 'Skill' && tc.skillName ? tc.skillName : undefined,
     agentType: tc.toolName === 'Agent' && tc.agentType ? tc.agentType : undefined,
     createdPrNumber: tc.createdPrNumber,
+    mcpPrNumber: tc.mcpPrNumber,
+    mcpPrRepo: tc.mcpPrRepo,
     runInBackground: tc.runInBackground === true || undefined,
   }));
 
@@ -2030,6 +2032,14 @@ export function deserializeFullSessionSummary(
             createdPrNumber:
               typeof e.createdPrNumber === 'string' && /^\d{1,9}$/.test(e.createdPrNumber)
                 ? e.createdPrNumber
+                : undefined,
+            mcpPrNumber:
+              typeof e.mcpPrNumber === 'string' && /^\d{1,9}$/.test(e.mcpPrNumber)
+                ? e.mcpPrNumber
+                : undefined,
+            mcpPrRepo:
+              typeof e.mcpPrRepo === 'string' && /^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(e.mcpPrRepo)
+                ? e.mcpPrRepo
                 : undefined,
             runInBackground: e.runInBackground === true || undefined,
           }))
