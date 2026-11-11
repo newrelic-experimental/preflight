@@ -516,6 +516,9 @@ export class TurnCostAttributor {
       thinkingTokens: 0,
       cacheReadTokens: event.cacheReadTokens,
       cacheCreationTokens: event.cacheCreationTokens,
+      ...(event.cacheCreation1hTokens !== undefined && {
+        cacheCreation1hTokens: event.cacheCreation1hTokens,
+      }),
       totalTokens: event.inputTokens + event.outputTokens,
     };
     return calculateModelCost(event.model, usage).totalUsd * this.rateMultiplier;

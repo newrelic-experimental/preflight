@@ -76,6 +76,60 @@ describe('LocalSessionAggregator', () => {
     ]);
   });
 
+  it('leaves out what another process may count, and nothing else', () => {
+    const agg = new LocalSessionAggregator();
+    const call = (toolName: string, rest: object): void =>
+      agg.recordToolCall({ sessionId: REAL_ID, toolName, ...rest });
+    call('Read', { toolUseId: 'paired', timestamp: 1, success: true });
+    call('Bash', { toolUseId: 'failed', timestamp: 2, success: false, errorType: 'tool_error' });
+    call('Grep', { toolUseId: 'timed-out', timestamp: 3, success: false, errorType: 'timeout' });
+    call('Grep', { toolUseId: 'rejected', timestamp: 4, success: false, errorType: 'rejected' });
+    call('Edit', { toolUseId: 'counted', timestamp: 5, success: true });
+
+    const kept = agg.withoutCallsOtherProcessesMayCount(summariesOf(agg)[0]!, new Set(['counted']));
+
+    expect(kept.toolCallCount).toBe(2);
+    expect(kept.toolBreakdown).toEqual({ Read: 1, Bash: 1 });
+    expect(kept.timeline).toMatchObject([{ toolName: 'Read' }, { toolName: 'Bash' }]);
+    expect(kept.toolSuccessRate).toBe(0.5);
+  });
+
+  it("writes no success rate over a file's when it leaves out every call", () => {
+    const agg = new LocalSessionAggregator();
+    const timedOut = { success: false, errorType: 'timeout' };
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', ...timedOut });
+
+    const kept = agg.withoutCallsOtherProcessesMayCount(summariesOf(agg)[0]!, new Set());
+
+    expect(kept.toolSuccessRate).toBeNull();
+    expect(kept.timeline).toBeUndefined();
+  });
+
+  it('keeps a failing post as a failure, with the error type it carries', () => {
+    const agg = new LocalSessionAggregator();
+    const timedOut = { id: 'r1', sessionId: REAL_ID, toolName: 'Agent', timestamp: 1000 };
+    agg.recordToolCall({ ...timedOut, durationMs: null, success: false, errorType: 'timeout' });
+    agg.amendToolCall({
+      ...timedOut,
+      toolUseId: 'toolu_1',
+      durationMs: 5000,
+      success: false,
+      errorType: 'interrupted',
+    });
+
+    const [summary] = summariesOf(agg, 'in progress');
+    expect(summary?.toolSuccessRate).toBe(0);
+    expect(summary?.timeline).toEqual([
+      {
+        timestamp: 1000,
+        toolName: 'Agent',
+        durationMs: 5000,
+        success: false,
+        errorType: 'interrupted',
+      },
+    ]);
+  });
+
   it('rolls tool calls up under the real session id', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({

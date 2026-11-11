@@ -9,8 +9,9 @@
  *   - workflow-spawned:  `<projectsDir>/<slug>/<sessionId>/subagents/workflows/wf_<id>/agent-*.jsonl`
  *
  * Each `agent-<id>.jsonl` file is parsed line-by-line; the assistant turns
- * (`type:'assistant'` with `message.model` + `message.usage`) supply the start/
- * end timestamps, the model, the turn count, and the summed token usage. Per-
+ * (`type:'assistant'` with `message.model` + `message.usage`) supply the model,
+ * the turn count, and the summed token usage; the span start/end are the
+ * earliest and latest timestamp of any line in the file. Per-
  * agent USD is computed via the shared `calculateCost` pricing table; when the
  * model is unknown (pricing resolves to an all-zero breakdown) `usd` is `null`
  * — mirroring how `CostTracker` treats unknown models.
@@ -84,9 +85,9 @@ export interface AgentSpan {
   readonly label: string;
   /** Model of the agent's turns (last non-empty observed). */
   readonly model: string;
-  /** Epoch ms of the first assistant turn. */
+  /** Epoch ms of the first timestamped transcript line, of any role. */
   readonly startMs: number;
-  /** Epoch ms of the last assistant turn. */
+  /** Epoch ms of the last timestamped transcript line, of any role. */
   readonly endMs: number;
   /** `endMs - startMs`. */
   readonly durationMs: number;
@@ -103,9 +104,36 @@ export interface SubagentTimelineWindow {
   readonly endMs: number;
 }
 
+export interface SubagentPeak {
+  readonly count: number;
+  readonly atMs: number | null;
+}
+
 export interface SubagentTimeline {
   readonly window: SubagentTimelineWindow;
   readonly agents: readonly AgentSpan[];
+  readonly peak: SubagentPeak;
+}
+
+/**
+ * Maximum number of agents running at the same instant. Opens sort before
+ * closes at equal timestamps, so a zero-length agent and spans that merely
+ * touch both count as overlapping.
+ */
+export function computeSubagentPeak(agents: readonly AgentSpan[]): SubagentPeak {
+  const events: { readonly ts: number; readonly delta: 1 | -1 }[] = [];
+  for (const a of agents) {
+    events.push({ ts: a.startMs, delta: 1 }, { ts: a.endMs, delta: -1 });
+  }
+  events.sort((a, b) => a.ts - b.ts || b.delta - a.delta);
+
+  let active = 0;
+  let peak: SubagentPeak = { count: 0, atMs: null };
+  for (const e of events) {
+    active += e.delta;
+    if (active > peak.count) peak = { count: active, atMs: e.ts };
+  }
+  return peak;
 }
 
 /**
@@ -286,7 +314,11 @@ export class SubagentTimelineStore {
    * session has no subagent transcripts (or anything goes wrong).
    */
   getSubagentsForSession(sessionId: string): SubagentTimeline {
-    const empty: SubagentTimeline = { window: { startMs: 0, endMs: 0 }, agents: [] };
+    const empty: SubagentTimeline = {
+      window: { startMs: 0, endMs: 0 },
+      agents: [],
+      peak: { count: 0, atMs: null },
+    };
     if (!SESSION_ID_RE.test(sessionId)) return empty;
 
     let files: DiscoveredAgentFile[];
@@ -360,6 +392,7 @@ export class SubagentTimelineStore {
         endMs: Number.isFinite(windowEnd) ? windowEnd : 0,
       },
       agents,
+      peak: computeSubagentPeak(agents),
     };
   }
 
@@ -700,8 +733,8 @@ export class SubagentTimelineStore {
    * with usage are found.
    */
   private parseTranscript(raw: string): ParsedAgentFile | null {
-    let startMs = Infinity;
-    let endMs = -Infinity;
+    let spanStartMs = Infinity;
+    let spanEndMs = -Infinity;
     let turnCount = 0;
     let inputTokens = 0;
     let outputTokens = 0;
@@ -736,6 +769,9 @@ export class SubagentTimelineStore {
       }
 
       const turn = parseAssistantTurn(line);
+      const lineMs = turn === null ? lineTimestampMs(line) : turn.timestampMs;
+      if (lineMs < spanStartMs) spanStartMs = lineMs;
+      if (lineMs > spanEndMs) spanEndMs = lineMs;
       if (turn === null) {
         if (nl === len) break;
         continue;
@@ -747,8 +783,6 @@ export class SubagentTimelineStore {
       seenMessageIds.add(turn.messageId);
 
       turnCount += 1;
-      if (turn.timestampMs < startMs) startMs = turn.timestampMs;
-      if (turn.timestampMs > endMs) endMs = turn.timestampMs;
       inputTokens += turn.inputTokens;
       outputTokens += turn.outputTokens;
       cacheReadTokens += turn.cacheReadTokens;
@@ -761,6 +795,9 @@ export class SubagentTimelineStore {
           thinkingTokens: 0,
           cacheReadTokens: turn.cacheReadTokens,
           cacheCreationTokens: turn.cacheCreationTokens,
+          ...(turn.cacheCreation1hTokens > 0 && {
+            cacheCreation1hTokens: turn.cacheCreation1hTokens,
+          }),
           totalTokens:
             turn.inputTokens + turn.outputTokens + turn.cacheReadTokens + turn.cacheCreationTokens,
         },
@@ -771,13 +808,20 @@ export class SubagentTimelineStore {
       if (nl === len) break;
     }
 
-    if (turnCount === 0 || !Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    if (turnCount === 0 || !Number.isFinite(spanStartMs) || !Number.isFinite(spanEndMs)) {
       return null;
     }
 
     const totalTokens = inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens;
 
-    return { startMs, endMs, turnCount, totalTokens, usd, model: lastModel };
+    return {
+      startMs: spanStartMs,
+      endMs: spanEndMs,
+      turnCount,
+      totalTokens,
+      usd,
+      model: lastModel,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -907,6 +951,7 @@ interface AssistantTurn {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  readonly cacheCreation1hTokens: number;
 }
 
 /**
@@ -941,7 +986,23 @@ function parseAssistantTurn(line: string): AssistantTurn | null {
     outputTokens: fields.outputTokens,
     cacheReadTokens: fields.cacheReadTokens,
     cacheCreationTokens: fields.cacheCreationTokens,
+    cacheCreation1hTokens: fields.cacheCreation1hTokens,
   };
+}
+
+const TIMESTAMP_KEY = '"timestamp":"';
+
+/**
+ * Timestamp of any transcript line without a full JSON parse: the first
+ * top-level-looking `"timestamp":"..."` value. NaN when absent or unparseable,
+ * which the span comparisons ignore.
+ */
+function lineTimestampMs(line: string): number {
+  const at = line.indexOf(TIMESTAMP_KEY);
+  if (at === -1) return NaN;
+  const from = at + TIMESTAMP_KEY.length;
+  const to = line.indexOf('"', from);
+  return to === -1 ? NaN : Date.parse(line.slice(from, to));
 }
 
 /**
