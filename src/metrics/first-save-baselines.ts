@@ -62,12 +62,13 @@ export interface RehydrationSeeds {
 /**
  * Seeding adds, so each tracker family of a --stdio engine must seed a
  * session from its file as it stood before this process saved anything that
- * family already counted. The tool-call trackers count every record the
- * process drains, provisional rollups of other sessions included, so their
- * snapshot is taken at the first save of any kind. The cost trackers only
- * price another session's tokens, so theirs is taken at the first save of
- * the process's own summary; until then they seed from the current file,
- * which holds the rollup cost they never counted.
+ * family already counted. The tool-call trackers count every record of the
+ * session the process drained, even one drained before it adopted the id, and
+ * a provisional rollup saves those records too, so their snapshot is taken at
+ * the first save of any kind. The cost trackers only price another session's
+ * tokens, so theirs is taken at the first save of the process's own summary;
+ * until then they seed from the current file, which holds the rollup cost they
+ * never counted.
  *
  * Entries stay until their id is rehydrated. A provisional engine keeps one
  * small tool-call record per session it rolls up, next to the full rollup

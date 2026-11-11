@@ -430,8 +430,8 @@ export interface ApiHandlerDeps {
       totalCacheCreationTokens?: number;
       totalCacheSavingsUsd?: number;
       totalInputTokens?: number;
-      unpricedByModel?: Record<string, UnpricedModelUsage>;
-      estimatedByModel?: Record<string, EstimatedModelUsage>;
+      unpricedByDay?: Record<string, Record<string, UnpricedModelUsage>>;
+      estimatedByDay?: Record<string, Record<string, EstimatedModelUsage>>;
     };
     // Optional: per-day cost attribution. Fixes the cross-midnight bug where
     // a session that started yesterday counted its full cost as today's. When
@@ -1943,6 +1943,8 @@ export function createApiHandler(
         subagentCostByDayUsd?: Record<string, number>;
         unpricedByModel?: Record<string, UnpricedModelUsage>;
         estimatedByModel?: Record<string, EstimatedModelUsage>;
+        unpricedByDay?: Record<string, Record<string, UnpricedModelUsage>>;
+        estimatedByDay?: Record<string, Record<string, EstimatedModelUsage>>;
         toolCallCount?: number;
         tokensInput?: number;
         tokensCacheRead?: number;
@@ -1985,8 +1987,17 @@ export function createApiHandler(
         liveCheckpointInputTokens = (s.tokensInput ?? 0) * liveRatio;
         continue;
       }
-      sumCallUsageInto(unpricedByModel, s.unpricedByModel);
-      sumCallUsageInto(estimatedByModel, s.estimatedByModel);
+      // Today's calls only, so a session that started yesterday doesn't put its
+      // earlier calls in a notice beside a today-only dollar figure. A summary
+      // written before day buckets existed has only the whole-session counts.
+      sumCallUsageInto(
+        unpricedByModel,
+        s.unpricedByDay === undefined ? s.unpricedByModel : s.unpricedByDay[todayKey],
+      );
+      sumCallUsageInto(
+        estimatedByModel,
+        s.estimatedByDay === undefined ? s.estimatedByModel : s.estimatedByDay[todayKey],
+      );
       totalCostUsd += todayCost.costUsd;
       // Subagent-only portion of the same session. This is what makes the KPI
       // cross-session: each `--stdio` process persists its own subagent cost, so
@@ -2061,8 +2072,8 @@ export function createApiHandler(
 
     if (!liveIsUnscopedAggregator) {
       const liveMetrics = deps.costTracker?.getMetrics();
-      sumCallUsageInto(unpricedByModel, liveMetrics?.unpricedByModel);
-      sumCallUsageInto(estimatedByModel, liveMetrics?.estimatedByModel);
+      sumCallUsageInto(unpricedByModel, liveMetrics?.unpricedByDay?.[todayKey]);
+      sumCallUsageInto(estimatedByModel, liveMetrics?.estimatedByDay?.[todayKey]);
       // Reuses `todayKey` from the enclosing scope (declared above the
       // persisted-session loop) so the persisted-loop and this live top-up can
       // never split onto two independently-derived day keys.
