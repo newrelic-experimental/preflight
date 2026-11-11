@@ -1656,9 +1656,12 @@ async function main(): Promise<void> {
       lastDayKey: localDateKey(),
       lastRefreshMs: 0,
     };
+    // Excludes the session this process owns now, not the one it started with:
+    // a --stdio engine that adopts or corrects its id seeds that session's saved
+    // cost into CostTracker, so its file must leave the baseline at the same time.
     const refreshPriorCostBaseline = (): void => {
       const now = Date.now();
-      const baseline = computeHistoricalCosts(sessionStoreForCostBaseline, currentSessionId, now);
+      const baseline = computeHistoricalCosts(sessionStoreForCostBaseline, sessionTraceId, now);
       priorCostCache.priorDailyCostUsd = baseline.priorDailyCostUsd;
       priorCostCache.priorWeeklyCostUsd = baseline.priorWeeklyCostUsd;
       priorCostCache.lastDayKey = localDateKey(now);
@@ -3058,6 +3061,7 @@ async function main(): Promise<void> {
       // confirmation branch (ppidId === staleId) calls
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
       if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
+      refreshPriorCostBaseline();
 
       try {
         saveObservedSessions('in progress', (id) =>

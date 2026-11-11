@@ -2343,6 +2343,47 @@ describe('stdio integration', () => {
       }
     }, 60000);
 
+    it("counts an adopted session's saved cost once in daily and weekly spend", async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(storagePath, projectCwd, 'adopted-budget-id', 400);
+        // Counted once the prior spend is 60% of each budget; counted twice it is 120%.
+        const budgetUsd = String(prior.estimatedCostUsd / 0.6);
+        const engine = await startEngine(storagePath, projectCwd, {
+          NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
+          NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
+        });
+        writeFileSync(ppidBreadcrumb(storagePath), 'adopted-budget-id');
+        expect(await engine.logged(ADOPTED)).toBe(true);
+        appendToHookBuffer(
+          resolve(storagePath, 'buffer-adopted-budget-id.jsonl'),
+          JSON.stringify({
+            mode: 'token',
+            tool: 'copilot-sdk-usage',
+            timestamp: Date.now(),
+            sessionId: 'adopted-budget-id',
+            messageId: 'msg_after_adopt',
+            model: 'claude-sonnet-5',
+            inputTokens: 10,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+          }) + '\n',
+        );
+
+        const crossed = (period: string, pct: number): RegExp =>
+          new RegExp(`"period":"${period}","pct":${pct}[^\\n]*Budget threshold reached`, 'g');
+        expect(await waitUntil(() => engine.count(crossed('weekly', 50)) > 0)).toBe(true);
+        expect(await waitUntil(() => engine.count(crossed('daily', 50)) > 0)).toBe(true);
+        await engine.settle();
+        expect(engine.count(crossed('daily', 80))).toBe(0);
+        expect(engine.count(crossed('weekly', 80))).toBe(0);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
     it('keeps the tool calls a provisional engine saved when it adopts their session', async () => {
       const { storagePath, projectCwd, cleanup } = makeDirs();
       try {
