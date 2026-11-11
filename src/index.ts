@@ -1000,7 +1000,6 @@ async function main(): Promise<void> {
       activeParentTranscriptWatcher?.stop();
       activeCopilotUsageWatcher?.stop();
       activeCopilotAppUsageWatcher?.stop();
-      liveSessionRegistry?.stopSampling();
       // Use allSettled so a failure in one stop() doesn't prevent the others.
       const stopResults = await Promise.allSettled([
         dashboardServer ? dashboardServer.stop() : Promise.resolve(),
@@ -1271,7 +1270,6 @@ async function main(): Promise<void> {
     // compact SessionStart has nothing to report and never calls recordResume().
     const sessionResumeTracker = new SessionResumeTracker();
     liveSessionRegistry = new LiveSessionRegistry();
-    liveSessionRegistry.startSampling();
     // Unconditional in every mode — decoupled from whether the `--local`
     // dashboard wins its port bind (see startMaintenanceGc()'s doc comment).
     maintenanceGcInterval = startMaintenanceGc({ localStore, liveSessionRegistry });
@@ -1881,7 +1879,6 @@ async function main(): Promise<void> {
           liveSessionRegistry,
           gitEfficiencyTracker,
           gitWorkspaceReporter,
-          concurrencyTracker: liveSessionRegistry,
           contextTracker,
           contextCompositionTracker,
           contextEfficiencyTracker: contextWindowTracker,
@@ -3022,7 +3019,11 @@ async function main(): Promise<void> {
         // anything these four trackers accumulated since startWatchers()
         // scoped them to that wrong id (chiefly ParentTranscriptWatcher
         // backfill from an unrelated old transcript) belongs to nobody.
-        firstSaveBaselines.forget(staleId);
+        // SessionTracker itself needs no reset here: real tool-call events
+        // only ever reach it via the per-session LocalStore/HookEventProcessor
+        // path, which is keyed by whatever id the hook collector script
+        // wrote — never the wrong guess — so toolCallCount/timeline stay
+        // clean through the whole unconfirmed window regardless.
         costTracker.reset(realId);
         modelUsageTracker.reset(realId);
         contextCompositionTracker.reset(realId);
