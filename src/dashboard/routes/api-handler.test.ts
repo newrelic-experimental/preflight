@@ -4298,6 +4298,39 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.antiPatternCount).toBe(0);
   });
 
+  it('keeps the lifetime anti-pattern count of a session that started within the last day', async () => {
+    const todayStart = localStartOfDay();
+    const todayKey = localDateKey(todayStart);
+    const recent = {
+      sessionId: 'resumed-recent',
+      startTime: todayStart - 12 * 60 * 60 * 1000,
+      endTime: todayStart + 10_000,
+      estimatedCostUsd: 2,
+      costByDayUsd: { [todayKey]: 2 },
+      antiPatterns: [{}, {}],
+      timeline: [
+        { timestamp: todayStart - 12 * 60 * 60 * 1000 },
+        { timestamp: todayStart + 1_000 },
+      ],
+    };
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadSessionsOverlappingToday: () => [],
+        loadSessionsWithActivityToday: () => [recent],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { antiPatternCount: number };
+    expect(parsed.antiPatternCount).toBe(2);
+  });
+
   it('returns forecastEndOfDayUsd null when there is no activity today from any source', async () => {
     const handler = createApiHandler({
       localStore: { peekAllBuffers: () => [] },
