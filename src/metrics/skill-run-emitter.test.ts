@@ -76,6 +76,19 @@ describe('createSkillRunEmitter', () => {
     expect(ingestSkillRun.mock.calls).toEqual([[STAMP, { timestamp: 1234, sessionId: 's' }]]);
   });
 
+  it('forwards the platform of the run to the sink', () => {
+    const { sink, ingestSkillRun } = makeSink();
+    const emit = createSkillRunEmitter({
+      stdio: false,
+      getOwnSessionId: () => 'x',
+      getSink: () => sink,
+    });
+    emit(STAMP, { sessionId: 's', timestamp: 1, platform: 'opencode' });
+    expect(ingestSkillRun.mock.calls).toEqual([
+      [STAMP, { timestamp: 1, sessionId: 's', platform: 'opencode' }],
+    ]);
+  });
+
   it('does nothing before the ingest manager exists', () => {
     const emit = createSkillRunEmitter({
       stdio: false,

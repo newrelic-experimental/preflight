@@ -4,7 +4,10 @@ import type { SkillRunOpenContext } from './skill-activation-tracker.js';
 import { isTokenEventForThisProcess } from './cost-estimate-gate.js';
 
 export interface SkillRunSink {
-  ingestSkillRun(stamp: SkillStamp, context: { timestamp: number; sessionId: string | null }): void;
+  ingestSkillRun(
+    stamp: SkillStamp,
+    context: { timestamp: number; sessionId: string | null; platform?: string },
+  ): void;
 }
 
 export interface SkillRunEmitterOptions {
@@ -34,6 +37,7 @@ export function createSkillRunEmitter(
     options.getSink()?.ingestSkillRun(stamp, {
       timestamp: ctx.timestamp ?? Date.now(),
       sessionId: ctx.sessionId,
+      platform: ctx.platform,
     });
   };
 }

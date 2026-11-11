@@ -16,6 +16,7 @@ export interface SkillActivationMetrics {
 export interface SkillRunOpenContext {
   readonly sessionId: string | null;
   readonly timestamp: number | undefined;
+  readonly platform?: string;
 }
 
 export interface SkillActivationTrackerOptions {
@@ -88,6 +89,7 @@ export class SkillActivationTracker implements Resettable {
       this.options.onRunOpened?.(stamp, {
         sessionId: record.sessionId ?? null,
         timestamp: record.timestamp,
+        ...(typeof record.platform === 'string' && { platform: record.platform }),
       });
       return stamp;
     }

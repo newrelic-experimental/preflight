@@ -522,6 +522,8 @@ Source: `src/transport/nr-ingest.ts` — `turnCostToNrEvents()` and `ingestTurnC
 
 #### `AiSkillRun`
 
+**What it is:** One record each time a skill run starts, whether the assistant loads a skill itself or you start one with a `/<skill>` prompt. It is the only record of a run that made no tool calls. Use it to count skill runs, adoption and users, including text-only runs that leave no `AiToolCall` rows.
+
 Emitted once, when a skill run opens, for every run. A run opens on a named `Skill` call or on a `/<skill>` prompt. A `slash` run is any prompt Claude Code receives that starts with `/`, so it also covers built-in commands that send a prompt to the model, such as `/init`. Built-ins Claude Code handles locally (`/clear`, `/compact`, `/context`, `/cost`) and unknown commands never reach Preflight. A run whose replies made no tool calls has no `AiToolCall` or `AiTurnCost` rows, so this event is what counts it. Runs are counted across both event types with `FROM AiToolCall, AiSkillRun SELECT uniqueCount(skill_run_id)`. The event carries no tool, duration, or cost data. Those stay on `AiToolCall` and `AiTurnCost`, which carry the same `skill_run_id`.
 
 | Field                 | Type   | Description                                                                                                        |
@@ -535,7 +537,7 @@ Emitted once, when a skill run opens, for every run. A run opens on a named `Ski
 | `skill_parent_run_id` | string | The run that was open when this one started; absent when none was                                                  |
 | `developer`           | string | Developer identifier                                                                                               |
 | `app_name`            | string | Application name                                                                                                   |
-| `platform`            | string | Originating platform (defaults to `"claude-code"`)                                                                 |
+| `platform`            | string | Originating platform of the `Skill` call; `"claude-code"` for a `/<skill>` prompt or a call with none              |
 | `session_id`          | string | Session the run belongs to; falls back to the engine's session when the run has none                               |
 | `team_id`             | string | User-defined team label (if configured)                                                                            |
 | `project_id`          | string | Project identifier (if configured)                                                                                 |

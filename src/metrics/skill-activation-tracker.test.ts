@@ -423,6 +423,15 @@ describe('SkillActivationTracker onRunOpened', () => {
     expect(opened[0]!.ctx).toEqual({ sessionId: 's1', timestamp: 1500 });
   });
 
+  it('passes the platform of the record that opened a Skill run', () => {
+    const { tracker, opened } = makeTrackerWithOpenLog();
+    tracker.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', platform: 'opencode' }),
+    );
+
+    expect(opened[0]!.ctx.platform).toBe('opencode');
+  });
+
   it('fires once for a slash run and passes the prompt timestamp', () => {
     const { tracker, opened } = makeTrackerWithOpenLog();
     tracker.recordPrompt('s1', 'simplify', 2000);
