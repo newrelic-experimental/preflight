@@ -32,6 +32,7 @@ import {
   startMaintenanceGc,
   dispatchSubcommand,
 } from './index.js';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { DashboardServer } from './dashboard/dashboard-server.js';
 import { sanitizeCwdForFilename } from './hooks/session-resolver.js';
 import { SessionStore } from './storage/session-store.js';
@@ -870,6 +871,25 @@ describe('startDashboardRepoll()', () => {
 });
 
 describe('stdio integration', () => {
+  /**
+   * Connects and waits for the engine's configured tool set. The engine answers
+   * the handshake before its trackers exist, and until they do its tools return
+   * errors or refusals, so a call made that early reads no real value.
+   */
+  async function connectToConfiguredEngine(
+    client: Client,
+    transport: Parameters<Client['connect']>[0],
+  ): Promise<void> {
+    await client.connect(transport);
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const { tools } = await client.listTools();
+      if (tools.some((tool) => tool.name === 'nr_observe_get_config')) return;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    throw new Error('engine never registered its configured tools');
+  }
+
   it('responds to MCP initialize handshake and lists tools', async () => {
     const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
     const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
@@ -907,7 +927,7 @@ describe('stdio integration', () => {
 
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     try {
-      await client.connect(transport);
+      await connectToConfiguredEngine(client, transport);
 
       const serverInfo = client.getServerVersion();
       expect(serverInfo?.name).toBe('preflight');
@@ -974,10 +994,10 @@ describe('stdio integration', () => {
 
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     try {
-      await client.connect(transport);
+      await connectToConfiguredEngine(client, transport);
 
-      // If the cwd fallback resolved synchronously, the full tool set is
-      // registered immediately — no pending-tools window to poll through.
+      // The cwd fallback resolved synchronously, so the configured tool set is
+      // the full one, with no pending-tools window to poll through.
       const tools = await client.listTools();
       const toolNames = tools.tools.map((t) => t.name);
       expect(toolNames).toContain('nr_observe_get_session_stats');
@@ -1028,10 +1048,10 @@ describe('stdio integration', () => {
 
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     try {
-      await client.connect(transport);
+      await connectToConfiguredEngine(client, transport);
 
-      // Full tool set immediately — confirms this is the synchronous cwd
-      // entry point (isProvisional === false), not the pending/async one.
+      // The full tool set confirms this is the synchronous cwd entry point
+      // (isProvisional === false), not the pending/async one.
       const tools = await client.listTools();
       expect(tools.tools.map((t) => t.name)).toContain('nr_observe_get_session_stats');
 
@@ -1304,7 +1324,7 @@ describe('stdio integration', () => {
 
       const client = new Client({ name: 'test-client', version: '1.0.0' });
       try {
-        await client.connect(transport);
+        await connectToConfiguredEngine(client, transport);
         const names = (await client.listTools()).tools.map((t) => t.name);
         expect(names).not.toContain('nr_observe_get_session_stats');
         await run(
@@ -1481,8 +1501,7 @@ describe('stdio integration', () => {
 
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     try {
-      await client.connect(transport);
-      await client.listTools();
+      await connectToConfiguredEngine(client, transport);
 
       // Let several 200ms persist ticks elapse while unconfirmed.
       await new Promise((r) => setTimeout(r, 900));
@@ -1531,8 +1550,7 @@ describe('stdio integration', () => {
 
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     try {
-      await client.connect(transport);
-      await client.listTools();
+      await connectToConfiguredEngine(client, transport);
       // An idle session is not persisted, so give the checkpoint something to write.
       await client.callTool({
         name: 'nr_observe_report_tokens',
@@ -1598,8 +1616,7 @@ describe('stdio integration', () => {
 
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     try {
-      await client.connect(transport);
-      await client.listTools();
+      await connectToConfiguredEngine(client, transport);
       // An idle session is not persisted, so give the checkpoint something to write.
       await client.callTool({
         name: 'nr_observe_report_tokens',
@@ -1740,8 +1757,7 @@ describe('stdio integration', () => {
         stderr += chunk.toString('utf8');
       });
       const client = new Client({ name: 'test-client', version: '1.0.0' });
-      await client.connect(transport);
-      await client.listTools();
+      await connectToConfiguredEngine(client, transport);
       const engine: Engine = {
         logged: (text: string) => waitUntil(() => stderr.includes(text)),
         count: (pattern: RegExp) => stderr.match(pattern)?.length ?? 0,
@@ -2117,8 +2133,7 @@ describe('stdio integration', () => {
       rmSync(projectCwd, { recursive: true, force: true });
     };
     try {
-      await client.connect(transport);
-      await client.listTools();
+      await connectToConfiguredEngine(client, transport);
       // An idle session is not persisted, so give the checkpoint something to write.
       await client.callTool({
         name: 'nr_observe_report_tokens',
@@ -2422,8 +2437,7 @@ describe('stdio integration', () => {
 
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     try {
-      await client.connect(transport);
-      await client.listTools();
+      await connectToConfiguredEngine(client, transport);
 
       // Simulate the wrong-identity backfill: while still on the stale cwd
       // id, real cost gets recorded through the same shared CostTracker the
@@ -2512,8 +2526,7 @@ describe('stdio integration', () => {
 
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     try {
-      await client.connect(transport);
-      await client.listTools();
+      await connectToConfiguredEngine(client, transport);
 
       const ppidBreadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
       mkdirSync(ppidBreadcrumbDir, { recursive: true });
@@ -2600,8 +2613,7 @@ describe('stdio integration', () => {
 
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     try {
-      await client.connect(transport);
-      await client.listTools();
+      await connectToConfiguredEngine(client, transport);
       // An idle session is not persisted, so give the checkpoint something to write.
       await client.callTool({
         name: 'nr_observe_report_tokens',
