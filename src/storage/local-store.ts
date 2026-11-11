@@ -63,6 +63,18 @@ const PARENT_TRANSCRIPT_CURSOR_RE = /^\.parent-transcript-pos-(.+)$/;
  */
 const ORPHAN_BUFFER_MTIME_MS = 5 * 60 * 1000;
 
+const COUNTED_IDS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function readCountedToolUseIds(path: string): string[] {
+  if (!existsSync(path)) return [];
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * The on-disk shape of `local-dashboard.pid` and `local-instances/<pid>.json`
  * — both self-written by this same class. Every field stays `unknown`; every
@@ -135,6 +147,8 @@ export class LocalStore {
   private readonly storagePath: string;
   private readonly bufferPath: string;
   private readonly sessionId: string | null;
+  private readonly countedDir: string;
+  private readonly ownCountedIds = new Map<string, Set<string>>();
   private readonly holds = new Map<string, DrainHold>();
   private giveUpOrder = false;
 
@@ -152,6 +166,7 @@ export class LocalStore {
    */
   constructor(storagePath: string, bufferPathOrSessionId?: string, sessionId?: string) {
     this.storagePath = storagePath;
+    this.countedDir = resolve(storagePath, 'counted');
     let resolvedBufferPath: string | null;
     let resolvedSessionId: string | null = null;
 
@@ -272,6 +287,68 @@ export class LocalStore {
     }
     for (const path of this.holds.keys()) if (!drains.has(basename(path))) this.holds.delete(path);
     return all;
+  }
+
+  /**
+   * Records toolUseIds this process counted without a post, in
+   * `counted/<sessionId>.<pid>.json`. Each process writes only its own file,
+   * so concurrent writers never lose each other's ids; readers take the union.
+   */
+  rememberCountedToolUseIds(sessionId: string, ids: readonly string[], cap: number): boolean {
+    if (!SESSION_ID_RE.test(sessionId) || ids.length === 0) return true;
+    const path = resolve(this.countedDir, `${sessionId}.${process.pid}.json`);
+    const window = this.ownCountedIds.get(sessionId) ?? new Set(readCountedToolUseIds(path));
+    for (const id of ids) {
+      window.delete(id);
+      window.add(id);
+    }
+    for (const id of window) {
+      if (window.size <= cap) break;
+      window.delete(id);
+    }
+    this.ownCountedIds.set(sessionId, window);
+    const tmpPath = `${path}.tmp`;
+    try {
+      mkdirSync(this.countedDir, { recursive: true, mode: 0o700 });
+      writeFileSync(tmpPath, JSON.stringify([...window]), { mode: 0o600 });
+      renameSync(tmpPath, path);
+      return true;
+    } catch (err) {
+      logger.warn('Failed to save counted toolUseIds', { sessionId, error: String(err) });
+      return false;
+    }
+  }
+
+  hasCountedToolUseId(sessionId: string, toolUseId: string): boolean {
+    return this.countedToolUseIds(sessionId).has(toolUseId);
+  }
+
+  countedToolUseIds(sessionId: string): Set<string> {
+    if (!SESSION_ID_RE.test(sessionId)) return new Set();
+    return new Set(
+      this.countedFileNames()
+        .filter((name) => name.startsWith(`${sessionId}.`) && name.endsWith('.json'))
+        .flatMap((name) => readCountedToolUseIds(resolve(this.countedDir, name))),
+    );
+  }
+
+  gcCountedToolUseIds(now: number = Date.now()): void {
+    for (const name of this.countedFileNames()) {
+      const path = resolve(this.countedDir, name);
+      try {
+        if (now - statSync(path).mtimeMs >= COUNTED_IDS_MAX_AGE_MS) unlinkSync(path);
+      } catch (err) {
+        logger.debug('Failed to delete counted toolUseIds file', { name, error: String(err) });
+      }
+    }
+  }
+
+  private countedFileNames(): string[] {
+    try {
+      return readdirSync(this.countedDir);
+    } catch {
+      return [];
+    }
   }
 
   /**

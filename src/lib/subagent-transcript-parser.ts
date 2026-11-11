@@ -21,6 +21,8 @@ export interface ParsedAssistantTurnFields {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  /** Subset of `cacheCreationTokens` written to the 1-hour cache; the rest are 5-minute writes. */
+  readonly cacheCreation1hTokens: number;
   readonly reasoningTokens: number;
   readonly stopReason: string | null;
   readonly usageKeysFingerprint: string;
@@ -71,6 +73,11 @@ export function parseAssistantTurnLine(line: string): ParseAssistantTurnLineResu
   const outputTokens = num(u.output_tokens);
   const cacheReadTokens = num(u.cache_read_input_tokens);
   const cacheCreationTokens = num(u.cache_creation_input_tokens);
+  const cacheCreation = u.cache_creation;
+  const cacheCreation1hTokens =
+    cacheCreation && typeof cacheCreation === 'object'
+      ? Math.min(num(cacheCreation.ephemeral_1h_input_tokens), cacheCreationTokens)
+      : 0;
   let reasoningTokens = 0;
   const otd = u.output_tokens_details;
   if (otd && typeof otd === 'object') {
@@ -91,6 +98,7 @@ export function parseAssistantTurnLine(line: string): ParseAssistantTurnLineResu
       outputTokens,
       cacheReadTokens,
       cacheCreationTokens,
+      cacheCreation1hTokens,
       reasoningTokens,
       stopReason,
       usageKeysFingerprint,
