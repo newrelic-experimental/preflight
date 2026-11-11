@@ -563,6 +563,168 @@ describe('SessionTracker', () => {
     });
   });
 
+  describe('records of other sessions', () => {
+    it('shows every call it drained while pending, then counts only the session it adopts', () => {
+      const tracker = new SessionTracker('pending-1700000000000');
+      const own = makeRecord({ sessionId: 'sess-own', toolName: 'Read' });
+      tracker.recordToolCall(own);
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-other', toolName: 'Bash' }));
+      expect(tracker.getMetrics().sessionId).toBe('pending-1700000000000');
+      expect(tracker.getMetrics().toolCallCountByTool).toEqual({ Read: 1, Bash: 1 });
+
+      tracker.adoptSessionId('sess-own', [own]);
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(1);
+      expect(metrics.toolCallCountByTool).toEqual({ Read: 1 });
+      expect(metrics.bashCommandsRun).toBe(0);
+    });
+
+    it('counts a record with no session id while pending', () => {
+      const tracker = new SessionTracker('pending-1700000000000');
+      tracker.recordToolCall(makeRecord({ sessionId: undefined }));
+      tracker.adoptSessionId('sess-own');
+      expect(tracker.getMetrics().toolCallCount).toBe(1);
+    });
+
+    it('shows the amended outcome of a call it drained while pending', () => {
+      const tracker = new SessionTracker('pending-1700000000000', 10);
+      const call = makeRecord({ id: 'c1', sessionId: 'sess-other', durationMs: null });
+      tracker.recordToolCall({ ...call, success: false, errorType: 'timeout' });
+      tracker.amendToolCall({ ...call, durationMs: 50, success: true });
+      expect(tracker.getMetrics().toolErrorCount).toBe(0);
+    });
+
+    it("drops the guessed session's calls when its id is corrected", () => {
+      const tracker = new SessionTracker('sess-guess', 10);
+      const guessed = makeRecord({ id: 'g1', sessionId: 'sess-guess', durationMs: null });
+      tracker.recordToolCall({ ...guessed, success: false, errorType: 'timeout' });
+
+      const real = makeRecord({ sessionId: 'sess-real', toolName: 'Bash' });
+      tracker.adoptSessionId('sess-real', [real], true);
+      tracker.amendToolCall({ ...guessed, durationMs: 90_000 });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.sessionId).toBe('sess-real');
+      expect(metrics.toolCallCountByTool).toEqual({ Bash: 1 });
+      expect(metrics.toolErrorCount).toBe(0);
+      expect(metrics.toolDurationMsByTool.Read).toBeUndefined();
+    });
+
+    it('replays every record of the session it adopts', () => {
+      const tracker = new SessionTracker('pending-1700000000000');
+      const first = makeRecord({ sessionId: 'sess-own', toolName: 'Read' });
+      const second = makeRecord({ sessionId: 'sess-own', toolName: 'Bash' });
+
+      tracker.adoptSessionId('sess-own', [first, second]);
+
+      expect(tracker.getMetrics().toolCallCountByTool).toEqual({ Read: 1, Bash: 1 });
+    });
+
+    it('counts a record of another session under a real id', () => {
+      const tracker = new SessionTracker('sess-own');
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-other' }));
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-own' }));
+      expect(tracker.getMetrics().toolCallCount).toBe(2);
+    });
+
+    it('counts every session under a --local id', () => {
+      const tracker = new SessionTracker('local-1700000000000');
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-a' }));
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-b' }));
+      expect(tracker.getMetrics().toolCallCount).toBe(2);
+    });
+  });
+
+  describe('amendToolCall()', () => {
+    it('applies the outcome of a late post to the timeout record it replaces', () => {
+      const tracker = new SessionTracker('sess-own', 10);
+      const timedOut = makeRecord({ sessionId: 'sess-own', toolName: 'Agent', timestamp: 1000 });
+      tracker.recordToolCall({
+        ...timedOut,
+        durationMs: null,
+        success: false,
+        errorType: 'timeout',
+      });
+      tracker.amendToolCall({ ...timedOut, durationMs: 180_000, success: true });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(1);
+      expect(metrics.toolSuccessRate).toBe(1);
+      expect(metrics.toolErrorCount).toBe(0);
+      expect(metrics.toolDurationMsByTool.Agent?.max).toBe(180_000);
+      expect(metrics.toolCallTimeline).toEqual([
+        { timestamp: 1000, toolName: 'Agent', durationMs: 180_000, success: true },
+      ]);
+    });
+    it('amends the timed-out record with its id, and counts its exit code and error', () => {
+      const tracker = new SessionTracker('sess-own', 10);
+      const call = makeRecord({
+        toolName: 'Bash',
+        timestamp: 1000,
+        durationMs: null,
+        success: false,
+      });
+      tracker.recordToolCall({ ...call, id: 'first', errorType: 'timeout' });
+      tracker.recordToolCall({ ...call, id: 'second', errorType: 'timeout' });
+      tracker.amendToolCall({ ...call, id: 'second', durationMs: 5000, exitCode: 2 });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(2);
+      expect(metrics.toolErrorCount).toBe(2);
+      expect(metrics.toolErrorsByType).toEqual({ timeout: 1 });
+      expect(metrics.bashExitCodes).toEqual({ '2': 1 });
+      expect(metrics.toolCallTimeline.map((e) => e.durationMs)).toEqual([null, 5000]);
+    });
+
+    it('amends the timeline entry of its own record when a newer entry follows', () => {
+      const tracker = new SessionTracker('sess-own', 10);
+      const call = { ...makeRecord({ durationMs: null, success: false }), errorType: 'timeout' };
+      tracker.recordToolCall({ ...call, id: 'first' });
+      tracker.recordToolCall({ ...call, id: 'second' });
+      tracker.amendToolCall({ ...call, id: 'first', durationMs: 5000, success: true });
+
+      expect(tracker.getMetrics().toolCallTimeline.map((e) => e.durationMs)).toEqual([5000, null]);
+    });
+
+    it('amends a rejected call that the user approved after all', () => {
+      const tracker = new SessionTracker('sess-own', 10);
+      const call = { ...makeRecord({ durationMs: null, success: false }), errorType: 'rejected' };
+      tracker.recordToolCall(call);
+      tracker.amendToolCall({ ...call, durationMs: 700_000, success: true, errorType: undefined });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolSuccessRate).toBe(1);
+      expect(metrics.toolErrorsByType).toEqual({});
+    });
+
+    it('amends only the newest timeouts, up to its cap', () => {
+      const tracker = new SessionTracker('sess-own', 1);
+      const call = { ...makeRecord({ durationMs: null, success: false }), errorType: 'timeout' };
+      tracker.recordToolCall({ ...call, id: 'first' });
+      tracker.recordToolCall({ ...call, id: 'second' });
+      tracker.amendToolCall({ ...call, id: 'first', durationMs: 5000, success: true });
+      tracker.amendToolCall({ ...call, id: 'second', durationMs: 6000, success: true });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallTimeline.map((e) => e.durationMs)).toEqual([null, 6000]);
+      expect(metrics.toolErrorsByType).toEqual({ timeout: 1 });
+    });
+
+    it('leaves the last timeline entry alone when the amended call did not fit the timeline', () => {
+      const tracker = new SessionTracker('sess-own', 10);
+      for (let i = 0; i < 10_000; i++) tracker.recordToolCall(makeRecord({ timestamp: i }));
+      const call = { ...makeRecord({ durationMs: null, success: false }), errorType: 'timeout' };
+      tracker.recordToolCall(call);
+      const lastBefore = tracker.getMetrics().toolCallTimeline.at(-1);
+      tracker.amendToolCall({ ...call, durationMs: 5000, success: true });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallTimeline.at(-1)).toEqual(lastBefore);
+      expect(metrics.toolErrorCount).toBe(0);
+    });
+  });
+
   describe('reset()', () => {
     it('clears all counters back to initial state', () => {
       const tracker = new SessionTracker('old-session');

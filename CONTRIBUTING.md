@@ -60,6 +60,7 @@ preflight update
 | `npm run test:e2e:update`           | Rewrite the Playwright screenshot baselines for the OS you are on                            |
 | `npm run test:e2e:update:linux`     | Rewrite the `-linux` baselines in the Playwright image CI uses (needs Docker)                |
 | `npm run test:integration`          | Run `src/multi-instance.integration.test.ts`                                                 |
+| `npm run test:scenario`             | Drive `--local` and `--stdio` through restarts (needs a build, about 2 minutes, not in CI)   |
 | `npx tsc -p tsconfig.web.json`      | Typecheck `src/web`, tests included (`npm run build` checks source only)                     |
 | `npx tsc -p tsconfig.tools.json`    | Typecheck `scripts/`, `e2e/` and the root `*.config.ts` files, which no other config reaches |
 | `npm run lint`                      | ESLint over `src/`, `scripts/`, `e2e/` and the root `*.config.ts` files                      |
@@ -256,7 +257,7 @@ Tests live next to the code they test (`foo.test.ts` alongside `foo.ts`).
 
 Two files sit outside all three: `jest.config.ts` also ignores `src/shared/index.test.ts`, which
 asserts an invariant that does not hold for vendored source, and
-`src/multi-instance.integration.test.ts`, which spawns real processes and runs on demand via
+`src/multi-instance.integration.test.ts`, which spawns real processes. CI runs it in the `processes` job, and you can run it via
 `npm run test:integration`. Both carry a comment saying why.
 
 `npm run test:e2e` installs its browser if needed, rebuilds, then starts two dashboards itself —
@@ -329,6 +330,7 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 - [ ] `npm run format:check` passes (the `pre-commit` hook runs this too)
 - [ ] `npm run lint:shell` passes (if you touched a script under `.claude/skills/`; the `pre-commit` hook runs this too)
 - [ ] `npm run check:test-ownership` passes (if you added, moved or renamed a test file, or touched `jest.config.ts`, `vitest.config.ts` or a `test:*` script)
+- [ ] `npm run check:tz-tests` passes (if you added or changed a test that uses local-time APIs such as `getHours`, `new Date(y, m, d)` or `toLocale*`; see [Time-zone-dependent tests](./docs/TEST_PATTERNS.md#time-zone-dependent-tests))
 - [ ] `package-lock.json` is unchanged by `npm install --package-lock-only` unless you changed dependencies
 - [ ] You added a changeset if the PR changes anything that ships, and left the version, `CHANGELOG.md`, and other PRs' pending changesets alone (see [Changesets](#changesets); CI's `changeset` job checks all three)
 - [ ] You've reviewed your own diff

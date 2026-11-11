@@ -175,7 +175,7 @@ An outbound request made by default, unlike the opt-in webhook and forwarding cl
 - The host and path are fixed (`raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`). The request uses `redirect: 'error'`, a 30 s timeout that also covers the body read, and an 8 MB cap enforced while streaming.
 - The response is mapped by `parseLiteLlmPrices` and the cache is re-validated by the vendored custom-pricing loader, which applies its own size cap and rate ceiling.
 - Refreshed entries are exact-id gap fill. They live in their own table and cannot change a price the bundled table, overlay, or user custom file resolves. They do take precedence over family estimates. Context windows above 10M tokens and rates above 10,000 USD/MTok are dropped. A tampered entry can still misprice a model only the refresh knows, within those bounds, and each such model is logged once as "Pricing from the LiteLLM refresh".
-- The cache is `<storagePath>/pricing-cache.json`, written atomically through a per-process temp file with mode `0o600`. It is refetched at server start when older than a day; a long-running server does not refetch on its own.
+- The cache is `<storagePath>/pricing-cache.json`, written atomically through a per-process temp file with mode `0o600`. It is refetched at server start when older than a day. A long-running server rechecks hourly, does nothing while the cache is unchanged and under a day old, and otherwise refetches only once the cache is a day old.
 - Opt out with `NEW_RELIC_AI_PRICING_REFRESH=false` or `pricingRefresh: false`. `highSecurity=true` forces it off. When off, nothing is fetched and no cache file is read or written.
 
 ### Proxy body limits — `proxy-manager.ts`

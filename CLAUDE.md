@@ -44,7 +44,7 @@ Claude Code
   │
   ├─ PreToolUse / PostToolUse hooks
   │    └─> preflight (collector-script.ts)
-  │         └─> writes to buffer.jsonl directly (raw fd append)
+  │         └─> appends to buffer-<session>.jsonl (appendToHookBuffer)
   │
   └─ MCP stdio connection
        └─> NrMcpServer (server.ts)
@@ -194,7 +194,7 @@ All local persistence lives under `~/.newrelic-preflight/` by default:
 | `sessions/`         | JSON files | Session summaries (`YYYY-MM-DD_sessionId.json`)                |
 | `weekly_summaries/` | JSON files | Cross-session weekly aggregations                              |
 
-`collector-script.ts` appends hook events to `buffer.jsonl` directly (raw `openSync`/`writeFileSync`/`closeSync` with `O_APPEND`). `LocalStore` handles the drain side (rename-then-read pattern) and session/weekly-summary persistence.
+Every write to a `buffer-*.jsonl` file from `src/` goes through `appendToHookBuffer` in [`src/storage/hook-buffer.ts`](./src/storage/hook-buffer.ts): the collector, `LocalStore`, the legacy buffer migration, and the transcript and Copilot watchers. Never append to a buffer any other way from `src/`. A raw append that races a drain is lost, and ESLint rejects `appendFileSync` in the collector and the watcher files. `npx tsx scripts/stress-hook-drain.ts` races one writer against four drainer processes and fails on any lost or doubled line. The one writer outside `src/` is the Copilot SDK extension (`copilot-sdk-extension/extension.mjs`), a standalone file users copy by hand. It still appends with `appendFileSync`, so a token line it writes during a drain can be lost. `LocalStore` drains by renaming the buffer into a claim under `drains/`, then `takeClaimText` appends a seal, returns the lines before it, and deletes the claim. A writer whose line landed after a seal writes it again to the live buffer. `LocalStore` also handles session and weekly-summary persistence.
 
 ## Harvest and Ingestion
 

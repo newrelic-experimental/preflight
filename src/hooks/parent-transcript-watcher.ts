@@ -25,7 +25,6 @@
  */
 
 import {
-  appendFileSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -44,6 +43,8 @@ import { createLogger } from '../shared/index.js';
 import { BilledTurnLedger } from './billed-turn-ledger.js';
 import { ThrottledWarning } from './throttled-warning.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
+import { claudeProjectsDir } from '../lib/claude-config-dir.js';
+import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import type { LocalStore } from '../storage/local-store.js';
 
 const logger = createLogger('parent-transcript-watcher');
@@ -58,7 +59,6 @@ const MAX_BYTES_PER_POLL = 64 * 1024;
 /** See SubagentWatcher's identical constant for the OOM-bug rationale this guards against. */
 const MAX_PARTIAL_LINE_BYTES = 1024 * 1024; // 1 MiB
 const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-const PROJECTS_DIR_NAME = '.claude/projects';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -67,7 +67,7 @@ const PROJECTS_DIR_NAME = '.claude/projects';
 export interface ParentTranscriptWatcherOptions {
   /** Storage path for cursor state (defaults to ~/.newrelic-preflight). */
   readonly storagePath?: string;
-  /** ~/.claude/projects directory; defaults to homedir-relative. */
+  /** Claude Code projects directory; defaults to `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`. */
   readonly projectsDir?: string;
   /** Poll interval in ms. Default 2000. */
   readonly pollIntervalMs?: number;
@@ -94,6 +94,7 @@ interface ParsedParentTurn {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  readonly cacheCreation1hTokens: number;
   /**
    * Gap (ms) between this line's timestamp and the previous raw transcript
    * line's timestamp — an estimate of time spent waiting on the model API.
@@ -174,7 +175,7 @@ export class ParentTranscriptWatcher {
 
   constructor(options: ParentTranscriptWatcherOptions = {}) {
     this.storagePath = options.storagePath ?? join(homedir(), '.newrelic-preflight');
-    this.projectsDir = options.projectsDir ?? join(homedir(), PROJECTS_DIR_NAME);
+    this.projectsDir = options.projectsDir ?? claudeProjectsDir();
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const envHours = parseInt(process.env.NR_AI_WATCHER_DISCOVERY_HOURS ?? '', 10);
     this.discoveryHours =
@@ -497,12 +498,15 @@ export class ParentTranscriptWatcher {
           outputTokens: parsed.outputTokens,
           cacheReadTokens: parsed.cacheReadTokens,
           cacheCreationTokens: parsed.cacheCreationTokens,
+          ...(parsed.cacheCreation1hTokens > 0 && {
+            cacheCreation1hTokens: parsed.cacheCreation1hTokens,
+          }),
           ...(parsed.responseMs !== undefined && { responseMs: parsed.responseMs }),
         }),
       );
       this.writeCursor(cursorPath, nextBytePos, newPartial, path);
     } catch (err) {
-      this.retryWarning.warn(err);
+      this.retryWarning.warn(err, path);
       this.partialByPath.delete(path);
       this.decoderByPath.delete(path);
       this.linesRead = linesReadBefore;
@@ -513,7 +517,7 @@ export class ParentTranscriptWatcher {
       }
       return;
     }
-    this.retryWarning.succeeded();
+    this.retryWarning.succeeded(path);
     if (newPartial.length > 0) {
       this.partialByPath.set(path, newPartial);
     } else {
@@ -596,6 +600,7 @@ export class ParentTranscriptWatcher {
       outputTokens: fields.outputTokens,
       cacheReadTokens: fields.cacheReadTokens,
       cacheCreationTokens: fields.cacheCreationTokens,
+      cacheCreation1hTokens: fields.cacheCreation1hTokens,
       responseMs,
     };
   }
@@ -648,7 +653,7 @@ export class ParentTranscriptWatcher {
     if (!existsSync(this.storagePath)) {
       mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
     }
-    appendFileSync(path, JSON.stringify(event) + '\n', { mode: 0o600 });
+    appendToHookBuffer(path, JSON.stringify(event) + '\n');
   }
 
   private recordError(err: unknown): void {

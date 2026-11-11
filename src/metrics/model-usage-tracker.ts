@@ -159,8 +159,8 @@ export class ModelUsageTracker implements Resettable {
    * the session total.
    *
    * Adds to current per-model state rather than overwriting, so callers must
-   * invoke this at most once per (re)adopted session id, before any real
-   * activity for that id has reached this tracker.
+   * invoke this at most once per (re)adopted session id, with totals this
+   * tracker has not already counted.
    */
   seedFromPersisted(breakdown: Readonly<Record<string, ModelBreakdownEntry>>): void {
     for (const [model, entry] of Object.entries(breakdown)) {
