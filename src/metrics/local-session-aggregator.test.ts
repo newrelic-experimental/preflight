@@ -535,6 +535,19 @@ describe('LocalSessionAggregator timeline persistence', () => {
     expect(timeline[0]?.createdPrNumber).toBe('42');
   });
 
+  it('persists the PR target of a GitHub MCP PR call', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'mcp__github__merge_pull_request',
+      timestamp: 100,
+      mcpPrNumber: '12',
+      mcpPrRepo: 'acme/app',
+    });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]).toMatchObject({ mcpPrNumber: '12', mcpPrRepo: 'acme/app' });
+  });
+
   it('persists a background run, whose success predates the command finishing', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({
@@ -632,6 +645,31 @@ describe('LocalSessionAggregator panel rehydration', () => {
     expect(typeof quality?.totalSignals).toBe('number');
     const toolSelection = summary?.toolSelectionMetrics as { totalCalls: number } | null;
     expect(toolSelection?.totalCalls).toBe(2);
+  });
+
+  it('carries the cache savings of recorded token usage into the summary', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'read_file',
+      timestamp: 1000,
+      success: true,
+    } as never);
+    agg.recordTokenUsage(REAL_ID, {
+      model: 'gpt-5',
+      cacheReadTokens: 5000,
+      costUsd: 0.01,
+      cacheSavingsUsd: 0.0135,
+    });
+    agg.recordTokenUsage(REAL_ID, {
+      model: 'gpt-5',
+      cacheReadTokens: 1000,
+      costUsd: 0.01,
+      cacheSavingsUsd: 0.0027,
+    });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.cacheSavingsUsd).toBeCloseTo(0.0162, 10);
   });
 
   it('emits a token-only session so its cost is persisted', () => {
