@@ -105,6 +105,7 @@ import { TaskDetector } from './metrics/task-detector.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
+import { tokenUsageFromSubagentTurn, tokenUsageFromTokenEvent } from './metrics/token-usage.js';
 import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
 import { TurnTracker } from './metrics/turn-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
@@ -113,7 +114,7 @@ import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 import { createServer } from './server.js';
-import type { CostBreakdown, TokenUsage } from './shared/index.js';
+import type { CostBreakdown } from './shared/index.js';
 import { createLogger } from './shared/index.js';
 import { LocalStore } from './storage/index.js';
 import { computeHistoricalCosts } from './storage/historical-costs.js';
@@ -998,7 +999,6 @@ async function main(): Promise<void> {
       activeParentTranscriptWatcher?.stop();
       activeCopilotUsageWatcher?.stop();
       activeCopilotAppUsageWatcher?.stop();
-      liveSessionRegistry?.stopSampling();
       // Use allSettled so a failure in one stop() doesn't prevent the others.
       const stopResults = await Promise.allSettled([
         dashboardServer ? dashboardServer.stop() : Promise.resolve(),
@@ -1261,7 +1261,6 @@ async function main(): Promise<void> {
     // compact SessionStart has nothing to report and never calls recordResume().
     const sessionResumeTracker = new SessionResumeTracker();
     liveSessionRegistry = new LiveSessionRegistry();
-    liveSessionRegistry.startSampling();
     // Unconditional in every mode — decoupled from whether the `--local`
     // dashboard wins its port bind (see startMaintenanceGc()'s doc comment).
     maintenanceGcInterval = startMaintenanceGc({ localStore, liveSessionRegistry });
@@ -1393,8 +1392,8 @@ async function main(): Promise<void> {
     let currentRepoName: string | null = null;
 
     // An unscoped process (--local, or a provisional --stdio window) drains
-    // every unowned buffer and folds it into trackers keyed by its own
-    // synthetic id, which persistSession() skips — so without this rollup the
+    // every unowned buffer. The tracker counts only its own session, and
+    // persistSession() skips a synthetic id, so without this rollup the
     // sessions it observes are never written to disk at all. See
     // local-session-aggregator.ts for why that hits Copilot but not Claude Code.
     const localSessionAggregator = new LocalSessionAggregator({
@@ -1423,8 +1422,13 @@ async function main(): Promise<void> {
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
     const firstSaveBaselines = new FirstSaveBaselines();
+    // A session's calls in its file before this process first wrote it, none of them this process's.
+    const callsBeforeFirstWrite = new Map<string, number>();
     const saveSessionRememberingBaseline = (summary: FullSessionSummary): boolean => {
       const saved = sessionStore!.saveSession(summary);
+      if (saved && !callsBeforeFirstWrite.has(summary.sessionId)) {
+        callsBeforeFirstWrite.set(summary.sessionId, saved.previous?.toolCallCount ?? 0);
+      }
       // Only a --stdio engine ever adopts a real session id and seeds it.
       if (saved && options.stdio && !rehydratedTrackerSessionIds.has(summary.sessionId)) {
         firstSaveBaselines.recordSave({
@@ -1866,7 +1870,6 @@ async function main(): Promise<void> {
           liveSessionRegistry,
           gitEfficiencyTracker,
           gitWorkspaceReporter,
-          concurrencyTracker: liveSessionRegistry,
           contextTracker,
           contextCompositionTracker,
           contextEfficiencyTracker: contextWindowTracker,
@@ -2394,14 +2397,7 @@ async function main(): Promise<void> {
         });
         const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
         if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
-        const usage = {
-          inputTokens: tokenEvent.inputTokens,
-          outputTokens: tokenEvent.outputTokens,
-          thinkingTokens: 0,
-          cacheReadTokens: tokenEvent.cacheReadTokens,
-          cacheCreationTokens: tokenEvent.cacheCreationTokens,
-          totalTokens: tokenEvent.inputTokens + tokenEvent.outputTokens,
-        };
+        const usage = tokenUsageFromTokenEvent(tokenEvent);
         let breakdown: CostBreakdown;
         if (!isOwnEvent) {
           breakdown = costTracker.priceUsage(usage, tokenEvent.model);
@@ -2421,6 +2417,7 @@ async function main(): Promise<void> {
           outputTokens: tokenEvent.outputTokens,
           cacheReadTokens: tokenEvent.cacheReadTokens,
           cacheCreationTokens: tokenEvent.cacheCreationTokens,
+          cacheSavingsUsd: breakdown.savingsFromCacheUsd,
         });
         contextCompositionTracker.recordTokenEvent(tokenEvent);
 
@@ -2504,22 +2501,7 @@ async function main(): Promise<void> {
         // the buffer.
         subagentAttribution.recordSubagentTurn(turn);
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
-        const usage: TokenUsage = {
-          inputTokens: turn.inputTokens,
-          outputTokens: turn.outputTokens,
-          // Subagent reasoning tokens (extended thinking) live under
-          // `output_tokens_details.reasoning_tokens`; map to `thinkingTokens`
-          // so the existing `thinkingPerMTok` rate column charges correctly.
-          thinkingTokens: turn.reasoningTokens,
-          cacheReadTokens: turn.cacheReadTokens,
-          cacheCreationTokens: turn.cacheCreationTokens,
-          totalTokens:
-            turn.inputTokens +
-            turn.outputTokens +
-            turn.reasoningTokens +
-            turn.cacheReadTokens +
-            turn.cacheCreationTokens,
-        };
+        const usage = tokenUsageFromSubagentTurn(turn);
         const breakdown = costTracker.recordTokenUsage(usage, turn.model, {
           timestampMs: turn.timestampMs,
           workflowRunId: turn.workflowRunId,
@@ -2544,6 +2526,7 @@ async function main(): Promise<void> {
           cacheReadTokens: turn.cacheReadTokens,
           cacheCreationTokens: turn.cacheCreationTokens,
           thinkingTokens: turn.reasoningTokens,
+          cacheSavingsUsd: breakdown.savingsFromCacheUsd,
           agentId: turn.agentId,
         });
         // Pricing miss → usd:null on the wire; we recompute here so
@@ -2659,6 +2642,47 @@ async function main(): Promise<void> {
       },
     });
 
+    const saveObservedSessions = (
+      outcome: string,
+      savesSession?: (sessionId: string) => boolean,
+    ): number => {
+      if (!sessionStore || !config) return 0;
+      const rollups = localSessionAggregator.toSummaries({
+        developer: config.developer ?? 'unknown',
+        platform: eventProcessor?.activePlatform,
+        outcome,
+        toolSelectionScorer,
+        repoResolver: repoNameResolver,
+        ...(savesSession !== undefined && { savesSession }),
+      });
+      let saved = 0;
+      for (const rollup of rollups) {
+        const sessionId = String(rollup.sessionId);
+        try {
+          const prior =
+            callsBeforeFirstWrite.get(sessionId) ??
+            sessionStore.loadSession(sessionId)?.toolCallCount ??
+            0;
+          // A file with calls adds this rollup to them, since a max-merge would drop it. It leaves
+          // out a call another process may count, and marks no ids, so that process still can.
+          const kept =
+            prior === 0
+              ? rollup
+              : localSessionAggregator.withoutCallsOtherProcessesMayCount(
+                  rollup,
+                  localStoreForShutdown?.countedToolUseIds(sessionId) ?? new Set<string>(),
+                );
+          const summary = { ...kept, toolCallCount: prior + Number(kept.toolCallCount) };
+          if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary)) continue;
+          saved += 1;
+          if (prior === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
+        } catch (err) {
+          logger.warn('Failed to save observed session', { sessionId, error: String(err) });
+        }
+      }
+      return saved;
+    };
+
     persistSession = (opts?: { periodic?: boolean }) => {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
       try {
@@ -2708,21 +2732,13 @@ async function main(): Promise<void> {
           // draining other sessions' buffers destructively — so if it returns
           // here without writing them, those events are simply lost. Persist
           // each real session it observed instead.
-          const rollups = localSessionAggregator.toSummaries({
-            developer: config.developer ?? 'unknown',
-            platform: eventProcessor?.activePlatform,
-            outcome: opts?.periodic ? 'in progress' : 'completed',
-            toolSelectionScorer,
-            repoResolver: repoNameResolver,
-          });
-          const saved = rollups.filter((rollup) =>
-            saveSessionRememberingBaseline(rollup as unknown as FullSessionSummary),
+          const persistedSessions = saveObservedSessions(
+            opts?.periodic ? 'in progress' : 'completed',
           );
-          eventProcessor?.persistCountedIdsOfSavedSessions(saved.map((r) => String(r.sessionId)));
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
-              persistedSessions: rollups.length,
+              persistedSessions,
             });
           }
           return;
@@ -2983,47 +2999,24 @@ async function main(): Promise<void> {
     // tracker, (re)constructs NrIngestManager, repoints the watchers, and
     // re-registers the full tool set. Used both for the initial pending ->
     // real transition and for a later correction (see
-    // startPpidCorrectionWatch below) — safe to call more than once:
-    // accumulated tracker metrics are preserved (adoptSessionId() only
-    // reassigns the id field), and any already-live NrIngestManager is
-    // stopped first so its harvest interval never leaks on a second call.
+    // startPpidCorrectionWatch below) — safe to call more than once.
     const adoptRealSessionId = async (
       realId: string,
       opts?: { isCorrection?: boolean; viaCwdOnly?: boolean },
     ): Promise<void> => {
+      const staleId = sessionTraceId;
       if (opts?.isCorrection) {
         // A real correction means the previously-adopted id was wrong, and
         // anything these four trackers accumulated since startWatchers()
         // scoped them to that wrong id (chiefly ParentTranscriptWatcher
         // backfill from an unrelated old transcript) belongs to nobody.
-        // SessionTracker itself needs no reset here: real tool-call events
-        // only ever reach it via the per-session LocalStore/HookEventProcessor
-        // path, which is keyed by whatever id the hook collector script
-        // wrote — never the wrong guess — so toolCallCount/timeline stay
-        // clean through the whole unconfirmed window regardless.
-        firstSaveBaselines.forget(sessionTraceId);
+        // SessionTracker is cleared below through adoptSessionId(realId, ...,
+        // isCorrection), which drops the wrong guess's counts and timeline.
         costTracker.reset(realId);
         modelUsageTracker.reset(realId);
         contextCompositionTracker.reset(realId);
         turnCostAttributor.reset(realId);
       }
-      sessionTraceId = realId;
-      sessionTracker!.adoptSessionId(realId);
-      // Now that the real id (and thus its transcript path) is known, resolve
-      // and apply the authoritative name. On a correction this re-resolves
-      // against the corrected id's own transcript, replacing any name derived
-      // for the previously-adopted (wrong) id.
-      applyAuthoritativeSessionName(realId);
-      // viaCwdOnly means this id came from the collision-prone cwd fallback
-      // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
-      // resolvedViaCwdOnly gate on the synchronous resolution path's own
-      // eager-seed call. Seeding here would import a DIFFERENT session's
-      // real cost/token total on an unconfirmed guess; the caller arms
-      // startPpidCorrectionWatch right after this returns, whose
-      // confirmation branch (ppidId === staleId) calls
-      // rehydrateTrackersIfResumed itself once the guess is confirmed.
-      if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
-
       // Replace the current LocalStore with one scoped to the real id.
       const realLocalStore = new LocalStore(config!.storagePath, realId);
       realLocalStore.initialize();
@@ -3039,8 +3032,39 @@ async function main(): Promise<void> {
       }
 
       // Hot-swap the event processor to the scoped store so it only drains
-      // this session's events going forward.
+      // this session's events going forward. Its final drain routes tokens by
+      // realId, and runs before the tracker adopts realId, so adoptSessionId()
+      // replays what it drains.
+      sessionTraceId = realId;
       eventProcessor!.replaceStore(realLocalStore, false);
+
+      sessionTracker!.adoptSessionId(
+        realId,
+        localSessionAggregator.recordsOf(realId),
+        opts?.isCorrection,
+      );
+      // Now that the real id (and thus its transcript path) is known, resolve
+      // and apply the authoritative name. On a correction this re-resolves
+      // against the corrected id's own transcript, replacing any name derived
+      // for the previously-adopted (wrong) id.
+      applyAuthoritativeSessionName(realId);
+      // viaCwdOnly means this id came from the collision-prone cwd fallback
+      // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
+      // resolvedViaCwdOnly gate on the synchronous resolution path's own
+      // eager-seed call. Seeding here would import a DIFFERENT session's
+      // real cost/token total on an unconfirmed guess; the caller arms
+      // startPpidCorrectionWatch right after this returns, whose
+      // confirmation branch (ppidId === staleId) calls
+      // rehydrateTrackersIfResumed itself once the guess is confirmed.
+      if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
+
+      try {
+        saveObservedSessions('in progress', (id) =>
+          opts?.isCorrection ? id === staleId : id !== realId,
+        );
+      } catch (err) {
+        logger.warn('Failed to save observed sessions on adoption', { error: String(err) });
+      }
 
       // Replace the span with a real-ID span. End the previous one first
       // (end() is a no-op if never started).
@@ -3308,8 +3332,8 @@ async function main(): Promise<void> {
               return;
             }
 
-            // Adopt the real session ID without clearing accumulated
-            // metrics — see adoptRealSessionId's own comment above. Skip the
+            // Adopt the real session ID. This is not a correction, so the
+            // tracker keeps the counts it has. Skip the
             // eager cost/token seed for a cwd-resolved id (see viaCwdOnly's
             // doc comment there) — startPpidCorrectionWatch below seeds it
             // once confirmed, exactly like the synchronous resolution path.

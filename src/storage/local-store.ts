@@ -320,12 +320,15 @@ export class LocalStore {
   }
 
   hasCountedToolUseId(sessionId: string, toolUseId: string): boolean {
-    if (!SESSION_ID_RE.test(sessionId)) return false;
-    return this.countedFileNames().some(
-      (name) =>
-        name.startsWith(`${sessionId}.`) &&
-        name.endsWith('.json') &&
-        readCountedToolUseIds(resolve(this.countedDir, name)).includes(toolUseId),
+    return this.countedToolUseIds(sessionId).has(toolUseId);
+  }
+
+  countedToolUseIds(sessionId: string): Set<string> {
+    if (!SESSION_ID_RE.test(sessionId)) return new Set();
+    return new Set(
+      this.countedFileNames()
+        .filter((name) => name.startsWith(`${sessionId}.`) && name.endsWith('.json'))
+        .flatMap((name) => readCountedToolUseIds(resolve(this.countedDir, name))),
     );
   }
 
