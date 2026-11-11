@@ -1466,7 +1466,7 @@ describe('Sessions view — subagent peak label', () => {
     expect(screen.getByText('Session trace').parentElement?.children).toHaveLength(1);
   });
 
-  it('drops the label together with the lanes when a refetch fails', async () => {
+  it('drops the label, the lanes and their time span when a refetch fails', async () => {
     const span = (agentId: string, label: string) => ({
       agentId,
       workflowRunId: null,
@@ -1516,6 +1516,7 @@ describe('Sessions view — subagent peak label', () => {
     await waitFor(() => expect(screen.getByText(/Peak 2 parallel/)).toBeInTheDocument());
     expect(screen.getByText('lane-one')).toBeInTheDocument();
     expect(screen.getByText('lane-two')).toBeInTheDocument();
+    expect(screen.getByText('0:10')).toBeInTheDocument();
 
     failSubagents = true;
     await qc.refetchQueries({ predicate: (q) => JSON.stringify(q.queryKey).includes('subagents') });
@@ -1523,5 +1524,6 @@ describe('Sessions view — subagent peak label', () => {
     await waitFor(() => expect(screen.queryByText('lane-one')).toBeNull());
     expect(screen.queryByText('lane-two')).toBeNull();
     expect(screen.queryByText(/Peak/)).toBeNull();
+    expect(screen.queryByText('0:10')).toBeNull();
   });
 });
