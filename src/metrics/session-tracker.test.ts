@@ -595,6 +595,43 @@ describe('SessionTracker', () => {
       expect(tracker.getMetrics().toolErrorCount).toBe(0);
     });
 
+    it('amends the right entry of a replayed session past the cap, drained or adopted', () => {
+      const timedOut = (id: string, timestamp: number) => ({
+        ...makeRecord({ id, timestamp, sessionId: 'sess-own' }),
+        durationMs: null,
+        success: false,
+        errorType: 'timeout' as const,
+      });
+      const records: ReturnType<typeof makeRecord>[] = [timedOut('old', 1), timedOut('kept', 2)];
+      for (let i = 3; i <= 10_001; i++)
+        records.push(makeRecord({ timestamp: i, sessionId: 'sess-own' }));
+      const tracker = new SessionTracker('pending-1700000000000', 10);
+      for (const record of records) tracker.recordToolCall(record);
+      const amend = (id: string, timestamp: number) =>
+        tracker.amendToolCall({
+          ...makeRecord({ id, timestamp, sessionId: 'sess-own' }),
+          durationMs: 7,
+        });
+
+      amend('kept', 2);
+      expect(tracker.getMetrics().toolCallTimeline[0]).toMatchObject({
+        timestamp: 2,
+        durationMs: 7,
+      });
+
+      tracker.adoptSessionId('sess-own', records);
+      amend('old', 1);
+      expect(tracker.getMetrics().toolCallTimeline[0]).toMatchObject({
+        timestamp: 2,
+        durationMs: null,
+      });
+      amend('kept', 2);
+      expect(tracker.getMetrics().toolCallTimeline[0]).toMatchObject({
+        timestamp: 2,
+        durationMs: 7,
+      });
+    });
+
     it("drops the guessed session's calls when its id is corrected", () => {
       const tracker = new SessionTracker('sess-guess', 10);
       const guessed = makeRecord({ id: 'g1', sessionId: 'sess-guess', durationMs: null });
@@ -611,6 +648,18 @@ describe('SessionTracker', () => {
       expect(metrics.toolDurationMsByTool.Read).toBeUndefined();
     });
 
+    it("keeps the session's name and intent when a guess is corrected", () => {
+      const tracker = new SessionTracker('sess-guess');
+      tracker.setAuthoritativeName('my title', 'user');
+      tracker.setSessionIntent('fix the bug');
+
+      tracker.adoptSessionId('sess-real', [], true);
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.sessionName).toBe('my title');
+      expect(metrics.sessionIntent).toBe('fix the bug');
+    });
+
     it('replays every record of the session it adopts', () => {
       const tracker = new SessionTracker('pending-1700000000000');
       const first = makeRecord({ sessionId: 'sess-own', toolName: 'Read' });
@@ -619,6 +668,15 @@ describe('SessionTracker', () => {
       tracker.adoptSessionId('sess-own', [first, second]);
 
       expect(tracker.getMetrics().toolCallCountByTool).toEqual({ Read: 1, Bash: 1 });
+    });
+
+    it('stops showing what it drained while pending once it is reset to a real id', () => {
+      const tracker = new SessionTracker('pending-1700000000000');
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-other' }));
+
+      tracker.reset('sess-real');
+
+      expect(tracker.getMetrics().toolCallCount).toBe(0);
     });
 
     it('counts a record of another session under a real id', () => {
@@ -676,6 +734,27 @@ describe('SessionTracker', () => {
       expect(metrics.bashExitCodes).toEqual({ '2': 1 });
       expect(metrics.toolCallTimeline.map((e) => e.durationMs)).toEqual([null, 5000]);
     });
+    it('amends the right timeline entry after older entries were evicted, and skips an evicted one', () => {
+      const tracker = new SessionTracker('sess-own', 10);
+      const timedOut = (id: string, timestamp: number) => ({
+        ...makeRecord({ id, timestamp }),
+        durationMs: null,
+        success: false,
+        errorType: 'timeout' as const,
+      });
+      tracker.recordToolCall(timedOut('evicted', 1));
+      tracker.recordToolCall(timedOut('kept', 2));
+      for (let i = 3; i <= 10_001; i++) tracker.recordToolCall(makeRecord({ timestamp: i }));
+
+      tracker.amendToolCall({ ...makeRecord({ id: 'evicted', timestamp: 1 }), durationMs: 111 });
+      const afterEvicted = tracker.getMetrics().toolCallTimeline;
+      expect(afterEvicted[0]).toMatchObject({ timestamp: 2, durationMs: null, success: false });
+
+      tracker.amendToolCall({ ...makeRecord({ id: 'kept', timestamp: 2 }), durationMs: 222 });
+      const timeline = tracker.getMetrics().toolCallTimeline;
+      expect(timeline[0]).toMatchObject({ timestamp: 2, durationMs: 222, success: true });
+      expect(timeline[1]).toMatchObject({ timestamp: 3, durationMs: 50 });
+    });
 
     it('amends the timeline entry of its own record when a newer entry follows', () => {
       const tracker = new SessionTracker('sess-own', 10);
@@ -711,16 +790,16 @@ describe('SessionTracker', () => {
       expect(metrics.toolErrorsByType).toEqual({ timeout: 1 });
     });
 
-    it('leaves the last timeline entry alone when the amended call did not fit the timeline', () => {
+    it('amends the newest timeline entry when the call evicted the oldest one at the cap', () => {
       const tracker = new SessionTracker('sess-own', 10);
       for (let i = 0; i < 10_000; i++) tracker.recordToolCall(makeRecord({ timestamp: i }));
       const call = { ...makeRecord({ durationMs: null, success: false }), errorType: 'timeout' };
       tracker.recordToolCall(call);
-      const lastBefore = tracker.getMetrics().toolCallTimeline.at(-1);
       tracker.amendToolCall({ ...call, durationMs: 5000, success: true });
 
       const metrics = tracker.getMetrics();
-      expect(metrics.toolCallTimeline.at(-1)).toEqual(lastBefore);
+      expect(metrics.toolCallTimeline).toHaveLength(10_000);
+      expect(metrics.toolCallTimeline.at(-1)).toMatchObject({ durationMs: 5000, success: true });
       expect(metrics.toolErrorCount).toBe(0);
     });
   });
@@ -886,5 +965,22 @@ describe('computeP95()', () => {
     // Values 1..100; floor((100-1)*0.95) = floor(94.05) = 94 → sorted[94] = 95
     const values = Array.from({ length: 100 }, (_, i) => i + 1);
     expect(computeP95(values)).toBe(95);
+  });
+});
+
+describe('SessionTracker timeline cap', () => {
+  it('keeps the most recent 10,000 entries once the cap is exceeded', () => {
+    const tracker = new SessionTracker('test-session');
+    const total = 10_000 + 25;
+    for (let i = 1; i <= total; i++) {
+      tracker.recordToolCall(makeRecord({ timestamp: i }));
+    }
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.toolCallTimeline).toHaveLength(10_000);
+    expect(metrics.toolCallTimeline[0]?.timestamp).toBe(26);
+    expect(metrics.toolCallTimeline[9_999]?.timestamp).toBe(total);
+    expect(metrics.timelineTruncated).toBe(true);
+    expect(metrics.timelineEntryCount).toBe(total);
   });
 });

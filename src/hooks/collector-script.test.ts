@@ -501,6 +501,54 @@ describe('collector-script', () => {
       expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '57' });
     });
 
+    it('keeps the repo and PR number an MCP merge_pull_request call names', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'mcp__github__merge_pull_request',
+          tool_input: { owner: 'acme', repo: 'app.js', pullNumber: 57, merge_method: 'squash' },
+          tool_response: [{ type: 'text', text: '{"merged":true}' }],
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolInput).toEqual({ prRepo: 'acme/app.js', prNumber: '57' });
+    });
+
+    it('keeps only the repo of an MCP create_pull_request call, which names no PR yet', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'mcp__github__create_pull_request',
+          tool_input: { owner: 'acme', repo: 'app', pullNumber: 3, title: 't' },
+          tool_response: [],
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolInput).toEqual({ prRepo: 'acme/app' });
+    });
+
+    it.each([
+      ['an owner with a slash', { owner: 'acme/x', repo: 'app', pullNumber: 5 }, { prNumber: '5' }],
+      [
+        'a fractional pullNumber',
+        { owner: 'acme', repo: 'app', pullNumber: 5.5 },
+        { prRepo: 'acme/app' },
+      ],
+      [
+        'a pullNumber of 0',
+        { owner: 'acme', repo: 'app', pullNumber: '0' },
+        { prRepo: 'acme/app' },
+      ],
+    ])('drops a PR target field that is not a plain name or number (%s)', (_label, input, kept) => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'mcp__github__update_pull_request',
+          tool_input: input,
+          tool_response: [],
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolInput).toEqual(kept);
+    });
+
     it('omits toolOutput when no parseable output fields exist', () => {
       const response = { filePath: '/tmp/out.ts', success: true };
       processHook(makePostToolUse({ tool_response: response }));
