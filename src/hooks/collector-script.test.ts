@@ -384,6 +384,29 @@ describe('collector-script', () => {
       const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
       expect(toolInput.command).toBe(expected);
     });
+
+    const longCommand = `deploy --token secret123 ${'x'.repeat(100)}`;
+    it.each([
+      ['Bash', makePreToolUse({ tool_name: 'Bash', tool_input: { command: longCommand } })],
+      [
+        'run_in_terminal',
+        makePreToolUse({ tool_name: 'run_in_terminal', tool_input: { command: longCommand } }),
+      ],
+      ['beforeShellExecution', makeCursorBeforeShellExecution({ command: longCommand })],
+      [
+        'pre_run_command',
+        JSON.stringify({
+          agent_action_name: 'pre_run_command',
+          tool_info: { command_line: longCommand, cwd: '/x' },
+        }),
+      ],
+    ])('caps a %s command at the content limit before redacting it', (_name, raw) => {
+      process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '50';
+      processHook(raw);
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.command).toBe(`deploy [REDACTED] ${'x'.repeat(25)}...[truncated]`);
+    });
   });
 
   describe('processHook() — PowerShell (native Windows tool, no Git Bash)', () => {
