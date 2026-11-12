@@ -355,12 +355,6 @@ Type: Short description
 
 Types: `Fix`, `Feat`, `Refactor`, `Chore`, `Test`, `Docs`
 
-If you used an AI coding assistant: add a `Co-Authored-By` trailer with the model name, e.g.:
-
-```
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
-```
-
 ### AI-authored pull requests
 
 An AI agent opens every pull request as a draft (`gh pr create --draft`). A human marks it ready for review once they have read, proofread and tested the changes.
