@@ -1,8 +1,9 @@
-import type {
-  NormalizedToolCall,
-  PlatformAdapter,
-  PlatformConfig,
-  PlatformSessionMetadata,
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformConfig,
+  type PlatformSessionMetadata,
 } from './types.js';
 
 /**
@@ -60,7 +61,11 @@ export class OpencodeAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'full-hooks' as const;
   // opencode.ai/docs/rules/: project-level AGENTS.md, with CLAUDE.md as a
   // documented fallback (opencode's own "Claude Code Compatibility" mode).
-  readonly capabilities = { instructionFilePaths: ['AGENTS.md'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['AGENTS.md'] as const,
+    // The documented plugin spawns the collector without naming an engine.
+    sessionBreadcrumbWriters: ['opencode', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // opencode's tool-call capture is delivered via a user-installed plugin
