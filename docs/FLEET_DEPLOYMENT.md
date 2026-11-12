@@ -13,7 +13,9 @@ the [plugin](./PLUGIN.md) and to hand every machine the same Preflight
 configuration. Preflight itself needs no machine-level config file for this.
 
 Nothing under `~/.claude/` or `~/.newrelic-preflight/` is written by your MDM
-script. Claude Code applies managed settings above every user and project
+script. (The npm-package alternative in
+[Installing the npm package from a root-run script](#installing-the-npm-package-from-a-root-run-script)
+does write there, as the user.) Claude Code applies managed settings above every user and project
 setting, so a developer cannot override a key you set.
 
 ## What to deploy
@@ -31,7 +33,7 @@ One managed settings document does three jobs.
       "source": {
         "source": "github",
         "repo": "newrelic-experimental/preflight",
-        "ref": "v1.67.2"
+        "ref": "v<version>"
       },
       "autoUpdate": false
     }
@@ -44,26 +46,28 @@ One managed settings document does three jobs.
     "NEW_RELIC_LICENSE_KEY": "<your-license-key>",
     "NEW_RELIC_ACCOUNT_ID": "1234567",
     "NEW_RELIC_AI_ORG_ID": "<org-identifier>",
-    "NEW_RELIC_AI_TEAM_ID": "<team-identifier>",
-    "NEW_RELIC_AI_PREFLIGHT_VERSION": "1.67.2"
+    "NEW_RELIC_AI_TEAM_ID": "<team-identifier>"
   }
 }
 ```
 
-| `env` key                        | Purpose                                                                                                                   |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `NR_AI_MODE`                     | `cloud` or `both`. Required, or a license key stops the server starting.                                                  |
-| `NEW_RELIC_LICENSE_KEY`          | Ingest license key for the destination account.                                                                           |
-| `NEW_RELIC_ACCOUNT_ID`           | Numeric account ID, 1 to 12 digits.                                                                                       |
-| `NEW_RELIC_AI_ORG_ID`            | Organization identifier stamped on every event.                                                                           |
-| `NEW_RELIC_AI_TEAM_ID`           | Team identifier stamped on every event.                                                                                   |
-| `NEW_RELIC_AI_PREFLIGHT_VERSION` | Holds the MCP server on one npm version. See [PLUGIN.md](./PLUGIN.md#pinning-the-server-version-for-managed-deployments). |
+> **Warning:** a `ref` tag from before the plugin pinned its server, whose
+> `plugin/.mcp.json` launches `@newrelic/preflight@${NEW_RELIC_AI_PREFLIGHT_VERSION:-latest}`,
+> gets a server that follows npm's `latest`. See
+> [PLUGIN.md](./PLUGIN.md#pinning-the-version-for-managed-deployments).
 
-Set `ref` and `NEW_RELIC_AI_PREFLIGHT_VERSION` to the same release so the hook
-collector bundled with the plugin and the MCP server stay in lockstep. Omit
-`ref` and the plugin tracks `main`, which can carry unreleased changes. Omit
-the env var and the server follows npm's `latest` tag. `ref` needs plugin
-1.61.0 or later.
+| `env` key               | Purpose                                                                  |
+| ----------------------- | ------------------------------------------------------------------------ |
+| `NR_AI_MODE`            | `cloud` or `both`. Required, or a license key stops the server starting. |
+| `NEW_RELIC_LICENSE_KEY` | Ingest license key for the destination account.                          |
+| `NEW_RELIC_ACCOUNT_ID`  | Numeric account ID, 1 to 12 digits.                                      |
+| `NEW_RELIC_AI_ORG_ID`   | Organization identifier stamped on every event.                          |
+| `NEW_RELIC_AI_TEAM_ID`  | Team identifier stamped on every event.                                  |
+
+Set `<version>` in `ref` to the release you want. `ref` holds the plugin on
+that release tag, and with it the hook collector bundled with the plugin and
+the MCP server, which the plugin launches at its own version. Omit `ref` and
+the plugin tracks `main`, which can carry unreleased changes.
 
 The license key sits in a file readable by every local user. Use an ingest
 license key scoped to this purpose, never a user API key (`NRAK-…`).
@@ -116,17 +120,46 @@ person is attributed individually without a per-machine setting.
 If the server shows `Failed to connect`, the most common cause is a license key
 with no `NR_AI_MODE`. See [Cloud mode](./PLUGIN.md#cloud-mode) in PLUGIN.md.
 
+## Installing the npm package from a root-run script
+
+This is the per-user alternative to the managed settings above: it writes
+`~/.claude/` and `~/.newrelic-preflight/` for the user instead of setting
+machine-wide managed settings.
+
+MDM tools such as Jamf run scripts as root, and `preflight install` configures
+the home directory of whoever runs it. Add `--target-user` to configure the
+logged-in user instead:
+
+```bash
+preflight install --mode cloud --target-user "$LOGGED_IN_USER" \
+  --license-key-file /path/to/key --account-id 123456
+```
+
+The install re-runs itself as that user with their `HOME`, so `config.json`
+(`0600`), `~/.claude/settings.json`, `~/.mcp.json` and the storage directory
+belong to them, and nothing is written under root's home. The license key is
+read as root and passed to the child through its environment, so the key file
+can stay root-only and the key never appears in `ps`, except with `--copilot`,
+where `copilot mcp add` still receives it as an argument. `--target-user` works
+on macOS and Linux, and not with `--project` or `--kiro`. Without it, a root-run install warns
+which home it is configuring.
+
+Install `@newrelic/preflight` globally (`npm install -g`) before running this.
+The child runs as the user, so it cannot read a `preflight` that `npx` put under
+root's home, or a Node.js that lives there (for example one managed by `nvm`).
+
 ## What has been tested
 
 - **Tested.** On Linux with Claude Code 2.1.304 and a `managed-settings.json` in
   `/etc/claude-code/`, values in the managed `env` reach the plugin's MCP
-  server. The pin variable expanded into the server command. A license key with
-  no mode failed the server, and the same key with `NR_AI_MODE=cloud` connected.
+  server. A license key with no mode failed the server, and the same key with
+  `NR_AI_MODE=cloud` connected.
 - **Not yet tested.** Delivery as a macOS configuration profile through Jamf.
   Whether the managed `env` reaches hook processes. Whether Claude Code installs
   the plugin without a prompt on first launch, as opposed to an admin running
-  `claude plugin install`. Confirm these on one pilot machine before widening
-  the rollout.
+  `claude plugin install`. Whether changing `ref` moves a machine that already
+  has the plugin to the new tag without `claude plugin marketplace update`.
+  Confirm these on one pilot machine before widening the rollout.
 
 ## What this does not do
 

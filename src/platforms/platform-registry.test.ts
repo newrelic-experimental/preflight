@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { UNATTRIBUTED_BREADCRUMB_WRITER as PUBLIC_UNATTRIBUTED_WRITER } from '../index.js';
 import { AmazonQAdapter } from './amazon-q-adapter.js';
 import { AntigravityAdapter } from './antigravity-adapter.js';
 import { CLAUDE_CODE_ENV_SIGNALS, ClaudeCodeAdapter } from './claude-code-adapter.js';
@@ -21,7 +22,13 @@ import { KiroAdapter } from './kiro-adapter.js';
 import { OpencodeAdapter } from './opencode-adapter.js';
 import { PiAdapter } from './pi-adapter.js';
 import { PlatformRegistry, createDefaultRegistry } from './platform-registry.js';
-import type { NormalizedToolCall, PlatformAdapter, PlatformSessionMetadata } from './types.js';
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  sessionBreadcrumbWriters,
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformSessionMetadata,
+} from './types.js';
 import { WindsurfAdapter } from './windsurf-adapter.js';
 import { ZedAdapter } from './zed-adapter.js';
 
@@ -575,6 +582,48 @@ describe('capabilities', () => {
       expect(adapter.capabilities).toBeDefined();
       expect(Array.isArray(adapter.capabilities.instructionFilePaths)).toBe(true);
     }
+  });
+
+  it('declares no breadcrumb writers for the engines whose hooks never write one', () => {
+    const writers = Object.fromEntries(
+      createDefaultRegistry()
+        .getRegistered()
+        .filter((a) => a.capabilities.sessionBreadcrumbWriters !== undefined)
+        .map((a) => [a.platformName, a.capabilities.sessionBreadcrumbWriters]),
+    );
+    expect(writers).toEqual({
+      cursor: [],
+      windsurf: [],
+      zed: [],
+      continue: [],
+      'amazon-q': [],
+      cline: [],
+      pi: [],
+      antigravity: [],
+    });
+  });
+
+  it('exports the unattributed writer under the name its breadcrumbs carry', () => {
+    expect(PUBLIC_UNATTRIBUTED_WRITER).toBe('unattributed');
+    expect(UNATTRIBUTED_BREADCRUMB_WRITER).toBe(PUBLIC_UNATTRIBUTED_WRITER);
+  });
+
+  it('lets a custom adapter that names no breadcrumb writers adopt its own and unattributed ones', () => {
+    const custom: PlatformAdapter = {
+      platformName: 'my-engine',
+      visibilityLevel: 'full-hooks',
+      capabilities: { instructionFilePaths: [] },
+      async initialize() {},
+      normalizeToolCall() {
+        throw new Error('not used by this test');
+      },
+      mapToolName: (name) => name,
+      getSessionMetadata: () => ({ platform: 'my-engine' }),
+      getHookInstallInstructions: () => '',
+      isSupported: () => true,
+    };
+    expect(sessionBreadcrumbWriters(custom)).toEqual(['my-engine', UNATTRIBUTED_BREADCRUMB_WRITER]);
+    expect(sessionBreadcrumbWriters(new CursorAdapter())).toEqual([]);
   });
 
   it('claude-code declares CLAUDE.md and .claude/ as instruction file paths', () => {

@@ -87,6 +87,8 @@ export interface TokenHookEvent extends HookEventBase {
   readonly outputTokens?: number;
   readonly cacheReadTokens?: number;
   readonly cacheCreationTokens?: number;
+  /** Subset of `cacheCreationTokens` written to the 1-hour cache. Omitted when zero. */
+  readonly cacheCreation1hTokens?: number;
   readonly model?: string;
   readonly sessionId?: string;
   /** Anthropic message id (msg_...) — used to dedupe replayed turns after a cursor-based re-read. */
@@ -113,6 +115,8 @@ export interface SubagentTokenHookEvent extends HookEventBase {
   readonly outputTokens?: number;
   readonly cacheReadTokens?: number;
   readonly cacheCreationTokens?: number;
+  /** See `TokenHookEvent.cacheCreation1hTokens`. */
+  readonly cacheCreation1hTokens?: number;
   readonly reasoningTokens?: number;
   readonly stopReason?: string | null;
   readonly schemaFingerprint?: string;
@@ -272,6 +276,8 @@ export interface TokenEvent {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  /** See `TokenHookEvent.cacheCreation1hTokens`. */
+  readonly cacheCreation1hTokens?: number;
   readonly model: string;
   readonly sessionId?: string;
   /** See `TokenHookEvent.responseMs`'s doc comment. */
@@ -371,7 +377,16 @@ export interface ToolCallRecord {
   readonly skillArgsLength?: number;
   /** Number of the PR a `gh pr create` or MCP create_pull_request call opened, parsed from the PR URL in its output. */
   readonly createdPrNumber?: string;
+  /** Number of the PR a GitHub MCP update_pull_request or merge_pull_request call named, from its `pullNumber` input. */
+  readonly mcpPrNumber?: string;
+  /** `owner/repo` a GitHub MCP PR tool call named, from its `owner` and `repo` inputs. */
+  readonly mcpPrRepo?: string;
   readonly [key: string]: unknown;
+}
+
+export function amendRecord(previous: ToolCallRecord, amend: ToolCallRecord): ToolCallRecord {
+  const { errorType: _replaced, ...intake } = previous;
+  return { ...intake, ...amend };
 }
 
 export interface ReplayTimelineEntry {
@@ -400,6 +415,10 @@ export interface ReplayTimelineEntry {
   readonly agentType?: string;
   /** Same as `ToolCallRecord.createdPrNumber`; absent in sessions persisted before it existed. */
   readonly createdPrNumber?: string;
+  /** Same as `ToolCallRecord.mcpPrNumber`; absent in sessions persisted before it existed. */
+  readonly mcpPrNumber?: string;
+  /** Same as `ToolCallRecord.mcpPrRepo`; absent in sessions persisted before it existed. */
+  readonly mcpPrRepo?: string;
   /** Only when true: a Bash call run in the background, whose `success` was reported when it started. */
   readonly runInBackground?: boolean;
 }

@@ -86,7 +86,12 @@ import {
   formatUsdOrDash,
   shortToolName,
 } from '../lib/format';
-import { isSameLocalDay, localStartOfDay, todayPortionRatio } from '../../lib/date.js';
+import {
+  isSameLocalDay,
+  localEndOfDay,
+  localStartOfDay,
+  todayPortionRatio,
+} from '../../lib/date.js';
 import { buildWeekForecast } from '../lib/forecast.js';
 
 const HEADER_TIMESTAMP_FORMAT = {
@@ -1178,7 +1183,8 @@ function SpendTodayPanel({
  * the local day containing `nowMs`. Lets Spend by hour (already hourly),
  * Tool calls (15-minute heatmap buckets) and Concurrent sessions (its own
  * bucket size) share one granularity so their charts scale identically.
- * Points outside the local day are dropped. `mode: 'max'` is for gauges
+ * Points outside the local day are dropped, and slots are local clock
+ * hours, so on a DST day the repeated hour shares one slot. `mode: 'max'` is for gauges
  * like concurrency, where summing sub-hour samples would double-count;
  * `'sum'` (the default) is for counts and costs.
  */
@@ -1188,11 +1194,11 @@ export function bucketByHour(
   mode: 'sum' | 'max' = 'sum',
 ): number[] {
   const dayStart = localStartOfDay(nowMs);
-  const dayEnd = dayStart + 86_400_000;
+  const dayEnd = localEndOfDay(dayStart);
   const buckets = new Array<number>(24).fill(0);
   for (const { ts, value } of points) {
     if (ts < dayStart || ts >= dayEnd) continue;
-    const hour = Math.min(23, Math.floor((ts - dayStart) / 3_600_000));
+    const hour = new Date(ts).getHours();
     buckets[hour] = mode === 'max' ? Math.max(buckets[hour]!, value) : buckets[hour]! + value;
   }
   return buckets;
@@ -1823,7 +1829,7 @@ function todayPortionOfSession(s: SessionSummary): number {
   return cost * todayOverlapRatio(s);
 }
 
-function computeTodaySpend(sessions: SessionSummary[]): number {
+export function computeTodaySpend(sessions: SessionSummary[]): number {
   let total = 0;
   for (const s of sessions) total += todayPortionOfSession(s);
   return total;
@@ -1843,7 +1849,7 @@ interface HourlyCostEntry {
   readonly cost: number;
 }
 
-function buildHourlySpend(sessions: SessionSummary[]): HourlyCostEntry[] {
+export function buildHourlySpend(sessions: SessionSummary[]): HourlyCostEntry[] {
   // The /api/sessions route always injects the live session with its current
   // in-memory cost (when not yet persisted) or returns the persisted entry
   // (when already on disk). Either way the live session is represented once in
@@ -1851,7 +1857,7 @@ function buildHourlySpend(sessions: SessionSummary[]): HourlyCostEntry[] {
   // it separately caused the live session's cost to be counted twice.
   const buckets = new Array<number>(24).fill(0);
   const dayStart = localStartOfDay();
-  const dayEnd = dayStart + 86_400_000;
+  const dayEnd = localEndOfDay(dayStart);
 
   for (const s of sessions) {
     if (!s.startTime || s.estimatedCostUsd == null || s.estimatedCostUsd <= 0) continue;

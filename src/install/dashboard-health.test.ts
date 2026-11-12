@@ -22,6 +22,17 @@ describe('getDashboardAddress()', () => {
     expect(getDashboardAddress()).toEqual({ host: '127.0.0.1', port: 7777 });
   });
 
+  it('loads the config without running secret helpers', () => {
+    mockedLoadMcpConfig.mockReturnValue({
+      dashboard: { host: '127.0.0.1', port: 7777, openOnStart: false },
+    } as unknown as McpServerConfig);
+
+    getDashboardAddress();
+
+    expect(mockedLoadMcpConfig).toHaveBeenCalledTimes(1);
+    expect(mockedLoadMcpConfig).toHaveBeenCalledWith(undefined, { resolveSecrets: false });
+  });
+
   it('returns null when loadMcpConfig() throws (e.g. cloud mode missing credentials)', () => {
     mockedLoadMcpConfig.mockImplementation(() => {
       throw new Error('missing credentials');

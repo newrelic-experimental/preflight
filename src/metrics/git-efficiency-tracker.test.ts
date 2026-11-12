@@ -8,7 +8,10 @@ import {
   parseDefaultBranchFromSymbolicRef,
 } from './git-efficiency-tracker.js';
 import { gitCommandTargetDir, stripHeredocBodies } from './local-session-aggregator.js';
-import type { ToolCallRecord, ReplayTimelineEntry } from '../storage/types.js';
+import { HookEventProcessor } from '../hooks/event-processor.js';
+import { ClaudeCodeAdapter } from '../platforms/claude-code-adapter.js';
+import { LocalStore } from '../storage/local-store.js';
+import type { HookEvent, ToolCallRecord, ReplayTimelineEntry } from '../storage/types.js';
 import { MetricAggregator } from '../shared/index.js';
 
 const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -25,6 +28,37 @@ function makeRecord(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
     success: true,
     ...overrides,
   };
+}
+
+/** The records HookEventProcessor pairs from one Claude Code pre/post hook pair per tool name. */
+function recordsFromClaudeCodeHooks(toolNames: readonly string[]): ToolCallRecord[] {
+  const dir = mkdtempSync(join(tmpdir(), 'git-eff-hooks-'));
+  try {
+    const store = new LocalStore(dir);
+    store.initialize();
+    const records: ToolCallRecord[] = [];
+    const processor = new HookEventProcessor({
+      store,
+      onRecord: (record) => records.push(record),
+      platformAdapter: new ClaudeCodeAdapter(),
+    });
+    processor.processEvents(
+      toolNames.flatMap((tool, i): HookEvent[] => [
+        { mode: 'pre', tool, timestamp: 1000 + i * 10, toolUseId: `tu-${i}`, sessionId: 's' },
+        {
+          mode: 'post',
+          tool,
+          timestamp: 1005 + i * 10,
+          success: true,
+          toolUseId: `tu-${i}`,
+          sessionId: 's',
+        },
+      ]),
+    );
+    return records;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 describe('parseDefaultBranchFromSymbolicRef()', () => {
@@ -1331,6 +1365,82 @@ describe('GitEfficiencyTracker', () => {
 
       const metrics = tracker.getMetrics();
       expect(metrics.prMetrics.prsUpdated).toBe(1);
+    });
+
+    // Claude Code names an MCP tool `mcp__<server>__<tool>`.
+    it('counts GitHub MCP PR tools under their Claude Code mcp__<server>__ names', () => {
+      for (const record of recordsFromClaudeCodeHooks([
+        'mcp__github__create_pull_request',
+        'mcp__plugin_github_github__update_pull_request',
+      ])) {
+        tracker.recordToolCall(record);
+      }
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.prMetrics.created).toBe(1);
+      expect(metrics.prMetrics.prsUpdated).toBe(1);
+    });
+
+    it('counts a GitHub MCP merge with the PR number it named, but not a failed one', () => {
+      tracker.recordToolCall(
+        makeRecord({ toolName: 'mcp__github__merge_pull_request', mcpPrNumber: '12' }),
+      );
+      tracker.recordToolCall(
+        makeRecord({
+          toolName: 'mcp__github__merge_pull_request',
+          mcpPrNumber: '13',
+          success: false,
+        }),
+      );
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.prMetrics.merged).toBe(1);
+      expect(metrics.prMetrics.prActivity).toEqual([
+        expect.objectContaining({ action: 'merge', prNumber: '12' }),
+      ]);
+    });
+
+    it('gives GitHub MCP creates and edits their PR numbers', () => {
+      tracker.recordToolCall(
+        makeRecord({ toolName: 'mcp__github__create_pull_request', createdPrNumber: '57' }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ toolName: 'mcp__github__update_pull_request', mcpPrNumber: '57' }),
+      );
+
+      expect(tracker.getMetrics().prMetrics.prActivity).toEqual([
+        expect.objectContaining({ action: 'create', prNumber: '57' }),
+        expect.objectContaining({ action: 'edit', prNumber: '57' }),
+      ]);
+    });
+
+    it('keeps a GitHub MCP PR number through replayTimeline()', () => {
+      tracker.replayTimeline([
+        {
+          timestamp: 1000,
+          toolName: 'mcp__github__merge_pull_request',
+          durationMs: null,
+          success: true,
+          mcpPrNumber: '12',
+        },
+      ]);
+
+      expect(tracker.getMetrics().prMetrics.prActivity).toEqual([
+        expect.objectContaining({ action: 'merge', prNumber: '12' }),
+      ]);
+    });
+
+    it('does not count a GitHub MCP tool whose name only starts like a PR tool', () => {
+      for (const record of recordsFromClaudeCodeHooks([
+        'mcp__github__create_pull_request_with_copilot',
+        'mcp__github__update_pull_request_branch',
+      ])) {
+        tracker.recordToolCall(record);
+      }
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.prMetrics.created).toBe(0);
+      expect(metrics.prMetrics.prsUpdated).toBe(0);
     });
 
     it('does not double-count a gh pr create Bash call as also being an MCP PR event', () => {

@@ -58,6 +58,13 @@ function hadExactReport(persisted: FullSessionSummary): boolean {
   );
 }
 
+// Day keys are zero-padded YYYY-MM-DD, so the string max is the latest day.
+function latestActivityDayKey(persisted: FullSessionSummary): string | undefined {
+  const days = Object.keys(persisted.costByDayUsd ?? {});
+  if (days.length > 0) return days.reduce((latest, day) => (day > latest ? day : latest));
+  return persisted.endTime > 0 ? localDateKey(persisted.endTime) : undefined;
+}
+
 // Builds the seed a freshly-started process's CostTracker needs to recover a
 // resumed session's pre-restart totals — see CostTracker.seedFromPersisted()
 // for why this exists (ParentTranscriptWatcher's read cursor durably survives
@@ -93,8 +100,11 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     dayCostUsd,
     daySubagentCostUsd,
     ...(dayFirstActivityMs !== undefined && { dayFirstActivityMs }),
+    legacyCallsDayKey: latestActivityDayKey(persisted) ?? dayKey,
     ...(persisted.unpricedByModel && { unpricedByModel: persisted.unpricedByModel }),
     ...(persisted.estimatedByModel && { estimatedByModel: persisted.estimatedByModel }),
+    ...(persisted.unpricedByDay && { unpricedByDay: persisted.unpricedByDay }),
+    ...(persisted.estimatedByDay && { estimatedByDay: persisted.estimatedByDay }),
     ...(persisted.byteEstimates && { byteEstimates: persisted.byteEstimates }),
     ...(!hadExactReport(persisted) && { hadExactReport: false }),
   };
