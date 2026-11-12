@@ -102,11 +102,7 @@ import { SessionTracker } from './metrics/session-tracker.js';
 import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
 import { TaskDetector, type AiCodingTask } from './metrics/task-detector.js';
-import {
-  holdTaskSend,
-  heldTaskSendsOwnedBy,
-  type HeldTaskSend,
-} from './metrics/held-task-sends.js';
+import { HeldTaskSends } from './metrics/held-task-sends.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
@@ -2132,7 +2128,7 @@ async function main(): Promise<void> {
     const subagentAttribution = new SubagentAttributionIndex();
     const capturedTaskDetector = taskDetector;
     const capturedConfig = config;
-    let heldTaskSends: HeldTaskSend[] = [];
+    const heldTaskSends = new HeldTaskSends();
     const antiPatternContext = (task: AiCodingTask) => {
       const firstRecord = task.toolCalls[0];
       // sessionTraceId is the resolved Claude Code session_id and is
@@ -2145,13 +2141,10 @@ async function main(): Promise<void> {
       };
     };
     const sendHeldTasksOwnedBy = (sessionId: string, ingest: NrIngestManager): void => {
-      const owned = heldTaskSendsOwnedBy(heldTaskSends, sessionId);
-      if (owned.length < heldTaskSends.length) {
-        logger.debug('Dropped held tasks not wholly from the adopted session', {
-          dropped: heldTaskSends.length - owned.length,
-        });
+      const { owned, dropped } = heldTaskSends.takeOwnedBy(sessionId);
+      if (dropped > 0) {
+        logger.debug('Dropped held tasks not wholly from the adopted session', { dropped });
       }
-      heldTaskSends = [];
       for (const { task, patterns } of owned) {
         ingest.ingestCodingTask(task);
         const context = antiPatternContext(task);
@@ -2194,7 +2187,7 @@ async function main(): Promise<void> {
             ts: Date.now(),
           });
         }
-        if (cloudIngestNotWiredYet) heldTaskSends = holdTaskSend(heldTaskSends, { task, patterns });
+        if (cloudIngestNotWiredYet) heldTaskSends.hold({ task, patterns });
       }
     };
 
