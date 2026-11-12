@@ -597,7 +597,7 @@ describe('capabilities', () => {
       windsurf: [],
       copilot: ['copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER],
       'copilot-app': ['copilot-app', 'copilot', UNATTRIBUTED_BREADCRUMB_WRITER],
-      'copilot-sdk': ['copilot-sdk', 'copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER],
+      'copilot-sdk': ['copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER],
       zed: [],
       continue: [],
       'amazon-q': [],
@@ -610,7 +610,7 @@ describe('capabilities', () => {
       kilocode: ['kilocode', UNATTRIBUTED_BREADCRUMB_WRITER],
       pi: [],
       antigravity: [],
-      'generic-mcp': [UNATTRIBUTED_BREADCRUMB_WRITER],
+      'generic-mcp': [],
     });
   });
 
