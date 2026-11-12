@@ -4,14 +4,16 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TaskCompletionPanel } from './TaskCompletionPanel';
 import type { TaskCompletionMetrics } from '../api/client';
 
-function stubTaskCompletion(body: TaskCompletionMetrics): void {
-  globalThis.fetch = vi.fn(
+function stubTaskCompletion(body: TaskCompletionMetrics): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(
     async () =>
       new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       }),
-  ) as typeof fetch;
+  );
+  globalThis.fetch = fetchMock as typeof fetch;
+  return fetchMock;
 }
 
 function renderPanel(): void {
@@ -39,6 +41,46 @@ describe('TaskCompletionPanel', () => {
     expect(screen.getByText('2m')).toBeTruthy();
     expect(screen.getByText('7.0')).toBeTruthy();
     expect(screen.queryByText(/No completed tasks yet/)).toBeNull();
+  });
+
+  it('shows a single completed task with its own averages', async () => {
+    stubTaskCompletion({ completedTasks: 1, avgTaskDurationMs: 42_000, avgToolCallsPerTask: 3 });
+    renderPanel();
+
+    expect(await screen.findByText('42s')).toBeTruthy();
+    expect(screen.getByText('3.0')).toBeTruthy();
+    expect(screen.queryByText(/No completed tasks yet/)).toBeNull();
+  });
+
+  it('requests the task-completion route', async () => {
+    const fetchMock = stubTaskCompletion({
+      completedTasks: 2,
+      avgTaskDurationMs: 120_000,
+      avgToolCallsPerTask: 7,
+    });
+    renderPanel();
+
+    await screen.findByText('2');
+    expect(fetchMock).toHaveBeenCalledWith('/api/task-completion', expect.anything());
+  });
+
+  it('refetches on an interval so the numbers stay current', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const fetchMock = stubTaskCompletion({
+        completedTasks: 1,
+        avgTaskDurationMs: 42_000,
+        avgToolCallsPerTask: 3,
+      });
+      renderPanel();
+
+      await screen.findByText('42s');
+      const before = fetchMock.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('renders the empty state when no task has completed', async () => {
