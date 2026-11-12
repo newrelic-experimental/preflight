@@ -33,7 +33,6 @@ import { Card, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
 import {
   fetchRecentAlerts,
   fetchBudget,
-  type BudgetPeriod,
   type BudgetStatus,
   fetchCacheHealth,
   fetchCost,
@@ -234,19 +233,11 @@ const QUALITY_REFETCH_MS = 10_000;
 const BUDGET_WARN_PCT = 50;
 const BUDGET_DANGER_PCT = 100;
 
-function DailyBudgetKpi({
-  spentUsd,
-  capUsd,
-  apiExceeded,
-}: {
-  spentUsd: number;
-  capUsd: number;
-  apiExceeded: boolean;
-}): JSX.Element {
+function DailyBudgetKpi({ spentUsd, capUsd }: { spentUsd: number; capUsd: number }): JSX.Element {
   const pct = (spentUsd / capUsd) * 100;
-  const overBudget = apiExceeded || spentUsd > capUsd;
+  const overBudget = spentUsd > capUsd;
   const tone: KpiTone =
-    overBudget || pct >= BUDGET_DANGER_PCT ? 'bad' : pct >= BUDGET_WARN_PCT ? 'warn' : 'neutral';
+    pct >= BUDGET_DANGER_PCT ? 'bad' : pct >= BUDGET_WARN_PCT ? 'warn' : 'neutral';
   return (
     <Kpi
       label="daily budget"
@@ -277,8 +268,7 @@ export function Today(): JSX.Element {
     queryFn: ({ signal }) => fetchBudget(signal),
     refetchInterval: 10_000,
   });
-  const dailyBudget: BudgetPeriod | null = budget?.daily ?? null;
-  const dailyBudgetCap = dailyBudget?.budgetUsd ?? null;
+  const dailyBudgetCap = budget?.daily?.budgetUsd ?? null;
   const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
     queryFn: ({ signal }) => fetchTodayAggregate(signal),
@@ -548,12 +538,8 @@ export function Today(): JSX.Element {
                   value={flagsLoading ? '…' : String(flagsCount)}
                   {...(flagsLoading ? {} : { animate: true, numericValue: flagsCount })}
                 />
-                {dailyBudget && dailyBudgetCap !== null && (
-                  <DailyBudgetKpi
-                    spentUsd={todayTotal}
-                    capUsd={dailyBudgetCap}
-                    apiExceeded={dailyBudget.exceeded}
-                  />
+                {dailyBudgetCap !== null && (
+                  <DailyBudgetKpi spentUsd={todayTotal} capUsd={dailyBudgetCap} />
                 )}
               </div>
             </Card>

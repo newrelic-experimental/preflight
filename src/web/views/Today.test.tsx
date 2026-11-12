@@ -3202,9 +3202,29 @@ describe('Today view — daily budget KPI', () => {
     await expectTile('$10.00', 'of $10.00 · 99% used', 'amber');
   });
 
-  it('goes red when the API says exceeded even if the local total is under the cap', async () => {
+  it('ignores the API exceeded flag when the day total is under the cap', async () => {
     stubBudget({ budgetUsd: 10, spentUsd: 11, pctUsed: 110, exceeded: true }, 4);
     renderToday();
-    await expectTile('$4.00', 'of $10.00 · 40% used · over budget', 'red');
+    await expectTile('$4.00', 'of $10.00 · 40% used', 'neutral');
+  });
+
+  it('shows the danger tone at exactly the cap without saying over budget', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 10, pctUsed: 100, exceeded: false });
+    renderToday();
+    await expectTile('$10.00', 'of $10.00 · 100% used', 'red');
+  });
+
+  it('adds a sixth column to the strip only while the budget tile shows', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 4, pctUsed: 40, exceeded: false });
+    renderToday();
+    const grid = (await budgetTile()).parentElement as HTMLElement;
+    expect(grid).toHaveClass('grid-cols-6');
+  });
+
+  it('keeps five columns in the strip when no daily budget is set', async () => {
+    stubBudget({ budgetUsd: null, spentUsd: 1.5, pctUsed: null, exceeded: false });
+    renderToday();
+    const label = await screen.findByText('spend today');
+    expect((label.parentElement as HTMLElement).parentElement).toHaveClass('grid-cols-5');
   });
 });
