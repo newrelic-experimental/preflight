@@ -8,6 +8,7 @@ import {
   fetchSessionReplay,
   fetchActivityHeatmap,
   patchSettings,
+  digestSendStatus,
   postDigestSend,
   qk,
   NotFoundError,
@@ -89,6 +90,15 @@ describe('api/client', () => {
         }),
       )) as typeof globalThis.fetch;
     await expect(postDigestSend()).rejects.toThrow(/503/);
+  });
+
+  it('digestSendStatus shows the send outcome, or a fallback when the body is not JSON', () => {
+    const body = (text: string) => ({ content: [{ type: 'text' as const, text }] });
+    expect(digestSendStatus(body(JSON.stringify({ ok: true })))).toBe('Digest sent.');
+    expect(digestSendStatus(body(JSON.stringify({ error: 'Slack webhook returned 500' })))).toBe(
+      'Slack webhook returned 500',
+    );
+    expect(digestSendStatus(body('<html>Bad Gateway</html>'))).toBe('Done.');
   });
 
   it('qk produces stable React Query keys', () => {

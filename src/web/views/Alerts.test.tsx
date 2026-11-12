@@ -225,3 +225,18 @@ describe('Alerts view — error and loading states', () => {
     settingsBox.current?.();
   });
 });
+
+describe('Alerts view — digest preview', () => {
+  it('Preview digest opens the dialog and POSTs nothing', async () => {
+    renderAlerts({ ...BASE_SETTINGS, digestWebhookUrlSource: 'file' } as typeof BASE_SETTINGS);
+    const posts: string[] = [];
+    const fetchForPreview = globalThis.fetch;
+    globalThis.fetch = ((url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') posts.push(url);
+      return fetchForPreview(url, init);
+    }) as typeof fetch;
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview digest' }));
+    expect(await screen.findByRole('dialog', { name: 'Digest preview' })).toBeTruthy();
+    expect(posts).toEqual([]);
+  });
+});

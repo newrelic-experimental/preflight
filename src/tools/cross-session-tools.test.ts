@@ -41,6 +41,7 @@ import {
   toFiniteNumber,
   registerCrossSessionTools,
   getNerdgraphUrl,
+  GET_DIGEST_PREVIEW_TOOL,
 } from './cross-session-tools.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -1542,5 +1543,11 @@ describe('registerCrossSessionTools()', () => {
       'nr_observe_subscribe_digest',
       'nr_observe_unsubscribe_digest',
     ]);
+  });
+});
+
+describe('GET_DIGEST_PREVIEW_TOOL', () => {
+  it('is annotated read-only, so MCP clients do not treat the preview as a write', () => {
+    expect(GET_DIGEST_PREVIEW_TOOL.annotations.readOnlyHint).toBe(true);
   });
 });
