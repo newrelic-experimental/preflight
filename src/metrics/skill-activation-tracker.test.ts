@@ -174,6 +174,30 @@ describe('SkillActivationTracker', () => {
     expect(stamp).toBeNull();
   });
 
+  it('ignores a late record with an older timestamp when measuring the gap', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+    t.recordToolCall(makeRecord({ toolUseId: 'u2', timestamp: 26_000 }));
+    t.recordToolCall(makeRecord({ toolUseId: 'u3', timestamp: 5000 }));
+
+    const stamp = t.recordToolCall(makeRecord({ toolUseId: 'u4', timestamp: 40_000 }));
+
+    expect(stamp?.name).toBe('eslint');
+  });
+
+  it('returns an evicted prompted session to gap mode when it reappears', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', null);
+    for (let i = 0; i < 60; i++) t.recordToolCall(makeRecord({ sessionId: `other-${i}` }));
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+
+    const stamp = t.recordToolCall(
+      makeRecord({ toolUseId: 'u2', timestamp: 1000 + DEFAULT_IDLE_TIMEOUT_MS + 1 }),
+    );
+
+    expect(stamp).toBeNull();
+  });
+
   it('does not count the wait for a prompt to produce its first tool call as an idle gap', () => {
     const t = new SkillActivationTracker();
     t.recordToolCall(makeRecord({ timestamp: 1000 }));
