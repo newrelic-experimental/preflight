@@ -78,6 +78,34 @@ describe('LocalSessionAggregator', () => {
     ]);
   });
 
+  it('amends the right timeline entry after older entries were evicted, and skips an evicted one', () => {
+    const agg = new LocalSessionAggregator();
+    const timedOut = (id: string, timestamp: number) => ({
+      id,
+      sessionId: REAL_ID,
+      toolName: 'Agent',
+      toolUseId: `toolu_${id}`,
+      timestamp,
+      durationMs: null,
+      success: false,
+      errorType: 'timeout',
+    });
+    agg.recordToolCall(timedOut('evicted', 1));
+    agg.recordToolCall(timedOut('kept', 2));
+    for (let i = 3; i <= 10_001; i++) {
+      const filler = { id: `f${i}`, sessionId: REAL_ID, toolName: 'Agent', timestamp: i };
+      agg.recordToolCall(filler);
+    }
+
+    agg.amendToolCall({ ...timedOut('evicted', 1), durationMs: 111, success: true });
+    const afterEvicted = summariesOf(agg)[0]?.timeline as Array<Record<string, unknown>>;
+    expect(afterEvicted[0]).toMatchObject({ timestamp: 2, durationMs: null, success: false });
+
+    agg.amendToolCall({ ...timedOut('kept', 2), durationMs: 222, success: true });
+    const timeline = summariesOf(agg)[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]).toMatchObject({ timestamp: 2, durationMs: 222, success: true });
+    expect(timeline[1]).toMatchObject({ timestamp: 3 });
+  });
   it('leaves out what another process may count, and nothing else', () => {
     const agg = new LocalSessionAggregator();
     const call = (toolName: string, rest: object): void =>
@@ -94,6 +122,45 @@ describe('LocalSessionAggregator', () => {
     expect(kept.toolBreakdown).toEqual({ Read: 1, Bash: 1 });
     expect(kept.timeline).toMatchObject([{ toolName: 'Read' }, { toolName: 'Bash' }]);
     expect(kept.toolSuccessRate).toBe(0.5);
+  });
+
+  it('keeps each timeline entry paired with its record at the cap, including after an amend', () => {
+    const agg = new LocalSessionAggregator();
+    const call = (id: string, timestamp: number, rest: object = {}) => ({
+      id,
+      sessionId: REAL_ID,
+      toolName: 'Read',
+      timestamp,
+      success: true,
+      ...rest,
+    });
+    agg.recordToolCall(
+      call('late', 1, {
+        toolUseId: 'late',
+        success: false,
+        errorType: 'timeout',
+        durationMs: null,
+      }),
+    );
+    agg.recordToolCall(
+      call('pending', 2, { toolUseId: 'pending', success: false, errorType: 'timeout' }),
+    );
+    for (let i = 3; i <= 10_001; i++) agg.recordToolCall(call(`f${i}`, i, { toolUseId: `t${i}` }));
+    agg.amendToolCall({ ...call('pending', 2), toolUseId: 'pending', durationMs: 9 });
+
+    const kept = agg.withoutCallsOtherProcessesMayCount(
+      summariesOf(agg)[0]!,
+      new Set(['t3', 't9999']),
+    ) as { timeline: Array<{ timestamp: number; durationMs: number | null }> };
+
+    const stamps = kept.timeline.map((e) => e.timestamp);
+    expect(stamps).toHaveLength(10_000 - 2);
+    expect(stamps[0]).toBe(2);
+    expect(kept.timeline[0]?.durationMs).toBe(9);
+    expect(stamps).not.toContain(3);
+    expect(stamps).not.toContain(9_999);
+    expect(stamps).toContain(10_000);
+    expect(stamps.at(-1)).toBe(10_001);
   });
 
   it("writes no success rate over a file's when it leaves out every call", () => {
@@ -1094,4 +1161,38 @@ describe('stripHeredocs', () => {
       expect(stripHeredocs(command)).toEqual({ text, unclosed: true, readingsDiffer });
     },
   );
+});
+
+describe('LocalSessionAggregator timeline cap', () => {
+  it('keeps the most recent 10,000 timeline entries once the cap is exceeded', () => {
+    const agg = new LocalSessionAggregator();
+    const total = 10_000 + 25;
+    for (let i = 1; i <= total; i++) {
+      agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: i });
+    }
+
+    const timeline = summariesOf(agg)[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline).toHaveLength(10_000);
+    expect(timeline[0]?.timestamp).toBe(26);
+    expect(timeline[9_999]?.timestamp).toBe(total);
+  });
+});
+
+describe('saved timeline past the cap', () => {
+  it('replaces the saved oldest entries with the newest as the session grows', () => {
+    const agg = new LocalSessionAggregator();
+    const save = (): FullSessionSummary => summariesOf(agg)[0] as unknown as FullSessionSummary;
+    let onDisk: FullSessionSummary | undefined;
+    for (let i = 1; i <= 10_025; i++) {
+      agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Bash', timestamp: i });
+      if (i === 10_000 || i === 10_025) {
+        onDisk = onDisk ? mergeSummaries(onDisk, save()) : save();
+      }
+    }
+
+    const stamps = onDisk!.timeline!.map((e) => e.timestamp);
+    expect(stamps).toHaveLength(10_000);
+    expect(stamps[0]).toBe(26);
+    expect(stamps.at(-1)).toBe(10_025);
+  });
 });
