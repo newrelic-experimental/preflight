@@ -3097,6 +3097,7 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
     ['mysql -u root -psecret123', 'secret123'],
     ['mysqldump -h db -u root -phunter2 shop', 'hunter2'],
     ['mysql -h db -P 3306 -u root -psecret123 shop', 'secret123'],
+    ['mysql -h my-prod -u root -psecret123', 'secret123'],
     ['curl -H "X-Api-Key secret123" https://api.example.com', 'secret123'],
     ['curl -H "X-Api-Key: secret123" https://api.example.com', 'secret123'],
     ["curl -H 'X-Auth-Token: secret123' https://api.example.com", 'secret123'],
@@ -3143,6 +3144,12 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
     'curl -H "Authorization: Bearer short" https://api.example.com',
     'vault kv get -field=token secret/app',
     'cat ~/.config/tool/token-cache.json',
+    'mysql -e "select 1" && ls -pa',
+    'mysql -e "select 1"; ls -pa',
+    'mysql -e "select 1"\nls -pa',
+    'mysqldump shop | pv -pt > dump.sql',
+    'ls pymysql -pa',
+    'ls mysqlbackups -pa',
   ])('leaves %s unchanged', (command) => {
     expect(redactSensitive(command)).toBe(command);
   });

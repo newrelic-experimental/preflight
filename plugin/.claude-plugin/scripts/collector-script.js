@@ -27,7 +27,8 @@ var REDACTION_PATTERNS = [
   /\b(?:vercel_|heroku_|dd_|pk_)[A-Za-z0-9_-]{20,}\b/gi,
   /(?<![\w-])--?(?:token|password|passwd|secret|api[-_]?key|access[-_]?key|auth[-_]?token)(?:[ \t]+|=)(?!-)\S+/gi,
   // -p is a port, parents or preserve flag everywhere else, so only a mysql client's -p<value> counts.
-  /-p(?<=\b(?:mysql(?:dump|admin)?|mariadb)\b[^\n;|&]{0,200}\s-p)\S+/g,
+  // The lookbehind stops at the previous " -p", so each scan covers new text and the cost stays linear.
+  /-p(?<=\b(?:mysql(?:dump|admin)?|mariadb)\b(?:(?!\s-p)[^\n;|&]){0,200}\s-p)\S+/g,
   /(?<=(?:-H|--header)[\s=]{1,4}["']?)(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})[^\s"']+/gi,
   /\baws_secret_access_key(?:[ \t]*[=:][ \t]*|[ \t]+)["']?[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/gi
 ];
@@ -395,7 +396,8 @@ function extractInputMeta(toolName, input) {
       if (Array.isArray(obj.replacements)) meta.replacementsCount = obj.replacements.length;
       break;
     case "run_in_terminal":
-      if (typeof obj.command === "string") meta.command = redact(obj.command);
+      if (typeof obj.command === "string")
+        meta.command = redact(truncate(obj.command, getMaxContentLength()));
       if (typeof obj.explanation === "string") meta.description = redact(obj.explanation);
       if (typeof obj.isBackground === "boolean") meta.run_in_background = obj.isBackground;
       break;
@@ -452,7 +454,8 @@ function extractInputMeta(toolName, input) {
     // input shape as Bash.
     case "Bash":
     case "PowerShell":
-      if (typeof obj.command === "string") meta.command = redact(obj.command);
+      if (typeof obj.command === "string")
+        meta.command = redact(truncate(obj.command, getMaxContentLength()));
       if (typeof obj.description === "string") meta.description = redact(obj.description);
       if (typeof obj.timeout === "number") meta.timeout = obj.timeout;
       if (typeof obj.run_in_background === "boolean")
@@ -704,7 +707,7 @@ function processHook(raw, cliEvent) {
       timestamp,
       inputSize: sizeOf(command),
       inputHash: hashInput(command),
-      toolInput: { command: redact(command) }
+      toolInput: { command: redact(truncate(command, maxContentLen)) }
     };
   } else if (eventName === "aftershellexecution") {
     event = {
@@ -796,7 +799,7 @@ function processHook(raw, cliEvent) {
       timestamp,
       inputSize: sizeOf(commandLine),
       inputHash: hashInput(commandLine),
-      toolInput: { command: redact(commandLine) }
+      toolInput: { command: redact(truncate(commandLine, maxContentLen)) }
     };
   } else if (eventName === "post_run_command") {
     event = {

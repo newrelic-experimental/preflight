@@ -536,7 +536,8 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
       if (Array.isArray(obj.replacements)) meta.replacementsCount = obj.replacements.length;
       break;
     case 'run_in_terminal':
-      if (typeof obj.command === 'string') meta.command = redact(obj.command);
+      if (typeof obj.command === 'string')
+        meta.command = redact(truncate(obj.command, getMaxContentLength()));
       if (typeof obj.explanation === 'string') meta.description = redact(obj.explanation);
       if (typeof obj.isBackground === 'boolean') meta.run_in_background = obj.isBackground;
       break;
@@ -593,7 +594,8 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
     // input shape as Bash.
     case 'Bash':
     case 'PowerShell':
-      if (typeof obj.command === 'string') meta.command = redact(obj.command);
+      if (typeof obj.command === 'string')
+        meta.command = redact(truncate(obj.command, getMaxContentLength()));
       if (typeof obj.description === 'string') meta.description = redact(obj.description);
       if (typeof obj.timeout === 'number') meta.timeout = obj.timeout;
       if (typeof obj.run_in_background === 'boolean')
@@ -1038,7 +1040,7 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       inputSize: sizeOf(command),
       inputHash: hashInput(command),
-      toolInput: { command: redact(command) },
+      toolInput: { command: redact(truncate(command, maxContentLen)) },
     };
   } else if (eventName === 'aftershellexecution') {
     // Cursor doesn't document a distinct failure event for shell (unlike
@@ -1160,7 +1162,7 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       inputSize: sizeOf(commandLine),
       inputHash: hashInput(commandLine),
-      toolInput: { command: redact(commandLine) },
+      toolInput: { command: redact(truncate(commandLine, maxContentLen)) },
     };
   } else if (eventName === 'post_run_command') {
     // No source documents an exit-code/output field for this event —
