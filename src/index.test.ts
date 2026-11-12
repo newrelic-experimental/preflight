@@ -2188,7 +2188,7 @@ describe('stdio integration', () => {
       });
     }, 40000);
 
-    it('an observed save that throws neither stops the next one nor the owner save', async () => {
+    it('an observed save that throws or fails neither stops the next one nor the owner save, and is retried', async () => {
       const preloadDir = mkdtempSync(join(tmpdir(), 'nr-throwing-save-'));
       const saveLog = resolve(preloadDir, 'saves.log');
       const storeUrl = pathToFileURL(resolve(distDir, 'storage', 'session-store.js')).href;
@@ -2198,9 +2198,11 @@ describe('stdio integration', () => {
           "import { appendFileSync } from 'node:fs';",
           `const { SessionStore } = await import(${JSON.stringify(storeUrl)});`,
           'const save = SessionStore.prototype.saveSession;',
+          'let failed = false;',
           'SessionStore.prototype.saveSession = function (summary) {',
           `  appendFileSync(${JSON.stringify(saveLog)}, summary.sessionId + '\\n');`,
           "  if (summary.sessionId === 'conv-throws') throw new Error('injected save failure');",
+          "  if (summary.sessionId === 'conv-fails' && !failed) return (failed = true), null;",
           '  return save.call(this, summary);',
           '};',
         ].join('\n'),
@@ -2215,18 +2217,22 @@ describe('stdio integration', () => {
             expect(await drained(storage, 'conv-throws')).toBe('');
             runHook(env, reportHook('conv-saved', 'r-saved-0001'));
             expect(await drained(storage, 'conv-saved')).toBe('');
+            runHook(env, reportHook('conv-fails', 'r-fails-0001'));
+            expect(await drained(storage, 'conv-fails')).toBe('');
 
             await adopt('real-owner-session');
             await close();
 
             const saves = readFileSync(saveLog, 'utf-8').trim().split('\n');
-            expect([...saves.slice(0, 2), saves.at(-1)]).toEqual([
+            expect([...saves.slice(0, 3), saves.at(-1)]).toEqual([
               'conv-throws',
               'conv-saved',
+              'conv-fails',
               'real-owner-session',
             ]);
             expect(saves.filter((id) => id === 'conv-throws').length).toBeGreaterThan(1);
             expect(savedSession(storage, 'conv-saved')).toMatchObject({ tokensInput: 1000 });
+            expect(savedSession(storage, 'conv-fails')).toMatchObject({ tokensInput: 1000 });
           },
           () => ['--import', preload],
         );
