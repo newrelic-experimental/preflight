@@ -15,6 +15,7 @@ const mockHooks: {
   shortSeal: boolean;
   bytesRead: number | null;
   failClose: boolean;
+  failStat: boolean;
 } = {
   beforeWrite: null,
   afterWrite: null,
@@ -25,6 +26,7 @@ const mockHooks: {
   shortSeal: false,
   bytesRead: null,
   failClose: false,
+  failStat: false,
 };
 
 function textOf(data: unknown): string {
@@ -87,6 +89,13 @@ jest.mock('node:fs', () => {
         throw Object.assign(new Error('EIO: i/o error, close'), { code: 'EIO' });
       }
     }) as typeof real.closeSync,
+    statSync: ((...args: Parameters<typeof real.statSync>) => {
+      if (mockHooks.failStat) {
+        mockHooks.failStat = false;
+        throw Object.assign(new Error('EIO: i/o error, stat'), { code: 'EIO' });
+      }
+      return real.statSync(...args);
+    }) as typeof real.statSync,
     readSync: ((fd: number, ...rest: unknown[]) => {
       const n = (real.readSync as (fd: number, ...rest: unknown[]) => number)(fd, ...rest);
       if (mockHooks.bytesRead !== null) mockHooks.bytesRead += n;
@@ -149,6 +158,7 @@ afterEach(() => {
   mockHooks.shortSeal = false;
   mockHooks.bytesRead = null;
   mockHooks.failClose = false;
+  mockHooks.failStat = false;
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -231,30 +241,30 @@ describe('appendToHookBuffer', () => {
     expect(() => appendToHookBuffer(bufferPath, line('B'))).toThrow(LineWrittenError);
   });
 
-  const failCloseAfter = (text: string, setUp?: () => void) => (): void => {
+  type Fault = 'failClose' | 'failStat';
+  const failAfter = (fault: Fault, text: string, setUp?: () => void) => (): void => {
     setUp?.();
     mockHooks.afterWrite = (written) => {
-      if (written.includes(text)) mockHooks.failClose = true;
+      if (written.includes(text)) mockHooks[fault] = true;
     };
   };
+  const failPastSeal = (fault: Fault) => (): void => {
+    fs.writeFileSync(bufferPath, line('A'));
+    mockHooks.beforeWrite = once(() => {
+      drainNow();
+      mockHooks[fault] = true;
+    });
+  };
   it.each([
-    ['the close after a whole line fails', true, failCloseAfter('"B"')],
-    [
-      'the close after a line that landed past a seal fails',
-      false,
-      () => {
-        fs.writeFileSync(bufferPath, line('A'));
-        mockHooks.beforeWrite = once(() => {
-          drainNow();
-          mockHooks.failClose = true;
-        });
-      },
-    ],
+    ['the close after a whole line fails', true, failAfter('failClose', '"B"')],
+    ['the close after a line that landed past a seal fails', false, failPastSeal('failClose')],
     [
       'the close after a torn write fails',
       false,
-      failCloseAfter('\x1e', () => (mockHooks.shortBy = 1)),
+      failAfter('failClose', '\x1e', () => (mockHooks.shortBy = 1)),
     ],
+    ['the stat after a whole line fails', true, failAfter('failStat', '"B"')],
+    ['the stat after a line that landed past a seal fails', false, failPastSeal('failStat')],
   ])(
     'marks the error as a written line only when a drain can read it: %s',
     (_label, written, fail) => {

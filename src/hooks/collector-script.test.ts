@@ -30,6 +30,7 @@ import {
 } from './collector-script.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
+import { DRAIN_SEAL } from '../storage/hook-buffer.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let stdoutSpy: ReturnType<typeof jest.spyOn>;
@@ -2102,20 +2103,23 @@ describe('collector-script', () => {
 
     const bufferFds = [
       "import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';",
-      'const { openSync, closeSync, writeSync } = fs; const buffers = new Map(); const paths = new Map(); let opened = 0;',
+      'const { openSync, closeSync, writeSync, statSync } = fs; const buffers = new Map(); const paths = new Map(); let opened = 0;',
       "fs.openSync = (p, ...a) => { const fd = openSync(p, ...a); if (String(p).includes('buffer-')) buffers.set(fd, ++opened), paths.set(fd, String(p)); return fd; };",
       'const reportLine = (fd) => buffers.get(fd) >= 2;',
       "const enospc = () => Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });",
     ];
     const bufferPath = () => resolve(tmpDir, 'buffer-conv-reporting.jsonl');
     const modesIn = (path: string): unknown[] =>
-      (existsSync(path) ? readFileSync(path, 'utf-8') : '').split('\n').flatMap((text) => {
-        try {
-          return [(JSON.parse(text) as { mode: string }).mode];
-        } catch {
-          return [];
-        }
-      });
+      (existsSync(path) ? readFileSync(path, 'utf-8') : '')
+        .split(DRAIN_SEAL)[0]!
+        .split('\n')
+        .flatMap((text) => {
+          try {
+            return [(JSON.parse(text) as { mode: string }).mode];
+          } catch {
+            return [];
+          }
+        });
     const runWithBufferFault = (failure: string): unknown[] => {
       const preload = [...bufferFds, failure, 'syncBuiltinESMExports();'].join('\n');
       const script = resolve(__dirname, '..', '..', 'dist', 'hooks', 'collector-script.js');
@@ -2138,7 +2142,17 @@ describe('collector-script', () => {
     const drainThenRestart = "fs.renameSync(p, p + '.drained'); fs.writeFileSync(p, '');";
     const shortWrite = (keep: string, tornEnd = 'throw enospc()') =>
       `fs.writeSync = (fd, b, off = 0, ...a) => { if (!reportLine(fd)) return writeSync(fd, b, off, ...a); if (typeof b === 'string') ${tornEnd}; return writeSync(fd, b, off, ${keep}); };`;
+    const sealThenFailStat = [
+      "fs.writeSync = (fd, b, ...a) => { if (!reportLine(fd) || typeof b === 'string') return writeSync(fd, b, ...a);",
+      `const p = paths.get(fd); fs.renameSync(p, p + '.drained'); const s = openSync(p + '.drained', 'a'); writeSync(s, ${JSON.stringify(DRAIN_SEAL)}); closeSync(s); fs.writeFileSync(p, '');`,
+      "const n = writeSync(fd, b, ...a); fs.statSync = (q, ...o) => { if (q === p) throw new Error('EIO'); return statSync(q, ...o); }; syncBuiltinESMExports(); return n; };",
+    ].join(' ');
     it.each([
+      [
+        'a drain renames and seals the buffer before the usage line lands and the stat after it fails',
+        sealThenFailStat,
+        ['post', 'post', 'self_report'],
+      ],
       [
         'closing the buffer fails after a drain took the usage line and a new hook began a fresh buffer',
         failClose('reportLine(fd)', drainThenRestart),
