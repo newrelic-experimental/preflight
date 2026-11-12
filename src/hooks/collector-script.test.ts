@@ -370,6 +370,22 @@ describe('collector-script', () => {
     });
   });
 
+  describe('processHook() — secrets passed as Bash arguments', () => {
+    it.each([
+      ['npm run deploy -- --token secret123', 'npm run deploy -- [REDACTED]'],
+      ['mysql -u root -psecret123', 'mysql -u root [REDACTED]'],
+      [
+        'curl -H "X-Api-Key secret123" https://api.example.com',
+        'curl -H "[REDACTED]" https://api.example.com',
+      ],
+    ])('writes %s to the buffer with the secret redacted', (command, expected) => {
+      processHook(makePreToolUse({ tool_name: 'Bash', tool_input: { command } }));
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.command).toBe(expected);
+    });
+  });
+
   describe('processHook() — PowerShell (native Windows tool, no Git Bash)', () => {
     // PowerShell is a real, first-party Claude Code tool (see
     // code.claude.com/docs/en/tools-reference) — extractInputMeta() had no

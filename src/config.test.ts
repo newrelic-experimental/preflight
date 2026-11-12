@@ -3080,3 +3080,51 @@ describe('resolveCompanionMode()', () => {
     expect(resolveCompanionMode(env, fileValue)).toEqual({ value, source });
   });
 });
+
+describe('redactSensitive() — secrets passed as command arguments', () => {
+  const AWS_SECRET = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+
+  it.each([
+    ['npm run deploy -- --token secret123', 'secret123'],
+    ['npm test -- --password hunter2', 'hunter2'],
+    ['deploy --api-key secret123', 'secret123'],
+    ['deploy --api_key secret123', 'secret123'],
+    ['deploy --auth-token secret123', 'secret123'],
+    ['deploy --access-key secret123', 'secret123'],
+    ['deploy --secret secret123', 'secret123'],
+    ['keytool -password hunter2', 'hunter2'],
+    ['deploy --api-key=secret123', 'secret123'],
+    ['mysql -u root -psecret123', 'secret123'],
+    ['mysqldump -h db -u root -phunter2 shop', 'hunter2'],
+    ['curl -H "X-Api-Key secret123" https://api.example.com', 'secret123'],
+    ['curl -H "X-Api-Key: secret123" https://api.example.com', 'secret123'],
+    ["curl -H 'X-Auth-Token: secret123' https://api.example.com", 'secret123'],
+    ['curl --header "Api-Key secret123" https://api.example.com', 'secret123'],
+    [`aws configure set aws_secret_access_key ${AWS_SECRET}`, AWS_SECRET],
+    [`AWS_SECRET_ACCESS_KEY=${AWS_SECRET} aws s3 ls`, AWS_SECRET],
+  ])('redacts the value in %s', (command, secret) => {
+    const result = redactSensitive(command);
+    expect(result).not.toContain(secret);
+    expect(result).toContain('[REDACTED]');
+  });
+
+  it.each([
+    'docker login -u me --password-stdin',
+    'tool --token-file ./token.txt',
+    'tool --password-file /run/secrets/pw',
+    'aws secretsmanager get-secret-value --secret-name prod/db',
+    'cmd --token --verbose',
+    'git log --format=%s',
+    'mkdir -p src/lib',
+    'cp -p a.txt b.txt',
+    'ps -p 123',
+    'ssh -p 2222 host',
+    'mysql -u root -p',
+    'mysql -h db -P 3306 -u root -p shop',
+    'refresh the token before it expires',
+    'the password prompt appears',
+    'curl -H "Content-Type: application/json" https://api.example.com',
+  ])('leaves %s unchanged', (command) => {
+    expect(redactSensitive(command)).toBe(command);
+  });
+});
