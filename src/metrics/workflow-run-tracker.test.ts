@@ -139,6 +139,19 @@ describe('WorkflowRunTracker', () => {
     expect(run.tool_call_count).toBe(2);
   });
 
+  it('counts a second Agent call that resumes the same subagent from zero', () => {
+    const tracker = new WorkflowRunTracker();
+    tracker.recordToolCall(makeRecord({ toolUseId: 'r1', agentId: 'a1' }));
+    tracker.recordToolCall(makeAgentRecord({ toolUseId: 'first', spawnedAgentId: 'a1' }));
+    tracker.recordToolCall(makeRecord({ toolUseId: 'r2', agentId: 'a1' }));
+    tracker.recordToolCall(makeAgentRecord({ toolUseId: 'second', spawnedAgentId: 'a1' }));
+
+    expect(tracker.drainCompleted().map((r) => [r.workflow_run_id, r.tool_call_count])).toEqual([
+      ['first', 1],
+      ['second', 1],
+    ]);
+  });
+
   it("does not count main-thread calls or another subagent's calls", () => {
     const tracker = new WorkflowRunTracker();
     tracker.recordToolCall(makeRecord({ toolName: 'Read', timestamp: 1_100, toolUseId: 'main' }));
