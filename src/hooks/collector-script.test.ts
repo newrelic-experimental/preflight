@@ -2094,9 +2094,18 @@ describe('collector-script', () => {
       "import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';",
       'const { openSync, closeSync, writeSync } = fs; const buffers = new Map(); const paths = new Map(); let opened = 0;',
       "fs.openSync = (p, ...a) => { const fd = openSync(p, ...a); if (String(p).includes('buffer-')) buffers.set(fd, ++opened), paths.set(fd, String(p)); return fd; };",
-      'const reportLine = (fd) => buffers.get(fd) === 2;',
+      'const reportLine = (fd) => buffers.get(fd) >= 2;',
       "const enospc = () => Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });",
     ];
+    const bufferPath = () => resolve(tmpDir, 'buffer-conv-reporting.jsonl');
+    const modesIn = (path: string): unknown[] =>
+      (existsSync(path) ? readFileSync(path, 'utf-8') : '').split('\n').flatMap((text) => {
+        try {
+          return [(JSON.parse(text) as { mode: string }).mode];
+        } catch {
+          return [];
+        }
+      });
     const runWithBufferFault = (failure: string): unknown[] => {
       const preload = [...bufferFds, failure, 'syncBuiltinESMExports();'].join('\n');
       const script = resolve(__dirname, '..', '..', 'dist', 'hooks', 'collector-script.js');
@@ -2108,49 +2117,45 @@ describe('collector-script', () => {
           env: { ...process.env, NEW_RELIC_AI_MCP_STORAGE_PATH: tmpDir, MCP_CLIENT: 'cursor' },
         },
       );
-      const parseable = (): unknown[] =>
-        (existsSync(resolve(tmpDir, 'buffer-conv-reporting.jsonl'))
-          ? readFileSync(resolve(tmpDir, 'buffer-conv-reporting.jsonl'), 'utf-8')
-          : ''
-        )
-          .split('\n')
-          .flatMap((text) => {
-            try {
-              return [(JSON.parse(text) as { mode: string }).mode];
-            } catch {
-              return [];
-            }
-          });
-      const drained = parseable();
-      rmSync(resolve(tmpDir, 'buffer-conv-reporting.jsonl'), { force: true });
+      const drained = [...modesIn(`${bufferPath()}.drained`), ...modesIn(bufferPath())];
+      rmSync(bufferPath(), { force: true });
       processHook(cursorReportHook('conv-reporting'));
-      return [...drained, ...parseable()];
+      return [...drained, ...modesIn(bufferPath())];
     };
 
-    const shortWrite = (keep: string) =>
-      `fs.writeSync = (fd, b, off = 0, ...a) => { if (!reportLine(fd)) return writeSync(fd, b, off, ...a); if (typeof b === 'string') throw enospc(); return writeSync(fd, b, off, ${keep}); };`;
+    const failClose = (lineFd: string, drain = '') =>
+      `fs.closeSync = (fd) => { closeSync(fd); if (${lineFd}) { const p = paths.get(fd); ${drain} throw new Error('EIO'); } };`;
+    const drainThenRestart = "fs.renameSync(p, p + '.drained'); fs.writeFileSync(p, '');";
+    const shortWrite = (keep: string, tornEnd = 'throw enospc()') =>
+      `fs.writeSync = (fd, b, off = 0, ...a) => { if (!reportLine(fd)) return writeSync(fd, b, off, ...a); if (typeof b === 'string') ${tornEnd}; return writeSync(fd, b, off, ${keep}); };`;
     it.each([
       [
-        'closing the buffer fails after the usage line was written',
-        "fs.closeSync = (fd) => { closeSync(fd); if (reportLine(fd)) throw new Error('EIO'); };",
+        'closing the buffer fails after a drain took the usage line and a new hook began a fresh buffer',
+        failClose('reportLine(fd)', drainThenRestart),
         ['post', 'self_report', 'post'],
       ],
       [
-        'a failed close leaves the buffer unreadable',
-        "fs.closeSync = (fd) => { closeSync(fd); if (reportLine(fd)) { fs.unlinkSync(paths.get(fd)); throw new Error('EIO'); } };",
-        ['post'],
-      ],
-      [
-        'the disk fills one byte short of the usage line',
+        'the disk fills one byte short of the usage line and its torn end fails too',
         shortWrite('b.length - 1 - off'),
         ['post', 'self_report', 'post'],
       ],
-    ])('keeps the claim when %s, so a retry adds no usage line', (_label, failure, modes) => {
+      [
+        'every write of the usage line ends one byte short and is marked torn',
+        shortWrite('b.length - 1 - off', 'return writeSync(fd, b)'),
+        ['post', 'post', 'self_report'],
+      ],
+      [
+        'the disk fills before the usage line is whole',
+        shortWrite('10'),
+        ['post', 'post', 'self_report'],
+      ],
+      [
+        'closing the buffer fails after the post, before the usage line',
+        failClose('buffers.get(fd) === 1'),
+        ['post', 'post', 'self_report'],
+      ],
+    ])('counts the usage line once when %s', (_label, failure, modes) => {
       expect(runWithBufferFault(failure)).toEqual(modes);
-    });
-
-    it('releases the claim when the disk fills before the usage line is whole, so a retry records it once', () => {
-      expect(runWithBufferFault(shortWrite('10'))).toEqual(['post', 'post', 'self_report']);
     });
 
     it.each(['pending-1', 'local-x', 'proxy-7', 'unknown'])(
