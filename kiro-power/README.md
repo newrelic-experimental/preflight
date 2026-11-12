@@ -10,6 +10,9 @@ Preflight observes your Kiro coding sessions — every tool call, what it cost,
 and patterns like thrashing, redundant re-reads or stuck loops — and exposes the
 results as `nr_observe_*` MCP tools the agent can query.
 
+**Full capture needs two extra steps:** a global `npm install -g @newrelic/preflight`
+plus a workspace hook file. The MCP tools alone only see Preflight's own calls.
+
 **Local-first.** A dashboard at `http://127.0.0.1:7777`, no account required,
 nothing leaves your machine. Connect a New Relic account only when you want
 team rollups, alerting and cross-session history.
@@ -69,8 +72,16 @@ This power uses the Agent Plugins format: a `plugin.json` manifest, an
 Local mode is the default and sends nothing off the machine — sessions are
 written to `~/.newrelic-preflight/` and served on `127.0.0.1`. Cloud mode
 transmits telemetry to New Relic only after you supply a license key and
-explicitly switch modes. Tool-call _content_ is not recorded unless you opt in,
-and secrets are redacted before anything is written or sent.
+explicitly switch modes. In cloud mode Preflight sends file paths, redacted
+shell commands, your developer ID and the repo URL, as well as aggregate costs
+and counts. Full file contents and command output are not recorded unless you
+opt in, and known secret formats are redacted before anything is written or
+sent. See [PRIVACY.md](https://github.com/newrelic-experimental/preflight/blob/main/PRIVACY.md)
+for the complete list.
+
+Credentials are never collected in chat. `mcp.json` reads every setting from
+`${VAR}` environment references (`NR_AI_MODE`, `NEW_RELIC_AI_PLATFORM`,
+`NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`) that you set yourself.
 
 See the [New Relic Privacy Notice](https://newrelic.com/termsandconditions/privacy)
 for how New Relic handles data you choose to send.
