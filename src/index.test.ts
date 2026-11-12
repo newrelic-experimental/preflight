@@ -1556,9 +1556,10 @@ describe('stdio integration', () => {
     }, 30000);
 
     const guessFromCwd = (storage: string, cwd: string): void => {
-      mkdirSync(resolve(storage, 'session-by-cwd'), { recursive: true });
+      const crumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-cwd');
+      mkdirSync(crumbs, { recursive: true });
       const breadcrumb = `${realpathSync(cwd).replace(/[\\/:]/g, '-')}.txt`;
-      writeFileSync(resolve(storage, 'session-by-cwd', breadcrumb), 'guessed-session');
+      writeFileSync(resolve(crumbs, breadcrumb), 'guessed-session');
     };
     const makeCwd = (): string => {
       const cwd = mkdtempSync(join(tmpdir(), 'nr-adopt-cwd-'));
