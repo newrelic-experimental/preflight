@@ -15,6 +15,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ZERO_QUALITY_PROXY_COUNTS } from './quality-proxy-tracker.js';
+import { makeUsage } from '../__test-utils__/token-usage.js';
 
 function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummary {
   const now = Date.now();
@@ -338,6 +339,36 @@ describe('byte-estimate sessions across a real restart', () => {
     );
   });
 
+  it('restores the day of each unpriced and estimated-price call', () => {
+    const before = new CostTracker();
+    const now = Date.now();
+    const yesterdayMs = localStartOfDay(now) - 60_000;
+    const usage = makeUsage({ inputTokens: 10, totalTokens: 10 });
+    before.recordTokenUsage(usage, 'claude-foo-9-9', { timestampMs: yesterdayMs });
+    before.recordTokenUsage(usage, 'claude-foo-9-9', { timestampMs: now });
+    before.recordTokenUsage(usage, 'claude-opus-5-9', { timestampMs: yesterdayMs });
+
+    const m = makeRestart(before).getMetrics();
+
+    expect(m.unpricedByDay).toEqual({
+      [localDateKey(yesterdayMs)]: { 'claude-foo-9-9': { calls: 1, tokens: 10 } },
+      [localDateKey(now)]: { 'claude-foo-9-9': { calls: 1, tokens: 10 } },
+    });
+    expect(Object.keys(m.estimatedByDay)).toEqual([localDateKey(yesterdayMs)]);
+  });
+
+  it('keeps calls that are all late arrivals out of every day', () => {
+    const before = new CostTracker();
+    before.recordTokenUsage(makeUsage({ inputTokens: 10, totalTokens: 10 }), 'claude-foo-9-9', {
+      timestampMs: Date.now() - 72 * 3_600_000,
+    });
+
+    const m = makeRestart(before).getMetrics();
+
+    expect(m.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 1, tokens: 10 } });
+    expect(m.unpricedByDay).toEqual({});
+  });
+
   it('treats a summary written before the exact/estimate split as reported', () => {
     const after = new CostTracker();
     after.seedFromPersisted(buildCostTrackerSeed(makeSummary()));
@@ -440,6 +471,24 @@ describe('buildCostTrackerSeed today attribution', () => {
     expect(seed.totalCostUsd).toBe(248);
     expect(seed.dayCostUsd).toBe(0);
     expect(seed.daySubagentCostUsd).toBe(0);
+  });
+
+  it('books the calls of a checkpoint written before day buckets to its own latest day', () => {
+    const unpricedByModel = { 'claude-foo-9-9': { calls: 3, tokens: 30 } };
+    const fromCostDays = seedTracker(
+      makeCrossMidnight({
+        endTime: NOON,
+        costByDayUsd: { '2026-10-27': 1, [YESTERDAY_KEY]: 2 },
+        unpricedByModel,
+      }),
+    );
+    const fromEndTime = seedTracker(
+      makeSummary({ endTime: DAY_START - 2 * HOUR, costByDayUsd: undefined, unpricedByModel }),
+    );
+
+    for (const tracker of [fromCostDays, fromEndTime]) {
+      expect(tracker.getMetrics().unpricedByDay).toEqual({ [YESTERDAY_KEY]: unpricedByModel });
+    }
   });
 
   it('never seeds a today subagent share above today total cost', () => {

@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { UNATTRIBUTED_BREADCRUMB_WRITER as PUBLIC_UNATTRIBUTED_WRITER } from '../index.js';
+import { generateCopilotHooksFile } from '../install/copilot-install-helper.js';
 import { AmazonQAdapter } from './amazon-q-adapter.js';
 import { AntigravityAdapter } from './antigravity-adapter.js';
 import { CLAUDE_CODE_ENV_SIGNALS, ClaudeCodeAdapter } from './claude-code-adapter.js';
@@ -21,7 +23,13 @@ import { KiroAdapter } from './kiro-adapter.js';
 import { OpencodeAdapter } from './opencode-adapter.js';
 import { PiAdapter } from './pi-adapter.js';
 import { PlatformRegistry, createDefaultRegistry } from './platform-registry.js';
-import type { NormalizedToolCall, PlatformAdapter, PlatformSessionMetadata } from './types.js';
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  sessionBreadcrumbWriters,
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformSessionMetadata,
+} from './types.js';
 import { WindsurfAdapter } from './windsurf-adapter.js';
 import { ZedAdapter } from './zed-adapter.js';
 
@@ -575,6 +583,81 @@ describe('capabilities', () => {
       expect(adapter.capabilities).toBeDefined();
       expect(Array.isArray(adapter.capabilities.instructionFilePaths)).toBe(true);
     }
+  });
+
+  it('names the breadcrumb writers each engine may adopt a session id from', () => {
+    const writers = Object.fromEntries(
+      createDefaultRegistry()
+        .getRegistered()
+        .map((a) => [a.platformName, a.capabilities.sessionBreadcrumbWriters]),
+    );
+    expect(writers).toEqual({
+      'claude-code': ['claude-code'],
+      cursor: [],
+      windsurf: [],
+      copilot: ['copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER],
+      'copilot-app': ['copilot-app', 'copilot', UNATTRIBUTED_BREADCRUMB_WRITER],
+      'copilot-sdk': ['copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER],
+      zed: [],
+      continue: [],
+      'amazon-q': [],
+      kiro: ['kiro', UNATTRIBUTED_BREADCRUMB_WRITER],
+      droid: ['droid', UNATTRIBUTED_BREADCRUMB_WRITER],
+      'gemini-cli': ['gemini-cli', UNATTRIBUTED_BREADCRUMB_WRITER],
+      cline: [],
+      codex: ['codex', UNATTRIBUTED_BREADCRUMB_WRITER],
+      opencode: ['opencode', UNATTRIBUTED_BREADCRUMB_WRITER],
+      kilocode: ['kilocode', UNATTRIBUTED_BREADCRUMB_WRITER],
+      pi: [],
+      antigravity: [],
+      'generic-mcp': [],
+    });
+  });
+
+  it('lets every Copilot engine adopt every engine name its shared hooks file can carry', () => {
+    const hookStamp = (text: string) => {
+      const command = /"command": "([^"]+)"/.exec(text)?.[1] ?? text;
+      return /(?:MCP_CLIENT|NEW_RELIC_AI_PLATFORM)=(\S+)/.exec(command)?.[1];
+    };
+    const sharedFileStamps = [
+      hookStamp(generateCopilotHooksFile().hooks.PreToolUse[0].command),
+      hookStamp(new CopilotAdapter().getHookInstallInstructions()),
+      hookStamp(new CopilotAppAdapter().getHookInstallInstructions()),
+      hookStamp(new CopilotSdkAdapter().getHookInstallInstructions()),
+    ];
+    expect(sharedFileStamps).toEqual(['copilot', 'copilot', 'copilot-app', 'copilot']);
+    for (const adapter of [
+      new CopilotAdapter(),
+      new CopilotAppAdapter(),
+      new CopilotSdkAdapter(),
+    ]) {
+      expect(adapter.capabilities.sessionBreadcrumbWriters).toEqual(
+        expect.arrayContaining([...sharedFileStamps, UNATTRIBUTED_BREADCRUMB_WRITER]),
+      );
+    }
+  });
+
+  it('exports the unattributed writer under the name its breadcrumbs carry', () => {
+    expect(PUBLIC_UNATTRIBUTED_WRITER).toBe('unattributed');
+    expect(UNATTRIBUTED_BREADCRUMB_WRITER).toBe(PUBLIC_UNATTRIBUTED_WRITER);
+  });
+
+  it('lets a custom adapter that names no breadcrumb writers adopt its own and unattributed ones', () => {
+    const custom: PlatformAdapter = {
+      platformName: 'my-engine',
+      visibilityLevel: 'full-hooks',
+      capabilities: { instructionFilePaths: [] },
+      async initialize() {},
+      normalizeToolCall() {
+        throw new Error('not used by this test');
+      },
+      mapToolName: (name) => name,
+      getSessionMetadata: () => ({ platform: 'my-engine' }),
+      getHookInstallInstructions: () => '',
+      isSupported: () => true,
+    };
+    expect(sessionBreadcrumbWriters(custom)).toEqual(['my-engine', UNATTRIBUTED_BREADCRUMB_WRITER]);
+    expect(sessionBreadcrumbWriters(new CursorAdapter())).toEqual([]);
   });
 
   it('claude-code declares CLAUDE.md and .claude/ as instruction file paths', () => {
