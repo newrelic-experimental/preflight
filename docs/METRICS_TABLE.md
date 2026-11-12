@@ -51,6 +51,8 @@ These events are emitted by the MCP server (`preflight`) when Claude Code or ano
 
 #### `AiToolCall`
 
+**What it is:** One record for each action your AI assistant takes, such as reading a file, running a command or editing code, with how long it took and whether it succeeded. It is the raw activity log behind most other Preflight data. Use it to see which tools the assistant leans on, find slow or failing calls, and drill into what happened in a specific session.
+
 Emitted for every tool call captured by the hook collector.
 
 | Field                 | Type    | Description                                                                                                                                                                                                                |
@@ -70,7 +72,7 @@ Emitted for every tool call captured by the hook collector.
 | `org_id`              | string  | Organization identifier (if configured)                                                                                                                                                                                    |
 | `platform`            | string  | Platform attribution (default: `claude-code`)                                                                                                                                                                              |
 | `duration_ms`         | number  | Tool call duration in milliseconds (if available)                                                                                                                                                                          |
-| `error_type`          | string  | Error classification (if failed): `timeout` (no completion within 60s), `rejected` (user rejected the permission prompt), `denied` (auto permission mode denied by policy), `interrupted` (user interrupted mid-execution) |
+| `error_type`          | string  | Error classes (if failed): `timeout` (no completion in 60s; Bash 11 min, Agent and Task 30 min), `rejected` (user rejected the permission prompt), `denied` (auto mode denied by policy), `interrupted` (user interrupted) |
 | `error`               | string  | Error message (if failed)                                                                                                                                                                                                  |
 | `input_size_bytes`    | number  | Size of tool input (if available)                                                                                                                                                                                          |
 | `output_size_bytes`   | number  | Size of tool output (if available)                                                                                                                                                                                         |
@@ -94,6 +96,8 @@ Bash tool calls additionally carry four classifier fields:
 Source: `src/hooks/bash-classifier.ts` — `classifyBash()`
 
 #### `AiMcpToolCall`
+
+**What it is:** A record of each tool call that Preflight's proxy forwarded to an upstream MCP server, with the upstream server's latency separated from the proxy's own overhead. Use it to see which MCP servers and tools your assistant relies on, find slow or unreliable servers, and confirm that proxying adds no noticeable delay.
 
 Emitted for proxied tool calls (when the server forwards to upstream MCP servers).
 
@@ -123,7 +127,9 @@ Source: `src/transport/nr-ingest.ts` — `proxyToolCallToNrEvent()`
 
 #### `AiProxyRequest`
 
-Emitted for non-tool proxy requests (discovery methods like `tools/list`, `resources/list`).
+**What it is:** A record of each non-tool request the proxy handled, such as asking an upstream MCP server to list its tools or resources. Use it to see how often assistants discover capabilities and whether discovery is slow.
+
+Emitted for non-tool proxy requests (discovery methods like `tools/list`, `resources/list`, `resources/read`).
 
 | Field                 | Type    | Description                                                                                                            |
 | --------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -148,6 +154,8 @@ Source: `src/transport/nr-ingest.ts` — `proxyRequestToNrEvent()`
 
 #### `AiAuditEvent`
 
+**What it is:** A security-focused record of what your assistant did, one per tool call, with the file path or command involved. Each record is labelled with the kind of action and flagged when it matches a risk rule, such as sensitive file access, destructive commands, external network requests or file deletion. Use it as an audit trail for compliance reviews and to work out what happened after an incident.
+
 Emitted for every tool call as a security audit record.
 
 | Field                  | Type    | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -155,7 +163,7 @@ Emitted for every tool call as a security audit record.
 | `eventType`            | string  | Always `"AiAuditEvent"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `event_version`        | number  | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `timestamp`            | number  | Unix epoch seconds                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `action`               | string  | Audit action: `FileRead`, `FileWrite`, `FileEdit`, `BashCommand`, `McpToolCall`, `AgentSpawn`, `Search`, or `Other`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `action`               | string  | Audit action: `FileRead`, `FileWrite`, `FileEdit`, `BashCommand`, `McpToolCall`, `AgentSpawn`, `Search`, `HookInstall`, or `Other`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `tool`                 | string  | Tool name                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `detail`               | string  | Human-readable description of the action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `developer`            | string  | Developer identifier                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -175,6 +183,8 @@ Emitted for every tool call as a security audit record.
 Source: `src/security/audit-trail.ts` — `auditRecordToNrEvent()`
 
 #### `SecurityAlert`
+
+**What it is:** A flag raised when an audit record looks risky, with a severity and a plain-language description. Use it to alert on risky assistant behavior without querying every audit record.
 
 Emitted only when a security alert is triggered (subset of audit events).
 
@@ -208,6 +218,8 @@ Security alert triggers:
 Source: `src/security/audit-trail.ts` — `securityAlertToNrEvent()`
 
 #### `AiCodingTask`
+
+**What it is:** A summary of one logical piece of work, from the moment your assistant starts on a request to the moment it finishes, such as fixing a bug or adding a feature. Each record rolls up the files touched, lines changed, tests and builds run, tokens used and estimated cost, and classifies the outcome. Use it to see what the assistant accomplished and what it cost per task, and to compare effort across bug fixes, features and refactors.
 
 Emitted when a task boundary is detected (a logical unit of work from task start to completion).
 
@@ -250,6 +262,8 @@ Source: `src/transport/nr-ingest.ts` — `codingTaskToNrEvent()`
 
 #### `AiAntiPattern`
 
+**What it is:** A wasteful working pattern found in a completed task, such as re-reading the same file or repeatedly editing a file while its tests keep failing, with a suggestion for avoiding it. Use it to find habits that waste tokens and time, and to see which patterns recur across developers or teams.
+
 Emitted for each anti-pattern detected within a completed task.
 
 | Field           | Type   | Description                                                                                                            |
@@ -279,6 +293,8 @@ Emitted for each anti-pattern detected within a completed task.
 Source: `src/transport/nr-ingest.ts` — `antiPatternToNrEvent()`
 
 #### `AiBudgetWarning`
+
+**What it is:** A record written when spend crosses 50%, 80% or 100% of a budget you configured. Use it to alert before you overspend, and to see which periods or teams run hot.
 
 Emitted when a configured budget threshold is crossed (50%, 80%, 100%).
 
@@ -312,6 +328,8 @@ Source: `src/transport/nr-ingest.ts`, `src/metrics/budget-tracker.ts`
 
 #### `AiContextSnapshot`
 
+**What it is:** A per-turn picture of how full the model's context window is, with an estimated split into system, tool, user and assistant content and the single largest tool contributor. Use it to find sessions nearing the limit and to spot the tool that adds the most to the context.
+
 Emitted for each LLM turn when context-window tracking is enabled, capturing token breakdown by category.
 
 | Field                   | Type   | Description                                                                                                            |
@@ -344,6 +362,8 @@ Source: `src/transport/nr-ingest.ts` — `ingestContextSnapshot()`
 
 #### `AiSubagentTurn`
 
+**What it is:** The token usage and cost of each turn taken by a subagent, a helper your assistant delegates work to. Use it to see what delegated work costs, which is easy to miss when you look only at the main session.
+
 Emitted for each subagent (`Task` tool) assistant turn observed by the subagent-watcher pipeline.
 
 | Field                   | Type   | Description                                                                                                                                                                                                                                                                                                                     |
@@ -375,6 +395,8 @@ Two builders produce this event type. `subagentTurnToNrEvent()` runs after `Cost
 Source: `src/transport/nr-ingest.ts` — `subagentTurnToNrEvent()`, `subagentTokenEventToNrEvent()`
 
 #### `AiWorkflowRun`
+
+**What it is:** A summary of one subagent run (an `Agent` tool call) or one script-driven workflow run: its status, duration and how many agents it started. Script-driven runs also carry total tokens and cost; runs started through the Agent tool do not, so use `AiSubagentTurn` for their cost. Use it to compare workflows and to find ones that are slow or failing.
 
 Emitted once per completed workflow run — either a Claude Code `Agent`-tool-spawned run (`run_source: "agent_tool"`) or a script-driven run tracked by the on-disk `wf_*.json` watcher (`run_source: "script"`).
 
@@ -430,6 +452,8 @@ Source: `src/transport/nr-ingest.ts` — `workflowRunToNrEvent()`, `scriptWorkfl
 
 #### `AiObservabilityHealth`
 
+**What it is:** Preflight's report on its workflow and subagent log watchers: how many files it is watching, how much it has read, and any parse errors or format changes (schema drift) it hit. It does not measure your coding sessions. Use it to check that telemetry is complete when numbers look low, or after an assistant update changes its log format.
+
 Emitted by the workflow/subagent watcher pipeline to report its own health — files watched, parse errors, schema drift. Not a measurement of the AI coding session itself.
 
 | Field                       | Type   | Description                                            |
@@ -460,6 +484,8 @@ Source: `src/transport/nr-ingest.ts` — `observabilityHealthToNrEvent()`
 
 #### `AiRetryAlert`
 
+**What it is:** A warning that your assistant seems stuck, either repeating nearly identical calls to the same tool or failing repeatedly with it across its last few calls, with an estimate of the tokens wasted. Use it to catch thrashing loops early.
+
 Emitted when `RetryDetector` flags a thrashing pattern — the same tool call repeating with high similarity in a short window.
 
 | Field           | Type   | Description                                                                                                                                                                        |
@@ -484,6 +510,8 @@ Unlike every other event type in this document, `AiRetryAlert` does not carry `e
 Source: `src/transport/nr-ingest.ts` — `retryAlertToNrEvent()`
 
 #### `AiTurnCost`
+
+**What it is:** The token cost of each assistant turn, attributed down to the individual tool call (an even share of the turn) and, when a skill is running, to that skill. Where `AiToolCall` shows what the assistant did, this event shows what it cost. Use it to find which tools or skills drive spend, and join it to `AiToolCall` on `tool_use_id` for per-call detail.
 
 Emitted for each tool call in an attributed turn, carrying the turn's cost and tokens split evenly across the calls, and once for each token report no tool call claimed (a response row). `tool_use_id` cross-references the call's `AiToolCall` row. Every call inside a skill run carries `skill_name`, so `sum(cost_usd) FACET skill_name` is the full cost of the work each skill drove.
 
@@ -524,6 +552,8 @@ Source: `src/transport/nr-ingest.ts` — `turnCostToNrEvents()` and `ingestTurnC
 
 #### `NrAiObserveSetupCheck`
 
+**What it is:** A test event the setup wizard sends to New Relic each time it validates your license key, to confirm that the key works and data can reach New Relic. It carries only a `setupCheck` flag and measures nothing, so you can ignore it in dashboards.
+
 A one-shot license-key validation ping, sent with a direct `fetch()` call to the NR Events API — it bypasses the `HarvestScheduler` entirely, so the flush-interval and retry-buffer behavior in [Delivery Mechanism](#delivery-mechanism) does not apply to it. Carries no session, developer, or file data.
 
 | Field        | Type    | Description                      |
@@ -541,14 +571,14 @@ Source: `src/install/key-validator.ts` — `validateLicenseKey()`
 
 Recorded for each tool call as it happens.
 
-| Metric Name                        | Value      | Attributes                                                           | How Computed                                                                                                                                                                                                                                                                                                                                   |
-| ---------------------------------- | ---------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ai.tool.call_count`               | `1`        | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}`     | Incremented once per tool call                                                                                                                                                                                                                                                                                                                 |
-| `ai.tool.duration_ms`              | duration   | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}`     | From `ToolCallRecord.durationMs`                                                                                                                                                                                                                                                                                                               |
-| `ai.tool.success`                  | `0` or `1` | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}`     | `record.success ? 1 : 0`                                                                                                                                                                                                                                                                                                                       |
-| `ai.bash.call_count`               | count      | `{category, session_id?, team_id?, project_id?, org_id?, repo_url?}` | Per-`bashCategory` call count for Bash tool calls (e.g. `git`, `test-runner`, `build`). **Local-only — not currently exported to New Relic**, despite this row's history: it is computed by `SessionTracker.emitMetrics()`, but the harvest loop never calls that method — see [Local-only Metrics](#local-only-metrics-defined-not-exported). |
-| `ai.mcp.proxy_request_count`       | `1`        | `{server, method}`                                                   | Incremented per proxy discovery request                                                                                                                                                                                                                                                                                                        |
-| `ai.mcp.proxy_request_duration_ms` | duration   | `{server}`                                                           | From `ProxyRequestRecord.durationMs`                                                                                                                                                                                                                                                                                                           |
+| Metric Name                        | Value      | Attributes                                                           | How Computed                                                                                                                                                                                                                                                                                                                                   | What it tells you                                                                                                                                                                 |
+| ---------------------------------- | ---------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ai.tool.call_count`               | `1`        | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}`     | Incremented once per tool call                                                                                                                                                                                                                                                                                                                 | How many tool calls the assistant made. Chart it as a rate to see activity over time.                                                                                             |
+| `ai.tool.duration_ms`              | duration   | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}`     | From `ToolCallRecord.durationMs`                                                                                                                                                                                                                                                                                                               | How long each tool call took, in milliseconds, when a duration was recorded. Use it to spot slow tools.                                                                           |
+| `ai.tool.success`                  | `0` or `1` | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}`     | `record.success ? 1 : 0`                                                                                                                                                                                                                                                                                                                       | Whether each call succeeded (`1`) or failed (`0`). Average it for a success rate by tool.                                                                                         |
+| `ai.bash.call_count`               | count      | `{category, session_id?, team_id?, project_id?, org_id?, repo_url?}` | Per-`bashCategory` call count for Bash tool calls (e.g. `git`, `test-runner`, `build`). **Local-only — not currently exported to New Relic**, despite this row's history: it is computed by `SessionTracker.emitMetrics()`, but the harvest loop never calls that method — see [Local-only Metrics](#local-only-metrics-defined-not-exported). | Local-only: how many shell commands ran, by kind (for example `git` or `test-runner`). Visible in the local dashboard and MCP tools, not in New Relic.                            |
+| `ai.mcp.proxy_request_count`       | `1`        | `{server, method}`                                                   | Incremented per proxy discovery request                                                                                                                                                                                                                                                                                                        | How many discovery requests (tool and resource listing, resource reads) the Preflight proxy handled for upstream MCP servers. Tool calls are not counted here.                    |
+| `ai.mcp.proxy_request_duration_ms` | duration   | `{server}`                                                           | From `ProxyRequestRecord.durationMs`                                                                                                                                                                                                                                                                                                           | How long each discovery request took, in milliseconds, including proxy overhead. Use it to find slow upstream MCP servers. For tool-call latency, see `ai.mcp.server_latency_ms`. |
 
 Source: `src/transport/nr-ingest.ts` — `ingestToolCall()`, `ingestProxyRequest()`
 
@@ -556,11 +586,11 @@ Source: `src/transport/nr-ingest.ts` — `ingestToolCall()`, `ingestProxyRequest
 
 Emitted every 60 seconds (on the metric harvest cadence) with current session state.
 
-| Metric Name                       | Value    | Attributes                                                 | How Computed                                             |
-| --------------------------------- | -------- | ---------------------------------------------------------- | -------------------------------------------------------- |
-| `ai.session.duration_ms`          | duration | `{session_id?, team_id?, project_id?, org_id?, repo_url?}` | `SessionTracker.getMetrics().sessionDurationMs`          |
-| `ai.session.unique_files_read`    | count    | `{session_id?, team_id?, project_id?, org_id?, repo_url?}` | Size of internal Set of file paths from Read calls       |
-| `ai.session.unique_files_written` | count    | `{session_id?, team_id?, project_id?, org_id?, repo_url?}` | Size of internal Set of file paths from Write/Edit calls |
+| Metric Name                       | Value    | Attributes                                                 | How Computed                                             | What it tells you                                                                                            |
+| --------------------------------- | -------- | ---------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `ai.session.duration_ms`          | duration | `{session_id?, team_id?, project_id?, org_id?, repo_url?}` | `SessionTracker.getMetrics().sessionDurationMs`          | How long the session has been running, in milliseconds.                                                      |
+| `ai.session.unique_files_read`    | count    | `{session_id?, team_id?, project_id?, org_id?, repo_url?}` | Size of internal Set of file paths from Read calls       | How many different files the assistant has read this session. A rough measure of how much code it explored.  |
+| `ai.session.unique_files_written` | count    | `{session_id?, team_id?, project_id?, org_id?, repo_url?}` | Size of internal Set of file paths from Write/Edit calls | How many different files the assistant has changed this session. A rough measure of the size of its changes. |
 
 Source: `src/transport/nr-ingest.ts` — `emitSessionGauges()`
 
@@ -568,45 +598,51 @@ Source: `src/transport/nr-ingest.ts` — `emitSessionGauges()`
 
 Emitted every 60 seconds alongside session gauges (only when proxy mode is active).
 
-| Metric Name                | Value       | Attributes                                                  | How Computed                                                    |
-| -------------------------- | ----------- | ----------------------------------------------------------- | --------------------------------------------------------------- |
-| `ai.mcp.server_call_count` | count       | `{server, team_id?, project_id?, org_id?, repo_url?}`       | Per-server total call count from `ProxyMetricsTracker`          |
-| `ai.mcp.server_latency_ms` | average ms  | `{server, team_id?, project_id?, org_id?, repo_url?}`       | `sum(latencies) / count` per server (only emitted if count > 0) |
-| `ai.mcp.server_error_rate` | ratio (0-1) | `{server, team_id?, project_id?, org_id?, repo_url?}`       | `failedCount / totalCount` per server (only emitted if > 0)     |
-| `ai.mcp.proxy_overhead_ms` | average ms  | `{team_id?, project_id?, org_id?, repo_url?}`               | `sum(overheadValues) / count` across all servers (only if > 0)  |
-| `ai.mcp.tool_popularity`   | count       | `{tool, server, team_id?, project_id?, org_id?, repo_url?}` | Per-tool per-server call count (capped at 100 combinations)     |
+| Metric Name                | Value       | Attributes                                                  | How Computed                                                    | What it tells you                                                                                      |
+| -------------------------- | ----------- | ----------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `ai.mcp.server_call_count` | count       | `{server, team_id?, project_id?, org_id?, repo_url?}`       | Per-server total call count from `ProxyMetricsTracker`          | How many calls each upstream MCP server has received. Shows which servers are used most.               |
+| `ai.mcp.server_latency_ms` | average ms  | `{server, team_id?, project_id?, org_id?, repo_url?}`       | `sum(latencies) / count` per server (only emitted if count > 0) | Average response time of each upstream MCP server, in milliseconds. Use it to find slow servers.       |
+| `ai.mcp.server_error_rate` | ratio (0-1) | `{server, team_id?, project_id?, org_id?, repo_url?}`       | `failedCount / totalCount` per server (only emitted if > 0)     | Share of each server's calls that failed, from 0 to 1. Use it to find unreliable servers.              |
+| `ai.mcp.proxy_overhead_ms` | average ms  | `{team_id?, project_id?, org_id?, repo_url?}`               | `sum(overheadValues) / count` across all servers (only if > 0)  | Average time the Preflight proxy adds to a call, in milliseconds. Use it to confirm proxying is cheap. |
+| `ai.mcp.tool_popularity`   | count       | `{tool, server, team_id?, project_id?, org_id?, repo_url?}` | Per-tool per-server call count (capped at 100 combinations)     | How many times each tool on each server has been called. Shows which tools matter most.                |
 
 Source: `src/transport/nr-ingest.ts` — `emitSessionGauges()`, `src/metrics/proxy-metrics.ts`
 
 ### MCP Server — Cost Metrics
 
-Emitted every 60 seconds alongside session gauges (only when a `CostTracker` is wired in). All metrics include `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}` attributes plus `{model?, provider?}` when a current model is known — `provider` (`anthropic`/`google`/`openai`/`mistral`/`cohere`/`bedrock`) is derived from `model` via `classifyProvider()`.
+Emitted every 60 seconds alongside session gauges (only when a `CostTracker` is wired in, and not when `companionMode` is enabled). All metrics include `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}` attributes plus `{model?, provider?}` when a current model is known — `provider` (`anthropic`/`google`/`openai`/`mistral`/`cohere`/`bedrock`) is derived from `model` via `classifyProvider()`.
 
-| Metric Name                      | Value | How Computed                                             |
-| -------------------------------- | ----- | -------------------------------------------------------- |
-| `ai.cost.session_total_usd`      | USD   | Cumulative session cost across all token reports         |
-| `ai.cost.tokens_input`           | count | Cumulative input tokens                                  |
-| `ai.cost.tokens_output`          | count | Cumulative output tokens                                 |
-| `ai.cost.tokens_thinking`        | count | Cumulative extended thinking tokens                      |
-| `ai.cost.tokens_cache_read`      | count | Cumulative prompt cache read tokens                      |
-| `ai.cost.cost_per_line_of_code`  | USD   | `session_total_usd / total_lines_changed` (only if > 0)  |
-| `ai.cost.cost_per_file_modified` | USD   | `session_total_usd / unique_files_written` (only if > 0) |
-| `ai.cost.report_count`           | count | Number of token reports received                         |
-| `ai.cost.estimation_count`       | count | Number of cost estimation calls                          |
+| Metric Name                      | Value | How Computed                                                                                     | What it tells you                                                                                                                                 |
+| -------------------------------- | ----- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ai.cost.session_total_usd`      | USD   | Cumulative session cost across all token reports                                                 | Total estimated spend for the session so far, in US dollars.                                                                                      |
+| `ai.cost.tokens_input`           | count | Cumulative input tokens                                                                          | Input tokens sent to the model this session.                                                                                                      |
+| `ai.cost.tokens_output`          | count | Cumulative output tokens                                                                         | Output tokens the model generated this session.                                                                                                   |
+| `ai.cost.tokens_thinking`        | count | Cumulative extended thinking tokens                                                              | Extended-thinking tokens the model used this session.                                                                                             |
+| `ai.cost.tokens_cache_read`      | count | Cumulative prompt cache read tokens                                                              | Tokens served from the prompt cache this session. Higher values mean cheaper, faster repeated context.                                            |
+| `ai.cost.tokens_cache_creation`  | count | Cumulative prompt cache creation tokens                                                          | Tokens written into the prompt cache this session. Compare it with `ai.cost.tokens_cache_read` to judge whether caching is paying off.            |
+| `ai.cost.cache_savings_usd`      | USD   | Cumulative savings from cache reads versus the full input price                                  | How much money the prompt cache has saved this session, in US dollars.                                                                            |
+| `ai.cost.cost_per_line_of_code`  | USD   | `session_total_usd / total_lines_changed` (only if > 0)                                          | Session spend divided by lines changed. A rough cost-per-output figure, emitted once something has changed.                                       |
+| `ai.cost.cost_per_file_modified` | USD   | `session_total_usd / unique_files_written` (only if > 0)                                         | Session spend divided by files changed. Emitted once a file has been written.                                                                     |
+| `ai.cost.report_count`           | count | Number of token reports received                                                                 | How many exact token-usage reports Preflight has received.                                                                                        |
+| `ai.cost.estimation_count`       | count | Number of cost estimation calls                                                                  | How many times tokens were guessed from text size (about 4 characters per token) instead of reported. High values mean less precise cost figures. |
+| `ai.cost.subagent_usd`           | USD   | Cumulative cost of token reports attributed to a subagent                                        | The part of session spend caused by subagents, the helpers your assistant delegates work to.                                                      |
+| `ai.cost.parent_usd`             | USD   | Cumulative cost of token reports not attributed to a subagent                                    | The part of session spend caused by the main assistant. Add it to `ai.cost.subagent_usd` to get the session total.                                |
+| `ai.cost.unpriced_calls`         | count | Per-model count of calls that used tokens but had no known price. Attributes: `{model}`          | Calls whose cost could not be priced, so they are missing from the spend totals. Use it to spot models Preflight has no price for.                |
+| `ai.cost.estimated_calls`        | count | Per-model count of calls priced with another model's rates. Attributes: `{model, estimatedFrom}` | Calls priced with another model's rates (named in `estimatedFrom`) because the model's own price is unknown, so the spend is approximate.         |
 
 Source: `src/metrics/cost-tracker.ts` — `emitMetrics()`
 
 ### MCP Server — Efficiency Metrics
 
-Emitted every 60 seconds alongside session gauges (only when an `EfficiencyScorer` is wired in and has scored at least one task). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?, model?, provider?}` — `model` is the model current on `costTracker` when the task was scored, and `provider` is derived from it via `classifyProvider()`.
+Emitted every 60 seconds alongside session gauges (only when an `EfficiencyScorer` is wired in and has scored at least one task). Each scored task is recorded once, and again only if its score is later updated. Values are per task, not cumulative. Attributes: `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?, model?, provider?}` — `model` is the model current on `costTracker` when the task was scored, and `provider` is derived from it via `classifyProvider()`.
 
-| Metric Name                           | Value       | How Computed                        |
-| ------------------------------------- | ----------- | ----------------------------------- |
-| `ai.efficiency.score`                 | score (0–1) | Composite efficiency score          |
-| `ai.efficiency.speed`                 | score (0–1) | Speed component of efficiency       |
-| `ai.efficiency.correctness`           | score (0–1) | Correctness component of efficiency |
-| `ai.efficiency.autonomy`              | score (0–1) | Autonomy component of efficiency    |
-| `ai.efficiency.first_attempt_quality` | score (0–1) | First-attempt quality component     |
+| Metric Name                           | Value       | How Computed                        | What it tells you                                                                                                                                                            |
+| ------------------------------------- | ----------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ai.efficiency.score`                 | score (0–1) | Composite efficiency score          | Overall efficiency of a scored task, from 0 to 1, as a weighted blend of the four scores below. Use it to track how well tasks go over time.                                 |
+| `ai.efficiency.speed`                 | score (0–1) | Speed component of efficiency       | How fast the task changed code, from 0 to 1 (1 line per second or faster scores 1). A task that changed no lines records 0 here, but speed is left out of its overall score. |
+| `ai.efficiency.correctness`           | score (0–1) | Correctness component of efficiency | Share of test runs that passed, from 0 to 1. Scores a neutral 0.5 when no tests ran.                                                                                         |
+| `ai.efficiency.autonomy`              | score (0–1) | Autonomy component of efficiency    | How rarely the assistant had to ask you questions, from 0 to 1. One question is free; each further one lowers the score.                                                     |
+| `ai.efficiency.first_attempt_quality` | score (0–1) | First-attempt quality component     | How free the task was of wasteful patterns, from 0 to 1. The more severe the worst anti-pattern found, the lower the score.                                                  |
 
 Source: `src/metrics/efficiency-score.ts` — `emitMetrics()`
 
@@ -614,27 +650,27 @@ Source: `src/metrics/efficiency-score.ts` — `emitMetrics()`
 
 Emitted every 60 seconds alongside session gauges (only when an `ApiFailureTracker` is wired in). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}` plus `{error_type}` or `{model, provider?}` where noted.
 
-| Metric Name                     | Value      | Attributes     | How Computed                                                                                                                  |
-| ------------------------------- | ---------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `ai.api.failures_total`         | count      | —              | Total recorded `StopFailure` events                                                                                           |
-| `ai.api.tokens_lost`            | count      | —              | Always 0 — `StopFailure` carries no token data (see tracker note)                                                             |
-| `ai.api.failure_by_type`        | count      | `{error_type}` | Per-`ApiErrorType` failure count, emitted only when count > 0                                                                 |
-| `ai.api.model_failure_rate`     | rate (0–1) | `{model}`      | `failureCount / totalRequests` per model — requires `recordRequest()` calls not currently made, so this stays unemitted today |
-| `ai.api.model_mean_recovery_ms` | duration   | `{model}`      | Mean `recoveryMs` per model — always `null`/unemitted since `StopFailure` never reports a recovery time                       |
+| Metric Name                     | Value      | Attributes     | How Computed                                                                                                                  | What it tells you                                                                                                    |
+| ------------------------------- | ---------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `ai.api.failures_total`         | count      | —              | Total recorded `StopFailure` events                                                                                           | How many times the model API failed during the session. Use it to spot outages or rate limiting.                     |
+| `ai.api.tokens_lost`            | count      | —              | Always 0 — `StopFailure` carries no token data (see tracker note)                                                             | Tokens wasted by failed requests. Currently always 0, because failure events carry no token data.                    |
+| `ai.api.failure_by_type`        | count      | `{error_type}` | Per-`ApiErrorType` failure count, emitted only when count > 0                                                                 | Failure count broken down by error type, such as rate limits or server errors. Emitted only for types that occurred. |
+| `ai.api.model_failure_rate`     | rate (0–1) | `{model}`      | `failureCount / totalRequests` per model — requires `recordRequest()` calls not currently made, so this stays unemitted today | Share of requests that failed, per model. Defined but not emitted today.                                             |
+| `ai.api.model_mean_recovery_ms` | duration   | `{model}`      | Mean `recoveryMs` per model — always `null`/unemitted since `StopFailure` never reports a recovery time                       | Average time to recover from a failure, per model. Defined but not emitted today.                                    |
 
 Source: `src/metrics/api-failure-tracker.ts` — `emitMetrics()`
 
 ### MCP Server — Git Metrics
 
-Emitted every 60 seconds alongside session gauges (only when a `GitEfficiencyTracker` is wired in). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?}`. Each count blends hook-observed git/gh-CLI activity with commits hydrated from `git log` at session start — the two sources are deduped upstream (see `GitEfficiencyTracker.hydrateGitLog()`), so there is no separate hook-observed-vs-hydrated breakdown.
+Emitted every 60 seconds alongside session gauges (only when a `GitEfficiencyTracker` is wired in). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}`. Each count blends hook-observed git/gh-CLI activity with commits hydrated from `git log` at session start — the two sources are deduped upstream (see `GitEfficiencyTracker.hydrateGitLog()`), so there is no separate hook-observed-vs-hydrated breakdown.
 
-| Metric Name               | Value | How Computed                                                                                                                                                                                                                                                                                                                                                                                             |
-| ------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ai.git.commit_count`     | count | `GitEfficiencyMetrics.commitCount`: commits that are not `--amend` and that `classifyGitSegments` marks succeeded. A chained command reports one exit status, so that mark is inferred from the error text and from bash's `&&`/`\|\|`/`\|` grouping, and a failed commit can still count when `&&` alone joins it to a later step and the text does not show its failure (a gpg signing error, for one) |
-| `ai.git.push_count`       | count | `GitEfficiencyMetrics.pushCount`: plain and force pushes that `classifyGitSegments` records as succeeded, inferred as for `ai.git.commit_count`                                                                                                                                                                                                                                                          |
-| `ai.git.force_push_count` | count | `GitEfficiencyMetrics.forcePushes`: every force push run, including one that failed                                                                                                                                                                                                                                                                                                                      |
-| `ai.git.pr_created`       | count | `GitEfficiencyMetrics.prMetrics.created`                                                                                                                                                                                                                                                                                                                                                                 |
-| `ai.git.pr_merged`        | count | `GitEfficiencyMetrics.prMetrics.merged`                                                                                                                                                                                                                                                                                                                                                                  |
+| Metric Name               | Value | How Computed                                                                                                                                                                                                                                                                                                                                                                                             | What it tells you                                                                                                           |
+| ------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `ai.git.commit_count`     | count | `GitEfficiencyMetrics.commitCount`: commits that are not `--amend` and that `classifyGitSegments` marks succeeded. A chained command reports one exit status, so that mark is inferred from the error text and from bash's `&&`/`\|\|`/`\|` grouping, and a failed commit can still count when `&&` alone joins it to a later step and the text does not show its failure (a gpg signing error, for one) | How many commits you made today, across your sessions, including ones made outside the assistant.                           |
+| `ai.git.push_count`       | count | `GitEfficiencyMetrics.pushCount`: plain and force pushes that `classifyGitSegments` records as succeeded, inferred as for `ai.git.commit_count`                                                                                                                                                                                                                                                          | How many pushes were made today, across your sessions.                                                                      |
+| `ai.git.force_push_count` | count | `GitEfficiencyMetrics.forcePushes`: every force push run, including one that failed                                                                                                                                                                                                                                                                                                                      | How many force pushes were run, including `--force-with-lease` and failed ones. Use it to watch for risky history rewrites. |
+| `ai.git.pr_created`       | count | `GitEfficiencyMetrics.prMetrics.created`                                                                                                                                                                                                                                                                                                                                                                 | How many pull requests were opened today, across your sessions.                                                             |
+| `ai.git.pr_merged`        | count | `GitEfficiencyMetrics.prMetrics.merged`                                                                                                                                                                                                                                                                                                                                                                  | How many pull requests were merged today, across your sessions.                                                             |
 
 Source: `src/metrics/git-efficiency-tracker.ts` — `emitMetrics()`
 
@@ -656,7 +692,7 @@ Source: `src/shared/harvest/metric-aggregator.ts`
 
 ### Local-only Metrics (Defined, Not Exported)
 
-Every tracker below defines an `emitMetrics(aggregator)` method (or, for `TrendAnalyzer`, `emitWeeklySummaryEvent()`) that calls `aggregator.record(...)` for the metric names in its table. None of these methods are ever called: `emitSessionGauges()` in `src/transport/nr-ingest.ts` only calls `emitMetrics()` on `costTracker`, `efficiencyScorer`, and `feedbackCollector` (see the Cost Metrics and Efficiency Metrics sections above). **Local-only — not currently exported to New Relic** for every metric name in this section; each tracker still computes and holds this data locally (available to the local dashboard and MCP tools via its own `getMetrics()`), it just never reaches the harvest loop.
+Every tracker below defines an `emitMetrics(aggregator)` method (or, for `TrendAnalyzer`, `emitWeeklySummaryEvent()`) that calls `aggregator.record(...)` for the metric names in its table. None of these methods are ever called: `emitSessionGauges()` in `src/transport/nr-ingest.ts` only calls `emitMetrics()` on `costTracker`, `efficiencyScorer`, `feedbackCollector`, `apiFailureTracker`, and `gitEfficiencyTracker` (see the Cost, Efficiency, API Failure and Git Metrics sections above). **Local-only — not currently exported to New Relic** for every metric name in this section; each tracker still computes and holds this data locally (available to the local dashboard and MCP tools via its own `getMetrics()`), it just never reaches the harvest loop.
 
 | Metric Name                                | Value       | Attributes                                         | Defined In                                                                               |
 | ------------------------------------------ | ----------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -679,11 +715,6 @@ Every tracker below defines an `emitMetrics(aggregator)` method (or, for `TrendA
 | `ai.quality.backtrack_count`               | count       | `{}`                                               | `src/metrics/quality-proxy-tracker.ts` — `QualityProxyTracker.emitMetrics()`             |
 | `ai.quality.self_correction_count`         | count       | `{}`                                               | `src/metrics/quality-proxy-tracker.ts` — `QualityProxyTracker.emitMetrics()`             |
 | `ai.quality.degradation_detected`          | `1`         | `{}`                                               | `src/metrics/quality-proxy-tracker.ts` — `QualityProxyTracker.emitMetrics()`             |
-| `ai.api.failures_total`                    | count       | `{}`                                               | `src/metrics/api-failure-tracker.ts` — `ApiFailureTracker.emitMetrics()`                 |
-| `ai.api.tokens_lost`                       | count       | `{}`                                               | `src/metrics/api-failure-tracker.ts` — `ApiFailureTracker.emitMetrics()`                 |
-| `ai.api.failure_by_type`                   | count       | `{error_type}`                                     | `src/metrics/api-failure-tracker.ts` — `ApiFailureTracker.emitMetrics()`                 |
-| `ai.api.model_failure_rate`                | rate (0–1)  | `{model, provider?}`                               | `src/metrics/api-failure-tracker.ts` — `ApiFailureTracker.emitMetrics()`                 |
-| `ai.api.model_mean_recovery_ms`            | duration    | `{model, provider?}`                               | `src/metrics/api-failure-tracker.ts` — `ApiFailureTracker.emitMetrics()`                 |
 | `ai.trend.efficiency_score_weekly`         | score (0–1) | `{developer, week}`                                | `src/metrics/trend-analyzer.ts` — `TrendAnalyzer.emitWeeklySummaryEvent()`               |
 | `ai.trend.cost_weekly`                     | USD         | `{developer, week}`                                | `src/metrics/trend-analyzer.ts` — `TrendAnalyzer.emitWeeklySummaryEvent()`               |
 | `ai.trend.task_success_rate_weekly`        | rate (0–1)  | `{developer, week}`                                | `src/metrics/trend-analyzer.ts` — `TrendAnalyzer.emitWeeklySummaryEvent()`               |

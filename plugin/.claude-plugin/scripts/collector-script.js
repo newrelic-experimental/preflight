@@ -1,16 +1,7 @@
 #!/usr/bin/env node
 
 // src/hooks/collector-script.ts
-import {
-  readFileSync,
-  writeFileSync,
-  openSync,
-  closeSync,
-  mkdirSync,
-  existsSync,
-  utimesSync,
-  constants as fsConstants
-} from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync, mkdirSync, existsSync, utimesSync } from "node:fs";
 import { resolve as resolve2, dirname } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
@@ -123,6 +114,102 @@ function breadcrumbWriter(env) {
   return CLAUDE_CODE_ENV_SIGNALS.some((key) => env[key] !== void 0) ? CLAUDE_CODE_PLATFORM_NAME : UNATTRIBUTED_BREADCRUMB_WRITER;
 }
 
+// src/storage/hook-buffer.ts
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+  unlinkSync,
+  writeSync
+} from "node:fs";
+var DRAIN_SEAL = "\0preflight-drain-seal\n";
+var MAX_WRITES = 5;
+var MAX_OPENS = 100;
+var TORN_LINE_END = "\n";
+function readRange(fd, start, end) {
+  const buf = Buffer.alloc(Math.max(0, end - start));
+  let read = 0;
+  while (read < buf.length) {
+    const n = readSync(fd, buf, read, buf.length - read, start + read);
+    if (n === 0) break;
+    read += n;
+  }
+  return buf.subarray(0, read);
+}
+function readToEnd(fd, scratch) {
+  let total = 0;
+  for (let n; (n = readSync(fd, scratch, 0, scratch.length, null)) > 0; ) total += n;
+  return total;
+}
+function offsetAfterWrite(fd) {
+  const scratch = Buffer.alloc(64 * 1024);
+  let after = readToEnd(fd, scratch);
+  for (; ; ) {
+    const size = fstatSync(fd).size;
+    const more = readToEnd(fd, scratch);
+    if (more === 0) return size - after;
+    after += more;
+  }
+}
+function isAt(path, file) {
+  const now = statSync(path, { bigint: true, throwIfNoEntry: false });
+  return now !== void 0 && now.ino === file.ino && now.dev === file.dev;
+}
+function appendOnce(path, data) {
+  const fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_APPEND, 384);
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    if (!isAt(path, opened)) return "moved";
+    const sealFloor = Number(opened.size);
+    const written = writeSync(fd, data);
+    if (written < data.length) {
+      writeSync(fd, TORN_LINE_END);
+      return "redo";
+    }
+    if (isAt(path, opened)) return "kept";
+    const start = offsetAfterWrite(fd) - data.length;
+    return readRange(fd, sealFloor, start).includes(DRAIN_SEAL) ? "redo" : "kept";
+  } finally {
+    closeSync(fd);
+  }
+}
+function appendToHookBuffer(path, text) {
+  if (text.includes("\0")) {
+    throw new Error(`Hook buffer text contains NUL, which marks a drain seal: ${path}`);
+  }
+  if (!text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) {
+    throw new Error(`Hook buffer text must be exactly one newline-terminated line: ${path}`);
+  }
+  const data = Buffer.from(text);
+  let writes = 0;
+  for (let opens = 0; opens < MAX_OPENS; opens++) {
+    const landing = appendOnce(path, data);
+    if (landing === "kept") return;
+    if (landing === "redo" && ++writes === MAX_WRITES) break;
+  }
+  throw new Error(`Hook buffer write raced a drain on all attempts and was not kept: ${path}`);
+}
+
+// src/metrics/mcp-pr-tools.ts
+var MCP_PR_TOOL_ACTION = {
+  create_pull_request: "create",
+  update_pull_request: "edit",
+  merge_pull_request: "merge"
+};
+function bareMcpToolName(toolName) {
+  const parts = toolName.split("__");
+  if (parts.length >= 3 && parts[0] === "mcp") return parts.slice(2).join("__");
+  return toolName;
+}
+function mcpPrToolAction(toolName) {
+  const bare = bareMcpToolName(toolName);
+  return Object.hasOwn(MCP_PR_TOOL_ACTION, bare) ? MCP_PR_TOOL_ACTION[bare] : void 0;
+}
+
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
 var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -140,7 +227,7 @@ var HIGH_SECURITY_FROM_FILE = (() => {
     try {
       const configPath = resolve2(homedir(), dir, "config.json");
       if (existsSync(configPath)) {
-        const config = JSON.parse(readFileSync(configPath, "utf-8"));
+        const config = JSON.parse(readFileSync2(configPath, "utf-8"));
         return config.highSecurity === true;
       }
     } catch {
@@ -211,7 +298,7 @@ function hasStringText(block) {
   return typeof block === "object" && block !== null && "text" in block && typeof block.text === "string";
 }
 var _procFs = {
-  readFile: (path) => readFileSync(path, "utf-8")
+  readFile: (path) => readFileSync2(path, "utf-8")
 };
 function getLinuxAncestorPids(startPpid, maxDepth = 5) {
   const pids = [startPpid];
@@ -254,7 +341,7 @@ function writePpidBreadcrumb(sessionId, root, legacyRoot) {
         const breadcrumbPath = resolve2(breadcrumbDir, `${pid}.txt`);
         if (existsSync(breadcrumbPath)) {
           try {
-            if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
+            if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
               touch(breadcrumbPath);
               continue;
             }
@@ -287,7 +374,7 @@ function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
       const breadcrumbPath = resolve2(breadcrumbDir, `${sanitizedCwd}.txt`);
       if (existsSync(breadcrumbPath)) {
         try {
-          if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
+          if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
             touch(breadcrumbPath);
             continue;
           }
@@ -307,12 +394,27 @@ function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
     }
   }
 }
+var GITHUB_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
+function mcpPrInputMeta(input, action) {
+  const meta = {};
+  const { owner, repo, pullNumber } = input;
+  if (typeof owner === "string" && typeof repo === "string" && GITHUB_NAME_RE.test(owner) && GITHUB_NAME_RE.test(repo)) {
+    meta.prRepo = `${owner}/${repo}`;
+  }
+  if (action !== "create") {
+    const number = typeof pullNumber === "number" ? String(pullNumber) : pullNumber;
+    if (typeof number === "string" && /^[1-9]\d{0,8}$/.test(number)) meta.prNumber = number;
+  }
+  return meta;
+}
 function extractInputMeta(toolName, input) {
   if (input === null || input === void 0 || typeof input !== "object") return void 0;
   const obj = input;
   const meta = {};
   if (typeof obj.file_path === "string") meta.file_path = obj.file_path;
   else if (typeof obj.filePath === "string") meta.file_path = obj.filePath;
+  const prAction = mcpPrToolAction(toolName);
+  if (prAction !== void 0) Object.assign(meta, mcpPrInputMeta(obj, prAction));
   switch (toolName) {
     case "Read":
       if (typeof obj.offset === "number") meta.offset = obj.offset;
@@ -465,7 +567,7 @@ function findCreatedPrNumber(output) {
 function extractOutputMeta(toolName, output, input) {
   if (output === null || output === void 0 || typeof output !== "object") return void 0;
   const obj = output;
-  if (toolName.endsWith("create_pull_request")) {
+  if (mcpPrToolAction(toolName) === "create") {
     const createdPrNumber = findCreatedPrNumber(output);
     return createdPrNumber === void 0 ? void 0 : { createdPrNumber };
   }
@@ -530,6 +632,7 @@ function extractOutputMeta(toolName, output, input) {
 function getWindsurfToolInfo(data) {
   return data.tool_info !== null && typeof data.tool_info === "object" ? data.tool_info : {};
 }
+var stderrSinkInstalled = false;
 function processHook(raw, cliEvent) {
   let data;
   try {
@@ -895,17 +998,17 @@ function processHook(raw, cliEvent) {
       mkdirSync(bufferDir, { recursive: true, mode: 448 });
     }
     const line = JSON.stringify(event) + "\n";
-    const fd = openSync(
-      bufferPath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND,
-      384
-    );
-    try {
-      writeFileSync(fd, line);
-    } finally {
-      closeSync(fd);
+    appendToHookBuffer(bufferPath, line);
+  } catch (err) {
+    if (!stderrSinkInstalled) {
+      stderrSinkInstalled = true;
+      process.stderr.on("error", () => void 0);
     }
-  } catch {
+    try {
+      process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}
+`);
+    } catch {
+    }
   }
   if (isGeminiCli) {
     try {
@@ -934,7 +1037,7 @@ var _resolvedScript = (() => {
 })();
 var _isDirectExecution = _resolvedScript != null && /collector-script\.[jt]s$/.test(_resolvedScript);
 var _stdinFs = {
-  readFileSync: (pathOrFd) => readFileSync(pathOrFd, "utf-8")
+  readFileSync: (pathOrFd) => readFileSync2(pathOrFd, "utf-8")
 };
 function readStdinSync() {
   if (process.platform === "win32") {

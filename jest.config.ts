@@ -26,6 +26,11 @@ const config: Config = {
   // (the transform regex above also matches .js so ts-jest will rewrite it).
   transformIgnorePatterns: ['/node_modules/(?!commander/)'],
   testTimeout: 15_000,
+  // Redirects HOME to a temp dir so default-path code (~/.newrelic-preflight) never touches
+  // the developer's real home; the setup file fails any test file that sees the real one.
+  globalSetup: '<rootDir>/test/support/isolated-home.global-setup.ts',
+  globalTeardown: '<rootDir>/test/support/isolated-home.global-teardown.ts',
+  setupFiles: ['<rootDir>/test/support/isolated-home.setup.ts'],
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.test.ts', '!src/**/index.ts'],
   coverageReporters: ['text', 'lcov'],
   coverageDirectory: 'coverage',
@@ -37,7 +42,7 @@ const config: Config = {
   // package — and the path resolution (join(__dirname, '..', 'package.json')) resolves
   // correctly in the upstream repo but to src/package.json (non-existent) in this layout.
   // Integration tests spawn real child processes and require a compiled binary
-  // (built via beforeAll). They run via `npm run test:integration` only.
+  // (built via beforeAll). They run via `npm run test:integration`, which CI's `processes` job also runs.
   testPathIgnorePatterns: [
     '/node_modules/',
     // src/web is Vitest's (jsdom + React). Jest's testMatch would otherwise claim

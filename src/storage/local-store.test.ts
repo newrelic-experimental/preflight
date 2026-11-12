@@ -29,10 +29,17 @@ beforeEach(() => {
 
 afterEach(() => {
   stderrSpy.mockRestore();
+  jest.restoreAllMocks();
   if (existsSync(tmpDir)) {
     rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+function watchLegacyDrains(store: LocalStore): void {
+  store.peekAllBuffers();
+  const now = Date.now();
+  jest.spyOn(Date, 'now').mockReturnValue(now + 61_000);
+}
 
 function makeEvent(overrides?: Partial<Omit<PostHookEvent, 'mode'>>): PostHookEvent {
   return {
@@ -179,6 +186,7 @@ describe('LocalStore', () => {
       const drainPath = resolve(tmpDir, 'buffer.jsonl.drain');
       const event = makeEvent({ tool: 'Orphaned' });
       writeFileSync(drainPath, JSON.stringify(event) + '\n');
+      watchLegacyDrains(store);
 
       const drained = store.drainBuffer();
       expect(drained).toHaveLength(1);
@@ -198,6 +206,7 @@ describe('LocalStore', () => {
 
       writeFileSync(drainPath, JSON.stringify(olderEvent) + '\n');
       writeFileSync(bufferPath, JSON.stringify(newerEvent) + '\n');
+      watchLegacyDrains(store);
 
       const drained = store.drainBuffer();
       expect(drained).toHaveLength(2);
@@ -213,6 +222,7 @@ describe('LocalStore', () => {
       const drainPath = resolve(tmpDir, 'buffer.jsonl.drain');
       const validEvent = makeEvent({ tool: 'Valid' });
       writeFileSync(drainPath, 'CORRUPT DATA\n' + JSON.stringify(validEvent) + '\n');
+      watchLegacyDrains(store);
 
       const drained = store.drainBuffer();
       expect(drained).toHaveLength(1);
@@ -434,13 +444,21 @@ describe('LocalStore', () => {
       // readFileSync(.drain) throws EACCES.
       writeFileSync(drainPath, JSON.stringify(event) + '\n');
       chmodSync(drainPath, 0o000);
+      watchLegacyDrains(store);
 
       const firstResult = store.drainBuffer();
       expect(firstResult).toEqual([]);
-      expect(existsSync(drainPath)).toBe(true);
+      const preserved = [tmpDir, resolve(tmpDir, 'drains')]
+        .filter((d) => existsSync(d))
+        .flatMap((d) =>
+          readdirSync(d)
+            .filter((n) => n.startsWith('buffer.jsonl.'))
+            .map((n) => resolve(d, n)),
+        );
+      expect(preserved).toHaveLength(1);
 
       // Restore readability and verify the next poll recovers the events
-      chmodSync(drainPath, 0o644);
+      chmodSync(preserved[0]!, 0o644);
       const recovered = store.drainBuffer();
       expect(recovered).toHaveLength(1);
       expect(recovered[0]?.tool).toBe('Bash');
@@ -493,6 +511,7 @@ describe('LocalStore', () => {
       const claimed = readFileSync(drainPath, 'utf-8');
       expect(JSON.parse(claimed.trim())).toEqual(inFlightEvent);
 
+      watchLegacyDrains(store);
       // The next poll's drainBuffer() recovers the still-present .drain file
       // AND the freshly-appended buffer — both events come back intact,
       // neither lost nor interleaved.
@@ -1511,6 +1530,70 @@ describe('LocalStore', () => {
     });
   });
 
+  describe('counted toolUseIds', () => {
+    it('finds an id another process saved for the session, after an earlier lookup', () => {
+      const store = new LocalStore(tmpDir);
+      store.rememberCountedToolUseIds('sess-1', ['toolu_mine'], 256);
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_theirs')).toBe(false);
+
+      writeFileSync(resolve(tmpDir, 'counted', 'sess-1.999999.json'), '["toolu_theirs"]');
+
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_mine')).toBe(true);
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_theirs')).toBe(true);
+      expect(store.hasCountedToolUseId('sess-2', 'toolu_theirs')).toBe(false);
+      writeFileSync(resolve(tmpDir, 'counted', 'sess-12.999999.json'), '["toolu_longer_id"]');
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_longer_id')).toBe(false);
+    });
+
+    it('keeps an id saved again among the newest 256', () => {
+      const store = new LocalStore(tmpDir);
+      store.rememberCountedToolUseIds('sess-1', ['toolu_again'], 256);
+      const others = Array.from({ length: 256 }, (_, i) => `toolu_${i}`);
+      store.rememberCountedToolUseIds('sess-1', [...others, 'toolu_again'], 256);
+
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_again')).toBe(true);
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_0')).toBe(false);
+    });
+
+    it('deletes the day-old files of any process, and leftover temp files', () => {
+      const store = new LocalStore(tmpDir);
+      store.rememberCountedToolUseIds('sess-live', ['toolu_1'], 256);
+      store.rememberCountedToolUseIds('sess-idle', ['toolu_2'], 256);
+      const dir = resolve(tmpDir, 'counted');
+      writeFileSync(resolve(dir, 'sess-old.999999.json'), '["toolu_3"]');
+      writeFileSync(resolve(dir, 'sess-recent.999999.json'), '["toolu_4"]');
+      writeFileSync(resolve(dir, 'x.json.tmp'), '[]');
+      const dayAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
+      for (const name of ['sess-old.999999.json', `sess-idle.${process.pid}.json`, 'x.json.tmp']) {
+        utimesSync(resolve(dir, name), dayAgo, dayAgo);
+      }
+
+      store.gcCountedToolUseIds();
+
+      expect(readdirSync(dir).sort()).toEqual([
+        `sess-live.${process.pid}.json`,
+        'sess-recent.999999.json',
+      ]);
+    });
+
+    it('finds an id another process wrote in the same mtime tick as an earlier lookup', () => {
+      const store = new LocalStore(tmpDir);
+      store.rememberCountedToolUseIds('sess-1', ['toolu_mine'], 256);
+      const dir = resolve(tmpDir, 'counted');
+      const file = resolve(dir, 'sess-1.999999.json');
+      writeFileSync(file, '[]');
+      const tick = new Date(Math.floor(Date.now() / 1000) * 1000);
+      utimesSync(dir, tick, tick);
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_theirs')).toBe(false);
+
+      writeFileSync(`${file}.tmp`, '["toolu_theirs"]');
+      renameSync(`${file}.tmp`, file);
+      utimesSync(dir, tick, tick);
+
+      expect(store.hasCountedToolUseId('sess-1', 'toolu_theirs')).toBe(true);
+    });
+  });
+
   describe('gcStaleBreadcrumbs()', () => {
     it('deletes breadcrumb files whose PID is dead and preserves live ones', () => {
       mkdirSync(tmpDir, { recursive: true });
@@ -1559,6 +1642,15 @@ describe('LocalStore', () => {
       expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(1);
       const warnCalls = (stderrSpy.mock.calls as unknown[][]).filter((args) =>
         String(args[0]).includes('gcStaleBreadcrumbs'),
+      );
+      expect(warnCalls).toHaveLength(0);
+    });
+
+    it('does not warn when no writer directory exists yet', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      new LocalStore(tmpDir).gcStaleBreadcrumbs();
+      const warnCalls = (stderrSpy.mock.calls as unknown[][]).filter((args) =>
+        String(args[0]).includes('breadcrumb writers'),
       );
       expect(warnCalls).toHaveLength(0);
     });

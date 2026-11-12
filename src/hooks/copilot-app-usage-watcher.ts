@@ -40,7 +40,7 @@
  * real billing reconciliation.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -48,6 +48,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createLogger } from '../shared/index.js';
 import { resolvePricing } from '../metrics/pricing-overlay.js';
 import { getCopilotAppDir } from '../platforms/copilot-app-adapter.js';
+import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import type { LocalStore } from '../storage/local-store.js';
 
 const logger = createLogger('copilot-app-usage-watcher');
@@ -383,12 +384,9 @@ export class CopilotAppUsageWatcher {
   private appendToBuffer(sessionId: string, event: object): void {
     try {
       this.ensureStorageDir();
-      appendFileSync(
+      appendToHookBuffer(
         join(this.storagePath, `buffer-${sessionId}.jsonl`),
         JSON.stringify(event) + '\n',
-        {
-          mode: 0o600,
-        },
       );
     } catch (err) {
       this.recordError(err);

@@ -1663,6 +1663,24 @@ describe('breadcrumbs filed by writer', () => {
     );
   });
 
+  it('ignores a fresh untagged ppid breadcrumb that names a different session', () => {
+    const startedAt = Date.now();
+    const before = new Date(startedAt - 60_000);
+    utimesSync(writeCrumb(null, 'cwd', '-projects-shared', 'sess-quiet'), before, before);
+    writeCrumb(null, 'ppid', '424251', 'sess-someone-else');
+    expect(sessionBreadcrumbs(tmpDir, KIRO, startedAt).cwd('/projects/shared')).toBeNull();
+  });
+
+  it("keeps an older collector's day-old cwd breadcrumb while its session's ppid breadcrumb stays fresh", () => {
+    const startedAt = Date.now();
+    const old = new Date(startedAt - 13 * 60 * 60 * 1000);
+    utimesSync(writeCrumb(null, 'cwd', '-projects-shared', 'sess-long-running'), old, old);
+    writeCrumb(null, 'ppid', '424252', 'sess-long-running');
+    expect(sessionBreadcrumbs(tmpDir, KIRO, startedAt).cwd('/projects/shared')).toBe(
+      'sess-long-running',
+    );
+  });
+
   it('ignores an untagged breadcrumb whose session a writer filed under another key', () => {
     writeCrumb('claude-code', 'ppid', '424242', 'sess-claude-a');
     writeCrumb('claude-code', 'cwd', '-projects-shared', 'sess-claude-b');
@@ -1737,7 +1755,7 @@ describe('breadcrumbs filed by writer', () => {
     expect(kiro.ancestors([1, 424280, 424281])?.sessionId).toBe('sess-old-collector');
   });
 
-  it.each(['generic-mcp', 'kiro', 'copilot', 'copilot-sdk'])(
+  it.each(['kiro', 'copilot', 'copilot-sdk'])(
     'hands a %s engine the breadcrumbs of hooks that stamp no engine',
     (platformName) => {
       writeCrumb('unattributed', 'cwd', '-projects-shared', 'sess-unstamped');
@@ -1746,6 +1764,18 @@ describe('breadcrumbs filed by writer', () => {
         .find((a) => a.platformName === platformName)!;
       const engine = sessionBreadcrumbs(tmpDir, sessionBreadcrumbWriters(adapter));
       expect(engine.cwd('/projects/shared')).toBe('sess-unstamped');
+    },
+  );
+
+  it.each(['generic-mcp', 'cursor'])(
+    'hands a %s engine no breadcrumb, even those of hooks that stamp no engine',
+    (platformName) => {
+      writeCrumb('unattributed', 'cwd', '-projects-shared', 'sess-unstamped');
+      const adapter = createDefaultRegistry()
+        .getRegistered()
+        .find((a) => a.platformName === platformName)!;
+      const engine = sessionBreadcrumbs(tmpDir, sessionBreadcrumbWriters(adapter));
+      expect(engine.cwd('/projects/shared')).toBeNull();
     },
   );
 

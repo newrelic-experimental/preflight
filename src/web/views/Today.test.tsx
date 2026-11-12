@@ -1,10 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Today, aggregateAttentionFlags, bucketByHour, buildSpendTodaySeries } from './Today';
+import {
+  Today,
+  aggregateAttentionFlags,
+  bucketByHour,
+  buildHourlySpend,
+  buildSpendTodaySeries,
+  computeTodaySpend,
+} from './Today';
 import { useLiveStore } from '../store/liveStore';
 import { qk } from '../api/client';
-import { localStartOfDay } from '../../lib/date.js';
+import { localEndOfDay, localStartOfDay, todayPortionRatio } from '../../lib/date.js';
+import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 
 function renderToday(qc?: QueryClient) {
   const client =
@@ -1497,6 +1505,44 @@ describe('Today view — Cache Health panel', () => {
     expect(await screen.findByText(/\$1\.50 saved today/)).toBeInTheDocument();
   });
 
+  it('shows sub-cent savings as $0.004, not $0.00', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 0,
+            totalCostUsd: 0,
+            antiPatternCount: 0,
+            avgDurationMs: 0,
+            sessionCount: 1,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
+            cacheHealth: {
+              status: 'needs_attention',
+              cacheHitRatePct: 12,
+              totalCacheReadTokens: 3000,
+              totalCacheCreationTokens: 500,
+              totalSavingsUsd: 0.004,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Today />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/\$0\.004 saved today/)).toBeInTheDocument();
+  });
+
   it('renders the cache hit rate from the aggregate endpoint, not the per-process cache-health snapshot', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
@@ -2735,10 +2781,10 @@ describe('bucketByHour()', () => {
     expect(buckets.every((v) => v === 0)).toBe(true);
   });
 
-  it('drops a point at or after local midnight + 24h', () => {
+  it('drops a point at or after the next local midnight', () => {
     const dayStart = localStartOfDay();
     const nowMs = dayStart + 12 * 60 * 60 * 1000;
-    const buckets = bucketByHour([{ ts: dayStart + 86_400_000, value: 9 }], nowMs);
+    const buckets = bucketByHour([{ ts: localEndOfDay(dayStart), value: 9 }], nowMs);
     expect(buckets.every((v) => v === 0)).toBe(true);
   });
 
@@ -2747,7 +2793,182 @@ describe('bucketByHour()', () => {
     expect(buckets.length).toBe(24);
     expect(buckets.every((v) => v === 0)).toBe(true);
   });
+
+  describe('on DST days (America/New_York)', () => {
+    const originalTZ = process.env.TZ;
+
+    beforeEach(() => {
+      process.env.TZ = 'America/New_York';
+    });
+
+    afterEach(() => {
+      if (originalTZ === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTZ;
+    });
+
+    it('puts 15:30 local on the spring-forward day in slot 15', () => {
+      const nowMs = new Date(2026, 2, 8, 12, 0).getTime();
+      const buckets = bucketByHour(
+        [
+          { ts: new Date(2026, 2, 8, 1, 30).getTime(), value: 1 },
+          { ts: new Date(2026, 2, 8, 15, 30).getTime(), value: 4 },
+        ],
+        nowMs,
+      );
+      expect(buckets[1]).toBe(1);
+      expect(buckets[14]).toBe(0);
+      expect(buckets[15]).toBe(4);
+    });
+
+    it('drops the next day 00:30 on the spring-forward day', () => {
+      const nowMs = new Date(2026, 2, 8, 12, 0).getTime();
+      const buckets = bucketByHour(
+        [{ ts: new Date(2026, 2, 9, 0, 30).getTime(), value: 9 }],
+        nowMs,
+      );
+      expect(buckets.every((v) => v === 0)).toBe(true);
+    });
+
+    it('keeps 23:30 local on the fall-back day in slot 23, apart from 22:30', () => {
+      const nowMs = new Date(2026, 10, 1, 12, 0).getTime();
+      const buckets = bucketByHour(
+        [
+          { ts: new Date(2026, 10, 1, 22, 30).getTime(), value: 2 },
+          { ts: new Date(2026, 10, 1, 23, 30).getTime(), value: 5 },
+        ],
+        nowMs,
+      );
+      expect(buckets[22]).toBe(2);
+      expect(buckets[23]).toBe(5);
+    });
+
+    it('shares one slot between the two 01:00 hours on the fall-back day', () => {
+      const nowMs = new Date(2026, 10, 1, 12, 0).getTime();
+      const firstOne = Date.UTC(2026, 10, 1, 5, 30);
+      const secondOne = Date.UTC(2026, 10, 1, 6, 30);
+      expect(new Date(firstOne).getHours()).toBe(1);
+      expect(new Date(secondOne).getHours()).toBe(1);
+      const points = [
+        { ts: firstOne, value: 2 },
+        { ts: secondOne, value: 3 },
+      ];
+      expect(bucketByHour(points, nowMs)[1]).toBe(5);
+      expect(bucketByHour(points, nowMs, 'max')[1]).toBe(3);
+    });
+  });
 });
+
+describe.each([
+  {
+    zone: 'America/New_York',
+    label: 'fall-back day 2026-11-01 (25h)',
+    day: [2026, 10, 1],
+    nextDay: [2026, 10, 2],
+    lateStart: [23, 10],
+    lateEnd: [23, 50],
+    dayMs: 25 * 3_600_000,
+  },
+  {
+    zone: 'America/New_York',
+    label: 'spring-forward day 2026-03-08 (23h)',
+    day: [2026, 2, 8],
+    nextDay: [2026, 2, 9],
+    lateStart: [23, 10],
+    lateEnd: [23, 50],
+    dayMs: 23 * 3_600_000,
+  },
+  {
+    zone: 'America/Santiago',
+    label: 'day after the midnight skip 2026-09-06 (starts 01:00, 23h)',
+    day: [2026, 8, 6],
+    nextDay: [2026, 8, 7],
+    lateStart: [23, 10],
+    lateEnd: [23, 50],
+    dayMs: 23 * 3_600_000,
+  },
+])(
+  'Today surfaces agree on $label ($zone)',
+  ({ zone, day, nextDay, lateStart, lateEnd, dayMs }) => {
+    const originalTZ = process.env.TZ;
+    const at = (ymd: number[], hm: number[]) =>
+      new Date(ymd[0]!, ymd[1]!, ymd[2]!, hm[0], hm[1]).getTime();
+
+    beforeEach(() => {
+      process.env.TZ = zone;
+      vi.useFakeTimers();
+      vi.setSystemTime(at(day, [12, 0]));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      if (originalTZ === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTZ;
+    });
+
+    it('localEndOfDay returns the true next local midnight', () => {
+      const dayStart = localStartOfDay();
+      const end = localEndOfDay(dayStart);
+      expect(end).toBe(new Date(nextDay[0]!, nextDay[1]!, nextDay[2]!).getTime());
+      expect(end - dayStart).toBe(dayMs);
+      expect(localStartOfDay(end)).toBe(end);
+    });
+
+    it('chart, headline and session ratio count a late-evening session once, in full', () => {
+      const session = {
+        sessionId: 's1',
+        startTime: at(day, lateStart),
+        endTime: at(day, lateEnd),
+        estimatedCostUsd: 10,
+      } as unknown as Parameters<typeof computeTodaySpend>[0][number];
+      expect(todayPortionRatio({ startTime: at(day, lateStart), endTime: at(day, lateEnd) })).toBe(
+        1,
+      );
+      expect(computeTodaySpend([session])).toBeCloseTo(10, 9);
+      const hourly = buildHourlySpend([session]);
+      expect(hourly.reduce((n, h) => n + h.cost, 0)).toBeCloseTo(10, 9);
+      expect(hourly[23]!.cost).toBeCloseTo(10, 9);
+    });
+
+    it('a session straddling the real midnight is pro-rated and the chart matches the headline', () => {
+      const session = {
+        sessionId: 's2',
+        startTime: at(day, [23, 30]),
+        endTime: at(nextDay, [0, 30]),
+        estimatedCostUsd: 10,
+      } as unknown as Parameters<typeof computeTodaySpend>[0][number];
+      const headline = computeTodaySpend([session]);
+      const chart = buildHourlySpend([session]).reduce((n, h) => n + h.cost, 0);
+      expect(headline).toBeCloseTo(5, 9);
+      expect(chart).toBeCloseTo(headline, 9);
+      expect(buildHourlySpend([session])[0]!.cost).toBe(0);
+    });
+
+    it('the end-of-day forecast runs to the real midnight', () => {
+      const nowMs = at(day, [12, 0]);
+      const forecast = buildCostForecastFromInputs(
+        { sessionSpentUsd: 1, sessionStartMs: nowMs - 3_600_000 },
+        nowMs,
+      );
+      const hoursLeft = (localEndOfDay(localStartOfDay(nowMs)) - nowMs) / 3_600_000;
+      expect(hoursLeft).toBe(12);
+      expect(forecast.forecastEndOfDayUsd).toBeCloseTo(1 + hoursLeft, 9);
+    });
+
+    it('bucketByHour drops a point at the next local midnight and keeps one just before', () => {
+      const nowMs = at(day, [12, 0]);
+      const end = localEndOfDay(localStartOfDay(nowMs));
+      const buckets = bucketByHour(
+        [
+          { ts: end, value: 9 },
+          { ts: end - 60_000, value: 4 },
+        ],
+        nowMs,
+      );
+      expect(buckets[23]).toBe(4);
+      expect(buckets.reduce((n, v) => n + v, 0)).toBe(4);
+    });
+  },
+);
 
 describe('aggregateAttentionFlags()', () => {
   it('collapses per-file flags into one pill per type with a file count', () => {

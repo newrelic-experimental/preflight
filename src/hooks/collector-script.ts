@@ -13,16 +13,7 @@
  *   - Config via env vars only (no file reads for config)
  */
 
-import {
-  readFileSync,
-  writeFileSync,
-  openSync,
-  closeSync,
-  mkdirSync,
-  existsSync,
-  utimesSync,
-  constants as fsConstants,
-} from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, utimesSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -36,6 +27,8 @@ import { hookEventFromArg } from '../hook-subcommands.js';
 import { canonicalPlatformName, ENGINE_ENV_KEYS } from '../platforms/platform-names.js';
 import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
 import { breadcrumbRoot, breadcrumbWriter } from './session-breadcrumbs.js';
+import { appendToHookBuffer } from '../storage/hook-buffer.js';
+import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -479,6 +472,33 @@ interface HookInput {
   [key: string]: unknown;
 }
 
+// GitHub owner and repo names: letters, digits, `.`, `_` and `-`.
+const GITHUB_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
+
+/** The target of a GitHub MCP PR call (`owner`, `repo`, and for an update or
+ *  merge `pullNumber`; see mcp-pr-tools.ts), as `prRepo` (`owner/repo`) and
+ *  `prNumber` (digits). A value that isn't a plain name or number is dropped. */
+function mcpPrInputMeta(
+  input: Record<string, unknown>,
+  action: ReturnType<typeof mcpPrToolAction>,
+): Record<string, string> {
+  const meta: Record<string, string> = {};
+  const { owner, repo, pullNumber } = input;
+  if (
+    typeof owner === 'string' &&
+    typeof repo === 'string' &&
+    GITHUB_NAME_RE.test(owner) &&
+    GITHUB_NAME_RE.test(repo)
+  ) {
+    meta.prRepo = `${owner}/${repo}`;
+  }
+  if (action !== 'create') {
+    const number = typeof pullNumber === 'number' ? String(pullNumber) : pullNumber;
+    if (typeof number === 'string' && /^[1-9]\d{0,8}$/.test(number)) meta.prNumber = number;
+  }
+  return meta;
+}
+
 /**
  * Extract only the metadata fields from tool_input that the tool-specific
  * parsers need. Full content strings are replaced with their lengths to
@@ -494,6 +514,9 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
   // (https://code.visualstudio.com/docs/copilot/customization/hooks).
   if (typeof obj.file_path === 'string') meta.file_path = obj.file_path;
   else if (typeof obj.filePath === 'string') meta.file_path = obj.filePath;
+
+  const prAction = mcpPrToolAction(toolName);
+  if (prAction !== undefined) Object.assign(meta, mcpPrInputMeta(obj, prAction));
 
   switch (toolName) {
     case 'Read':
@@ -667,7 +690,7 @@ function extractOutputMeta(
   if (output === null || output === undefined || typeof output !== 'object') return undefined;
   const obj = output as Record<string, unknown>;
 
-  if (toolName.endsWith('create_pull_request')) {
+  if (mcpPrToolAction(toolName) === 'create') {
     const createdPrNumber = findCreatedPrNumber(output as Record<string, unknown> | unknown[]);
     return createdPrNumber === undefined ? undefined : { createdPrNumber };
   }
@@ -747,6 +770,8 @@ function extractOutputMeta(
 function getWindsurfToolInfo(data: HookInput): Record<string, unknown> {
   return data.tool_info !== null && typeof data.tool_info === 'object' ? data.tool_info : {};
 }
+
+let stderrSinkInstalled = false;
 
 /**
  * @param cliEvent The hook command's first argument (`process.argv[2]`), if
@@ -1384,18 +1409,18 @@ function processHook(raw: string, cliEvent?: string): void {
 
     const line = JSON.stringify(event) + '\n';
 
-    const fd = openSync(
-      bufferPath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND,
-      0o600,
-    );
-    try {
-      writeFileSync(fd, line);
-    } finally {
-      closeSync(fd);
+    appendToHookBuffer(bufferPath, line);
+  } catch (err) {
+    // A closed stderr (EPIPE) must not turn a dropped event into a failed hook.
+    if (!stderrSinkInstalled) {
+      stderrSinkInstalled = true;
+      process.stderr.on('error', () => undefined);
     }
-  } catch {
-    // Silent failure — never block Claude Code
+    try {
+      process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}\n`);
+    } catch {
+      // The hook still exits 0.
+    }
   }
 
   // Gemini CLI's own hook examples always print "{}" before exiting 0, even

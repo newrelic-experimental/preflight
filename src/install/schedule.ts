@@ -330,7 +330,10 @@ export function getDashboardDaemonStatus(): DashboardDaemonStatus {
   }
 }
 
-const WINDOWS_BINARY_SUFFIXES = ['.cmd', '.ps1', ''];
+// mise's default windows_shim_mode = "exe" puts a stable preflight.exe on PATH that
+// survives Node upgrades, unlike the install dir the .cmd/.ps1 shims point into.
+// .cmd stays ahead of .exe so npm's global dir resolves exactly as before.
+const WINDOWS_BINARY_SUFFIXES = ['.cmd', '.ps1', '.exe', ''];
 
 // Walk PATH directly — avoids hardcoding the `which` location and is safe
 // for Nix/Homebrew installs where binaries live outside /usr/bin.

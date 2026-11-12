@@ -1,5 +1,6 @@
 import {
   isSameLocalDay,
+  localEndOfDay,
   localDateKey,
   localStartOfDay,
   todayPortionOfSessionCost,
@@ -341,5 +342,15 @@ describe('todayPortionRatio', () => {
     };
     const ratio = todayPortionRatio(session, refTs);
     expect(ratio * session.estimatedCostUsd).toBe(todayPortionOfSessionCost(session, refTs));
+  });
+});
+
+describe('localEndOfDay', () => {
+  it('is the start of the next local calendar day for every day of 2026 in the host zone', () => {
+    for (let i = 0; i < 365; i++) {
+      const dayStart = localStartOfDay(new Date(2026, 0, 1 + i, 12).getTime());
+      const expected = localStartOfDay(new Date(2026, 0, 2 + i, 12).getTime());
+      expect(localEndOfDay(dayStart)).toBe(expected);
+    }
   });
 });

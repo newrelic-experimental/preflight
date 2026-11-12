@@ -3,19 +3,21 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MAX_AGENT_TYPE_LENGTH } from '../lib/agent-id.js';
+import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import { LocalStore } from '../storage/local-store.js';
 import { HookEventProcessor } from './event-processor.js';
 import { SkillActivationTracker } from '../metrics/skill-activation-tracker.js';
 import { AntigravityAdapter } from '../platforms/antigravity-adapter.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
-import type {
-  HookEvent,
-  PermissionDeniedHookEvent,
-  PermissionRequestHookEvent,
-  PreHookEvent,
-  PostHookEvent,
-  ToolCallRecord,
-  UserPromptSubmitHookEvent,
+import {
+  amendRecord,
+  type HookEvent,
+  type PermissionDeniedHookEvent,
+  type PermissionRequestHookEvent,
+  type PreHookEvent,
+  type PostHookEvent,
+  type ToolCallRecord,
+  type UserPromptSubmitHookEvent,
 } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -880,7 +882,7 @@ describe('HookEventProcessor', () => {
         const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
         processor.start();
         processor.processEvents([
-          makePreEvent({ tool: 'Bash', toolUseId: 'toolu_rej', timestamp: Date.now() }),
+          makePreEvent({ tool: 'Edit', toolUseId: 'toolu_rej', timestamp: Date.now() }),
           makePermissionRequestEvent({ toolUseId: 'toolu_rej', timestamp: Date.now() }),
         ]);
 
@@ -894,17 +896,23 @@ describe('HookEventProcessor', () => {
         expect(record.errorType).toBe('rejected');
         expect(record.success).toBe(false);
         expect(record.durationMs).toBeNull();
-        expect(record.toolName).toBe('Bash');
+        expect(record.toolName).toBe('Edit');
         processor.stop();
       } finally {
         jest.useRealTimers();
       }
     });
 
-    it('handles an approval later than the TTL as a post-without-pre record', () => {
+    it('amends the rejected record with an approval later than the TTL', () => {
       jest.useFakeTimers();
       try {
-        const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
+        const onRecordAmend = jest.fn();
+        const processor = new HookEventProcessor({
+          store,
+          onRecord,
+          onRecordAmend,
+          pollIntervalMs: 1000,
+        });
         processor.start();
         processor.processEvents([
           makePreEvent({ toolUseId: 'toolu_late', timestamp: Date.now() }),
@@ -915,16 +923,14 @@ describe('HookEventProcessor', () => {
         expect(records).toHaveLength(1);
         expect(records[0]!.errorType).toBe('rejected');
 
-        // The user approves after the sweep — the post arrives with no pending pre.
         processor.processEvents([
           makePostEvent({ toolUseId: 'toolu_late', timestamp: Date.now() }),
         ]);
 
-        expect(records).toHaveLength(2);
-        const lateRecord = records[1]!;
-        expect(lateRecord.toolUseId).toBe('toolu_late');
-        expect(lateRecord.durationMs).toBeNull();
-        expect(lateRecord.success).toBe(true);
+        expect(records).toHaveLength(1);
+        expect(onRecordAmend).toHaveBeenCalledWith(
+          expect.objectContaining({ id: records[0]!.id, success: true }),
+        );
         processor.stop();
       } finally {
         jest.useRealTimers();
@@ -1055,6 +1061,363 @@ describe('HookEventProcessor', () => {
       expect(records).toHaveLength(2);
       expect(records.every((r) => r.toolName === 'Read')).toBe(true);
     });
+
+    it('pairs a post with a pre of its own session, or of any session when it has none', () => {
+      const processor = new HookEventProcessor({ store, onRecord, drainAllSessions: true });
+
+      processor.processEvents([
+        { mode: 'pre', tool: 'Read', timestamp: 5000, sessionId: 'sess-a' } as HookEvent,
+        { mode: 'pre', tool: 'Read', timestamp: 5010, sessionId: 'sess-b' } as HookEvent,
+        { mode: 'post', tool: 'Read', timestamp: 5100, sessionId: 'sess-b' } as HookEvent,
+        { mode: 'post', tool: 'Read', timestamp: 5200 } as HookEvent,
+      ]);
+
+      expect(records).toMatchObject([
+        { sessionId: 'sess-b', timestamp: 5010, durationMs: 90 },
+        { sessionId: 'sess-a', timestamp: 5000, durationMs: 200 },
+      ]);
+      expect(processor.pendingCount).toBe(0);
+    });
+  });
+
+  describe('a call whose pre was already counted unpaired', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('amends the timeout record of a call longer than the orphan timeout', () => {
+      const onRecordAmend = jest.fn();
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onRecordAmend,
+        pollIntervalMs: 1000,
+      });
+      processor.start();
+      store.appendToBuffer(makePreEvent({ toolUseId: 'toolu_slow', timestamp: Date.now() }));
+
+      jest.advanceTimersByTime(61_000);
+      expect(records.map((r) => r.errorType)).toEqual(['timeout']);
+
+      store.appendToBuffer(makePostEvent({ toolUseId: 'toolu_slow', timestamp: Date.now() }));
+      jest.advanceTimersByTime(1_000);
+      processor.stop();
+
+      expect(records).toHaveLength(1);
+      expect(onRecordAmend).toHaveBeenCalledWith(
+        expect.objectContaining({ id: records[0]!.id, success: true, durationMs: 61_000 }),
+      );
+    });
+
+    it.each([
+      [61_000, 1],
+      [125_000, 2],
+    ])(
+      'matches a post without a toolUseId to a timed-out pre only within a window (post at %i ms)',
+      (postAfterMs, recordCount) => {
+        const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
+        const start = Date.now();
+        processor.start();
+        processor.processEvents([
+          { mode: 'pre', tool: 'Read', timestamp: start, sessionId: 'sess-001' } as HookEvent,
+        ]);
+
+        jest.advanceTimersByTime(postAfterMs);
+        processor.processEvents([
+          {
+            mode: 'post',
+            tool: 'Read',
+            timestamp: Date.now(),
+            sessionId: 'sess-001',
+          } as HookEvent,
+        ]);
+        processor.stop();
+
+        expect(records).toHaveLength(recordCount);
+        expect(records[0]!.errorType).toBe('timeout');
+      },
+    );
+
+    it('waits out a Bash call that the user approved after 4 minutes and that ran 8', () => {
+      const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
+      processor.start();
+      const bash = { tool: 'Bash', toolUseId: 'toolu_bash', timestamp: Date.now() };
+      processor.processEvents([makePreEvent(bash), { mode: 'permission_request', ...bash }]);
+      jest.advanceTimersByTime(720_000);
+      processor.processEvents([makePostEvent({ ...bash, timestamp: Date.now() })]);
+      processor.stop();
+
+      expect(records).toMatchObject([{ success: true, durationMs: 720_000 }]);
+    });
+
+    it.each([
+      ['Agent', true, 33],
+      ['Task', true, 33],
+      ['Task', false, 25],
+    ])(
+      'waits out a %s call (prompted: %s) whose post comes after %i minutes',
+      (tool, prompted, minutes) => {
+        const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
+        processor.start();
+        const call = { tool, toolUseId: 'toolu_long', timestamp: Date.now() };
+        processor.processEvents([makePreEvent(call)]);
+        if (prompted) processor.processEvents([{ mode: 'permission_request', ...call }]);
+        jest.advanceTimersByTime(minutes * 60_000);
+        processor.processEvents([makePostEvent({ ...call, timestamp: Date.now() })]);
+        processor.stop();
+
+        expect(records).toMatchObject([{ success: true, durationMs: minutes * 60_000 }]);
+      },
+    );
+
+    it('records a 3-minute Agent call once, as a success with its duration', () => {
+      const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
+      processor.start();
+      const start = Date.now();
+      store.appendToBuffer(
+        makePreEvent({ tool: 'Agent', toolUseId: 'toolu_agent', timestamp: start }),
+      );
+      jest.advanceTimersByTime(180_000);
+      store.appendToBuffer(
+        makePostEvent({ tool: 'Agent', toolUseId: 'toolu_agent', timestamp: start + 180_000 }),
+      );
+      jest.advanceTimersByTime(1_000);
+      processor.stop();
+
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ success: true, durationMs: 180_000 });
+    });
+
+    it("pairs its own call in flight across replaceStore() and counts another session's once", () => {
+      const processor = new HookEventProcessor({ store, onRecord, drainAllSessions: true });
+      processor.processEvents([
+        makePreEvent({ tool: 'Bash', toolUseId: 'toolu_swap', timestamp: 1000 }),
+        makePreEvent({ toolUseId: 'toolu_other', sessionId: 'sess-other', timestamp: 1500 }),
+      ]);
+
+      processor.replaceStore(new LocalStore(tmpDir, 'sess-001'), false);
+      expect(records).toMatchObject([{ sessionId: 'sess-other', errorType: 'timeout' }]);
+      processor.processEvents([
+        makePostEvent({ tool: 'Bash', toolUseId: 'toolu_swap', timestamp: 5000 }),
+      ]);
+      processor.persistCountedIdsOfSavedSessions(['sess-other']);
+      processor.stop();
+      const otherStore = new LocalStore(tmpDir, 'sess-other');
+      const owner = new HookEventProcessor({ store: otherStore, onRecord });
+      owner.processEvents([
+        makePostEvent({ toolUseId: 'toolu_other', sessionId: 'sess-other', timestamp: 9500 }),
+      ]);
+      owner.stop();
+
+      expect(records).toMatchObject([
+        { toolUseId: 'toolu_other', sessionId: 'sess-other', errorType: 'timeout' },
+        { toolUseId: 'toolu_swap', sessionId: 'sess-001', success: true, durationMs: 4000 },
+      ]);
+      expect(records).toHaveLength(2);
+      expect(existsSync(resolve(tmpDir, 'buffer-sess-other.jsonl'))).toBe(false);
+    });
+
+    it("counts another session's pre that only the swap's final drain reaches", () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        drainAllSessions: true,
+        pollIntervalMs: 3_600_000,
+      });
+      processor.start();
+      const pre = makePreEvent({ toolUseId: 'toolu_late', sessionId: 'sess-other' });
+      appendToHookBuffer(resolve(tmpDir, 'buffer-sess-other.jsonl'), JSON.stringify(pre) + '\n');
+
+      processor.replaceStore(new LocalStore(tmpDir, 'sess-001'), false);
+      const atSwap = [...records];
+      processor.stop();
+
+      expect(atSwap).toMatchObject([{ toolUseId: 'toolu_late', errorType: 'timeout' }]);
+    });
+
+    it('keeps a pre with no session id pending across replaceStore()', () => {
+      const processor = new HookEventProcessor({ store, onRecord, drainAllSessions: true });
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'toolu_unstamped', sessionId: undefined, timestamp: 1000 }),
+      ]);
+
+      processor.replaceStore(new LocalStore(tmpDir, 'sess-001'), false);
+      expect(records).toEqual([]);
+      processor.processEvents([
+        makePostEvent({ toolUseId: 'toolu_unstamped', sessionId: undefined, timestamp: 2000 }),
+      ]);
+      processor.stop();
+
+      expect(records).toMatchObject([{ success: true, durationMs: 1000 }]);
+    });
+
+    it("keeps another session's pre pending when the new store still drains every session", () => {
+      const processor = new HookEventProcessor({ store, onRecord, drainAllSessions: true });
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'toolu_other', sessionId: 'sess-other' }),
+      ]);
+
+      processor.replaceStore(new LocalStore(tmpDir), true);
+
+      expect(records).toEqual([]);
+      processor.stop();
+    });
+
+    it('keeps the other calls it counted unpaired when one is counted again', () => {
+      const onRecordAmend = jest.fn();
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onRecordAmend,
+        maxPendingEvents: 2,
+      });
+      processor.processEvents([makePreEvent({ toolUseId: 'toolu_a' }), makePreEvent()]);
+      processor.stop();
+      processor.processEvents([makePreEvent()]);
+      processor.stop();
+      processor.processEvents([makePostEvent({ toolUseId: 'toolu_a' })]);
+
+      expect(onRecordAmend).toHaveBeenCalledWith(
+        expect.objectContaining({ toolUseId: 'toolu_a', success: true }),
+      );
+    });
+
+    it('counts a call in flight across a clean exit and restart once', () => {
+      const first = new HookEventProcessor({ store: new LocalStore(tmpDir, 'sess-001'), onRecord });
+      first.processEvents([makePreEvent({ toolUseId: 'toolu_exit' })]);
+      first.stop();
+      expect(records.map((r) => r.errorType)).toEqual(['timeout']);
+      expect(store.hasCountedToolUseId('sess-001', 'toolu_exit')).toBe(false);
+      first.persistCountedIdsOfSavedSessions(['sess-001']);
+
+      const restarted = new HookEventProcessor({
+        store: new LocalStore(tmpDir),
+        drainAllSessions: true,
+        onRecord,
+      });
+      restarted.processEvents([makePostEvent({ toolUseId: 'toolu_exit' })]);
+      restarted.stop();
+
+      expect(records).toHaveLength(1);
+    });
+
+    it('amends the record of a call once, however many posts repeat', () => {
+      const onRecordAmend = jest.fn();
+      const processor = new HookEventProcessor({ store, onRecord, onRecordAmend });
+      processor.processEvents([makePreEvent({ toolUseId: 'toolu_twice', timestamp: 1000 })]);
+      processor.stop();
+      processor.processEvents([makePostEvent({ toolUseId: 'toolu_twice', timestamp: 2000 })]);
+      processor.processEvents([makePostEvent({ toolUseId: 'toolu_twice', timestamp: 2000 })]);
+
+      expect(onRecordAmend).toHaveBeenCalledTimes(1);
+    });
+
+    it('writes a counted id to disk at one save, not again at the next', () => {
+      const remember = jest.spyOn(store, 'rememberCountedToolUseIds');
+      const processor = new HookEventProcessor({ store, onRecord });
+      processor.processEvents([makePreEvent({ toolUseId: 'toolu_once' })]);
+      processor.stop();
+      processor.persistCountedIdsOfSavedSessions(['sess-001']);
+      processor.persistCountedIdsOfSavedSessions(['sess-001']);
+
+      expect(remember.mock.calls.map(([, ids]) => ids)).toEqual([['toolu_once'], []]);
+    });
+
+    it('marks every call it counted unpaired for a restart, past its in-memory cap', () => {
+      const first = new HookEventProcessor({ store, onRecord, maxPendingEvents: 300 });
+      const ids = ['toolu_a', ...Array.from({ length: 300 }, (_, i) => `toolu_${i}`)];
+      first.processEvents(
+        ids.map((toolUseId, i) => makePreEvent({ toolUseId, sessionId: i ? 'sess-b' : 'sess-a' })),
+      );
+      first.stop();
+      first.persistCountedIdsOfSavedSessions(['sess-a', 'sess-b']);
+
+      new HookEventProcessor({ store, onRecord }).processEvents([
+        makePostEvent({ toolUseId: 'toolu_a', sessionId: 'sess-a' }),
+        makePostEvent({ toolUseId: 'toolu_0', sessionId: 'sess-b' }),
+      ]);
+      expect(records.filter((r) => r.success).map((r) => r.toolUseId)).toEqual([]);
+    });
+
+    it('does not count a late post twice for an id evicted from the amend window', () => {
+      const p = new HookEventProcessor({ store, onRecord, maxPendingEvents: 2 });
+      p.processEvents(['a', 'b', 'c', 'd'].map((toolUseId) => makePreEvent({ toolUseId })));
+      p.stop();
+      p.processEvents([makePostEvent({ toolUseId: 'a' })]);
+      expect(records.filter((r) => r.toolUseId === 'a')).toHaveLength(1);
+    });
+
+    it('retries a counted-file write that failed at the next save', () => {
+      const first = new HookEventProcessor({ store, onRecord });
+      first.processEvents([makePreEvent({ toolUseId: 'toolu_retry' })]);
+      first.stop();
+      const countedDir = resolve(tmpDir, 'counted');
+      writeFileSync(countedDir, 'not a directory');
+
+      first.persistCountedIdsOfSavedSessions(['sess-001']);
+      expect(store.hasCountedToolUseId('sess-001', 'toolu_retry')).toBe(false);
+
+      rmSync(countedDir);
+      first.persistCountedIdsOfSavedSessions(['sess-001']);
+      expect(store.hasCountedToolUseId('sess-001', 'toolu_retry')).toBe(true);
+    });
+
+    it('marks a swept timeout counted at the next save, before any stop', () => {
+      const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
+      processor.start();
+      store.appendToBuffer(makePreEvent({ toolUseId: 'toolu_slow', timestamp: Date.now() }));
+      jest.advanceTimersByTime(61_000);
+      expect(records.map((r) => r.errorType)).toEqual(['timeout']);
+
+      processor.persistCountedIdsOfSavedSessions(['sess-other']);
+      expect(store.hasCountedToolUseId('sess-001', 'toolu_slow')).toBe(false);
+      processor.persistCountedIdsOfSavedSessions(['sess-001']);
+      expect(store.hasCountedToolUseId('sess-001', 'toolu_slow')).toBe(true);
+      processor.stop();
+    });
+
+    it('takes the outcome of a late post and keeps the fields added at intake', () => {
+      const late: ToolCallRecord = {
+        id: 'r1',
+        sessionId: 'sess-001',
+        toolName: 'Read',
+        toolUseId: 'toolu_1',
+        timestamp: 1000,
+        durationMs: 61_000,
+        success: true,
+      };
+      const activeSkill = { name: 'review', source: 'tool', runId: 'run-1' } as const;
+      const timedOut = {
+        ...late,
+        durationMs: null,
+        success: false,
+        errorType: 'timeout',
+        activeSkill,
+      };
+
+      expect(amendRecord(timedOut, late)).toEqual({ ...late, activeSkill });
+      expect(amendRecord(timedOut, { ...late, success: false, errorType: 'interrupted' })).toEqual({
+        ...late,
+        success: false,
+        errorType: 'interrupted',
+        activeSkill,
+      });
+    });
+
+    it('still records a post that never had a pre', () => {
+      const first = new HookEventProcessor({ store: new LocalStore(tmpDir, 'sess-001'), onRecord });
+      first.processEvents([makePreEvent({ toolUseId: 'toolu_exit' })]);
+      first.stop();
+
+      const restarted = new HookEventProcessor({ store: new LocalStore(tmpDir), onRecord });
+      restarted.processEvents([makePostEvent({ toolUseId: 'toolu_other' })]);
+      restarted.stop();
+
+      expect(records.map((r) => r.toolUseId)).toEqual(['toolu_exit', 'toolu_other']);
+    });
   });
 
   describe('negative duration clamping', () => {
@@ -1119,10 +1482,8 @@ describe('HookEventProcessor', () => {
       expect(records).toHaveLength(1);
       expect(records[0]!.errorType).toBe('timeout'); // eviction emits a timeout record
 
-      // toolu_0's post produces an orphaned-post record (no matching pre in pending)
       processor.processEvents([makePostEvent({ toolUseId: 'toolu_0', timestamp: 2000 })]);
-      expect(records).toHaveLength(2);
-      expect(records[1]!.durationMs).toBeNull(); // orphaned post — no matching pre
+      expect(records).toHaveLength(1);
 
       // toolu_1 through toolu_3 still pair normally
       records.length = 0;
@@ -1642,6 +2003,38 @@ describe('HookEventProcessor', () => {
       expect(workflowRecords).toHaveLength(1);
       expect(workflowRecords[0]!.toolName).toBe('Agent');
       expect(workflowRecords[0]!.durationMs).toBeNull();
+    });
+
+    it('fires for the amended record of an Agent call that outran its TTL', () => {
+      jest.useFakeTimers();
+      try {
+        const workflowRecords: ToolCallRecord[] = [];
+        const processor = new HookEventProcessor({
+          store,
+          onRecord,
+          onRecordAmend: () => {},
+          onWorkflowAgent: (record) => workflowRecords.push(record),
+          pollIntervalMs: 1000,
+        });
+        processor.start();
+        const start = Date.now();
+        processor.processEvents([
+          makePreEvent({ tool: 'Agent', toolUseId: 'toolu_long_agent', timestamp: start }),
+        ]);
+        jest.advanceTimersByTime(31 * 60_000);
+        processor.processEvents([
+          makePostEvent({ tool: 'Agent', toolUseId: 'toolu_long_agent', timestamp: Date.now() }),
+        ]);
+
+        expect(records).toHaveLength(1);
+        expect(workflowRecords.map((r) => [r.toolUseId, r.success, r.durationMs])).toEqual([
+          ['toolu_long_agent', false, null],
+          ['toolu_long_agent', true, 31 * 60_000],
+        ]);
+        processor.stop();
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('swallows errors from the callback so the main pipeline keeps emitting', () => {

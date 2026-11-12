@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { UNATTRIBUTED_BREADCRUMB_WRITER as PUBLIC_UNATTRIBUTED_WRITER } from '../index.js';
 import { generateCopilotHooksFile } from '../install/copilot-install-helper.js';
 import { AmazonQAdapter } from './amazon-q-adapter.js';
 import { AntigravityAdapter } from './antigravity-adapter.js';
@@ -612,7 +613,7 @@ describe('capabilities', () => {
       windsurf: [],
       copilot: ['copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER],
       'copilot-app': ['copilot-app', 'copilot', UNATTRIBUTED_BREADCRUMB_WRITER],
-      'copilot-sdk': ['copilot-sdk', 'copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER],
+      'copilot-sdk': ['copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER],
       zed: [],
       continue: [],
       'amazon-q': [],
@@ -625,7 +626,7 @@ describe('capabilities', () => {
       kilocode: ['kilocode', UNATTRIBUTED_BREADCRUMB_WRITER],
       pi: [],
       antigravity: [],
-      'generic-mcp': [UNATTRIBUTED_BREADCRUMB_WRITER],
+      'generic-mcp': [],
     });
   });
 
@@ -650,6 +651,11 @@ describe('capabilities', () => {
         expect.arrayContaining([...sharedFileStamps, UNATTRIBUTED_BREADCRUMB_WRITER]),
       );
     }
+  });
+
+  it('exports the unattributed writer under the name its breadcrumbs carry', () => {
+    expect(PUBLIC_UNATTRIBUTED_WRITER).toBe('unattributed');
+    expect(UNATTRIBUTED_BREADCRUMB_WRITER).toBe(PUBLIC_UNATTRIBUTED_WRITER);
   });
 
   it('lets a custom adapter that names no breadcrumb writers adopt its own and unattributed ones', () => {
