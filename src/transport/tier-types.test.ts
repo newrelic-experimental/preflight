@@ -208,7 +208,7 @@ describe('validateTiers()', () => {
     expect(message).toContain('Tier "team"');
     expect(message).toContain('SecurityAlert');
     expect(message).toContain('no longer exists');
-    expect(message).toContain('AiAuditEvent');
+    expect(message).toContain('List AiAuditEvent in this tier');
     expect(message).toContain('personal-only');
     expect(message).not.toContain('non-empty eventTypes');
     expect(message).not.toContain('["*"]');
