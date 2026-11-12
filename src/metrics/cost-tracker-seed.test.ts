@@ -608,6 +608,70 @@ describe('first spend today across a real restart', () => {
     expect(cost.forecast.forecastEndOfDayUsd).toBeCloseTo(aggregate.forecastEndOfDayUsd, 2);
   });
 
+  it('never saves the restart time as the first spend when the persisted day has none', () => {
+    const before = new CostTracker();
+    const usage = makeUsage({ inputTokens: 100_000, outputTokens: 10_000, totalTokens: 110_000 });
+    before.recordTokenUsage(usage, 'claude-sonnet-4', { timestampMs: at(9) });
+    const { firstActivityByDayMs: _dropped, ...legacy } = buildSessionSummary({
+      sessionTracker,
+      costTracker: before,
+      developer: 'dev',
+    });
+
+    jest.setSystemTime(at(14));
+    const after = new CostTracker();
+    after.seedFromPersisted(buildCostTrackerSeed(legacy));
+    expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBeNull();
+    expect(after.getMetrics().firstActivityByDayMs[TODAY_KEY]).toBeUndefined();
+
+    jest.setSystemTime(at(15));
+    after.recordTokenUsage(usage, 'claude-sonnet-4', { timestampMs: at(15) });
+    expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBeNull();
+    const resaved = buildSessionSummary({ sessionTracker, costTracker: after, developer: 'dev' });
+    expect(resaved.firstActivityByDayMs?.[TODAY_KEY]).toBeUndefined();
+  });
+
+  it('drops a live first spend recorded before a seed that has spend but no first', () => {
+    const usage = makeUsage({ inputTokens: 100_000, outputTokens: 10_000, totalTokens: 110_000 });
+    const before = new CostTracker();
+    before.recordTokenUsage(usage, 'claude-sonnet-4', { timestampMs: at(9) });
+    const { firstActivityByDayMs: _dropped, ...legacy } = buildSessionSummary({
+      sessionTracker,
+      costTracker: before,
+      developer: 'dev',
+    });
+    const after = new CostTracker();
+    after.recordTokenUsage(usage, 'claude-sonnet-4', { timestampMs: at(12) });
+    after.seedFromPersisted(buildCostTrackerSeed(legacy));
+    expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBeNull();
+  });
+
+  it('anchors again after reset when the day was seeded without a first spend', () => {
+    const usage = makeUsage({ inputTokens: 100_000, outputTokens: 10_000, totalTokens: 110_000 });
+    const before = new CostTracker();
+    before.recordTokenUsage(usage, 'claude-sonnet-4', { timestampMs: at(9) });
+    const { firstActivityByDayMs: _dropped, ...legacy } = buildSessionSummary({
+      sessionTracker,
+      costTracker: before,
+      developer: 'dev',
+    });
+    const after = new CostTracker();
+    after.seedFromPersisted(buildCostTrackerSeed(legacy));
+    after.reset('next-session');
+    after.recordTokenUsage(usage, 'claude-sonnet-4', { timestampMs: at(15) });
+    expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBe(at(15));
+  });
+
+  it('anchors a fresh process at its first spend when nothing was persisted', () => {
+    const fresh = new CostTracker();
+    fresh.recordTokenUsage(
+      makeUsage({ inputTokens: 1000, outputTokens: 100, totalTokens: 1100 }),
+      'claude-sonnet-4',
+      { timestampMs: at(15) },
+    );
+    expect(fresh.getFirstActivityMsForDay(TODAY_KEY)).toBe(at(15));
+  });
+
   it('moves an already-recorded first spend today back to the persisted earlier one', () => {
     const before = new CostTracker();
     before.recordTokenUsage(

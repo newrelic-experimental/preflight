@@ -4427,6 +4427,19 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       expect(forecast).toBe(5);
     });
 
+    it('anchors at the earliest first spend across two sessions', async () => {
+      const session = (id: string, firstH: number) => ({
+        sessionId: id,
+        startTime: at(firstH),
+        endTime: at(12),
+        estimatedCostUsd: 1,
+        costByDayUsd: { [todayKey]: 1 },
+        firstActivityByDayMs: { [todayKey]: at(firstH) },
+      });
+      const forecast = await forecastAt(at(12), [session('later', 10), session('earlier', 8)]);
+      expect(forecast).toBe(8);
+    });
+
     it('does not dilute the rate with idle time between process start and the first spend', async () => {
       const forecast = await forecastAt(at(16), {
         sessionId: 'idle-window',
