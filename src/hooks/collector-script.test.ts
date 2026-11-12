@@ -2127,36 +2127,30 @@ describe('collector-script', () => {
       return [...drained, ...parseable()];
     };
 
-    it('keeps the claim when closing the buffer fails after the usage line was written, so a retry adds none', () => {
-      const modes = runWithBufferFault(
+    const shortWrite = (keep: string) =>
+      `fs.writeSync = (fd, b, off = 0, ...a) => { if (!reportLine(fd)) return writeSync(fd, b, off, ...a); if (typeof b === 'string') throw enospc(); return writeSync(fd, b, off, ${keep}); };`;
+    it.each([
+      [
+        'closing the buffer fails after the usage line was written',
         "fs.closeSync = (fd) => { closeSync(fd); if (reportLine(fd)) throw new Error('EIO'); };",
-      );
-
-      expect(modes).toEqual(['post', 'self_report', 'post']);
-    });
-
-    it('keeps the claim when a failed close leaves the buffer unreadable, so a retry adds none', () => {
-      const modes = runWithBufferFault(
+        ['post', 'self_report', 'post'],
+      ],
+      [
+        'a failed close leaves the buffer unreadable',
         "fs.closeSync = (fd) => { closeSync(fd); if (reportLine(fd)) { fs.unlinkSync(paths.get(fd)); throw new Error('EIO'); } };",
-      );
-
-      expect(modes).toEqual(['post']);
-    });
-
-    it('keeps the claim when the disk fills one byte short of the usage line, so a retry adds none', () => {
-      const modes = runWithBufferFault(
-        "fs.writeSync = (fd, b, off = 0, ...a) => { if (!reportLine(fd)) return writeSync(fd, b, off, ...a); if (typeof b === 'string') throw enospc(); return writeSync(fd, b, off, b.length - 1 - off); };",
-      );
-
-      expect(modes).toEqual(['post', 'self_report', 'post']);
+        ['post'],
+      ],
+      [
+        'the disk fills one byte short of the usage line',
+        shortWrite('b.length - 1 - off'),
+        ['post', 'self_report', 'post'],
+      ],
+    ])('keeps the claim when %s, so a retry adds no usage line', (_label, failure, modes) => {
+      expect(runWithBufferFault(failure)).toEqual(modes);
     });
 
     it('releases the claim when the disk fills before the usage line is whole, so a retry records it once', () => {
-      const modes = runWithBufferFault(
-        "fs.writeSync = (fd, b, off = 0, ...a) => { if (!reportLine(fd)) return writeSync(fd, b, off, ...a); if (typeof b === 'string') throw enospc(); return writeSync(fd, b, off, 10); };",
-      );
-
-      expect(modes).toEqual(['post', 'post', 'self_report']);
+      expect(runWithBufferFault(shortWrite('10'))).toEqual(['post', 'post', 'self_report']);
     });
 
     it.each(['pending-1', 'local-x', 'proxy-7', 'unknown'])(

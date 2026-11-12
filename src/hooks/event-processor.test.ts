@@ -1782,30 +1782,23 @@ describe('HookEventProcessor', () => {
       expect(onSelfReport.mock.calls).toEqual([[selfReport], [reusedId]]);
     });
 
-    it('drops a self-report with a bad model', () => {
-      const onSelfReport = jest.fn();
-      const processor = new HookEventProcessor({ store, onRecord, onSelfReport });
-
-      processor.processEvents([{ ...selfReport, model: 'bad model!' }]);
-
-      expect(onSelfReport).not.toHaveBeenCalled();
-    });
-
-    it('keeps a plausible report timestamp and dates an implausible one at drain time', () => {
+    it('drops a self-report with a bad model, keeps a plausible timestamp and dates the rest at drain time', () => {
       const now = 1_800_000_000_000;
       const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
       const minute = 60_000;
       const day = 24 * 60 * minute;
       const onSelfReport = jest.fn<(e: { reportId: string; timestamp: number }) => void>();
       const processor = new HookEventProcessor({ store, onRecord, onSelfReport });
-      const at = (reportId: string, timestamp: unknown) => ({
+      const at = (reportId: string, timestamp: unknown, model: string = selfReport.model) => ({
         ...selfReport,
         reportId,
+        model,
         timestamp: timestamp as number,
       });
 
       try {
         processor.processEvents([
+          at('r-bad-model', now, 'bad model!'),
           at('r-old-kept', now - 29 * day),
           at('r-too-old1', now - 31 * day),
           at('r-ahead-ok', now + 4 * minute),
@@ -1816,15 +1809,14 @@ describe('HookEventProcessor', () => {
         nowSpy.mockRestore();
       }
 
-      expect(
-        Object.fromEntries(onSelfReport.mock.calls.map(([e]) => [e.reportId, e.timestamp])),
-      ).toEqual({
-        'r-old-kept': now - 29 * day,
-        'r-too-old1': now,
-        'r-ahead-ok': now + 4 * minute,
-        'r-too-late': now,
-        'r-not-num1': now,
-      });
+      const timestamps = onSelfReport.mock.calls.map(([e]) => [e.reportId, e.timestamp]);
+      expect(timestamps).toEqual([
+        ['r-old-kept', now - 29 * day],
+        ['r-too-old1', now],
+        ['r-ahead-ok', now + 4 * minute],
+        ['r-too-late', now],
+        ['r-not-num1', now],
+      ]);
     });
 
     it('hands a self-report on once even when its callback threw partway, with counts clamped', () => {
