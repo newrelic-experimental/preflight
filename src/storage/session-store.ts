@@ -478,12 +478,18 @@ export interface ExactTotals {
   readonly costByDayUsd: Readonly<Record<string, number>>;
 }
 
+export type ExactTotalsSource = Pick<
+  FullSessionSummary,
+  'exactTotals' | 'byteEstimates' | 'estimatedCostUsd' | 'costByDayUsd'
+> &
+  Partial<Pick<FullSessionSummary, 'tokensInput' | 'tokensOutput'>>;
+
 /**
  * `exactTotals` as stored, or derived as total minus ledger for a summary that
  * predates the field. A merged total cannot be split afterwards (the file does
  * not record which writer's figure won the max), so writers persist the split.
  */
-export function exactTotalsOf(s: FullSessionSummary): ExactTotals {
+export function exactTotalsOf(s: ExactTotalsSource): ExactTotals {
   if (s.exactTotals) return s.exactTotals;
   const ledger = s.byteEstimates;
   return {
