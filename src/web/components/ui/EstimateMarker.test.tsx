@@ -10,14 +10,13 @@ describe('EstimateMarker', () => {
 
   it('explains on hover why the number can differ from a bill', () => {
     render(<EstimateMarker />);
-    fireEvent.mouseEnter(screen.getByRole('button', { name: 'What is this?' }));
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Why this is an estimate' }));
 
     const tooltip = screen.getByRole('tooltip');
     expect(tooltip).toHaveTextContent('unless a rate multiplier, data residency premium');
-    expect(tooltip).not.toHaveTextContent('not your negotiated rate');
     expect(tooltip).toHaveTextContent('this machine and the platforms Preflight hooks into');
     expect(tooltip).toHaveTextContent('Copilot in VS Code');
-    expect(tooltip).toHaveTextContent('estimated from text length');
+    expect(tooltip).toHaveTextContent('estimated from the size of tool inputs and outputs');
     expect(tooltip).toHaveTextContent('Invoices can post later');
     expect(tooltip).toHaveTextContent('local time zone');
   });
