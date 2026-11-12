@@ -6,10 +6,11 @@ import {
   type SpawnSyncReturns,
 } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { localDateKey } from '../lib/date.js';
-import { mergeSummaries, type FullSessionSummary } from '../storage/session-store.js';
+import { mergeSummaries, SessionStore, type FullSessionSummary } from '../storage/session-store.js';
 import {
   collectCommitsAcrossRepos,
   LocalSessionAggregator,
@@ -958,6 +959,38 @@ describe('LocalSessionAggregator baseline fold from a file with a byte-estimate 
       expect(merged.estimatedCostUsd!).toBeGreaterThanOrEqual(merged.subagentCostUsd);
     },
   );
+
+  it('counts the ledger and the saved calls once when a restart folds into a saved file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-fold-'));
+    try {
+      const store = new SessionStore({ storagePath: dir });
+      store.saveSession({
+        ...makeSavedFileWithLedger('stored'),
+        toolCallCount: 4,
+      });
+      const agg = new LocalSessionAggregator({
+        persistedCostBaseline: (id) => store.loadSession(id),
+      });
+      agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+      agg.recordTokenUsage(REAL_ID, { costUsd: 0.25, timestamp: DAY, agentId: 'agent-1' });
+      const [rollup] = summariesOf(agg);
+      const prior = store.loadSession(REAL_ID)!.toolCallCount;
+      const kept = agg.withoutCallsOtherProcessesMayCount(rollup!, new Set());
+      store.saveSession({
+        ...kept,
+        toolCallCount: prior + Number(kept.toolCallCount),
+      } as unknown as FullSessionSummary);
+      expect(store.loadSession(REAL_ID)).toMatchObject({
+        toolCallCount: 5,
+        estimatedCostUsd: 1.75,
+        costByDayUsd: { [DAY_KEY]: 1.75 },
+        exactTotals: { costUsd: 1.25 },
+        byteEstimates: { costUsd: 0.5 },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it('never seeds the total or a day under the saved subagent figures when exactTotals is stale-low', () => {
     const file: FullSessionSummary = {
