@@ -3124,6 +3124,13 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
     'refresh the token before it expires',
     'the password prompt appears',
     'curl -H "Content-Type: application/json" https://api.example.com',
+    'rotate the auth-token every day',
+    'mkdir -pv src/lib',
+    'mysql -h db -P3306 -u root -p shop',
+    'mysql --pager=less shop',
+    'pass the api-key header',
+    'aws_secret_access_key is required',
+    'some-cli --token\nls -la',
   ])('leaves %s unchanged', (command) => {
     expect(redactSensitive(command)).toBe(command);
   });
