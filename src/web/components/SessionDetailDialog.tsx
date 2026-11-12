@@ -56,7 +56,18 @@ function formatSessionMarkdown(s: SessionListEntry): string {
   return lines.join('\n');
 }
 
-type CopyKind = 'markdown' | 'json';
+// A command is raw shell text and can carry an inline token, so the JSON copy
+// leaves it out the same way the Markdown copy does.
+function withoutCommands(s: SessionListEntry): SessionListEntry {
+  if (!s.antiPatterns) return s;
+  return { ...s, antiPatterns: s.antiPatterns.map(({ command: _command, ...rest }) => rest) };
+}
+
+function sessionLink(s: SessionListEntry): string {
+  return `${window.location.origin}/sessions?${new URLSearchParams({ session: s.sessionId })}`;
+}
+
+type CopyKind = 'markdown' | 'json' | 'link';
 
 const COPY_BUTTON_CLASS =
   'px-2 py-1 rounded-md text-[11px] text-ink-muted hover:text-ink-base hover:bg-surface-5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40';
@@ -86,7 +97,11 @@ export function SessionDetailDialog({
   async function copySummary(kind: CopyKind): Promise<void> {
     if (!summary) return;
     const text =
-      kind === 'markdown' ? formatSessionMarkdown(summary) : JSON.stringify(summary, null, 2);
+      kind === 'markdown'
+        ? formatSessionMarkdown(summary)
+        : kind === 'link'
+          ? sessionLink(summary)
+          : JSON.stringify(withoutCommands(summary), null, 2);
     let ok = true;
     try {
       await navigator.clipboard.writeText(text);
@@ -179,6 +194,14 @@ export function SessionDetailDialog({
               className={COPY_BUTTON_CLASS}
             >
               {copyLabel('json', 'Copy as JSON')}
+            </button>
+            <button
+              type="button"
+              disabled={!summary}
+              onClick={() => void copySummary('link')}
+              className={COPY_BUTTON_CLASS}
+            >
+              {copyLabel('link', 'Copy link')}
             </button>
           </div>
           <button

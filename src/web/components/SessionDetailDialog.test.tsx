@@ -340,8 +340,63 @@ describe('SessionDetailDialog — copy session', () => {
     fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const text = writeText.mock.calls[0]![0];
-    expect(JSON.parse(text)).toEqual(summary);
+    expect(JSON.parse(text)).toEqual({
+      ...summary,
+      antiPatterns: [
+        { type: 're_reading', file: 'src/billing.ts', readCount: 5 },
+        { type: 'stuck_loop', iterations: 3 },
+      ],
+    });
     expect(text).toContain('\n  "sessionId"');
+  });
+
+  it('leaves the anti-pattern command and its token out of the JSON copy', async () => {
+    const writeText = installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const text = writeText.mock.calls[0]![0];
+    expect(text).not.toContain('secret123');
+    expect(text).not.toContain('npm test');
+    expect(text).not.toContain('"command"');
+    expect(JSON.parse(text).antiPatterns[1]).toEqual({ type: 'stuck_loop', iterations: 3 });
+  });
+
+  it('copies valid JSON for a session that has no anti-pattern list', async () => {
+    const writeText = installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary({ antiPatterns: undefined })}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(writeText.mock.calls[0]![0]).sessionId).toBe('sess-abc');
+  });
+
+  it('copies a link that opens the session in the Sessions view', async () => {
+    const writeText = installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy link/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(writeText.mock.calls[0]![0]).toBe(`${window.location.origin}/sessions?session=sess-abc`);
   });
 
   it('shows a Copied state after a successful copy', async () => {
@@ -368,6 +423,7 @@ describe('SessionDetailDialog — copy session', () => {
     );
     expect(screen.getByRole('button', { name: /copy as markdown/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /copy as json/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /copy link/i })).toBeDisabled();
   });
 
   it('lists every model from the breakdown in the Markdown copy within fifteen lines', async () => {
