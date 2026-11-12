@@ -228,6 +228,12 @@ describe('appendToHookBuffer', () => {
       if (text.includes('\x1e')) throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
     };
   };
+  const failCloseAfter = (text: string, setUp?: () => void) => (): void => {
+    setUp?.();
+    mockHooks.afterWrite = (written) => {
+      if (written.includes(text)) mockHooks.failClose = true;
+    };
+  };
   it.each([
     ['the torn end of a write one byte short fails', true, failTornEndAfter(1)],
     [
@@ -235,7 +241,7 @@ describe('appendToHookBuffer', () => {
       false,
       failTornEndAfter(Math.floor(line('B').length / 2)),
     ],
-    ['the close after a whole line fails', true, () => (mockHooks.failClose = true)],
+    ['the close after a whole line fails', true, failCloseAfter('"B"')],
     [
       'the close after a line that landed past a seal fails',
       false,
@@ -246,6 +252,11 @@ describe('appendToHookBuffer', () => {
           mockHooks.failClose = true;
         });
       },
+    ],
+    [
+      'the close after a torn write fails',
+      false,
+      failCloseAfter('\x1e', () => (mockHooks.shortBy = 1)),
     ],
   ])(
     'marks the error as a written line only when a drain can read it: %s',

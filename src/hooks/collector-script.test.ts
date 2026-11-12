@@ -2023,25 +2023,22 @@ describe('collector-script', () => {
         },
       });
 
-    it.each(['newrelic-preflight', 'preflight', 'nr-ai-observability'])(
-      'Cursor afterMCPExecution from the %s server adds a usage line to that conversation only',
-      (serverName) => {
-        processHook(cursorReportHook('conv-reporting', { mcp_server_name: serverName }));
+    it.each([
+      ...['newrelic-preflight', 'preflight', 'nr-ai-observability'].map(
+        (server): [string, string, string] => [
+          `Cursor afterMCPExecution from the ${server} server`,
+          cursorReportHook('conv-reporting', { mcp_server_name: server }),
+          'cursor',
+        ],
+      ),
+      ['Windsurf post_mcp_tool_use', windsurfReportHook('conv-reporting'), 'windsurf'],
+    ])('%s adds a usage line to that conversation only', (_label, payload, platform) => {
+      processHook(payload);
 
-        const events = readBufferLines('conv-reporting');
-        expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
-        expect(events[1]).toMatchObject(expectedLine('conv-reporting', 'cursor'));
-        expect(readBufferLines('conv-other')).toEqual([]);
-      },
-    );
-
-    it('Windsurf post_mcp_tool_use adds a usage line to its trajectory', () => {
-      process.env.MCP_CLIENT = 'windsurf';
-      processHook(windsurfReportHook('traj-reporting'));
-
-      const events = readBufferLines('traj-reporting');
+      const events = readBufferLines('conv-reporting');
       expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
-      expect(events[1]).toMatchObject(expectedLine('traj-reporting', 'windsurf'));
+      expect(events[1]).toMatchObject(expectedLine('conv-reporting', platform));
+      expect(readBufferLines('conv-other')).toEqual([]);
     });
 
     const errorReply = (text: string) =>
@@ -2074,10 +2071,17 @@ describe('collector-script', () => {
           }),
         },
       ],
+      ...['pending-1', 'local-x', 'proxy-7', 'unknown'].map(
+        (id): [string, Record<string, unknown>] => [
+          `the synthetic conversation id ${id}`,
+          { conversation_id: id },
+        ],
+      ),
     ])('adds no usage line for %s', (_label, overrides) => {
       processHook(cursorReportHook('conv-reporting', overrides));
 
-      expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post']);
+      const id = overrides.conversation_id ?? 'conv-reporting';
+      expect(readBufferLines(String(id)).map((e) => e.mode)).toEqual(['post']);
     });
 
     it('records a reused report_id with different counts, but an exact retry once', () => {
@@ -2157,15 +2161,6 @@ describe('collector-script', () => {
     ])('counts the usage line once when %s', (_label, failure, modes) => {
       expect(runWithBufferFault(failure)).toEqual(modes);
     });
-
-    it.each(['pending-1', 'local-x', 'proxy-7', 'unknown'])(
-      'adds no usage line for the synthetic conversation id %s',
-      (conversationId) => {
-        processHook(cursorReportHook(conversationId));
-
-        expect(readBufferLines(conversationId).map((e) => e.mode)).toEqual(['post']);
-      },
-    );
 
     it('writes a retried report_id once, even after the buffer was drained', () => {
       processHook(cursorReportHook('conv-reporting'));
