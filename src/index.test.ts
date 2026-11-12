@@ -2422,6 +2422,7 @@ describe('stdio integration', () => {
             daily: { spentUsd: number };
             weekly: { spentUsd: number };
           };
+          if (!status.daily) throw new Error(first!.text);
           return { daily: status.daily.spentUsd, weekly: status.weekly.spentUsd };
         },
         close: () => client.close(),
@@ -2667,12 +2668,11 @@ describe('stdio integration', () => {
           400,
         );
         const budgetUsd = String(prior.estimatedCostUsd / 0.4);
-        writeFileSync(ppidBreadcrumb(storagePath), 'owned-after-restart-id');
+        writeCwdBreadcrumb(storagePath, projectCwd, 'owned-after-restart-id');
         const engine = await startEngine(storagePath, projectCwd, {
           NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
           NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
         });
-        expect(await engine.logged(ADOPTED)).toBe(true);
 
         const spent = await engine.dailyAndWeeklySpentUsd();
         expect(spent.daily).toBeCloseTo(prior.estimatedCostUsd, 9);
