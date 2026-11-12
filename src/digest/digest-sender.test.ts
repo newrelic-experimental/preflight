@@ -128,6 +128,22 @@ describe('digest-sender', () => {
       }
     });
 
+    it.each([
+      [300, /invalid or revoked/],
+      [301, /invalid or revoked/],
+      [399, /invalid or revoked/],
+      [400, /^Slack webhook returned 400$/],
+      [404, /^Slack webhook returned 404$/],
+    ])('reports status %i with the matching message', async (status, message) => {
+      const originalFetch = global.fetch;
+      global.fetch = (async () => ({ ok: false, status })) as unknown as typeof fetch;
+      try {
+        await expect(sendSlackDigest(webhookUrl, { text: 'x' })).rejects.toThrow(message);
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
     it('still resolves on a real 200', async () => {
       const originalFetch = global.fetch;
       global.fetch = (async () => ({ ok: true, status: 200 })) as unknown as typeof fetch;
