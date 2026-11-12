@@ -17,6 +17,7 @@ import {
 } from './git-event-classifier.js';
 import { UNATTRIBUTED_WORKSPACE_KEY, WorktreeIdentityResolver } from './git-workspace-identity.js';
 import { stripHeredocs } from './local-session-aggregator.js';
+import { mcpPrEvent } from './mcp-pr-tools.js';
 import type { PrEvent } from './git-efficiency-tracker.js';
 
 /** `sessionId` used for commit records hydrated from `git log` rather than
@@ -44,12 +45,6 @@ export type GitActivityRecord = KeyedRecord & {
     | { readonly kind: 'verify'; readonly verify: 'build' | 'test' }
     | { readonly kind: 'pr'; readonly prEvent: PrEvent }
   );
-
-/** Detected PR action from gh CLI or MCP tools. */
-const MCP_PR_TOOL_ACTION: Record<string, PrEvent['action']> = {
-  create_pull_request: 'create',
-  update_pull_request: 'edit',
-};
 
 export class GitActivityRecorder {
   constructor(
@@ -102,18 +97,21 @@ export class GitActivityRecorder {
       });
     }
 
-    // MCP tool calls (e.g. the GitHub MCP server's create_pull_request /
-    // update_pull_request)
-    const mcpPrAction = MCP_PR_TOOL_ACTION[record.toolName];
-    if (mcpPrAction) {
+    // GitHub MCP PR tool calls (create_pull_request, update_pull_request,
+    // merge_pull_request), bare or as Claude Code's mcp__<server>__<tool>.
+    // The call names its own owner/repo; the activity is keyed to the cwd's
+    // repo, so as on the gh path below a number for a repo that isn't one of
+    // the cwd's remotes is dropped.
+    const mcpPr = mcpPrEvent(record.toolName, record, record.timestamp);
+    if (mcpPr) {
+      const prEvent =
+        mcpPr.prNumber !== null && this.namesOtherRepo(record.mcpPrRepo, cwd)
+          ? { ...mcpPr, prNumber: null }
+          : mcpPr;
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',
         kind: 'pr',
-        prEvent: {
-          timestamp: record.timestamp,
-          action: mcpPrAction,
-          prNumber: mcpPrAction === 'create' ? (record.createdPrNumber ?? null) : null,
-        },
+        prEvent,
         timestamp: record.timestamp,
         recordId: this.makeRecordId(record, 'pr-mcp'),
         workspaceKey: this.resolveWorkspaceKey(cwd),
@@ -204,6 +202,17 @@ export class GitActivityRecorder {
 
   private ingestActivity(activity: GitActivityRecord): void {
     this.store.ingest(activity);
+  }
+
+  /** True when an MCP PR call's `owner/repo` is known and names none of the
+   *  cwd repo's remotes. Every remote counts, not just `origin`: in a fork
+   *  clone `origin` is the fork while the PR lives in `upstream`. A repo with
+   *  no remotes can't contradict the call, which matches the gh path keeping
+   *  a number that nothing points elsewhere. */
+  private namesOtherRepo(callRepo: string | undefined, cwd: string | undefined): boolean {
+    if (callRepo === undefined) return false;
+    const remotes = this.identityResolver.remoteRepoNames(cwd);
+    return remotes.length > 0 && !remotes.includes(callRepo.toLowerCase());
   }
 
   /** True when `segment`, run before a gh call, may have pointed that call
