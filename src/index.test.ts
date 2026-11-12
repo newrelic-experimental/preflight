@@ -2128,6 +2128,52 @@ describe('stdio integration', () => {
       });
     }, 40000);
 
+    it('a pending engine adds the report it drained before adopting its conversation to the ones after', async () => {
+      await withCursorEngine('600000', async (env, adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        runHook(env, reportHook('conv-own', 'r-own-00001'));
+        expect(await drained(storage, 'conv-own')).toBe('');
+        await adopt('conv-own');
+        runHook(env, reportHook('conv-own', 'r-own-00002'));
+        expect(await drained(storage, 'conv-own')).toBe('');
+        await close();
+
+        expect(savedSession(storage, 'conv-own')).toMatchObject({
+          tokensInput: 2000,
+          selfReportCount: 1,
+        });
+      });
+    }, 40000);
+
+    it('a pending engine adds the report it drained before its cwd guess is confirmed to the ones after', async () => {
+      await withCursorEngine('600000', async (env, _adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        runHook(env, reportHook('conv-guess', 'r-guess-0001'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+        const crumbs = resolve(storage, 'session-by-cwd');
+        mkdirSync(crumbs, { recursive: true });
+        writeFileSync(
+          resolve(crumbs, `${realpathSync(process.cwd()).replace(/[\\/:]/g, '-')}.txt`),
+          'conv-guess',
+        );
+        await until(
+          () => existsSync(resolve(storage, 'active-conv-guess.pid')),
+          (alive) => alive,
+        );
+        mkdirSync(resolve(storage, 'session-by-ppid'), { recursive: true });
+        writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'conv-guess');
+        await until(
+          () => savedSession(storage, 'conv-guess')?.tokensInput,
+          (tokens) => tokens === 1000,
+        );
+        runHook(env, reportHook('conv-guess', 'r-guess-0002'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+        await close();
+
+        expect(savedSession(storage, 'conv-guess')?.tokensInput).toBe(2000);
+      });
+    }, 40000);
+
     it("a pending engine that drains another conversation's tool calls and then adopts saves them", async () => {
       await withCursorEngine('600000', async (env, adopt, close) => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
