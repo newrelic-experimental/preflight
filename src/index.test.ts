@@ -2580,8 +2580,8 @@ describe('stdio integration', () => {
       try {
         const prior = await savePriorSession(storagePath, projectCwd, 'unconfirmed-budget-id', 400);
         // Prior spend is 30% of each budget and this engine adds 42%: 72% counted
-        // once, 42% if the prior is dropped, and 84% if the checkpointed file,
-        // which holds the larger of the two, is counted next to the live total.
+        // once, 42% if the prior is dropped, and 114% if the checkpointed file,
+        // which holds both, is counted next to the live total.
         const budgetUsd = String(prior.estimatedCostUsd / 0.3);
         writeCwdBreadcrumb(storagePath, projectCwd, 'unconfirmed-budget-id');
         const engine = await startEngine(storagePath, projectCwd, {
@@ -2593,9 +2593,10 @@ describe('stdio integration', () => {
         expect(await waitUntil(() => engine.count(crossedBudget('weekly', 50)) > 0)).toBe(true);
 
         // The cap has expired, so a checkpoint writes the guessed session's file.
+        // It holds both writers' calls, the prior 400 and this engine's 560.
         expect(
           await waitUntil(
-            () => readSaved(storagePath, 'unconfirmed-budget-id')?.tokensInput === 560,
+            () => readSaved(storagePath, 'unconfirmed-budget-id')?.tokensInput === 960,
           ),
         ).toBe(true);
         // Past the 30 s baseline cache, so the next update rereads that file.
