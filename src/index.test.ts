@@ -41,7 +41,7 @@ import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
 import type { NrIngestManager } from './transport/nr-ingest.js';
 import { UNFORWARDED_SESSIONS_HINT } from './transport/unforwarded-session-monitor.js';
 import { breadcrumbRoot } from './hooks/session-breadcrumbs.js';
-import { sanitizeCwdForFilename } from './hooks/session-resolver.js';
+import { UNATTRIBUTED_BREADCRUMB_WRITER } from './platforms/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -1688,7 +1688,10 @@ describe('stdio integration', () => {
         resolve(jobDir, 'state.json'),
         JSON.stringify({ linkScanPath: `/x/${id}.jsonl` }),
       );
-      const client = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: jobDir });
+      const client = await startEngine(storage, undefined, {
+        CLAUDE_JOB_DIR: jobDir,
+        MCP_CLIENT: 'claude-code',
+      });
       await waitFor(() => existsSync(resolve(storage, `active-${id}.pid`)));
       return client;
     };
@@ -2380,8 +2383,9 @@ describe('stdio integration', () => {
     function makeDirs(): { storagePath: string; projectCwd: string; cleanup: () => Promise<void> } {
       const storagePath = mkdtempSync(join(tmpdir(), 'nr-seed-storage-'));
       const projectCwd = mkdtempSync(join(tmpdir(), 'nr-seed-project-'));
-      mkdirSync(resolve(storagePath, 'session-by-cwd'), { recursive: true });
-      mkdirSync(resolve(storagePath, 'session-by-ppid'), { recursive: true });
+      const crumbs = breadcrumbRoot(storagePath, UNATTRIBUTED_BREADCRUMB_WRITER);
+      mkdirSync(resolve(crumbs, 'session-by-cwd'), { recursive: true });
+      mkdirSync(resolve(crumbs, 'session-by-ppid'), { recursive: true });
       return {
         storagePath,
         projectCwd,
@@ -2395,11 +2399,22 @@ describe('stdio integration', () => {
 
     function writeCwdBreadcrumb(storagePath: string, projectCwd: string, sessionId: string): void {
       const sanitizedCwd = sanitizeCwdForFilename(realpathSync(projectCwd));
-      writeFileSync(resolve(storagePath, 'session-by-cwd', `${sanitizedCwd}.txt`), sessionId);
+      writeFileSync(
+        resolve(
+          breadcrumbRoot(storagePath, UNATTRIBUTED_BREADCRUMB_WRITER),
+          'session-by-cwd',
+          `${sanitizedCwd}.txt`,
+        ),
+        sessionId,
+      );
     }
 
     const ppidBreadcrumb = (storagePath: string): string =>
-      resolve(storagePath, 'session-by-ppid', `${process.pid}.txt`);
+      resolve(
+        breadcrumbRoot(storagePath, UNATTRIBUTED_BREADCRUMB_WRITER),
+        'session-by-ppid',
+        `${process.pid}.txt`,
+      );
 
     interface SavedTotals {
       readonly tokensInput: number;

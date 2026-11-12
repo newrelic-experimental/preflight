@@ -3,6 +3,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -256,7 +257,13 @@ describe('collector-script', () => {
   describe('processHook() — PreToolUse', () => {
     it('lands its session breadcrumbs in the test temp dir, not the default storage dir', () => {
       processHook(makePreToolUse());
-      expect(existsSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'))).toBe(true);
+      const writers = readdirSync(resolve(tmpDir, 'breadcrumbs'));
+      expect(writers).toHaveLength(1);
+      expect(
+        existsSync(
+          resolve(tmpDir, 'breadcrumbs', writers[0]!, 'session-by-cwd', '-projects-test.txt'),
+        ),
+      ).toBe(true);
       expect(existsSync(resolve(homedir(), '.newrelic-preflight'))).toBe(false);
     });
 
