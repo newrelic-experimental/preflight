@@ -505,12 +505,18 @@ export interface ExactTotals {
   readonly costByDayUsd: Readonly<Record<string, number>>;
 }
 
+export type ExactTotalsSource = Pick<
+  FullSessionSummary,
+  'exactTotals' | 'byteEstimates' | 'estimatedCostUsd' | 'costByDayUsd'
+> &
+  Partial<Pick<FullSessionSummary, 'tokensInput' | 'tokensOutput'>>;
+
 /**
  * `exactTotals` as stored, or derived as total minus ledger for a summary that
  * predates the field. A merged total cannot be split afterwards (the file does
  * not record which writer's figure won the max), so writers persist the split.
  */
-export function exactTotalsOf(s: FullSessionSummary): ExactTotals {
+export function exactTotalsOf(s: ExactTotalsSource): ExactTotals {
   if (s.exactTotals) return s.exactTotals;
   const ledger = s.byteEstimates;
   return {
@@ -582,8 +588,15 @@ export function usageLedgerOf(s: FullSessionSummary): SessionUsageLedger {
   }
   const exact = exactTotalsOf(s);
   const est = s.byteEstimates;
+  // A stale exact share can fall under the subagent figures it includes; the
+  // subagent spend is a floor for the total and for each day.
+  const subagentByDay = s.subagentCostByDayUsd ?? {};
+  const costByDayUsd: Record<string, number> = { ...exact.costByDayUsd };
+  for (const [day, usd] of Object.entries(subagentByDay)) {
+    costByDayUsd[day] = Math.max(costByDayUsd[day] ?? 0, usd);
+  }
   const base: CostTotals = {
-    costUsd: exact.costUsd,
+    costUsd: Math.max(exact.costUsd, s.subagentCostUsd ?? 0),
     subagentCostUsd: s.subagentCostUsd ?? 0,
     inputTokens: exact.inputTokens,
     outputTokens: exact.outputTokens,
@@ -592,7 +605,7 @@ export function usageLedgerOf(s: FullSessionSummary): SessionUsageLedger {
     cacheCreationTokens: s.tokensCacheCreation ?? 0,
     cacheSavingsUsd: s.cacheSavingsUsd ?? 0,
     costByModel: subtractRecord(costByModelOf(s), est?.costByModel ?? {}),
-    costByDayUsd: exact.costByDayUsd,
+    costByDayUsd,
     subagentCostByDayUsd: s.subagentCostByDayUsd ?? {},
     costByWorkflowRunId: s.costByWorkflowRunId ?? {},
     unpricedByModel: s.unpricedByModel ?? {},

@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { localDateKey } from '../lib/date.js';
-import { SessionStore } from '../storage/session-store.js';
+import { mergeSummaries, SessionStore } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import {
   collectCommitsAcrossRepos,
@@ -875,6 +875,131 @@ describe('LocalSessionAggregator usage ids and the session file', () => {
     save(store, b);
 
     expect(store.loadSession(REAL_ID)?.estimatedCostUsd).toBe(8);
+  });
+});
+
+describe('LocalSessionAggregator saving into a pre-ledger file with byte estimates', () => {
+  const DAY = new Date(2026, 8, 10, 12).getTime();
+  const DAY_KEY = localDateKey(DAY);
+  /** After the file's last write, so it cannot already hold this usage. */
+  const LATER = DAY + 1_000;
+
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(DAY + 60 * 60 * 1000);
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  /** A file a pre-ledger Preflight wrote: $1 exact plus $0.50 of byte estimates. */
+  function makeSavedFileWithLedger(shape: 'legacy' | 'stored'): FullSessionSummary {
+    const writer = new LocalSessionAggregator();
+    writer.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    writer.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY });
+    const [exact] = summariesOf(writer) as unknown as FullSessionSummary[];
+    const { usageLedger: _ledger, ...preLedger } = exact!;
+    const withLedger: FullSessionSummary = {
+      ...preLedger,
+      estimatedCostUsd: 1.5,
+      costByDayUsd: { [DAY_KEY]: 1.5 },
+      byteEstimates: {
+        costUsd: 0.5,
+        inputTokens: 0,
+        outputTokens: 0,
+        costByModel: {},
+        costByDayUsd: { [DAY_KEY]: 0.5 },
+      },
+    };
+    if (shape === 'legacy') return withLedger;
+    return {
+      ...withLedger,
+      exactTotals: { costUsd: 1, inputTokens: 0, outputTokens: 0, costByDayUsd: { [DAY_KEY]: 1 } },
+    };
+  }
+
+  it.each(['legacy', 'stored'] as const)(
+    'saves the exact total, the subagent usage and the estimates once (%s file)',
+    (shape) => {
+      const file = makeSavedFileWithLedger(shape);
+      const agg = new LocalSessionAggregator();
+      agg.recordTokenUsage(REAL_ID, { costUsd: 0.25, timestamp: LATER, agentId: 'agent-1' });
+      const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
+      const merged = mergeSummaries(file, incoming!);
+      expect(merged).toMatchObject({
+        estimatedCostUsd: 1.75,
+        subagentCostUsd: 0.25,
+        costByDayUsd: { [DAY_KEY]: 1.75 },
+        subagentCostByDayUsd: { [DAY_KEY]: 0.25 },
+        exactTotals: { costUsd: 1.25, costByDayUsd: { [DAY_KEY]: 1.25 } },
+      });
+      expect(merged.estimatedCostUsd!).toBeGreaterThanOrEqual(merged.subagentCostUsd);
+    },
+  );
+
+  it('counts the estimates and the saved calls once when a restart saves into the file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-fold-'));
+    try {
+      const store = new SessionStore({ storagePath: dir });
+      store.saveSession({
+        ...makeSavedFileWithLedger('stored'),
+        toolCallCount: 4,
+      });
+      const agg = new LocalSessionAggregator();
+      agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: LATER, success: true });
+      agg.recordTokenUsage(REAL_ID, { costUsd: 0.25, timestamp: LATER, agentId: 'agent-1' });
+      const [rollup] = summariesOf(agg);
+      const prior = store.loadSession(REAL_ID)!.toolCallCount;
+      const kept = agg.withoutCallsOtherProcessesMayCount(rollup!, new Set());
+      store.saveSession({
+        ...kept,
+        toolCallCount: prior + Number(kept.toolCallCount),
+      } as unknown as FullSessionSummary);
+      expect(store.loadSession(REAL_ID)).toMatchObject({
+        toolCallCount: 5,
+        estimatedCostUsd: 1.75,
+        costByDayUsd: { [DAY_KEY]: 1.75 },
+        exactTotals: { costUsd: 1.25 },
+        byteEstimates: { costUsd: 0.5 },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('never saves the total or a day under the subagent figures when exactTotals is stale-low', () => {
+    const file: FullSessionSummary = {
+      ...makeSavedFileWithLedger('stored'),
+      exactTotals: {
+        costUsd: 0.25,
+        inputTokens: 0,
+        outputTokens: 0,
+        costByDayUsd: { [DAY_KEY]: 0.25 },
+      },
+      subagentCostUsd: 0.5,
+      subagentCostByDayUsd: { [DAY_KEY]: 0.5 },
+    };
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.25, timestamp: LATER, agentId: 'agent-1' });
+    const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
+    const merged = mergeSummaries(file, incoming!);
+    expect(merged.estimatedCostUsd!).toBeGreaterThanOrEqual(merged.subagentCostUsd);
+    expect(merged.costByDayUsd![DAY_KEY]!).toBeGreaterThanOrEqual(
+      merged.subagentCostByDayUsd![DAY_KEY]!,
+    );
+    expect(merged.subagentCostUsd).toBe(0.75);
+  });
+
+  it('keeps a saved subagent day that the exact per-day costs do not list', () => {
+    const otherDay = localDateKey(new Date(2026, 8, 9, 12).getTime());
+    const file: FullSessionSummary = {
+      ...makeSavedFileWithLedger('stored'),
+      subagentCostUsd: 0.5,
+      subagentCostByDayUsd: { [otherDay]: 0.5 },
+    };
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.25, timestamp: LATER, agentId: 'agent-1' });
+    const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
+    expect(mergeSummaries(file, incoming!).costByDayUsd![otherDay]).toBe(0.5);
   });
 });
 
