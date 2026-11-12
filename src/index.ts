@@ -1425,7 +1425,10 @@ async function main(): Promise<void> {
     const firstSaveBaselines = new FirstSaveBaselines();
     // A session's calls in its file before this process first wrote it, none of them this process's.
     const callsBeforeFirstWrite = new Map<string, number>();
-    const saveSessionRememberingBaseline = (summary: FullSessionSummary): boolean => {
+    const saveSessionRememberingBaseline = (
+      summary: FullSessionSummary,
+      from: 'ownTrackers' | 'rollup',
+    ): boolean => {
       const saved = sessionStore!.saveSession(summary);
       if (saved && !callsBeforeFirstWrite.has(summary.sessionId)) {
         callsBeforeFirstWrite.set(summary.sessionId, saved.previous?.toolCallCount ?? 0);
@@ -1435,7 +1438,7 @@ async function main(): Promise<void> {
         firstSaveBaselines.recordSave({
           sessionId: summary.sessionId,
           previous: saved.previous,
-          ownSession: summary.sessionId === sessionTraceId,
+          ownSession: from === 'ownTrackers',
         });
       }
       return saved !== null;
@@ -2714,7 +2717,8 @@ async function main(): Promise<void> {
                   localStoreForShutdown?.countedToolUseIds(sessionId) ?? new Set<string>(),
                 );
           const summary = { ...kept, toolCallCount: prior + Number(kept.toolCallCount) };
-          if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary)) continue;
+          if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary, 'rollup'))
+            continue;
           localSessionAggregator.markSaved(sessionId);
           saved += 1;
           if (prior === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
@@ -2799,7 +2803,7 @@ async function main(): Promise<void> {
           undefined,
           (id) => id !== summary.sessionId && localSessionAggregator.isUnsaved(id),
         );
-        if (saveSessionRememberingBaseline(summary)) {
+        if (saveSessionRememberingBaseline(summary, 'ownTrackers')) {
           eventProcessor?.persistCountedIdsOfSavedSessions([summary.sessionId]);
         }
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
