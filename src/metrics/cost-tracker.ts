@@ -348,6 +348,8 @@ export class CostTracker implements Resettable {
   // including tokens spent before midnight.
   private costByDayUsd = new Map<string, number>();
   private firstActivityMsByDay = new Map<string, number>();
+  /** Days seeded with spend but no persisted first spend: the real first spend is unknown, so no anchor is saved. */
+  private unanchoredDays = new Set<string>();
   /**
    * Per-workflow-run cost attribution split by local-day so a run that crosses
    * midnight contributes to each day's bucket independently. Two-level map:
@@ -620,7 +622,11 @@ export class CostTracker implements Resettable {
     }
     this.lastMutationMsByDay.set(dayKey, wallNowMs);
     const existingFirst = this.firstActivityMsByDay.get(dayKey);
-    if (breakdown.totalUsd > 0 && (existingFirst === undefined || tsMs < existingFirst)) {
+    if (
+      breakdown.totalUsd > 0 &&
+      !this.unanchoredDays.has(dayKey) &&
+      (existingFirst === undefined || tsMs < existingFirst)
+    ) {
       // Use earliest event timestamp for the day so cross-midnight burn-rate
       // denominators stay correct (NOT wall-clock arrival time).
       this.firstActivityMsByDay.set(dayKey, tsMs);
@@ -719,10 +725,14 @@ export class CostTracker implements Resettable {
         (this.costByDayUsd.get(seed.dayKey) ?? 0) + seed.dayCostUsd,
       );
       this.lastMutationMsByDay.set(seed.dayKey, Date.now());
-      const seededFirst = seed.dayFirstActivityMs ?? Date.now();
-      const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
-      if (existingFirst === undefined || seededFirst < existingFirst) {
-        this.firstActivityMsByDay.set(seed.dayKey, seededFirst);
+      if (seed.dayFirstActivityMs === undefined) {
+        this.firstActivityMsByDay.delete(seed.dayKey);
+        this.unanchoredDays.add(seed.dayKey);
+      } else {
+        const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
+        if (existingFirst === undefined || seed.dayFirstActivityMs < existingFirst) {
+          this.firstActivityMsByDay.set(seed.dayKey, seed.dayFirstActivityMs);
+        }
       }
     }
     if (seed.daySubagentCostUsd !== 0) {
@@ -1006,6 +1016,7 @@ export class CostTracker implements Resettable {
     this.highContextCostUsd = 0;
     this.apiDurationMs = null;
     this.firstActivityMsByDay = new Map();
+    this.unanchoredDays = new Set();
     this.costByWorkflowRunId = new Map();
     this.lastMutationMsByDay = new Map();
     this.subagentCostUsd = 0;
