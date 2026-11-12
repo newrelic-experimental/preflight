@@ -41,7 +41,6 @@ import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
 import type { NrIngestManager } from './transport/nr-ingest.js';
 import { UNFORWARDED_SESSIONS_HINT } from './transport/unforwarded-session-monitor.js';
 import { breadcrumbRoot } from './hooks/session-breadcrumbs.js';
-import { UNATTRIBUTED_BREADCRUMB_WRITER } from './platforms/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -1144,7 +1143,15 @@ describe('stdio integration', () => {
           const stats = await engine.stats();
           expect(stats?.session_id).toBe(expectedId);
           if (expectedJobName) expect(stats?.session_name).toBe(expectedJobName);
-          else expect(stats?.session_name).not.toBe('claude job name');
+          else {
+            let name = stats?.session_name ?? null;
+            for (let i = 0; i < 40 && name === null; i++) {
+              await new Promise((r) => setTimeout(r, 250));
+              name = (await engine.stats())?.session_name ?? null;
+            }
+            expect(name).not.toBeNull();
+            expect(name).not.toBe('claude job name');
+          }
         } finally {
           await engine.close();
           rmSync(jobDir, { recursive: true, force: true });
@@ -1350,7 +1357,7 @@ describe('stdio integration', () => {
         for (let i = 0; i < 40 && !predicate(); i++) await new Promise((r) => setTimeout(r, 250));
         expect(predicate()).toBe(true);
       };
-      const env = { ...process.env };
+      const env: NodeJS.ProcessEnv = { ...process.env, MCP_CLIENT: 'claude-code' };
       delete env.CLAUDE_JOB_DIR;
       const client = new Client({ name: 'test-client', version: '1.0.0' });
       const sessions = resolve(storage, 'sessions');
@@ -1403,7 +1410,7 @@ describe('stdio integration', () => {
       for (let i = 0; i < 40 && !predicate(); i++) await new Promise((r) => setTimeout(r, 250));
       expect(predicate()).toBe(true);
     };
-    const env = { ...process.env };
+    const env: NodeJS.ProcessEnv = { ...process.env, MCP_CLIENT: 'claude-code' };
     delete env.CLAUDE_JOB_DIR;
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     try {
@@ -1479,7 +1486,7 @@ describe('stdio integration', () => {
     const startEngine = async (storage: string, cwd?: string, envOverrides = {}) => {
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
       const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
-      const env = { ...process.env };
+      const env: NodeJS.ProcessEnv = { ...process.env, MCP_CLIENT: 'claude-code' };
       delete env.CLAUDE_JOB_DIR;
       const client = new Client({ name: 'test-client', version: '1.0.0' });
       await connectToConfiguredEngine(
@@ -1688,10 +1695,7 @@ describe('stdio integration', () => {
         resolve(jobDir, 'state.json'),
         JSON.stringify({ linkScanPath: `/x/${id}.jsonl` }),
       );
-      const client = await startEngine(storage, undefined, {
-        CLAUDE_JOB_DIR: jobDir,
-        MCP_CLIENT: 'claude-code',
-      });
+      const client = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: jobDir });
       await waitFor(() => existsSync(resolve(storage, `active-${id}.pid`)));
       return client;
     };
@@ -1883,7 +1887,7 @@ describe('stdio integration', () => {
       await saveCalls(storage, 'other-real-session', 3);
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
       const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
-      const env = { ...process.env };
+      const env: NodeJS.ProcessEnv = { ...process.env, MCP_CLIENT: 'claude-code' };
       delete env.CLAUDE_JOB_DIR;
       const transport = new StdioClientTransport({
         command: 'node',
@@ -1989,7 +1993,7 @@ describe('stdio integration', () => {
       // No breadcrumb and no CLAUDE_* vars keeps the server in pending mode for
       // the whole call, as on a fresh install that has no hooks yet. MCP_CLIENT
       // names the client explicitly instead.
-      const env = { ...process.env };
+      const env: NodeJS.ProcessEnv = { ...process.env, MCP_CLIENT: 'claude-code' };
       for (const name of Object.keys(env)) {
         if (name.startsWith('CLAUDE')) delete env[name];
       }
@@ -2383,7 +2387,7 @@ describe('stdio integration', () => {
     function makeDirs(): { storagePath: string; projectCwd: string; cleanup: () => Promise<void> } {
       const storagePath = mkdtempSync(join(tmpdir(), 'nr-seed-storage-'));
       const projectCwd = mkdtempSync(join(tmpdir(), 'nr-seed-project-'));
-      const crumbs = breadcrumbRoot(storagePath, UNATTRIBUTED_BREADCRUMB_WRITER);
+      const crumbs = breadcrumbRoot(storagePath, 'claude-code');
       mkdirSync(resolve(crumbs, 'session-by-cwd'), { recursive: true });
       mkdirSync(resolve(crumbs, 'session-by-ppid'), { recursive: true });
       return {
@@ -2401,7 +2405,7 @@ describe('stdio integration', () => {
       const sanitizedCwd = sanitizeCwdForFilename(realpathSync(projectCwd));
       writeFileSync(
         resolve(
-          breadcrumbRoot(storagePath, UNATTRIBUTED_BREADCRUMB_WRITER),
+          breadcrumbRoot(storagePath, 'claude-code'),
           'session-by-cwd',
           `${sanitizedCwd}.txt`,
         ),
@@ -2410,11 +2414,7 @@ describe('stdio integration', () => {
     }
 
     const ppidBreadcrumb = (storagePath: string): string =>
-      resolve(
-        breadcrumbRoot(storagePath, UNATTRIBUTED_BREADCRUMB_WRITER),
-        'session-by-ppid',
-        `${process.pid}.txt`,
-      );
+      resolve(breadcrumbRoot(storagePath, 'claude-code'), 'session-by-ppid', `${process.pid}.txt`);
 
     interface SavedTotals {
       readonly tokensInput: number;
@@ -2447,7 +2447,7 @@ describe('stdio integration', () => {
     ): Promise<Engine> {
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
       const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
-      const env = { ...process.env };
+      const env: NodeJS.ProcessEnv = { ...process.env, MCP_CLIENT: 'claude-code' };
       delete env.CLAUDE_JOB_DIR;
       const transport = new StdioClientTransport({
         command: 'node',

@@ -1105,7 +1105,7 @@ export class LocalStore {
   /**
    * Garbage-collect stale per-PPID breadcrumb files at
    * `<storage>/breadcrumbs/<writer>/session-by-ppid/<pid>.txt`, and at
-   * `<storage>/session-by-ppid/<pid>.txt` where collectors before #979 wrote
+   * `<storage>/session-by-ppid/<pid>.txt` where older collectors wrote
    * them. A breadcrumb is stale when its PID names a process that no longer
    * exists (its engine's session ended).
    *

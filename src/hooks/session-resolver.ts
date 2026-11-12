@@ -319,7 +319,7 @@ export interface SessionBreadcrumbs {
 
 /**
  * Each breadcrumb source tries the writers' own directories first, then the
- * untagged layout collectors wrote before #979. An untagged breadcrumb names
+ * untagged layout older collectors wrote. An untagged breadcrumb names
  * no engine, so it counts only when written since this process started:
  * an older collector still running keeps rewriting its own, while one left
  * from before an upgrade never counts again.

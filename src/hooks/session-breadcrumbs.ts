@@ -6,8 +6,8 @@ import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
  * Session breadcrumbs live at `<storage>/breadcrumbs/<writer>/`, one
  * directory per engine whose hooks wrote them, each laid out as
  * `session-by-ppid/<pid>.txt` and `session-by-cwd/<sanitized-cwd>.txt`.
- * Collectors before #979 wrote that layout at the storage root itself, with
- * no writer.
+ * Older collectors wrote that layout at the storage root itself, with no
+ * writer.
  */
 export const BREADCRUMBS_DIR = 'breadcrumbs';
 

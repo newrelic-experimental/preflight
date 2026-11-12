@@ -1634,7 +1634,7 @@ describe('breadcrumbs filed by writer', () => {
     );
   });
 
-  it.each(['generic-mcp', 'kiro', 'copilot', 'copilot-sdk'])(
+  it.each(['kiro', 'copilot', 'copilot-sdk'])(
     'hands a %s engine the breadcrumbs of hooks that stamp no engine',
     (platformName) => {
       writeCrumb('unattributed', 'cwd', '-projects-shared', 'sess-unstamped');
@@ -1643,6 +1643,18 @@ describe('breadcrumbs filed by writer', () => {
         .find((a) => a.platformName === platformName)!;
       const engine = sessionBreadcrumbs(tmpDir, sessionBreadcrumbWriters(adapter));
       expect(engine.cwd('/projects/shared')).toBe('sess-unstamped');
+    },
+  );
+
+  it.each(['generic-mcp', 'cursor'])(
+    'hands a %s engine no breadcrumb, even those of hooks that stamp no engine',
+    (platformName) => {
+      writeCrumb('unattributed', 'cwd', '-projects-shared', 'sess-unstamped');
+      const adapter = createDefaultRegistry()
+        .getRegistered()
+        .find((a) => a.platformName === platformName)!;
+      const engine = sessionBreadcrumbs(tmpDir, sessionBreadcrumbWriters(adapter));
+      expect(engine.cwd('/projects/shared')).toBeNull();
     },
   );
 
