@@ -3851,4 +3851,37 @@ describe('log level at startup', () => {
     });
     expect(jsonLevels(stderr)).toContain('debug');
   }, 30000);
+
+  it('logs an invalid config file error once and exits with the config error status', async () => {
+    const { spawnSync } = await import('node:child_process');
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const dir = mkdtempSync(join(tmpdir(), 'nr-badconfig-'));
+    const configPath = resolve(dir, 'config.json');
+    writeFileSync(configPath, '{not valid json');
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: resolve(dir, 'home'),
+      NEW_RELIC_AI_MCP_STORAGE_PATH: resolve(dir, 'storage'),
+      NR_AI_ALERTS_ENABLED: 'false',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+    };
+    delete env.NR_AI_MODE;
+    delete env.NEW_RELIC_AI_LOG_LEVEL;
+    delete env.NEW_RELIC_AI_MCP_LOG_LEVEL;
+    try {
+      const result = spawnSync(process.execPath, [binPath, '--stdio', '--config', configPath], {
+        env,
+        encoding: 'utf8',
+        timeout: 20_000,
+      });
+      const invalidJsonLines = result.stderr
+        .split('\n')
+        .filter((line) => line.includes('Invalid JSON in config file'));
+      expect(invalidJsonLines).toHaveLength(1);
+      expect(result.status).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
 });

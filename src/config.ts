@@ -565,14 +565,19 @@ export function resolveStartupLogLevel(
 ): LogLevel {
   let file: z.infer<typeof ConfigFileSchema> = {};
   try {
-    file = loadConfigFile(configPath ?? resolve(DEFAULT_STORAGE_PATH, 'config.json'));
+    file = loadConfigFile(configPath ?? resolve(DEFAULT_STORAGE_PATH, 'config.json'), {
+      quiet: true,
+    });
   } catch {
     // Reported by loadMcpConfig() when the config loads.
   }
   return resolveConfiguredLogLevel(cliLevel, file.logLevel);
 }
 
-function loadConfigFile(filePath: string): z.infer<typeof ConfigFileSchema> {
+function loadConfigFile(
+  filePath: string,
+  options: { quiet?: boolean } = {},
+): z.infer<typeof ConfigFileSchema> {
   let raw: string;
   try {
     raw = readFileSync(filePath, 'utf-8');
@@ -584,10 +589,12 @@ function loadConfigFile(filePath: string): z.infer<typeof ConfigFileSchema> {
     parsed = JSON.parse(raw);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    logger.error('Invalid JSON in config file', {
-      filePath,
-      error: errorMsg,
-    });
+    if (!options.quiet) {
+      logger.error('Invalid JSON in config file', {
+        filePath,
+        error: errorMsg,
+      });
+    }
     throw new Error(`Config file parsing failed at ${filePath}: ${errorMsg}`);
   }
   const validation = ConfigFileSchema.safeParse(parsed);
@@ -598,10 +605,12 @@ function loadConfigFile(filePath: string): z.infer<typeof ConfigFileSchema> {
         return `${path || 'root'}: ${issue.message}`;
       })
       .join('; ');
-    logger.error('Config file validation failed', {
-      filePath,
-      issues,
-    });
+    if (!options.quiet) {
+      logger.error('Config file validation failed', {
+        filePath,
+        issues,
+      });
+    }
     throw new Error(`Config file validation failed at ${filePath}: ${issues}`);
   }
   return validation.data;
