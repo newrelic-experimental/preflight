@@ -3131,15 +3131,19 @@ describe('Today view — daily budget KPI', () => {
   async function expectTile(
     value: string,
     sub: string,
-    tone: 'neutral' | 'amber' | 'red',
+    tone: 'neutral' | 'caution' | 'amber' | 'red',
   ): Promise<void> {
     const tile = await budgetTile();
-    await waitFor(() => expect(within(tile).getByText(sub)).toBeInTheDocument());
+    await waitFor(() => expect(tile.lastElementChild?.textContent).toBe(sub));
     const v = within(tile).getByText(value);
+    const valueTone = tone === 'caution' ? 'neutral' : tone;
     for (const t of ['amber', 'red'] as const) {
-      if (t === tone) expect(v).toHaveClass(`text-accent-${t}`);
+      if (t === valueTone) expect(v).toHaveClass(`text-accent-${t}`);
       else expect(v).not.toHaveClass(`text-accent-${t}`);
     }
+    const percent = within(tile).getByText(/% used$/);
+    if (tone === 'caution') expect(percent).toHaveClass('text-accent-amber');
+    else expect(percent).not.toHaveClass('text-accent-amber');
   }
 
   it('shows spend against the daily cap and the percent used when a daily budget is set', async () => {
@@ -3160,22 +3164,17 @@ describe('Today view — daily budget KPI', () => {
     expect(screen.queryByText(/No daily budget set/)).toBeNull();
   });
 
-  it('switches the budget value to the warning tone at 50 percent used', async () => {
-    stubBudget({ budgetUsd: 10, spentUsd: 5, pctUsed: 50, exceeded: false });
+  it.each([
+    [4.9, 49, '$4.90', 'neutral'],
+    [5, 50, '$5.00', 'caution'],
+    [7.9, 79, '$7.90', 'caution'],
+    [8, 80, '$8.00', 'amber'],
+    [9.9, 99, '$9.90', 'amber'],
+    [10, 100, '$10.00', 'red'],
+  ] as const)('spent %s of a $10 cap (%s percent) reads %s', async (spent, pct, value, tone) => {
+    stubBudget({ budgetUsd: 10, spentUsd: spent, pctUsed: pct, exceeded: false });
     renderToday();
-    await expectTile('$5.00', 'of $10.00 · 50% used', 'amber');
-  });
-
-  it('keeps the budget value out of the warning tone below 50 percent used', async () => {
-    stubBudget({ budgetUsd: 10, spentUsd: 4.9, pctUsed: 49, exceeded: false });
-    renderToday();
-    await expectTile('$4.90', 'of $10.00 · 49% used', 'neutral');
-  });
-
-  it('switches the budget value to the warning tone at 80 percent used', async () => {
-    stubBudget({ budgetUsd: 10, spentUsd: 8, pctUsed: 80, exceeded: false });
-    renderToday();
-    await expectTile('$8.00', 'of $10.00 · 80% used', 'amber');
+    await expectTile(value, `of $10.00 · ${pct}% used`, tone);
   });
 
   it('switches the budget value to the danger tone and says over budget once the cap is passed', async () => {

@@ -230,7 +230,8 @@ interface ToolSelectionMetrics {
 
 const QUALITY_REFETCH_MS = 10_000;
 
-const BUDGET_WARN_PCT = 50;
+const BUDGET_CAUTION_PCT = 50;
+const BUDGET_WARN_PCT = 80;
 const BUDGET_DANGER_PCT = 100;
 
 function DailyBudgetKpi({ spentUsd, capUsd }: { spentUsd: number; capUsd: number }): JSX.Element {
@@ -238,12 +239,21 @@ function DailyBudgetKpi({ spentUsd, capUsd }: { spentUsd: number; capUsd: number
   const overBudget = spentUsd > capUsd;
   const tone: KpiTone =
     pct >= BUDGET_DANGER_PCT ? 'bad' : pct >= BUDGET_WARN_PCT ? 'warn' : 'neutral';
+  const caution = pct >= BUDGET_CAUTION_PCT && pct < BUDGET_WARN_PCT;
   return (
     <Kpi
       label="daily budget"
       tone={tone}
       value={formatUsd(spentUsd)}
-      sub={`of ${formatUsd(capUsd)} · ${Math.floor(pct)}% used${overBudget ? ' · over budget' : ''}`}
+      sub={
+        <>
+          {`of ${formatUsd(capUsd)} · `}
+          <span className={caution ? 'text-accent-amber' : undefined}>
+            {`${Math.floor(pct)}% used`}
+          </span>
+          {overBudget ? ' · over budget' : ''}
+        </>
+      }
     />
   );
 }
