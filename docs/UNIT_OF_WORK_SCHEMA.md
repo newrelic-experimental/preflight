@@ -19,7 +19,7 @@ This schema is a view over existing events. Preflight sends no single row for a 
 | Slash command       | `skill_run_id`              | A prompt that starts with `/<name>`    | The next prompt, or the next skill with another name |
 | Subagent invocation | `agent_id` (AiSubagentTurn) | The subagent's first transcript record | The subagent's last transcript record                |
 
-`skill_source` separates the first two units. Its value is `tool` for a skill run and `slash` for a slash command. A `Skill` call that names the open slash command's skill stays in the same run. A failed or unrun `Skill` call still carries `skill_name` and `skill_source = 'tool'` on its `AiToolCall` row, with no `skill_run_id`, so filter on `skill_run_id IS NOT NULL` to keep only runs.
+`skill_source` separates the first two units. Its value is `tool` for a skill run and `slash` for a slash command. A `Skill` call that names the open slash command's skill stays in the same run. A failed or unrun `Skill` call outside any run carries `skill_name` and `skill_source = 'tool'` with no `skill_run_id`. Inside an open run it carries that run's `skill_name`, `skill_source` and `skill_run_id`, so the failed skill's own name does not appear. To keep only rows inside a run, filter on `skill_run_id IS NOT NULL`.
 
 Two other records are not units in this schema. `AiCodingTask` covers a detected task, which can span many units. A script-driven `AiWorkflowRun` covers a workflow of many agents.
 
@@ -63,7 +63,7 @@ Each status means one of the following:
 | Parent-session id    | `AiSubagentTurn.parent_session_id`, `AiWorkflowRun.session_id`                  | Exact       | Both name the session that spawned the subagent.                                                                                                                                                                                                                                               |
 | Team, project, org   | `team_id`, `project_id`, `org_id` on both events                                | Exact       | Each is omitted when not configured or derived.                                                                                                                                                                                                                                                |
 
-`AiWorkflowRun.started_at` is outside this schema. On a paired hook call, the emitter subtracts the duration from a timestamp that is already the call's start, so `started_at` is one duration too early.
+`AiWorkflowRun.started_at` is outside this schema. On a paired hook call, the tracker (`workflow-run-tracker.ts`, `record.timestamp - durationMs`) subtracts the duration from a timestamp that is already the call's start, so `started_at` is one duration too early.
 
 ## The existing events leave these gaps
 

@@ -186,6 +186,30 @@ describe('unit of agent work schema', () => {
   });
 
   describe('documented gaps', () => {
+    it('gives a failed Skill call inside an open run the outer run, not its own name', () => {
+      const skills = new SkillActivationTracker();
+      const outer = skills.recordToolCall(makeRecord('Skill', { skillName: 'outer' }));
+      if (!outer) throw new Error('a successful Skill call opens a run');
+      const failed = makeRecord('Skill', { skillName: 'inner', success: false });
+      const activeSkill = skills.recordToolCall(failed);
+      const event = toolCallToNrEvent(activeSkill ? { ...failed, activeSkill } : failed, ATTRS);
+      expect(event).toMatchObject({
+        skill_name: 'outer',
+        skill_source: 'tool',
+        skill_run_id: outer.runId,
+      });
+      expect(Object.values(event)).not.toContain('inner');
+    });
+
+    it('gives a failed Skill call outside any run its own name and no skill_run_id', () => {
+      const skills = new SkillActivationTracker();
+      const failed = makeRecord('Skill', { skillName: 'inner', success: false });
+      expect(skills.recordToolCall(failed)).toBeNull();
+      const event = toolCallToNrEvent(failed, ATTRS);
+      expect(event).toMatchObject({ skill_name: 'inner', skill_source: 'tool' });
+      expect(event).not.toHaveProperty('skill_run_id');
+    });
+
     it('leaves a response row inside an open slash run without skill attributes', () => {
       const skills = new SkillActivationTracker();
       const attributor = new TurnCostAttributor();
