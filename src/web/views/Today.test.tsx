@@ -1505,6 +1505,44 @@ describe('Today view — Cache Health panel', () => {
     expect(await screen.findByText(/\$1\.50 saved today/)).toBeInTheDocument();
   });
 
+  it('shows sub-cent savings as $0.004, not $0.00', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 0,
+            totalCostUsd: 0,
+            antiPatternCount: 0,
+            avgDurationMs: 0,
+            sessionCount: 1,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
+            cacheHealth: {
+              status: 'needs_attention',
+              cacheHitRatePct: 12,
+              totalCacheReadTokens: 3000,
+              totalCacheCreationTokens: 500,
+              totalSavingsUsd: 0.004,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Today />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/\$0\.004 saved today/)).toBeInTheDocument();
+  });
+
   it('renders the cache hit rate from the aggregate endpoint, not the per-process cache-health snapshot', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);

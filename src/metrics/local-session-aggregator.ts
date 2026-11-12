@@ -25,9 +25,15 @@ import { spawnSync } from 'node:child_process';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
-import { hasRecordedUsage, type FullSessionSummary } from '../storage/session-store.js';
+import {
+  exactTotalsOf,
+  hasRecordedUsage,
+  type ExactTotalsSource,
+  type FullSessionSummary,
+} from '../storage/session-store.js';
+import { isAwaitingLatePost } from './session-tracker.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
-import { addCallUsage } from './call-usage.js';
+import { CallUsageBook } from './call-usage.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import { resolvePricingDetail } from './pricing-overlay.js';
 import { QualityProxyTracker } from './quality-proxy-tracker.js';
@@ -63,10 +69,8 @@ export interface ModelBreakdownTally {
  * `FullSessionSummary` structurally satisfies this, so `SessionStore.loadSession`
  * can be passed as `persistedCostBaseline` unchanged.
  */
-export type PersistedCostBaseline = Pick<
-  FullSessionSummary,
-  'estimatedCostUsd' | 'subagentCostUsd' | 'costByDayUsd' | 'subagentCostByDayUsd'
->;
+export type PersistedCostBaseline = ExactTotalsSource &
+  Pick<FullSessionSummary, 'subagentCostUsd' | 'subagentCostByDayUsd'>;
 
 interface EmittedCost {
   readonly costUsd: number;
@@ -133,9 +137,10 @@ export interface LocalSessionRollup {
   tokensOutput: number;
   tokensCacheRead: number;
   tokensCacheCreation: number;
+  cacheSavingsUsd: number;
   models: Set<string>;
-  unpricedByModel: Map<string, UnpricedModelUsage>;
-  estimatedByModel: Map<string, EstimatedModelUsage>;
+  unpriced: CallUsageBook<UnpricedModelUsage>;
+  estimated: CallUsageBook<EstimatedModelUsage>;
   successCount: number;
 }
 
@@ -371,9 +376,10 @@ export class LocalSessionAggregator {
         tokensOutput: 0,
         tokensCacheRead: 0,
         tokensCacheCreation: 0,
+        cacheSavingsUsd: 0,
         models: new Set(),
-        unpricedByModel: new Map(),
-        estimatedByModel: new Map(),
+        unpriced: new CallUsageBook(),
+        estimated: new CallUsageBook(),
         successCount: 0,
       };
       this.sessions.set(sessionId, rollup);
@@ -381,6 +387,37 @@ export class LocalSessionAggregator {
     if (timestamp < rollup.startTime) rollup.startTime = timestamp;
     if (timestamp > rollup.endTime) rollup.endTime = timestamp;
     return rollup;
+  }
+
+  recordsOf(sessionId: string): readonly ToolCallRecord[] {
+    return this.sessions.get(sessionId)?.records ?? [];
+  }
+
+  /**
+   * A rollup's summary for a session whose file has calls, without what another process may count:
+   * a timeout, whose post may land elsewhere, and a call another process marked counted.
+   */
+  withoutCallsOtherProcessesMayCount(
+    summary: Record<string, unknown>,
+    countedIds: ReadonlySet<string>,
+  ): Record<string, unknown> {
+    const rollup = this.sessions.get(String(summary.sessionId))!;
+    const isLeftOut = (r: ToolCallRecord): boolean =>
+      isAwaitingLatePost(r) || (r.toolUseId !== undefined && countedIds.has(r.toolUseId));
+    const leftOut = rollup.records.filter(isLeftOut);
+    const calls = rollup.toolCallCount - leftOut.length;
+    const successes = rollup.successCount - leftOut.filter((r) => r.success).length;
+    const tools = new Map(Object.entries(rollup.toolBreakdown));
+    for (const { toolName } of leftOut) tools.set(toolName, tools.get(toolName)! - 1);
+    const timeline = rollup.timeline.filter((_, i) => !isLeftOut(rollup.records[i]!));
+    return {
+      ...summary,
+      toolCallCount: calls,
+      toolBreakdown: Object.fromEntries([...tools].filter(([, count]) => count > 0)),
+      timeline: timeline.length > 0 ? timeline : undefined,
+      // A null rate keeps the file's own.
+      toolSuccessRate: calls > 0 ? successes / calls : null,
+    };
   }
 
   amendToolCall(record: ToolCallRecord): void {
@@ -417,6 +454,8 @@ export class LocalSessionAggregator {
     platform?: string | null;
     agentId?: unknown;
     createdPrNumber?: unknown;
+    mcpPrNumber?: unknown;
+    mcpPrRepo?: unknown;
     runInBackground?: unknown;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
@@ -458,33 +497,35 @@ export class LocalSessionAggregator {
     // Persisting the per-call timeline is what lets a restarted process replay
     // this session (git activity, anti-pattern analysis). Capped the same way
     // SessionTracker caps its own timeline so a long session can't grow the
-    // session file without bound.
-    if (rollup.timeline.length < MAX_TIMELINE_ENTRIES) {
-      rollup.timeline.push({
-        timestamp,
-        toolName: tool,
-        durationMs: record.durationMs ?? null,
-        success: record.success !== false,
-        ...(typeof record.filePath === 'string' && { filePath: record.filePath }),
-        ...(typeof record.command === 'string' && { command: record.command }),
-        ...(typeof record.cwd === 'string' && { cwd: record.cwd }),
-        ...(record.isTestCommand === true && { isTestCommand: true }),
-        ...(record.isBuildCommand === true && { isBuildCommand: true }),
-        ...(record.isLintCommand === true && { isLintCommand: true }),
-        ...(typeof record.errorType === 'string' && { errorType: record.errorType }),
-        ...(typeof record.agentId === 'string' && { agentId: record.agentId }),
-        ...(typeof record.createdPrNumber === 'string' && {
-          createdPrNumber: record.createdPrNumber,
-        }),
-        ...(record.runInBackground === true && { runInBackground: true }),
-      });
-    }
+    // session file without bound. Keeps the most recent entries.
+    if (rollup.timeline.length >= MAX_TIMELINE_ENTRIES) rollup.timeline.shift();
+    rollup.timeline.push({
+      timestamp,
+      toolName: tool,
+      durationMs: record.durationMs ?? null,
+      success: record.success !== false,
+      ...(typeof record.filePath === 'string' && { filePath: record.filePath }),
+      ...(typeof record.command === 'string' && { command: record.command }),
+      ...(typeof record.cwd === 'string' && { cwd: record.cwd }),
+      ...(record.isTestCommand === true && { isTestCommand: true }),
+      ...(record.isBuildCommand === true && { isBuildCommand: true }),
+      ...(record.isLintCommand === true && { isLintCommand: true }),
+      ...(typeof record.errorType === 'string' && { errorType: record.errorType }),
+      ...(typeof record.agentId === 'string' && { agentId: record.agentId }),
+      ...(typeof record.createdPrNumber === 'string' && {
+        createdPrNumber: record.createdPrNumber,
+      }),
+      ...(typeof record.mcpPrNumber === 'string' && { mcpPrNumber: record.mcpPrNumber }),
+      ...(typeof record.mcpPrRepo === 'string' && { mcpPrRepo: record.mcpPrRepo }),
+      ...(record.runInBackground === true && { runInBackground: true }),
+    });
 
     // Feed the real trackers rather than reimplementing their heuristics, so a
     // rehydrated panel shows exactly what the live one would have shown.
     const fullRecord = record as unknown as ToolCallRecord;
     rollup.quality.recordToolCall(fullRecord);
-    if (rollup.records.length < MAX_TIMELINE_ENTRIES) rollup.records.push(fullRecord);
+    if (rollup.records.length >= MAX_TIMELINE_ENTRIES) rollup.records.shift();
+    rollup.records.push(fullRecord);
   }
 
   recordTokenUsage(
@@ -498,6 +539,7 @@ export class LocalSessionAggregator {
       cacheReadTokens?: number;
       cacheCreationTokens?: number;
       thinkingTokens?: number;
+      cacheSavingsUsd?: number;
       /**
        * Present iff this usage came from a subagent transcript turn — the SAME
        * discriminator `CostTracker.recordTokenUsage`'s `ctx.agentId` uses, so
@@ -531,6 +573,7 @@ export class LocalSessionAggregator {
     rollup.tokensOutput += usage.outputTokens ?? 0;
     rollup.tokensCacheRead += usage.cacheReadTokens ?? 0;
     rollup.tokensCacheCreation += usage.cacheCreationTokens ?? 0;
+    rollup.cacheSavingsUsd += usage.cacheSavingsUsd ?? 0;
     if (usage.model) {
       rollup.models.add(usage.model);
       const entry = rollup.modelBreakdown.get(usage.model) ?? {
@@ -560,9 +603,9 @@ export class LocalSessionAggregator {
       if (tokens > 0) {
         const resolution = resolvePricingDetail(usage.model);
         if (resolution.kind === 'unpriced') {
-          addCallUsage(rollup.unpricedByModel, usage.model, { calls: 1, tokens });
+          rollup.unpriced.add(usage.model, dayKey, { calls: 1, tokens });
         } else if (resolution.source === 'estimated') {
-          addCallUsage(rollup.estimatedByModel, usage.model, {
+          rollup.estimated.add(usage.model, dayKey, {
             calls: 1,
             tokens,
             estimatedFrom: resolution.estimatedFrom,
@@ -580,16 +623,27 @@ export class LocalSessionAggregator {
    * quadruple (not just the subagent pair) is seeded so the persisted
    * invariant `estimatedCostUsd >= subagentCostUsd` survives the fold; seeding
    * only the subagent pair could leave a merged file whose subagent figure
-   * exceeds its all-in figure.
+   * exceeds its all-in figure. Cost and day costs are seeded from the file's
+   * exact share: mergeSummaries adds the byte-estimate ledger back on top of
+   * the merged exact totals, so seeding the ledger too counts it twice. Never
+   * below the saved subagent figures, so a stale stored `exactTotals` cannot
+   * seed a total under them.
    */
   private applyPersistedBaseline(sessionId: string, rollup: LocalSessionRollup): void {
     rollup.costBaselineApplied = true;
     const baseline = this.persistedCostBaseline?.(sessionId) ?? null;
     if (baseline === null) return;
     const emitted = rollup.lastEmittedCost;
-    rollup.costUsd += excessOver(baseline.estimatedCostUsd ?? 0, emitted?.costUsd);
+    const exact = exactTotalsOf(baseline);
+    rollup.costUsd += excessOver(
+      Math.max(exact.costUsd, baseline.subagentCostUsd),
+      emitted?.costUsd,
+    );
     rollup.subagentCostUsd += excessOver(baseline.subagentCostUsd, emitted?.subagentCostUsd);
-    for (const [day, usd] of Object.entries(baseline.costByDayUsd ?? {})) {
+    const subagentByDay = baseline.subagentCostByDayUsd ?? {};
+    const seedDays = new Set([...Object.keys(exact.costByDayUsd), ...Object.keys(subagentByDay)]);
+    for (const day of seedDays) {
+      const usd = Math.max(exact.costByDayUsd[day] ?? 0, subagentByDay[day] ?? 0);
       rollup.costByDayUsd.set(
         day,
         (rollup.costByDayUsd.get(day) ?? 0) + excessOver(usd, emitted?.costByDayUsd.get(day)),
@@ -632,9 +686,11 @@ export class LocalSessionAggregator {
     outcome: string;
     repoResolver: RepoNameResolver;
     toolSelectionScorer: ToolSelectionScorer;
+    savesSession?: (sessionId: string) => boolean;
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
+      if (context.savesSession?.(rollup.sessionId) === false) continue;
       if (
         !hasRecordedUsage({
           toolCallCount: rollup.toolCallCount,
@@ -697,18 +753,13 @@ export class LocalSessionAggregator {
         ...(rollup.subagentCostByDayUsd.size > 0
           ? { subagentCostByDayUsd: Object.fromEntries(rollup.subagentCostByDayUsd) }
           : {}),
-        ...(rollup.unpricedByModel.size > 0
-          ? { unpricedByModel: Object.fromEntries(rollup.unpricedByModel) }
-          : {}),
-        ...(rollup.estimatedByModel.size > 0
-          ? { estimatedByModel: Object.fromEntries(rollup.estimatedByModel) }
-          : {}),
+        ...callUsageFields(rollup),
         tokensInput: rollup.tokensInput,
         tokensOutput: rollup.tokensOutput,
         tokensThinking: 0,
         tokensCacheRead: rollup.tokensCacheRead,
         tokensCacheCreation: rollup.tokensCacheCreation,
-        cacheSavingsUsd: 0,
+        cacheSavingsUsd: rollup.cacheSavingsUsd,
         efficiencyScore: null,
         antiPatterns: [],
         taskCount: 0,
@@ -887,4 +938,27 @@ function modelBreakdownOf(rollup: {
     };
   }
   return out;
+}
+
+/**
+ * The call-usage fields of a session that has counts. A day map rides with its
+ * counts even when empty: an absent one tells readers the summary predates day
+ * buckets and to fall back to whole-session counts.
+ */
+function callUsageFields(
+  rollup: LocalSessionRollup,
+): Pick<
+  FullSessionSummary,
+  'unpricedByModel' | 'estimatedByModel' | 'unpricedByDay' | 'estimatedByDay'
+> {
+  const unpricedByModel = rollup.unpriced.byModel();
+  const estimatedByModel = rollup.estimated.byModel();
+  return {
+    ...(Object.keys(unpricedByModel).length > 0
+      ? { unpricedByModel, unpricedByDay: rollup.unpriced.byDay() }
+      : {}),
+    ...(Object.keys(estimatedByModel).length > 0
+      ? { estimatedByModel, estimatedByDay: rollup.estimated.byDay() }
+      : {}),
+  };
 }

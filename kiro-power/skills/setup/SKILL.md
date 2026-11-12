@@ -9,9 +9,11 @@ description: Set up New Relic Preflight observability for Kiro — verify the
 
 # Setup
 
-Run this once, right after `preflight` connects. Everything here happens
-through your own tool calls (shell + `nr_observe_*`) — never ask the user to
-open a terminal themselves. Deep troubleshooting detail (session-id
+Run this once, right after `preflight` connects. Run the install and
+verification steps through your own tool calls (shell + `nr_observe_*`), but
+let the user choose: if they would rather run a command (such as
+`npm install -g @newrelic/preflight`) themselves, give them the command and
+wait for them to confirm. Deep troubleshooting detail (session-id
 resolution, hook exit-code semantics) lives in `references/troubleshooting.md`
 — read it if a step below doesn't behave as expected.
 
@@ -19,7 +21,7 @@ resolution, hook exit-code semantics) lives in `references/troubleshooting.md`
 
 Call `nr_observe_health`. If it errors or the tool isn't available, note that
 this power's `mcp.json` launches `preflight` via `npx -y
-@newrelic/preflight@latest --stdio` — no global install is required for the
+@newrelic/preflight@<version> --stdio` — no global install is required for the
 MCP tools themselves, so check that `npx` can resolve on `PATH` and reach the
 npm registry rather than looking for a global `preflight` binary. (Step 2's
 hook wiring is the part that does need a global install — see below.) Then
@@ -75,35 +77,72 @@ reflect the whole session instead of just the `nr_observe_*` calls.
 3. Verify it's working: make any tool call, then call
    `nr_observe_get_session_timeline` and confirm the call shows up.
 
-## Step 3: Ask which mode and credentials
+## Step 3: Set the environment variables, one question at a time
 
-This power's `mcp.json` sets `NR_AI_MODE: "local"` so it works out of the box
-with no New Relic account (dashboard at `http://127.0.0.1:7777`, nothing
-leaves the machine). Ask the user, conversationally, whether they'd rather
-send data to New Relic instead (`cloud`) or do both.
+This power's `mcp.json` reads every setting from an environment variable, so
+nothing is stored in the power itself. Never put real values in `mcp.json`;
+the only edit it ever needs is the pair of `${VAR}` references in Step 3c. The user sets each variable in the environment Kiro is launched from (for
+example their shell profile). Walk through these in order and don't skip ahead.
 
-If `cloud` or `both`, ask for their license key and account ID, then edit
-this power's own `mcp.json` directly — add `NEW_RELIC_LICENSE_KEY` and
-`NEW_RELIC_ACCOUNT_ID` to the same `env` block, and change `NR_AI_MODE` to
-`cloud` or `both`. Edit `mcp.json` itself rather than relying on
-shell-profile exports: it's literally the config Kiro reads to launch this
-server. Never hardcode real credentials into a shared/source-controlled copy
-of `mcp.json` — keep it on `local` mode with no credentials there, and only
-fill in real values in the user's own local install. Tell the user to fully
-quit and relaunch Kiro so the change is picked up, then verify with
-`nr_observe_get_config`.
+**3a. Platform (always).** Ask the user to set:
 
-Leave `NEW_RELIC_AI_PLATFORM: "kiro"` in that `env` block alone. Kiro exposes
-no ambient environment variable that identifies it, so without this the
-platform auto-detection falls through to the generic MCP adapter, Kiro's tool
-names are never normalized, and every file/edit/shell metric silently reports
-zero while the raw tool-call count still looks correct. Verify with
-`nr_observe_get_config` that `platform` reads `kiro`, not `generic-mcp`.
+```bash
+export NEW_RELIC_AI_PLATFORM=kiro
+```
+
+Kiro exposes no ambient variable that identifies it. Without this the platform
+falls through to the generic MCP adapter, Kiro's tool names are never
+normalized, and every file/edit/shell metric silently reports zero while the
+raw tool-call count still looks correct.
+
+**3b. Mode.** Ask which mode they want:
+
+- `local` (default): dashboard at `http://127.0.0.1:7777`, nothing leaves the
+  machine. No account needed.
+- `cloud`: send data to New Relic.
+
+Have them set their choice:
+
+```bash
+export NR_AI_MODE=local   # or: cloud
+```
+
+**3c. Credentials (only if they chose `cloud`).** Before asking, tell them what
+cloud sends: file paths, redacted shell commands, the developer ID and the repo
+URL, not just aggregate counts (see
+[PRIVACY.md](https://github.com/newrelic-experimental/preflight/blob/main/PRIVACY.md)).
+If they still want it, two things are needed, because `mcp.json` ships with
+only the mode and platform variables:
+
+1. Ask them to add these two lines to the `env` block of this power's
+   installed `mcp.json`. They are `${VAR}` references, not values, so no secret
+   goes in the file. Tell them an edit to the Power's own `mcp.json` is replaced
+   when the Power updates, so they need to re-add the two lines after an update:
+
+   ```json
+   "NEW_RELIC_LICENSE_KEY": "${NEW_RELIC_LICENSE_KEY}",
+   "NEW_RELIC_ACCOUNT_ID": "${NEW_RELIC_ACCOUNT_ID}"
+   ```
+
+2. Ask them to set the real values in their own environment:
+
+   ```bash
+   export NEW_RELIC_LICENSE_KEY=...
+   export NEW_RELIC_ACCOUNT_ID=...
+   ```
+
+**Never ask the user to paste a license key or account ID into chat, and never
+write credentials to any file yourself, including `mcp.json`.** They fill in
+their own values. If they chose `local`, skip this step.
+
+**3d. Restart and verify.** Have them fully quit and relaunch Kiro so the
+variables are picked up. Then call `nr_observe_get_config` and confirm
+`platform` reads `kiro` (not `generic-mcp`) and `mode` matches their choice.
 
 ## Step 4: Mention optional feature flags
 
-Once Steps 1-3 are done, briefly let the user know they can add more fields
-to that same `mcp.json` `env` block to unlock specific tools — don't ask about
+Once Steps 1-3 are done, briefly let the user know they can set more environment
+variables (and add them to `mcp.json`'s `env` block as `${VAR}` references) to unlock specific tools — don't ask about
 these proactively, just mention they exist:
 
 - `NEW_RELIC_AI_SESSION_BUDGET_USD` / `_DAILY_` / `_WEEKLY_BUDGET_USD` — set a
