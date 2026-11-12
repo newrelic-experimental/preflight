@@ -1,4 +1,9 @@
-import { localStartOfDay } from '../lib/date.js';
+import { localEndOfDay, localStartOfDay } from '../lib/date.js';
+
+const MIN_FORECAST_WINDOW_MS = 10 * 60_000;
+const MODERATE_CONFIDENCE_WINDOW_MS = 30 * 60_000;
+const MIN_FORECAST_WINDOW_MIN = MIN_FORECAST_WINDOW_MS / 60_000;
+const MODERATE_CONFIDENCE_WINDOW_MIN = MODERATE_CONFIDENCE_WINDOW_MS / 60_000;
 
 export interface CostForecast {
   readonly elapsedMs: number;
@@ -8,6 +13,8 @@ export interface CostForecast {
   readonly forecastEndOfWeekUsd: number | null;
   readonly forecastSessionEndUsd: number | null;
   readonly confidenceNote: string;
+  /** Why the end-of-day and end-of-week forecasts are held. Null when they are shown, and also for the no-data and no-spend early returns. */
+  readonly heldReason: string | null;
 }
 
 export interface CostForecastInputs {
@@ -58,6 +65,7 @@ export function buildCostForecastFromInputs(
       forecastEndOfWeekUsd: null,
       forecastSessionEndUsd: null,
       confidenceNote: 'Insufficient data for forecast.',
+      heldReason: null,
     };
   }
 
@@ -72,62 +80,82 @@ export function buildCostForecastFromInputs(
       forecastEndOfWeekUsd: 0,
       forecastSessionEndUsd: 0,
       confidenceNote: 'Session running — no spend recorded yet.',
+      heldReason: null,
     };
   }
 
   const sessionRateUsdPerMs = sessionSpentUsd / elapsedMs;
 
-  // End-of-day boundary in **local** time, matching the rest of the dashboard
-  // (lib/date.ts localStartOfDay). Previously this used UTC, which drifted
-  // a forecast across the day boundary for non-UTC users.
+  // Local-time day boundary, matching the dashboard's day bucketing.
   const dayStartMs = localStartOfDay(nowMs);
-  const dayEndMs = dayStartMs + 86_400_000;
+  const dayEndMs = localEndOfDay(dayStartMs);
   const msUntilEndOfDay = Math.max(0, dayEndMs - nowMs);
 
-  // Daily-anchored EoD/EoW forecast when caller supplies today's spend +
-  // first-activity-of-day. Both the day and week projections use the same
-  // effective rate and base so they are internally consistent: the week
-  // forecast is simply the day forecast extended to the full remaining week.
-  // Falls back to session rate/base when the daily anchor is absent.
+  // Day and week projections share one effective rate and base.
+  let effectiveElapsedMs: number;
   let effectiveRateUsdPerMs: number;
   let effectiveBaseUsd: number;
+  let anchorMissing = false;
   if (
     typeof dailySpentUsd === 'number' &&
     dailySpentUsd >= 0 &&
     typeof dailyFirstActivityMs === 'number' &&
     dailyFirstActivityMs > 0
   ) {
-    const dailyElapsedMs = Math.max(1, nowMs - dailyFirstActivityMs);
-    effectiveRateUsdPerMs = dailySpentUsd / dailyElapsedMs;
+    effectiveElapsedMs = Math.max(1, nowMs - dailyFirstActivityMs);
+    effectiveRateUsdPerMs = dailySpentUsd / effectiveElapsedMs;
     effectiveBaseUsd = dailySpentUsd;
   } else {
+    // Without a daily anchor, only a session that began today has all its
+    // spend in today's base. An older session's spend is mostly yesterday's.
+    effectiveElapsedMs = elapsedMs;
     effectiveRateUsdPerMs = sessionRateUsdPerMs;
     effectiveBaseUsd = sessionSpentUsd;
+    anchorMissing = sessionStartMs < dayStartMs;
   }
-  const forecastEndOfDayUsd = effectiveBaseUsd + effectiveRateUsdPerMs * msUntilEndOfDay;
+  const forecastHeld = anchorMissing || effectiveElapsedMs < MIN_FORECAST_WINDOW_MS;
+  const heldReason = !forecastHeld
+    ? null
+    : anchorMissing
+      ? 'held: no spend yet today'
+      : `held: under ${MIN_FORECAST_WINDOW_MIN} minutes of today's data`;
+  const project = (msRemaining: number): number | null =>
+    forecastHeld ? null : effectiveBaseUsd + effectiveRateUsdPerMs * msRemaining;
+  const forecastEndOfDayUsd = project(msUntilEndOfDay);
 
-  // ISO week ends on Sunday. Convert local getDay() (0=Sun…6=Sat) to ISO day (1=Mon…7=Sun)
-  // then compute remaining days: Sunday → 0 remaining, Monday → 6, …, Saturday → 1.
-  // Use getDay() (local) not getUTCDay() — the week boundary must match the local EoD boundary.
+  // Local weekday, so the week boundary matches the local day boundary.
   const now = new Date(nowMs);
   const dayOfWeek = now.getDay();
   const isoDay = dayOfWeek === 0 ? 7 : dayOfWeek;
-  const msUntilEndOfWeek = ((7 - isoDay) % 7) * 86_400_000 + msUntilEndOfDay;
-  const forecastEndOfWeekUsd = effectiveBaseUsd + effectiveRateUsdPerMs * msUntilEndOfWeek;
+  // Built from Y/M/D parts like localEndOfDay, so a 23h or 25h DST day in the
+  // rest of the week isn't counted as 24h.
+  const weekEndMs = localStartOfDay(
+    new Date(now.getFullYear(), now.getMonth(), now.getDate() + (7 - isoDay) + 1).getTime(),
+  );
+  const msUntilEndOfWeek = Math.max(0, weekEndMs - nowMs);
+  const forecastEndOfWeekUsd = project(msUntilEndOfWeek);
 
   // Assumes a full 8-hour workday as the session-end horizon — there's no
   // real "end of session" signal to anchor this forecast to otherwise.
   const SESSION_TARGET_MS = 8 * 60 * 60 * 1000;
   const msUntilSessionEnd = Math.max(0, SESSION_TARGET_MS - elapsedMs);
-  const forecastSessionEndUsd = sessionSpentUsd + sessionRateUsdPerMs * msUntilSessionEnd;
+  const forecastSessionEndUsd =
+    elapsedMs < MIN_FORECAST_WINDOW_MS
+      ? null
+      : sessionSpentUsd + sessionRateUsdPerMs * msUntilSessionEnd;
 
-  const elapsedMinutes = elapsedMs / 60_000;
-  const confidenceNote =
-    elapsedMinutes < 10
-      ? 'Low confidence — less than 10 minutes of data.'
-      : elapsedMinutes < 30
-        ? 'Moderate confidence — based on less than 30 minutes of data.'
-        : 'Reasonable confidence — based on 30+ minutes of data.';
+  // Grades the window of the number the caller sees: the day/week window while
+  // those forecasts are shown, else the session window behind the session-end one.
+  const sessionEndShown = forecastSessionEndUsd !== null;
+  const gradedWindowMs = forecastHeld ? (sessionEndShown ? elapsedMs : 0) : effectiveElapsedMs;
+  let confidenceNote: string;
+  if (gradedWindowMs < MIN_FORECAST_WINDOW_MS) {
+    confidenceNote = `Low confidence — less than ${MIN_FORECAST_WINDOW_MIN} minutes of data.`;
+  } else if (gradedWindowMs < MODERATE_CONFIDENCE_WINDOW_MS) {
+    confidenceNote = `Moderate confidence — based on less than ${MODERATE_CONFIDENCE_WINDOW_MIN} minutes of data.`;
+  } else {
+    confidenceNote = `Reasonable confidence — based on ${MODERATE_CONFIDENCE_WINDOW_MIN}+ minutes of data.`;
+  }
 
   return {
     elapsedMs,
@@ -137,5 +165,6 @@ export function buildCostForecastFromInputs(
     forecastEndOfWeekUsd,
     forecastSessionEndUsd,
     confidenceNote,
+    heldReason,
   };
 }

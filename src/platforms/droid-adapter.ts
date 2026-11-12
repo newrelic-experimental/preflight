@@ -52,7 +52,7 @@ export class DroidAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'full-hooks' as const;
   readonly capabilities = {
     instructionFilePaths: ['AGENTS.md'] as const,
-    // The documented hook command names no engine.
+    // docs.factory.ai/reference/hooks-reference sends session_id; the documented command names no engine.
     sessionBreadcrumbWriters: ['droid', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
   };
 

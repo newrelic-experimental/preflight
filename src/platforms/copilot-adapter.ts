@@ -113,7 +113,7 @@ export class CopilotAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'full-hooks' as const;
   readonly capabilities = {
     instructionFilePaths: [] as const,
-    // Hook commands documented before #557 (2026-09-04) lack the
+    // Hook commands documented before 2026-09-04 lack the
     // NEW_RELIC_AI_PLATFORM=copilot stamp. The desktop app's setup stamps
     // MCP_CLIENT=copilot-app into ~/.copilot/hooks/preflight.json, which VS
     // Code reads too.
@@ -188,6 +188,9 @@ export class CopilotAdapter implements PlatformAdapter {
       '   does not inherit env vars set on an MCP server registration (e.g.',
       '   `copilot mcp add --env MCP_CLIENT=...`), so without it every event falls',
       '   through to the claude-code platform default.',
+      '   On Windows, PowerShell cannot parse that prefix. Add a "powershell" field to',
+      "   each entry: $env:NEW_RELIC_AI_PLATFORM='copilot'; & 'preflight-collector.cmd' pre-tool",
+      '   (post-tool for PostToolUse).',
       '1b. VS Code also reads Claude-format hooks from ~/.claude/settings.json by',
       '   default — if preflight hooks are installed there for Claude Code, either',
       '   rely on those or disable that location via chat.hookFilesLocations to',

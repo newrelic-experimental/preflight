@@ -9,16 +9,38 @@ import {
   readdirSync,
   statSync,
 } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { basename, dirname, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
+import {
+  DRAINS_DIR,
+  DrainHold,
+  forgetLegacySightingsExcept,
+  formatClaimName,
+  holdsBuffer,
+  isAdoptable,
+  isBufferName,
+  legacyDrainBuffer,
+  listClaims,
+  noteFailure,
+  clearFailure,
+  sightLegacy,
+  type DrainClaim,
+} from './drain-claims.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
 import { BREADCRUMBS_DIR, breadcrumbRoot } from '../hooks/session-breadcrumbs.js';
+import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
 const logger = createLogger('local-store');
 
 const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
+
+interface BufferDrain {
+  present: boolean;
+  readonly claims: DrainClaim[];
+}
+
 /**
  * Matches `.subagent-pos-<parentSessionId>-<agentId>` cursor filenames.
  * Group 1 (parentSessionId) is pinned to the UUID shape (mirrors
@@ -41,6 +63,18 @@ const PARENT_TRANSCRIPT_CURSOR_RE = /^\.parent-transcript-pos-(.+)$/;
  * idle without tool calls won't trip the threshold.
  */
 const ORPHAN_BUFFER_MTIME_MS = 5 * 60 * 1000;
+
+const COUNTED_IDS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function readCountedToolUseIds(path: string): string[] {
+  if (!existsSync(path)) return [];
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
 
 /**
  * The on-disk shape of `local-dashboard.pid` and `local-instances/<pid>.json`
@@ -114,6 +148,10 @@ export class LocalStore {
   private readonly storagePath: string;
   private readonly bufferPath: string;
   private readonly sessionId: string | null;
+  private readonly countedDir: string;
+  private readonly ownCountedIds = new Map<string, Set<string>>();
+  private readonly holds = new Map<string, DrainHold>();
+  private giveUpOrder = false;
 
   /**
    * @param storagePath The base storage directory (e.g. ~/.newrelic-preflight).
@@ -129,6 +167,7 @@ export class LocalStore {
    */
   constructor(storagePath: string, bufferPathOrSessionId?: string, sessionId?: string) {
     this.storagePath = storagePath;
+    this.countedDir = resolve(storagePath, 'counted');
     let resolvedBufferPath: string | null;
     let resolvedSessionId: string | null = null;
 
@@ -173,6 +212,7 @@ export class LocalStore {
       resolve(this.storagePath, 'sessions'),
       resolve(this.storagePath, 'weekly_summaries'),
       resolve(this.storagePath, 'audit'),
+      resolve(this.storagePath, DRAINS_DIR),
     ];
 
     for (const dir of dirs) {
@@ -184,13 +224,9 @@ export class LocalStore {
     logger.debug('Storage initialized', { path: this.storagePath });
   }
 
-  /**
-   * Append a hook event as a JSON line to the buffer file.
-   * Uses appendFileSync for minimal latency (<5ms budget).
-   */
   appendToBuffer(event: HookEvent): void {
     try {
-      appendFileSync(this.bufferPath, JSON.stringify(event) + '\n', { mode: 0o600 });
+      appendToHookBuffer(this.bufferPath, JSON.stringify(event) + '\n');
     } catch (err) {
       // Never block the caller — log and move on
       logger.warn('Failed to append to buffer', { error: String(err) });
@@ -198,12 +234,29 @@ export class LocalStore {
   }
 
   /**
-   * Atomically drain all events from the buffer file.
-   * Renames the file to a temp path (atomic on POSIX), reads it, then deletes.
-   * This avoids data loss from concurrent hook writes during drain.
+   * Drain this store's buffer, plus this process's own leftover claims of any
+   * buffer. The buffer is renamed into a claim of this process's own before it
+   * is read, so concurrent drainers never return an event twice, and a claim
+   * left by a drainer that died mid-drain is adopted by another.
+   *
+   * Reading a claim appends a seal to it first. A hook that opened the buffer
+   * before the rename and whose line lands after the seal writes the line
+   * again to the live buffer, so it is drained on a later pass.
    */
   drainBuffer(): HookEvent[] {
-    return this.drainPath(this.bufferPath);
+    const claims = listClaims(dirname(this.bufferPath), basename(this.bufferPath));
+    return this.drainPath(this.bufferPath, { present: existsSync(this.bufferPath), claims });
+  }
+
+  /**
+   * For a processor that is shutting down: every later drain takes each claim
+   * it can rather than holding the claims after one it cannot take. The
+   * processor flushes its pending pre events as timeouts right after its last
+   * drain, so a post left behind would pair with nothing and count its call
+   * twice.
+   */
+  giveUpHeldOrder(): void {
+    this.giveUpOrder = true;
   }
 
   /**
@@ -214,13 +267,7 @@ export class LocalStore {
    * MCP isn't running) are picked up too.
    *
    * A per-session buffer whose `active-<sessionId>.pid` heartbeat names a
-   * live PID is skipped: that session's own `--stdio` process is already
-   * polling and draining that exact file via its own scoped drainBuffer() on
-   * the same cadence. Draining it here too would race that rename-then-read
-   * against the owner's — whichever process wins a given poll cycle silently
-   * keeps the batch, and the loser sees nothing, with no error on either
-   * side. The owner's copy always wins fairly since this call skips the file
-   * outright rather than racing it.
+   * live PID is left to that session's own `--stdio` process.
    */
   drainAllBuffers(): HookEvent[] {
     const all: HookEvent[] = [];
@@ -232,20 +279,77 @@ export class LocalStore {
       logger.warn('Failed to enumerate storage path for drainAllBuffers', { error: String(err) });
       return [];
     }
-    for (const name of entries) {
-      // Per-session: buffer-<id>.jsonl. Also pick up the legacy shared
-      // buffer.jsonl so a freshly-upgraded user's pre-existing events still flow.
-      if (!name.endsWith('.jsonl')) continue;
-      if (name !== 'buffer.jsonl' && !name.startsWith('buffer-')) continue;
-
-      if (name !== 'buffer.jsonl' && this.hasLiveOwner(name)) continue;
-
-      const drained = this.drainPath(resolve(this.storagePath, name));
-      if (drained.length > 0) {
-        for (const event of drained) all.push(event);
+    const drains = this.bufferDrains(entries);
+    for (const [name, drain] of drains) {
+      const ownerLive = (): boolean => name !== 'buffer.jsonl' && this.hasLiveOwner(name);
+      for (const event of this.drainPath(resolve(this.storagePath, name), drain, ownerLive)) {
+        all.push(event);
       }
     }
+    for (const path of this.holds.keys()) if (!drains.has(basename(path))) this.holds.delete(path);
     return all;
+  }
+
+  /**
+   * Records toolUseIds this process counted without a post, in
+   * `counted/<sessionId>.<pid>.json`. Each process writes only its own file,
+   * so concurrent writers never lose each other's ids; readers take the union.
+   */
+  rememberCountedToolUseIds(sessionId: string, ids: readonly string[], cap: number): boolean {
+    if (!SESSION_ID_RE.test(sessionId) || ids.length === 0) return true;
+    const path = resolve(this.countedDir, `${sessionId}.${process.pid}.json`);
+    const window = this.ownCountedIds.get(sessionId) ?? new Set(readCountedToolUseIds(path));
+    for (const id of ids) {
+      window.delete(id);
+      window.add(id);
+    }
+    for (const id of window) {
+      if (window.size <= cap) break;
+      window.delete(id);
+    }
+    this.ownCountedIds.set(sessionId, window);
+    const tmpPath = `${path}.tmp`;
+    try {
+      mkdirSync(this.countedDir, { recursive: true, mode: 0o700 });
+      writeFileSync(tmpPath, JSON.stringify([...window]), { mode: 0o600 });
+      renameSync(tmpPath, path);
+      return true;
+    } catch (err) {
+      logger.warn('Failed to save counted toolUseIds', { sessionId, error: String(err) });
+      return false;
+    }
+  }
+
+  hasCountedToolUseId(sessionId: string, toolUseId: string): boolean {
+    return this.countedToolUseIds(sessionId).has(toolUseId);
+  }
+
+  countedToolUseIds(sessionId: string): Set<string> {
+    if (!SESSION_ID_RE.test(sessionId)) return new Set();
+    return new Set(
+      this.countedFileNames()
+        .filter((name) => name.startsWith(`${sessionId}.`) && name.endsWith('.json'))
+        .flatMap((name) => readCountedToolUseIds(resolve(this.countedDir, name))),
+    );
+  }
+
+  gcCountedToolUseIds(now: number = Date.now()): void {
+    for (const name of this.countedFileNames()) {
+      const path = resolve(this.countedDir, name);
+      try {
+        if (now - statSync(path).mtimeMs >= COUNTED_IDS_MAX_AGE_MS) unlinkSync(path);
+      } catch (err) {
+        logger.debug('Failed to delete counted toolUseIds file', { name, error: String(err) });
+      }
+    }
+  }
+
+  private countedFileNames(): string[] {
+    try {
+      return readdirSync(this.countedDir);
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -276,7 +380,9 @@ export class LocalStore {
    *
    * The legacy shared `buffer.jsonl` is included so an upgrading user with
    * unmigrated events still appears in aggregate views before the next
-   * `migrateLegacyBuffer()` runs.
+   * `migrateLegacyBuffer()` runs. Lines held in drain claims are included
+   * too: they are still waiting for a drainer to return them, so a claim
+   * that no drainer can unlink keeps showing up here.
    */
   peekAllBuffers(): HookEvent[] {
     const all: HookEvent[] = [];
@@ -288,13 +394,16 @@ export class LocalStore {
       logger.warn('Failed to enumerate storage path for peekAllBuffers', { error: String(err) });
       return [];
     }
-    for (const name of entries) {
-      if (!name.endsWith('.jsonl')) continue;
-      if (name !== 'buffer.jsonl' && !name.startsWith('buffer-')) continue;
-      const path = resolve(this.storagePath, name);
+    const paths: string[] = [];
+    for (const [name, drain] of this.bufferDrains(entries)) {
+      for (const claim of drain.claims) paths.push(claim.path);
+      if (drain.present) paths.push(resolve(this.storagePath, name));
+    }
+    for (const path of paths) {
+      const name = basename(path);
       let raw: string;
       try {
-        raw = readFileSync(path, 'utf-8');
+        raw = textBeforeSeal(readFileSync(path, 'utf-8'));
       } catch {
         continue;
       }
@@ -669,8 +778,7 @@ export class LocalStore {
     for (const name of entries) {
       // Match `buffer-<sessionId>.jsonl` exactly. Skip `.drain` companions and
       // already-archived files so a follow-up pass doesn't re-process them.
-      if (!name.startsWith('buffer-') || !name.endsWith('.jsonl')) continue;
-      if (name === 'buffer.jsonl') continue;
+      if (!isBufferName(name) || name === 'buffer.jsonl') continue;
 
       const sessionId = name.slice('buffer-'.length, -'.jsonl'.length);
       // Defense in depth — a malformed sessionId would mean a malformed
@@ -725,6 +833,15 @@ export class LocalStore {
       const archivedPath = `${bufferPath}.archived-${now}`;
       try {
         renameSync(bufferPath, archivedPath);
+        try {
+          sealHookBuffer(archivedPath);
+        } catch (err) {
+          logger.warn('Failed to seal archived orphan buffer', {
+            sessionId,
+            archivedPath,
+            error: String(err),
+          });
+        }
         archived++;
         logger.info('Archived orphan buffer', { sessionId, archivedPath });
         // Only remove the heartbeat once the archive rename has succeeded.
@@ -795,9 +912,7 @@ export class LocalStore {
     }
 
     const cutoffMs = Date.now() - discoveryHours * 60 * 60 * 1000;
-    const bufferNames = new Set(
-      entries.filter((n) => n.startsWith('buffer-') && n.endsWith('.jsonl')),
-    );
+    const bufferNames = new Set(entries.filter(isBufferName));
 
     let subagentCursors = 0;
     let transcriptCursors = 0;
@@ -1065,7 +1180,9 @@ export class LocalStore {
    * accept this trade because re-migrating from `.migrating-<pid>` would
    * re-append already-migrated partitions and produce duplicate events,
    * which is worse than a once-only loss bounded by the size of the legacy
-   * file at upgrade time.
+   * file at upgrade time. The file is sealed, so recover it by hand with
+   * the text before the seal (`\0preflight-drain-seal`), not by appending
+   * it whole to a live buffer, where the seal would hide every later line.
    *
    * Returns the number of events migrated.
    */
@@ -1100,7 +1217,7 @@ export class LocalStore {
 
     let raw: string;
     try {
-      raw = readFileSync(migratingPath, 'utf-8');
+      raw = readSealed(migratingPath);
     } catch (err) {
       logger.warn('Failed to read legacy buffer.jsonl during migration', { error: String(err) });
       // Leave the .migrating file in place for forensic recovery; we already
@@ -1139,7 +1256,8 @@ export class LocalStore {
     for (const [sid, lines] of partitioned) {
       const target = resolve(this.storagePath, `buffer-${sid}.jsonl`);
       try {
-        appendFileSync(target, lines.join('\n') + '\n', { mode: 0o600 });
+        // One append per line: a redo after a short write can repeat only one torn line.
+        for (const l of lines) appendToHookBuffer(target, l + '\n');
       } catch (err) {
         // Mid-partition failure: the .migrating file stays on disk so the
         // operator can recover forensically. We don't retry on next boot to
@@ -1167,42 +1285,102 @@ export class LocalStore {
     return count;
   }
 
-  private drainPath(bufferPath: string): HookEvent[] {
-    const tmpPath = bufferPath + '.drain';
-
-    // Recover from a previous failed drain — the .drain file has events that
-    // were never processed. Extracted in memory (never merged back into
-    // bufferPath) so a concurrent preflight-collector append can never be
-    // silently clobbered: any append that lands after the claim-rename below
-    // creates a fresh bufferPath, which the next poll drains normally.
-    let recoveredEvents: HookEvent[] = [];
-    if (existsSync(tmpPath)) {
-      try {
-        const drainData = readFileSync(tmpPath, 'utf-8');
-        recoveredEvents = parseHookEvents(drainData);
-        unlinkSync(tmpPath);
-      } catch {
-        logger.warn('Failed to recover .drain file — will retry next poll');
+  private bufferDrains(entries: readonly string[]): Map<string, BufferDrain> {
+    const drains = new Map<string, BufferDrain>();
+    const drainOf = (name: string): BufferDrain => {
+      let drain = drains.get(name);
+      if (!drain) drains.set(name, (drain = { present: false, claims: [] }));
+      return drain;
+    };
+    const legacies = new Set<string>();
+    for (const entry of entries) {
+      if (isBufferName(entry)) {
+        drainOf(entry).present = true;
+        continue;
+      }
+      const legacyOf = legacyDrainBuffer(entry);
+      const legacy = legacyOf && sightLegacy(resolve(this.storagePath, entry), legacyOf);
+      if (legacy) {
+        legacies.add(legacy.path);
+        drainOf(legacy.buffer).claims.push(legacy);
       }
     }
-
-    if (!existsSync(bufferPath)) {
-      return recoveredEvents;
+    forgetLegacySightingsExcept(resolve(this.storagePath), legacies);
+    for (const claim of listClaims(this.storagePath)) {
+      if (isBufferName(claim.buffer)) drainOf(claim.buffer).claims.push(claim);
     }
+    return drains;
+  }
 
-    try {
-      renameSync(bufferPath, tmpPath);
-    } catch {
-      return recoveredEvents;
+  private drainPath(
+    bufferPath: string,
+    drain: BufferDrain,
+    ownerLive: () => boolean = () => false,
+  ): HookEvent[] {
+    const drainsDir = resolve(dirname(bufferPath), DRAINS_DIR);
+    const owned: {
+      readonly path: string;
+      readonly firstClaimedAt: number;
+      readonly origin: string;
+    }[] = [];
+    let mayAdopt: boolean | undefined;
+    for (const claim of drain.claims) {
+      if (claim.owner === process.pid) owned.push({ ...claim, origin: claim.path });
+      else if (isAdoptable(claim, isPidAlive) && (mayAdopt ??= !ownerLive())) {
+        const path = this.claimDrain(claim.path, drainsDir, claim.buffer, claim.firstClaimedAt);
+        if (path) owned.push({ path, firstClaimedAt: claim.firstClaimedAt, origin: claim.path });
+      }
     }
+    const paths = owned
+      .sort((a, b) => a.firstClaimedAt - b.firstClaimedAt || (a.origin < b.origin ? -1 : 1))
+      .map(({ path }) => path);
 
+    const hold = this.holds.get(bufferPath) ?? new DrainHold();
+    const events: HookEvent[] = [];
+    const take = (path: string): boolean => {
+      const taken = hold.take(path, this.giveUpOrder);
+      if (taken === 'stop') return false;
+      if (taken !== 'skip') for (const event of parseHookEvents(taken.text)) events.push(event);
+      return true;
+    };
+    const finished = paths.every(take);
+    // The buffer is claimed only once every older claim is taken or given up, and ownerLive is
+    // asked again on purpose: an engine can adopt the session while the claims above are taken.
+    const olderEventsPending = drain.claims.some((claim) => holdsBuffer(claim, isPidAlive));
+    if (finished && drain.present && !olderEventsPending && !ownerLive()) {
+      const path = this.claimDrain(bufferPath, drainsDir, basename(bufferPath));
+      if (path) take(path);
+    }
+    hold.endPoll();
+    if (hold.idle) this.holds.delete(bufferPath);
+    else this.holds.set(bufferPath, hold);
+    return events;
+  }
+
+  private claimDrain(
+    from: string,
+    drainsDir: string,
+    buffer: string,
+    firstClaimedAt?: number,
+  ): string | null {
+    const to = resolve(drainsDir, formatClaimName(buffer, process.pid, Date.now(), firstClaimedAt));
     try {
-      const raw = readFileSync(tmpPath, 'utf-8');
-      unlinkSync(tmpPath);
-      return [...recoveredEvents, ...parseHookEvents(raw)];
+      try {
+        renameSync(from, to);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        mkdirSync(drainsDir, { recursive: true, mode: 0o700 });
+        renameSync(from, to);
+      }
+      clearFailure(from);
+      return to;
     } catch (err) {
-      logger.warn('Failed to drain buffer — will retry next poll', { error: String(err) });
-      return recoveredEvents;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        clearFailure(from);
+      } else {
+        noteFailure(from, 'Failed to claim a buffer for draining — retrying each poll', err);
+      }
+      return null;
     }
   }
 

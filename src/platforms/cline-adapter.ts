@@ -56,6 +56,7 @@ export class ClineAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'mcp-tools-only' as const;
   readonly capabilities = {
     instructionFilePaths: ['.clinerules/'] as const,
+    // Cline's extension has no hooks (docs.cline.bot/customization/plugins), so it writes no breadcrumb.
     sessionBreadcrumbWriters: [] as const,
   };
 

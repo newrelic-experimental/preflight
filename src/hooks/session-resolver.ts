@@ -50,6 +50,7 @@ import {
 import { resolve, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { createLogger } from '../shared/index.js';
+import { claudeProjectsDir } from '../lib/claude-config-dir.js';
 import {
   getAncestorPids,
   isNpmExecWrapper,
@@ -1044,7 +1045,7 @@ export function readTranscriptTitle(input: {
   const { sessionId } = input;
   if (!SESSION_ID_RE.test(sessionId)) return null;
 
-  const projectsDir = input.projectsDir ?? resolve(homedir(), '.claude', 'projects');
+  const projectsDir = input.projectsDir ?? claudeProjectsDir();
   const transcriptPath = findTranscriptPath(projectsDir, sessionId);
   if (transcriptPath === null) return null;
 

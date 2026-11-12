@@ -46,6 +46,10 @@ export interface RawUsage {
   readonly output_tokens?: number;
   readonly cache_read_input_tokens?: number;
   readonly cache_creation_input_tokens?: number;
+  readonly cache_creation?: {
+    readonly ephemeral_1h_input_tokens?: number;
+    readonly ephemeral_5m_input_tokens?: number;
+  };
   readonly output_tokens_details?: { readonly reasoning_tokens?: number };
   readonly [key: string]: unknown;
 }

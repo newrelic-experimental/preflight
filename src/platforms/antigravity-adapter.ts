@@ -59,7 +59,7 @@ export class AntigravityAdapter implements PlatformAdapter {
   // .agents/rules/ (with backward-compat support for the older .agent/rules/).
   readonly capabilities = {
     instructionFilePaths: ['GEMINI.md', '.agents/rules/'] as const,
-    // Antigravity's hooks send conversationId, never session_id, so they write no breadcrumb.
+    // antigravity.google/docs/hooks: hooks send conversationId, never session_id, so they write no breadcrumb.
     sessionBreadcrumbWriters: [] as const,
   };
 

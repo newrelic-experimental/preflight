@@ -48,6 +48,7 @@ export class ContinueAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'mcp-tools-only' as const;
   readonly capabilities = {
     instructionFilePaths: [] as const,
+    // Continue has no hook mechanism, so it writes no breadcrumb.
     sessionBreadcrumbWriters: [] as const,
   };
 
