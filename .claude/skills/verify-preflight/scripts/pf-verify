@@ -48,16 +48,9 @@ ensure_run_dirs() {
   chmod 700 "$RUN" "$RUN/store"
 }
 
-cmd_up() {
-  [[ -f "$REPO/dist/index.js" && -f "$REPO/dist/web/index.html" ]] ||
-    die "no build in $REPO/dist; run: npm ci && npm run build"
-  alive && die "already up (pid $(server_pid)) at $URL; run doctor or down"
-  local holder; holder="$(port_listener)"
-  [[ -z "$holder" ]] || die "port $PORT is held by pid $holder, not this run; pick PF_PORT=<free port>"
-  rm -rf "$RUN"
-  ensure_run_dirs
+start_server() {
   (cd "$REPO" && exec env "${ENV_ARGS[@]}" node dist/index.js --local --config "$RUN/store/config.json" \
-    >"$RUN/server.log" 2>&1 </dev/null) &
+    >>"$RUN/server.log" 2>&1 </dev/null) &
   echo $! >"$RUN/server.pid"
   for _ in $(seq 1 60); do
     curl -sf "$URL/api/health" >/dev/null && { echo "up pid=$(server_pid) url=$URL run=$RUN"; return; }
@@ -65,6 +58,56 @@ cmd_up() {
     sleep 0.5
   done
   die "no /api/health after 30s; see $RUN/server.log"
+}
+
+require_build() {
+  [[ -f "$REPO/dist/index.js" && -f "$REPO/dist/web/index.html" ]] ||
+    die "no build in $REPO/dist; run: npm ci && npm run build"
+}
+
+require_port_free() {
+  local holder; holder="$(port_listener)"
+  [[ -z "$holder" ]] || die "port $PORT is held by pid $holder, not this run; pick PF_PORT=<free port>"
+}
+
+cmd_up() {
+  require_build
+  alive && die "already up (pid $(server_pid)) at $URL; run doctor or down"
+  require_port_free
+  rm -rf "$RUN"
+  ensure_run_dirs
+  start_server
+}
+
+cmd_restart() {
+  require_build
+  alive && die "already up (pid $(server_pid)) at $URL; run stop first"
+  require_port_free
+  ensure_run_dirs
+  start_server
+}
+
+stop_server() {
+  local pid; pid="$(server_pid)"
+  alive || return 0
+  ps -o command= -p "$pid" | grep -q -- "--config $RUN/store/config.json" ||
+    die "pid $pid is not this run's server; refusing to kill it"
+  kill "$pid"
+  for _ in $(seq 1 20); do alive || break; sleep 0.25; done
+  alive && kill -9 "$pid"
+  return 0
+}
+
+cmd_stop() {
+  stop_server
+  echo "stop port=$PORT run=$RUN"
+}
+
+cmd_env() {
+  local e
+  for e in "${ENV_ARGS[@]}"; do
+    if [[ $e == *=* ]]; then echo "$e"; fi
+  done
 }
 
 cmd_doctor() {
@@ -203,14 +246,7 @@ cmd_mcp() {
 }
 
 cmd_down() {
-  local pid; pid="$(server_pid)"
-  if alive; then
-    ps -o command= -p "$pid" | grep -q -- "--config $RUN/store/config.json" ||
-      die "pid $pid is not this run's server; refusing to kill it"
-    kill "$pid"
-    for _ in $(seq 1 20); do alive || break; sleep 0.25; done
-    alive && kill -9 "$pid"
-  fi
+  stop_server
   if [[ -d "$RUN" ]]; then
     mkdir -p "$EVIDENCE"
     [[ -f "$RUN/server.log" ]] && cp "$RUN/server.log" "$EVIDENCE/server-$PORT-$(date +%Y%m%d-%H%M%S).log"
@@ -255,6 +291,6 @@ cmd_where() {
 }
 
 case "${1:-}" in
-  up | doctor | sid | hook | prompt | turn | api | mcp | shot | down | where) c="$1"; shift; "cmd_$c" "$@" ;;
-  *) die "usage: pf-verify {up|doctor|sid|hook|prompt|turn|api|mcp|shot|down|where}" ;;
+  up | restart | stop | env | doctor | sid | hook | prompt | turn | api | mcp | shot | down | where) c="$1"; shift; "cmd_$c" "$@" ;;
+  *) die "usage: pf-verify {up|restart|stop|env|doctor|sid|hook|prompt|turn|api|mcp|shot|down|where}" ;;
 esac

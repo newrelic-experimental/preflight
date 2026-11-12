@@ -87,6 +87,8 @@ The feature map in [`features/README.md`](features/README.md) holds the per-feat
 $PF down        # kills only the PID this run recorded, after checking its argv names this run's config
 ```
 
+`stop` kills the server the same way but keeps the run dir, and `restart` starts the server again on that store, so a restart proof keeps its persisted sessions and billed-turn ledger. `env` prints the isolated `KEY=VALUE` environment, for a driver that spawns its own `--stdio` server. `npm run test:scenario` uses all three to run the both-modes-plus-restart scenario in `scripts/scenario-both-modes-restart.ts`.
+
 `down` refuses to kill a PID whose command line doesn't match the run. It copies `server.log` into the evidence dir, then deletes the run dir. It never touches the evidence dir. `mcp` children exit before `mcp` returns, and it SIGKILLs any child still alive after 5s. Run `down` after every failed iteration too, so no stray server keeps holding the port.
 
 ## Helpers
