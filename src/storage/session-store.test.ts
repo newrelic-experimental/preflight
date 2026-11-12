@@ -722,17 +722,6 @@ describe('SessionStore', () => {
     expect(saved).not.toBeNull();
   });
 
-  it('keeps the existing outcome when a write carries none', () => {
-    const store = new SessionStore({ storagePath: tmpDir });
-    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
-    store.saveSession(makeSummary({ sessionId: 'observed', startTime, outcome: 'in progress' }));
-    const { outcome: _outcome, ...observed } = makeSummary({ sessionId: 'observed', startTime });
-
-    store.saveSession(observed as unknown as FullSessionSummary);
-
-    expect(store.loadSession('observed')?.outcome).toBe('in progress');
-  });
-
   it('keeps the larger selfReportCount', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const startTime = new Date('2026-04-15T10:00:00Z').getTime();

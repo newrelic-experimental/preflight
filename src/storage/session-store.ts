@@ -580,11 +580,6 @@ function mergeCallUsageByDayWithLedger<T extends CallUsage>(
   return combineCallUsageByDay(exact, mergedLedger, addCallUsageRecords);
 }
 
-function mergeOutcome(existing: string, incoming: unknown): string {
-  if (typeof incoming !== 'string') return existing;
-  return incoming === 'completed' || existing !== 'completed' ? incoming : existing;
-}
-
 export function mergeSummaries(
   existing: FullSessionSummary,
   incoming: FullSessionSummary,
@@ -826,7 +821,10 @@ export function mergeSummaries(
       (incoming.antiPatterns?.length ?? 0) >= (existing.antiPatterns?.length ?? 0)
         ? incoming.antiPatterns
         : existing.antiPatterns,
-    outcome: mergeOutcome(existing.outcome, incoming.outcome),
+    outcome:
+      incoming.outcome === 'completed' || existing.outcome !== 'completed'
+        ? incoming.outcome
+        : existing.outcome,
     ...(timeline ? { timeline } : {}),
     toolSelectionMetrics,
     modelBreakdown,

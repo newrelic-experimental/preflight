@@ -698,7 +698,7 @@ export class LocalSessionAggregator {
   toSummaries(context: {
     developer: string;
     platform?: string | null;
-    outcome?: string;
+    outcome: string;
     repoResolver: RepoNameResolver;
     toolSelectionScorer: ToolSelectionScorer;
     savesSession?: (sessionId: string) => boolean;
@@ -782,7 +782,7 @@ export class LocalSessionAggregator {
         userMessages: 0,
         assistantMessages: 0,
         userCorrections: 0,
-        ...(context.outcome !== undefined && { outcome: context.outcome }),
+        outcome: context.outcome,
         platform: rollup.platform ?? context.platform ?? null,
       });
     }

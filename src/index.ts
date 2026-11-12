@@ -2687,7 +2687,7 @@ async function main(): Promise<void> {
     });
 
     const saveObservedSessions = (
-      outcome: string | undefined,
+      outcome: string,
       savesSession?: (sessionId: string) => boolean,
     ): number => {
       if (!sessionStore || !config) return 0;
@@ -2731,7 +2731,7 @@ async function main(): Promise<void> {
 
     const saveRolledUpBeforeSeeding = (sessionId: string): void => {
       try {
-        saveObservedSessions(undefined, (id) => id === sessionId);
+        saveObservedSessions('in progress', (id) => id === sessionId);
       } catch (err) {
         logger.warn('Failed to save what the session rolled up while pending', {
           error: String(err),
@@ -2800,7 +2800,7 @@ async function main(): Promise<void> {
           return;
         }
         saveObservedSessions(
-          undefined,
+          'in progress',
           (id) => id !== summary.sessionId && localSessionAggregator.isUnsaved(id),
         );
         if (saveSessionRememberingBaseline(summary, 'ownTrackers')) {

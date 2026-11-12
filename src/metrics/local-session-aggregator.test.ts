@@ -1016,19 +1016,6 @@ describe('LocalSessionAggregator unsaved rollups', () => {
 
     expect(summariesOf(agg).map((s) => s.sessionId)).toEqual(['conv-a']);
   });
-
-  it('writes no outcome when the context gives none', () => {
-    const agg = new LocalSessionAggregator();
-    agg.recordToolCall({ sessionId: 'conv-a', toolName: 'Read', timestamp: 1000 });
-
-    const [summary] = agg.toSummaries({
-      developer: 'tester',
-      repoResolver: new StubRepoResolver(),
-      toolSelectionScorer: new ToolSelectionScorer(),
-    });
-
-    expect(summary).not.toHaveProperty('outcome');
-  });
 });
 
 describe('stripHeredocs', () => {
