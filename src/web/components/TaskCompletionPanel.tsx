@@ -20,7 +20,7 @@ export function TaskCompletionPanel(): JSX.Element {
   return (
     <Panel
       title="Tasks"
-      tooltip="Tasks completed since this server process started, with average duration and tool calls per task. Counts only sessions this process has read, so under --stdio it covers its own session, not every session on the machine."
+      tooltip="Tasks this server process closed since it started, with average duration and tool calls per task. A task closes on a completion signal or after an idle gap, so an abandoned task counts too. Counts only sessions this process has read, so under --stdio it covers its own session, not every session on the machine."
     >
       {isError ? (
         <div className="text-[12px] text-ink-muted">Task stats unavailable.</div>
