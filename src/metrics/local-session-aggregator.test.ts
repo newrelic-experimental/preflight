@@ -18,7 +18,6 @@ import {
   stripHeredocs,
 } from './local-session-aggregator.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
-import { mergeSummaries, type FullSessionSummary } from '../storage/session-store.js';
 
 // git sets GIT_DIR/GIT_WORK_TREE for hook subprocesses, which override `-C
 // <dir>` and would silently redirect these calls to the real repo instead of
