@@ -385,7 +385,7 @@ function spawnChild(
       // to the local pipeline (per index.privacy.test.ts pattern).
       NR_AI_MODE: 'local',
       NEW_RELIC_AI_MCP_STORAGE_PATH: storagePath,
-      MCP_CLIENT: 'claude-code',
+      CLAUDECODE: '1',
       // CLAUDE_JOB_DIR is the resolver's fast path — bypasses ppid breadcrumb
       // collisions when multiple children share the same parent test process.
       CLAUDE_JOB_DIR: jobDir,
@@ -440,7 +440,7 @@ function spawnChildOnPort(
       ...process.env,
       NR_AI_MODE: 'local',
       NEW_RELIC_AI_MCP_STORAGE_PATH: storagePath,
-      MCP_CLIENT: 'claude-code',
+      CLAUDECODE: '1',
       CLAUDE_JOB_DIR: jobDir,
       NR_AI_DASHBOARD_PORT: String(dashboardPort),
       // Compress the re-poll interval so the takeover scenario fits inside
