@@ -4,10 +4,10 @@
     "preflight": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@newrelic/preflight@latest", "--stdio"],
+      "args": ["-y", "@newrelic/preflight@1.72.0", "--stdio"],
       "env": {
-        "NR_AI_MODE": "local",
-        "NEW_RELIC_AI_PLATFORM": "kiro"
+        "NR_AI_MODE": "${NR_AI_MODE}",
+        "NEW_RELIC_AI_PLATFORM": "${NEW_RELIC_AI_PLATFORM}"
       }
     }
   }

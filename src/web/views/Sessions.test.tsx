@@ -1465,4 +1465,65 @@ describe('Sessions view — subagent peak label', () => {
     expect(screen.queryByText(/Peak/)).toBeNull();
     expect(screen.getByText('Session trace').parentElement?.children).toHaveLength(1);
   });
+
+  it('drops the label, the lanes and their time span when a refetch fails', async () => {
+    const span = (agentId: string, label: string) => ({
+      agentId,
+      workflowRunId: null,
+      workflowName: null,
+      label,
+      model: 'm',
+      startMs: 1_000,
+      endMs: 30_000,
+      durationMs: 29_000,
+      turnCount: 2,
+      totalTokens: 10,
+      usd: null,
+    });
+    const atMs = Date.parse('2026-05-28T17:35:00Z');
+    const good = {
+      window: SUBAGENT_WINDOW,
+      agents: [span('a1', 'lane-one'), span('a2', 'lane-two')],
+      peak: { count: 2, atMs },
+    };
+    let failSubagents = false;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = ((url: string) => {
+      const reply = (status: number, body: unknown) =>
+        Promise.resolve(
+          new Response(JSON.stringify(body), {
+            status,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      if (url.includes('/subagents')) {
+        return failSubagents ? reply(500, { error: 'boom' }) : reply(200, good);
+      }
+      if (url.startsWith('/api/sessions/')) {
+        return reply(200, {
+          sessionId: 's1',
+          timeline: [{ timestamp: 1_000, toolName: 'Read', durationMs: 120, success: true }],
+        });
+      }
+      return reply(200, SAMPLE_LIST);
+    }) as typeof globalThis.fetch;
+    render(
+      <QueryClientProvider client={qc}>
+        <Sessions />
+      </QueryClientProvider>,
+    );
+    await openSession();
+    await waitFor(() => expect(screen.getByText(/Peak 2 parallel/)).toBeInTheDocument());
+    expect(screen.getByText('lane-one')).toBeInTheDocument();
+    expect(screen.getByText('lane-two')).toBeInTheDocument();
+    expect(screen.getByText('0:10')).toBeInTheDocument();
+
+    failSubagents = true;
+    await qc.refetchQueries({ predicate: (q) => JSON.stringify(q.queryKey).includes('subagents') });
+
+    await waitFor(() => expect(screen.queryByText('lane-one')).toBeNull());
+    expect(screen.queryByText('lane-two')).toBeNull();
+    expect(screen.queryByText(/Peak/)).toBeNull();
+    expect(screen.queryByText('0:10')).toBeNull();
+  });
 });
