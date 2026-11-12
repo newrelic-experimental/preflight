@@ -58,14 +58,8 @@ function formatSessionMarkdown(s: SessionListEntry): string {
 
 type CopyKind = 'markdown' | 'json';
 
-async function writeClipboard(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
+const COPY_BUTTON_CLASS =
+  'px-2 py-1 rounded-md text-[11px] text-ink-muted hover:text-ink-base hover:bg-surface-5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40';
 
 // Same drawer/backdrop/focus-trap pattern as WorkflowRunDetail — kept in
 // lockstep with that component so the two dialogs behave identically.
@@ -93,7 +87,12 @@ export function SessionDetailDialog({
     if (!summary) return;
     const text =
       kind === 'markdown' ? formatSessionMarkdown(summary) : JSON.stringify(summary, null, 2);
-    const ok = await writeClipboard(text);
+    let ok = true;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      ok = false;
+    }
     setCopyStatus({ kind, ok });
   }
 
@@ -169,7 +168,7 @@ export function SessionDetailDialog({
               type="button"
               disabled={!summary}
               onClick={() => void copySummary('markdown')}
-              className="px-2 py-1 rounded-md text-[11px] text-ink-muted hover:text-ink-base hover:bg-surface-5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40"
+              className={COPY_BUTTON_CLASS}
             >
               {copyLabel('markdown', 'Copy as Markdown')}
             </button>
@@ -177,7 +176,7 @@ export function SessionDetailDialog({
               type="button"
               disabled={!summary}
               onClick={() => void copySummary('json')}
-              className="px-2 py-1 rounded-md text-[11px] text-ink-muted hover:text-ink-base hover:bg-surface-5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40"
+              className={COPY_BUTTON_CLASS}
             >
               {copyLabel('json', 'Copy as JSON')}
             </button>

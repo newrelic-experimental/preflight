@@ -392,6 +392,114 @@ describe('SessionDetailDialog — copy session', () => {
     expect(text).toContain('claude-opus-5');
     expect(text.split('\n').length).toBeLessThan(15);
   });
+
+  async function copyMarkdownOf(summary: SessionListEntry): Promise<string> {
+    const writeText = installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={summary}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as markdown/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    return writeText.mock.calls[0]![0];
+  }
+
+  it('writes the start time and every token total', async () => {
+    const text = await copyMarkdownOf(makeSummary());
+    expect(text).toContain('- Started: 2026-11-05T14:30:00.000Z');
+    expect(text).toContain('- Tokens: 120.0k in / 8.0k out / 900.0k cache read');
+  });
+
+  it('names the breakdown models rather than the single model field', async () => {
+    const text = await copyMarkdownOf(
+      makeSummary({ modelBreakdown: { 'claude-opus-5': { requestCount: 1 } } }),
+    );
+    expect(text).toContain('- Models: claude-opus-5');
+    expect(text).not.toContain('claude-sonnet-5');
+  });
+
+  it('omits the model line when no model is known', async () => {
+    const text = await copyMarkdownOf(makeSummary({ model: null }));
+    expect(text).not.toContain('- Model');
+  });
+
+  it('keeps the tokens line when only the input count is known', async () => {
+    const text = await copyMarkdownOf(makeSummary({ tokensOutput: undefined }));
+    expect(text).toContain('- Tokens: 120.0k in / 0 out / 900.0k cache read');
+  });
+
+  it('lists at most three anti-patterns, with the file path where one is known', async () => {
+    const text = await copyMarkdownOf(
+      makeSummary({
+        antiPatterns: [
+          { type: 'thrashing' },
+          { type: 're_reading', file: 'a.ts', readCount: 3 },
+          { type: 'blind_editing' },
+          { type: 'over_delegation' },
+        ],
+      }),
+    );
+    expect(text).toContain('- Anti-patterns: thrashing, re_reading (a.ts), blind_editing');
+    expect(text).not.toContain('over_delegation');
+  });
+
+  it('omits the anti-pattern line when there are none', async () => {
+    const text = await copyMarkdownOf(makeSummary({ antiPatterns: [] }));
+    expect(text).not.toContain('Anti-patterns');
+  });
+
+  it('shows Copy failed when the clipboard refuses the write', async () => {
+    const writeText = vi
+      .fn<(text: string) => Promise<void>>()
+      .mockRejectedValue(new Error('denied'));
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
+    expect(await screen.findByText('Copy failed')).toBeInTheDocument();
+    expect(screen.queryByText('Copied')).toBeNull();
+  });
+
+  it('returns the copy label to idle after 1.5 seconds', async () => {
+    installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
+    expect(await screen.findByText('Copied')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Copied')).toBeNull(), { timeout: 2500 });
+    expect(screen.getByRole('button', { name: /copy as json/i })).toHaveTextContent('Copy as JSON');
+  });
+
+  it('changes only the label of the button that was clicked', async () => {
+    installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as markdown/i }));
+    expect(await screen.findByText('Copied')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /copy as json/i })).toHaveTextContent('Copy as JSON');
+  });
 });
 
 describe('SessionDetailDialog — focus trap with copy buttons disabled', () => {
