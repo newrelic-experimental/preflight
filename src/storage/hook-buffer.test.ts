@@ -2,12 +2,8 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import * as fs from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import {
-  appendToHookBuffer,
-  DRAIN_SEAL as SEAL,
-  LineWrittenError,
-  takeClaimText,
-} from './hook-buffer.js';
+import { appendToHookBuffer, DRAIN_SEAL as SEAL, takeClaimText } from './hook-buffer.js';
+import { LineWrittenError } from './hook-buffer.js';
 
 const mockHooks: {
   beforeWrite: ((text: string) => void) | null;

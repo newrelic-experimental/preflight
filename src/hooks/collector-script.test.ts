@@ -2032,14 +2032,20 @@ describe('collector-script', () => {
         ],
       ),
       ['Windsurf post_mcp_tool_use', windsurfReportHook('conv-reporting'), 'windsurf'],
-    ])('%s adds a usage line to that conversation only', (_label, payload, platform) => {
-      processHook(payload);
+    ])(
+      "%s adds a usage line to that conversation only, stamped with its platform under Claude Code's environment",
+      (_label, payload, platform) => {
+        process.env.MCP_CLIENT = 'claude-code';
+        process.env.CLAUDECODE = '1';
+        processHook(payload);
 
-      const events = readBufferLines('conv-reporting');
-      expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
-      expect(events[1]).toMatchObject(expectedLine('conv-reporting', platform));
-      expect(readBufferLines('conv-other')).toEqual([]);
-    });
+        const events = readBufferLines('conv-reporting');
+        expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
+        expect(events.map((e) => e.platform)).toEqual([platform, platform]);
+        expect(events[1]).toMatchObject(expectedLine('conv-reporting', platform));
+        expect(readBufferLines('conv-other')).toEqual([]);
+      },
+    );
 
     const errorReply = (text: string) =>
       JSON.stringify({ isError: true, content: [{ type: 'text', text }] });
@@ -2209,23 +2215,6 @@ describe('collector-script', () => {
 
       expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post']);
     });
-
-    it.each([
-      ['Cursor', 'cursor', cursorReportHook('conv-unstamped')],
-      ['Windsurf', 'windsurf', windsurfReportHook('conv-unstamped')],
-    ])(
-      "stamps a %s usage line with the hook's platform even when it inherits Claude Code's environment",
-      (_label, platform, payload) => {
-        process.env.MCP_CLIENT = 'claude-code';
-        process.env.CLAUDECODE = '1';
-
-        processHook(payload);
-
-        const events = readBufferLines('conv-unstamped');
-        expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
-        expect(events.map((e) => e.platform)).toEqual([platform, platform]);
-      },
-    );
 
     it.each([
       ['beforeMCPExecution', 'cursor'],
