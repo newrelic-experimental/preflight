@@ -234,22 +234,35 @@ function isAt(path, file) {
   const now = statSync(path, { bigint: true, throwIfNoEntry: false });
   return now !== void 0 && now.ino === file.ino && now.dev === file.dev;
 }
+var LineWrittenError = class extends Error {
+  constructor(cause) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+};
 function appendOnce(path, data) {
   const fd = openSync2(path, constants2.O_RDWR | constants2.O_CREAT | constants2.O_APPEND, 384);
+  let written = 0;
   try {
-    const opened = fstatSync(fd, { bigint: true });
-    if (!isAt(path, opened)) return "moved";
-    const sealFloor = Number(opened.size);
-    const written = writeSync(fd, data);
-    if (written < data.length) {
-      writeSync(fd, TORN_LINE_END);
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      if (!isAt(path, opened)) return "moved";
+      const sealFloor = Number(opened.size);
+      written = writeSync(fd, data);
+      if (written < data.length) {
+        writeSync(fd, TORN_LINE_END);
+        written = 0;
+        return "redo";
+      }
+      if (isAt(path, opened)) return "kept";
+      const start = offsetAfterWrite(fd) - data.length;
+      if (!readRange(fd, sealFloor, start).includes(DRAIN_SEAL)) return "kept";
+      written = 0;
       return "redo";
+    } finally {
+      closeSync2(fd);
     }
-    if (isAt(path, opened)) return "kept";
-    const start = offsetAfterWrite(fd) - data.length;
-    return readRange(fd, sealFloor, start).includes(DRAIN_SEAL) ? "redo" : "kept";
-  } finally {
-    closeSync2(fd);
+  } catch (err) {
+    throw written >= data.length - 1 ? new LineWrittenError(err) : err;
   }
 }
 function appendToHookBuffer(path, text) {
@@ -326,13 +339,6 @@ function getMaxContentLength() {
   if (val === void 0) return 10240;
   const parsed = parseInt(val, 10);
   return Number.isNaN(parsed) ? 10240 : parsed;
-}
-function reportLineLanded(bufferPath, line) {
-  try {
-    return readFileSync2(bufferPath, "utf-8").includes(JSON.stringify(line));
-  } catch {
-    return true;
-  }
 }
 var HOOK_EVENT_PLATFORM = {
   beforeshellexecution: "cursor",
@@ -1082,10 +1088,8 @@ function processHook(raw, cliEvent) {
   if (data.agent_type) event.agentType = data.agent_type;
   const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : void 0;
   let reportAttempted = false;
-  let reportBufferPath = "";
   try {
     const bufferPath = getBufferPath(sessionId);
-    reportBufferPath = bufferPath;
     const bufferDir = dirname2(bufferPath);
     if (!existsSync(bufferDir)) {
       mkdirSync2(bufferDir, { recursive: true, mode: 448 });
@@ -1096,7 +1100,7 @@ function processHook(raw, cliEvent) {
       appendToHookBuffer(bufferPath, JSON.stringify(newReport) + "\n");
     }
   } catch (err) {
-    if (newReport && (!reportAttempted || !reportLineLanded(reportBufferPath, newReport))) {
+    if (newReport && !(reportAttempted && err instanceof LineWrittenError)) {
       releaseReport(getStorageDir(), newReport);
     }
     if (!stderrSinkInstalled) {

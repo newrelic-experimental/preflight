@@ -28,8 +28,7 @@ import {
   SESSION_ID_RE,
   type HookReportCall,
 } from './self-report.js';
-import type { SelfReportHookEvent } from '../storage/types.js';
-import { appendToHookBuffer } from '../storage/hook-buffer.js';
+import { appendToHookBuffer, LineWrittenError } from '../storage/hook-buffer.js';
 import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
 
 // ---------------------------------------------------------------------------
@@ -106,17 +105,6 @@ function getMaxContentLength(): number {
  * whose hook-process env signal is verified; other platforms stamp via
  * explicit MCP_CLIENT in their generated hook commands.
  */
-// A throw after the line landed (a failed close) must keep the claim. So must a cut that kept every
-// byte but the newline, since the drain parses that as a line. An unreadable buffer counts as landed,
-// so an unknown outcome never lets a retry record the report twice.
-function reportLineLanded(bufferPath: string, line: SelfReportHookEvent): boolean {
-  try {
-    return readFileSync(bufferPath, 'utf-8').includes(JSON.stringify(line));
-  } catch {
-    return true;
-  }
-}
-
 const HOOK_EVENT_PLATFORM: Readonly<Record<string, string>> = {
   beforeshellexecution: 'cursor',
   aftershellexecution: 'cursor',
@@ -1430,10 +1418,8 @@ function processHook(raw: string, cliEvent?: string): void {
   const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : undefined;
   // Write to buffer — wrapped in try/catch for resilience.
   let reportAttempted = false;
-  let reportBufferPath = '';
   try {
     const bufferPath = getBufferPath(sessionId);
-    reportBufferPath = bufferPath;
     const bufferDir = dirname(bufferPath);
     if (!existsSync(bufferDir)) {
       mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
@@ -1445,9 +1431,8 @@ function processHook(raw: string, cliEvent?: string): void {
       appendToHookBuffer(bufferPath, JSON.stringify(newReport) + '\n');
     }
   } catch (err) {
-    // The claim stays once the report line has landed. A report line that did not land leaves
-    // no complete line behind, so the claim goes and a retry can record it.
-    if (newReport && (!reportAttempted || !reportLineLanded(reportBufferPath, newReport))) {
+    // A report line a drain can read keeps its claim. Any other failure frees it for a retry.
+    if (newReport && !(reportAttempted && err instanceof LineWrittenError)) {
       releaseReport(getStorageDir(), newReport);
     }
     // A closed stderr (EPIPE) must not turn a dropped event into a failed hook.
