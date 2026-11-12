@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
+import { buildCostTrackerSeed } from './cost-tracker-seed.js';
 import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import {
   spawnSync as nodeSpawnSync,
@@ -1123,4 +1124,54 @@ describe('stripHeredocs', () => {
       expect(stripHeredocs(command)).toEqual({ text, unclosed: true, readingsDiffer });
     },
   );
+});
+
+describe('LocalSessionAggregator first spend of a day against a saved file', () => {
+  const MORNING = new Date().setHours(9, 0, 0, 0);
+  const RESTART = new Date().setHours(14, 6, 0, 0);
+  const DAY_KEY = localDateKey(MORNING);
+
+  function savedFile(overrides: Partial<FullSessionSummary>): FullSessionSummary {
+    const writer = new LocalSessionAggregator();
+    writer.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Read',
+      timestamp: MORNING,
+      success: true,
+    });
+    const [base] = summariesOf(writer) as unknown as FullSessionSummary[];
+    const { firstActivityByDayMs: _dropped, ...legacy } = base!;
+    return { ...legacy, ...overrides };
+  }
+
+  function restartedSummary(): FullSessionSummary {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { costUsd: 3, timestamp: RESTART });
+    const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
+    return incoming!;
+  }
+
+  it('saves no first spend for a day a legacy file already spent on', () => {
+    const file = savedFile({ estimatedCostUsd: 2, costByDayUsd: { [DAY_KEY]: 2 } });
+    const merged = mergeSummaries(file, restartedSummary());
+    expect(merged.costByDayUsd?.[DAY_KEY]).toBe(3);
+    expect(merged.firstActivityByDayMs?.[DAY_KEY]).toBeUndefined();
+    expect(buildCostTrackerSeed(merged).dayFirstActivityMs).toBeUndefined();
+  });
+
+  it('saves the first spend of a day the file had no spend on', () => {
+    const merged = mergeSummaries(savedFile({}), restartedSummary());
+    expect(merged.firstActivityByDayMs).toEqual({ [DAY_KEY]: RESTART });
+    expect(buildCostTrackerSeed(merged).dayFirstActivityMs).toBe(RESTART);
+  });
+
+  it('keeps the earlier saved first spend over a later restart', () => {
+    const file = savedFile({
+      estimatedCostUsd: 2,
+      costByDayUsd: { [DAY_KEY]: 2 },
+      firstActivityByDayMs: { [DAY_KEY]: MORNING },
+    });
+    const merged = mergeSummaries(file, restartedSummary());
+    expect(merged.firstActivityByDayMs).toEqual({ [DAY_KEY]: MORNING });
+  });
 });

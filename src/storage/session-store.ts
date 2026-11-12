@@ -511,12 +511,30 @@ function addRecord(
   return out;
 }
 
-function minRecord(
-  a: Readonly<Record<string, number>>,
-  b: Readonly<Record<string, number>>,
-): Record<string, number> {
-  const out: Record<string, number> = { ...a };
-  for (const [k, v] of Object.entries(b)) out[k] = Math.min(out[k] ?? v, v);
+/**
+ * A day's first spend is only known when every side that spent that day
+ * recorded it. A side with spend but no saved first spend (a file written
+ * before the field existed) makes the other side's anchor a later guess, so
+ * that day stays unanchored and readers fall back to the first tool call.
+ */
+function mergeFirstActivity(
+  a: FullSessionSummary,
+  b: FullSessionSummary,
+): Record<string, number> | undefined {
+  if (a.firstActivityByDayMs === undefined && b.firstActivityByDayMs === undefined) {
+    return undefined;
+  }
+  const out: Record<string, number> = {};
+  const take = (own: FullSessionSummary, other: FullSessionSummary): void => {
+    for (const [day, ms] of Object.entries(own.firstActivityByDayMs ?? {})) {
+      const otherSpentUnanchored =
+        other.firstActivityByDayMs?.[day] === undefined && (other.costByDayUsd?.[day] ?? 0) > 0;
+      if (otherSpentUnanchored) continue;
+      out[day] = Math.min(out[day] ?? ms, ms);
+    }
+  };
+  take(a, b);
+  take(b, a);
   return out;
 }
 
@@ -677,10 +695,7 @@ export function mergeSummaries(
     existing.subagentCostByDayUsd,
     incoming.subagentCostByDayUsd,
   );
-  const firstActivityByDayMs =
-    existing.firstActivityByDayMs === undefined && incoming.firstActivityByDayMs === undefined
-      ? undefined
-      : minRecord(existing.firstActivityByDayMs ?? {}, incoming.firstActivityByDayMs ?? {});
+  const firstActivityByDayMs = mergeFirstActivity(existing, incoming);
 
   const unpricedByModel = mergeCallUsageWithLedger(
     [existing.unpricedByModel, existing.byteEstimates?.unpricedByModel],

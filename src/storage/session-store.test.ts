@@ -1778,6 +1778,26 @@ describe('buildSessionSummary', () => {
     });
   });
 
+  it('mergeSummaries drops a first spend when the other side spent that day without saving one', () => {
+    const legacy = makeSummary({ costByDayUsd: { '2026-09-10': 2, '2026-09-11': 1 } });
+    const anchored = makeSummary({
+      costByDayUsd: { '2026-09-10': 3 },
+      firstActivityByDayMs: { '2026-09-10': 9_000 },
+    });
+    for (const merged of [mergeSummaries(legacy, anchored), mergeSummaries(anchored, legacy)]) {
+      expect(merged.firstActivityByDayMs).toEqual({});
+    }
+  });
+
+  it('mergeSummaries keeps a first spend when the other side spent nothing that day', () => {
+    const quiet = makeSummary({ costByDayUsd: { '2026-09-10': 0 } });
+    const anchored = makeSummary({
+      costByDayUsd: { '2026-09-10': 3 },
+      firstActivityByDayMs: { '2026-09-10': 9_000 },
+    });
+    expect(mergeSummaries(quiet, anchored).firstActivityByDayMs).toEqual({ '2026-09-10': 9_000 });
+  });
+
   it('mergeSummaries leaves firstActivityByDayMs undefined when neither side has it', () => {
     const merged = mergeSummaries(makeSummary(), makeSummary());
     expect(merged.firstActivityByDayMs).toBeUndefined();
