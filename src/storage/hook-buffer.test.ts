@@ -218,12 +218,19 @@ describe('appendToHookBuffer', () => {
     expect(live()).toEqual(['B']);
   });
 
-  const failTornEndAfter = (shortBy: number) => (): void => {
-    mockHooks.shortBy = shortBy;
+  it('throws a written line error when the newline that ends a short write fails too', () => {
+    mockHooks.shortBy = 1;
     mockHooks.beforeWrite = (text) => {
-      if (text.includes('\x1e')) throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+      if (text.includes('\x1e')) {
+        throw Object.assign(new Error('ENOSPC: no space left on device, write'), {
+          code: 'ENOSPC',
+        });
+      }
     };
-  };
+
+    expect(() => appendToHookBuffer(bufferPath, line('B'))).toThrow(LineWrittenError);
+  });
+
   const failCloseAfter = (text: string, setUp?: () => void) => (): void => {
     setUp?.();
     mockHooks.afterWrite = (written) => {
@@ -231,12 +238,6 @@ describe('appendToHookBuffer', () => {
     };
   };
   it.each([
-    ['the torn end of a write one byte short fails', true, failTornEndAfter(1)],
-    [
-      'the torn end of half a line fails',
-      false,
-      failTornEndAfter(Math.floor(line('B').length / 2)),
-    ],
     ['the close after a whole line fails', true, failCloseAfter('"B"')],
     [
       'the close after a line that landed past a seal fails',

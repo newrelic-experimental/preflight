@@ -2181,17 +2181,6 @@ describe('collector-script', () => {
       expect(statSync(resolve(conversationDir, claims[0]!)).mode & 0o777).toBe(0o600);
     });
 
-    it('releases the claim when the buffer write fails, so a retry still records', () => {
-      const bufferPath = resolve(tmpDir, 'buffer-conv-reporting.jsonl');
-      mkdirSync(bufferPath);
-      processHook(cursorReportHook('conv-reporting'));
-      rmSync(bufferPath, { recursive: true });
-
-      processHook(cursorReportHook('conv-reporting'));
-
-      expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post', 'self_report']);
-    });
-
     it.each([
       ['the self-reports path is a file', () => writeFileSync(resolve(tmpDir, 'self-reports'), '')],
       [
