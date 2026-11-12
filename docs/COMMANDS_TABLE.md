@@ -1414,13 +1414,14 @@ Cost attribution per tool type — approximate, based on turn-level token correl
     }
   },
   "totalAttributedCost": 0.042,
-  "attributionRate": 0.85
+  "attributionRate": 0.85,
+  "evictedToolBursts": 0
 }
 ```
 
 **Data source:** `TurnCostAttributor`
 
-**How it works:** Attributes token costs reported via `nr_observe_report_tokens` to the tool calls that occurred within the same conversation turn. Each turn's cost is split evenly across its tool calls, then aggregated by tool type. `attributionRate` is the fraction of total session cost that could be attributed (turns with no token report are excluded). Results are approximate — cost is correlated at the turn level, not the individual call level.
+**How it works:** Attributes token costs reported via `nr_observe_report_tokens` to the tool calls that occurred within the same conversation turn. Each turn's cost is split evenly across its tool calls, then aggregated by tool type. `attributionRate` is the fraction of tool calls whose turn had a token report. Results are approximate — cost is correlated at the turn level, not the individual call level. `evictedToolBursts` counts tool-call bursts dropped without a closing token report, either because the burst went stale or the pending queue overflowed. Each one's cost is lost, so a value above zero means `totalAttributedCost` understates real spend. A token report that no burst claims is not counted: it becomes its own response turn.
 
 `costBySkill` has one row per skill name (`code-review`, `pstack:how`) and covers every tool call made inside that skill's runs. A run opens on a named `Skill` call or a `/<skill>` prompt and lasts until the next prompt or the next skill. In a session that has never sent a prompt event, a gap of more than 30 seconds between records also ends the run, so a hook install without prompt events does not keep one run open for the rest of the session. Users of current installs, whose hooks send prompt events, see no change. `callCount` counts invocations, and `avgCost` is cost per invocation. `attributedCallCount`, `totalDurationMs`, cost, and tokens cover the tool calls inside the runs, each with the same even split of its turn that `costByToolType` uses, so a Read inside a skill run counts in both `costByToolType.Read` and that skill's row. Skill calls that arrive without a skill name (some non-Claude-Code adapters) open no run. Runs, calls, and time per skill over any window are also available in New Relic, since every `AiToolCall` inside a run carries `skill_name`, `skill_source`, and `skill_run_id`:
 
