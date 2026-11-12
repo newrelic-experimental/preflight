@@ -2110,16 +2110,13 @@ describe('collector-script', () => {
     ];
     const bufferPath = () => resolve(tmpDir, 'buffer-conv-reporting.jsonl');
     const modesIn = (path: string): unknown[] =>
-      (existsSync(path) ? readFileSync(path, 'utf-8') : '')
-        .split(DRAIN_SEAL)[0]!
-        .split('\n')
-        .flatMap((text) => {
-          try {
-            return [(JSON.parse(text) as { mode: string }).mode];
-          } catch {
-            return [];
-          }
-        });
+      (existsSync(path) ? readFileSync(path, 'utf-8') : '').split(/\n|\0[^]*/).flatMap((text) => {
+        try {
+          return [(JSON.parse(text) as { mode: string }).mode];
+        } catch {
+          return [];
+        }
+      });
     const runWithBufferFault = (failure: string): unknown[] => {
       const preload = [...bufferFds, failure, 'syncBuiltinESMExports();'].join('\n');
       const script = resolve(__dirname, '..', '..', 'dist', 'hooks', 'collector-script.js');
