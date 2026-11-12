@@ -122,6 +122,7 @@ import { createServer } from './server.js';
 import type { CostBreakdown } from './shared/index.js';
 import { createLogger } from './shared/index.js';
 import { LocalStore } from './storage/index.js';
+import { hasLiveOwningEngine } from './storage/local-store.js';
 import { computeHistoricalCosts } from './storage/historical-costs.js';
 import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.js';
 import {
@@ -178,6 +179,7 @@ export type {
   ReportSessionStartInput,
   ReportToolCallInput,
 } from './platforms/index.js';
+export { UNATTRIBUTED_BREADCRUMB_WRITER } from './platforms/types.js';
 export { ProxyManager } from './proxy/index.js';
 export type { ProxyRequestRecord, ProxyToolCallRecord, UpstreamConfig } from './proxy/index.js';
 export { createServer, NrMcpServer } from './server.js';
@@ -1007,7 +1009,6 @@ async function main(): Promise<void> {
       activeParentTranscriptWatcher?.stop();
       activeCopilotUsageWatcher?.stop();
       activeCopilotAppUsageWatcher?.stop();
-      liveSessionRegistry?.stopSampling();
       // Use allSettled so a failure in one stop() doesn't prevent the others.
       const stopResults = await Promise.allSettled([
         dashboardServer ? dashboardServer.stop() : Promise.resolve(),
@@ -1200,12 +1201,20 @@ async function main(): Promise<void> {
     // dashboard owner's GC pass can tell which buffer files still have a live
     // owner. Removed in the shutdown handler below. Skipped during the
     // provisional window — the real heartbeat is written after resolution.
-    if (options.stdio && !isProvisional) {
-      localStore.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
-        value: config.companionMode,
-        source: config.companionModeSource,
+    // A cwd guess leaves a live engine's heartbeat for the guessed session in
+    // place, since a correction must not leave that engine without one.
+    let heartbeatSkipped = false;
+    const writeHeartbeat = (store: LocalStore, viaCwdOnly: boolean): void => {
+      const sessionId = store.getSessionId();
+      heartbeatSkipped =
+        viaCwdOnly && !!sessionId && hasLiveOwningEngine(config!.storagePath, sessionId);
+      if (heartbeatSkipped) return;
+      store.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
+        value: config!.companionMode,
+        source: config!.companionModeSource,
       });
-    }
+    };
+    if (options.stdio && !isProvisional) writeHeartbeat(localStore, resolvedViaCwdOnly);
     localStoreForShutdown = localStore;
 
     // Migrate any pre-existing events from the legacy shared `buffer.jsonl` into
@@ -1270,7 +1279,6 @@ async function main(): Promise<void> {
     // compact SessionStart has nothing to report and never calls recordResume().
     const sessionResumeTracker = new SessionResumeTracker();
     liveSessionRegistry = new LiveSessionRegistry();
-    liveSessionRegistry.startSampling();
     // Unconditional in every mode — decoupled from whether the `--local`
     // dashboard wins its port bind (see startMaintenanceGc()'s doc comment).
     maintenanceGcInterval = startMaintenanceGc({ localStore, liveSessionRegistry });
@@ -1402,8 +1410,8 @@ async function main(): Promise<void> {
     let currentRepoName: string | null = null;
 
     // An unscoped process (--local, or a provisional --stdio window) drains
-    // every unowned buffer and folds it into trackers keyed by its own
-    // synthetic id, which persistSession() skips — so without this rollup the
+    // every unowned buffer. The tracker counts only its own session, and
+    // persistSession() skips a synthetic id, so without this rollup the
     // sessions it observes are never written to disk at all. See
     // local-session-aggregator.ts for why that hits Copilot but not Claude Code.
     const localSessionAggregator = new LocalSessionAggregator({
@@ -1432,8 +1440,13 @@ async function main(): Promise<void> {
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
     const firstSaveBaselines = new FirstSaveBaselines();
+    // A session's calls in its file before this process first wrote it, none of them this process's.
+    const callsBeforeFirstWrite = new Map<string, number>();
     const saveSessionRememberingBaseline = (summary: FullSessionSummary): boolean => {
       const saved = sessionStore!.saveSession(summary);
+      if (saved && !callsBeforeFirstWrite.has(summary.sessionId)) {
+        callsBeforeFirstWrite.set(summary.sessionId, saved.previous?.toolCallCount ?? 0);
+      }
       // Only a --stdio engine ever adopts a real session id and seeds it.
       if (saved && options.stdio && !rehydratedTrackerSessionIds.has(summary.sessionId)) {
         firstSaveBaselines.recordSave({
@@ -1661,9 +1674,24 @@ async function main(): Promise<void> {
       lastDayKey: localDateKey(),
       lastRefreshMs: 0,
     };
+    // Excludes the session this process owns now once its saved cost is seeded
+    // into CostTracker, which for a --stdio engine happens when it adopts or
+    // confirms the id, not at startup. An unconfirmed cwd guess is not seeded
+    // yet, so its file stays in, as it stood before this process's own cost
+    // reached it.
     const refreshPriorCostBaseline = (): void => {
       const now = Date.now();
-      const baseline = computeHistoricalCosts(sessionStoreForCostBaseline, currentSessionId, now);
+      const ownIsSeeded =
+        isSyntheticSessionId(sessionTraceId) || rehydratedTrackerSessionIds.has(sessionTraceId);
+      const ownFile = firstSaveBaselines.costFileBeforeOwnSave(sessionTraceId);
+      const baseline = computeHistoricalCosts(
+        sessionStoreForCostBaseline,
+        ownIsSeeded ? sessionTraceId : null,
+        now,
+        !ownIsSeeded && ownFile !== undefined
+          ? { sessionId: sessionTraceId, summary: ownFile }
+          : undefined,
+      );
       priorCostCache.priorDailyCostUsd = baseline.priorDailyCostUsd;
       priorCostCache.priorWeeklyCostUsd = baseline.priorWeeklyCostUsd;
       priorCostCache.lastDayKey = localDateKey(now);
@@ -1875,7 +1903,6 @@ async function main(): Promise<void> {
           liveSessionRegistry,
           gitEfficiencyTracker,
           gitWorkspaceReporter,
-          concurrencyTracker: liveSessionRegistry,
           contextTracker,
           contextCompositionTracker,
           contextEfficiencyTracker: contextWindowTracker,
@@ -2447,6 +2474,7 @@ async function main(): Promise<void> {
           outputTokens: tokenEvent.outputTokens,
           cacheReadTokens: tokenEvent.cacheReadTokens,
           cacheCreationTokens: tokenEvent.cacheCreationTokens,
+          cacheSavingsUsd: breakdown.savingsFromCacheUsd,
         });
         contextCompositionTracker.recordTokenEvent(tokenEvent);
 
@@ -2555,6 +2583,7 @@ async function main(): Promise<void> {
           cacheReadTokens: turn.cacheReadTokens,
           cacheCreationTokens: turn.cacheCreationTokens,
           thinkingTokens: turn.reasoningTokens,
+          cacheSavingsUsd: breakdown.savingsFromCacheUsd,
           agentId: turn.agentId,
         });
         // Pricing miss → usd:null on the wire; we recompute here so
@@ -2670,6 +2699,47 @@ async function main(): Promise<void> {
       },
     });
 
+    const saveObservedSessions = (
+      outcome: string,
+      savesSession?: (sessionId: string) => boolean,
+    ): number => {
+      if (!sessionStore || !config) return 0;
+      const rollups = localSessionAggregator.toSummaries({
+        developer: config.developer ?? 'unknown',
+        platform: eventProcessor?.activePlatform,
+        outcome,
+        toolSelectionScorer,
+        repoResolver: repoNameResolver,
+        ...(savesSession !== undefined && { savesSession }),
+      });
+      let saved = 0;
+      for (const rollup of rollups) {
+        const sessionId = String(rollup.sessionId);
+        try {
+          const prior =
+            callsBeforeFirstWrite.get(sessionId) ??
+            sessionStore.loadSession(sessionId)?.toolCallCount ??
+            0;
+          // A file with calls adds this rollup to them, since a max-merge would drop it. It leaves
+          // out a call another process may count, and marks no ids, so that process still can.
+          const kept =
+            prior === 0
+              ? rollup
+              : localSessionAggregator.withoutCallsOtherProcessesMayCount(
+                  rollup,
+                  localStoreForShutdown?.countedToolUseIds(sessionId) ?? new Set<string>(),
+                );
+          const summary = { ...kept, toolCallCount: prior + Number(kept.toolCallCount) };
+          if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary)) continue;
+          saved += 1;
+          if (prior === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
+        } catch (err) {
+          logger.warn('Failed to save observed session', { sessionId, error: String(err) });
+        }
+      }
+      return saved;
+    };
+
     persistSession = (opts?: { periodic?: boolean }) => {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
       try {
@@ -2719,21 +2789,13 @@ async function main(): Promise<void> {
           // draining other sessions' buffers destructively — so if it returns
           // here without writing them, those events are simply lost. Persist
           // each real session it observed instead.
-          const rollups = localSessionAggregator.toSummaries({
-            developer: config.developer ?? 'unknown',
-            platform: eventProcessor?.activePlatform,
-            outcome: opts?.periodic ? 'in progress' : 'completed',
-            toolSelectionScorer,
-            repoResolver: repoNameResolver,
-          });
-          const saved = rollups.filter((rollup) =>
-            saveSessionRememberingBaseline(rollup as unknown as FullSessionSummary),
+          const persistedSessions = saveObservedSessions(
+            opts?.periodic ? 'in progress' : 'completed',
           );
-          eventProcessor?.persistCountedIdsOfSavedSessions(saved.map((r) => String(r.sessionId)));
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
-              persistedSessions: rollups.length,
+              persistedSessions,
             });
           }
           return;
@@ -2767,6 +2829,8 @@ async function main(): Promise<void> {
     // is safe to arm immediately. unref'd so it never keeps the process alive.
     const SESSION_PERSIST_INTERVAL_MS = getSessionPersistIntervalMs();
     sessionPersistInterval = setInterval(() => {
+      // A cwd guess whose session had a live engine takes the heartbeat once that engine exits.
+      if (heartbeatSkipped && localStoreForShutdown) writeHeartbeat(localStoreForShutdown, true);
       // Skip while the live session id is an unconfirmed cwd-fallback guess —
       // see armPendingConfirmation's own comment. Persisting here would write
       // a real, non-synthetic checkpoint file under an identity that might
@@ -2994,32 +3058,49 @@ async function main(): Promise<void> {
     // tracker, (re)constructs NrIngestManager, repoints the watchers, and
     // re-registers the full tool set. Used both for the initial pending ->
     // real transition and for a later correction (see
-    // startPpidCorrectionWatch below) — safe to call more than once:
-    // accumulated tracker metrics are preserved (adoptSessionId() only
-    // reassigns the id field), and any already-live NrIngestManager is
-    // stopped first so its harvest interval never leaks on a second call.
+    // startPpidCorrectionWatch below) — safe to call more than once.
     const adoptRealSessionId = async (
       realId: string,
       opts?: { isCorrection?: boolean; viaCwdOnly?: boolean },
     ): Promise<void> => {
+      const staleId = sessionTraceId;
       if (opts?.isCorrection) {
         // A real correction means the previously-adopted id was wrong, and
         // anything these four trackers accumulated since startWatchers()
         // scoped them to that wrong id (chiefly ParentTranscriptWatcher
         // backfill from an unrelated old transcript) belongs to nobody.
-        // SessionTracker itself needs no reset here: real tool-call events
-        // only ever reach it via the per-session LocalStore/HookEventProcessor
-        // path, which is keyed by whatever id the hook collector script
-        // wrote — never the wrong guess — so toolCallCount/timeline stay
-        // clean through the whole unconfirmed window regardless.
-        firstSaveBaselines.forget(sessionTraceId);
+        // SessionTracker is cleared below through adoptSessionId(realId, ...,
+        // isCorrection), which drops the wrong guess's counts and timeline.
         costTracker.reset(realId);
         modelUsageTracker.reset(realId);
         contextCompositionTracker.reset(realId);
         turnCostAttributor.reset(realId);
       }
+      // Replace the current LocalStore with one scoped to the real id.
+      const realLocalStore = new LocalStore(config!.storagePath, realId);
+      realLocalStore.initialize();
+      // A corrected guess's heartbeat would keep drain-all processes off its buffer.
+      localStoreForShutdown?.removeHeartbeat();
+      writeHeartbeat(realLocalStore, opts?.viaCwdOnly ?? false);
+      localStoreForShutdown = realLocalStore;
+      try {
+        realLocalStore.migrateLegacyBuffer();
+      } catch (err) {
+        logger.warn('Legacy buffer migration failed (continuing)', { error: String(err) });
+      }
+
+      // Hot-swap the event processor to the scoped store so it only drains
+      // this session's events going forward. Its final drain routes tokens by
+      // realId, and runs before the tracker adopts realId, so adoptSessionId()
+      // replays what it drains.
       sessionTraceId = realId;
-      sessionTracker!.adoptSessionId(realId);
+      eventProcessor!.replaceStore(realLocalStore, false);
+
+      sessionTracker!.adoptSessionId(
+        realId,
+        localSessionAggregator.recordsOf(realId),
+        opts?.isCorrection,
+      );
       // Now that the real id (and thus its transcript path) is known, resolve
       // and apply the authoritative name. On a correction this re-resolves
       // against the corrected id's own transcript, replacing any name derived
@@ -3034,24 +3115,15 @@ async function main(): Promise<void> {
       // confirmation branch (ppidId === staleId) calls
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
       if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
+      refreshPriorCostBaseline();
 
-      // Replace the current LocalStore with one scoped to the real id.
-      const realLocalStore = new LocalStore(config!.storagePath, realId);
-      realLocalStore.initialize();
-      realLocalStore.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
-        value: config!.companionMode,
-        source: config!.companionModeSource,
-      });
-      localStoreForShutdown = realLocalStore;
       try {
-        realLocalStore.migrateLegacyBuffer();
+        saveObservedSessions('in progress', (id) =>
+          opts?.isCorrection ? id === staleId : id !== realId,
+        );
       } catch (err) {
-        logger.warn('Legacy buffer migration failed (continuing)', { error: String(err) });
+        logger.warn('Failed to save observed sessions on adoption', { error: String(err) });
       }
-
-      // Hot-swap the event processor to the scoped store so it only drains
-      // this session's events going forward.
-      eventProcessor!.replaceStore(realLocalStore, false);
 
       // Replace the span with a real-ID span. End the previous one first
       // (end() is a no-op if never started).
@@ -3213,6 +3285,8 @@ async function main(): Promise<void> {
             // first call site) precisely because it wasn't confirmed yet —
             // seed it now that it is.
             rehydrateTrackersIfResumed(staleId);
+            refreshPriorCostBaseline();
+            if (localStoreForShutdown) writeHeartbeat(localStoreForShutdown, false);
             clearPendingConfirmation();
             return;
           }
@@ -3320,8 +3394,8 @@ async function main(): Promise<void> {
               return;
             }
 
-            // Adopt the real session ID without clearing accumulated
-            // metrics — see adoptRealSessionId's own comment above. Skip the
+            // Adopt the real session ID. This is not a correction, so the
+            // tracker keeps the counts it has. Skip the
             // eager cost/token seed for a cwd-resolved id (see viaCwdOnly's
             // doc comment there) — startPpidCorrectionWatch below seeds it
             // once confirmed, exactly like the synchronous resolution path.
