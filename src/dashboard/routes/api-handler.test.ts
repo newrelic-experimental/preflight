@@ -4514,6 +4514,31 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       expect(forecast).toBe(2);
     });
 
+    it('falls back to the earliest tool call today, ignoring yesterday, when the summary has no anchor', async () => {
+      const forecast = await forecastAt(at(12), {
+        sessionId: 'legacy-many-calls',
+        startTime: dayStart - HOUR,
+        endTime: at(12),
+        estimatedCostUsd: 1,
+        costByDayUsd: { [todayKey]: 1 },
+        timeline: [tool(at(11)), tool(dayStart - HOUR), tool(at(10))],
+      });
+      expect(forecast).toBe(7);
+    });
+
+    it('anchors the day at a buffered token event that only read from the cache', async () => {
+      const buffer = [
+        {
+          mode: 'token',
+          sessionId: 'buffered-cache',
+          timestamp: at(6),
+          model: 'claude-sonnet-4',
+          cacheReadTokens: 1_000_000,
+        },
+      ];
+      expect(await forecastAt(at(12), [spender], buffer)).toBe(3);
+    });
+
     it('keeps the first-tool-call anchor for a legacy summary without firstActivityByDayMs', async () => {
       const forecast = await forecastAt(at(12), {
         sessionId: 'legacy',

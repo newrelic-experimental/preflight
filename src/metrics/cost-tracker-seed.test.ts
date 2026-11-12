@@ -19,7 +19,6 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ZERO_QUALITY_PROXY_COUNTS } from './quality-proxy-tracker.js';
-import { makeUsage } from '../__test-utils__/token-usage.js';
 
 function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummary {
   const now = Date.now();
@@ -607,5 +606,31 @@ describe('first spend today across a real restart', () => {
     };
     expect(aggregate.forecastEndOfDayUsd).not.toBeNull();
     expect(cost.forecast.forecastEndOfDayUsd).toBeCloseTo(aggregate.forecastEndOfDayUsd, 2);
+  });
+
+  it('moves an already-recorded first spend today back to the persisted earlier one', () => {
+    const before = new CostTracker();
+    before.recordTokenUsage(
+      makeUsage({ inputTokens: 1000, outputTokens: 100, totalTokens: 1100 }),
+      'claude-sonnet-4',
+      {
+        timestampMs: at(9),
+      },
+    );
+    const persisted = buildSessionSummary({
+      sessionTracker,
+      costTracker: before,
+      developer: 'dev',
+    });
+    const after = new CostTracker();
+    after.recordTokenUsage(
+      makeUsage({ inputTokens: 1000, outputTokens: 100, totalTokens: 1100 }),
+      'claude-sonnet-4',
+      {
+        timestampMs: at(12),
+      },
+    );
+    after.seedFromPersisted(buildCostTrackerSeed(persisted));
+    expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBe(at(9));
   });
 });
