@@ -25,8 +25,13 @@ import { spawnSync } from 'node:child_process';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
+import {
+  exactTotalsOf,
+  hasRecordedUsage,
+  type ExactTotalsSource,
+  type FullSessionSummary,
+} from '../storage/session-store.js';
 import { isAwaitingLatePost } from './session-tracker.js';
-import { hasRecordedUsage, type FullSessionSummary } from '../storage/session-store.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
 import { CallUsageBook } from './call-usage.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
@@ -64,10 +69,8 @@ export interface ModelBreakdownTally {
  * `FullSessionSummary` structurally satisfies this, so `SessionStore.loadSession`
  * can be passed as `persistedCostBaseline` unchanged.
  */
-export type PersistedCostBaseline = Pick<
-  FullSessionSummary,
-  'estimatedCostUsd' | 'subagentCostUsd' | 'costByDayUsd' | 'subagentCostByDayUsd'
->;
+export type PersistedCostBaseline = ExactTotalsSource &
+  Pick<FullSessionSummary, 'subagentCostUsd' | 'subagentCostByDayUsd'>;
 
 interface EmittedCost {
   readonly costUsd: number;
@@ -494,35 +497,35 @@ export class LocalSessionAggregator {
     // Persisting the per-call timeline is what lets a restarted process replay
     // this session (git activity, anti-pattern analysis). Capped the same way
     // SessionTracker caps its own timeline so a long session can't grow the
-    // session file without bound.
-    if (rollup.timeline.length < MAX_TIMELINE_ENTRIES) {
-      rollup.timeline.push({
-        timestamp,
-        toolName: tool,
-        durationMs: record.durationMs ?? null,
-        success: record.success !== false,
-        ...(typeof record.filePath === 'string' && { filePath: record.filePath }),
-        ...(typeof record.command === 'string' && { command: record.command }),
-        ...(typeof record.cwd === 'string' && { cwd: record.cwd }),
-        ...(record.isTestCommand === true && { isTestCommand: true }),
-        ...(record.isBuildCommand === true && { isBuildCommand: true }),
-        ...(record.isLintCommand === true && { isLintCommand: true }),
-        ...(typeof record.errorType === 'string' && { errorType: record.errorType }),
-        ...(typeof record.agentId === 'string' && { agentId: record.agentId }),
-        ...(typeof record.createdPrNumber === 'string' && {
-          createdPrNumber: record.createdPrNumber,
-        }),
-        ...(typeof record.mcpPrNumber === 'string' && { mcpPrNumber: record.mcpPrNumber }),
-        ...(typeof record.mcpPrRepo === 'string' && { mcpPrRepo: record.mcpPrRepo }),
-        ...(record.runInBackground === true && { runInBackground: true }),
-      });
-    }
+    // session file without bound. Keeps the most recent entries.
+    if (rollup.timeline.length >= MAX_TIMELINE_ENTRIES) rollup.timeline.shift();
+    rollup.timeline.push({
+      timestamp,
+      toolName: tool,
+      durationMs: record.durationMs ?? null,
+      success: record.success !== false,
+      ...(typeof record.filePath === 'string' && { filePath: record.filePath }),
+      ...(typeof record.command === 'string' && { command: record.command }),
+      ...(typeof record.cwd === 'string' && { cwd: record.cwd }),
+      ...(record.isTestCommand === true && { isTestCommand: true }),
+      ...(record.isBuildCommand === true && { isBuildCommand: true }),
+      ...(record.isLintCommand === true && { isLintCommand: true }),
+      ...(typeof record.errorType === 'string' && { errorType: record.errorType }),
+      ...(typeof record.agentId === 'string' && { agentId: record.agentId }),
+      ...(typeof record.createdPrNumber === 'string' && {
+        createdPrNumber: record.createdPrNumber,
+      }),
+      ...(typeof record.mcpPrNumber === 'string' && { mcpPrNumber: record.mcpPrNumber }),
+      ...(typeof record.mcpPrRepo === 'string' && { mcpPrRepo: record.mcpPrRepo }),
+      ...(record.runInBackground === true && { runInBackground: true }),
+    });
 
     // Feed the real trackers rather than reimplementing their heuristics, so a
     // rehydrated panel shows exactly what the live one would have shown.
     const fullRecord = record as unknown as ToolCallRecord;
     rollup.quality.recordToolCall(fullRecord);
-    if (rollup.records.length < MAX_TIMELINE_ENTRIES) rollup.records.push(fullRecord);
+    if (rollup.records.length >= MAX_TIMELINE_ENTRIES) rollup.records.shift();
+    rollup.records.push(fullRecord);
   }
 
   recordTokenUsage(
@@ -620,16 +623,27 @@ export class LocalSessionAggregator {
    * quadruple (not just the subagent pair) is seeded so the persisted
    * invariant `estimatedCostUsd >= subagentCostUsd` survives the fold; seeding
    * only the subagent pair could leave a merged file whose subagent figure
-   * exceeds its all-in figure.
+   * exceeds its all-in figure. Cost and day costs are seeded from the file's
+   * exact share: mergeSummaries adds the byte-estimate ledger back on top of
+   * the merged exact totals, so seeding the ledger too counts it twice. Never
+   * below the saved subagent figures, so a stale stored `exactTotals` cannot
+   * seed a total under them.
    */
   private applyPersistedBaseline(sessionId: string, rollup: LocalSessionRollup): void {
     rollup.costBaselineApplied = true;
     const baseline = this.persistedCostBaseline?.(sessionId) ?? null;
     if (baseline === null) return;
     const emitted = rollup.lastEmittedCost;
-    rollup.costUsd += excessOver(baseline.estimatedCostUsd ?? 0, emitted?.costUsd);
+    const exact = exactTotalsOf(baseline);
+    rollup.costUsd += excessOver(
+      Math.max(exact.costUsd, baseline.subagentCostUsd),
+      emitted?.costUsd,
+    );
     rollup.subagentCostUsd += excessOver(baseline.subagentCostUsd, emitted?.subagentCostUsd);
-    for (const [day, usd] of Object.entries(baseline.costByDayUsd ?? {})) {
+    const subagentByDay = baseline.subagentCostByDayUsd ?? {};
+    const seedDays = new Set([...Object.keys(exact.costByDayUsd), ...Object.keys(subagentByDay)]);
+    for (const day of seedDays) {
+      const usd = Math.max(exact.costByDayUsd[day] ?? 0, subagentByDay[day] ?? 0);
       rollup.costByDayUsd.set(
         day,
         (rollup.costByDayUsd.get(day) ?? 0) + excessOver(usd, emitted?.costByDayUsd.get(day)),
