@@ -2166,6 +2166,7 @@ describe('stdio integration', () => {
           () => savedSession(storage, 'conv-guess')?.tokensInput,
           (tokens) => tokens === 1000,
         );
+        expect(savedSession(storage, 'conv-guess')?.outcome).toBe('in progress');
         runHook(env, reportHook('conv-guess', 'r-guess-0002'));
         expect(await drained(storage, 'conv-guess')).toBe('');
         await close();
