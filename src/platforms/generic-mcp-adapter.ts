@@ -1,8 +1,8 @@
-import type {
-  NormalizedToolCall,
-  PlatformAdapter,
-  PlatformConfig,
-  PlatformSessionMetadata,
+import {
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformConfig,
+  type PlatformSessionMetadata,
 } from './types.js';
 
 export interface ReportToolCallInput {
@@ -160,7 +160,12 @@ export const GENERIC_MCP_PLATFORM_NAME = 'generic-mcp';
 export class GenericMcpAdapter implements PlatformAdapter {
   readonly platformName = GENERIC_MCP_PLATFORM_NAME;
   readonly visibilityLevel = 'self-reported' as const;
-  readonly capabilities = { instructionFilePaths: [] as const };
+  readonly capabilities = {
+    instructionFilePaths: [] as const,
+    // No hook setup is documented for this adapter, so no breadcrumb is ever
+    // its own.
+    sessionBreadcrumbWriters: [] as const,
+  };
 
   private sessionMetadata: PlatformSessionMetadata = { platform: 'generic-mcp' };
 
