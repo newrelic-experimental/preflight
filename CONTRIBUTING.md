@@ -60,6 +60,7 @@ preflight update
 | `npm run test:e2e:update`           | Rewrite the Playwright screenshot baselines for the OS you are on                            |
 | `npm run test:e2e:update:linux`     | Rewrite the `-linux` baselines in the Playwright image CI uses (needs Docker)                |
 | `npm run test:integration`          | Run `src/multi-instance.integration.test.ts`                                                 |
+| `npm run test:scenario`             | Drive `--local` and `--stdio` through restarts (needs a build, about 2 minutes, not in CI)   |
 | `npx tsc -p tsconfig.web.json`      | Typecheck `src/web`, tests included (`npm run build` checks source only)                     |
 | `npx tsc -p tsconfig.tools.json`    | Typecheck `scripts/`, `e2e/` and the root `*.config.ts` files, which no other config reaches |
 | `npm run lint`                      | ESLint over `src/`, `scripts/`, `e2e/` and the root `*.config.ts` files                      |
@@ -353,12 +354,6 @@ Type: Short description
 ```
 
 Types: `Fix`, `Feat`, `Refactor`, `Chore`, `Test`, `Docs`
-
-If you used an AI coding assistant: add a `Co-Authored-By` trailer with the model name, e.g.:
-
-```
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
-```
 
 ### AI-authored pull requests
 
