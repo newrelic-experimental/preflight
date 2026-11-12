@@ -34,7 +34,8 @@ export async function joinSession() {
   setImmediate(() => {
     for (const handler of handlers) handler({ data: JSON.parse(process.env.STUB_DATA) });
   });
-  return { sessionId: process.env.STUB_SESSION_ID, on: (_name, handler) => handlers.push(handler) };
+  const sessionId = process.env.STUB_NUMERIC_ID ? 12345 : process.env.STUB_SESSION_ID;
+  return { sessionId, on: (name, handler) => name === 'assistant.usage' && handlers.push(handler) };
 }
 `;
 
@@ -104,7 +105,7 @@ describe('Copilot SDK extension bundle', () => {
 
   function runExtension(
     withDrainRace: boolean,
-    stub: { sessionId?: string; data?: unknown; fail?: boolean } = {},
+    stub: { sessionId?: string; data?: unknown; fail?: boolean; numericId?: boolean } = {},
   ) {
     const args = withDrainRace ? ['--import', join(dir, 'preload.mjs')] : [];
     return spawnSync(process.execPath, [...args, join(dir, 'extension.mjs')], {
@@ -116,6 +117,7 @@ describe('Copilot SDK extension bundle', () => {
         STUB_SESSION_ID: stub.sessionId ?? SESSION_ID,
         STUB_DATA: JSON.stringify(stub.data ?? USAGE),
         ...(stub.fail ? { STUB_FAIL: '1' } : {}),
+        ...(stub.numericId ? { STUB_NUMERIC_ID: '1' } : {}),
       },
       timeout: 10_000,
     });
@@ -128,6 +130,7 @@ describe('Copilot SDK extension bundle', () => {
   }
 
   it('writes the token line to the session buffer', () => {
+    const before = Date.now();
     const result = runExtension(false);
 
     expect(result.stderr).toBe('');
@@ -144,7 +147,30 @@ describe('Copilot SDK extension bundle', () => {
       cacheReadTokens: 10,
       cacheCreationTokens: 5,
     });
+    expect(JSON.parse(live.trim()).timestamp).toBeGreaterThanOrEqual(before);
     expect(readdirSync(storage)).toEqual([`buffer-${SESSION_ID}.jsonl`]);
+  });
+
+  it('creates the storage directory with owner-only permissions', () => {
+    runExtension(false);
+
+    expect(statSync(storage).mode & 0o777).toBe(0o700);
+  });
+
+  it('reports a failed write on stderr and exits cleanly', () => {
+    writeFileSync(storage, '');
+
+    const result = runExtension(false);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('failed to write token line');
+  });
+
+  it('writes nothing when the session id is not a string', () => {
+    const result = runExtension(false, { numericId: true });
+
+    expect(result.stderr).toContain('returned no sessionId');
+    expect(existsSync(storage)).toBe(false);
   });
 
   it('creates the buffer with owner-only permissions', () => {
