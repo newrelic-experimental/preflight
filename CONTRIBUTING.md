@@ -60,6 +60,7 @@ preflight update
 | `npm run test:e2e:update`           | Rewrite the Playwright screenshot baselines for the OS you are on                            |
 | `npm run test:e2e:update:linux`     | Rewrite the `-linux` baselines in the Playwright image CI uses (needs Docker)                |
 | `npm run test:integration`          | Run `src/multi-instance.integration.test.ts`                                                 |
+| `npm run test:scenario`             | Drive `--local` and `--stdio` through restarts (needs a build, about 2 minutes, not in CI)   |
 | `npx tsc -p tsconfig.web.json`      | Typecheck `src/web`, tests included (`npm run build` checks source only)                     |
 | `npx tsc -p tsconfig.tools.json`    | Typecheck `scripts/`, `e2e/` and the root `*.config.ts` files, which no other config reaches |
 | `npm run lint`                      | ESLint over `src/`, `scripts/`, `e2e/` and the root `*.config.ts` files                      |
@@ -354,12 +355,6 @@ Type: Short description
 
 Types: `Fix`, `Feat`, `Refactor`, `Chore`, `Test`, `Docs`
 
-If you used an AI coding assistant: add a `Co-Authored-By` trailer with the model name, e.g.:
-
-```
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
-```
-
 ### AI-authored pull requests
 
 An AI agent opens every pull request as a draft (`gh pr create --draft`). A human marks it ready for review once they have read, proofread and tested the changes.
@@ -444,8 +439,8 @@ fixes or removes it.
    [`release-pr.yml`](./.github/workflows/release-pr.yml) keeps a **Chore: Release x.y.z** PR
    open. It runs `npm run version-packages`, which bumps `package.json`, adds the CHANGELOG
    entry, and deletes the changesets it used. Then `scripts/release-files.ts` copies the new
-   version into `package-lock.json`, `server.json`, both plugin manifests, and the plugin's
-   `npx` pin in `plugin/.mcp.json`, and dates the entry. Each push to `main` rebuilds the PR,
+   version into `package-lock.json`, `server.json`, both plugin manifests, and the `npx` pins in
+   `plugin/.mcp.json` and `kiro-power/mcp.json`, and dates the entry. Each push to `main` rebuilds the PR,
    so to change an entry, edit its changeset on `main` instead of pushing to the PR's branch.
    The entry's date is the day the PR was last rebuilt. If that's stale, start the Release PR
    workflow on `main` from the Actions tab (Run workflow) before merging. Don't use Re-run on
