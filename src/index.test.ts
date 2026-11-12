@@ -3731,3 +3731,124 @@ describe('--local persisting the sessions it drains', () => {
     }
   }, 30000);
 });
+
+describe('log level at startup', () => {
+  async function runLocalAndCollectStderr(opts: {
+    env?: Record<string, string>;
+    config?: { logLevel: string };
+    configAtDefaultPath?: boolean;
+    extraArgs?: string[];
+  }): Promise<string> {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const dir = mkdtempSync(join(tmpdir(), 'nr-loglevel-'));
+    const home = resolve(dir, 'home');
+    const storage = resolve(dir, 'storage');
+    mkdirSync(resolve(home, '.newrelic-preflight'), { recursive: true });
+    mkdirSync(storage, { recursive: true });
+    const args = [binPath, '--local', ...(opts.extraArgs ?? [])];
+    if (opts.config !== undefined) {
+      const configPath = opts.configAtDefaultPath
+        ? resolve(home, '.newrelic-preflight', 'config.json')
+        : resolve(dir, 'config.json');
+      writeFileSync(configPath, JSON.stringify(opts.config));
+      if (!opts.configAtDefaultPath) args.push('--config', configPath);
+    }
+
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_ALERTS_ENABLED: 'false',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+      ...opts.env,
+    };
+    delete env.NR_AI_MODE;
+    if (opts.env?.NEW_RELIC_AI_LOG_LEVEL === undefined) delete env.NEW_RELIC_AI_LOG_LEVEL;
+    if (opts.env?.NEW_RELIC_AI_MCP_LOG_LEVEL === undefined) delete env.NEW_RELIC_AI_MCP_LOG_LEVEL;
+
+    const child = spawn(process.execPath, args, { env, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+    try {
+      const deadline = Date.now() + 20_000;
+      let up = false;
+      while (!up && Date.now() < deadline) {
+        try {
+          up = (await fetch(`http://127.0.0.1:${port}/api/health`)).ok;
+        } catch {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
+      expect(up).toBe(true);
+      await new Promise((r) => setTimeout(r, 500));
+      return stderr;
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const jsonLevels = (stderr: string): Set<string> =>
+    new Set(Array.from(stderr.matchAll(/"level":"(\w+)"/g), (m) => m[1] as string));
+
+  it('NEW_RELIC_AI_LOG_LEVEL=error silences the info lines the server writes by default', async () => {
+    const stderr = await runLocalAndCollectStderr({ env: { NEW_RELIC_AI_LOG_LEVEL: 'error' } });
+    expect(stderr).not.toContain('Starting preflight');
+    expect(jsonLevels(stderr)).not.toContain('info');
+  }, 30000);
+
+  it('NEW_RELIC_AI_MCP_LOG_LEVEL=debug turns on debug lines and wins over NEW_RELIC_AI_LOG_LEVEL', async () => {
+    const stderr = await runLocalAndCollectStderr({
+      env: { NEW_RELIC_AI_MCP_LOG_LEVEL: 'debug', NEW_RELIC_AI_LOG_LEVEL: 'error' },
+    });
+    expect(stderr).toContain('"message":"Starting preflight"');
+    expect(jsonLevels(stderr)).toContain('debug');
+  }, 30000);
+
+  it('uses the config file logLevel when no environment variable is set', async () => {
+    const stderr = await runLocalAndCollectStderr({ config: { logLevel: 'debug' } });
+    expect(stderr).toContain('"logLevel":"debug"');
+    expect(jsonLevels(stderr)).toContain('debug');
+  }, 30000);
+
+  it('reads logLevel from the default config path when --config is absent', async () => {
+    const stderr = await runLocalAndCollectStderr({
+      config: { logLevel: 'error' },
+      configAtDefaultPath: true,
+    });
+    expect(stderr).not.toContain('Starting preflight');
+  }, 30000);
+
+  it('an environment variable beats the config file logLevel', async () => {
+    const stderr = await runLocalAndCollectStderr({
+      env: { NEW_RELIC_AI_LOG_LEVEL: 'error' },
+      config: { logLevel: 'debug' },
+    });
+    expect(jsonLevels(stderr)).not.toContain('debug');
+    expect(jsonLevels(stderr)).not.toContain('info');
+  }, 30000);
+
+  it('--log-level beats the environment', async () => {
+    const stderr = await runLocalAndCollectStderr({
+      env: { NEW_RELIC_AI_LOG_LEVEL: 'error' },
+      extraArgs: ['--log-level', 'debug'],
+    });
+    expect(jsonLevels(stderr)).toContain('debug');
+  }, 30000);
+});

@@ -117,7 +117,6 @@ import { AuditTrailManager } from './security/audit-trail.js';
 import { createServer } from './server.js';
 import type { CostBreakdown } from './shared/index.js';
 import { createLogger } from './shared/index.js';
-import { __resetLogLevelCache } from './shared/logger.js';
 import { LocalStore } from './storage/index.js';
 import { hasLiveOwningEngine } from './storage/local-store.js';
 import { computeHistoricalCosts } from './storage/historical-costs.js';
@@ -829,11 +828,10 @@ async function main(): Promise<void> {
 
   const options = parseArgs(process.argv);
 
-  // The shared logger reads NEW_RELIC_AI_LOG_LEVEL, so point it at the resolved level.
-  // Child processes inherit the variable, so they see the same level.
+  // The shared logger reads NEW_RELIC_AI_LOG_LEVEL on its first emit, so point it at the resolved
+  // level before anything logs. Child processes inherit the variable, so they see the same level.
   const logLevel = resolveStartupLogLevel(options.logLevel, options.config);
   process.env.NEW_RELIC_AI_LOG_LEVEL = logLevel;
-  __resetLogLevelCache();
 
   logger.info('Starting preflight', {
     version: VERSION,
