@@ -51,6 +51,7 @@ export class ZedAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'mcp-tools-only' as const;
   readonly capabilities = {
     instructionFilePaths: [] as const,
+    // Zed has no hook mechanism (zed.dev/docs/ai/mcp.html), so it writes no breadcrumb.
     sessionBreadcrumbWriters: [] as const,
   };
 

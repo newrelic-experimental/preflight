@@ -258,6 +258,7 @@ export interface CostForecast {
   readonly forecastEndOfWeekUsd: number | null;
   readonly forecastSessionEndUsd: number | null;
   readonly confidenceNote: string;
+  readonly heldReason?: string | null;
 }
 
 export interface CostResponse {
@@ -817,6 +818,7 @@ export interface AgentSpan {
 export interface SessionSubagentsResponse {
   readonly window: { readonly startMs: number; readonly endMs: number };
   readonly agents: ReadonlyArray<AgentSpan>;
+  readonly peak: { readonly count: number; readonly atMs: number | null };
 }
 
 // Subagent fan-out timeline for a session, sorted by startMs ASC. Consumed
@@ -1320,6 +1322,7 @@ export interface SettingsResponse {
   readonly weeklyBudgetUsd: number | null;
   readonly retainSessionsDays: number | null;
   readonly digestWebhookUrl: string | null;
+  readonly digestWebhookUrlSource: 'env' | 'command' | 'file' | 'unset';
   readonly digestSchedule: string;
   readonly alerts: {
     readonly personal: {

@@ -49,7 +49,7 @@ export class AmazonQAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'full-hooks' as const;
   readonly capabilities = {
     instructionFilePaths: [] as const,
-    // Amazon Q hook events carry no session_id, so they write no breadcrumb.
+    // Amazon Q hook events carry no session identifier (docs/ADAPTERS.md), so they write no breadcrumb.
     sessionBreadcrumbWriters: [] as const,
   };
 

@@ -89,7 +89,7 @@ export class CopilotAppAdapter implements PlatformAdapter {
     // The app's pooled CLI fires ~/.copilot/hooks/preflight.json, the same
     // file the standalone CLI reads, where `preflight setup --copilot` and the
     // copilot-sdk setup stamp NEW_RELIC_AI_PLATFORM=copilot. That file's
-    // commands documented before #557 (2026-09-04) stamp nothing.
+    // commands documented before 2026-09-04 stamp nothing.
     sessionBreadcrumbWriters: ['copilot-app', 'copilot', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
   };
 

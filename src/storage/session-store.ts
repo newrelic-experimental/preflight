@@ -17,11 +17,13 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
@@ -43,7 +45,16 @@ import type {
   EstimatedModelUsage,
   UnpricedModelUsage,
 } from '../metrics/cost-tracker.js';
-import { mergeCallUsageMax, parseCallUsageRecord } from '../metrics/call-usage.js';
+import {
+  addCallUsageRecords,
+  combineCallUsageByDay,
+  mergeCallUsageMax,
+  parseCallUsageByDay,
+  parseCallUsageRecord,
+  subtractCallUsage,
+  type CallUsage,
+  type CallUsageByDay,
+} from '../metrics/call-usage.js';
 import type {
   TurnCostAttributor,
   CostAttributionMetrics,
@@ -161,6 +172,14 @@ export interface FullSessionSummary extends SessionSummary {
   /** Calls priced from a sibling model; their cost is in the totals as an estimate. */
   readonly estimatedByModel?: Record<string, EstimatedModelUsage>;
   /**
+   * `unpricedByModel` split by local day, like `costByDayUsd`, so a today-scoped
+   * reader counts only that day's calls. Absent on summaries written before this
+   * field; readers then fall back to the whole-session counts.
+   */
+  readonly unpricedByDay?: CallUsageByDay<UnpricedModelUsage>;
+  /** `estimatedByModel` split by local day; see `unpricedByDay`. */
+  readonly estimatedByDay?: CallUsageByDay<EstimatedModelUsage>;
+  /**
    * Byte-estimated share of the cost and token totals that a real token report
    * has not yet replaced (see `ByteEstimateLedger`). Written all-zero once the
    * report arrives so it overwrites an earlier non-zero copy on merge.
@@ -275,15 +294,21 @@ export interface AttributableActivity {
   readonly selfReportCount?: number;
 }
 
+export interface RecordedUsage extends AttributableActivity {
+  readonly estimatedCostUsd?: number | null;
+  readonly tokensInput?: number;
+  readonly tokensOutput?: number;
+  readonly tokensThinking?: number;
+}
+
 /**
  * Does this summary represent work we can attribute to a real session?
  *
- * THE single definition of "not empty" for session persistence. Three call
- * sites derive from it and must never re-implement it:
- *   1. `LocalSessionAggregator.toSummaries()` — which rollups get written.
- *   2. `SessionStore.saveSession()` — which incoming writes may overwrite.
- *   3. the `/api/sessions/today/aggregate` route — which persisted rows may
- *      contribute a pro-rated cost when they carry no per-day buckets.
+ * The narrower of the two definitions of "not empty" for session
+ * persistence; `hasRecordedUsage` is the wider and gates the writes. This one
+ * is for the `/api/sessions/today/aggregate` route, which uses it to decide
+ * which persisted rows may contribute a pro-rated cost when they carry no
+ * per-day buckets. Callers must never re-implement either definition.
  *
  * Subagent spend counts as activity on purpose. A session whose parent process
  * died while its subagent transcripts were still being tailed has an empty
@@ -307,23 +332,17 @@ export function hasAttributableActivity(s: AttributableActivity): boolean {
  * Did this session record anything worth a file on disk? Wider than
  * `hasAttributableActivity`: a chat-only session has no tool calls but real
  * cost and tokens, and must still be kept. A session with none of these is an
- * idle MCP process (a window that was opened and never used).
+ * idle MCP process (a window that was opened and never used). It gates the
+ * aggregator's summaries, every write `SessionStore.saveSession()` accepts,
+ * the existing file an empty write must not clobber, and the History list in
+ * `/api/sessions`.
  */
-function hasRecordedUsage(s: FullSessionSummary): boolean {
+export function hasRecordedUsage(s: RecordedUsage): boolean {
   return (
     hasAttributableActivity(s) ||
     (s.estimatedCostUsd ?? 0) > 0 ||
     (s.tokensInput ?? 0) + (s.tokensOutput ?? 0) + (s.tokensThinking ?? 0) > 0
   );
-}
-
-function holdsOnlySelfReports(s: FullSessionSummary): boolean {
-  return (s.selfReportCount ?? 0) > 0 && !hasAttributableActivity({ ...s, selfReportCount: 0 });
-}
-
-function wouldClobber(existing: FullSessionSummary, incoming: FullSessionSummary): boolean {
-  if (!hasAttributableActivity(existing) || hasAttributableActivity(incoming)) return false;
-  return !(holdsOnlySelfReports(existing) && hasRecordedUsage(incoming));
 }
 
 export interface SessionFileInfo {
@@ -498,6 +517,69 @@ function subtractRecord(
   return out;
 }
 
+type CallUsageSide<T extends CallUsage> = readonly [
+  total: Readonly<Record<string, T>> | undefined,
+  ledger: Readonly<Record<string, T>> | undefined,
+];
+
+/**
+ * Merges one session's call counts the way `mergeSummaries` merges its cost: the
+ * exact share (total minus the writer's ledger) is max-merged and the merged
+ * ledger is added back. A max over the estimate-laden totals would keep the
+ * calls of byte estimates a real report has since replaced.
+ */
+function mergeCallUsageWithLedger<T extends CallUsage>(
+  existing: CallUsageSide<T>,
+  incoming: CallUsageSide<T>,
+  mergedLedger: Readonly<Record<string, T>> | undefined,
+): Record<string, T> | undefined {
+  if (existing[0] === undefined && incoming[0] === undefined) return undefined;
+  const exact = mergeCallUsageMax(
+    subtractCallUsage(existing[0], existing[1]),
+    subtractCallUsage(incoming[0], incoming[1]),
+  );
+  const merged = addCallUsageRecords(exact, mergedLedger);
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+type CallUsageByDaySide<T extends CallUsage> = readonly [
+  byModel: Readonly<Record<string, T>> | undefined,
+  total: Readonly<CallUsageByDay<T>> | undefined,
+  ledger: Readonly<CallUsageByDay<T>> | undefined,
+];
+
+/**
+ * True when `side` was written before day buckets (counts but no day split) and
+ * holds calls `other`'s totals lack. No day can be named for those calls, so the
+ * merged file keeps only whole-session counts, as a legacy file does. A resumed
+ * session was seeded from its legacy file, so its own totals already cover it.
+ */
+function legacySideAddsCalls<T extends CallUsage>(
+  [byModel, byDay]: CallUsageByDaySide<T>,
+  other: Readonly<Record<string, T>> | undefined,
+): boolean {
+  if (byModel === undefined || byDay !== undefined) return false;
+  return Object.entries(byModel).some(
+    ([model, usage]) => usage.calls > (other?.[model]?.calls ?? 0),
+  );
+}
+
+function mergeCallUsageByDayWithLedger<T extends CallUsage>(
+  existing: CallUsageByDaySide<T>,
+  incoming: CallUsageByDaySide<T>,
+  mergedLedger: Readonly<CallUsageByDay<T>> | undefined,
+): CallUsageByDay<T> | undefined {
+  if (existing[1] === undefined && incoming[1] === undefined) return undefined;
+  if (legacySideAddsCalls(existing, incoming[0]) || legacySideAddsCalls(incoming, existing[0]))
+    return undefined;
+  const exact = combineCallUsageByDay(
+    combineCallUsageByDay(existing[1], existing[2], subtractCallUsage),
+    combineCallUsageByDay(incoming[1], incoming[2], subtractCallUsage),
+    mergeCallUsageMax,
+  );
+  return combineCallUsageByDay(exact, mergedLedger, addCallUsageRecords);
+}
+
 function mergeOutcome(existing: string, incoming: unknown): string {
   if (typeof incoming !== 'string') return existing;
   return incoming === 'completed' || existing !== 'completed' ? incoming : existing;
@@ -588,8 +670,26 @@ export function mergeSummaries(
     incoming.subagentCostByDayUsd,
   );
 
-  const unpricedByModel = mergeCallUsageMax(existing.unpricedByModel, incoming.unpricedByModel);
-  const estimatedByModel = mergeCallUsageMax(existing.estimatedByModel, incoming.estimatedByModel);
+  const unpricedByModel = mergeCallUsageWithLedger(
+    [existing.unpricedByModel, existing.byteEstimates?.unpricedByModel],
+    [incoming.unpricedByModel, incoming.byteEstimates?.unpricedByModel],
+    mergedLedger?.unpricedByModel,
+  );
+  const estimatedByModel = mergeCallUsageWithLedger(
+    [existing.estimatedByModel, existing.byteEstimates?.estimatedByModel],
+    [incoming.estimatedByModel, incoming.byteEstimates?.estimatedByModel],
+    mergedLedger?.estimatedByModel,
+  );
+  const unpricedByDay = mergeCallUsageByDayWithLedger(
+    [existing.unpricedByModel, existing.unpricedByDay, existing.byteEstimates?.unpricedByDay],
+    [incoming.unpricedByModel, incoming.unpricedByDay, incoming.byteEstimates?.unpricedByDay],
+    mergedLedger?.unpricedByDay,
+  );
+  const estimatedByDay = mergeCallUsageByDayWithLedger(
+    [existing.estimatedByModel, existing.estimatedByDay, existing.byteEstimates?.estimatedByDay],
+    [incoming.estimatedByModel, incoming.estimatedByDay, incoming.byteEstimates?.estimatedByDay],
+    mergedLedger?.estimatedByDay,
+  );
   // Latest writer wins, not max: the ledger shrinks to zero when a real report
   // replaces it, and a max-merge would resurrect the stale estimate.
   const byteEstimates = mergedLedger;
@@ -696,8 +796,10 @@ export function mergeSummaries(
     subagentCostUsd: maxNum(existing.subagentCostUsd, incoming.subagentCostUsd),
     ...(costByDayUsd !== undefined ? { costByDayUsd } : {}),
     ...(subagentCostByDayUsd !== undefined ? { subagentCostByDayUsd } : {}),
-    ...(unpricedByModel !== undefined ? { unpricedByModel } : {}),
-    ...(estimatedByModel !== undefined ? { estimatedByModel } : {}),
+    unpricedByModel,
+    estimatedByModel,
+    unpricedByDay,
+    estimatedByDay,
     ...(byteEstimates !== undefined ? { byteEstimates } : {}),
     exactTotals,
     tokensInput: exactTotals.inputTokens + (mergedLedger?.inputTokens ?? 0),
@@ -744,10 +846,16 @@ export class SessionStore {
     return this.sessionsDir;
   }
 
-  saveSession(summary: FullSessionSummary): boolean {
+  /**
+   * Returns null when nothing was written, else the file the write merged
+   * against (`previous`, null for a new file).
+   */
+  saveSession(
+    summary: FullSessionSummary,
+  ): { readonly previous: FullSessionSummary | null } | null {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(summary.sessionId) || summary.sessionId === 'unknown') {
       logger.warn('Rejecting invalid sessionId for file path', { sessionId: summary.sessionId });
-      return false;
+      return null;
     }
 
     if (!existsSync(this.sessionsDir)) {
@@ -765,7 +873,7 @@ export class SessionStore {
     // merged (inflated, since counters take the max) result to a NEW file
     // while leaving the OLD file on disk untouched — the session then
     // appeared twice in history with overlapping, double-counted totals.
-    const existingWithPath = this.loadSessionWithPath(summary.sessionId);
+    const { existing: existingWithPath, filesRead } = this.loadSessionWithPath(summary.sessionId);
 
     // Every MCP server process checkpoints every 30s, including windows that
     // never saw a tool call or a token. Writing those first-time files filled
@@ -775,7 +883,7 @@ export class SessionStore {
       logger.debug('Skipping first write of a session with no recorded usage', {
         sessionId: summary.sessionId,
       });
-      return false;
+      return null;
     }
 
     // A second process saving under the same sessionId (e.g. two MCP
@@ -787,16 +895,16 @@ export class SessionStore {
     // never observed any hook activity would replace a fully recorded session
     // with an all-zero summary, erasing tool calls, tokens and cost from the
     // dashboard on the next refresh. Never let an empty summary clobber a
-    // non-empty one; other collisions keep the previous last-write-wins
-    // behaviour with a warning.
+    // non-empty one. A summary with cost or tokens but no tool calls, such as
+    // a restarted dashboard's parent-only rollup, is not empty: it merges.
     let toWrite: FullSessionSummary = summary;
     if (existingWithPath) {
       const { summary: existing } = existingWithPath;
-      if (wouldClobber(existing, summary)) {
+      if (hasRecordedUsage(existing) && !hasRecordedUsage(summary)) {
         logger.warn('Refusing to overwrite recorded session with an empty summary', {
           sessionId: summary.sessionId,
         });
-        return false;
+        return null;
       }
       // Two processes legitimately share one session id: the CLI/editor
       // spawns an MCP engine that owns the session natively, while a
@@ -826,8 +934,29 @@ export class SessionStore {
       throw new Error(`Session path escaped storage directory: ${filepath}`);
     }
 
+    const unparsedFilesReplaced = filesRead.filter(
+      (file) =>
+        file.parsed.kind !== 'clean' &&
+        (file.filepath === filepath || file.filepath === existingWithPath?.filepath),
+    );
+
+    // Write-then-rename so two processes saving the same session id can never
+    // interleave bytes in the target file (the temp name does not end in .json,
+    // so loaders never see it).
+    const content = JSON.stringify(toWrite, null, 2) + '\n';
+    const tmpPath = `${filepath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     try {
-      writeFileSync(filepath, JSON.stringify(toWrite, null, 2) + '\n', { mode: 0o600 });
+      try {
+        writeFileSync(tmpPath, content, { mode: 0o600 });
+        if (!unparsedFilesReplaced.every(copiedAsideUnchanged)) return null;
+        renameIntoPlace(tmpPath, filepath, content);
+      } finally {
+        try {
+          unlinkSync(tmpPath);
+        } catch {
+          // Renamed into place, or never written.
+        }
+      }
       // The merge landed on a different filename than where the existing
       // record lived (a date-rollover case) — remove the now-superseded
       // file so the session isn't left duplicated across two files.
@@ -843,7 +972,7 @@ export class SessionStore {
         }
       }
       logger.debug('Session saved', { sessionId: toWrite.sessionId, filename });
-      return true;
+      return { previous: existingWithPath?.summary ?? null };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn('Failed to save session file', {
@@ -851,39 +980,55 @@ export class SessionStore {
         filename,
         error: message,
       });
-      return false;
+      return null;
     }
   }
 
   loadSession(sessionId: string): FullSessionSummary | null {
-    return this.loadSessionWithPath(sessionId)?.summary ?? null;
+    return this.loadSessionWithPath(sessionId).existing?.summary ?? null;
   }
 
-  /** Like loadSession(), but also returns the file path it was loaded from — used by saveSession() to detect and clean up a stale file after a merge relocates a session to a different filename. */
-  private loadSessionWithPath(
-    sessionId: string,
-  ): { summary: FullSessionSummary; filepath: string } | null {
-    if (!existsSync(this.sessionsDir)) return null;
+  /**
+   * Like loadSession(), but also returns the file path it was loaded from — used by saveSession() to detect and clean up a stale file after a merge relocates a session to a different filename.
+   *
+   * An unreadable file is skipped rather than ending the search: returning null
+   * there made saveSession() treat the session as new and start a fresh file
+   * on every later save. Sibling files for one id are not merged here,
+   * because files split that way hold disjoint activity that mergeSummaries'
+   * per-counter max would drop.
+   */
+  private loadSessionWithPath(sessionId: string): {
+    readonly existing: { readonly summary: FullSessionSummary; readonly filepath: string } | null;
+    readonly filesRead: readonly SessionFileRead[];
+  } {
+    if (!existsSync(this.sessionsDir)) return { existing: null, filesRead: [] };
 
-    for (const file of readdirSync(this.sessionsDir)) {
-      if (!file.endsWith('.json')) continue;
-      if (parseSessionFilename(file)?.sessionId !== sessionId) continue;
-
-      const filepath = join(this.sessionsDir, file);
+    const names = readdirSync(this.sessionsDir)
+      .filter((file) => parseSessionFilename(file)?.sessionId === sessionId)
+      .sort();
+    const filesRead: SessionFileRead[] = [];
+    for (const file of names) {
+      const filepath = resolve(this.sessionsDir, file);
       try {
-        const raw = readFileSync(filepath, 'utf-8');
-        const session = deserializeSession(raw);
-        if (session === null) {
-          logger.warn('Failed to deserialize session file', { file });
-          return null;
-        }
-        return { summary: session, filepath };
+        const bytes = readFileSync(filepath);
+        filesRead.push({
+          filepath,
+          bytes,
+          parsed: parseSessionFile(bytes.toString('utf-8'), filepath),
+        });
       } catch {
         logger.warn('Failed to read session file', { file });
       }
     }
 
-    return null;
+    for (const { filepath, parsed } of filesRead) {
+      const summary = usableSummary(
+        parsed,
+        () => names.length - filesRead.filter((f) => f.parsed.kind === 'unreadable').length,
+      );
+      if (summary) return { existing: { summary, filepath }, filesRead };
+    }
+    return { existing: null, filesRead };
   }
 
   listSessions(options?: ListSessionsOptions): SessionFileInfo[] {
@@ -892,7 +1037,13 @@ export class SessionStore {
     const sinceDate = options?.since ? formatDate(options.since) : null;
     const results: SessionFileInfo[] = [];
 
-    for (const file of readdirSync(this.sessionsDir)) {
+    const names = readdirSync(this.sessionsDir);
+    const parsingFilesForId = parsingFileCounter(
+      this.sessionsDir,
+      names.flatMap((name) => parseSessionFilename(name) ?? []),
+    );
+
+    for (const file of names) {
       if (!file.endsWith('.json')) continue;
 
       const parsed = parseSessionFilename(file);
@@ -902,9 +1053,12 @@ export class SessionStore {
 
       if (options?.developer) {
         try {
-          const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
-          const session = deserializeSession(raw);
-          if (session?.developer !== options.developer) continue;
+          const filepath = join(this.sessionsDir, file);
+          const summary = usableSummary(
+            parseSessionFile(readFileSync(filepath, 'utf-8'), filepath),
+            () => parsingFilesForId(parsed.sessionId),
+          );
+          if (!summary || summary.developer !== options.developer) continue;
         } catch {
           continue;
         }
@@ -925,12 +1079,13 @@ export class SessionStore {
     const modifiedSinceMs = options?.includeModifiedSince?.getTime() ?? null;
     const results: FullSessionSummary[] = [];
 
-    for (const file of readdirSync(this.sessionsDir)) {
-      if (!file.endsWith('.json')) continue;
+    const sessionFiles = readdirSync(this.sessionsDir).flatMap(
+      (file) => parseSessionFilename(file) ?? [],
+    );
+    const parsingFilesForId = parsingFileCounter(this.sessionsDir, sessionFiles);
 
-      const parsed = parseSessionFilename(file);
-      if (!parsed) continue;
-
+    for (const parsed of sessionFiles) {
+      const file = parsed.filename;
       if (sinceDate && parsed.date < sinceDate) {
         if (modifiedSinceMs === null) continue;
         try {
@@ -941,8 +1096,11 @@ export class SessionStore {
       }
 
       try {
-        const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
-        const session = deserializeSession(raw);
+        const filepath = join(this.sessionsDir, file);
+        const session = usableSummary(
+          parseSessionFile(readFileSync(filepath, 'utf-8'), filepath),
+          () => parsingFilesForId(parsed.sessionId),
+        );
         if (!session) continue;
 
         // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
@@ -1235,6 +1393,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     skillName: tc.toolName === 'Skill' && tc.skillName ? tc.skillName : undefined,
     agentType: tc.toolName === 'Agent' && tc.agentType ? tc.agentType : undefined,
     createdPrNumber: tc.createdPrNumber,
+    mcpPrNumber: tc.mcpPrNumber,
+    mcpPrRepo: tc.mcpPrRepo,
     runInBackground: tc.runInBackground === true || undefined,
   }));
 
@@ -1277,11 +1437,16 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     subagentCostUsd: costMetrics?.subagentCostUsd ?? 0,
     costByDayUsd: costMetrics?.costByDayUsd ?? {},
     subagentCostByDayUsd: costMetrics?.subagentCostByDayUsd ?? {},
+    // A day map rides with its counts even when empty (all late arrivals):
+    // readers treat an absent one as a summary written before day buckets.
     ...(costMetrics && Object.keys(costMetrics.unpricedByModel).length > 0
-      ? { unpricedByModel: costMetrics.unpricedByModel }
+      ? { unpricedByModel: costMetrics.unpricedByModel, unpricedByDay: costMetrics.unpricedByDay }
       : {}),
     ...(costMetrics && Object.keys(costMetrics.estimatedByModel).length > 0
-      ? { estimatedByModel: costMetrics.estimatedByModel }
+      ? {
+          estimatedByModel: costMetrics.estimatedByModel,
+          estimatedByDay: costMetrics.estimatedByDay,
+        }
       : {}),
     ...(costMetrics?.byteEstimates !== undefined
       ? { byteEstimates: costMetrics.byteEstimates }
@@ -1410,6 +1575,8 @@ interface SerializedFullSessionSummary {
   readonly subagentCostByDayUsd?: unknown;
   readonly unpricedByModel?: unknown;
   readonly estimatedByModel?: unknown;
+  readonly unpricedByDay?: unknown;
+  readonly estimatedByDay?: unknown;
   readonly byteEstimates?: unknown;
   readonly exactTotals?: unknown;
   readonly tokensInput?: unknown;
@@ -1561,6 +1728,13 @@ function parseByteEstimates(value: unknown): ByteEstimateLedger | undefined {
     outputTokens: finite(obj.outputTokens),
     costByModel: parseNumberRecord(obj.costByModel) ?? {},
     costByDayUsd: parseNumberRecord(obj.costByDayUsd) ?? {},
+    unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
+    estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
+    unpricedByDay: parseCallUsageByDay<UnpricedModelUsage>(obj.unpricedByDay, parseUnpricedExtra),
+    estimatedByDay: parseCallUsageByDay<EstimatedModelUsage>(
+      obj.estimatedByDay,
+      parseEstimatedExtra,
+    ),
   };
 }
 
@@ -1576,18 +1750,26 @@ function parseExactTotals(value: unknown): ExactTotals | undefined {
   };
 }
 
+function parseUnpricedExtra(): Omit<UnpricedModelUsage, keyof CallUsage> {
+  return {};
+}
+
+function parseEstimatedExtra({
+  estimatedFrom,
+}: Record<string, unknown>): Omit<EstimatedModelUsage, keyof CallUsage> | null {
+  return typeof estimatedFrom === 'string' &&
+    estimatedFrom.length > 0 &&
+    estimatedFrom.length <= MAX_MODEL_ID_LENGTH
+    ? { estimatedFrom }
+    : null;
+}
+
 function parseUnpricedByModel(value: unknown): Record<string, UnpricedModelUsage> | undefined {
-  return parseCallUsageRecord<UnpricedModelUsage>(value, () => ({}));
+  return parseCallUsageRecord<UnpricedModelUsage>(value, parseUnpricedExtra);
 }
 
 function parseEstimatedByModel(value: unknown): Record<string, EstimatedModelUsage> | undefined {
-  return parseCallUsageRecord<EstimatedModelUsage>(value, ({ estimatedFrom }) =>
-    typeof estimatedFrom === 'string' &&
-    estimatedFrom.length > 0 &&
-    estimatedFrom.length <= MAX_MODEL_ID_LENGTH
-      ? { estimatedFrom }
-      : null,
-  );
+  return parseCallUsageRecord<EstimatedModelUsage>(value, parseEstimatedExtra);
 }
 
 /**
@@ -1802,6 +1984,11 @@ export function deserializeFullSessionSummary(
     subagentCostByDayUsd: parseNumberRecord(obj.subagentCostByDayUsd),
     unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
     estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
+    unpricedByDay: parseCallUsageByDay<UnpricedModelUsage>(obj.unpricedByDay, parseUnpricedExtra),
+    estimatedByDay: parseCallUsageByDay<EstimatedModelUsage>(
+      obj.estimatedByDay,
+      parseEstimatedExtra,
+    ),
     byteEstimates: parseByteEstimates(obj.byteEstimates),
     exactTotals: parseExactTotals(obj.exactTotals),
     tokensInput: typeof obj.tokensInput === 'number' ? obj.tokensInput : 0,
@@ -1856,6 +2043,14 @@ export function deserializeFullSessionSummary(
               typeof e.createdPrNumber === 'string' && /^\d{1,9}$/.test(e.createdPrNumber)
                 ? e.createdPrNumber
                 : undefined,
+            mcpPrNumber:
+              typeof e.mcpPrNumber === 'string' && /^\d{1,9}$/.test(e.mcpPrNumber)
+                ? e.mcpPrNumber
+                : undefined,
+            mcpPrRepo:
+              typeof e.mcpPrRepo === 'string' && /^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(e.mcpPrRepo)
+                ? e.mcpPrRepo
+                : undefined,
             runInBackground: e.runInBackground === true || undefined,
           }))
       : undefined,
@@ -1867,11 +2062,94 @@ export function deserializeFullSessionSummary(
   };
 }
 
+type ParsedSessionFile =
+  | { readonly kind: 'clean' | 'recovered'; readonly summary: FullSessionSummary }
+  | { readonly kind: 'unreadable' };
+
+interface SessionFileRead {
+  readonly filepath: string;
+  readonly bytes: Buffer;
+  readonly parsed: ParsedSessionFile;
+}
+
+const warnedKeys = new Set<string>();
+
+function warnOnce(key: string, message: string, data: Record<string, unknown>): void {
+  if (warnedKeys.has(key)) return;
+  warnedKeys.add(key);
+  logger.warn(message, data);
+}
+
+function parseSessionFile(raw: string, filepath: string): ParsedSessionFile {
+  const summary = parseSummary(raw);
+  if (summary) return { kind: 'clean', summary };
+
+  const first = firstTopLevelJsonDocument(raw);
+  const recovered = first === null ? null : parseSummary(first);
+  const file = basename(filepath);
+  if (recovered) {
+    warnOnce(`recovered:${filepath}`, 'Recovered first JSON document from corrupt session file', {
+      file,
+    });
+    return { kind: 'recovered', summary: recovered };
+  }
+  warnOnce(`unreadable:${filepath}`, 'Failed to deserialize session file', { file });
+  return { kind: 'unreadable' };
+}
+
+/**
+ * A recovered document is used only when its file is the only one of its id
+ * that parses. Beside a parsing sibling it may repeat activity the sibling
+ * already holds, so adding the two could double count. It stays unread there,
+ * as it was before recovery existed, until a session's split files are
+ * combined. A sibling that parses as unreadable holds nothing to double count,
+ * so it does not hide the recovered file. A sibling that cannot be read at all
+ * might hold anything, so it counts as parsing. The count includes the file
+ * itself and is only asked for when the file is recovered.
+ */
+function usableSummary(
+  parsed: ParsedSessionFile,
+  parsingFilesForId: () => number,
+): FullSessionSummary | null {
+  if (parsed.kind === 'unreadable') return null;
+  return parsed.kind === 'clean' || parsingFilesForId() === 1 ? parsed.summary : null;
+}
+
+/**
+ * Counts, per session id, the files that parse as clean or recovered. A file
+ * that cannot be read at all might hold anything, so it counts as parsing.
+ * Reads an id's files once, on first ask.
+ */
+function parsingFileCounter(
+  sessionsDir: string,
+  files: readonly SessionFileInfo[],
+): (sessionId: string) => number {
+  const filenamesById = new Map<string, string[]>();
+  for (const { sessionId, filename } of files) {
+    filenamesById.set(sessionId, [...(filenamesById.get(sessionId) ?? []), filename]);
+  }
+  const counts = new Map<string, number>();
+  return (sessionId) => {
+    const known = counts.get(sessionId);
+    if (known !== undefined) return known;
+    const count = (filenamesById.get(sessionId) ?? []).filter((filename) => {
+      const filepath = join(sessionsDir, filename);
+      try {
+        return parseSessionFile(readFileSync(filepath, 'utf-8'), filepath).kind !== 'unreadable';
+      } catch {
+        return true;
+      }
+    }).length;
+    counts.set(sessionId, count);
+    return count;
+  };
+}
+
 /**
  * Parse a raw session JSON string and extract known fields. Delegates field
  * extraction to `deserializeFullSessionSummary` to avoid duplication.
  */
-function deserializeSession(raw: string): FullSessionSummary | null {
+function parseSummary(raw: string): FullSessionSummary | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -1880,6 +2158,101 @@ function deserializeSession(raw: string): FullSessionSummary | null {
   }
   if (typeof parsed !== 'object' || parsed === null) return null;
   return deserializeFullSessionSummary(parsed as SerializedFullSessionSummary);
+}
+
+function copiedAsideUnchanged(file: SessionFileRead): boolean {
+  const name = basename(file.filepath);
+  try {
+    if (!readFileSync(file.filepath).equals(file.bytes)) {
+      logger.warn('Session file changed since it was read; skipping this save', { file: name });
+      return false;
+    }
+    if (hasCorruptCopy(file)) return true;
+    const suffix = `${Date.now()}.${process.pid}.${randomBytes(4).toString('hex')}`;
+    writeFileSync(`${file.filepath}.${suffix}.corrupt`, file.bytes, {
+      mode: 0o600,
+      flag: 'wx',
+    });
+    return true;
+  } catch (err) {
+    logger.warn('Could not copy an unparsed session file aside; skipping this save', {
+      file: name,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+/** True when a `.corrupt` copy of these exact bytes already sits beside the file. */
+function hasCorruptCopy(file: SessionFileRead): boolean {
+  const dir = dirname(file.filepath);
+  const prefix = `${basename(file.filepath)}.`;
+  return readdirSync(dir).some((entry) => {
+    if (!entry.startsWith(prefix) || !entry.endsWith('.corrupt')) return false;
+    try {
+      return readFileSync(join(dir, entry)).equals(file.bytes);
+    } catch {
+      return false;
+    }
+  });
+}
+
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_BACKOFF_MS = [10, 20, 40, 80];
+const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Windows refuses to rename over a file another process has open, which
+ * antivirus scanners do briefly after each write. Retry with backoff, then
+ * write the target directly so saves never silently stop.
+ */
+function renameIntoPlace(tmpPath: string, filepath: string, content: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(tmpPath, filepath);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      if (!RENAME_RETRY_CODES.has(code)) throw err;
+      if (process.platform !== 'win32' || attempt === RENAME_BACKOFF_MS.length) break;
+      Atomics.wait(SLEEP_CELL, 0, 0, RENAME_BACKOFF_MS[attempt]);
+    }
+  }
+  try {
+    writeFileSync(filepath, content, { mode: 0o600 });
+  } catch (err) {
+    warnOnce(
+      `rename-failed:${filepath}`,
+      'Could not rename session file into place and the direct write failed too',
+      { file: basename(filepath), error: err instanceof Error ? err.message : String(err) },
+    );
+    throw err;
+  }
+  warnOnce(`rename:${filepath}`, 'Could not rename session file into place; wrote it directly', {
+    file: basename(filepath),
+  });
+}
+
+/** Returns the leading `{...}` of `raw` (string- and escape-aware), or null if it never closes. */
+function firstTopLevelJsonDocument(raw: string): string | null {
+  const start = raw.search(/\S/);
+  if (start === -1 || raw[start] !== '{') return null;
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inString) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}' && --depth === 0) {
+      return raw.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
 function parseSessionFilename(filename: string): SessionFileInfo | null {

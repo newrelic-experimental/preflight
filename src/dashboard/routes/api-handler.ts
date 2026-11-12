@@ -1,13 +1,18 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
-import { digestWebhookUrlOverride, normalizeDeveloperName, redactSensitive } from '../../config.js';
+import {
+  digestWebhookUrlOverrideSource,
+  digestWebhookUrlOverride,
+  normalizeDeveloperName,
+  redactSensitive,
+} from '../../config.js';
 import {
   isSyntheticSessionId,
   isUnscopedAggregatorSessionId,
   type SessionNameSource,
 } from '../../hooks/session-resolver.js';
-import { localDateKey, localStartOfDay, todayPortionRatio } from '../../lib/date.js';
+import { localDateKey, localEndOfDay, localStartOfDay, todayPortionRatio } from '../../lib/date.js';
 import { todayCostOfSummary } from '../../metrics/cost-tracker-seed.js';
 import type { AntiPattern } from '../../metrics/anti-patterns.js';
 import { AntiPatternDetector } from '../../metrics/anti-patterns.js';
@@ -77,7 +82,11 @@ import type {
   PersistedAntiPattern,
   SessionFileInfo,
 } from '../../storage/session-store.js';
-import { toPersistedAntiPatterns } from '../../storage/session-store.js';
+import {
+  hasRecordedUsage,
+  toPersistedAntiPatterns,
+  type RecordedUsage,
+} from '../../storage/session-store.js';
 import type {
   AttributionBucket,
   HookEvent,
@@ -86,7 +95,11 @@ import type {
 } from '../../storage/types.js';
 import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
-import { digestWebhookUrlShadowedBy, handleSendDigest } from '../../tools/cross-session-tools.js';
+import {
+  digestWebhookUrlShadowedBy,
+  handleSendDigest,
+  isDigestWebhookCommandConfigured,
+} from '../../tools/cross-session-tools.js';
 import type { AlertEvent } from '../live-event-bus.js';
 import type {
   AgentCall,
@@ -405,6 +418,7 @@ export interface ApiHandlerDeps {
     loadAllSessions?: (opts?: {
       since?: Date;
       developer?: string;
+      includeModifiedSince?: Date;
     }) => readonly FullSessionSummary[];
   };
   readonly costTracker?: {
@@ -416,8 +430,8 @@ export interface ApiHandlerDeps {
       totalCacheCreationTokens?: number;
       totalCacheSavingsUsd?: number;
       totalInputTokens?: number;
-      unpricedByModel?: Record<string, UnpricedModelUsage>;
-      estimatedByModel?: Record<string, EstimatedModelUsage>;
+      unpricedByDay?: Record<string, Record<string, UnpricedModelUsage>>;
+      estimatedByDay?: Record<string, Record<string, EstimatedModelUsage>>;
     };
     // Optional: per-day cost attribution. Fixes the cross-midnight bug where
     // a session that started yesterday counted its full cost as today's. When
@@ -608,11 +622,6 @@ export interface ApiHandlerDeps {
     // see computeCrossProcessTodaySessionIds(). `?.` falls back to an empty
     // set for older fakes/mocks.
     getTodaySessionIds?: (options?: { includeSynthetic?: boolean }) => string[];
-  };
-  readonly concurrencyTracker?: {
-    getConcurrentCount: () => number;
-    getPeakConcurrent: () => number;
-    getConcurrencyTimeSeries: () => readonly { timestamp: number; count: number }[];
   };
   readonly contextTracker?: { getMetrics: (sessionId?: string) => ContextTrackerMetrics };
   readonly contextCompositionTracker?: { getMetrics: () => ContextCompositionMetrics };
@@ -831,11 +840,11 @@ function mergeActivityWindows(
   return windows;
 }
 
-// 96 × 15-minute buckets covering today (00:00 → 24:00 local). Each bucket
-// holds the peak concurrent session count observed within its window — see
+// 15-minute buckets covering today (00:00 → 24:00 local): 96 on a normal day,
+// 92 or 100 on the DST-transition days. Each bucket holds the peak concurrent
+// session count observed within its window — see
 // computeTodayConcurrencyBuckets() below.
 const CONCURRENCY_BUCKET_SIZE_MS = 15 * 60 * 1000;
-const CONCURRENCY_BUCKET_COUNT = 96;
 
 interface ConcurrencyBucket {
   readonly timestamp: number;
@@ -848,12 +857,33 @@ interface SessionInterval {
 }
 
 interface SessionActivityLike {
+  readonly sessionId?: string;
   readonly timeline?: readonly { readonly timestamp: number }[];
 }
 
-interface SessionIdentityLike {
+// One session can be stored across several files. Concatenating their
+// timelines per session id keeps a session from overlapping itself, matching
+// collectTodayActivityWindows' per-id merge for today.
+function timelinesBySession(
+  sessions: readonly SessionActivityLike[],
+): (readonly { readonly timestamp: number }[])[] {
+  const byId = new Map<string, { readonly timestamp: number }[]>();
+  const anonymous: (readonly { readonly timestamp: number }[])[] = [];
+  for (const s of sessions) {
+    if (!s.timeline || s.timeline.length === 0) continue;
+    if (typeof s.sessionId !== 'string' || s.sessionId.length === 0) {
+      anonymous.push(s.timeline);
+      continue;
+    }
+    const existing = byId.get(s.sessionId);
+    if (existing) existing.push(...s.timeline);
+    else byId.set(s.sessionId, [...s.timeline]);
+  }
+  return [...byId.values(), ...anonymous];
+}
+
+interface SessionIdentityLike extends RecordedUsage {
   readonly sessionId?: string;
-  readonly toolCallCount?: number;
 }
 
 interface ReplaySessionResponse {
@@ -958,12 +988,17 @@ function computeTodayConcurrencyBuckets(
   startTimestamp: number,
 ): ConcurrencyBucket[] {
   // Single pass O(N log N) — build delta events from every activity window,
-  // clamped to today's window, then sort once and sweep across the 96
+  // clamped to today's window, then sort once and sweep across the day's
   // buckets in lockstep with the event cursor. Buckets containing no
   // events still need a count: the value carried over from the previous
   // bucket's tail (a window that spans many buckets without a delta in
   // between must propagate as count=1+ in those buckets).
-  const dayEnd = startTimestamp + CONCURRENCY_BUCKET_COUNT * CONCURRENCY_BUCKET_SIZE_MS;
+  // The day end uses local-date arithmetic, not a fixed 24h offset, so the
+  // grid is 23h or 25h long on DST-transition days (see computeDailyPeakConcurrency).
+  const dayEndDate = new Date(startTimestamp);
+  dayEndDate.setDate(dayEndDate.getDate() + 1);
+  const dayEnd = dayEndDate.getTime();
+  const bucketCount = Math.ceil((dayEnd - startTimestamp) / CONCURRENCY_BUCKET_SIZE_MS);
   const events: Array<{ ts: number; delta: number }> = [];
   for (const window of windows) {
     const start = Math.max(window.startTime, startTimestamp);
@@ -979,10 +1014,10 @@ function computeTodayConcurrencyBuckets(
   // can fall 1 below the day peak at boundary conditions.
   events.sort((a, b) => a.ts - b.ts || b.delta - a.delta);
 
-  const buckets: ConcurrencyBucket[] = new Array(CONCURRENCY_BUCKET_COUNT);
+  const buckets: ConcurrencyBucket[] = new Array(bucketCount);
   let current = 0;
   let cursor = 0;
-  for (let b = 0; b < CONCURRENCY_BUCKET_COUNT; b++) {
+  for (let b = 0; b < bucketCount; b++) {
     const bucketStart = startTimestamp + b * CONCURRENCY_BUCKET_SIZE_MS;
     const bucketEnd = bucketStart + CONCURRENCY_BUCKET_SIZE_MS;
     // Peak defaults to the carried-over level so a session spanning many
@@ -1020,10 +1055,8 @@ function computeTodayConcurrencyBuckets(
 
 function computeTodayPeakConcurrency(sessions: readonly SessionActivityLike[]): number {
   const events: Array<{ ts: number; delta: number }> = [];
-  for (const session of sessions) {
-    if (!session.timeline || session.timeline.length === 0) continue;
-
-    const windows = mergeActivityWindows(session.timeline);
+  for (const timeline of timelinesBySession(sessions)) {
+    const windows = mergeActivityWindows(timeline);
 
     for (const w of windows) {
       events.push({ ts: w.start, delta: 1 }, { ts: w.end, delta: -1 });
@@ -1059,6 +1092,36 @@ function rawQualityCountsFromEvents(events: readonly QualityEvent[]): QualityPro
   };
 }
 
+/**
+ * Today's 15-minute concurrency grid (96 buckets, 92 or 100 on DST days) and
+ * its peak. Shared by the Today and History views of GET /api/concurrency so
+ * today's History bar cannot drift from the Today headline.
+ */
+function computeTodayConcurrency(deps: ApiHandlerDeps): {
+  startTimestamp: number;
+  buckets: ReturnType<typeof computeTodayConcurrencyBuckets>;
+  peak: number;
+} {
+  // loadSessionsWithActivityToday() so a session resumed from an older start
+  // date (it keeps its original filename) isn't dropped; window-building clamps
+  // each session's activity to today. The loaders and getTodaySessionIds()
+  // already exclude synthetic session ids.
+  const todaySessions =
+    deps.sessionStore?.loadSessionsWithActivityToday?.() ??
+    deps.sessionStore?.loadSessionsOverlappingToday?.() ??
+    deps.sessionStore?.loadTodaySessions() ??
+    [];
+  const startTimestamp = localStartOfDay();
+  // Today-scoped (not 3-min live-scoped): an idle-but-still-open session's
+  // buffered activity must still fold in.
+  const liveIds = deps.liveSessionRegistry?.getTodaySessionIds?.() ?? [];
+  const bufferRecords = deps.toolCallBuffer?.getRecords() ?? [];
+  const windows = collectTodayActivityWindows(todaySessions, liveIds, bufferRecords);
+  const buckets = computeTodayConcurrencyBuckets(windows, startTimestamp);
+  const peak = buckets.reduce((max, b) => Math.max(max, b.count), 0);
+  return { startTimestamp, buckets, peak };
+}
+
 function computeDailyPeakConcurrency(
   sessions: readonly SessionActivityLike[],
   days: number,
@@ -1069,29 +1132,21 @@ function computeDailyPeakConcurrency(
   // UTC, and disagree with this same file's local-day `aggregateDailyCost`
   // equivalent on the client (History.tsx).
   const todayStart = localStartOfDay();
+  const timelines = timelinesBySession(sessions);
   const result: Array<{ date: string; peak: number }> = [];
 
   for (let d = days - 1; d >= 0; d--) {
     const dayStart = new Date(todayStart);
     dayStart.setDate(dayStart.getDate() - d);
     const dayStartMs = dayStart.getTime();
-    // `dayEnd` must be derived via the same local-date arithmetic as
-    // `dayStart`, not `dayStartMs + 86_400_000` — a local calendar day is
-    // 23h or 25h long on the ~2 DST-transition days/year, so the fixed-ms
-    // offset lands an hour into (or short of) the next/previous local day,
-    // misattributing entries near the boundary on those days.
-    const dayEnd = new Date(dayStart);
-    dayEnd.setDate(dayEnd.getDate() + 1);
-    const dayEndMs = dayEnd.getTime();
+    const dayEndMs = localEndOfDay(dayStartMs);
     const dateKey = localDateKey(dayStartMs);
 
     // Find sessions that overlap with this day and have timeline data
     const events: Array<{ ts: number; delta: number }> = [];
-    for (const session of sessions) {
-      if (!session.timeline || session.timeline.length === 0) continue;
-
+    for (const timeline of timelines) {
       // Only include tool calls within this day
-      const dayEntries = session.timeline.filter(
+      const dayEntries = timeline.filter(
         (e) => e.timestamp >= dayStartMs && e.timestamp < dayEndMs,
       );
       if (dayEntries.length === 0) continue;
@@ -1509,10 +1564,7 @@ export function createApiHandler(
     // MCP-internal bookkeeping from --local / proxy modes that would
     // otherwise appear as confusing "duplicate" rows next to real Claude
     // Code sessions.
-    const withActivity = (allSessions as readonly SessionIdentityLike[]).filter((s) => {
-      const calls = s.toolCallCount ?? 0;
-      return calls > 0;
-    });
+    const withActivity = (allSessions as readonly SessionIdentityLike[]).filter(hasRecordedUsage);
     const sliced = withActivity.slice(-limit);
 
     // Append the current live session so it appears in the list before
@@ -1529,7 +1581,12 @@ export function createApiHandler(
       const alreadyPersisted = sliced.some(
         (s) => (s as { sessionId?: string }).sessionId === live.sessionId,
       );
-      if (!alreadyPersisted && live.toolCallCount > 0 && !isSyntheticSessionId(live.sessionId)) {
+      const liveCostUsd = deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null;
+      const liveHasUsage = hasRecordedUsage({
+        toolCallCount: live.toolCallCount,
+        estimatedCostUsd: liveCostUsd,
+      });
+      if (!alreadyPersisted && liveHasUsage && !isSyntheticSessionId(live.sessionId)) {
         sliced.push({
           sessionId: live.sessionId,
           sessionName: live.sessionName ?? null,
@@ -1537,7 +1594,7 @@ export function createApiHandler(
           startTime: live.sessionStartTime,
           durationMs: live.sessionDurationMs,
           toolCallCount: live.toolCallCount,
-          estimatedCostUsd: deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null,
+          estimatedCostUsd: liveCostUsd,
           // costTracker.getMetrics() also exposes the model this live
           // session is actually using; without it, aggregateModelPerformance
           // (History.tsx) buckets this session's real-time cost/count under
@@ -1871,6 +1928,8 @@ export function createApiHandler(
         subagentCostByDayUsd?: Record<string, number>;
         unpricedByModel?: Record<string, UnpricedModelUsage>;
         estimatedByModel?: Record<string, EstimatedModelUsage>;
+        unpricedByDay?: Record<string, Record<string, UnpricedModelUsage>>;
+        estimatedByDay?: Record<string, Record<string, EstimatedModelUsage>>;
         toolCallCount?: number;
         tokensInput?: number;
         tokensCacheRead?: number;
@@ -1913,8 +1972,17 @@ export function createApiHandler(
         liveCheckpointInputTokens = (s.tokensInput ?? 0) * liveRatio;
         continue;
       }
-      sumCallUsageInto(unpricedByModel, s.unpricedByModel);
-      sumCallUsageInto(estimatedByModel, s.estimatedByModel);
+      // Today's calls only, so a session that started yesterday doesn't put its
+      // earlier calls in a notice beside a today-only dollar figure. A summary
+      // written before day buckets existed has only the whole-session counts.
+      sumCallUsageInto(
+        unpricedByModel,
+        s.unpricedByDay === undefined ? s.unpricedByModel : s.unpricedByDay[todayKey],
+      );
+      sumCallUsageInto(
+        estimatedByModel,
+        s.estimatedByDay === undefined ? s.estimatedByModel : s.estimatedByDay[todayKey],
+      );
       totalCostUsd += todayCost.costUsd;
       // Subagent-only portion of the same session. This is what makes the KPI
       // cross-session: each `--stdio` process persists its own subagent cost, so
@@ -1987,8 +2055,8 @@ export function createApiHandler(
 
     if (!liveIsUnscopedAggregator) {
       const liveMetrics = deps.costTracker?.getMetrics();
-      sumCallUsageInto(unpricedByModel, liveMetrics?.unpricedByModel);
-      sumCallUsageInto(estimatedByModel, liveMetrics?.estimatedByModel);
+      sumCallUsageInto(unpricedByModel, liveMetrics?.unpricedByDay?.[todayKey]);
+      sumCallUsageInto(estimatedByModel, liveMetrics?.estimatedByDay?.[todayKey]);
       // Reuses `todayKey` from the enclosing scope (declared above the
       // persisted-session loop) so the persisted-loop and this live top-up can
       // never split onto two independently-derived day keys.
@@ -2824,10 +2892,8 @@ export function createApiHandler(
   });
 
   routes.set('GET /api/concurrency', (req, res) => {
-    if (!deps.concurrencyTracker) return unavailable(res, 'concurrencyTracker');
+    if (!deps.liveSessionRegistry) return unavailable(res, 'liveSessionRegistry');
     try {
-      const livePeak = deps.concurrencyTracker.getPeakConcurrent();
-
       const url = new URL(req.url ?? '/', 'http://localhost');
       const view = url.searchParams.get('view');
       if (view === 'history') {
@@ -2835,20 +2901,21 @@ export function createApiHandler(
         const days = daysParam ? Math.min(Math.max(parseInt(daysParam, 10) || 30, 1), 90) : 30;
         const since = new Date(localStartOfDay());
         since.setDate(since.getDate() - days);
-        const allSessions = deps.sessionStore?.loadAllSessions?.({ since }) ?? [];
+        const allSessions =
+          deps.sessionStore?.loadAllSessions?.({ since, includeModifiedSince: since }) ?? [];
         const dailyPeaks = computeDailyPeakConcurrency(
           allSessions as readonly SessionActivityLike[],
           days,
         );
-        // Override today's bucket with the live peak — disk-derived
-        // concurrency only sees persisted (completed) sessions, so a
-        // dashboard with active concurrent sessions but nothing flushed
-        // to disk yet would otherwise report peak=0 for today.
-        if (dailyPeaks.length > 0 && livePeak > 0) {
+        // Today is replaced (not maxed) with the Today view's headline peak so
+        // the two views agree exactly, and it includes live sessions' buffered
+        // activity that the disk-derived value misses.
+        if (dailyPeaks.length > 0) {
           const today = dailyPeaks[dailyPeaks.length - 1];
-          if (today.peak < livePeak) {
-            dailyPeaks[dailyPeaks.length - 1] = { ...today, peak: livePeak };
-          }
+          dailyPeaks[dailyPeaks.length - 1] = {
+            ...today,
+            peak: computeTodayConcurrency(deps).peak,
+          };
         }
         jsonOk(res, { dailyPeaks });
         return;
@@ -2863,56 +2930,15 @@ export function createApiHandler(
         allSessions as readonly SessionActivityLike[],
       );
 
-      // Prefer loadSessionsWithActivityToday() so a session that started
-      // earlier and is still running, or was resumed from an older start date
-      // (keeping its original filename), isn't invisible to the chart —
-      // loadTodaySessions() filters by filename date (= start date) and would
-      // silently drop it. Downstream window-building clamps each session's
-      // activity to [startTimestamp, dayEnd], so widening the input set here
-      // can't leak earlier days' activity into today's buckets.
-      // loadAllSessions()/loadTodaySessions() already exclude synthetic session
-      // ids, so the chart buckets below agree with the session list shown
-      // alongside the chart without re-filtering here.
-      const todaySessions =
-        deps.sessionStore?.loadSessionsWithActivityToday?.() ??
-        deps.sessionStore?.loadSessionsOverlappingToday?.() ??
-        deps.sessionStore?.loadTodaySessions() ??
-        [];
-
-      // 96 × 15-minute fixed-grid buckets covering today (local midnight →
-      // local midnight + 24h). Each bucket holds the peak concurrent
-      // session count within its window. Bounded payload (~10 KB) and
-      // renders cleanly at any zoom level. Replaces the prior unbounded
-      // 30-second rolling timeSeries.
-      const startTimestamp = localStartOfDay();
-      // Today-scoped (not 3-min live-scoped): an idle-but-still-open session's
-      // buffered activity must still fold into the chart — getTodaySessionIds()
-      // already excludes synthetic session ids too.
-      const liveIds = deps.liveSessionRegistry?.getTodaySessionIds?.() ?? [];
-      const bufferRecords = deps.toolCallBuffer?.getRecords() ?? [];
-      const windows = collectTodayActivityWindows(todaySessions, liveIds, bufferRecords);
-      const buckets = computeTodayConcurrencyBuckets(windows, startTimestamp);
-      // Derive the headline "today peak" from the SAME buckets shown in the
-      // chart — rather than from an independent computation over a
-      // differently-scoped session set — so the two numbers can never
-      // disagree by construction. Computing them from two different
-      // concurrency models is exactly how the headline and chart can
-      // silently drift apart.
-      //
-      // Deliberately NOT folded with `livePeak` here (unlike allTimePeak
-      // below): `livePeak` is a synthetic-id-unfiltered, never-reset
-      // lifetime max from LiveSessionRegistry, so mixing it into today's
-      // headline can reintroduce that same chart/headline disagreement.
-      // It's unnecessary anyway:
-      // `windows` already unions each live session's buffered (not-yet-
-      // persisted) activity into the same buckets, so a currently-live
-      // session with any tool-call activity is already reflected here.
-      const historicalPeak = buckets.reduce((max, b) => Math.max(max, b.count), 0);
+      // The headline peak is derived from the same buckets as the chart so they
+      // cannot disagree, and the buckets already include live sessions'
+      // buffered activity.
+      const { startTimestamp, buckets, peak: historicalPeak } = computeTodayConcurrency(deps);
 
       jsonOk(res, {
         current: computeCrossProcessLiveSessionIds(deps).length,
         peak: historicalPeak,
-        allTimePeak: Math.max(livePeak, historicalPeak, allTimePeak),
+        allTimePeak: Math.max(historicalPeak, allTimePeak),
         bucketSizeMs: CONCURRENCY_BUCKET_SIZE_MS,
         startTimestamp,
         buckets,
@@ -3116,6 +3142,13 @@ export function createApiHandler(
       }
     }
 
+    // Sends read the file at call time and skip its URL when a command is
+    // configured there, so follow the disk rather than the startup snapshot.
+    const overrideSource =
+      digestWebhookUrlOverrideSource(c) ??
+      (isDigestWebhookCommandConfigured(disk) ? 'command' : undefined);
+    const fileWebhookUrl = typeof disk.digestWebhookUrl === 'string' ? disk.digestWebhookUrl : null;
+
     const diskAlerts = (disk.alerts ?? {}) as Record<string, unknown>;
     const diskPersonal = (diskAlerts['personal'] ?? {}) as Record<string, unknown>;
 
@@ -3133,8 +3166,10 @@ export function createApiHandler(
         'retainSessionsDays' in disk
           ? (disk.retainSessionsDays as number | null)
           : c.retainSessionsDays,
-      digestWebhookUrl:
-        'digestWebhookUrl' in disk ? (disk.digestWebhookUrl as string | null) : c.digestWebhookUrl,
+      digestWebhookUrl: fileWebhookUrl,
+      // Where sends actually read the URL from. The value above is only the
+      // file's; env or a command outranks it, and its value is never returned.
+      digestWebhookUrlSource: overrideSource ?? (fileWebhookUrl ? 'file' : 'unset'),
       digestSchedule:
         typeof disk.digestSchedule === 'string' ? disk.digestSchedule : c.digestSchedule,
       alerts: {

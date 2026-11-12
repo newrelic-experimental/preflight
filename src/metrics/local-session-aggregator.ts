@@ -22,22 +22,19 @@
  */
 
 import { spawnSync } from 'node:child_process';
-
-import { createLogger } from '../shared/index.js';
 import { SESSION_ID_RE } from '../hooks/self-report.js';
 import { isSyntheticSessionId } from '../hooks/synthetic-session-id.js';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
-import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
-import { hasAttributableActivity, type FullSessionSummary } from '../storage/session-store.js';
+import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
+import { isAwaitingLatePost } from './session-tracker.js';
+import { hasRecordedUsage, type FullSessionSummary } from '../storage/session-store.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
-import { addCallUsage } from './call-usage.js';
+import { CallUsageBook } from './call-usage.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import { resolvePricingDetail } from './pricing-overlay.js';
 import { QualityProxyTracker } from './quality-proxy-tracker.js';
 import { ToolSelectionScorer, toToolSelectionSummary } from './tool-selection-scorer.js';
-
-const logger = createLogger('local-session-aggregator');
 
 /** Matches SessionTracker's own cap so session files stay bounded. */
 const MAX_TIMELINE_ENTRIES = 10_000;
@@ -79,14 +76,6 @@ interface EmittedCost {
   readonly subagentCostUsd: number;
   readonly costByDayUsd: ReadonlyMap<string, number>;
   readonly subagentCostByDayUsd: ReadonlyMap<string, number>;
-}
-
-export interface SummaryContext {
-  readonly developer: string;
-  readonly platform?: string | null;
-  readonly outcome?: string;
-  readonly repoResolver: RepoNameResolver;
-  readonly toolSelectionScorer: ToolSelectionScorer;
 }
 
 export interface LocalSessionAggregatorOptions {
@@ -138,8 +127,8 @@ export interface LocalSessionRollup {
   /** Set once the persisted baseline has been folded in — see recordTokenUsage. */
   costBaselineApplied: boolean;
   /**
-   * The cost quadruple as of the last write `saveSummaries()` confirmed, i.e.
-   * what this aggregator has already put in the session file. A later baseline fold
+   * The cost quadruple as of the last `markSaved()` call, i.e. what this
+   * aggregator has already put in the session file. A later baseline fold
    * subtracts it, because the file may be this aggregator's own checkpoint.
    */
   lastEmittedCost: EmittedCost | null;
@@ -147,12 +136,14 @@ export interface LocalSessionRollup {
   tokensOutput: number;
   tokensThinking: number;
   selfReportCount: number;
+  /** Holds something no confirmed save has written yet. */
   unsaved: boolean;
   tokensCacheRead: number;
   tokensCacheCreation: number;
+  cacheSavingsUsd: number;
   models: Set<string>;
-  unpricedByModel: Map<string, UnpricedModelUsage>;
-  estimatedByModel: Map<string, EstimatedModelUsage>;
+  unpriced: CallUsageBook<UnpricedModelUsage>;
+  estimated: CallUsageBook<EstimatedModelUsage>;
   successCount: number;
 }
 
@@ -387,9 +378,10 @@ export class LocalSessionAggregator {
         unsaved: true,
         tokensCacheRead: 0,
         tokensCacheCreation: 0,
+        cacheSavingsUsd: 0,
         models: new Set(),
-        unpricedByModel: new Map(),
-        estimatedByModel: new Map(),
+        unpriced: new CallUsageBook(),
+        estimated: new CallUsageBook(),
         successCount: 0,
       };
       this.sessions.set(sessionId, rollup);
@@ -398,6 +390,73 @@ export class LocalSessionAggregator {
     if (timestamp < rollup.startTime) rollup.startTime = timestamp;
     if (timestamp > rollup.endTime) rollup.endTime = timestamp;
     return rollup;
+  }
+
+  recordsOf(sessionId: string): readonly ToolCallRecord[] {
+    return this.sessions.get(sessionId)?.records ?? [];
+  }
+
+  /**
+   * A rollup's summary for a session whose file has calls, without what another process may count:
+   * a timeout, whose post may land elsewhere, and a call another process marked counted.
+   */
+  withoutCallsOtherProcessesMayCount(
+    summary: Record<string, unknown>,
+    countedIds: ReadonlySet<string>,
+  ): Record<string, unknown> {
+    const rollup = this.sessions.get(String(summary.sessionId))!;
+    const isLeftOut = (r: ToolCallRecord): boolean =>
+      isAwaitingLatePost(r) || (r.toolUseId !== undefined && countedIds.has(r.toolUseId));
+    const leftOut = rollup.records.filter(isLeftOut);
+    const calls = rollup.toolCallCount - leftOut.length;
+    const successes = rollup.successCount - leftOut.filter((r) => r.success).length;
+    const tools = new Map(Object.entries(rollup.toolBreakdown));
+    for (const { toolName } of leftOut) tools.set(toolName, tools.get(toolName)! - 1);
+    const timeline = rollup.timeline.filter((_, i) => !isLeftOut(rollup.records[i]!));
+    return {
+      ...summary,
+      toolCallCount: calls,
+      toolBreakdown: Object.fromEntries([...tools].filter(([, count]) => count > 0)),
+      timeline: timeline.length > 0 ? timeline : undefined,
+      // A null rate keeps the file's own.
+      toolSuccessRate: calls > 0 ? successes / calls : null,
+    };
+  }
+
+  isUnsaved(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.unsaved === true;
+  }
+
+  /** Records that the store wrote this session's file with what the rollup holds now. */
+  markSaved(sessionId: string): void {
+    const rollup = this.sessions.get(sessionId);
+    if (!rollup) return;
+    rollup.lastEmittedCost = {
+      costUsd: rollup.costUsd,
+      subagentCostUsd: rollup.subagentCostUsd,
+      costByDayUsd: new Map(rollup.costByDayUsd),
+      subagentCostByDayUsd: new Map(rollup.subagentCostByDayUsd),
+    };
+    rollup.unsaved = false;
+  }
+
+  amendToolCall(record: ToolCallRecord): void {
+    const rollup = record.sessionId ? this.sessions.get(record.sessionId) : undefined;
+    if (!rollup) return;
+    const index = rollup.records.findIndex((r) => r.id === record.id);
+    const previous = rollup.records[index];
+    const entry = rollup.timeline[index];
+    if (previous?.success !== false || !entry) return;
+    if (record.success) rollup.successCount += 1;
+    rollup.unsaved = true;
+    rollup.records[index] = amendRecord(previous, record);
+    const { errorType: _replaced, ...rest } = entry;
+    rollup.timeline[index] = {
+      ...rest,
+      durationMs: record.durationMs,
+      success: record.success,
+      ...(record.errorType !== undefined && { errorType: record.errorType }),
+    };
   }
 
   recordToolCall(record: {
@@ -416,6 +475,8 @@ export class LocalSessionAggregator {
     platform?: string | null;
     agentId?: unknown;
     createdPrNumber?: unknown;
+    mcpPrNumber?: unknown;
+    mcpPrRepo?: unknown;
     runInBackground?: unknown;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
@@ -475,6 +536,8 @@ export class LocalSessionAggregator {
         ...(typeof record.createdPrNumber === 'string' && {
           createdPrNumber: record.createdPrNumber,
         }),
+        ...(typeof record.mcpPrNumber === 'string' && { mcpPrNumber: record.mcpPrNumber }),
+        ...(typeof record.mcpPrRepo === 'string' && { mcpPrRepo: record.mcpPrRepo }),
         ...(record.runInBackground === true && { runInBackground: true }),
       });
     }
@@ -497,6 +560,7 @@ export class LocalSessionAggregator {
       cacheReadTokens?: number;
       cacheCreationTokens?: number;
       thinkingTokens?: number;
+      cacheSavingsUsd?: number;
       /**
        * Present iff this usage came from a subagent transcript turn — the SAME
        * discriminator `CostTracker.recordTokenUsage`'s `ctx.agentId` uses, so
@@ -535,6 +599,7 @@ export class LocalSessionAggregator {
     if (usage.selfReported) rollup.selfReportCount += 1;
     rollup.tokensCacheRead += usage.cacheReadTokens ?? 0;
     rollup.tokensCacheCreation += usage.cacheCreationTokens ?? 0;
+    rollup.cacheSavingsUsd += usage.cacheSavingsUsd ?? 0;
     if (usage.model) {
       rollup.models.add(usage.model);
       const entry = rollup.modelBreakdown.get(usage.model) ?? {
@@ -564,9 +629,9 @@ export class LocalSessionAggregator {
       if (tokens > 0) {
         const resolution = resolvePricingDetail(usage.model);
         if (resolution.kind === 'unpriced') {
-          addCallUsage(rollup.unpricedByModel, usage.model, { calls: 1, tokens });
+          rollup.unpriced.add(usage.model, dayKey, { calls: 1, tokens });
         } else if (resolution.source === 'estimated') {
-          addCallUsage(rollup.estimatedByModel, usage.model, {
+          rollup.estimated.add(usage.model, dayKey, {
             calls: 1,
             tokens,
             estimatedFrom: resolution.estimatedFrom,
@@ -623,129 +688,105 @@ export class LocalSessionAggregator {
 
   /**
    * Session summaries ready for `SessionStore.saveSession()`. Only sessions
-   * with attributable activity are returned (see `hasAttributableActivity`) —
-   * a rollup with neither tool calls nor subagent spend would be filtered out
-   * of `/api/sessions` anyway, and writing it would burn a file that the
+   * with recorded usage (see `hasRecordedUsage`) are returned. A rollup with
+   * none is an idle process, and writing it would burn a file that the
    * empty-summary guard then has to defend. A subagent-only rollup (dead
    * parent, tail still being read) DOES qualify: it has real dollars even
-   * though its parent timeline and toolCallCount are both zero.
+   * though its parent timeline and toolCallCount are both zero. So does a
+   * chat-only rollup, with no tool calls but real cost or tokens.
    */
-  toSummaries(
-    context: SummaryContext,
-    include: (rollup: Readonly<LocalSessionRollup>) => boolean = () => true,
-  ): Array<{ readonly sessionId: string } & Record<string, unknown>> {
-    const out: Array<{ readonly sessionId: string } & Record<string, unknown>> = [];
+  toSummaries(context: {
+    developer: string;
+    platform?: string | null;
+    outcome?: string;
+    repoResolver: RepoNameResolver;
+    toolSelectionScorer: ToolSelectionScorer;
+    savesSession?: (sessionId: string) => boolean;
+  }): Array<Record<string, unknown>> {
+    const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
-      if (!include(rollup) || !hasAttributableActivity(rollup)) continue;
-      out.push(this.summaryOf(rollup, context));
+      if (context.savesSession?.(rollup.sessionId) === false) continue;
+      if (
+        !hasRecordedUsage({
+          toolCallCount: rollup.toolCallCount,
+          subagentCostUsd: rollup.subagentCostUsd,
+          timeline: rollup.timeline,
+          estimatedCostUsd: rollup.costUsd,
+          tokensInput: rollup.tokensInput,
+          tokensOutput: rollup.tokensOutput,
+          selfReportCount: rollup.selfReportCount,
+        })
+      )
+        continue;
+      const models = [...rollup.models];
+      out.push({
+        sessionId: rollup.sessionId,
+        sessionName: null,
+        repoName: context.repoResolver.resolve(rollup.cwd),
+        startTime: rollup.startTime,
+        endTime: rollup.endTime,
+        durationMs: Math.max(0, rollup.endTime - rollup.startTime),
+        toolCallCount: rollup.toolCallCount,
+        toolBreakdown: { ...rollup.toolBreakdown },
+        developer: context.developer,
+        model: models.length === 1 ? models[0] : null,
+        filesRead: [...rollup.filesRead],
+        filesModified: [...rollup.filesModified],
+        timeline: rollup.timeline.length > 0 ? [...rollup.timeline] : undefined,
+        // These three fields are what let the dashboard rebuild its
+        // Model Usage / Quality / Tool Selection panels after a restart: the
+        // API combines them across today's persisted sessions. Without them a
+        // restarted process shows empty panels despite having the history.
+        modelBreakdown: modelBreakdownOf(rollup),
+        qualityProxy: rollup.quality.getRawCounts(),
+        toolSelectionMetrics:
+          rollup.records.length > 0
+            ? toToolSelectionSummary(context.toolSelectionScorer.scoreSession(rollup.records))
+            : null,
+        linesAdded: 0,
+        linesRemoved: 0,
+        bashCommandCount: 0,
+        testRunCount: 0,
+        testPassCount: 0,
+        buildRunCount: 0,
+        buildPassCount: 0,
+        estimatedCostUsd: rollup.costUsd > 0 ? rollup.costUsd : null,
+        subagentCostUsd: rollup.subagentCostUsd,
+        // Emitted ONLY when non-empty. `undefined` is the documented "this
+        // rollup has no per-day buckets, fall back to the timeline pro-rate"
+        // signal the aggregate route keys on; writing `{}` would assert
+        // "authoritatively $0 today" and silently zero a row that should have
+        // pro-rated. Absent and empty are NOT the same value here.
+        ...(rollup.costByDayUsd.size > 0
+          ? { costByDayUsd: Object.fromEntries(rollup.costByDayUsd) }
+          : {}),
+        ...(rollup.subagentCostByDayUsd.size > 0
+          ? { subagentCostByDayUsd: Object.fromEntries(rollup.subagentCostByDayUsd) }
+          : {}),
+        ...callUsageFields(rollup),
+        tokensInput: rollup.tokensInput,
+        tokensOutput: rollup.tokensOutput,
+        tokensThinking: rollup.tokensThinking,
+        ...(rollup.selfReportCount > 0 && { selfReportCount: rollup.selfReportCount }),
+        tokensCacheRead: rollup.tokensCacheRead,
+        tokensCacheCreation: rollup.tokensCacheCreation,
+        cacheSavingsUsd: rollup.cacheSavingsUsd,
+        efficiencyScore: null,
+        antiPatterns: [],
+        taskCount: 0,
+        taskSuccessRate: null,
+        toolSuccessRate:
+          rollup.toolCallCount > 0 ? rollup.successCount / rollup.toolCallCount : null,
+        contextCompressions: 0,
+        agentSpawns: 0,
+        userMessages: 0,
+        assistantMessages: 0,
+        userCorrections: 0,
+        ...(context.outcome !== undefined && { outcome: context.outcome }),
+        platform: rollup.platform ?? context.platform ?? null,
+      });
     }
     return out;
-  }
-
-  private summaryOf(
-    rollup: LocalSessionRollup,
-    context: SummaryContext,
-  ): { readonly sessionId: string } & Record<string, unknown> {
-    const models = [...rollup.models];
-    return {
-      sessionId: rollup.sessionId,
-      sessionName: null,
-      repoName: context.repoResolver.resolve(rollup.cwd),
-      startTime: rollup.startTime,
-      endTime: rollup.endTime,
-      durationMs: Math.max(0, rollup.endTime - rollup.startTime),
-      toolCallCount: rollup.toolCallCount,
-      toolBreakdown: { ...rollup.toolBreakdown },
-      developer: context.developer,
-      model: models.length === 1 ? models[0] : null,
-      filesRead: [...rollup.filesRead],
-      filesModified: [...rollup.filesModified],
-      timeline: rollup.timeline.length > 0 ? [...rollup.timeline] : undefined,
-      // These three fields are what let the dashboard rebuild its
-      // Model Usage / Quality / Tool Selection panels after a restart: the
-      // API combines them across today's persisted sessions. Without them a
-      // restarted process shows empty panels despite having the history.
-      modelBreakdown: modelBreakdownOf(rollup),
-      qualityProxy: rollup.quality.getRawCounts(),
-      toolSelectionMetrics:
-        rollup.records.length > 0
-          ? toToolSelectionSummary(context.toolSelectionScorer.scoreSession(rollup.records))
-          : null,
-      linesAdded: 0,
-      linesRemoved: 0,
-      bashCommandCount: 0,
-      testRunCount: 0,
-      testPassCount: 0,
-      buildRunCount: 0,
-      buildPassCount: 0,
-      estimatedCostUsd: rollup.costUsd > 0 ? rollup.costUsd : null,
-      subagentCostUsd: rollup.subagentCostUsd,
-      // Emitted ONLY when non-empty. `undefined` is the documented "this
-      // rollup has no per-day buckets, fall back to the timeline pro-rate"
-      // signal the aggregate route keys on; writing `{}` would assert
-      // "authoritatively $0 today" and silently zero a row that should have
-      // pro-rated. Absent and empty are NOT the same value here.
-      ...(rollup.costByDayUsd.size > 0
-        ? { costByDayUsd: Object.fromEntries(rollup.costByDayUsd) }
-        : {}),
-      ...(rollup.subagentCostByDayUsd.size > 0
-        ? { subagentCostByDayUsd: Object.fromEntries(rollup.subagentCostByDayUsd) }
-        : {}),
-      ...(rollup.unpricedByModel.size > 0
-        ? { unpricedByModel: Object.fromEntries(rollup.unpricedByModel) }
-        : {}),
-      ...(rollup.estimatedByModel.size > 0
-        ? { estimatedByModel: Object.fromEntries(rollup.estimatedByModel) }
-        : {}),
-      tokensInput: rollup.tokensInput,
-      tokensOutput: rollup.tokensOutput,
-      tokensThinking: rollup.tokensThinking,
-      ...(rollup.selfReportCount > 0 && { selfReportCount: rollup.selfReportCount }),
-      tokensCacheRead: rollup.tokensCacheRead,
-      tokensCacheCreation: rollup.tokensCacheCreation,
-      cacheSavingsUsd: 0,
-      efficiencyScore: null,
-      antiPatterns: [],
-      taskCount: 0,
-      taskSuccessRate: null,
-      toolSuccessRate: rollup.toolCallCount > 0 ? rollup.successCount / rollup.toolCallCount : null,
-      contextCompressions: 0,
-      agentSpawns: 0,
-      userMessages: 0,
-      assistantMessages: 0,
-      userCorrections: 0,
-      ...(context.outcome !== undefined && { outcome: context.outcome }),
-      platform: rollup.platform ?? context.platform ?? null,
-    };
-  }
-
-  saveSummaries(
-    store: { saveSession(summary: FullSessionSummary): boolean },
-    context: SummaryContext,
-    include: (rollup: Readonly<LocalSessionRollup>) => boolean = () => true,
-  ): number {
-    let written = 0;
-    for (const rollup of this.sessions.values()) {
-      if (!include(rollup) || !hasAttributableActivity(rollup)) continue;
-      try {
-        const summary = this.summaryOf(rollup, context);
-        if (!store.saveSession(summary as unknown as FullSessionSummary)) continue;
-        rollup.lastEmittedCost = {
-          costUsd: rollup.costUsd,
-          subagentCostUsd: rollup.subagentCostUsd,
-          costByDayUsd: new Map(rollup.costByDayUsd),
-          subagentCostByDayUsd: new Map(rollup.subagentCostByDayUsd),
-        };
-        rollup.unsaved = false;
-        written += 1;
-      } catch (err) {
-        logger.warn('Failed to save observed session', {
-          sessionId: rollup.sessionId,
-          error: String(err),
-        });
-      }
-    }
-    return written;
   }
 }
 
@@ -908,4 +949,27 @@ function modelBreakdownOf(rollup: {
     };
   }
   return out;
+}
+
+/**
+ * The call-usage fields of a session that has counts. A day map rides with its
+ * counts even when empty: an absent one tells readers the summary predates day
+ * buckets and to fall back to whole-session counts.
+ */
+function callUsageFields(
+  rollup: LocalSessionRollup,
+): Pick<
+  FullSessionSummary,
+  'unpricedByModel' | 'estimatedByModel' | 'unpricedByDay' | 'estimatedByDay'
+> {
+  const unpricedByModel = rollup.unpriced.byModel();
+  const estimatedByModel = rollup.estimated.byModel();
+  return {
+    ...(Object.keys(unpricedByModel).length > 0
+      ? { unpricedByModel, unpricedByDay: rollup.unpriced.byDay() }
+      : {}),
+    ...(Object.keys(estimatedByModel).length > 0
+      ? { estimatedByModel, estimatedByDay: rollup.estimated.byDay() }
+      : {}),
+  };
 }
