@@ -2232,7 +2232,10 @@ describe('stdio integration', () => {
             ]);
             expect(saves.filter((id) => id === 'conv-throws').length).toBeGreaterThan(1);
             expect(savedSession(storage, 'conv-saved')).toMatchObject({ tokensInput: 1000 });
-            expect(savedSession(storage, 'conv-fails')).toMatchObject({ tokensInput: 1000 });
+            expect(savedSession(storage, 'conv-fails')).toMatchObject({
+              tokensInput: 1000,
+              outcome: 'in progress',
+            });
           },
           () => ['--import', preload],
         );
@@ -2270,6 +2273,7 @@ describe('stdio integration', () => {
 
         const saved = savedSession(storage, 'conv-resumed');
         expect(saved).toMatchObject({ tokensInput: 1100, outcome: 'completed' });
+        expect(saved?.modelBreakdown).toHaveProperty(['claude-sonnet-4-6']);
         expect(saved?.estimatedCostUsd).toBeCloseTo(10.0075, 6);
       });
     }, 40000);
