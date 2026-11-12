@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { defineConfig } from '@playwright/test';
 
 import { EMPTY_PORT, EMPTY_URL, SEEDED_PORT } from './e2e/servers.js';
+import { INHERITED_SETTINGS_PATTERN } from './test/support/inherited-settings.js';
 
 const RUN_ROOT = join(tmpdir(), `nr-ai-e2e-${process.pid}`);
 
@@ -20,7 +21,7 @@ const RUN_ROOT = join(tmpdir(), `nr-ai-e2e-${process.pid}`);
  */
 const INHERITED_SETTINGS = Object.fromEntries(
   Object.keys(process.env)
-    .filter((key) => /^(NEW_RELIC_|NR_AI_|OTEL_|CLAUDE|MCP_CLIENT)/.test(key))
+    .filter((key) => INHERITED_SETTINGS_PATTERN.test(key))
     .map((key) => [key, undefined]),
 );
 

@@ -59,6 +59,86 @@ function summariesOf(agg: LocalSessionAggregator, outcome = 'in progress') {
 }
 
 describe('LocalSessionAggregator', () => {
+  it('applies the outcome of a late post once, to the timeout record it replaces', () => {
+    const agg = new LocalSessionAggregator();
+    const timedOut = { id: 'r1', sessionId: REAL_ID, toolName: 'Agent', timestamp: 1000 };
+    agg.recordToolCall({ ...timedOut, durationMs: null, success: false, errorType: 'timeout' });
+    const late = { ...timedOut, toolUseId: 'toolu_1', durationMs: 180_000, success: true };
+    agg.amendToolCall(late);
+    agg.amendToolCall(late);
+    agg.amendToolCall({ ...late, id: 'not-recorded' });
+
+    const [summary] = summariesOf(agg, 'in progress');
+    expect(summary?.toolCallCount).toBe(1);
+    expect(summary?.toolSuccessRate).toBe(1);
+    expect(summary?.timeline).toEqual([
+      { timestamp: 1000, toolName: 'Agent', durationMs: 180_000, success: true },
+    ]);
+  });
+
+  it('leaves out what another process may count, and nothing else', () => {
+    const agg = new LocalSessionAggregator();
+    const call = (toolName: string, rest: object): void =>
+      agg.recordToolCall({ sessionId: REAL_ID, toolName, ...rest });
+    call('Read', { toolUseId: 'paired', timestamp: 1, success: true });
+    call('Bash', { toolUseId: 'failed', timestamp: 2, success: false, errorType: 'tool_error' });
+    call('Grep', { toolUseId: 'timed-out', timestamp: 3, success: false, errorType: 'timeout' });
+    call('Grep', { toolUseId: 'rejected', timestamp: 4, success: false, errorType: 'rejected' });
+    call('Edit', { toolUseId: 'counted', timestamp: 5, success: true });
+
+    const kept = agg.withoutCallsOtherProcessesMayCount(summariesOf(agg)[0]!, new Set(['counted']));
+
+    expect(kept.toolCallCount).toBe(2);
+    expect(kept.toolBreakdown).toEqual({ Read: 1, Bash: 1 });
+    expect(kept.timeline).toMatchObject([{ toolName: 'Read' }, { toolName: 'Bash' }]);
+    expect(kept.toolSuccessRate).toBe(0.5);
+  });
+
+  it("writes no success rate over a file's when it leaves out every call", () => {
+    const agg = new LocalSessionAggregator();
+    const timedOut = { success: false, errorType: 'timeout' };
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', ...timedOut });
+
+    const kept = agg.withoutCallsOtherProcessesMayCount(summariesOf(agg)[0]!, new Set());
+
+    expect(kept.toolSuccessRate).toBeNull();
+    expect(kept.timeline).toBeUndefined();
+  });
+
+  it('keeps a call with no tool use id when a counted id is empty', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1, success: true });
+
+    const kept = agg.withoutCallsOtherProcessesMayCount(summariesOf(agg)[0]!, new Set(['']));
+
+    expect(kept.toolCallCount).toBe(1);
+  });
+
+  it('keeps a failing post as a failure, with the error type it carries', () => {
+    const agg = new LocalSessionAggregator();
+    const timedOut = { id: 'r1', sessionId: REAL_ID, toolName: 'Agent', timestamp: 1000 };
+    agg.recordToolCall({ ...timedOut, durationMs: null, success: false, errorType: 'timeout' });
+    agg.amendToolCall({
+      ...timedOut,
+      toolUseId: 'toolu_1',
+      durationMs: 5000,
+      success: false,
+      errorType: 'interrupted',
+    });
+
+    const [summary] = summariesOf(agg, 'in progress');
+    expect(summary?.toolSuccessRate).toBe(0);
+    expect(summary?.timeline).toEqual([
+      {
+        timestamp: 1000,
+        toolName: 'Agent',
+        durationMs: 5000,
+        success: false,
+        errorType: 'interrupted',
+      },
+    ]);
+  });
+
   it('rolls tool calls up under the real session id', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({
@@ -196,6 +276,56 @@ describe('LocalSessionAggregator', () => {
     expect(byId.get(other)?.unpricedByModel).toBeUndefined();
   });
 
+  it('buckets unpriced-model calls by the local day of each usage timestamp', () => {
+    const agg = new LocalSessionAggregator();
+    const dayOne = new Date(2026, 10, 5, 12).getTime();
+    const dayTwo = new Date(2026, 10, 6, 12).getTime();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: dayOne });
+    agg.recordTokenUsage(REAL_ID, { model: 'claude-foo-9-9', inputTokens: 100, timestamp: dayOne });
+    agg.recordTokenUsage(REAL_ID, { model: 'claude-foo-9-9', inputTokens: 30, timestamp: dayTwo });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.unpricedByDay).toEqual({
+      '2026-11-05': { 'claude-foo-9-9': { calls: 1, tokens: 100 } },
+      '2026-11-06': { 'claude-foo-9-9': { calls: 1, tokens: 30 } },
+    });
+  });
+
+  it('buckets family-priced calls by day beside their session total', () => {
+    const agg = new LocalSessionAggregator();
+    const dayOne = new Date(2026, 10, 5, 12).getTime();
+    const dayTwo = new Date(2026, 10, 6, 12).getTime();
+    const estimatedFrom = estimatedFromOf('claude-opus-5-9');
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: dayOne });
+    agg.recordTokenUsage(REAL_ID, {
+      model: 'claude-opus-5-9',
+      inputTokens: 100,
+      timestamp: dayOne,
+    });
+    agg.recordTokenUsage(REAL_ID, { model: 'claude-opus-5-9', inputTokens: 30, timestamp: dayTwo });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.estimatedByModel).toEqual({
+      'claude-opus-5-9': { calls: 2, tokens: 130, estimatedFrom },
+    });
+    expect(summary?.estimatedByDay).toEqual({
+      '2026-11-05': { 'claude-opus-5-9': { calls: 1, tokens: 100, estimatedFrom } },
+      '2026-11-06': { 'claude-opus-5-9': { calls: 1, tokens: 30, estimatedFrom } },
+    });
+  });
+
+  it('omits every call-count field for a session with only priced calls', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0.01, model: 'claude-sonnet-5', inputTokens: 100 });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.tokensInput).toBe(100);
+    expect(
+      Object.keys(summary ?? {}).filter((k) => /^(unpriced|estimated)By(Model|Day)$/.test(k)),
+    ).toEqual([]);
+  });
+
   it('counts family-priced calls on the session that made them', () => {
     const other = 'b0000000-0000-4000-8000-000000000000';
     const agg = new LocalSessionAggregator();
@@ -225,12 +355,17 @@ describe('LocalSessionAggregator', () => {
     expect(summariesOf(agg)[0]?.model).toBeNull();
   });
 
-  // A token-only rollup would be filtered out of /api/sessions anyway, which
-  // requires toolCallCount > 0 — writing it just burns a file.
-  it('does not emit a summary for a session with no tool calls', () => {
+  it('emits a summary for a chat-only session that recorded cost', () => {
     const agg = new LocalSessionAggregator();
     agg.recordTokenUsage(REAL_ID, { costUsd: 2, inputTokens: 500 });
     expect(agg.size()).toBe(1);
+    expect(summariesOf(agg)).toHaveLength(1);
+    expect(summariesOf(agg)[0]).toMatchObject({ sessionId: REAL_ID, estimatedCostUsd: 2 });
+  });
+
+  it('does not emit a summary for a session with no tool calls and no usage', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, {});
     expect(summariesOf(agg)).toEqual([]);
   });
 
@@ -400,6 +535,19 @@ describe('LocalSessionAggregator timeline persistence', () => {
     expect(timeline[0]?.createdPrNumber).toBe('42');
   });
 
+  it('persists the PR target of a GitHub MCP PR call', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'mcp__github__merge_pull_request',
+      timestamp: 100,
+      mcpPrNumber: '12',
+      mcpPrRepo: 'acme/app',
+    });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]).toMatchObject({ mcpPrNumber: '12', mcpPrRepo: 'acme/app' });
+  });
+
   it('persists a background run, whose success predates the command finishing', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({
@@ -499,7 +647,32 @@ describe('LocalSessionAggregator panel rehydration', () => {
     expect(toolSelection?.totalCalls).toBe(2);
   });
 
-  it('keeps a token-only session out of the summaries, as before', () => {
+  it('carries the cache savings of recorded token usage into the summary', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'read_file',
+      timestamp: 1000,
+      success: true,
+    } as never);
+    agg.recordTokenUsage(REAL_ID, {
+      model: 'gpt-5',
+      cacheReadTokens: 5000,
+      costUsd: 0.01,
+      cacheSavingsUsd: 0.0135,
+    });
+    agg.recordTokenUsage(REAL_ID, {
+      model: 'gpt-5',
+      cacheReadTokens: 1000,
+      costUsd: 0.01,
+      cacheSavingsUsd: 0.0027,
+    });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.cacheSavingsUsd).toBeCloseTo(0.0162, 10);
+  });
+
+  it('emits a token-only session so its cost is persisted', () => {
     const agg = new LocalSessionAggregator();
     agg.recordTokenUsage(REAL_ID, {
       model: 'gpt-5',
@@ -507,7 +680,7 @@ describe('LocalSessionAggregator panel rehydration', () => {
       outputTokens: 1,
       costUsd: 0.01,
     });
-    expect(summariesOf(agg)).toEqual([]);
+    expect(summariesOf(agg)).toHaveLength(1);
   });
 });
 
@@ -607,6 +780,15 @@ describe('LocalSessionAggregator subagent cost', () => {
 
     const [summary] = summariesOf(agg);
     expect(summary?.tokensThinking).toBe(0);
+  });
+
+  it('takes the platform of a token usage that arrives first, and keeps it afterwards', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, inputTokens: 10, platform: 'cursor' });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, inputTokens: 10, platform: 'windsurf' });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.platform).toBe('cursor');
   });
 
   it('omits costByDayUsd (undefined, not {}) for a rollup with only tool calls and no token usage', () => {

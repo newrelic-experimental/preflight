@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -11,7 +11,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import {
   _procFs,
@@ -43,6 +43,7 @@ beforeEach(() => {
   tmpDir = resolve(tmpdir(), `nr-hook-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tmpDir, { recursive: true });
   bufferPath = resolve(tmpDir, 'buffer.jsonl');
+  process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
   process.env.NEW_RELIC_AI_MCP_BUFFER_PATH = bufferPath;
   delete process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT;
   delete process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
@@ -255,6 +256,12 @@ function readBufferLines(sessionId?: string): Record<string, unknown>[] {
 
 describe('collector-script', () => {
   describe('processHook() — PreToolUse', () => {
+    it('lands its session breadcrumbs in the test temp dir, not the default storage dir', () => {
+      processHook(makePreToolUse());
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'))).toBe(true);
+      expect(existsSync(resolve(homedir(), '.newrelic-preflight'))).toBe(false);
+    });
+
     it('writes a valid pre event to the buffer', () => {
       processHook(makePreToolUse());
 
@@ -494,6 +501,54 @@ describe('collector-script', () => {
       );
 
       expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '57' });
+    });
+
+    it('keeps the repo and PR number an MCP merge_pull_request call names', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'mcp__github__merge_pull_request',
+          tool_input: { owner: 'acme', repo: 'app.js', pullNumber: 57, merge_method: 'squash' },
+          tool_response: [{ type: 'text', text: '{"merged":true}' }],
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolInput).toEqual({ prRepo: 'acme/app.js', prNumber: '57' });
+    });
+
+    it('keeps only the repo of an MCP create_pull_request call, which names no PR yet', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'mcp__github__create_pull_request',
+          tool_input: { owner: 'acme', repo: 'app', pullNumber: 3, title: 't' },
+          tool_response: [],
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolInput).toEqual({ prRepo: 'acme/app' });
+    });
+
+    it.each([
+      ['an owner with a slash', { owner: 'acme/x', repo: 'app', pullNumber: 5 }, { prNumber: '5' }],
+      [
+        'a fractional pullNumber',
+        { owner: 'acme', repo: 'app', pullNumber: 5.5 },
+        { prRepo: 'acme/app' },
+      ],
+      [
+        'a pullNumber of 0',
+        { owner: 'acme', repo: 'app', pullNumber: '0' },
+        { prRepo: 'acme/app' },
+      ],
+    ])('drops a PR target field that is not a plain name or number (%s)', (_label, input, kept) => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'mcp__github__update_pull_request',
+          tool_input: input,
+          tool_response: [],
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolInput).toEqual(kept);
     });
 
     it('omits toolOutput when no parseable output fields exist', () => {
@@ -1994,6 +2049,10 @@ describe('collector-script', () => {
 
     it.each([
       ['a reply that recorded the report itself', { result_json: '{"recorded":true}' }],
+      [
+        'a reply not marked as recorded by the hook',
+        { result_json: hookReply.replace('"recorded_by":"hook"', '"recorded_by":"engine"') },
+      ],
       ['a rejected call', { result_json: '{"error":"invalid_token_report","message":"bad"}' }],
       ['a reply for another report_id', { result_json: hookReply.replace('7c1d', '0000') }],
       ['a lookalike tool name', { tool_name: 'xnr_observe_report_tokens' }],
@@ -2033,25 +2092,12 @@ describe('collector-script', () => {
 
     const bufferFds = [
       "import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';",
-      'const { openSync, closeSync, writeSync, writeFileSync } = fs; const buffers = new Set();',
-      "fs.openSync = (p, ...a) => { const fd = openSync(p, ...a); if (String(p).includes('buffer-')) buffers.add(fd); return fd; };",
+      'const { openSync, closeSync, writeSync } = fs; const buffers = new Map(); const paths = new Map(); let opened = 0;',
+      "fs.openSync = (p, ...a) => { const fd = openSync(p, ...a); if (String(p).includes('buffer-')) buffers.set(fd, ++opened), paths.set(fd, String(p)); return fd; };",
+      'const reportLine = (fd) => buffers.get(fd) === 2;',
       "const enospc = () => Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });",
     ];
-    it.each([
-      [
-        'closing the buffer fails after the line was written',
-        "fs.closeSync = (fd) => { closeSync(fd); if (buffers.delete(fd)) throw new Error('EIO'); };",
-      ],
-      [
-        'the disk fills after all but the last byte was written',
-        [
-          'const cut = (fd, b, off) => { buffers.delete(fd); return writeSync(fd, b, off, b.length - 1 - off); };',
-          'fs.writeFileSync = (fd, d, ...a) => { if (!buffers.has(fd)) return writeFileSync(fd, d, ...a); cut(fd, Buffer.from(d), 0); throw enospc(); };',
-          'const short = new Set();',
-          'fs.writeSync = (fd, b, off = 0, ...a) => { if (short.has(fd)) throw enospc(); if (!buffers.has(fd)) return writeSync(fd, b, off, ...a); short.add(fd); return cut(fd, b, off); };',
-        ].join('\n'),
-      ],
-    ])('keeps the claim when %s, so a retry adds no usage line', (_label, failure) => {
+    const runWithBufferFault = (failure: string): unknown[] => {
       const preload = [...bufferFds, failure, 'syncBuiltinESMExports();'].join('\n');
       const script = resolve(__dirname, '..', '..', 'dist', 'hooks', 'collector-script.js');
       execFileSync(
@@ -2062,12 +2108,55 @@ describe('collector-script', () => {
           env: { ...process.env, NEW_RELIC_AI_MCP_STORAGE_PATH: tmpDir, MCP_CLIENT: 'cursor' },
         },
       );
-      const drained = readBufferLines('conv-reporting');
-      rmSync(resolve(tmpDir, 'buffer-conv-reporting.jsonl'));
+      const parseable = (): unknown[] =>
+        (existsSync(resolve(tmpDir, 'buffer-conv-reporting.jsonl'))
+          ? readFileSync(resolve(tmpDir, 'buffer-conv-reporting.jsonl'), 'utf-8')
+          : ''
+        )
+          .split('\n')
+          .flatMap((text) => {
+            try {
+              return [(JSON.parse(text) as { mode: string }).mode];
+            } catch {
+              return [];
+            }
+          });
+      const drained = parseable();
+      rmSync(resolve(tmpDir, 'buffer-conv-reporting.jsonl'), { force: true });
       processHook(cursorReportHook('conv-reporting'));
+      return [...drained, ...parseable()];
+    };
 
-      const modes = [...drained, ...readBufferLines('conv-reporting')].map((e) => e.mode);
+    it('keeps the claim when closing the buffer fails after the usage line was written, so a retry adds none', () => {
+      const modes = runWithBufferFault(
+        "fs.closeSync = (fd) => { closeSync(fd); if (reportLine(fd)) throw new Error('EIO'); };",
+      );
+
       expect(modes).toEqual(['post', 'self_report', 'post']);
+    });
+
+    it('keeps the claim when a failed close leaves the buffer unreadable, so a retry adds none', () => {
+      const modes = runWithBufferFault(
+        "fs.closeSync = (fd) => { closeSync(fd); if (reportLine(fd)) { fs.unlinkSync(paths.get(fd)); throw new Error('EIO'); } };",
+      );
+
+      expect(modes).toEqual(['post']);
+    });
+
+    it('keeps the claim when the disk fills one byte short of the usage line, so a retry adds none', () => {
+      const modes = runWithBufferFault(
+        "fs.writeSync = (fd, b, off = 0, ...a) => { if (!reportLine(fd)) return writeSync(fd, b, off, ...a); if (typeof b === 'string') throw enospc(); return writeSync(fd, b, off, b.length - 1 - off); };",
+      );
+
+      expect(modes).toEqual(['post', 'self_report', 'post']);
+    });
+
+    it('releases the claim when the disk fills before the usage line is whole, so a retry records it once', () => {
+      const modes = runWithBufferFault(
+        "fs.writeSync = (fd, b, off = 0, ...a) => { if (!reportLine(fd)) return writeSync(fd, b, off, ...a); if (typeof b === 'string') throw enospc(); return writeSync(fd, b, off, 10); };",
+      );
+
+      expect(modes).toEqual(['post', 'post', 'self_report']);
     });
 
     it.each(['pending-1', 'local-x', 'proxy-7', 'unknown'])(
@@ -2319,11 +2408,51 @@ describe('collector-script', () => {
       expect(events[0]!.mode).toBe('pre');
       expect(events[0]!.tool).toBe('Read');
     });
+
+    it('exits 0 when it drops an event and its stderr is closed', async () => {
+      const scriptPath = resolve(
+        __dirname,
+        '..',
+        '..',
+        'plugin',
+        '.claude-plugin',
+        'scripts',
+        'collector-script.js',
+      );
+      writeFileSync(resolve(tmpDir, 'f'), '');
+      const child = spawn(process.execPath, [scriptPath], {
+        stdio: ['pipe', 'ignore', 'pipe'],
+        env: { ...process.env, NEW_RELIC_AI_MCP_BUFFER_PATH: resolve(tmpDir, 'f', 'b.jsonl') },
+      });
+      const closed = new Promise((done) => child.stderr.once('close', done));
+      child.stderr.destroy();
+      await closed;
+      child.stdin.end(makePreToolUse());
+
+      const code = await new Promise((done) => child.on('exit', done));
+      expect(code).toBe(0);
+    });
   });
 
   // ---------------------------------------------------------------------------
   // Per-session buffer paths + PPID breadcrumb
   // ---------------------------------------------------------------------------
+
+  describe('processHook() — failed buffer writes', () => {
+    it('installs one stderr error listener across repeated drops', () => {
+      mkdirSync(bufferPath);
+      const write = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        processHook(makePreToolUse());
+        const afterFirst = process.stderr.listenerCount('error');
+        for (let i = 0; i < 19; i++) processHook(makePreToolUse());
+        expect(write).toHaveBeenCalledTimes(20);
+        expect(process.stderr.listenerCount('error')).toBe(afterFirst);
+      } finally {
+        write.mockRestore();
+      }
+    });
+  });
 
   describe('getBufferPath()', () => {
     it('honours NEW_RELIC_AI_MCP_BUFFER_PATH verbatim and ignores sessionId', () => {

@@ -24,14 +24,12 @@
  *
  * Tailing/cursor mechanics mirror `ParentTranscriptWatcher`: durable byte
  * cursor per session (`.copilot-usage-pos-<sessionId>`), bounded reads per
- * poll, bounded partial-line carry, duplicate emissions after a crash are
- * deduped downstream by (sessionId, messageId) in
- * `HookEventProcessor.handleTokenEvent()` — `responseId` serves as the
- * message id.
+ * poll, bounded partial-line carry, and each `responseId` claimed in the
+ * BilledTurnLedger before it is buffered, so a re-read after a crash or a torn
+ * cursor emits nothing already emitted.
  */
 
 import {
-  appendFileSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -47,6 +45,9 @@ import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 import { createLogger } from '../shared/index.js';
+import { appendToHookBuffer } from '../storage/hook-buffer.js';
+import { BilledTurnLedger } from './billed-turn-ledger.js';
+import { ThrottledWarning } from './throttled-warning.js';
 import type { LocalStore } from '../storage/local-store.js';
 
 const logger = createLogger('copilot-usage-watcher');
@@ -64,6 +65,15 @@ const DEFAULT_DISCOVERY_HOURS = 24;
 const MAX_BYTES_PER_POLL = 1024 * 1024;
 /** See SubagentWatcher's identical constant for the OOM-bug rationale this guards against. */
 const MAX_PARTIAL_LINE_BYTES = 4 * 1024 * 1024; // 4 MiB — sized to the larger log lines
+// A line past the cap is not dropped: its head and tail windows are kept and
+// the middle is elided, so memory stays bounded while the usage fields, which
+// sit near the line's ends, are still extracted when the line completes.
+const ELIDE_KEEP_CHARS = 64 * 1024;
+// A raw JSONL line cannot contain a literal NUL, so the mark is unambiguous.
+const ELIDE_MARK = '\u0000ELIDED\u0000';
+// A replaced log is recognised by its first bytes, not its size or inode: a new
+// file can be larger than the old cursor, and ext4 reuses freed inodes.
+const FINGERPRINT_BYTES = 256;
 const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const COPILOT_LOG_SUBPATH = join('GitHub.copilot-chat', 'debug-logs');
 
@@ -125,6 +135,8 @@ export interface CopilotUsageWatcherOptions {
   readonly parentSessionId?: string;
   /** LocalStore, used to exclude sessions already owned by a live --stdio watcher in unscoped mode. */
   readonly localStore?: LocalStore;
+  /** The process's one billed-turn ledger; tests may omit it to get a private one. */
+  readonly ledger?: BilledTurnLedger;
 }
 
 export interface CopilotUsageWatcherHealth {
@@ -145,17 +157,26 @@ export interface CopilotUsageWatcherHealth {
 
 interface ParsedUsageRecord {
   readonly timestampMs: number;
+  readonly undated: boolean;
   readonly sessionId: string | null;
-  readonly responseId: string;
+  /** The record's `responseId`, unique per API response. */
+  readonly messageId: string;
   readonly model: string;
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cachedTokens: number;
 }
 
+interface LineParse {
+  readonly parsed: ParsedUsageRecord | null;
+  readonly parseError: boolean;
+}
+
 interface CursorState {
   readonly bytePos: number;
   readonly partialLine: string;
+  /** Base64 of the log's first bytes when last read. Absent in cursors written before it existed. */
+  readonly fingerprint?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,8 +190,14 @@ export class CopilotUsageWatcher {
   private readonly discoveryHours: number;
   private readonly parentSessionFilter: string | null;
   private readonly localStore: LocalStore | undefined;
+  private readonly ledger: BilledTurnLedger;
+  private readonly retryWarning = new ThrottledWarning(
+    logger,
+    'CopilotUsageWatcher read deferred to the next poll',
+  );
 
   private intervalId: ReturnType<typeof setInterval> | null = null;
+  private readonly bytePosBySession = new Map<string, number>();
   private readonly partialByPath = new Map<string, string>();
   private readonly decoderByPath = new Map<string, StringDecoder>();
 
@@ -178,6 +205,7 @@ export class CopilotUsageWatcher {
   private linesRead = 0;
   private bytesRead = 0;
   private parseErrors = 0;
+  private warnedElided = false;
   private debugLoggingLikelyDisabled = false;
   private warnedDebugLoggingDisabled = false;
 
@@ -188,6 +216,7 @@ export class CopilotUsageWatcher {
     this.discoveryHours = options.discoveryHours ?? DEFAULT_DISCOVERY_HOURS;
     this.parentSessionFilter = options.parentSessionId ?? null;
     this.localStore = options.localStore;
+    this.ledger = options.ledger ?? new BilledTurnLedger({ storagePath: this.storagePath });
   }
 
   start(): void {
@@ -280,7 +309,13 @@ export class CopilotUsageWatcher {
             if (!st.isFile()) continue;
             // Scoped mode always tails its own session; unscoped applies the
             // recency window so old logs don't trigger unbounded cold scans.
-            if (this.parentSessionFilter === null && st.mtimeMs < cutoffMs) continue;
+            if (
+              this.parentSessionFilter === null &&
+              st.mtimeMs < cutoffMs &&
+              !this.hasUnreadBytes(sessionId, st.size)
+            ) {
+              continue;
+            }
           } catch {
             continue;
           }
@@ -312,10 +347,8 @@ export class CopilotUsageWatcher {
     const cursorPath = this.cursorPath(dirSessionId);
     const persisted = this.readCursor(cursorPath);
     const memPartial = this.partialByPath.get(path);
-    const startCursor: CursorState =
-      memPartial !== undefined
-        ? { bytePos: persisted.bytePos, partialLine: memPartial }
-        : persisted;
+    let startCursor: CursorState =
+      memPartial !== undefined ? { ...persisted, partialLine: memPartial } : persisted;
 
     let size: number;
     try {
@@ -323,25 +356,51 @@ export class CopilotUsageWatcher {
     } catch {
       return;
     }
-    // Truncated/rotated file: restart from 0.
-    const fromPos = startCursor.bytePos > size ? 0 : startCursor.bytePos;
-    if (fromPos >= size) return;
-
-    const toRead = Math.min(size - fromPos, MAX_BYTES_PER_POLL);
-    const buf = Buffer.alloc(toRead);
-    let actuallyRead = 0;
-    let fd: number | null = null;
+    let fd: number;
     try {
       fd = openSync(path, 'r');
-      actuallyRead = readSync(fd, buf, 0, toRead, fromPos);
+    } catch (err) {
+      this.recordError(err);
+      return;
+    }
+    let fingerprint: string;
+    let fromPos: number;
+    let buf: Buffer;
+    try {
+      const head = readAt(fd, 0, Math.min(size, FINGERPRINT_BYTES));
+      // Truncated or replaced file: restart from 0, and drop the carried partial
+      // line and decoder state, which belong to the old file's bytes. A cursor
+      // without a fingerprint can only detect truncation.
+      const knownHead =
+        startCursor.fingerprint === undefined
+          ? null
+          : Buffer.from(startCursor.fingerprint, 'base64');
+      const replaced = knownHead !== null && !onePrefixesOther(head, knownHead);
+      if (startCursor.bytePos > size || replaced) {
+        startCursor = { bytePos: 0, partialLine: '' };
+        this.partialByPath.delete(path);
+        this.decoderByPath.delete(path);
+      }
+      fingerprint = (
+        knownHead !== null && !replaced && knownHead.length > head.length ? knownHead : head
+      ).toString('base64');
+      fromPos = startCursor.bytePos;
+      if (fromPos >= size) {
+        this.bytePosBySession.set(dirSessionId, fromPos);
+        return;
+      }
+      buf = readAt(fd, fromPos, Math.min(size - fromPos, MAX_BYTES_PER_POLL));
     } catch (err) {
       this.recordError(err);
       return;
     } finally {
-      if (fd !== null) closeSync(fd);
+      closeSync(fd);
     }
-    if (actuallyRead <= 0) return;
-    this.bytesRead += actuallyRead;
+    const actuallyRead = buf.length;
+    if (actuallyRead <= 0) {
+      this.bytePosBySession.set(dirSessionId, fromPos);
+      return;
+    }
 
     let decoder = this.decoderByPath.get(path);
     if (!decoder) {
@@ -358,47 +417,73 @@ export class CopilotUsageWatcher {
       lines = combined.slice(0, lastNewline).split('\n');
       newPartial = combined.slice(lastNewline + 1);
     }
-    if (newPartial.length > MAX_PARTIAL_LINE_BYTES) {
-      newPartial = '';
-      this.parseErrors += 1;
-    }
+    newPartial = elideOversize(newPartial);
 
+    // Health counters wait until the read is committed, so a redone read counts once.
+    const recordsBySession = new Map<string, ParsedUsageRecord[]>();
+    let linesRead = 0;
+    let parseErrors = 0;
     for (const line of lines) {
       if (!line) continue;
-      this.linesRead += 1;
-      const parsed = this.tryParseLine(line);
+      linesRead += 1;
+      const { parsed, parseError } = line.includes(ELIDE_MARK)
+        ? this.parseElidedLine(line)
+        : this.tryParseLine(line);
+      if (parseError) parseErrors += 1;
       if (parsed === null) continue;
       const sessionId = parsed.sessionId ?? dirSessionId;
-      this.appendToBuffer(sessionId, {
-        mode: 'token',
-        tool: 'copilot-usage',
-        timestamp: parsed.timestampMs,
-        sessionId,
-        messageId: parsed.responseId,
-        model: parsed.model,
-        // VS Code's inputTokens is cache-INCLUSIVE (verified against a real
-        // main.jsonl: each request's cachedTokens ≈ the previous request's
-        // inputTokens). CostTracker follows the Anthropic convention where
-        // input excludes cache reads, so emit only the uncached remainder —
-        // otherwise cached tokens are double-billed at full input rate.
-        inputTokens: Math.max(0, parsed.inputTokens - parsed.cachedTokens),
-        outputTokens: parsed.outputTokens,
-        // `cachedTokens` is the only cache figure the debug-log schema exposes,
-        // and it is cache-READ (confirmed against a real main.jsonl: it tracks
-        // the previous request's input). KNOWN ESTIMATION GAP: VS Code does not
-        // surface cache-CREATION (cache-write) tokens separately, so any turn
-        // with a fresh cache write has those tokens folded into `inputTokens`
-        // above and billed at the base input rate instead of the premium
-        // `cacheCreationPerMTok` rate (src/shared/pricing.ts). This causes a
-        // small, consistent UNDER-billing on cache-write turns. We report 0
-        // rather than guess a split the source doesn't provide; revisit if VS
-        // Code adds a cache-creation field to the schema.
-        cacheReadTokens: parsed.cachedTokens,
-        cacheCreationTokens: 0,
-      });
+      const group = recordsBySession.get(sessionId);
+      if (group) group.push(parsed);
+      else recordsBySession.set(sessionId, [parsed]);
     }
 
-    this.writeCursor(cursorPath, nextBytePos, newPartial);
+    // If the claim, an append or the cursor write fails, the cursor stays put
+    // and the next poll redoes the read: the ledger hands back the records
+    // still owed and refuses the ones already appended.
+    try {
+      for (const [sessionId, records] of recordsBySession) {
+        this.ledger.deliver(sessionId, records, (parsed) => {
+          this.appendToBuffer(sessionId, {
+            mode: 'token',
+            tool: 'copilot-usage',
+            timestamp: parsed.timestampMs,
+            sessionId,
+            messageId: parsed.messageId,
+            model: parsed.model,
+            // VS Code's inputTokens is cache-INCLUSIVE (verified against a real
+            // main.jsonl: each request's cachedTokens ≈ the previous request's
+            // inputTokens). CostTracker follows the Anthropic convention where
+            // input excludes cache reads, so emit only the uncached remainder —
+            // otherwise cached tokens are double-billed at full input rate.
+            inputTokens: Math.max(0, parsed.inputTokens - parsed.cachedTokens),
+            outputTokens: parsed.outputTokens,
+            // `cachedTokens` is the only cache figure the debug-log schema exposes,
+            // and it is cache-READ (confirmed against a real main.jsonl: it tracks
+            // the previous request's input). KNOWN ESTIMATION GAP: VS Code does not
+            // surface cache-CREATION (cache-write) tokens separately, so any turn
+            // with a fresh cache write has those tokens folded into `inputTokens`
+            // above and billed at the base input rate instead of the premium
+            // `cacheCreationPerMTok` rate (src/shared/pricing.ts). This causes a
+            // small, consistent UNDER-billing on cache-write turns. We report 0
+            // rather than guess a split the source doesn't provide; revisit if VS
+            // Code adds a cache-creation field to the schema.
+            cacheReadTokens: parsed.cachedTokens,
+            cacheCreationTokens: 0,
+          });
+        });
+      }
+      this.writeCursor(cursorPath, nextBytePos, newPartial, fingerprint);
+    } catch (err) {
+      this.retryWarning.warn(err, path);
+      this.partialByPath.delete(path);
+      this.decoderByPath.delete(path);
+      return;
+    }
+    this.retryWarning.succeeded(path);
+    this.bytePosBySession.set(dirSessionId, nextBytePos);
+    this.bytesRead += actuallyRead;
+    this.linesRead += linesRead;
+    this.parseErrors += parseErrors;
     if (newPartial.length > 0) this.partialByPath.set(path, newPartial);
     else this.partialByPath.delete(path);
   }
@@ -415,40 +500,96 @@ export class CopilotUsageWatcher {
   }
 
   /**
-   * Parse a debug-log JSONL line, returning non-null only for an
+   * Parse a debug-log JSONL line; `parsed` is non-null only for an
    * `llm_request` record carrying a model, responseId, and token counts.
    */
-  private tryParseLine(line: string): ParsedUsageRecord | null {
-    let parsed: unknown;
+  private tryParseLine(line: string): LineParse {
+    let json: unknown;
     try {
-      parsed = JSON.parse(line);
+      json = JSON.parse(line);
     } catch {
-      this.parseErrors += 1;
-      return null;
+      return { parsed: null, parseError: true };
     }
-    if (!parsed || typeof parsed !== 'object') return null;
-    const obj = parsed as Record<string, unknown>;
-    if (obj.type !== 'llm_request') return null;
+    const none = { parsed: null, parseError: false };
+    if (!json || typeof json !== 'object') return none;
+    const obj = json as Record<string, unknown>;
+    if (obj.type !== 'llm_request') return none;
     const attrs = obj.attrs;
-    if (!attrs || typeof attrs !== 'object') return null;
+    if (!attrs || typeof attrs !== 'object') return none;
     const a = attrs as Record<string, unknown>;
     const model = typeof a.model === 'string' && a.model.length > 0 ? a.model : null;
-    if (!model) return null;
+    if (!model) return none;
     const responseId =
       typeof a.responseId === 'string' && a.responseId.length > 0 ? a.responseId : null;
-    if (!responseId) return null;
-    const timestampMs =
-      typeof obj.ts === 'number' && Number.isFinite(obj.ts) && obj.ts > 0 ? obj.ts : Date.now();
+    if (!responseId) return none;
+    const ts = typeof obj.ts === 'number' && Number.isFinite(obj.ts) && obj.ts > 0 ? obj.ts : null;
     const sid = typeof obj.sid === 'string' && SESSION_ID_RE.test(obj.sid) ? obj.sid : null;
-    return {
-      timestampMs,
+    const parsed: ParsedUsageRecord = {
+      timestampMs: ts ?? Date.now(),
+      undated: ts === null,
       sessionId: sid,
-      responseId,
+      messageId: responseId,
       model,
       inputTokens: num(a.inputTokens),
       outputTokens: num(a.outputTokens),
       cachedTokens: num(a.cachedTokens),
     };
+    return { parsed, parseError: false };
+  }
+
+  /**
+   * Extract usage fields from a line whose middle was elided. Only scalar
+   * fields are matched, and an escaped quote inside a string payload never
+   * matches the unescaped patterns below. A field that fell in the elided
+   * middle yields no record: a guessed zero-token record would misreport cost.
+   */
+  private parseElidedLine(line: string): LineParse {
+    const at = line.indexOf(ELIDE_MARK);
+    const head = line.slice(0, at);
+    const tail = line.slice(at + ELIDE_MARK.length);
+    // The same field in both windows with different values is ambiguous, for
+    // example a nested object carrying its own `model`. Refuse it instead of
+    // guessing which one is the request's.
+    let ambiguous = false;
+    const find = (re: RegExp): string | null => {
+      const inHead = re.exec(head)?.[1] ?? null;
+      const inTail = re.exec(tail)?.[1] ?? null;
+      if (inHead !== null && inTail !== null && inHead !== inTail) ambiguous = true;
+      return inHead ?? inTail;
+    };
+    if (find(/("type":"llm_request")/) === null) return { parsed: null, parseError: false };
+    // A number must end at a delimiter, or a value cut by the head boundary
+    // would match its leading digits.
+    const findNumber = (name: string): number | null => {
+      const raw = find(new RegExp(`"${name}":(\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)(?=[,}\\s])`));
+      return raw === null ? null : num(Number(raw));
+    };
+    const model = find(/"model":"([^"\\]+)"/);
+    const responseId = find(/"responseId":"([^"\\]+)"/);
+    const inputTokens = findNumber('inputTokens');
+    const outputTokens = findNumber('outputTokens');
+    const cachedTokens = findNumber('cachedTokens');
+    if (ambiguous || !model || !responseId || inputTokens === null || outputTokens === null) {
+      if (!this.warnedElided) {
+        this.warnedElided = true;
+        logger.warn('Skipped an oversize Copilot log line whose usage fields were not recoverable');
+      }
+      return { parsed: null, parseError: true };
+    }
+    const ts = Number(/"ts":(\d+)/.exec(head)?.[1]);
+    const dated = Number.isFinite(ts) && ts > 0;
+    const sid = /"sid":"([^"\\]+)"/.exec(head)?.[1];
+    const parsed: ParsedUsageRecord = {
+      timestampMs: dated ? ts : Date.now(),
+      undated: !dated,
+      sessionId: sid !== undefined && SESSION_ID_RE.test(sid) ? sid : null,
+      messageId: responseId,
+      model,
+      inputTokens,
+      outputTokens,
+      cachedTokens: cachedTokens ?? 0,
+    };
+    return { parsed, parseError: false };
   }
 
   // -------------------------------------------------------------------------
@@ -457,6 +598,23 @@ export class CopilotUsageWatcher {
 
   private cursorPath(sessionId: string): string {
     return join(this.storagePath, `.copilot-usage-pos-${sessionId}`);
+  }
+
+  /**
+   * True when a cursor exists and the file has bytes past it. An existing
+   * cursor is read from disk once per session and tailFile keeps the cached
+   * position current, so the 2s poll does not re-read every old session's
+   * cursor file. Absence is not cached: another process may create the cursor.
+   */
+  private hasUnreadBytes(sessionId: string, size: number): boolean {
+    let bytePos = this.bytePosBySession.get(sessionId);
+    if (bytePos === undefined) {
+      const cursorPath = this.cursorPath(sessionId);
+      if (!existsSync(cursorPath)) return false;
+      bytePos = this.readCursor(cursorPath).bytePos;
+      this.bytePosBySession.set(sessionId, bytePos);
+    }
+    return bytePos < size;
   }
 
   private readCursor(cursorPath: string): CursorState {
@@ -469,39 +627,36 @@ export class CopilotUsageWatcher {
       const bytePos =
         typeof parsed.bytePos === 'number' && parsed.bytePos >= 0 ? parsed.bytePos : 0;
       const partialLine = typeof parsed.partialLine === 'string' ? parsed.partialLine : '';
-      return { bytePos, partialLine };
+      const fingerprint = typeof parsed.fingerprint === 'string' ? parsed.fingerprint : undefined;
+      return { bytePos, partialLine, fingerprint };
     } catch {
       return { bytePos: 0, partialLine: '' };
     }
   }
 
-  private writeCursor(cursorPath: string, bytePos: number, partialLine: string): void {
-    try {
-      if (!existsSync(this.storagePath)) {
-        mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
-      }
-      writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine }), { mode: 0o600 });
-    } catch (err) {
-      this.recordError(err);
+  private writeCursor(
+    cursorPath: string,
+    bytePos: number,
+    partialLine: string,
+    fingerprint: string,
+  ): void {
+    if (!existsSync(this.storagePath)) {
+      mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
     }
+    writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine, fingerprint }), {
+      mode: 0o600,
+    });
   }
 
   /** Append into the session's hook buffer, same path convention as the collector. */
   private appendToBuffer(sessionId: string, event: object): void {
-    try {
-      if (!existsSync(this.storagePath)) {
-        mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
-      }
-      appendFileSync(
-        join(this.storagePath, `buffer-${sessionId}.jsonl`),
-        JSON.stringify(event) + '\n',
-        {
-          mode: 0o600,
-        },
-      );
-    } catch (err) {
-      this.recordError(err);
+    if (!existsSync(this.storagePath)) {
+      mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
     }
+    appendToHookBuffer(
+      join(this.storagePath, `buffer-${sessionId}.jsonl`),
+      JSON.stringify(event) + '\n',
+    );
   }
 
   private recordError(err: unknown): void {
@@ -513,6 +668,36 @@ export class CopilotUsageWatcher {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Bound a carried partial line. Past the cap, keep the first and last
+ * ELIDE_KEEP_CHARS and replace the middle with ELIDE_MARK.
+ */
+function elideOversize(partial: string): string {
+  const at = partial.indexOf(ELIDE_MARK);
+  if (at === -1) {
+    if (partial.length <= MAX_PARTIAL_LINE_BYTES) return partial;
+    return (
+      partial.slice(0, ELIDE_KEEP_CHARS) +
+      ELIDE_MARK +
+      partial.slice(partial.length - ELIDE_KEEP_CHARS)
+    );
+  }
+  const tailStart = at + ELIDE_MARK.length;
+  if (partial.length - tailStart <= 2 * ELIDE_KEEP_CHARS) return partial;
+  return partial.slice(0, tailStart) + partial.slice(partial.length - ELIDE_KEEP_CHARS);
+}
+
+function readAt(fd: number, pos: number, len: number): Buffer {
+  const buf = Buffer.alloc(len);
+  const n = len === 0 ? 0 : readSync(fd, buf, 0, len, pos);
+  return n === len ? buf : buf.subarray(0, n);
+}
+
+function onePrefixesOther(a: Buffer, b: Buffer): boolean {
+  const n = Math.min(a.length, b.length);
+  return a.subarray(0, n).equals(b.subarray(0, n));
+}
 
 function num(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;

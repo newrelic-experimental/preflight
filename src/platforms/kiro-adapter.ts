@@ -98,7 +98,7 @@ export class KiroAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'full-hooks' as const;
   readonly capabilities = {
     instructionFilePaths: [] as const,
-    // Hook commands documented before #634 (2026-09-10) lack the MCP_CLIENT=kiro stamp.
+    // Hook commands documented before 2026-09-10 lack the MCP_CLIENT=kiro stamp.
     sessionBreadcrumbWriters: ['kiro', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
   };
 

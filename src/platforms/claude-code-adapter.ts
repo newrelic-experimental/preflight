@@ -24,6 +24,7 @@ export class ClaudeCodeAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'full-hooks' as const;
   readonly capabilities = {
     instructionFilePaths: ['CLAUDE.md', '.claude/'] as const,
+    // Claude Code's hooks send session_id and the collector stamps its own env signals.
     sessionBreadcrumbWriters: ['claude-code'] as const,
   };
 
