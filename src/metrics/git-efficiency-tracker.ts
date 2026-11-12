@@ -11,6 +11,7 @@ import {
   type GitEvent,
 } from './git-event-classifier.js';
 import { RepoNameResolver } from './local-session-aggregator.js';
+import { mcpPrEvent } from './mcp-pr-tools.js';
 
 /**
  * Parse `git symbolic-ref --short refs/remotes/<remoteName>/HEAD`'s stdout
@@ -38,21 +39,6 @@ const GIT_PULL_RE = /\bgit\s+pull\b/;
 
 // Conflict file path extraction: "CONFLICT (content): Merge conflict in <path>"
 const CONFLICT_FILE_RE = /Merge conflict in (.+)/g;
-
-/**
- * GitHub MCP server tool names confirmed via live-account NRQL evidence
- * to reach Preflight as first-class AiToolCall events with these exact
- * `tool` values,
- * but never counted by the PR metric because recordToolCall() only inspects
- * `record.command` — which MCP tool calls never carry. Deliberately limited
- * to the two names the issue's own evidence covers; other GitHub-MCP PR
- * tools (merge_pull_request, etc.) are unconfirmed and out of scope pending
- * their own evidence.
- */
-const MCP_PR_TOOL_ACTION: Record<string, PrEvent['action']> = {
-  create_pull_request: 'create',
-  update_pull_request: 'edit',
-};
 
 // hydrateGitLog()'s dedup window, used only against a hook-observed commit
 // event (one with no hash in its command text): `git log`'s %ct has 1-second
@@ -319,15 +305,12 @@ export class GitEfficiencyTracker {
       this.lastBuildOrTestTimestamp = record.timestamp;
     }
 
-    // MCP tool calls (e.g. the GitHub MCP server's create_pull_request /
-    // update_pull_request) carry no `command` field, so they'd otherwise be
-    // silently dropped by the guard below. See MCP_PR_TOOL_ACTION's doc
-    // comment. No confirmed PR-number field exists for these — prNumber is
-    // null, unlike the gh-CLI path below which extracts it from command text.
-    const mcpPrAction = MCP_PR_TOOL_ACTION[record.toolName];
-    if (mcpPrAction) {
-      this.prEvents.push({ timestamp: record.timestamp, action: mcpPrAction, prNumber: null });
-    }
+    // GitHub MCP PR tool calls (create_pull_request, update_pull_request,
+    // merge_pull_request, bare or as Claude Code's mcp__<server>__<tool>)
+    // carry no `command` field, so they'd otherwise be silently dropped by the
+    // guard below.
+    const mcpPr = mcpPrEvent(record.toolName, record, record.timestamp);
+    if (mcpPr) this.prEvents.push(mcpPr);
 
     const rawCommand = record.command as string | undefined;
     if (!rawCommand) return;
@@ -509,6 +492,8 @@ export class GitEfficiencyTracker {
         errorType: entry.errorType,
         isTestCommand: entry.isTestCommand,
         isBuildCommand: entry.isBuildCommand,
+        createdPrNumber: entry.createdPrNumber,
+        mcpPrNumber: entry.mcpPrNumber,
       };
       this.recordToolCall(syntheticRecord);
     }

@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { platform } from 'node:os';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
@@ -561,6 +561,18 @@ function extractInstalledHookCommand(settingsPaths: string[]): string | null {
   return null;
 }
 
+/**
+ * Resolves symlinks, so a version-manager alias directory (fnm or nvm `default`) compares
+ * equal to the install it points at.
+ */
+function canonicalDir(dir: string): string {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return resolve(dir);
+  }
+}
+
 function checkHookNodePath(settingsPaths: string[], platform: string | undefined): DiagnosticCheck {
   if (platform !== undefined && platform !== 'claude-code') {
     return {
@@ -610,7 +622,7 @@ function checkHookNodePath(settingsPaths: string[], platform: string | undefined
   }
 
   const currentNodeDir = dirname(process.execPath);
-  if (resolve(nodeDir) !== resolve(currentNodeDir)) {
+  if (canonicalDir(nodeDir) !== canonicalDir(currentNodeDir)) {
     return {
       check: 'Hook node path',
       status: 'warn',

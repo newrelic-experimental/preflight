@@ -66,7 +66,7 @@ export interface SessionMetrics {
   bashCallsByCategory: Record<string, number>;
   searchQueries: number;
   toolCallTimeline: TimelineEntry[];
-  /** True when the timeline was capped at MAX_TIMELINE_ENTRIES; callers should not assume they have the full history. */
+  /** True when the oldest entries were dropped to stay within MAX_TIMELINE_ENTRIES; callers should not assume they have the full history. */
   timelineTruncated: boolean;
   /** Lifetime total of timeline entries, including those dropped by the cap. */
   timelineEntryCount: number;
@@ -78,6 +78,11 @@ export interface SessionMetrics {
 
 const MAX_TIMELINE_ENTRIES = 10_000;
 const AMENDABLE_ERROR_TYPES = new Set(['timeout', 'rejected']);
+
+/** A record for a pre that has seen no post yet, which a late post could still amend or count. */
+export function isAwaitingLatePost(record: Pick<ToolCallRecord, 'errorType'>): boolean {
+  return record.errorType !== undefined && AMENDABLE_ERROR_TYPES.has(record.errorType);
+}
 
 function addCount<K>(counts: Map<K, number>, key: K, delta: number): void {
   const next = (counts.get(key) ?? 0) + delta;
@@ -178,8 +183,13 @@ export class SessionTracker implements Resettable {
   private readonly bashCallsByCategory = new Map<string, number>();
   private timeline: TimelineEntry[] = [];
   private timelineEntryCount = 0;
-  private readonly amendable = new Map<string, { record: ToolCallRecord; timelineIndex: number }>();
+  private readonly amendable = new Map<
+    string,
+    { record: ToolCallRecord; timelineSequence: number }
+  >();
   private readonly maxAmendable: number;
+  /** What getMetrics() shows until this engine adopts a session, which some engines never do. */
+  private drainedWhilePending: SessionTracker | null;
 
   constructor(sessionId: string, maxAmendable = 0) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -190,9 +200,15 @@ export class SessionTracker implements Resettable {
     this.sessionId = sessionId;
     this.sessionStartTime = Date.now();
     this.maxAmendable = maxAmendable;
+    this.drainedWhilePending = sessionId.startsWith('pending-')
+      ? new SessionTracker('drained-while-pending', maxAmendable)
+      : null;
   }
 
   recordToolCall(record: ToolCallRecord): void {
+    this.drainedWhilePending?.recordToolCall(record);
+    // A pending engine drains every session; adoptSessionId() replays its own.
+    if (record.sessionId && this.sessionId.startsWith('pending-')) return;
     this.toolCallCount++;
 
     // FALLBACK naming only: an authoritative name (job-state title or
@@ -255,19 +271,18 @@ export class SessionTracker implements Resettable {
       this.searchQueries++;
     }
 
-    // Timeline (capped); always increment the lifetime counter.
+    // Timeline (capped, keeps the most recent entries); always increment the lifetime counter.
     this.timelineEntryCount++;
-    const timelineIndex = this.timeline.length < MAX_TIMELINE_ENTRIES ? this.timeline.length : -1;
-    if (timelineIndex >= 0) {
-      this.timeline.push({
-        timestamp: record.timestamp,
-        toolName: tool,
-        durationMs: record.durationMs,
-        success: record.success,
-      });
-    }
-    if (record.errorType !== undefined && AMENDABLE_ERROR_TYPES.has(record.errorType)) {
-      this.amendable.set(record.id, { record, timelineIndex });
+    const timelineSequence = this.timelineEntryCount - 1;
+    if (this.timeline.length >= MAX_TIMELINE_ENTRIES) this.timeline.shift();
+    this.timeline.push({
+      timestamp: record.timestamp,
+      toolName: tool,
+      durationMs: record.durationMs,
+      success: record.success,
+    });
+    if (isAwaitingLatePost(record)) {
+      this.amendable.set(record.id, { record, timelineSequence });
       if (this.amendable.size > this.maxAmendable)
         this.amendable.delete(this.amendable.keys().next().value!);
     }
@@ -288,6 +303,7 @@ export class SessionTracker implements Resettable {
   }
 
   amendToolCall(record: ToolCallRecord): void {
+    this.drainedWhilePending?.amendToolCall(record);
     const amended = this.amendable.get(record.id);
     if (!amended) return;
     this.amendable.delete(record.id);
@@ -298,9 +314,11 @@ export class SessionTracker implements Resettable {
       if (durations.length < 500) durations.push(record.durationMs);
       this.toolDurationsByTool.set(record.toolName, durations);
     }
-    const entry = this.timeline[amended.timelineIndex];
+    const timelineIndex =
+      amended.timelineSequence - (this.timelineEntryCount - this.timeline.length);
+    const entry = this.timeline[timelineIndex];
     if (entry) {
-      this.timeline[amended.timelineIndex] = {
+      this.timeline[timelineIndex] = {
         ...entry,
         durationMs: record.durationMs,
         success: record.success,
@@ -309,6 +327,9 @@ export class SessionTracker implements Resettable {
   }
 
   getMetrics(): SessionMetrics {
+    if (this.drainedWhilePending) {
+      return { ...this.drainedWhilePending.getMetrics(), sessionId: this.sessionId };
+    }
     // Convert Maps to plain objects
     const toolCallCountByTool: Record<string, number> = {};
     for (const [tool, count] of this.toolCallCountByTool) {
@@ -439,12 +460,23 @@ export class SessionTracker implements Resettable {
     this.sessionIntent = intent && intent.length > 0 ? intent : null;
   }
 
-  /** Update the session ID in place without clearing any accumulated metrics. */
-  adoptSessionId(sessionId: string): void {
+  /**
+   * Adopts the real session id and counts `records`, the calls of that session
+   * drained before this tracker knew its id. Replacing a wrong guess first drops
+   * every count of the guessed session.
+   */
+  adoptSessionId(
+    sessionId: string,
+    records: readonly ToolCallRecord[] = [],
+    replacingGuess = false,
+  ): void {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
       throw new Error('SessionTracker.adoptSessionId() requires a non-empty sessionId');
     }
+    if (replacingGuess) this.clearCounts();
+    this.drainedWhilePending = null;
     this.sessionId = sessionId;
+    for (const record of records) this.recordToolCall(record);
   }
 
   /**
@@ -462,12 +494,17 @@ export class SessionTracker implements Resettable {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
       throw new Error('SessionTracker.reset() requires a non-empty sessionId');
     }
+    this.drainedWhilePending = null;
     this.sessionId = sessionId;
     this.sessionName = null;
     this.sessionNameSource = null;
     this.sessionIntent = null;
     this.authoritativeName = false;
     this.sessionStartTime = Date.now();
+    this.clearCounts();
+  }
+
+  private clearCounts(): void {
     this.toolCallCount = 0;
     this.toolErrorCount = 0;
     this.successCount = 0;
