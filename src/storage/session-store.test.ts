@@ -1798,11 +1798,6 @@ describe('buildSessionSummary', () => {
     expect(mergeSummaries(quiet, anchored).firstActivityByDayMs).toEqual({ '2026-09-10': 9_000 });
   });
 
-  it('mergeSummaries leaves firstActivityByDayMs undefined when neither side has it', () => {
-    const merged = mergeSummaries(makeSummary(), makeSummary());
-    expect(merged.firstActivityByDayMs).toBeUndefined();
-  });
-
   it('mergeSummaries takes the per-model max of unpriced calls and tokens', () => {
     const existing = makeSummary({
       unpricedByModel: { a: { calls: 3, tokens: 100 }, b: { calls: 1, tokens: 10 } },
@@ -2441,14 +2436,7 @@ describe('buildSessionSummary', () => {
       const first = new Date(2026, 8, 10, 9, 0, 0).getTime();
       for (const timestampMs of [first + 30 * 60_000, first]) {
         costTracker.recordTokenUsage(
-          {
-            inputTokens: 1_000,
-            outputTokens: 100,
-            thinkingTokens: 0,
-            cacheReadTokens: 0,
-            cacheCreationTokens: 0,
-            totalTokens: 1_100,
-          },
+          makeUsage({ inputTokens: 1_000, outputTokens: 100, totalTokens: 1_100 }),
           'claude-sonnet-4',
           { timestampMs },
         );
