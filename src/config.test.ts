@@ -3096,6 +3096,7 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
     ['deploy --api-key=secret123', 'secret123'],
     ['mysql -u root -psecret123', 'secret123'],
     ['mysqldump -h db -u root -phunter2 shop', 'hunter2'],
+    ['mysql -h db -P 3306 -u root -psecret123 shop', 'secret123'],
     ['curl -H "X-Api-Key secret123" https://api.example.com', 'secret123'],
     ['curl -H "X-Api-Key: secret123" https://api.example.com', 'secret123'],
     ["curl -H 'X-Auth-Token: secret123' https://api.example.com", 'secret123'],
@@ -3131,7 +3132,25 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
     'pass the api-key header',
     'aws_secret_access_key is required',
     'some-cli --token\nls -la',
+    'gh auth token',
+    'npm token list',
+    'kubectl create secret generic x --from-literal=name=web',
+    'docker run -p 8080:80 nginx',
+    'pg_dump -p 5432 mydb',
+    'git commit -m "fix password reset"',
+    "terraform apply -var 'token_ttl=3600'",
+    'openssl pkey -in key.pem -passin env:PW',
+    'curl -H "Authorization: Bearer short" https://api.example.com',
+    'vault kv get -field=token secret/app',
+    'cat ~/.config/tool/token-cache.json',
   ])('leaves %s unchanged', (command) => {
     expect(redactSensitive(command)).toBe(command);
+  });
+
+  it('scans a 1 MB command of repeated mysql -p flags in linear time', () => {
+    const command = `mysql${' -p'.repeat(349_000)}`;
+    const start = performance.now();
+    expect(redactSensitive(command)).toBe(command);
+    expect(performance.now() - start).toBeLessThan(100);
   });
 });
