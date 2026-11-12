@@ -1410,6 +1410,14 @@ describe('removed digestSchedule key', () => {
     expect(config.retainSessionsDays).toBe(30);
     expect(config).not.toHaveProperty('digestSchedule');
   });
+
+  it('still loads when the removed digestSchedule key holds a non-string value', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ digestSchedule: 42, retainSessionsDays: 30 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(30);
+  });
 });
 
 describe('retainSessionsDays', () => {
