@@ -1393,8 +1393,8 @@ async function main(): Promise<void> {
     let currentRepoName: string | null = null;
 
     // An unscoped process (--local, or a provisional --stdio window) drains
-    // every unowned buffer and folds it into trackers keyed by its own
-    // synthetic id, which persistSession() skips — so without this rollup the
+    // every unowned buffer. The tracker counts only its own session, and
+    // persistSession() skips a synthetic id, so without this rollup the
     // sessions it observes are never written to disk at all. See
     // local-session-aggregator.ts for why that hits Copilot but not Claude Code.
     const localSessionAggregator = new LocalSessionAggregator({
@@ -1657,9 +1657,24 @@ async function main(): Promise<void> {
       lastDayKey: localDateKey(),
       lastRefreshMs: 0,
     };
+    // Excludes the session this process owns now once its saved cost is seeded
+    // into CostTracker, which for a --stdio engine happens when it adopts or
+    // confirms the id, not at startup. An unconfirmed cwd guess is not seeded
+    // yet, so its file stays in, as it stood before this process's own cost
+    // reached it.
     const refreshPriorCostBaseline = (): void => {
       const now = Date.now();
-      const baseline = computeHistoricalCosts(sessionStoreForCostBaseline, currentSessionId, now);
+      const ownIsSeeded =
+        isSyntheticSessionId(sessionTraceId) || rehydratedTrackerSessionIds.has(sessionTraceId);
+      const ownFile = firstSaveBaselines.costFileBeforeOwnSave(sessionTraceId);
+      const baseline = computeHistoricalCosts(
+        sessionStoreForCostBaseline,
+        ownIsSeeded ? sessionTraceId : null,
+        now,
+        !ownIsSeeded && ownFile !== undefined
+          ? { sessionId: sessionTraceId, summary: ownFile }
+          : undefined,
+      );
       priorCostCache.priorDailyCostUsd = baseline.priorDailyCostUsd;
       priorCostCache.priorWeeklyCostUsd = baseline.priorWeeklyCostUsd;
       priorCostCache.lastDayKey = localDateKey(now);
@@ -2418,6 +2433,7 @@ async function main(): Promise<void> {
           outputTokens: tokenEvent.outputTokens,
           cacheReadTokens: tokenEvent.cacheReadTokens,
           cacheCreationTokens: tokenEvent.cacheCreationTokens,
+          cacheSavingsUsd: breakdown.savingsFromCacheUsd,
         });
         contextCompositionTracker.recordTokenEvent(tokenEvent);
 
@@ -2526,6 +2542,7 @@ async function main(): Promise<void> {
           cacheReadTokens: turn.cacheReadTokens,
           cacheCreationTokens: turn.cacheCreationTokens,
           thinkingTokens: turn.reasoningTokens,
+          cacheSavingsUsd: breakdown.savingsFromCacheUsd,
           agentId: turn.agentId,
         });
         // Pricing miss → usd:null on the wire; we recompute here so
@@ -3009,11 +3026,8 @@ async function main(): Promise<void> {
         // anything these four trackers accumulated since startWatchers()
         // scoped them to that wrong id (chiefly ParentTranscriptWatcher
         // backfill from an unrelated old transcript) belongs to nobody.
-        // SessionTracker itself needs no reset here: real tool-call events
-        // only ever reach it via the per-session LocalStore/HookEventProcessor
-        // path, which is keyed by whatever id the hook collector script
-        // wrote — never the wrong guess — so toolCallCount/timeline stay
-        // clean through the whole unconfirmed window regardless.
+        // SessionTracker is cleared below through adoptSessionId(realId, ...,
+        // isCorrection), which drops the wrong guess's counts and timeline.
         costTracker.reset(realId);
         modelUsageTracker.reset(realId);
         contextCompositionTracker.reset(realId);
@@ -3059,6 +3073,7 @@ async function main(): Promise<void> {
       // confirmation branch (ppidId === staleId) calls
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
       if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
+      refreshPriorCostBaseline();
 
       try {
         saveObservedSessions('in progress', (id) =>
@@ -3227,6 +3242,7 @@ async function main(): Promise<void> {
             // first call site) precisely because it wasn't confirmed yet —
             // seed it now that it is.
             rehydrateTrackersIfResumed(staleId);
+            refreshPriorCostBaseline();
             clearPendingConfirmation();
             return;
           }
@@ -3334,8 +3350,8 @@ async function main(): Promise<void> {
               return;
             }
 
-            // Adopt the real session ID without clearing accumulated
-            // metrics — see adoptRealSessionId's own comment above. Skip the
+            // Adopt the real session ID. This is not a correction, so the
+            // tracker keeps the counts it has. Skip the
             // eager cost/token seed for a cwd-resolved id (see viaCwdOnly's
             // doc comment there) — startPpidCorrectionWatch below seeds it
             // once confirmed, exactly like the synchronous resolution path.
