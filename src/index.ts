@@ -1431,8 +1431,6 @@ async function main(): Promise<void> {
     // below can call this again for a *different* id after a pending->real
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
-    // Assigned once the prior-cost cache exists; the first rehydrate runs before then.
-    let seedBudgetPeriods: () => void = () => {};
     const firstSaveBaselines = new FirstSaveBaselines();
     // A session's calls in its file before this process first wrote it, none of them this process's.
     const callsBeforeFirstWrite = new Map<string, number>();
@@ -1462,7 +1460,6 @@ async function main(): Promise<void> {
         if (cost) {
           costTracker.seedFromPersisted(cost.costTracker);
           budgetTracker.seedFiredThresholdsFromSessionTotal(cost.estimatedCostUsd ?? 0);
-          seedBudgetPeriods();
           modelUsageTracker.seedFromPersisted(cost.modelBreakdown);
         }
         if (toolCalls) {
@@ -1698,9 +1695,10 @@ async function main(): Promise<void> {
       const expired = now - priorCostCache.lastRefreshMs > PRIOR_COST_CACHE_TTL_MS;
       if (dayChanged || expired) refreshPriorCostBaseline();
     };
-    refreshPriorCostBaseline();
-    seedBudgetPeriods = (): void => {
-      refreshPriorCostBaselineIfStale();
+    // Rereads the baseline first: it moves with the seeded set and with sessions
+    // other engines saved since it was cached, which a stale cache would double count.
+    const seedBudgetPeriods = (): void => {
+      refreshPriorCostBaseline();
       budgetTracker.seedPeriodSpend(
         priorCostCache.priorDailyCostUsd + costTracker.getCostForDay(localDateKey()),
         priorCostCache.priorWeeklyCostUsd + (costTracker.getMetrics().sessionTotalCostUsd ?? 0),
@@ -3094,7 +3092,7 @@ async function main(): Promise<void> {
       // confirmation branch (ppidId === staleId) calls
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
       if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
-      refreshPriorCostBaseline();
+      seedBudgetPeriods();
 
       try {
         saveObservedSessions('in progress', (id) =>

@@ -7,6 +7,7 @@ import {
   rmSync,
   existsSync,
   readdirSync,
+  renameSync,
   utimesSync,
   realpathSync,
   readFileSync,
@@ -2364,6 +2365,7 @@ describe('stdio integration', () => {
       count: (pattern: RegExp) => number;
       settle: () => Promise<void>;
       reportInputTokens: (inputTokens: number) => Promise<unknown>;
+      dailyAndWeeklySpentUsd: () => Promise<{ daily: number; weekly: number }>;
       close: () => Promise<void>;
     }
 
@@ -2410,6 +2412,18 @@ describe('stdio integration', () => {
             name: 'nr_observe_report_tokens',
             arguments: { input_tokens: inputTokens, output_tokens: 0, model: 'claude-sonnet-5' },
           }),
+        dailyAndWeeklySpentUsd: async () => {
+          const result = await client.callTool({
+            name: 'nr_observe_get_budget_status',
+            arguments: {},
+          });
+          const [first] = result.content as Array<{ text: string }>;
+          const status = JSON.parse(first!.text) as {
+            daily: { spentUsd: number };
+            weekly: { spentUsd: number };
+          };
+          return { daily: status.daily.spentUsd, weekly: status.weekly.spentUsd };
+        },
         close: () => client.close(),
       };
       startedEngines.push(engine);
@@ -2632,9 +2646,9 @@ describe('stdio integration', () => {
       );
     }
 
-    // Prior spend is 60% of each budget and this engine adds about 15%: counting
-    // each once crosses 50% and not 80%, double counting either crosses 80%, and
-    // dropping the prior spend never crosses 50%.
+    // Prior spend is 40% of each budget and this engine adds about 15%: counting
+    // each once crosses 50% and not 80%, double counting the prior spend already
+    // reads 80% at the seed so 50% never alerts, and dropping it never crosses 50%.
     async function expectPriorAndOwnSpendCountedOnce(engine: Engine): Promise<void> {
       expect(await waitUntil(() => engine.count(crossedBudget('daily', 50)) > 0)).toBe(true);
       expect(await waitUntil(() => engine.count(crossedBudget('weekly', 50)) > 0)).toBe(true);
@@ -2643,18 +2657,79 @@ describe('stdio integration', () => {
       expect(engine.count(crossedBudget('weekly', 80))).toBe(0);
     }
 
+    it("starts a restarted engine's daily and weekly spend at what other sessions already spent", async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(
+          storagePath,
+          projectCwd,
+          'spent-before-restart-id',
+          400,
+        );
+        const budgetUsd = String(prior.estimatedCostUsd / 0.4);
+        writeFileSync(ppidBreadcrumb(storagePath), 'owned-after-restart-id');
+        const engine = await startEngine(storagePath, projectCwd, {
+          NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
+          NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
+        });
+        expect(await engine.logged(ADOPTED)).toBe(true);
+
+        const spent = await engine.dailyAndWeeklySpentUsd();
+        expect(spent.daily).toBeCloseTo(prior.estimatedCostUsd, 9);
+        expect(spent.weekly).toBeCloseTo(prior.estimatedCostUsd, 9);
+
+        appendTokenEvent(storagePath, 'owned-after-restart-id', 'msg_after_restart', 150);
+        await expectPriorAndOwnSpendCountedOnce(engine);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
+    it('counts a session another engine saved between this engine starting and adopting', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(
+          storagePath,
+          projectCwd,
+          'saved-while-pending-id',
+          400,
+        );
+        const sessionsDir = resolve(storagePath, 'sessions');
+        const savedFile = readdirSync(sessionsDir).find((f) =>
+          f.endsWith('_saved-while-pending-id.json'),
+        )!;
+        const held = resolve(storagePath, savedFile);
+        renameSync(resolve(sessionsDir, savedFile), held);
+        const engine = await startEngine(storagePath, projectCwd);
+        renameSync(held, resolve(sessionsDir, savedFile));
+        writeFileSync(ppidBreadcrumb(storagePath), 'owned-after-pending-id');
+        expect(await engine.logged(ADOPTED)).toBe(true);
+
+        const spent = await engine.dailyAndWeeklySpentUsd();
+        expect(spent.daily).toBeCloseTo(prior.estimatedCostUsd, 9);
+        expect(spent.weekly).toBeCloseTo(prior.estimatedCostUsd, 9);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
     it("counts an adopted session's saved cost once in daily and weekly spend", async () => {
       const { storagePath, projectCwd, cleanup } = makeDirs();
       try {
         const prior = await savePriorSession(storagePath, projectCwd, 'adopted-budget-id', 400);
-        const budgetUsd = String(prior.estimatedCostUsd / 0.6);
+        const budgetUsd = String(prior.estimatedCostUsd / 0.4);
         const engine = await startEngine(storagePath, projectCwd, {
           NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
           NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
         });
         writeFileSync(ppidBreadcrumb(storagePath), 'adopted-budget-id');
         expect(await engine.logged(ADOPTED)).toBe(true);
-        appendTokenEvent(storagePath, 'adopted-budget-id', 'msg_after_adopt', 100);
+        const spent = await engine.dailyAndWeeklySpentUsd();
+        expect(spent.daily).toBeCloseTo(prior.estimatedCostUsd, 9);
+        expect(spent.weekly).toBeCloseTo(prior.estimatedCostUsd, 9);
+        appendTokenEvent(storagePath, 'adopted-budget-id', 'msg_after_adopt', 150);
 
         await expectPriorAndOwnSpendCountedOnce(engine);
         await engine.close();
@@ -2667,7 +2742,7 @@ describe('stdio integration', () => {
       const { storagePath, projectCwd, cleanup } = makeDirs();
       try {
         const prior = await savePriorSession(storagePath, projectCwd, 'guess-budget-id', 400);
-        const budgetUsd = String(prior.estimatedCostUsd / 0.6);
+        const budgetUsd = String(prior.estimatedCostUsd / 0.4);
         const engine = await startEngine(storagePath, projectCwd, {
           NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
           NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
@@ -2676,10 +2751,10 @@ describe('stdio integration', () => {
         });
         writeCwdBreadcrumb(storagePath, projectCwd, 'guess-budget-id');
         expect(await engine.logged(ADOPTED)).toBe(true);
-        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_before_confirm', 50);
+        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_before_confirm', 75);
 
         await confirmViaPpid(storagePath, engine, 'guess-budget-id');
-        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_after_confirm', 50);
+        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_after_confirm', 75);
 
         await expectPriorAndOwnSpendCountedOnce(engine);
         await engine.close();

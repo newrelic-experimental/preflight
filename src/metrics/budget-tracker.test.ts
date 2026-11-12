@@ -261,6 +261,19 @@ describe('BudgetTracker', () => {
       expect(t.getStatus().alerts).toHaveLength(0);
     });
 
+    it('treats spend exactly at a threshold as crossed', () => {
+      const fired: string[] = [];
+      const tracker = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: 10,
+        weeklyBudgetUsd: 50,
+        onThreshold: (e) => fired.push(`${e.period}_${e.thresholdPct}`),
+      });
+      tracker.seedPeriodSpend(5, 25);
+      tracker.updateCost(0, 5, 25);
+      expect(fired).toEqual([]);
+    });
+
     it('fires no threshold twice across a restart, and still fires a newly crossed one', () => {
       const firedBefore: Array<{ period: string; thresholdPct: number }> = [];
       const before = new BudgetTracker({
