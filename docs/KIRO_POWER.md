@@ -163,24 +163,37 @@ everything is working while most of the session goes unobserved.
 
 ## Cloud mode
 
-This Power's `mcp.json` sets `NR_AI_MODE: "local"` explicitly, so it works
-with no New Relic account (dashboard at `http://127.0.0.1:7777`, nothing
-leaves the machine). To send telemetry to New Relic instead, edit
-`kiro-power/mcp.json`'s own `env` block — add `NEW_RELIC_LICENSE_KEY` and
-`NEW_RELIC_ACCOUNT_ID`, and change `NR_AI_MODE` to `cloud` or `both`. Edit
-the file directly rather than exporting shell variables: it's the config
-Kiro actually reads to launch this server, whereas whether Kiro's launcher
-also layers in the host shell environment on top isn't documented. Never
-commit real credentials into a shared copy of `mcp.json` — keep source
-control on `local` mode with no credentials, same as this repo's copy. See
-[ADVANCED.md](./ADVANCED.md) for the full field reference.
+This Power's `mcp.json` reads its settings from `${VAR}` environment
+references and holds no values itself. `NR_AI_MODE` unset means `local`, so the
+Power works with no New Relic account (dashboard at `http://127.0.0.1:7777`,
+nothing leaves the machine). To send telemetry to New Relic instead:
+
+1. Add the credentials as references to the `env` block of the installed
+   Power's `mcp.json` (no secret goes in the file):
+
+   ```json
+   "NEW_RELIC_LICENSE_KEY": "${NEW_RELIC_LICENSE_KEY}",
+   "NEW_RELIC_ACCOUNT_ID": "${NEW_RELIC_ACCOUNT_ID}"
+   ```
+
+2. Export the real values, and `NR_AI_MODE=cloud` (or `both`), in the
+   environment Kiro is launched from, then fully restart Kiro.
+
+Credentials come only from the user's own environment, never from chat, and
+never from a committed copy of `mcp.json`. An edit to the installed Power's own
+`mcp.json` is replaced when the Power updates, so re-add the two lines after an
+update. Cloud mode sends file paths, redacted shell commands, the developer ID
+and the repo URL, not just counts; see
+[PRIVACY.md](../PRIVACY.md). See [ADVANCED.md](./ADVANCED.md) for the full
+field reference.
 
 ## Optional feature flags
 
 A handful of `nr_observe_*` tools stay inert (or error outright) until specific
-fields are set. All of these go in the same `mcp.json` `env` block as
-`NR_AI_MODE`/`NEW_RELIC_LICENSE_KEY` above — add only the ones you actually
-want; everything below is optional and independent of the others.
+fields are set. Each one is set the same way as the cloud credentials above:
+add a `${VAR}` reference to the `mcp.json` `env` block, and export the value
+in the environment Kiro launches from. Add only the ones you actually want;
+everything below is optional and independent of the others.
 
 | Env var                           | Unlocks                                                                                                                                        | Notes                                                                                                                                                                                                                               |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -197,8 +210,8 @@ Restart Kiro after editing `mcp.json` — none of these are hot-reloaded.
 
 ## Why `NEW_RELIC_AI_PLATFORM` is set
 
-`mcp.json` also pins `NEW_RELIC_AI_PLATFORM: "kiro"`. This is load-bearing,
-not decoration: Kiro exposes no ambient environment variable identifying
+`mcp.json` forwards `NEW_RELIC_AI_PLATFORM` from the environment, and the setup
+skill has the user set it to `kiro`. This is load-bearing, not decoration: Kiro exposes no ambient environment variable identifying
 itself to a child process (a Power's MCP server gets 16 variables, none of
 them Kiro-specific), so `KiroAdapter.isSupported()` cannot detect it and
 `PlatformRegistry.detect()` falls through to the generic MCP adapter.
@@ -220,8 +233,8 @@ to bundle; [Enable automatic tool-call capture](#enable-automatic-tool-call-capt
 reuses the already-published `preflight-collector` bin instead.
 
 `kiro-power/mcp.json` fetches the package on demand
-(`npx -y @newrelic/preflight@latest --stdio`) rather than requiring a global
-install, so the `nr_observe_*` tools work on a first-time machine.
+(`npx -y @newrelic/preflight@<version> --stdio`, pinned to an exact version
+that each release updates) rather than requiring a global install, so the `nr_observe_*` tools work on a first-time machine.
 
 That was not always safe, and the reason is worth recording. `npx` does not
 run the server directly — it execs an `npm exec` process which then runs the
@@ -236,8 +249,9 @@ to the Power's install directory and never sees the workspace path.
 `src/hooks/process-ancestry.ts` fixes this by walking a few levels up the
 server's own ancestry instead of checking only its immediate parent, so the
 breadcrumb one level above the wrapper is found. **This config therefore
-depends on that fix being present in the published package** — pinning
-`@latest` is what ties the two together. If you ever see `session_id: null`
+depends on that fix being present in the published package** — the release
+pin is what ties the two together, since every pinned version is at or after
+the one that introduced the walk. If you ever see `session_id: null`
 on Kiro, check the installed version actually contains the ancestor walk
 before looking anywhere else.
 
