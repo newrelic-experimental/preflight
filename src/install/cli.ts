@@ -930,13 +930,19 @@ function handleCopilotInstall(options: {
     }
 
     const ext = installCopilotSdkExtension();
-    if (ext.copied) {
-      print('✓ Copilot SDK usage extension installed (token-exact cost)');
+    if (ext.action === 'copied' || ext.action === 'updated') {
+      print(
+        ext.action === 'copied'
+          ? '✓ Copilot SDK usage extension installed (token-exact cost)'
+          : '✓ Copilot SDK usage extension updated to the current version',
+      );
       print(
         '  Restart the Copilot CLI with --experimental (or run /experimental on) to activate it.',
       );
-    } else if (ext.reason === 'exists') {
-      print('  Copilot SDK usage extension already installed');
+    } else if (ext.action === 'unchanged') {
+      print('  Copilot SDK usage extension already up to date');
+    } else if (ext.action === 'skipped') {
+      print('  ⚠ Left the existing Copilot extension alone: it is not a Preflight extension');
     } else {
       print(`  ⚠ Could not install Copilot SDK usage extension: ${ext.reason}`);
     }
