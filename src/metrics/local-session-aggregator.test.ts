@@ -16,6 +16,7 @@ import {
   stripHeredocs,
 } from './local-session-aggregator.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
+import { mergeSummaries, type FullSessionSummary } from '../storage/session-store.js';
 
 // git sets GIT_DIR/GIT_WORK_TREE for hook subprocesses, which override `-C
 // <dir>` and would silently redirect these calls to the real repo instead of
@@ -148,7 +149,7 @@ describe('LocalSessionAggregator', () => {
 
     const kept = agg.withoutCallsOtherProcessesMayCount(
       summariesOf(agg)[0]!,
-      new Set(['t3', 't10001']),
+      new Set(['t3', 't9999']),
     ) as { timeline: Array<{ timestamp: number; durationMs: number | null }> };
 
     const stamps = kept.timeline.map((e) => e.timestamp);
@@ -156,7 +157,9 @@ describe('LocalSessionAggregator', () => {
     expect(stamps[0]).toBe(2);
     expect(kept.timeline[0]?.durationMs).toBe(9);
     expect(stamps).not.toContain(3);
-    expect(stamps.at(-1)).toBe(10_000);
+    expect(stamps).not.toContain(9_999);
+    expect(stamps).toContain(10_000);
+    expect(stamps.at(-1)).toBe(10_001);
   });
 
   it("writes no success rate over a file's when it leaves out every call", () => {
@@ -1054,5 +1057,24 @@ describe('LocalSessionAggregator timeline cap', () => {
     expect(timeline).toHaveLength(10_000);
     expect(timeline[0]?.timestamp).toBe(26);
     expect(timeline[9_999]?.timestamp).toBe(total);
+  });
+});
+
+describe('saved timeline past the cap', () => {
+  it('replaces the saved oldest entries with the newest as the session grows', () => {
+    const agg = new LocalSessionAggregator();
+    const save = (): FullSessionSummary => summariesOf(agg)[0] as unknown as FullSessionSummary;
+    let onDisk: FullSessionSummary | undefined;
+    for (let i = 1; i <= 10_025; i++) {
+      agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Bash', timestamp: i });
+      if (i === 10_000 || i === 10_025) {
+        onDisk = onDisk ? mergeSummaries(onDisk, save()) : save();
+      }
+    }
+
+    const stamps = onDisk!.timeline!.map((e) => e.timestamp);
+    expect(stamps).toHaveLength(10_000);
+    expect(stamps[0]).toBe(26);
+    expect(stamps.at(-1)).toBe(10_025);
   });
 });
