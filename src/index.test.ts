@@ -1688,6 +1688,10 @@ describe('stdio integration', () => {
       );
     const drained = (storage: string, sessionId: string) => () =>
       !existsSync(resolve(storage, `buffer-${sessionId}.jsonl`));
+    const settle = async <T>(read: () => T, want: T): Promise<T> => {
+      for (let i = 0; i < 20 && read() !== want; i++) await new Promise((r) => setTimeout(r, 250));
+      return read();
+    };
     const startOwner = async (storage: string, id: string) => {
       const jobDir = mkdtempSync(join(tmpdir(), 'nr-adopt-job-'));
       storages.push(jobDir);
@@ -1972,6 +1976,126 @@ describe('stdio integration', () => {
 
       expect(savedCalls(storage, 'other-real-session')).toBe(1);
       expect(savedCalls(storage, 'own-real-session') ?? 0).toBe(0);
+    }, 30000);
+
+    const adoptedId = async (client: Awaited<ReturnType<typeof startEngine>>): Promise<string> => {
+      for (let i = 0; i < 80; i++) {
+        const result = await client
+          .callTool({ name: 'nr_observe_get_session_stats', arguments: {} })
+          .catch(() => null);
+        const content = result?.content as Array<{ text?: string }> | undefined;
+        const id = content
+          ? (JSON.parse(content[0]?.text ?? '{}') as { session_id?: string }).session_id
+          : '';
+        if (id && !id.startsWith('pending-')) return id;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      throw new Error('engine never adopted a session');
+    };
+
+    it("leaves a live engine's heartbeat alone when it adopts that session from a cwd guess", async () => {
+      const storage = makeStorage();
+      const owner = await startOwner(storage, 'guessed-session');
+      const heartbeat = resolve(storage, 'active-guessed-session.pid');
+      const ownerPid = readFileSync(heartbeat, 'utf-8');
+      const cwd = makeCwd();
+      const guessing = await startEngine(storage, cwd);
+      guessFromCwd(storage, cwd);
+      expect(await adoptedId(guessing)).toBe('guessed-session');
+      const afterAdoption = readFileSync(heartbeat, 'utf-8');
+      await guessing.close();
+      await stopOwner(storage, owner, 'guessed-session');
+
+      expect(afterAdoption).toBe(ownerPid);
+    }, 30000);
+
+    it("lets another process drain the guessed session's buffer after a correction", async () => {
+      const storage = makeStorage();
+      const cwd = makeCwd();
+      guessFromCwd(storage, cwd);
+      const guessing = await startEngine(storage, cwd);
+      const breadcrumb = resolve(storage, 'session-by-ppid', `${process.pid}.txt`);
+      writeFileSync(breadcrumb, 'corrected-session');
+      await waitFor(() => existsSync(resolve(storage, 'active-corrected-session.pid')));
+      rmSync(breadcrumb);
+      const drainer = await startEngine(storage, undefined, {
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+      });
+      writeHook(storage, 'guessed-session', 'pre', 'toolu_b');
+      writeHook(storage, 'guessed-session', 'post', 'toolu_b');
+      const saved = await settle(() => savedCalls(storage, 'guessed-session'), 1);
+      await drainer.close();
+      await stopOwner(storage, guessing, 'corrected-session');
+
+      expect(saved).toBe(1);
+    }, 30000);
+
+    it("keeps the heartbeat of the guessed session's own engine through the correction", async () => {
+      const storage = makeStorage();
+      const owner = await startOwner(storage, 'guessed-session');
+      const heartbeat = resolve(storage, 'active-guessed-session.pid');
+      const ownerPid = readFileSync(heartbeat, 'utf-8');
+      const cwd = makeCwd();
+      guessFromCwd(storage, cwd);
+      const guessing = await startEngine(storage, cwd);
+      const guessedPid = readFileSync(heartbeat, 'utf-8');
+      await adoptAndStop(storage, guessing, 'corrected-session');
+      const afterCorrection = existsSync(heartbeat) ? readFileSync(heartbeat, 'utf-8') : null;
+      await stopOwner(storage, owner, 'guessed-session');
+
+      expect([guessedPid, afterCorrection]).toEqual([ownerPid, ownerPid]);
+    }, 30000);
+
+    it('takes the heartbeat of its guessed session once the ppid breadcrumb confirms it', async () => {
+      const storage = makeStorage();
+      const previous = await startOwner(storage, 'guessed-session');
+      const heartbeat = resolve(storage, 'active-guessed-session.pid');
+      const previousPid = readFileSync(heartbeat, 'utf-8');
+      const cwd = makeCwd();
+      guessFromCwd(storage, cwd);
+      const guessing = await startEngine(storage, cwd);
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'guessed-session');
+      await waitFor(() => readFileSync(heartbeat, 'utf-8') !== previousPid);
+      await previous.close();
+      await new Promise((r) => setTimeout(r, 1000));
+      const afterPreviousExit = existsSync(heartbeat);
+      await stopOwner(storage, guessing, 'guessed-session');
+
+      expect(afterPreviousExit).toBe(true);
+    }, 30000);
+
+    it("takes the heartbeat of its guessed session once that session's own engine exits", async () => {
+      const storage = makeStorage();
+      const previous = await startOwner(storage, 'guessed-session');
+      const heartbeat = resolve(storage, 'active-guessed-session.pid');
+      const cwd = makeCwd();
+      guessFromCwd(storage, cwd);
+      const guessing = await startEngine(storage, cwd, {
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+      });
+      await stopOwner(storage, previous, 'guessed-session');
+      const retaken = await settle(() => existsSync(heartbeat), true);
+      await stopOwner(storage, guessing, 'guessed-session');
+
+      expect(retaken).toBe(true);
+    }, 30000);
+
+    it("leaves a live engine's heartbeat alone at each checkpoint of a cwd guess", async () => {
+      const storage = makeStorage();
+      const owner = await startOwner(storage, 'guessed-session');
+      const heartbeat = resolve(storage, 'active-guessed-session.pid');
+      const ownerPid = readFileSync(heartbeat, 'utf-8');
+      const cwd = makeCwd();
+      guessFromCwd(storage, cwd);
+      const guessing = await startEngine(storage, cwd, {
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '100',
+      });
+      await new Promise((r) => setTimeout(r, 1000));
+      const afterCheckpoints = readFileSync(heartbeat, 'utf-8');
+      await guessing.close();
+      await stopOwner(storage, owner, 'guessed-session');
+
+      expect(afterCheckpoints).toBe(ownerPid);
     }, 30000);
   });
 
