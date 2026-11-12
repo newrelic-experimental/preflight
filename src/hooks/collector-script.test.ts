@@ -2142,16 +2142,25 @@ describe('collector-script', () => {
     const drainThenRestart = "fs.renameSync(p, p + '.drained'); fs.writeFileSync(p, '');";
     const shortWrite = (keep: string, tornEnd = 'throw enospc()') =>
       `fs.writeSync = (fd, b, off = 0, ...a) => { if (!reportLine(fd)) return writeSync(fd, b, off, ...a); if (typeof b === 'string') ${tornEnd}; return writeSync(fd, b, off, ${keep}); };`;
-    const sealThenFailStat = [
-      "fs.writeSync = (fd, b, ...a) => { if (!reportLine(fd) || typeof b === 'string') return writeSync(fd, b, ...a);",
-      `const p = paths.get(fd); fs.renameSync(p, p + '.drained'); const s = openSync(p + '.drained', 'a'); writeSync(s, ${JSON.stringify(DRAIN_SEAL)}); closeSync(s); fs.writeFileSync(p, '');`,
-      "const n = writeSync(fd, b, ...a); fs.statSync = (q, ...o) => { if (q === p) throw new Error('EIO'); return statSync(q, ...o); }; syncBuiltinESMExports(); return n; };",
-    ].join(' ');
+    const sealAndFailStat = (sealFirst: boolean): string => {
+      const seal = `fs.renameSync(p, p + '.drained'); const s = openSync(p + '.drained', 'a'); writeSync(s, ${JSON.stringify(DRAIN_SEAL)}); closeSync(s); fs.writeFileSync(p, '');`;
+      const write = 'const n = writeSync(fd, b, ...a);';
+      return [
+        "fs.writeSync = (fd, b, ...a) => { if (!reportLine(fd) || typeof b === 'string') return writeSync(fd, b, ...a); const p = paths.get(fd);",
+        ...(sealFirst ? [seal, write] : [write, seal]),
+        "fs.statSync = (q, ...o) => { if (q === p) throw new Error('EIO'); return statSync(q, ...o); }; syncBuiltinESMExports(); return n; };",
+      ].join(' ');
+    };
     it.each([
       [
         'a drain renames and seals the buffer before the usage line lands and the stat after it fails',
-        sealThenFailStat,
+        sealAndFailStat(true),
         ['post', 'post', 'self_report'],
+      ],
+      [
+        'a drain renames and seals the buffer after the usage line lands and the stat after it fails',
+        sealAndFailStat(false),
+        ['post', 'self_report', 'post'],
       ],
       [
         'closing the buffer fails after a drain took the usage line and a new hook began a fresh buffer',

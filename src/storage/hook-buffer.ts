@@ -70,31 +70,36 @@ export class LineWrittenError extends Error {
   }
 }
 
+function landedBeforeSeal(fd: number, sealFloor: number): boolean {
+  return !readRange(fd, sealFloor, offsetAfterWrite(fd)).includes(DRAIN_SEAL);
+}
+
 function appendOnce(path: string, data: Buffer): Landing {
   const fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_APPEND, 0o600);
-  let written = 0;
+  let landed = false;
   try {
     try {
       const opened = fstatSync(fd, { bigint: true });
       if (!isAt(path, opened)) return 'moved';
       const sealFloor = Number(opened.size);
-      written = writeSync(fd, data);
-      if (written < data.length) {
-        writeSync(fd, TORN_LINE_END);
-        written = 0;
-        return 'redo';
+      const written = writeSync(fd, data);
+      try {
+        if (written < data.length) {
+          writeSync(fd, TORN_LINE_END);
+          return 'redo';
+        }
+        landed = isAt(path, opened) || landedBeforeSeal(fd, sealFloor);
+      } catch (err) {
+        // A line short of only its newline still parses at the end of the file.
+        landed = written >= data.length - 1 && landedBeforeSeal(fd, sealFloor);
+        throw err;
       }
-      if (isAt(path, opened)) return 'kept';
-      const start = offsetAfterWrite(fd) - data.length;
-      if (!readRange(fd, sealFloor, start).includes(DRAIN_SEAL)) return 'kept';
-      written = 0;
-      return 'redo';
+      return landed ? 'kept' : 'redo';
     } finally {
       closeSync(fd);
     }
   } catch (err) {
-    // A line short of only its newline still parses at the end of the file.
-    throw written >= data.length - 1 ? new LineWrittenError(err) : err;
+    throw landed ? new LineWrittenError(err) : err;
   }
 }
 

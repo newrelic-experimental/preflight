@@ -239,30 +239,34 @@ var LineWrittenError = class extends Error {
     super(cause instanceof Error ? cause.message : String(cause), { cause });
   }
 };
+function landedBeforeSeal(fd, sealFloor) {
+  return !readRange(fd, sealFloor, offsetAfterWrite(fd)).includes(DRAIN_SEAL);
+}
 function appendOnce(path, data) {
   const fd = openSync2(path, constants2.O_RDWR | constants2.O_CREAT | constants2.O_APPEND, 384);
-  let written = 0;
+  let landed = false;
   try {
     try {
       const opened = fstatSync(fd, { bigint: true });
       if (!isAt(path, opened)) return "moved";
       const sealFloor = Number(opened.size);
-      written = writeSync(fd, data);
-      if (written < data.length) {
-        writeSync(fd, TORN_LINE_END);
-        written = 0;
-        return "redo";
+      const written = writeSync(fd, data);
+      try {
+        if (written < data.length) {
+          writeSync(fd, TORN_LINE_END);
+          return "redo";
+        }
+        landed = isAt(path, opened) || landedBeforeSeal(fd, sealFloor);
+      } catch (err) {
+        landed = written >= data.length - 1 && landedBeforeSeal(fd, sealFloor);
+        throw err;
       }
-      if (isAt(path, opened)) return "kept";
-      const start = offsetAfterWrite(fd) - data.length;
-      if (!readRange(fd, sealFloor, start).includes(DRAIN_SEAL)) return "kept";
-      written = 0;
-      return "redo";
+      return landed ? "kept" : "redo";
     } finally {
       closeSync2(fd);
     }
   } catch (err) {
-    throw written >= data.length - 1 ? new LineWrittenError(err) : err;
+    throw landed ? new LineWrittenError(err) : err;
   }
 }
 function appendToHookBuffer(path, text) {
