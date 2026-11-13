@@ -2334,6 +2334,28 @@ describe('buildSessionSummary', () => {
     expect(merged.timeline?.map((e) => e.toolUseId)).toEqual(['a', 'b', 'c']);
   });
 
+  it('keeps same-millisecond calls with distinct ids across a reload through a new SessionStore', () => {
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    const call = (toolUseId: string) => ({
+      timestamp: startTime + 100,
+      toolName: 'Read',
+      toolUseId,
+      durationMs: 5,
+      success: true,
+    });
+    new SessionStore({ storagePath: tmpDir }).saveSession(
+      makeSummary({ sessionId: 'reload-ids', startTime, timeline: [call('a'), call('b')] }),
+    );
+
+    const resumed = new SessionStore({ storagePath: tmpDir });
+    resumed.saveSession(makeSummary({ sessionId: 'reload-ids', startTime, timeline: [] }));
+
+    expect(resumed.loadSession('reload-ids')!.timeline?.map((e) => e.toolUseId)).toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
   it('mergeSummaries still collapses id-less entries by timestamp and tool', () => {
     const legacy = { timestamp: 100, toolName: 'Read', durationMs: 5, success: true };
     const merged = mergeSummaries(
