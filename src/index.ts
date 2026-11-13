@@ -68,7 +68,7 @@ import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
 import { CostTracker } from './metrics/cost-tracker.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
-import { FirstSaveBaselines } from './metrics/first-save-baselines.js';
+import { FirstSaveBaselines, costSeedOf } from './metrics/first-save-baselines.js';
 import type { RepoContext } from './metrics/git-efficiency-tracker.js';
 import {
   GitEfficiencyTracker,
@@ -1680,6 +1680,9 @@ async function main(): Promise<void> {
       lastDayKey: localDateKey(),
       lastRefreshMs: 0,
     };
+    // Sessions whose saved cost a --local process folded into its CostTracker
+    // on first sight. Each is counted by the tracker, so the baseline leaves it out.
+    const localSeededSessionIds = new Set<string>();
     // Excludes the session this process owns now once its saved cost is seeded
     // into CostTracker, which for a --stdio engine happens when it adopts or
     // confirms the id, not at startup. An unconfirmed cwd guess is not seeded
@@ -1692,7 +1695,7 @@ async function main(): Promise<void> {
       const ownFile = firstSaveBaselines.costFileBeforeOwnSave(sessionTraceId);
       const baseline = computeHistoricalCosts(
         sessionStoreForCostBaseline,
-        ownIsSeeded ? sessionTraceId : null,
+        new Set([...localSeededSessionIds, ...(ownIsSeeded ? [sessionTraceId] : [])]),
         now,
         !ownIsSeeded && ownFile !== undefined
           ? { sessionId: sessionTraceId, summary: ownFile }
@@ -1702,6 +1705,19 @@ async function main(): Promise<void> {
       priorCostCache.priorWeeklyCostUsd = baseline.priorWeeklyCostUsd;
       priorCostCache.lastDayKey = localDateKey(now);
       priorCostCache.lastRefreshMs = now;
+    };
+    // A --local process reads only the transcript lines after its saved cursor,
+    // so a session resumed from an earlier process starts at zero here without
+    // its file's total. Runs once per session before its first turn is priced.
+    const seedLocalTrackersFromFile = (sessionId: string | null | undefined): void => {
+      if (options.stdio || !sessionId || isSyntheticSessionId(sessionId)) return;
+      if (localSeededSessionIds.has(sessionId)) return;
+      localSeededSessionIds.add(sessionId);
+      const persisted = sessionStoreForCostBaseline.loadSession(sessionId);
+      if (!persisted) return;
+      const seed = costSeedOf(persisted);
+      costTracker.seedFromPersisted(seed.costTracker);
+      refreshPriorCostBaseline();
     };
     const refreshPriorCostBaselineIfStale = (): void => {
       const now = Date.now();
@@ -2436,6 +2452,7 @@ async function main(): Promise<void> {
         });
         const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
         if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
+        seedLocalTrackersFromFile(tokenEvent.sessionId);
         const usage = tokenUsageFromTokenEvent(tokenEvent);
         let breakdown: CostBreakdown;
         if (!isOwnEvent) {
@@ -2540,6 +2557,7 @@ async function main(): Promise<void> {
         // the buffer.
         subagentAttribution.recordSubagentTurn(turn);
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
+        seedLocalTrackersFromFile(turn.parentSessionId);
         const usage = tokenUsageFromSubagentTurn(turn);
         const breakdown = costTracker.recordTokenUsage(usage, turn.model, {
           timestampMs: turn.timestampMs,

@@ -554,14 +554,18 @@ export class LocalSessionAggregator {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
     const timestamp = usage.timestamp ?? Date.now();
     const rollup = this.ensure(sessionId, timestamp);
-    // Seed from disk on this session's first subagent-attributed usage, not at
-    // rollup creation: an unscoped process creates a rollup from a session's
-    // first drained hook event, which happens before that session's own
-    // engine has written anything to sessions/*.json — seeding at creation
-    // would read nothing and lose the engine's eventual total on restart
-    // under the max-based merge in mergeSummaries.
-    if (usage.agentId !== undefined && !rollup.costBaselineApplied) {
-      this.applyPersistedBaseline(sessionId, rollup);
+    // Seed from disk on this session's first usage, not at rollup creation: an
+    // unscoped process creates a rollup from a session's first drained hook
+    // event, which happens before that session's own engine has written
+    // anything to sessions/*.json — seeding at creation would read nothing and
+    // lose the engine's eventual total on restart under the max-based merge in
+    // mergeSummaries. Parent usage seeds too: a restarted process reads only
+    // the transcript lines after its saved cursor, so without the file's total
+    // the merge keeps the file's total and drops this turn's cost. A parent
+    // turn that finds no saved cost leaves the baseline open for a later
+    // subagent turn, which still folds whatever another writer saved by then.
+    if (!rollup.costBaselineApplied) {
+      this.applyPersistedBaseline(sessionId, rollup, usage.agentId !== undefined);
     }
     const dayKey = localDateKey(timestamp);
     const usd = usage.costUsd ?? 0;
@@ -635,12 +639,16 @@ export class LocalSessionAggregator {
    * below the saved subagent figures, so a stale stored `exactTotals` cannot
    * seed a total under them.
    */
-  private applyPersistedBaseline(sessionId: string, rollup: LocalSessionRollup): void {
-    rollup.costBaselineApplied = true;
+  private applyPersistedBaseline(
+    sessionId: string,
+    rollup: LocalSessionRollup,
+    closeWhenEmpty: boolean,
+  ): void {
     const baseline = this.persistedCostBaseline?.(sessionId) ?? null;
-    if (baseline === null) return;
+    const exact = baseline && exactTotalsOf(baseline);
+    rollup.costBaselineApplied = closeWhenEmpty || (exact !== null && exact.costUsd > 0);
+    if (baseline === null || exact === null) return;
     const emitted = rollup.lastEmittedCost;
-    const exact = exactTotalsOf(baseline);
     rollup.costUsd += excessOver(
       Math.max(exact.costUsd, baseline.subagentCostUsd),
       emitted?.costUsd,

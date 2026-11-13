@@ -1,5 +1,7 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import type { ChildProcess } from 'node:child_process';
 import {
+  appendFileSync,
   chmodSync,
   mkdirSync,
   mkdtempSync,
@@ -3824,6 +3826,266 @@ describe('--local Today cache savings', () => {
       rmSync(tmpStoragePath, { recursive: true, force: true });
     }
   }, 40000);
+});
+
+describe('--local budget spend', () => {
+  it("counts each session it holds once after the session's saved file joins the baseline", async () => {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpHome = mkdtempSync(join(tmpdir(), 'nr-local-budget-home-'));
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-local-budget-storage-'));
+    const projectDir = resolve(tmpHome, '.claude', 'projects', '-tmp-budget');
+    mkdirSync(projectDir, { recursive: true });
+    const first = 'b1c2d3e4-0000-4000-8000-000000000001';
+    const second = 'b1c2d3e4-0000-4000-8000-000000000002';
+    const agentId = 'a1b2c3d4e5f607189';
+    const subagentsDir = resolve(projectDir, second, 'subagents');
+    mkdirSync(subagentsDir, { recursive: true });
+    const appendTurn = (
+      file: string,
+      sessionId: string,
+      messageId: string,
+      inputTokens: number,
+      outputTokens: number,
+      subagent = false,
+    ): void =>
+      appendFileSync(
+        file,
+        JSON.stringify({
+          type: 'assistant',
+          sessionId,
+          ...(subagent && { agentId }),
+          isSidechain: subagent,
+          uuid: `uuid-${messageId}`,
+          timestamp: new Date().toISOString(),
+          message: {
+            id: messageId,
+            model: 'claude-sonnet-4-5-20250929',
+            role: 'assistant',
+            stop_reason: 'end_turn',
+            content: [{ type: 'text', text: 'ok' }],
+            usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+          },
+        }) + '\n',
+      );
+    const firstTranscript = resolve(projectDir, `${first}.jsonl`);
+
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: tmpHome,
+      USERPROFILE: tmpHome,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_MODE: 'local',
+      NR_AI_ALERTS_ENABLED: 'false',
+      NR_AI_SESSION_PERSIST_INTERVAL_MS: '500',
+      NEW_RELIC_AI_DAILY_BUDGET_USD: '10',
+      NEW_RELIC_AI_WEEKLY_BUDGET_USD: '40',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+    };
+    for (const key of Object.keys(env)) if (key.startsWith('CLAUDE')) delete env[key];
+    const child = spawn(process.execPath, [binPath, '--local'], {
+      env,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    const getJson = async <T>(path: string): Promise<T> =>
+      (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as T;
+    const savedCostUsd = (sessionId: string): number | null => {
+      const file = readdirSync(resolve(tmpStoragePath, 'sessions')).find((f) =>
+        f.endsWith(`_${sessionId}.json`),
+      );
+      if (!file) return null;
+      const saved = JSON.parse(
+        readFileSync(resolve(tmpStoragePath, 'sessions', file), 'utf-8'),
+      ) as { estimatedCostUsd: number | null };
+      return saved.estimatedCostUsd;
+    };
+    const spent = () =>
+      getJson<{ daily: { spentUsd: number }; weekly: { spentUsd: number } }>('/api/budget');
+    const poll = async (predicate: () => boolean | Promise<boolean>): Promise<boolean> => {
+      for (const deadline = Date.now() + 20_000; Date.now() < deadline;) {
+        try {
+          if (await predicate()) return true;
+        } catch {
+          // Not listening or not saved yet.
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      return false;
+    };
+
+    try {
+      appendTurn(firstTranscript, first, 'msg_first_1', 1_000_000, 100_000);
+      appendTurn(
+        resolve(subagentsDir, `agent-${agentId}.jsonl`),
+        second,
+        'msg_second_sub',
+        500_000,
+        50_000,
+        true,
+      );
+      expect(await poll(() => savedCostUsd(first) === 4.5 && savedCostUsd(second) === 2.25)).toBe(
+        true,
+      );
+      // Past the baseline cache's 30 s lifetime, so the next cost update rereads it
+      // with both sessions' files on disk.
+      await new Promise((r) => setTimeout(r, 31_000));
+      appendTurn(firstTranscript, first, 'msg_first_2', 100_000, 10_000);
+      expect(await poll(async () => (await spent()).daily.spentUsd >= 7.2 - 1e-9)).toBe(true);
+
+      const budget = await spent();
+      expect(budget.daily.spentUsd).toBeCloseTo(7.2, 9);
+      expect(budget.weekly.spentUsd).toBeCloseTo(7.2, 9);
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+    }
+  }, 90000);
+});
+describe('--local restart', () => {
+  it('keeps the turns billed before the restart in cost, Today and the daily budget', async () => {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+    const { appendFileSync, mkdirSync } = await import('node:fs');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpHome = mkdtempSync(join(tmpdir(), 'nr-local-restart-home-'));
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-local-restart-storage-'));
+    const configPath = resolve(tmpStoragePath, 'config.json');
+    writeFileSync(configPath, JSON.stringify({ mode: 'local' }));
+
+    const sessionId = '7c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
+    const projectDir = resolve(tmpHome, '.claude', 'projects', '-tmp-restart');
+    mkdirSync(projectDir, { recursive: true });
+    const transcript = resolve(projectDir, `${sessionId}.jsonl`);
+    // 266666 output tokens at $15 per million.
+    const turn = (messageId: string): string =>
+      JSON.stringify({
+        type: 'assistant',
+        sessionId,
+        isSidechain: false,
+        uuid: `uuid-${messageId}`,
+        timestamp: new Date().toISOString(),
+        message: {
+          id: messageId,
+          model: 'claude-sonnet-4-5-20250929',
+          role: 'assistant',
+          stop_reason: 'end_turn',
+          content: [{ type: 'text', text: 'ok' }],
+          usage: {
+            input_tokens: 0,
+            output_tokens: 266_666,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+        },
+      }) + '\n';
+    writeFileSync(transcript, turn('msg_before_restart'));
+    const sessionFile = (): string | undefined =>
+      existsSync(resolve(tmpStoragePath, 'sessions'))
+        ? readdirSync(resolve(tmpStoragePath, 'sessions')).find((f) =>
+            f.endsWith(`${sessionId}.json`),
+          )
+        : undefined;
+
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: tmpHome,
+      USERPROFILE: tmpHome,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_MODE: 'local',
+      NR_AI_ALERTS_ENABLED: 'false',
+      NR_AI_SESSION_PERSIST_INTERVAL_MS: '500',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+    };
+    for (const key of Object.keys(env)) if (key.startsWith('CLAUDE')) delete env[key];
+    const start = (): ChildProcess =>
+      spawn(process.execPath, [binPath, '--local', '--config', configPath], {
+        env,
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+
+    interface Totals {
+      sessionCostUsd: number | null;
+      todayUsd: number | null;
+      dailyBudgetUsd: number | null;
+    }
+    const read = async (): Promise<Totals> => {
+      const get = async <T>(path: string): Promise<T> =>
+        (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as T;
+      const cost = await get<{ cost: { sessionTotalCostUsd: number | null } }>('/api/cost');
+      const today = await get<{ totalCostUsd: number }>('/api/sessions/today/aggregate');
+      const budget = await get<{ daily: { spentUsd: number } }>('/api/budget');
+      return {
+        sessionCostUsd: cost.cost.sessionTotalCostUsd,
+        todayUsd: today.totalCostUsd,
+        dailyBudgetUsd: budget.daily.spentUsd,
+      };
+    };
+    const settle = async (done: (t: Totals) => boolean): Promise<Totals | undefined> => {
+      let last: Totals | undefined;
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        try {
+          last = await read();
+          if (done(last)) break;
+        } catch {
+          // Not listening yet.
+        }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      return last;
+    };
+
+    let child = start();
+    try {
+      const before = await settle(
+        (t) => (t.sessionCostUsd ?? 0) > 3.9 && sessionFile() !== undefined,
+      );
+      expect(before?.sessionCostUsd).toBeCloseTo(4, 2);
+      await new Promise((r) => setTimeout(r, 1500));
+      child.kill('SIGKILL');
+      await new Promise((r) => child.once('exit', r));
+
+      appendFileSync(transcript, turn('msg_after_restart_1') + turn('msg_after_restart_2'));
+      child = start();
+      await settle((t) => (t.sessionCostUsd ?? 0) > 3.9);
+      const after = await settle(
+        (t) =>
+          (t.sessionCostUsd ?? 0) > 11.9 && (t.todayUsd ?? 0) > 11.9 && t.dailyBudgetUsd! > 11.9,
+      );
+
+      expect(after?.sessionCostUsd).toBeCloseTo(12, 2);
+      expect(after?.todayUsd).toBeCloseTo(12, 2);
+      expect(after?.dailyBudgetUsd).toBeCloseTo(12, 2);
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+    }
+  }, 90000);
 });
 
 describe('deploy-dashboards/deploy-alerts --staging is hidden from --help', () => {

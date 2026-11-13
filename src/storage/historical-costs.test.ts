@@ -108,6 +108,17 @@ describe('computeHistoricalCosts', () => {
     });
   });
 
+  it('excludes every session in a set, so sessions a tracker seeded are not counted twice', () => {
+    save('seeded-a', local(15, 8), local(15, 9), 4);
+    save('seeded-b', local(15, 8), local(15, 9), 5);
+    save('other', local(15, 10), local(15, 11), 2);
+
+    expect(computeHistoricalCosts(store, new Set(['seeded-a', 'seeded-b']), REF_TS)).toEqual({
+      priorDailyCostUsd: 2,
+      priorWeeklyCostUsd: 2,
+    });
+  });
+
   it('leaves nothing out when there is no current session', () => {
     save('today', local(15, 10), local(15, 11), 2);
 
