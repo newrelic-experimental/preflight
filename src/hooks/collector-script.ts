@@ -19,8 +19,12 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
-import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
+import {
+  CLAUDE_CODE_ENV_SIGNALS,
+  CLAUDE_CODE_PLATFORM_NAME,
+} from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
+import { breadcrumbRoot, breadcrumbWriter } from './session-breadcrumbs.js';
 import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
 
@@ -99,7 +103,7 @@ function detectStampPlatform(): string | undefined {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
   return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)
-    ? 'claude-code'
+    ? CLAUDE_CODE_PLATFORM_NAME
     : undefined;
 }
 
@@ -164,7 +168,7 @@ function hasStringText(block: unknown): block is { text: string } {
 }
 
 // ---------------------------------------------------------------------------
-// PPID + cwd breadcrumbs — let the MCP server learn the Claude Code session_id
+// PPID + cwd breadcrumbs — let the MCP server learn its engine's session_id
 //
 // Claude Code spawns its MCP server and hook collector scripts as children of
 // the same process; they share a PPID. The MCP can read its own process.ppid
@@ -231,14 +235,13 @@ export function getLinuxAncestorPids(startPpid: number, maxDepth = 5): number[] 
 
 let _breadcrumbWriteFailed = false;
 
-function writePpidBreadcrumb(sessionId: string): void {
+function writePpidBreadcrumb(sessionId: string, root: string): void {
   if (!SESSION_ID_RE.test(sessionId)) return;
   const ppid = process.ppid;
   if (typeof ppid !== 'number' || ppid <= 0) return;
 
   try {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    const breadcrumbDir = resolve(storageDir, 'session-by-ppid');
+    const breadcrumbDir = resolve(root, 'session-by-ppid');
     mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
 
     // Walk ancestor PIDs. On Linux this includes any intermediate shell
@@ -295,13 +298,12 @@ function writePpidBreadcrumb(sessionId: string): void {
 
 let _cwdBreadcrumbWriteFailed = false;
 
-function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined): void {
+function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined, root: string): void {
   if (!SESSION_ID_RE.test(sessionId)) return;
   if (typeof cwd !== 'string' || cwd.length === 0) return;
 
   try {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    const breadcrumbDir = resolve(storageDir, 'session-by-cwd');
+    const breadcrumbDir = resolve(root, 'session-by-cwd');
     mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
 
     // Same sanitization scheme as getTranscriptPath() above, so the MCP
@@ -786,7 +788,7 @@ function processHook(raw: string, cliEvent?: string): void {
     data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
 
   // Drop a PPID breadcrumb at the very top so the MCP server can resolve its
-  // Claude Code session_id without an env-var or initialize-payload extension.
+  // engine's session_id without an env-var or initialize-payload extension.
   // The function itself is a no-op when sessionId is missing or invalid, and
   // short-circuits if the breadcrumb is already current. Cursor's
   // conversation_id is deliberately excluded here — there is no confirmed
@@ -794,8 +796,12 @@ function processHook(raw: string, cliEvent?: string): void {
   // ancestry-based session-resolution model, so extending this to
   // conversation_id would be a guess, not a fix.
   if (typeof data.session_id === 'string' && data.session_id.length > 0) {
-    writePpidBreadcrumb(data.session_id);
-    writeCwdBreadcrumb(data.session_id, data.cwd);
+    const root = breadcrumbRoot(
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR,
+      breadcrumbWriter(detectStampPlatform()),
+    );
+    writePpidBreadcrumb(data.session_id, root);
+    writeCwdBreadcrumb(data.session_id, data.cwd, root);
   }
 
   // Claude Code sends PascalCase hook names ('PreToolUse'); Kiro sends
