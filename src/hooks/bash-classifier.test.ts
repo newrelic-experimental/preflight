@@ -378,6 +378,10 @@ describe('classifyBash', () => {
       expect(classifyBash("echo $'a\\'b'; rm -rf /tmp/x").isDestructive).toBe(true);
     });
 
+    it('treats a hash right after a separator as a comment', () => {
+      expect(classifyBash("ls;# Don't\nrm -rf /tmp/x").isDestructive).toBe(true);
+    });
+
     it('flags a destructive command after a mid-word hash', () => {
       expect(classifyBash('echo a#b ; rm -rf /tmp/x').isDestructive).toBe(true);
     });

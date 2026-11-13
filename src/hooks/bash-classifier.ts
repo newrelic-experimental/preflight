@@ -235,17 +235,36 @@ const DESTRUCTIVE_PATTERNS: readonly RegExp[] = [
 // Replace the contents of single- or double-quoted regions with spaces of
 // the same length so destructive-pattern matching can't be fooled by quoted
 // arguments — e.g. `git commit -m "rm -rf old code"` should NOT classify as
-// destructive. Heuristic: backslash-escapes inside quotes are honoured;
-// dollar-quoted, ANSI-quoted, and heredoc bodies are not handled.
+// destructive. Heuristic: backslash-escapes inside double and ANSI-C
+// (`$'...'`) quotes are honoured, and `#` comments (a `#` that starts a word,
+// outside quotes) are blanked to end of line so an apostrophe in a comment
+// can't open a quote. Heredoc bodies are not handled.
 function maskQuotedRegions(command: string): string {
   let out = '';
   let i = 0;
   while (i < command.length) {
     const ch = command[i];
-    if (ch === "'") {
+    if (ch === '#' && (i === 0 || /[\s;&|()]/.test(command[i - 1]!))) {
+      while (i < command.length && command[i] !== '\n') {
+        out += ' ';
+        i++;
+      }
+      continue;
+    }
+    if (ch === "'" || (ch === '$' && command[i + 1] === "'")) {
+      const ansiC = ch === '$';
+      if (ansiC) {
+        out += ' ';
+        i++;
+      }
       out += ' ';
       i++;
       while (i < command.length && command[i] !== "'") {
+        if (ansiC && command[i] === '\\' && i + 1 < command.length) {
+          out += '  ';
+          i += 2;
+          continue;
+        }
         out += ' ';
         i++;
       }
