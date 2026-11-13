@@ -459,6 +459,7 @@ export class LocalSessionAggregator {
     mcpPrNumber?: unknown;
     mcpPrRepo?: unknown;
     runInBackground?: unknown;
+    toolUseId?: unknown;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
     const timestamp = record.timestamp ?? Date.now();
@@ -503,6 +504,7 @@ export class LocalSessionAggregator {
     if (rollup.timeline.length >= MAX_TIMELINE_ENTRIES) rollup.timeline.shift();
     rollup.timeline.push({
       timestamp,
+      ...(typeof record.toolUseId === 'string' && { toolUseId: record.toolUseId }),
       toolName: tool,
       durationMs: record.durationMs ?? null,
       success: record.success !== false,
