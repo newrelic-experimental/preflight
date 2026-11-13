@@ -126,7 +126,7 @@ The secret flags are `--token`, `--password`, `--passwd`, `--secret`, `--api-key
 
 - Test a new pattern on its own: a token inside `https://user:token@host` is already caught by the URL-credentials pattern, so a test that only uses that form passes without the new pattern. Test the bare token too.
 - Run the changed set over ordinary identifiers (repo names, paths, branch names) and over tokens after `\n`, `\t`, an ANSI colour code and `%3A`.
-- An argument rule's value is read by the scanner, not by its regex. A change to how values are read must keep `src/redaction-patterns.test.ts` passing: random secret words must leave no character behind and must keep the `rm -rf` after them classifiable.
+- An argument rule's value is read by the scanner, not by its regex. A change to how values are read must keep `src/redaction-patterns.test.ts` passing. Its random secret words, each followed by a shell operator or a line break and `rm -rf`, must leave no character behind and keep the `rm` classifiable. A `NAME=` value must also hide every secret character that main's `\s*[=:]\s*\S+` rule hid, including a value on the next line after a bare `NAME=` or `NAME:`.
 - Update this table and CLAUDE.md § Security in the same PR. `npm run verify:plugin-hook` (run by the pre-push hook and the release workflow) checks that the plugin's bundled collector picked up the change.
 
 ### Credentials in logs
