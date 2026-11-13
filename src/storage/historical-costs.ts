@@ -64,7 +64,7 @@ function dailyPortion(session: FullSessionSummary, weekAgo: Date, refTs: number)
 export function computeHistoricalCosts(
   sessionStore: Pick<SessionStore, 'loadAllSessions'>,
   /** Left out of the baseline; null leaves nothing out. */
-  currentSessionId: string | null,
+  excluded: string | ReadonlySet<string> | null,
   refTs: number = Date.now(),
   /** Counts `summary` (nothing when null) in place of `sessionId`'s current file. */
   substitute?: { readonly sessionId: string; readonly summary: FullSessionSummary | null },
@@ -78,7 +78,13 @@ export function computeHistoricalCosts(
       includeModifiedSince: weekAgo,
     });
     for (const loaded of sessions) {
-      if (loaded.sessionId === currentSessionId) continue;
+      if (
+        typeof excluded === 'string'
+          ? loaded.sessionId === excluded
+          : excluded?.has(loaded.sessionId)
+      ) {
+        continue;
+      }
       const session = loaded.sessionId === substitute?.sessionId ? substitute.summary : loaded;
       if (session === null || session.estimatedCostUsd === null) continue;
       priorDailyCostUsd += dailyPortion(session, weekAgo, refTs);
