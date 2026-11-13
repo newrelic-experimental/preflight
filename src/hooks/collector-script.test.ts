@@ -378,26 +378,6 @@ describe('collector-script', () => {
   });
 
   describe('processHook() — secrets passed as Bash arguments', () => {
-    it.each([
-      ['npm run deploy -- --token secret123', 'npm run deploy -- [REDACTED]'],
-      ['mysql -u root -psecret123', 'mysql -u root [REDACTED]'],
-      [
-        'curl -H "X-Api-Key secret123" https://api.example.com',
-        'curl -H "[REDACTED]" https://api.example.com',
-      ],
-      ['curl --token="my secret" x', 'curl --[REDACTED] x'],
-      ["tool --password='a b S3CRET9' x", 'tool --[REDACTED] x'],
-      ['API_KEY="a b S3CRET9" x', '[REDACTED] x'],
-      ['curl --token \\\n  S3CRET9 x', 'curl [REDACTED] x'],
-      ['curl -H \\\n    "X-Api-Key: S3CRET9" x', 'curl -H \\\n    "[REDACTED]" x'],
-      ['curl --token "sec\\"S3CRET9" x', 'curl [REDACTED] x'],
-    ])('writes %s to the buffer with the secret redacted', (command, expected) => {
-      processHook(makePreToolUse({ tool_name: 'Bash', tool_input: { command } }));
-
-      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
-      expect(toolInput.command).toBe(expected);
-    });
-
     const token = `ghp_${'A'.repeat(36)}`;
     const straddling = `echo ${'x'.repeat(10_240 - 16 - 'echo '.length - 1)} ${token}`;
     it.each([

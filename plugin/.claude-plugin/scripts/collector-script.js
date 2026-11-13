@@ -9,28 +9,7 @@ import { createHash } from "node:crypto";
 // src/redaction-patterns.ts
 var AFTER_ESCAPE = String.raw`\\[nrt]|\\u[0-9a-fA-F]{4}|\x1b\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
 var CONTINUATION = String.raw`(?:\\\r?\n|\\\\\\n)`;
-var DQ_CHAR = String.raw`(?:[^"\\\n]|${CONTINUATION}|\\.)`;
-var JSON_DQ_CHAR = String.raw`(?:[^"\\\n]|\\\\\\"|\\[^"\n])`;
-var SQ_CHAR = String.raw`[^'\n]`;
-var ANSI_SQ_CHAR = String.raw`(?:[^'\\\n]|\\.)`;
-var QUOTED = [
-  String.raw`\\"${JSON_DQ_CHAR}{0,1000}\\"`,
-  String.raw`"${DQ_CHAR}{0,1000}"`,
-  String.raw`\$'${ANSI_SQ_CHAR}{0,1000}'`,
-  String.raw`'${SQ_CHAR}{0,1000}'`
-].join("|");
-var VALUE = String.raw`(?!${CONTINUATION})(?:${QUOTED}|${CONTINUATION}|\S)+`;
-var AFTER_SEPARATOR = String.raw`\s*`;
-var FLAG_GAP = String.raw`(?:[ \t]|${CONTINUATION})+(?!-)`;
-var P_FLAG_START = String.raw`(?:\s|${AFTER_ESCAPE})-p`;
-var HEADER_FLAG = String.raw`(?:-H|--header)(?:[\s=]|${CONTINUATION}){1,8}`;
-var HEADER_NAME = String.raw`(?:x-)?(?:api-?key|auth-token|access-token)`;
-var HEADER_SEP = String.raw`(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})`;
 var REDACTION_PATTERNS = [
-  new RegExp(
-    String.raw`(?<![a-zA-Z])(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-zA-Z])\s*[=:]${AFTER_SEPARATOR}${VALUE}`,
-    "gi"
-  ),
   /(?:sk-|ghp_|gho_|ghs_|github_pat_|xoxb-|xoxp-|Bearer\s+)[A-Za-z0-9_-]{20,200}/g,
   /-----BEGIN[^-\n]{0,100}-----[A-Za-z0-9+/=\r\n. ]{0,65536}-----END[^-\n]{0,100}-----/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
@@ -47,30 +26,244 @@ var REDACTION_PATTERNS = [
   /\b(?:AC|SK)[a-f0-9]{32}\b/g,
   /(?:[?&])(?:sig|se|sp|srt|ss|sv|st)=[A-Za-z0-9%_-]+/gi,
   /\b(?:vercel_|heroku_|dd_|pk_)[A-Za-z0-9_-]{20,}\b/gi,
-  // The argument rules start with a literal before any lookbehind. A leading lookbehind runs at
-  // every position and tripled the cost of a plain 1 MB command.
-  new RegExp(
-    String.raw`-(?<=(?:^|[^\w-]|${AFTER_ESCAPE})-)-?(?:[a-z0-9]{1,30}[-_]){0,3}(?:token|password|passwd|secret|(?:api|access|secret|private)[-_]?key)(?:${FLAG_GAP}|=${AFTER_SEPARATOR})${VALUE}`,
-    "gi"
-  ),
-  // -p is a port, parents or preserve flag everywhere else, so only a mysql client's -p<value> counts,
-  // and never a docker-style -p3306:3306 port mapping.
-  // The lookbehind stops at the previous -p, so each scan covers new text and the cost stays linear.
-  new RegExp(
-    String.raw`-p(?<=\b(?:mysql(?:dump|admin)?|mariadb)\b(?:${QUOTED}|${CONTINUATION}|(?!${P_FLAG_START})[^\n;|&"'])*${P_FLAG_START})(?![\d.]+:\d)${VALUE}`,
-    "g"
-  ),
-  new RegExp(
-    String.raw`${HEADER_NAME}(?:${[
-      String.raw`(?<=${HEADER_FLAG}"${HEADER_NAME})${HEADER_SEP}${DQ_CHAR}{1,1000}`,
-      String.raw`(?<=${HEADER_FLAG}\\"${HEADER_NAME})${HEADER_SEP}${JSON_DQ_CHAR}{1,1000}`,
-      String.raw`(?<=${HEADER_FLAG}'${HEADER_NAME})${HEADER_SEP}${SQ_CHAR}{1,1000}`,
-      String.raw`(?<=${HEADER_FLAG}${HEADER_NAME})${HEADER_SEP}[^\s"']+`
-    ].join("|")})`,
-    "gi"
-  ),
-  /aws_secret_access_key(?:[ \t]*[=:][ \t]*|[ \t]+)["']?[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/gi
+  /aws_secret_access_key(?:[ \t]*[=:][ \t]*|[ \t]+)(?:\\"[A-Za-z0-9/+]{40}\\"|"[A-Za-z0-9/+]{40}"|'[A-Za-z0-9/+]{40}'|[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+]))/gi
 ];
+var BACKSLASH = 92;
+var DOUBLE_QUOTE = 34;
+var SINGLE_QUOTE = 39;
+var DOLLAR = 36;
+var HASH = 35;
+var LF = 10;
+var CR = 13;
+var EOF = -1;
+var CLOSE = -2;
+var PLAIN = -3;
+var MAX_QUOTED_PART = 4096;
+var charTable = (chars) => Uint8Array.from({ length: 128 }, (_, c) => chars.includes(String.fromCharCode(c)) ? 1 : 0);
+var OPERATORS = ";|&()<>`";
+var OPERATOR = charTable(OPERATORS);
+var SPECIAL = charTable(`	
+\v\f\r ${OPERATORS}"'\\$`);
+var isSpace = (c) => c === 32 || c >= 9 && c <= 13;
+var isOperator = (c) => c >= 0 && c < 128 && OPERATOR[c] === 1;
+var isBlankOrOperator = (c) => isSpace(c) || isOperator(c);
+function skipPlain(text, from) {
+  let i = from;
+  while (i < text.length) {
+    const c = text.charCodeAt(i);
+    if (c < 128 && SPECIAL[c] === 1) break;
+    i++;
+  }
+  return i;
+}
+function unitAt(text, i, context) {
+  if (i >= text.length) return EOF;
+  const c = text.charCodeAt(i);
+  if (context === "double") {
+    if (c === DOUBLE_QUOTE) return CLOSE;
+    if (c !== BACKSLASH || i + 1 >= text.length) return c;
+    const escaped = text.charCodeAt(i + 1);
+    if (escaped === DOUBLE_QUOTE || escaped === BACKSLASH) return escaped;
+    if (escaped === 110) return LF;
+    if (escaped === 114) return CR;
+    return escaped === 116 ? 9 : PLAIN;
+  }
+  if (context === "comment") return c === LF ? CLOSE : c;
+  return c === SINGLE_QUOTE && context !== "none" ? CLOSE : c;
+}
+function unitLength(text, i, context) {
+  return context === "double" && text.charCodeAt(i) === BACKSLASH && i + 1 < text.length ? 2 : 1;
+}
+function readValue(text, from, context, inside = "none") {
+  let i = from;
+  let part = inside;
+  let opened = from - 1;
+  let dollar = false;
+  for (; ; ) {
+    const plain = skipPlain(text, i);
+    if (plain > i) {
+      i = plain;
+      dollar = false;
+    }
+    const c = unitAt(text, i, context);
+    if (part !== "none") {
+      if (c === EOF || c === CLOSE) return bareWord(text, from, context);
+      if (i - opened - 1 > MAX_QUOTED_PART) return plainPrefix(text, from);
+    } else if (c === EOF || c === CLOSE || isBlankOrOperator(c)) {
+      return i;
+    }
+    const at = i;
+    i += unitLength(text, i, context);
+    if (c === BACKSLASH && part !== "single") {
+      i = afterEscaped(text, i, context);
+    } else if (part === "none" && (c === DOUBLE_QUOTE || c === SINGLE_QUOTE)) {
+      part = c === DOUBLE_QUOTE ? "double" : dollar ? "ansi" : "single";
+      opened = at;
+    } else if (part !== "none" && c === (part === "double" ? DOUBLE_QUOTE : SINGLE_QUOTE)) {
+      if (inside !== "none") return at;
+      part = "none";
+    }
+    dollar = c === DOLLAR;
+  }
+}
+function afterEscaped(text, from, context) {
+  const escaped = unitAt(text, from, context);
+  if (escaped === EOF || escaped === CLOSE) return from;
+  const i = from + unitLength(text, from, context);
+  return escaped === CR && unitAt(text, i, context) === LF ? i + unitLength(text, i, context) : i;
+}
+function bareWord(text, from, context) {
+  let i = from;
+  for (; ; ) {
+    i = skipPlain(text, i);
+    const c = unitAt(text, i, context);
+    if (c === EOF || c === CLOSE || isBlankOrOperator(c)) return i;
+    i += unitLength(text, i, context);
+    if (c === BACKSLASH) i = afterEscaped(text, i, context);
+  }
+}
+function quotedRun(text, from, quote) {
+  const end = skipPlain(text, from + 1);
+  const run = quote !== "comment" && unitAt(text, from, quote) === CLOSE && text[end] === text[from];
+  return run ? end + 1 : from;
+}
+function plainPrefix(text, from) {
+  let i = skipPlain(text, from);
+  while (text.charCodeAt(i) === DOLLAR) i = skipPlain(text, i + 1);
+  return i;
+}
+var QuoteTracker = class {
+  constructor(text) {
+    this.text = text;
+  }
+  text;
+  index = 0;
+  quote = "none";
+  dollar = false;
+  advanceTo(to) {
+    const { text } = this;
+    let { index: i, quote, dollar } = this;
+    for (; i < to; i++) {
+      const c = text.charCodeAt(i);
+      if (quote === "comment") {
+        if (c === LF) quote = "none";
+      } else if (quote === "single") {
+        if (c === SINGLE_QUOTE) quote = "none";
+      } else if (c === BACKSLASH) {
+        i++;
+      } else if (quote === "none") {
+        if (c === DOUBLE_QUOTE) quote = "double";
+        else if (c === SINGLE_QUOTE) quote = dollar ? "ansi" : "single";
+        else if (c === HASH && (i === 0 || isBlankOrOperator(text.charCodeAt(i - 1))))
+          quote = "comment";
+      } else if (c === (quote === "double" ? DOUBLE_QUOTE : SINGLE_QUOTE)) {
+        quote = "none";
+      }
+      dollar = c === DOLLAR;
+    }
+    this.index = i;
+    this.quote = quote;
+    this.dollar = dollar;
+    return quote;
+  }
+  skipRedacted(start, end) {
+    this.advanceTo(start);
+    this.index = Math.max(this.index, end);
+    this.dollar = false;
+  }
+};
+function pushValue(spans, spanStart, from, end) {
+  if (end > from) spans.push(spanStart, end);
+  return end;
+}
+var HEADER = new RegExp(
+  String.raw`((?:-H|--header)(?:[\s=]|${CONTINUATION}){1,8}(\\"|"|')?)(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})`,
+  "gi"
+);
+var headerValue = (text, match, quote, spans) => {
+  const from = match.index + match[0].length;
+  const opener = match[2];
+  const double = opener === '"' || opener === '\\"' && quote === "double";
+  const end = readValue(text, from, quote, opener === "'" ? "single" : double ? "double" : "none");
+  return pushValue(spans, match.index + match[1].length, from, end);
+};
+var NAME = /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-z])[ \t]*[=:][ \t]*/gi;
+var FLAG = new RegExp(
+  String.raw`-(?<=(?:^|[^\w-]|${AFTER_ESCAPE})-)-?(?:[a-z0-9]+[-_])*(?:token|password|passwd|secret|(?:api|access|secret|private)[-_]?key)(?:=[ \t]*|(?:[ \t]|${CONTINUATION})+(?![ \t-]|${CONTINUATION}))`,
+  "gi"
+);
+var wordValue = (text, match, quote, spans) => {
+  const from = match.index + match[0].length;
+  const end = readValue(text, from, quote);
+  return pushValue(spans, match.index, from, end > from ? end : quotedRun(text, from, quote));
+};
+var MYSQL = /\b(?:mysql(?:dump|admin)?|mariadb)\b/g;
+var ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, "y");
+var PORT_MAPPING = /[\d.]+:\d/y;
+var REDIRECT = /&>>?|[<>][<>&|]*/y;
+var mysqlPasswords = (text, match, quote, spans) => {
+  let i = match.index + match[0].length;
+  for (; ; ) {
+    while (isSpace(unitAt(text, i, quote)) && text.charCodeAt(i) !== LF) {
+      i += unitLength(text, i, quote);
+    }
+    REDIRECT.lastIndex = i;
+    if ("<>&".includes(text[i]) && REDIRECT.test(text)) {
+      i = REDIRECT.lastIndex;
+      continue;
+    }
+    const end = readValue(text, i, quote);
+    if (end === i) return i;
+    const flag = passwordFlag(text, i, end);
+    if (flag >= 0) spans.push(flag, end);
+    i = end;
+  }
+};
+function passwordFlag(text, from, end) {
+  for (let flag = from; flag + 2 < end; flag++) {
+    if (text.charCodeAt(flag) !== 45 || text.charCodeAt(flag + 1) !== 112) continue;
+    ESCAPED_P.lastIndex = flag;
+    if (flag > from && !ESCAPED_P.test(text)) continue;
+    PORT_MAPPING.lastIndex = flag + 2;
+    return PORT_MAPPING.test(text) ? -1 : flag;
+  }
+  return -1;
+}
+var RULES = [
+  { start: HEADER, redact: headerValue },
+  { start: NAME, redact: wordValue },
+  ...REDACTION_PATTERNS,
+  { start: FLAG, redact: wordValue },
+  { start: MYSQL, redact: mysqlPasswords }
+];
+function redactSecrets(text, counts) {
+  let result = text;
+  for (const rule of RULES) result = applyRule(result, rule, counts);
+  return result;
+}
+function applyRule(text, rule, counts) {
+  if (rule instanceof RegExp && counts === void 0) return text.replace(rule, "[REDACTED]");
+  const pattern = rule instanceof RegExp ? rule : rule.start;
+  const quotes = rule instanceof RegExp ? void 0 : new QuoteTracker(text);
+  const spans = [];
+  pattern.lastIndex = 0;
+  for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
+    if (counts !== void 0 && !counts(text, match.index)) {
+      pattern.lastIndex = match.index + 1;
+      continue;
+    }
+    const first = spans.length;
+    let resume = pattern.lastIndex;
+    if (quotes === void 0 || rule instanceof RegExp) spans.push(match.index, resume);
+    else resume = rule.redact(text, match, quotes.advanceTo(match.index), spans);
+    for (let k = first; k < spans.length; k += 2) quotes?.skipRedacted(spans[k], spans[k + 1]);
+    pattern.lastIndex = resume;
+  }
+  if (spans.length === 0) return text;
+  const kept = [text.slice(0, spans[0])];
+  for (let k = 1; k < spans.length; k += 2) kept.push(text.slice(spans[k], spans[k + 1]));
+  return kept.join("[REDACTED]");
+}
 
 // src/record-content-gate.ts
 function resolveRecordContent(highSecurity, explicitValue) {
@@ -274,11 +467,7 @@ function redact(value) {
     const buf = Buffer.from(value, "utf8").subarray(0, MAX_REDACT_BYTES);
     result = buf.toString("utf8").replace(/�$/, "");
   }
-  for (const pattern of REDACTION_PATTERNS) {
-    const re = new RegExp(pattern.source, pattern.flags);
-    result = result.replace(re, "[REDACTED]");
-  }
-  return result;
+  return redactSecrets(result);
 }
 function hashInput(input) {
   const str = JSON.stringify(input) ?? "";
