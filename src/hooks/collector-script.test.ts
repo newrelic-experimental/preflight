@@ -374,6 +374,14 @@ describe('collector-script', () => {
     it.each([
       ['npm run deploy -- --token secret123', 'npm run deploy -- [REDACTED]'],
       ['mysql -u root -psecret123', 'mysql -u root [REDACTED]'],
+      ['curl -u alice:s3cretpw https://api.example.com', 'curl [REDACTED] https://api.example.com'],
+      [
+        'curl -H "Authorization: Basic YWxpY2U6cw==" https://api.example.com',
+        'curl -H "[REDACTED]" https://api.example.com',
+      ],
+      ['docker login -u me -p s3cretpw', 'docker login -u me [REDACTED]'],
+      ['sshpass -p hunter2 ssh -p 2222 host', 'sshpass [REDACTED] ssh -p 2222 host'],
+      ['redis-cli -a s3cretpw ping', 'redis-cli [REDACTED] ping'],
       [
         'curl -H "X-Api-Key secret123" https://api.example.com',
         'curl -H "[REDACTED]" https://api.example.com',
