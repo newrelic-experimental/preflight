@@ -1,9 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ModelRecommendationConfidence, ModelRecommendationReport } from './trend-analyzer.js';
-import { publishModelRecommendation } from './model-recommendation-publisher.js';
+import {
+  publishModelRecommendation,
+  startModelRecommendationPublisher,
+} from './model-recommendation-publisher.js';
 
 let storagePath: string;
 
@@ -109,5 +120,130 @@ describe('publishModelRecommendation', () => {
       publishModelRecommendation(analyzerReturning('high', 'model-a'), missing),
     ).not.toThrow();
     expect(existsSync(join(missing, 'model-recommendation.json'))).toBe(true);
+  });
+
+  describe('crash leftovers', () => {
+    const DEAD_PID = 2147483647;
+    const leftover = (suffix: string | number) =>
+      join(storagePath, `model-recommendation.json.tmp-${suffix}`);
+
+    it('removes a leftover whose writer process is gone', () => {
+      writeFileSync(leftover(DEAD_PID), '{"partial"');
+
+      publishModelRecommendation(analyzerReturning('high', 'model-a'), storagePath);
+
+      expect(existsSync(leftover(DEAD_PID))).toBe(false);
+    });
+
+    it('removes a leftover older than a minute even when its pid is alive', () => {
+      const path = leftover(process.pid);
+      writeFileSync(path, '{"partial"');
+      const twoMinutesAgo = new Date(Date.now() - 2 * 60_000);
+      utimesSync(path, twoMinutesAgo, twoMinutesAgo);
+
+      publishModelRecommendation(analyzerReturning('high', 'model-a'), storagePath);
+
+      expect(existsSync(path)).toBe(false);
+    });
+
+    it('keeps a fresh temp file that a live process is still writing', () => {
+      const path = leftover(process.ppid);
+      writeFileSync(path, '{"partial"');
+
+      publishModelRecommendation(analyzerReturning('high', 'model-a'), storagePath);
+
+      expect(existsSync(path)).toBe(true);
+    });
+
+    it('sweeps leftovers when the verdict is not high confidence', () => {
+      writeFileSync(leftover(DEAD_PID), '{"partial"');
+
+      publishModelRecommendation(analyzerReturning('low', 'model-a'), storagePath);
+
+      expect(existsSync(leftover(DEAD_PID))).toBe(false);
+    });
+  });
+});
+
+describe('startModelRecommendationPublisher', () => {
+  const HOUR_MS = 60 * 60 * 1000;
+  const file = () => join(storagePath, 'model-recommendation.json');
+  const recommendedModel = () => JSON.parse(readFileSync(file(), 'utf8')).recommendedModel;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('does not publish during startup', () => {
+    const stop = startModelRecommendationPublisher(
+      analyzerReturning('high', 'model-a'),
+      storagePath,
+    );
+
+    expect(existsSync(file())).toBe(false);
+    stop();
+  });
+
+  it('publishes the first verdict about 10 seconds after startup', () => {
+    const stop = startModelRecommendationPublisher(
+      analyzerReturning('high', 'model-a'),
+      storagePath,
+    );
+
+    jest.advanceTimersByTime(9_999);
+    expect(existsSync(file())).toBe(false);
+
+    jest.advanceTimersByTime(1);
+    expect(existsSync(file())).toBe(true);
+    stop();
+  });
+
+  it('republishes the current verdict every hour', () => {
+    let current = 'model-a';
+    const analyzer = {
+      rankModelsByOutcome: () => analyzerReturning('high', current).rankModelsByOutcome(),
+    };
+    const stop = startModelRecommendationPublisher(analyzer, storagePath);
+    jest.advanceTimersByTime(10_000);
+    expect(recommendedModel()).toBe('model-a');
+
+    current = 'model-b';
+    jest.advanceTimersByTime(HOUR_MS - 10_000 - 1);
+    expect(recommendedModel()).toBe('model-a');
+
+    jest.advanceTimersByTime(1);
+    expect(recommendedModel()).toBe('model-b');
+    stop();
+  });
+
+  it('cancels the deferred first publish when stopped before it fires', () => {
+    const stop = startModelRecommendationPublisher(
+      analyzerReturning('high', 'model-a'),
+      storagePath,
+    );
+
+    stop();
+    jest.advanceTimersByTime(2 * HOUR_MS);
+
+    expect(existsSync(file())).toBe(false);
+  });
+
+  it('cancels the hourly interval when stopped after the first publish', () => {
+    const stop = startModelRecommendationPublisher(
+      analyzerReturning('high', 'model-a'),
+      storagePath,
+    );
+    jest.advanceTimersByTime(10_000);
+    expect(existsSync(file())).toBe(true);
+
+    rmSync(file());
+    stop();
+    jest.advanceTimersByTime(2 * HOUR_MS);
+
+    expect(existsSync(file())).toBe(false);
   });
 });
