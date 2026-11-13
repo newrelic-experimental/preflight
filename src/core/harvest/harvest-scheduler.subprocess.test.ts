@@ -37,7 +37,7 @@ describeIfBuilt('HarvestScheduler subprocess smoke', () => {
   let outputPath: string;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'nr-ai-shared-subprocess-'));
+    tmpDir = mkdtempSync(join(tmpdir(), 'preflight-core-subprocess-'));
     outputPath = join(tmpDir, 'events.jsonl');
   });
 

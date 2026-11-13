@@ -2,7 +2,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { MetricAggregator } from '../shared/index.js';
+import type { MetricAggregator } from '../core/index.js';
 import { SessionStore } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import type { ToolCallRecord } from '../storage/types.js';

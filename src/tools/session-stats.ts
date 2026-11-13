@@ -15,7 +15,7 @@ import {
   ErrorCode,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { redactSensitive } from '../config.js';
 import type { SecretSources } from '../secret-command.js';
 import { VERSION } from '../version.js';

@@ -1,4 +1,4 @@
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { localDateKey } from '../lib/date.js';
 import { todayCostOfSummary } from '../metrics/cost-tracker-seed.js';
 import type { FullSessionSummary, SessionStore } from './session-store.js';

@@ -1,4 +1,4 @@
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../metrics/quality-proxy-tracker.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import { SessionStore } from '../storage/session-store.js';

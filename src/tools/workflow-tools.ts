@@ -10,7 +10,7 @@
 
 import { z } from 'zod';
 
-import type { MetricAggregator } from '../shared/index.js';
+import type { MetricAggregator } from '../core/index.js';
 import type { TaskDetector, AiCodingTask } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';

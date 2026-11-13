@@ -17,8 +17,8 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import type { MetricAggregator, ModelPricing } from '../shared/index.js';
-import { createLogger } from '../shared/index.js';
+import type { MetricAggregator, ModelPricing } from '../core/index.js';
+import { createLogger } from '../core/index.js';
 import { resolvePricing } from './pricing-overlay.js';
 import type { SessionStore } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';

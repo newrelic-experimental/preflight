@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import type { Logger } from '../shared/index.js';
+import type { Logger } from '../core/index.js';
 import { ThrottledWarning } from './throttled-warning.js';
 
 describe('ThrottledWarning', () => {

@@ -4,7 +4,7 @@
  * upstream MCP server traffic flowing through the proxy.
  */
 
-import type { MetricAggregator } from '../shared/index.js';
+import type { MetricAggregator } from '../core/index.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js';
 import { computeDurationStats, type DurationStats } from './session-tracker.js';
 

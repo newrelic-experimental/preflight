@@ -5,8 +5,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { createLogger } from '../shared/index.js';
-import type { NrEventData } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
+import type { NrEventData } from '../core/index.js';
 import type { ToolCallRecord, AuditEntry } from '../storage/types.js';
 import type { ProxyToolCallRecord } from '../proxy/types.js';
 import type { LocalStore } from '../storage/local-store.js';

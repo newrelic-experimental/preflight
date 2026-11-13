@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from '@jest/globals';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { initPricing, resolveModelPricing } from '../shared/pricing.js';
+import { initPricing, resolveModelPricing } from '../core/pricing.js';
 import { applyGapFilledOverlay, resolvePricingOverlayPath } from './pricing-overlay.js';
 
 describe('pricing overlay integration', () => {
@@ -12,7 +12,7 @@ describe('pricing overlay integration', () => {
     initPricing(null);
   });
 
-  it('loads the real bundled overlay file (via its resolved path) without disturbing vendored entries', () => {
+  it('loads the real bundled overlay file (via its resolved path) without disturbing built-in entries', () => {
     const overlayPath = resolvePricingOverlayPath();
     expect(overlayPath).not.toBeNull();
     initPricing(overlayPath);
@@ -30,18 +30,18 @@ describe('pricing overlay integration', () => {
       rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it('drops an overlay entry that collides with an already-vendored model instead of overriding it', () => {
-      const vendoredBefore = resolveModelPricing('claude-opus-4-8');
-      expect(vendoredBefore).toMatchObject({ inputPerMTok: 5, outputPerMTok: 25 });
+    it('drops an overlay entry that collides with an already-built-in model instead of overriding it', () => {
+      const builtInBefore = resolveModelPricing('claude-opus-4-8');
+      expect(builtInBefore).toMatchObject({ inputPerMTok: 5, outputPerMTok: 25 });
 
       tmpDir = mkdtempSync(join(tmpdir(), 'preflight-overlay-collision-test-'));
       const overlayPath = join(tmpDir, 'pricing.json');
       writeFileSync(
         overlayPath,
         JSON.stringify({
-          // Colliding key: already vendored, with deliberately wrong rates —
+          // Colliding key: already in the table, with deliberately wrong rates —
           // if the collision guard failed, resolveModelPricing would return
-          // these bogus values instead of the real vendored ones.
+          // these bogus values instead of the real built-in ones.
           'claude-opus-4-8': { inputPerMTok: 999, outputPerMTok: 999, contextWindow: 200000 },
           // Genuine gap key alongside it — must still be applied even though
           // the colliding key above was dropped.
@@ -51,7 +51,7 @@ describe('pricing overlay integration', () => {
 
       applyGapFilledOverlay(overlayPath);
 
-      expect(resolveModelPricing('claude-opus-4-8')).toEqual(vendoredBefore);
+      expect(resolveModelPricing('claude-opus-4-8')).toEqual(builtInBefore);
       expect(resolveModelPricing('a-brand-new-gap-model')).toMatchObject({
         inputPerMTok: 1,
         outputPerMTok: 2,

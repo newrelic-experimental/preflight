@@ -16,7 +16,7 @@
  * Final score = weighted average, clamped to [0, 1].
  */
 
-import type { MetricAggregator } from '../shared/index.js';
+import type { MetricAggregator } from '../core/index.js';
 import type { AiCodingTask } from './task-detector.js';
 import type { AntiPattern } from './anti-patterns.js';
 import type { Resettable } from './tracker-contracts.js';

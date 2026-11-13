@@ -1,7 +1,7 @@
 import { SpanStatusCode, context } from '@opentelemetry/api';
 import type { ToolCallRecord } from '../storage/types.js';
 import { getMcpTracer } from './mcp-tracer.js';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 
 const logger = createLogger('tool-call-span');
 

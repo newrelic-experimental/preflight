@@ -37,10 +37,6 @@ const config: Config = {
   displayName: 'preflight',
   maxWorkers: 1,
   forceExit: true,
-  // src/shared/index.test.ts verifies that VERSION matches the upstream package.json.
-  // That invariant is not meaningful here — shared is inlined source, not a versioned
-  // package — and the path resolution (join(__dirname, '..', 'package.json')) resolves
-  // correctly in the upstream repo but to src/package.json (non-existent) in this layout.
   // Integration tests spawn real child processes and require a compiled binary
   // (built via beforeAll). They run via `npm run test:integration`, which CI's `processes` job also runs.
   testPathIgnorePatterns: [
@@ -48,7 +44,6 @@ const config: Config = {
     // src/web is Vitest's (jsdom + React). Jest's testMatch would otherwise claim
     // any .test.ts there, running it under both runners.
     '<rootDir>/src/web/',
-    'src/shared/index\\.test\\.ts',
     '<rootDir>/src/multi-instance\\.integration\\.test\\.ts',
   ],
 };

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { calculateCost } from '../shared/index.js';
+import { calculateCost } from '../core/index.js';
 import {
   computeSubagentPeak,
   SubagentTimelineStore,

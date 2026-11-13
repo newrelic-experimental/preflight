@@ -23,7 +23,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 
 const logger = createLogger('workflow-script-parser');
 

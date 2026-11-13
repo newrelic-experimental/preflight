@@ -1,5 +1,5 @@
-import type { ModelPricing } from '../shared/index.js';
-import { createLogger } from '../shared/index.js';
+import type { ModelPricing } from '../core/index.js';
+import { createLogger } from '../core/index.js';
 
 const logger = createLogger('model-pricing');
 

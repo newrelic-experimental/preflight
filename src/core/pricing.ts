@@ -419,7 +419,7 @@ export function loadCustomPricing(filePath: string): Record<string, ModelPricing
  * caller doing
  *
  * ```ts
- * import { DEFAULT_PRICING_TABLE } from '@newrelic/ai-telemetry';
+ * import { DEFAULT_PRICING_TABLE } from '../core/index.js';
  * DEFAULT_PRICING_TABLE['claude-opus-4-7'].outputPerMTok = 99999;
  * ```
  *

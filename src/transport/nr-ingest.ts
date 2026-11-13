@@ -1,6 +1,6 @@
 /**
  * New Relic Event Ingestion — converts ToolCallRecords into NR events and
- * metrics, then ships them via the shared HarvestScheduler.
+ * metrics, then ships them via the HarvestScheduler.
  */
 
 import type {
@@ -9,7 +9,7 @@ import type {
   NrLogEntry,
   TransportOptions,
   TransportResult,
-} from '../shared/index.js';
+} from '../core/index.js';
 import {
   HarvestScheduler,
   MetricAggregator,
@@ -18,7 +18,7 @@ import {
   OtlpTransport,
   OtlpEventBridge,
   createLogger,
-} from '../shared/index.js';
+} from '../core/index.js';
 
 const logger = createLogger('nr-ingest');
 import { redactSensitive } from '../config.js';
@@ -102,13 +102,13 @@ export interface NrIngestOptions {
    * same audit log instance in both `local` and `cloud`/`both` modes.
    */
   auditTrail?: AuditTrailManager;
-  /** Override for testing; defaults to the shared sendEvents transport. */
+  /** Override for testing; defaults to the core sendEvents transport. */
   sendEventsFn?: SendEventsFn;
-  /** Override for testing; defaults to the shared sendMetrics transport. */
+  /** Override for testing; defaults to the core sendMetrics transport. */
   sendMetricsFn?: SendMetricsFn;
   /** Harvest interval for NR Logs API delivery. Default: 5000ms. */
   logHarvestIntervalMs?: number;
-  /** Override for testing; defaults to the shared sendLogs transport. */
+  /** Override for testing; defaults to the core sendLogs transport. */
   sendLogsFn?: SendLogsFn;
   /** Cost tracker for emitting ai.cost.* metrics. */
   costTracker?: CostTracker;

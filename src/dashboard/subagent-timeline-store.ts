@@ -35,7 +35,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { createLogger, type TokenUsage } from '../shared/index.js';
+import { createLogger, type TokenUsage } from '../core/index.js';
 import { calculateModelCost } from '../metrics/pricing-overlay.js';
 import { AGENT_ID_RE } from '../lib/agent-id.js';
 import { claudeProjectsDir } from '../lib/claude-config-dir.js';

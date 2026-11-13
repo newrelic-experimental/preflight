@@ -49,7 +49,7 @@ import {
 } from 'node:fs';
 import { resolve, basename } from 'node:path';
 import { homedir } from 'node:os';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { claudeProjectsDir } from '../lib/claude-config-dir.js';
 import {
   getAncestorPids,

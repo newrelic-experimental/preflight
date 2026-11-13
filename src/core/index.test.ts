@@ -53,11 +53,9 @@ import {
   truncateErrorMessage,
 } from './index.js';
 
-describe('shared package', () => {
-  // EVENT_SCHEMA_VERSION must be importable from the
-  // package root so consumers can `import { EVENT_SCHEMA_VERSION } from
-  // '@newrelic/ai-telemetry'` per the documented public API.
-  it('exports EVENT_SCHEMA_VERSION from the package root', () => {
+describe('core index', () => {
+  // EVENT_SCHEMA_VERSION must stay importable from the core index.
+  it('exports EVENT_SCHEMA_VERSION from the index', () => {
     expect(EVENT_SCHEMA_VERSION).toBe(1);
   });
 

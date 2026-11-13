@@ -30,13 +30,13 @@ Key settings:
 | `forceExit`              | `true`                                                          | Ensures Jest terminates after harvest schedulers / proxies are stopped |
 | `tsconfig` (transform)   | `tsconfig.test.json`                                            | Loose TS settings for test compilation                                 |
 
-`src/shared/` is imported relatively (`from '../shared/index.js'`), so no special module resolution is required.
+`src/core/` is imported relatively (`from '../core/index.js'`), so no special module resolution is required.
 
 ### Running tests
 
 ```bash
 npm test                                         # Entire Jest suite
-npx jest -- src/shared/                          # All tests under one directory
+npx jest -- src/core/                          # All tests under one directory
 npx jest -- src/metrics/cost-tracker.test.ts     # One file
 npx jest -- --testNamePattern="re-queues"        # Tests matching a name pattern
 ```
@@ -497,19 +497,19 @@ The philosophy: mock at system boundaries (network, stdio), use real implementat
 
 These files demonstrate the patterns well and serve as templates for new tests:
 
-| File                                           | Demonstrates                                                                      |
-| ---------------------------------------------- | --------------------------------------------------------------------------------- |
-| `src/shared/harvest/harvest-scheduler.test.ts` | Fake timers, mock send functions, retry/requeue, concurrent stop, atomic snapshot |
-| `src/metrics/session-tracker.test.ts`          | Metric tracker pattern: record → getMetrics → assert                              |
-| `src/metrics/anti-patterns.test.ts`            | Sequence-based detection: build record arrays, analyze, filter results            |
-| `src/metrics/efficiency-score.test.ts`         | Task factory, component scoring, boundary conditions                              |
-| `src/hooks/event-processor.test.ts`            | Pre/post event pairing, temp directory, mock callback                             |
-| `src/storage/local-store.test.ts`              | Filesystem tests with temp directory cleanup, edge cases                          |
-| `src/tools/session-stats.test.ts`              | Tool handler pattern: real trackers → handler → JSON.parse                        |
-| `src/tools/cross-session-tools.test.ts`        | Cross-session tools with SessionStore, temp directory, rich factories             |
-| `src/shared/transport/http-client.test.ts`     | fetch mocking, gzip verification, region detection, retry behavior                |
-| `src/security/audit-trail.test.ts`             | Security classification, regex pattern testing, false positive/negative coverage  |
-| `src/transport/nr-ingest.test.ts`              | Proxy event builders, session trace ID propagation, `makeProxyRecord` factory     |
+| File                                         | Demonstrates                                                                      |
+| -------------------------------------------- | --------------------------------------------------------------------------------- |
+| `src/core/harvest/harvest-scheduler.test.ts` | Fake timers, mock send functions, retry/requeue, concurrent stop, atomic snapshot |
+| `src/metrics/session-tracker.test.ts`        | Metric tracker pattern: record → getMetrics → assert                              |
+| `src/metrics/anti-patterns.test.ts`          | Sequence-based detection: build record arrays, analyze, filter results            |
+| `src/metrics/efficiency-score.test.ts`       | Task factory, component scoring, boundary conditions                              |
+| `src/hooks/event-processor.test.ts`          | Pre/post event pairing, temp directory, mock callback                             |
+| `src/storage/local-store.test.ts`            | Filesystem tests with temp directory cleanup, edge cases                          |
+| `src/tools/session-stats.test.ts`            | Tool handler pattern: real trackers → handler → JSON.parse                        |
+| `src/tools/cross-session-tools.test.ts`      | Cross-session tools with SessionStore, temp directory, rich factories             |
+| `src/core/transport/http-client.test.ts`     | fetch mocking, gzip verification, region detection, retry behavior                |
+| `src/security/audit-trail.test.ts`           | Security classification, regex pattern testing, false positive/negative coverage  |
+| `src/transport/nr-ingest.test.ts`            | Proxy event builders, session trace ID propagation, `makeProxyRecord` factory     |
 
 ---
 

@@ -6,7 +6,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 jest.mock('../security/index.js', () => ({ validateSsrfUrl: jest.fn() }));
 
 import { validateSsrfUrl } from '../security/index.js';
-import { stagingHost } from '../shared/transport/http-client.js';
+import { stagingHost } from '../core/transport/http-client.js';
 import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';

@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { DEFAULT_PRICING_TABLE, initPricing } from '../shared/index.js';
+import { DEFAULT_PRICING_TABLE, initPricing } from '../core/index.js';
 import { makeUsage } from '../__test-utils__/token-usage.js';
 import {
   clearPricingMemo,

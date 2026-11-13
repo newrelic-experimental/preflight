@@ -6,7 +6,7 @@ import {
   ErrorCode,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
-import { createLogger } from './shared/index.js';
+import { createLogger } from './core/index.js';
 import { VERSION } from './version.js';
 import type { ServerOptions } from './types.js';
 import { registerTools } from './tools/session-stats.js';

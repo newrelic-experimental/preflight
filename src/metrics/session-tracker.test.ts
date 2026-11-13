@@ -1,7 +1,7 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { SessionTracker, computeP95 } from './session-tracker.js';
 import type { ToolCallRecord } from '../storage/types.js';
-import { MetricAggregator } from '../shared/index.js';
+import { MetricAggregator } from '../core/index.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 

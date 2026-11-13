@@ -1,5 +1,5 @@
-import type { MetricAggregator } from '../shared/index.js';
-import { createLogger } from '../shared/index.js';
+import type { MetricAggregator } from '../core/index.js';
+import { createLogger } from '../core/index.js';
 import { resolvePricing } from './pricing-overlay.js';
 import type { TokenEvent } from '../storage/types.js';
 

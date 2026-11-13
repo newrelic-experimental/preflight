@@ -5,7 +5,7 @@ import {
   detectRegionFromLicenseKeyStrict,
   suggestRegionFromLicenseKey,
 } from './regions.js';
-import { stagingHost } from '../shared/transport/http-client.js';
+import { stagingHost } from '../core/transport/http-client.js';
 
 describe('REGIONS', () => {
   it('is ordered us, eu, gov, jp — staging deliberately excluded', () => {

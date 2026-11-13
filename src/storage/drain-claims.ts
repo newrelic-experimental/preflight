@@ -2,7 +2,7 @@ import { readdirSync, statSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, resolve } from 'node:path';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { takeClaimText } from './hook-buffer.js';
 
 const logger = createLogger('drain-claims');
