@@ -1719,12 +1719,25 @@ describe('buildSessionSummary', () => {
     expect(merged.sessionIntent).toBe('the original prompt');
   });
 
-  it("mergeSummaries keeps an owner's completed against a later in-progress save", () => {
-    const merged = mergeSummaries(
-      makeSummary({ outcome: 'completed' }),
+  it("mergeSummaries keeps an owner's completed against later saves", () => {
+    const owner = makeSummary({ outcome: 'completed' });
+    for (const later of [
       makeSummary({ outcome: 'in progress' }),
+      makeSummary({ outcome: 'completed', completedByObserver: true }),
+    ]) {
+      expect(mergeSummaries(owner, later)).toMatchObject({
+        outcome: 'completed',
+        completedByObserver: undefined,
+      });
+    }
+  });
+
+  it("mergeSummaries keeps an observer's completed over an earlier in-progress save", () => {
+    const merged = mergeSummaries(
+      makeSummary({ outcome: 'in progress' }),
+      makeSummary({ outcome: 'completed', completedByObserver: true }),
     );
-    expect(merged).toMatchObject({ outcome: 'completed', completedByObserver: undefined });
+    expect(merged).toMatchObject({ outcome: 'completed', completedByObserver: true });
   });
 
   it("mergeSummaries lets a later in-progress save replace an observer's completed", () => {
