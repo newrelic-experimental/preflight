@@ -1,5 +1,6 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import {
+  appendFileSync,
   chmodSync,
   mkdirSync,
   mkdtempSync,
@@ -3689,6 +3690,132 @@ describe('--local Today cache savings', () => {
   }, 40000);
 });
 
+describe('--local budget spend', () => {
+  it("counts each session it holds once after the session's saved file joins the baseline", async () => {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpHome = mkdtempSync(join(tmpdir(), 'nr-local-budget-home-'));
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-local-budget-storage-'));
+    const projectDir = resolve(tmpHome, '.claude', 'projects', '-tmp-budget');
+    mkdirSync(projectDir, { recursive: true });
+    const first = 'b1c2d3e4-0000-4000-8000-000000000001';
+    const second = 'b1c2d3e4-0000-4000-8000-000000000002';
+    const agentId = 'a1b2c3d4e5f607189';
+    const subagentsDir = resolve(projectDir, second, 'subagents');
+    mkdirSync(subagentsDir, { recursive: true });
+    const appendTurn = (
+      file: string,
+      sessionId: string,
+      messageId: string,
+      inputTokens: number,
+      outputTokens: number,
+      subagent = false,
+    ): void =>
+      appendFileSync(
+        file,
+        JSON.stringify({
+          type: 'assistant',
+          sessionId,
+          ...(subagent && { agentId }),
+          isSidechain: subagent,
+          uuid: `uuid-${messageId}`,
+          timestamp: new Date().toISOString(),
+          message: {
+            id: messageId,
+            model: 'claude-sonnet-4-5-20250929',
+            role: 'assistant',
+            stop_reason: 'end_turn',
+            content: [{ type: 'text', text: 'ok' }],
+            usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+          },
+        }) + '\n',
+      );
+    const firstTranscript = resolve(projectDir, `${first}.jsonl`);
+
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: tmpHome,
+      USERPROFILE: tmpHome,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_MODE: 'local',
+      NR_AI_ALERTS_ENABLED: 'false',
+      NR_AI_SESSION_PERSIST_INTERVAL_MS: '500',
+      NEW_RELIC_AI_DAILY_BUDGET_USD: '10',
+      NEW_RELIC_AI_WEEKLY_BUDGET_USD: '40',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+    };
+    for (const key of Object.keys(env)) if (key.startsWith('CLAUDE')) delete env[key];
+    const child = spawn(process.execPath, [binPath, '--local'], {
+      env,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    const getJson = async <T>(path: string): Promise<T> =>
+      (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as T;
+    const savedCostUsd = (sessionId: string): number | null => {
+      const file = readdirSync(resolve(tmpStoragePath, 'sessions')).find((f) =>
+        f.endsWith(`_${sessionId}.json`),
+      );
+      if (!file) return null;
+      const saved = JSON.parse(
+        readFileSync(resolve(tmpStoragePath, 'sessions', file), 'utf-8'),
+      ) as { estimatedCostUsd: number | null };
+      return saved.estimatedCostUsd;
+    };
+    const spent = () =>
+      getJson<{ daily: { spentUsd: number }; weekly: { spentUsd: number } }>('/api/budget');
+    const poll = async (predicate: () => boolean | Promise<boolean>): Promise<boolean> => {
+      for (const deadline = Date.now() + 20_000; Date.now() < deadline;) {
+        try {
+          if (await predicate()) return true;
+        } catch {
+          // Not listening or not saved yet.
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      return false;
+    };
+
+    try {
+      appendTurn(firstTranscript, first, 'msg_first_1', 1_000_000, 100_000);
+      appendTurn(
+        resolve(subagentsDir, `agent-${agentId}.jsonl`),
+        second,
+        'msg_second_sub',
+        500_000,
+        50_000,
+        true,
+      );
+      expect(await poll(() => savedCostUsd(first) === 4.5 && savedCostUsd(second) === 2.25)).toBe(
+        true,
+      );
+      // Past the baseline cache's 30 s lifetime, so the next cost update rereads it
+      // with both sessions' files on disk.
+      await new Promise((r) => setTimeout(r, 31_000));
+      appendTurn(firstTranscript, first, 'msg_first_2', 100_000, 10_000);
+      expect(await poll(async () => (await spent()).daily.spentUsd >= 7.2 - 1e-9)).toBe(true);
+
+      const budget = await spent();
+      expect(budget.daily.spentUsd).toBeCloseTo(7.2, 9);
+      expect(budget.weekly.spentUsd).toBeCloseTo(7.2, 9);
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+    }
+  }, 90000);
+});
 describe('deploy-dashboards/deploy-alerts --staging is hidden from --help', () => {
   async function expectHelpHidesStaging(sub: 'deploy-dashboards' | 'deploy-alerts'): Promise<void> {
     const exitSpy = jest
