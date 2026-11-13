@@ -72,6 +72,73 @@ describe('Idle-based task detection', () => {
     detector.dispose();
   });
 
+  it('notifies the host when the idle timer closes a task so it can drain without another record', () => {
+    let detector: TaskDetector;
+    const emitted: string[] = [];
+    detector = new TaskDetector({
+      onClose: () => {
+        for (const task of detector.drainNewlyCompletedTasks()) emitted.push(task.taskId);
+      },
+    });
+
+    detector.recordToolCall(makeRecord({ toolName: 'Read' }));
+    expect(emitted).toHaveLength(0);
+
+    jest.advanceTimersByTime(30_000);
+
+    expect(emitted).toHaveLength(1);
+    expect(detector.drainNewlyCompletedTasks()).toHaveLength(0);
+
+    detector.dispose();
+  });
+
+  it('keeps the idle close when the host callback throws', () => {
+    const detector = new TaskDetector({
+      onClose: () => {
+        throw new Error('boom');
+      },
+    });
+
+    detector.recordToolCall(makeRecord({ toolName: 'Read' }));
+
+    expect(() => jest.advanceTimersByTime(30_000)).not.toThrow();
+    expect(detector.getCompletedTasks()).toHaveLength(1);
+
+    detector.dispose();
+  });
+
+  it('notifies the host when a boundary closes a task so it can drain without another record', () => {
+    let detector: TaskDetector;
+    const emitted: string[] = [];
+    detector = new TaskDetector({
+      onClose: () => {
+        for (const task of detector.drainNewlyCompletedTasks()) emitted.push(task.taskId);
+      },
+    });
+
+    detector.recordToolCall(makeRecord({ toolName: 'Read' }));
+    const closed = detector.markBoundary(Date.now());
+
+    expect(emitted).toEqual([closed?.taskId]);
+
+    detector.dispose();
+  });
+
+  it('keeps the boundary close when the host callback throws', () => {
+    const detector = new TaskDetector({
+      onClose: () => {
+        throw new Error('boom');
+      },
+    });
+
+    detector.recordToolCall(makeRecord({ toolName: 'Read' }));
+
+    expect(detector.markBoundary(Date.now())).not.toBeNull();
+    expect(detector.getCompletedTasks()).toHaveLength(1);
+
+    detector.dispose();
+  });
+
   it('rapid continuous calls -> single long task', () => {
     const detector = new TaskDetector();
 

@@ -7,6 +7,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
+import { appendToHookBuffer } from './storage/hook-buffer.js';
+
 // ---------------------------------------------------------------------------
 // Multi-instance integration test (proposal task #11)
 // ---------------------------------------------------------------------------
@@ -315,6 +317,133 @@ describe('multi-instance integration (proposal #11)', () => {
   }, 30_000);
 });
 
+describe('AiCodingTask emission in cloud mode', () => {
+  const SESSION = 'task-emit-test';
+  let root: string;
+  let storage: string;
+  let capturePath: string;
+  let preloadPath: string;
+  let jobDir: string;
+  let port: number;
+
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), 'nr-task-emit-'));
+    storage = resolve(root, 'storage');
+    mkdirSync(resolve(storage, 'session-by-ppid'), { recursive: true, mode: 0o700 });
+    capturePath = resolve(root, 'captured.jsonl');
+    preloadPath = resolve(root, 'capture-fetch.mjs');
+    writeFileSync(
+      preloadPath,
+      [
+        "import { gunzipSync } from 'node:zlib';",
+        "import { appendFileSync } from 'node:fs';",
+        'const real = globalThis.fetch;',
+        'globalThis.fetch = async (url, init) => {',
+        "  if (!String(url).includes('insights-collector')) return real(url, init);",
+        "  for (const e of JSON.parse(gunzipSync(init.body).toString('utf8'))) {",
+        "    appendFileSync(process.env.CAPTURE_PATH, JSON.stringify(e) + '\\n');",
+        '  }',
+        '  return new Response(\'{"success":true}\', { status: 200 });',
+        '};',
+      ].join('\n'),
+    );
+    jobDir = resolve(root, 'job');
+    mkdirSync(jobDir, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      resolve(jobDir, 'state.json'),
+      JSON.stringify({ linkScanPath: `/fake/transcript/${SESSION}.jsonl` }),
+      { mode: 0o600 },
+    );
+    port = await getFreePort();
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function startCloudEngine(harvestEventsMs: number): ChildHandle {
+    return spawnChild(SESSION, storage, jobDir, distIndex, port, {
+      NR_AI_MODE: 'cloud',
+      NEW_RELIC_LICENSE_KEY: 'a'.repeat(40),
+      NEW_RELIC_ACCOUNT_ID: '1',
+      NEW_RELIC_AI_MCP_HARVEST_EVENTS_MS: String(harvestEventsMs),
+      CAPTURE_PATH: capturePath,
+      NODE_OPTIONS: `--import ${preloadPath}`,
+    });
+  }
+
+  function seedOneToolCall(): void {
+    const bufferPath = resolve(storage, `buffer-${SESSION}.jsonl`);
+    const base = Date.now() - 1000;
+    const common = { tool: 'Bash', sessionId: SESSION, toolUseId: 'toolu_task_emit' };
+    appendToHookBuffer(
+      bufferPath,
+      JSON.stringify({
+        ...common,
+        mode: 'pre',
+        timestamp: base,
+        inputSize: 16,
+        toolInput: { command: 'echo hi' },
+      }) + '\n',
+    );
+    appendToHookBuffer(
+      bufferPath,
+      JSON.stringify({
+        ...common,
+        mode: 'post',
+        timestamp: base + 1,
+        success: true,
+        outputSize: 8,
+      }) + '\n',
+    );
+  }
+
+  function capturedTasks(): Array<Record<string, unknown>> {
+    if (!existsSync(capturePath)) return [];
+    return readFileSync(capturePath, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((event) => event.eventType === 'AiCodingTask');
+  }
+
+  it('sends a task closed by the idle timer while the engine keeps running', async () => {
+    const child = startCloudEngine(200);
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedOneToolCall();
+
+      const deadline = Date.now() + 45_000;
+      while (capturedTasks().length === 0 && Date.now() < deadline) await delay(250);
+
+      expect(child.proc.exitCode).toBeNull();
+      const tasks = capturedTasks();
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0]?.session_id).toBe(SESSION);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 4000);
+    }
+  }, 90_000);
+
+  it('sends a task that is still open when the engine shuts down', async () => {
+    const child = startCloudEngine(3_600_000);
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedOneToolCall();
+      await waitForStats(child, 1, TOOLS_CALL_TIMEOUT_MS);
+      expect(capturedTasks()).toHaveLength(0);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    expect(capturedTasks()).toHaveLength(1);
+  }, 60_000);
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -377,6 +506,7 @@ function spawnChild(
   jobDir: string,
   distPath: string,
   port: number,
+  extraEnv: Record<string, string> = {},
 ): ChildHandle {
   const proc = spawn(process.execPath, [distPath, '--stdio'], {
     env: {
@@ -397,6 +527,7 @@ function spawnChild(
       // Disable the local alerts engine so the test isn't sensitive to
       // periodic alert evaluation noise on stderr.
       NR_AI_ALERTS_ENABLED: 'false',
+      ...extraEnv,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   }) as ChildProcessWithoutNullStreams;
