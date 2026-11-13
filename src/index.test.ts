@@ -1,4 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import type { ChildProcess } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
@@ -3612,6 +3613,140 @@ describe('--local Today cache savings', () => {
       rmSync(tmpStoragePath, { recursive: true, force: true });
     }
   }, 40000);
+});
+
+describe('--local restart', () => {
+  it('keeps the turns billed before the restart in cost, Today and the daily budget', async () => {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+    const { appendFileSync, mkdirSync } = await import('node:fs');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpHome = mkdtempSync(join(tmpdir(), 'nr-local-restart-home-'));
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-local-restart-storage-'));
+    const configPath = resolve(tmpStoragePath, 'config.json');
+    writeFileSync(configPath, JSON.stringify({ mode: 'local' }));
+
+    const sessionId = '7c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
+    const projectDir = resolve(tmpHome, '.claude', 'projects', '-tmp-restart');
+    mkdirSync(projectDir, { recursive: true });
+    const transcript = resolve(projectDir, `${sessionId}.jsonl`);
+    // 266666 output tokens at $15 per million.
+    const turn = (messageId: string): string =>
+      JSON.stringify({
+        type: 'assistant',
+        sessionId,
+        isSidechain: false,
+        uuid: `uuid-${messageId}`,
+        timestamp: new Date().toISOString(),
+        message: {
+          id: messageId,
+          model: 'claude-sonnet-4-5-20250929',
+          role: 'assistant',
+          stop_reason: 'end_turn',
+          content: [{ type: 'text', text: 'ok' }],
+          usage: {
+            input_tokens: 0,
+            output_tokens: 266_666,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+        },
+      }) + '\n';
+    writeFileSync(transcript, turn('msg_before_restart'));
+    const sessionFile = (): string | undefined =>
+      existsSync(resolve(tmpStoragePath, 'sessions'))
+        ? readdirSync(resolve(tmpStoragePath, 'sessions')).find((f) =>
+            f.endsWith(`${sessionId}.json`),
+          )
+        : undefined;
+
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: tmpHome,
+      USERPROFILE: tmpHome,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_MODE: 'local',
+      NR_AI_ALERTS_ENABLED: 'false',
+      NR_AI_SESSION_PERSIST_INTERVAL_MS: '500',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+    };
+    for (const key of Object.keys(env)) if (key.startsWith('CLAUDE')) delete env[key];
+    const start = (): ChildProcess =>
+      spawn(process.execPath, [binPath, '--local', '--config', configPath], {
+        env,
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+
+    interface Totals {
+      sessionCostUsd: number | null;
+      todayUsd: number | null;
+      dailyBudgetUsd: number | null;
+    }
+    const read = async (): Promise<Totals> => {
+      const get = async <T>(path: string): Promise<T> =>
+        (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as T;
+      const cost = await get<{ cost: { sessionTotalCostUsd: number | null } }>('/api/cost');
+      const today = await get<{ totalCostUsd: number }>('/api/sessions/today/aggregate');
+      const budget = await get<{ daily: { spentUsd: number } }>('/api/budget');
+      return {
+        sessionCostUsd: cost.cost.sessionTotalCostUsd,
+        todayUsd: today.totalCostUsd,
+        dailyBudgetUsd: budget.daily.spentUsd,
+      };
+    };
+    const settle = async (done: (t: Totals) => boolean): Promise<Totals | undefined> => {
+      let last: Totals | undefined;
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        try {
+          last = await read();
+          if (done(last)) break;
+        } catch {
+          // Not listening yet.
+        }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      return last;
+    };
+
+    let child = start();
+    try {
+      const before = await settle(
+        (t) => (t.sessionCostUsd ?? 0) > 3.9 && sessionFile() !== undefined,
+      );
+      expect(before?.sessionCostUsd).toBeCloseTo(4, 2);
+      await new Promise((r) => setTimeout(r, 1500));
+      child.kill('SIGKILL');
+      await new Promise((r) => child.once('exit', r));
+
+      appendFileSync(transcript, turn('msg_after_restart_1') + turn('msg_after_restart_2'));
+      child = start();
+      await settle((t) => (t.sessionCostUsd ?? 0) > 3.9);
+      const after = await settle(
+        (t) =>
+          (t.sessionCostUsd ?? 0) > 11.9 && (t.todayUsd ?? 0) > 11.9 && t.dailyBudgetUsd! > 11.9,
+      );
+
+      expect(after?.sessionCostUsd).toBeCloseTo(12, 2);
+      expect(after?.todayUsd).toBeCloseTo(12, 2);
+      expect(after?.dailyBudgetUsd).toBeCloseTo(12, 2);
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+    }
+  }, 90000);
 });
 
 describe('deploy-dashboards/deploy-alerts --staging is hidden from --help', () => {
