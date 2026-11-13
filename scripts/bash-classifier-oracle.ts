@@ -1,13 +1,15 @@
 // Checks classifyBash against real bash. Generates seeded commands from safe
-// pieces (echo, true, x=, cat, quotes, escapes, comments, heredocs) that end in
-// `rm -rf /tmp/x`, runs each under bash with `rm` shadowed by a function and PATH
-// holding only `cat`, and compares whether bash reached the marker with
-// isDestructive. Writes an evenly spaced slice for bash-classifier.test.ts.
+// pieces (echo, true, x=, cat, quotes, escapes, comments, heredocs, brace groups)
+// that end in a marker `rm`, sometimes built by eval, bash -c, sh -c or brace
+// expansion. Runs each in a sandbox directory under bash with `rm`
+// shadowed by a function and by a PATH `rm` that only echoes, and compares
+// whether bash reached the marker with isDestructive. Writes an evenly spaced
+// slice for bash-classifier.test.ts.
 //
 //   tsx scripts/bash-classifier-oracle.ts --seed 1177 --count 3000 \
-//     --fixture src/hooks/bash-classifier.oracle.json [--rows all.json] [--compare other-classifier.ts]
+//     --fixture src/hooks/bash-classifier.oracle.json [--root dir] [--rows all.json] [--compare other.ts]
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -25,10 +27,11 @@ const { values } = parseArgs({
     rows: { type: 'string' },
     compare: { type: 'string', multiple: true, default: [] },
     bash: { type: 'string', default: '/bin/bash' },
+    root: { type: 'string', default: tmpdir() },
   },
 });
 
-const MARKER = 'rm -rf /tmp/x';
+const MARKERS = ['rm -rf ./x', '{rm,-rf,./x}', '{rm,-rf} ./x'];
 const RAN = '__marker_ran__';
 
 function mulberry32(seed: number): () => number {
@@ -91,6 +94,7 @@ const FRAGMENTS: readonly (() => string)[] = [
       "$'\\''",
     ]),
   () => pick(["'", '"', "$'"]),
+  () => pick(['{a,b}', '{rm,-rf}', '{,}']),
 ];
 const word = (): string => repeat(1, 3, () => pick(FRAGMENTS)());
 
@@ -121,13 +125,27 @@ function statement(): Statement {
   return s;
 }
 
+const singleQuoted = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
+const doubleQuoted = (s: string): string => `"${s.replace(/[\\"$`]/g, '\\$&')}"`;
+const quoted = (s: string): string => pick([singleQuoted, doubleQuoted])(s);
+const WRAPPERS: readonly ((script: string) => string)[] = [
+  (s) => s,
+  (s) => `eval ${quoted(s)}`,
+  (s) => `bash -c ${quoted(s)}`,
+  (s) => `sh -c ${quoted(s)}`,
+  (s) => `eval ${quoted(`bash -c ${quoted(s)}`)}`,
+  (s) => `bash -c ${quoted(`eval ${quoted(s)}`)}`,
+  (s) => `sh -c ${quoted(`sh -c ${quoted(s)}`)}`,
+];
+
 function command(): string {
-  let out = '';
-  for (let k = 1 + Math.floor(random() * 3); k > 0; k--) {
+  const statements = Array.from({ length: 1 + Math.floor(random() * 3) }, () => {
     const s = statement();
-    out += s.text + (s.needsNewline ? '\n' : pick(SEPARATORS));
-  }
-  return out + MARKER;
+    return s.text + (s.needsNewline ? '\n' : pick(SEPARATORS));
+  });
+  const wrapped = Math.floor(random() * (statements.length + 1));
+  const script = statements.slice(wrapped).join('') + pick(MARKERS);
+  return statements.slice(0, wrapped).join('') + pick(WRAPPERS)(script);
 }
 
 interface Row {
@@ -137,10 +155,12 @@ interface Row {
   readonly got: readonly boolean[];
 }
 
-const sandbox = mkdtempSync(join(tmpdir(), 'bash-oracle-'));
+const sandbox = mkdtempSync(join(values.root, 'bash-oracle-'));
 const bin = join(sandbox, 'bin');
 mkdirSync(bin);
-symlinkSync('/bin/cat', join(bin, 'cat'));
+for (const tool of ['cat', 'bash', 'sh']) symlinkSync(`/bin/${tool}`, join(bin, tool));
+writeFileSync(join(bin, 'rm'), `#!/bin/bash\necho ${RAN}\n`);
+chmodSync(join(bin, 'rm'), 0o755);
 
 function runBash(cmd: string): { ran: boolean; rejected: boolean } | undefined {
   const res = spawnSync(

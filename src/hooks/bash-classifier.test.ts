@@ -469,6 +469,41 @@ describe('classifyBash', () => {
       expect(ran.filter((cmd) => !classifyBash(cmd).isDestructive)).toEqual([]);
     });
 
+    it.each([
+      'eval "rm -rf ./x"',
+      'eval "rm -rf \\"./x\\""',
+      "eval 'rm -rf ./x'",
+      'echo a; eval rm -rf ./x',
+      "bash -c 'rm -rf ./x'",
+      'sh -c "echo a; rm -rf ./x"',
+      '/bin/zsh -ec "rm -rf ./x"',
+      "dash -c 'echo a' && eval 'bash -c \"rm -rf ./x\"'",
+      'x=$(eval "rm -rf ./x")',
+      '{rm,-rf,./x}',
+      'echo a; {rm,-rf} ./x',
+    ])('flags rm that bash builds at runtime: %j', (cmd) => {
+      expect(classifyBash(cmd).isDestructive).toBe(true);
+    });
+
+    it.each([
+      'echo "eval is fine"',
+      'echo {a,b}',
+      "bash -c 'echo hi'",
+      "git log --format='%s'",
+      'eval \'echo "rm -rf ./x"\'',
+      "bash -c 'echo {rm,-rf,./x}'",
+      'echo {rm,-rf,./x}',
+      "bash script.sh -c 'rm -rf ./x'",
+    ])('does not flag runtime-built text bash never runs as rm: %j', (cmd) => {
+      expect(classifyBash(cmd).isDestructive).toBe(false);
+    });
+
+    it('stops recursing into nested shells after three levels', () => {
+      const nest = (script: string): string => `eval ${JSON.stringify(script)}`;
+      expect(classifyBash(nest(nest(nest('rm -rf ./x')))).isDestructive).toBe(true);
+      expect(classifyBash(nest(nest(nest(nest('rm -rf ./x'))))).isDestructive).toBe(false);
+    });
+
     it('git push --force-with-lease is NOT destructive (it is the safe form)', () => {
       expect(classifyBash('git push --force-with-lease').isDestructive).toBe(false);
       expect(classifyBash('git push origin main --force-with-lease').isDestructive).toBe(false);
