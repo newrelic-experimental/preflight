@@ -571,7 +571,7 @@ describe('first spend today across a real restart', () => {
   }
 
   it.each([false, true])(
-    'gives /api/cost the aggregate forecast, restarted at 14:00: %s',
+    'gives /api/cost the aggregate forecast, process restarted at 14:00 is %s',
     async (restart) => {
       const before = new CostTracker();
       for (const h of [9, 11]) {

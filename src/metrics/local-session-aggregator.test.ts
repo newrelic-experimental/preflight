@@ -1262,6 +1262,23 @@ describe('LocalSessionAggregator first spend of a day against a saved file', () 
       });
     },
   );
+
+  it.each([0, 1])(
+    'keeps an earlier day saved first spend when a restart spends only today, with a $%d usage',
+    (usd) => {
+      const yesterday = MORNING - 86_400_000;
+      const saved = { [localDateKey(yesterday)]: yesterday, [DAY_KEY]: MORNING };
+      const file = savedFile({
+        estimatedCostUsd: 20,
+        costByDayUsd: { [localDateKey(yesterday)]: 10, [DAY_KEY]: 10 },
+        firstActivityByDayMs: saved,
+      });
+      const agg = new LocalSessionAggregator({ persistedCostBaseline: () => file });
+      agg.recordTokenUsage(REAL_ID, { costUsd: usd, timestamp: RESTART, agentId: 'sub' });
+      const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
+      expect(mergeSummaries(file, incoming!).firstActivityByDayMs).toEqual(saved);
+    },
+  );
 });
 
 describe('LocalSessionAggregator timeline cap', () => {

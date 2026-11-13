@@ -681,7 +681,9 @@ describe('Today view', () => {
 
     renderToday();
     await waitFor(() => expect(screen.getByText('3')).toBeInTheDocument());
-    expect(screen.getByText(/^→ \$8\.00 by end of day/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/^→ \$8\.00 by end of day \(all spend so far, this session's pace\)/),
+    ).toBeInTheDocument();
   });
 
   it('uses the aggregate forecast over the SSE forecast once the aggregate has one', async () => {

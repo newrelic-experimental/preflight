@@ -338,7 +338,7 @@ export function Today(): JSX.Element {
     ? []
     : [
         { usd: aggregate?.forecastEndOfDayUsd, scope: 'all sessions' },
-        { usd: cost?.forecastEodUsd, scope: 'all sessions' },
+        { usd: cost?.forecastEodUsd, scope: "all spend so far, this session's pace" },
         { usd: costApi?.forecast?.forecastEndOfDayUsd, scope: 'this session' },
       ].filter((source): source is { usd: number; scope: string } => source.usd != null);
   const forecast = forecastSources.find((source) => source.usd >= todayTotal);
