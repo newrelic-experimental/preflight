@@ -232,48 +232,126 @@ const DESTRUCTIVE_PATTERNS: readonly RegExp[] = [
   /\b(?:curl|wget)\b.*\|\s*(?:\/[^\s]*\/)?(?:node|python3?|perl|ruby)\b/i,
 ];
 
-// Replace the contents of single- or double-quoted regions with spaces of
-// the same length so destructive-pattern matching can't be fooled by quoted
-// arguments — e.g. `git commit -m "rm -rf old code"` should NOT classify as
-// destructive. Heuristic: backslash-escapes inside quotes are honoured;
-// dollar-quoted, ANSI-quoted, and heredoc bodies are not handled.
+type LexState = 'none' | 'single' | 'double' | 'ansi-c' | 'comment';
+type Heredoc = { delimiter: string; stripTabs: boolean; quoted: boolean };
+
+const CLOSED_BY: Record<Exclude<LexState, 'none'>, string> = {
+  single: "'",
+  double: '"',
+  'ansi-c': "'",
+  comment: '\n',
+};
+// Inside double quotes bash escapes only ` $ " \ and newline, but treating every
+// `\x` as a pair masks the same characters, since only `"` can close the quote.
+const ESCAPES_IN: ReadonlySet<LexState> = new Set(['none', 'double', 'ansi-c']);
+const METACHAR = /[\s;&|(]/;
+const HEREDOC_OPERATOR = /(?<!<)<<(-?)[ \t]*(['"]?)(\w+)\2/y;
+const LINE_CONTINUES = /(?<!\\)(?:\\\\)*\\$/;
+
+function stateOpenedAt(command: string, i: number, atWordStart: boolean): LexState {
+  const ch = command[i];
+  if (ch === "'") return 'single';
+  if (ch === '"') return 'double';
+  if (ch === '$' && command[i + 1] === "'") return 'ansi-c';
+  if (ch === '#' && atWordStart) return 'comment';
+  return 'none';
+}
+
+function heredocBodiesEnd(command: string, start: number, heredocs: readonly Heredoc[]): number {
+  let i = start;
+  for (const { delimiter, stripTabs, quoted } of heredocs) {
+    let line = '';
+    while (i < command.length) {
+      const eol = command.indexOf('\n', i);
+      const end = eol === -1 ? command.length : eol;
+      const segment = command.slice(i, end);
+      i = end + 1;
+      if (!quoted && LINE_CONTINUES.test(segment)) {
+        line += segment.slice(0, -1);
+        continue;
+      }
+      line += segment;
+      if ((stripTabs ? line.replace(/^\t+/, '') : line) === delimiter) break;
+      line = '';
+    }
+  }
+  return i;
+}
+
+// Replace quoted regions and `#` comments with spaces so destructive-pattern
+// matching can't be fooled by quoted arguments (`git commit -m "rm -rf old"`)
+// and an apostrophe in a comment can't open a quote. Outside single quotes a
+// backslash escapes the next character, and an escaped character never opens
+// a quote or a comment. Heredoc bodies are left unmasked: they are data, but an
+// unquoted body still runs its `$(...)` substitutions.
 function maskQuotedRegions(command: string): string {
   let out = '';
+  let state: LexState = 'none';
+  let atWordStart = true;
+  const heredocs: Heredoc[] = [];
+  const parens: ('substitution' | 'group')[] = [];
   let i = 0;
   while (i < command.length) {
-    const ch = command[i];
-    if (ch === "'") {
-      out += ' ';
-      i++;
-      while (i < command.length && command[i] !== "'") {
+    const ch = command[i]!;
+    if (ch === '\\' && ESCAPES_IN.has(state)) {
+      out += state === 'none' ? command.slice(i, i + 2) : '  ';
+      i += 2;
+      atWordStart = false;
+      continue;
+    }
+    if (state === 'none') {
+      HEREDOC_OPERATOR.lastIndex = i;
+      const heredoc = HEREDOC_OPERATOR.exec(command);
+      if (heredoc) {
+        heredocs.push({
+          delimiter: heredoc[3]!,
+          stripTabs: heredoc[1] === '-',
+          quoted: heredoc[2] !== '',
+        });
+        out += heredoc[0];
+        i += heredoc[0].length;
+        atWordStart = false;
+        continue;
+      }
+      state = stateOpenedAt(command, i, atWordStart);
+      if (state === 'ansi-c') {
         out += ' ';
         i++;
       }
-      if (i < command.length) {
+      if (state !== 'none') {
         out += ' ';
         i++;
+        atWordStart = false;
+        continue;
+      }
+      if (ch === '$' && command[i + 1] === '(') {
+        parens.push('substitution');
+        out += '$(';
+        i += 2;
+        atWordStart = true;
+        continue;
+      }
+      if (ch === '(') parens.push('group');
+      out += ch;
+      i++;
+      atWordStart = ch === ')' ? parens.pop() !== 'substitution' : METACHAR.test(ch);
+      if (ch === '\n' && heredocs.length > 0) {
+        const end = heredocBodiesEnd(command, i, heredocs);
+        out += command.slice(i, end);
+        i = end;
+        heredocs.length = 0;
       }
       continue;
     }
-    if (ch === '"') {
-      out += ' ';
-      i++;
-      while (i < command.length && command[i] !== '"') {
-        if (command[i] === '\\' && i + 1 < command.length) {
-          out += '  ';
-          i += 2;
-          continue;
-        }
+    if (ch === CLOSED_BY[state]) {
+      if (state !== 'comment') {
         out += ' ';
         i++;
       }
-      if (i < command.length) {
-        out += ' ';
-        i++;
-      }
+      state = 'none';
       continue;
     }
-    out += ch;
+    out += ' ';
     i++;
   }
   return out;
