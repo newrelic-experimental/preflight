@@ -2,7 +2,7 @@
 
 // src/hooks/collector-script.ts
 import { readFileSync as readFileSync2, writeFileSync, mkdirSync as mkdirSync2, existsSync, utimesSync } from "node:fs";
-import { resolve as resolve2, dirname as dirname2 } from "node:path";
+import { resolve as resolve3, dirname as dirname2 } from "node:path";
 import { homedir } from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 
@@ -33,6 +33,7 @@ function resolveRecordContent(highSecurity, explicitValue) {
 }
 
 // src/platforms/claude-code-adapter.ts
+var CLAUDE_CODE_PLATFORM_NAME = "claude-code";
 var CLAUDE_CODE_ENV_SIGNALS = [
   "CLAUDECODE",
   "CLAUDE_CODE_ENTRYPOINT",
@@ -189,6 +190,22 @@ function releaseReport(storageDir, line) {
   }
 }
 
+// src/hooks/session-breadcrumbs.ts
+import { resolve as resolve2 } from "node:path";
+
+// src/platforms/types.ts
+var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
+
+// src/hooks/session-breadcrumbs.ts
+var BREADCRUMBS_DIR = "breadcrumbs";
+var WRITER_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+function breadcrumbRoot(storagePath, writer) {
+  return resolve2(storagePath, BREADCRUMBS_DIR, writer);
+}
+function breadcrumbWriter(engine) {
+  return engine !== void 0 && WRITER_RE.test(engine) ? engine : UNATTRIBUTED_BREADCRUMB_WRITER;
+}
+
 // src/storage/hook-buffer.ts
 import {
   closeSync as closeSync2,
@@ -304,7 +321,7 @@ function mcpPrToolAction(toolName) {
 
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
-var DEFAULT_STORAGE_DIR = resolve2(homedir(), ".newrelic-preflight");
+var DEFAULT_STORAGE_DIR = resolve3(homedir(), ".newrelic-preflight");
 function getStorageDir() {
   return process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
 }
@@ -314,12 +331,12 @@ function getBufferPath(sessionId) {
   }
   const storageDir = getStorageDir();
   const safeId = typeof sessionId === "string" && SESSION_ID_RE.test(sessionId) ? sessionId : "unknown";
-  return resolve2(storageDir, `buffer-${safeId}.jsonl`);
+  return resolve3(storageDir, `buffer-${safeId}.jsonl`);
 }
 var HIGH_SECURITY_FROM_FILE = (() => {
   for (const dir of [".newrelic-preflight", ".nr-ai-observe"]) {
     try {
-      const configPath = resolve2(homedir(), dir, "config.json");
+      const configPath = resolve3(homedir(), dir, "config.json");
       if (existsSync(configPath)) {
         const config = JSON.parse(readFileSync2(configPath, "utf-8"));
         return config.highSecurity === true;
@@ -363,7 +380,7 @@ var HOOK_EVENT_PLATFORM = {
 function detectStampPlatform() {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
-  return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0) ? "claude-code" : void 0;
+  return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0) ? CLAUDE_CODE_PLATFORM_NAME : void 0;
 }
 var MAX_REDACT_BYTES = 1048576;
 function redact(value) {
@@ -425,18 +442,17 @@ function getLinuxAncestorPids(startPpid, maxDepth = 5) {
   return pids;
 }
 var _breadcrumbWriteFailed = false;
-function writePpidBreadcrumb(sessionId) {
+function writePpidBreadcrumb(sessionId, root) {
   if (!SESSION_ID_RE.test(sessionId)) return;
   const ppid = process.ppid;
   if (typeof ppid !== "number" || ppid <= 0) return;
   try {
-    const storageDir = getStorageDir();
-    const breadcrumbDir = resolve2(storageDir, "session-by-ppid");
+    const breadcrumbDir = resolve3(root, "session-by-ppid");
     mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const pids = getLinuxAncestorPids(ppid);
     let wroteAny = false;
     for (const pid of pids) {
-      const breadcrumbPath = resolve2(breadcrumbDir, `${pid}.txt`);
+      const breadcrumbPath = resolve3(breadcrumbDir, `${pid}.txt`);
       if (existsSync(breadcrumbPath)) {
         try {
           if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
@@ -466,15 +482,14 @@ function writePpidBreadcrumb(sessionId) {
   }
 }
 var _cwdBreadcrumbWriteFailed = false;
-function writeCwdBreadcrumb(sessionId, cwd) {
+function writeCwdBreadcrumb(sessionId, cwd, root) {
   if (!SESSION_ID_RE.test(sessionId)) return;
   if (typeof cwd !== "string" || cwd.length === 0) return;
   try {
-    const storageDir = getStorageDir();
-    const breadcrumbDir = resolve2(storageDir, "session-by-cwd");
+    const breadcrumbDir = resolve3(root, "session-by-cwd");
     mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
-    const breadcrumbPath = resolve2(breadcrumbDir, `${sanitizedCwd}.txt`);
+    const breadcrumbPath = resolve3(breadcrumbDir, `${sanitizedCwd}.txt`);
     if (existsSync(breadcrumbPath)) {
       try {
         if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
@@ -744,8 +759,9 @@ function processHook(raw, cliEvent) {
   }
   const sessionId = data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
   if (typeof data.session_id === "string" && data.session_id.length > 0) {
-    writePpidBreadcrumb(data.session_id);
-    writeCwdBreadcrumb(data.session_id, data.cwd);
+    const root = breadcrumbRoot(getStorageDir(), breadcrumbWriter(detectStampPlatform()));
+    writePpidBreadcrumb(data.session_id, root);
+    writeCwdBreadcrumb(data.session_id, data.cwd, root);
   }
   const eventName = (data.hook_event_name ?? data.agent_action_name)?.toLowerCase();
   const toolName = data.tool_name ?? "unknown";
