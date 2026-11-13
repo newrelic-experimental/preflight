@@ -112,7 +112,7 @@ function parseHookEvents(raw: string): HookEvent[] {
  * we have rights to signal. ESRCH = dead, EPERM = alive (different uid),
  * anything else (e.g. EINVAL on a malformed PID) = treat as dead.
  */
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);

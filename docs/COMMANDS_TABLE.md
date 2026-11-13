@@ -1311,7 +1311,7 @@ Data-driven model recommendation ranked by historical efficiency score, cost, an
 - Ranks by efficiency descending, cost ascending on ties, null-efficiency last.
 - Assigns confidence tier based on the top-ranked model's session count.
 
-**Published file:** For consumers that cannot call an MCP tool, such as a SessionStart hook, the overall verdict is also written to `model-recommendation.json` in the configured storage directory (`~/.newrelic-preflight/` by default). It is written on startup and hourly, only while `confidence` is `high`. When confidence drops, the file is removed. An unchanged verdict is not rewritten. Writes are atomic (temp file, then rename). No hook reads it by default.
+**Published file:** For consumers that cannot call an MCP tool, such as a SessionStart hook, the overall verdict is also written to `model-recommendation.json` in the configured storage directory (`~/.newrelic-preflight/` by default). It is first written about 10 seconds after startup, then hourly, only while `confidence` is `high`. When confidence drops, the file is removed. An unchanged verdict is not rewritten. Writes are atomic (temp file, then rename), and temp files left by a crashed write are removed on the next publish. No hook reads it by default.
 
 ```json
 {

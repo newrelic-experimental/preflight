@@ -1,14 +1,26 @@
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 import { createLogger } from '../shared/index.js';
+import { isPidAlive } from '../storage/local-store.js';
 import type { ModelOutcomeStats, TrendAnalyzer } from './trend-analyzer.js';
 
 const logger = createLogger('model-recommendation-publisher');
 
 export const MODEL_RECOMMENDATION_FILENAME = 'model-recommendation.json';
 export const MODEL_RECOMMENDATION_SCHEMA_VERSION = 1;
+const FIRST_PUBLISH_DELAY_MS = 10_000;
 const PUBLISH_INTERVAL_MS = 60 * 60 * 1000;
+const TEMP_FILE_PREFIX = `${MODEL_RECOMMENDATION_FILENAME}.tmp-`;
+const STALE_TEMP_AGE_MS = 60_000;
 
 export interface PublishedModelRecommendation {
   readonly schemaVersion: typeof MODEL_RECOMMENDATION_SCHEMA_VERSION;
@@ -33,6 +45,33 @@ function sameVerdict(a: PublishedModelRecommendation, b: PublishedModelRecommend
 }
 
 /**
+ * Remove temp files a crashed publish left between writeFileSync and
+ * renameSync. A temp file is kept only while its writer pid is alive and the
+ * file is under a minute old, so a concurrent writer's file survives.
+ */
+function removeStaleTempFiles(storagePath: string): void {
+  const now = Date.now();
+  let names: string[];
+  try {
+    names = readdirSync(storagePath);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(TEMP_FILE_PREFIX)) continue;
+    const path = join(storagePath, name);
+    try {
+      const ageMs = now - statSync(path).mtimeMs;
+      const writerAlive = isPidAlive(Number(name.slice(TEMP_FILE_PREFIX.length)));
+      if (writerAlive && ageMs <= STALE_TEMP_AGE_MS) continue;
+      rmSync(path, { force: true });
+    } catch {
+      // Another process removed the file first.
+    }
+  }
+}
+
+/**
  * Publish the overall model verdict for consumers that cannot call an MCP
  * tool (a SessionStart hook reads this file directly). Reuses the same
  * `confidence === 'high'` gate as RecommendationEngine. Below that gate the
@@ -41,6 +80,7 @@ function sameVerdict(a: PublishedModelRecommendation, b: PublishedModelRecommend
  */
 export function publishModelRecommendation(analyzer: Analyzer, storagePath: string): void {
   const path = join(storagePath, MODEL_RECOMMENDATION_FILENAME);
+  removeStaleTempFiles(storagePath);
   try {
     const report = analyzer.rankModelsByOutcome();
     if (report.confidence !== 'high' || report.recommendedModel === null) {
@@ -72,16 +112,22 @@ export function publishModelRecommendation(analyzer: Analyzer, storagePath: stri
   }
 }
 
-/** Publish once immediately, then hourly. */
+/**
+ * Publish once shortly after startup, then hourly. The first publish is
+ * deferred so the session-list scan does not delay the dashboard becoming
+ * ready. Both timers are unref'd. The returned function cancels both.
+ */
 export function startModelRecommendationPublisher(
   analyzer: Analyzer,
   storagePath: string,
-): NodeJS.Timeout {
-  publishModelRecommendation(analyzer, storagePath);
-  const interval = setInterval(
-    () => publishModelRecommendation(analyzer, storagePath),
-    PUBLISH_INTERVAL_MS,
-  );
+): () => void {
+  const publish = () => publishModelRecommendation(analyzer, storagePath);
+  const first = setTimeout(publish, FIRST_PUBLISH_DELAY_MS);
+  first.unref?.();
+  const interval = setInterval(publish, PUBLISH_INTERVAL_MS);
   interval.unref?.();
-  return interval;
+  return () => {
+    clearTimeout(first);
+    clearInterval(interval);
+  };
 }

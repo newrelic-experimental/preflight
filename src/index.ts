@@ -886,7 +886,7 @@ async function main(): Promise<void> {
   // independent of dashboard-bind status. Cleared in the shutdown handler.
   let maintenanceGcInterval: NodeJS.Timeout | undefined;
   let retentionInterval: NodeJS.Timeout | undefined;
-  let modelRecommendationInterval: NodeJS.Timeout | undefined;
+  let stopModelRecommendationPublisher: (() => void) | undefined;
   // Periodic re-fetch of ahead/behind-main counts so the Git Efficiency
   // dashboard's "behind main" KPI doesn't stay frozen at its startup value
   // for the life of a long-running `--local` daemon. Cleared in the
@@ -975,7 +975,7 @@ async function main(): Promise<void> {
       if (alertEvaluationInterval) clearInterval(alertEvaluationInterval);
       if (maintenanceGcInterval) clearInterval(maintenanceGcInterval);
       if (retentionInterval) clearInterval(retentionInterval);
-      if (modelRecommendationInterval) clearInterval(modelRecommendationInterval);
+      stopModelRecommendationPublisher?.();
       if (branchDivergenceInterval) clearInterval(branchDivergenceInterval);
       if (dashboardRepollInterval) clearInterval(dashboardRepollInterval);
       if (sessionPersistInterval) clearInterval(sessionPersistInterval);
@@ -1712,7 +1712,7 @@ async function main(): Promise<void> {
     });
 
     const trendAnalyzer = new TrendAnalyzer({ sessionStore });
-    modelRecommendationInterval = startModelRecommendationPublisher(
+    stopModelRecommendationPublisher = startModelRecommendationPublisher(
       trendAnalyzer,
       config.storagePath,
     );
