@@ -23,4 +23,16 @@ export const REDACTION_PATTERNS: readonly RegExp[] = [
   /\b(?:AC|SK)[a-f0-9]{32}\b/g,
   /(?:[?&])(?:sig|se|sp|srt|ss|sv|st)=[A-Za-z0-9%_-]+/gi,
   /\b(?:vercel_|heroku_|dd_|pk_)[A-Za-z0-9_-]{20,}\b/gi,
+  /(?<![\w-])--?(?:token|password|passwd|secret|api[-_]?key|access[-_]?key|auth[-_]?token)(?:[ \t]+|=)(?!-)\S+/gi,
+  // -p is a port, parents or preserve flag everywhere else, so only a mysql client's -p<value> counts.
+  // The lookbehind stops at the previous " -p", so each scan covers new text and the cost stays linear.
+  /-p(?<=\b(?:mysql(?:dump|admin)?|mariadb)\b(?:(?!\s-p)[^\n;|&]){0,200}\s-p)\S+/g,
+  /(?<=(?:-H|--header)[\s=]{1,4}["']?)(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})[^\s"']+/gi,
+  /(?:-u|--user)(?<=\bcurl\b(?:(?!\s-u|\s--user)[^\n;|&]){0,200}\s(?:-u|--user))(?:[ \t]+|=)(?:"[^":\n]{1,100}:[^"\n]{0,200}"|'[^':\n]{1,100}:[^'\n]{0,200}'|[^\s:"']+:(?!\/\/)\S+)/g,
+  /(?<=(?:-H|--header)[\s=]{1,4}["']?)authorization[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4}[A-Za-z0-9+/=_-]+/gi,
+  /-p(?<=\bdocker\s+login\b(?:(?!\s-p)[^\n;|&]){0,200}\s-p)(?:[ \t]+|=)?(?!-)(?:"[^"\n]{0,200}"|'[^'\n]{0,200}'|\S+)/g,
+  // A flag after sshpass is a password only before the wrapped command, so ssh -p 2222 stays intact.
+  /-p(?<=\bsshpass[ \t]+(?:(?:-[ehv]|-[fdP][ \t]*\S+)[ \t]+){0,4}-p)[ \t]*(?:"[^"\n]{0,200}"|'[^'\n]{0,200}'|\S+)/g,
+  /(?:-a|--pass)(?<=\bredis-cli\b(?:(?!\s-a|\s--pass)[^\n;|&]){0,200}\s(?:-a|--pass))[ \t]+(?!-)(?:"[^"\n]{0,200}"|'[^'\n]{0,200}'|\S+)/g,
+  /\baws_secret_access_key(?:[ \t]*[=:][ \t]*|[ \t]+)["']?[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/gi,
 ];

@@ -3080,3 +3080,162 @@ describe('resolveCompanionMode()', () => {
     expect(resolveCompanionMode(env, fileValue)).toEqual({ value, source });
   });
 });
+
+describe('redactSensitive() — secrets passed as command arguments', () => {
+  const AWS_SECRET = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+
+  it.each([
+    ['npm run deploy -- --token secret123', 'secret123'],
+    ['npm test -- --password hunter2', 'hunter2'],
+    ['deploy --api-key secret123', 'secret123'],
+    ['deploy --api_key secret123', 'secret123'],
+    ['deploy --auth-token secret123', 'secret123'],
+    ['deploy --access-key secret123', 'secret123'],
+    ['deploy --secret secret123', 'secret123'],
+    ['keytool -password hunter2', 'hunter2'],
+    ['deploy --api-key=secret123', 'secret123'],
+    ['mysql -u root -psecret123', 'secret123'],
+    ['mysqldump -h db -u root -phunter2 shop', 'hunter2'],
+    ['mysql -h db -P 3306 -u root -psecret123 shop', 'secret123'],
+    ['mysql -h my-prod -u root -psecret123', 'secret123'],
+    ['curl -H "X-Api-Key secret123" https://api.example.com', 'secret123'],
+    ['curl -H "X-Api-Key: secret123" https://api.example.com', 'secret123'],
+    ["curl -H 'X-Auth-Token: secret123' https://api.example.com", 'secret123'],
+    ['curl --header "Api-Key secret123" https://api.example.com', 'secret123'],
+    ['curl -u alice:s3cretpw https://api.example.com', 's3cretpw'],
+    ['curl --user alice:s3cretpw https://api.example.com', 's3cretpw'],
+    ['curl --user=alice:s3cretpw https://api.example.com', 's3cretpw'],
+    ['curl -s -u "alice:s3cret pw" https://api.example.com', 's3cret pw'],
+    [
+      'curl -H "Authorization: Basic YWxpY2U6czNjcmV0cHc=" https://api.example.com',
+      'YWxpY2U6czNjcmV0cHc=',
+    ],
+    [
+      "curl --header 'authorization: basic YWxpY2U6czNjcmV0cHc=' https://api.example.com",
+      'YWxpY2U6czNjcmV0cHc=',
+    ],
+    ['docker login -u me -p s3cretpw', 's3cretpw'],
+    ['docker login -p s3cretpw -u me registry.example.com', 's3cretpw'],
+    ['docker login -u me -p "my pass"', 'pass'],
+    ['sshpass -p hunter2 ssh host', 'hunter2'],
+    ['sshpass -phunter2 ssh host', 'hunter2'],
+    ['sshpass -e -p hunter2 ssh host', 'hunter2'],
+    ["sshpass -p 'hun ter2' scp a host:/b", 'ter2'],
+    ['redis-cli -a s3cretpw ping', 's3cretpw'],
+    ['redis-cli -h host -p 6380 -a s3cretpw ping', 's3cretpw'],
+    ['redis-cli --pass s3cretpw ping', 's3cretpw'],
+    [`aws configure set aws_secret_access_key ${AWS_SECRET}`, AWS_SECRET],
+    [`AWS_SECRET_ACCESS_KEY=${AWS_SECRET} aws s3 ls`, AWS_SECRET],
+  ])('redacts the value in %s', (command, secret) => {
+    const result = redactSensitive(command);
+    expect(result).not.toContain(secret);
+    expect(result).toContain('[REDACTED]');
+  });
+
+  it.each([
+    'docker login -u me --password-stdin',
+    'tool --token-file ./token.txt',
+    'tool --password-file /run/secrets/pw',
+    'aws secretsmanager get-secret-value --secret-name prod/db',
+    'cmd --token --verbose',
+    'git log --format=%s',
+    'mkdir -p src/lib',
+    'cp -p a.txt b.txt',
+    'ps -p 123',
+    'ssh -p 2222 host',
+    'mysql -u root -p',
+    'mysql -h db -P 3306 -u root -p shop',
+    'refresh the token before it expires',
+    'the password prompt appears',
+    'curl -H "Content-Type: application/json" https://api.example.com',
+    'rotate the auth-token every day',
+    'mkdir -pv src/lib',
+    'mysql -h db -P3306 -u root -p shop',
+    'mysql --pager=less shop',
+    'pass the api-key header',
+    'aws_secret_access_key is required',
+    'some-cli --token\nls -la',
+    'gh auth token',
+    'npm token list',
+    'kubectl create secret generic x --from-literal=name=web',
+    'docker run -p 8080:80 nginx',
+    'pg_dump -p 5432 mydb',
+    'git commit -m "fix password reset"',
+    "terraform apply -var 'token_ttl=3600'",
+    'openssl pkey -in key.pem -passin env:PW',
+    'curl -H "Authorization: Bearer short" https://api.example.com',
+    'vault kv get -field=token secret/app',
+    'cat ~/.config/tool/token-cache.json',
+    'mysql -e "select 1" && ls -pa',
+    'mysql -e "select 1"; ls -pa',
+    'mysql -e "select 1"\nls -pa',
+    'mysqldump shop | pv -pt > dump.sql',
+    'ls pymysql -pa',
+    'ls mysqlbackups -pa',
+    'ls -a',
+    'useradd -u 1001 bob',
+    'curl -u alice https://api.example.com',
+    'curl -u alice: https://api.example.com',
+    'curl -u https://api.example.com',
+    'curl https://api.example.com | sort -u a:b',
+    'curl -s https://x; useradd -u a:b',
+    'curl -H "Authorization: Basic" https://api.example.com',
+    'curl -H "Authorization: Digest abc" https://api.example.com',
+    'echo Authorization: Basic abc',
+    'docker login -u me',
+    'docker login -p --username me registry.example.com',
+    'docker login registry.example.com',
+    'docker ps -p 8080',
+    'docker login -u me && docker run -p 8080:80 nginx',
+    'sshpass -e ssh -p 2222 host',
+    'sshpass -f pw.txt ssh -p 2222 host',
+    'ssh -p 2222 host',
+    'redis-cli -h host ping',
+    'redis-cli -h host -p 6380 ping',
+    'redis-cli ping; ls -a',
+    'redis-cli ping && ls -a',
+    'redis-cli ping; ls -a /tmp',
+    'redis-cli ping | sort -a x',
+    'redis-cli --pass',
+    'redis-cli -a --version',
+    'ls -a redis-cli',
+  ])('leaves %s unchanged', (command) => {
+    expect(redactSensitive(command)).toBe(command);
+  });
+
+  it.each([
+    ['sshpass -p hunter2 ssh -p 2222 host', 'sshpass [REDACTED] ssh -p 2222 host'],
+    ['docker login -u me -p s3cretpw registry', 'docker login -u me [REDACTED] registry'],
+    ['redis-cli -a s3cretpw -h host ping', 'redis-cli [REDACTED] -h host ping'],
+    ['curl -u alice:s3cretpw https://x', 'curl [REDACTED] https://x'],
+  ])('redacts only the credential in %s', (command, expected) => {
+    expect(redactSensitive(command)).toBe(expected);
+  });
+
+  it.each([
+    ['curl', ' -u'],
+    ['curl', ' --user'],
+    ['curl', ' -u a:'],
+    ['curl', ' -H "Authorization: Basic'],
+    ['docker login', ' -p'],
+    ['sshpass -e', ' -p'],
+    ['sshpass -p x', ' -p'],
+    ['redis-cli', ' -a'],
+    ['redis-cli', ' --pass'],
+    ['redis-cli', ' -a "'],
+  ])('scans a command of %s followed by repeated%s in linear time', (head, unit) => {
+    for (const size of [65_536, 1_048_576]) {
+      const command = `${head}${unit.repeat(Math.floor(size / unit.length))}`;
+      const start = performance.now();
+      redactSensitive(command);
+      expect(performance.now() - start).toBeLessThan(100);
+    }
+  });
+
+  it('scans a 1 MB command of repeated mysql -p flags in linear time', () => {
+    const command = `mysql${' -p'.repeat(349_000)}`;
+    const start = performance.now();
+    expect(redactSensitive(command)).toBe(command);
+    expect(performance.now() - start).toBeLessThan(100);
+  });
+});

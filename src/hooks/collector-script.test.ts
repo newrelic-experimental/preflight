@@ -370,6 +370,53 @@ describe('collector-script', () => {
     });
   });
 
+  describe('processHook() — secrets passed as Bash arguments', () => {
+    it.each([
+      ['npm run deploy -- --token secret123', 'npm run deploy -- [REDACTED]'],
+      ['mysql -u root -psecret123', 'mysql -u root [REDACTED]'],
+      ['curl -u alice:s3cretpw https://api.example.com', 'curl [REDACTED] https://api.example.com'],
+      [
+        'curl -H "Authorization: Basic YWxpY2U6cw==" https://api.example.com',
+        'curl -H "[REDACTED]" https://api.example.com',
+      ],
+      ['docker login -u me -p s3cretpw', 'docker login -u me [REDACTED]'],
+      ['sshpass -p hunter2 ssh -p 2222 host', 'sshpass [REDACTED] ssh -p 2222 host'],
+      ['redis-cli -a s3cretpw ping', 'redis-cli [REDACTED] ping'],
+      [
+        'curl -H "X-Api-Key secret123" https://api.example.com',
+        'curl -H "[REDACTED]" https://api.example.com',
+      ],
+    ])('writes %s to the buffer with the secret redacted', (command, expected) => {
+      processHook(makePreToolUse({ tool_name: 'Bash', tool_input: { command } }));
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.command).toBe(expected);
+    });
+
+    const longCommand = `deploy --token secret123 ${'x'.repeat(100)}`;
+    it.each([
+      ['Bash', makePreToolUse({ tool_name: 'Bash', tool_input: { command: longCommand } })],
+      [
+        'run_in_terminal',
+        makePreToolUse({ tool_name: 'run_in_terminal', tool_input: { command: longCommand } }),
+      ],
+      ['beforeShellExecution', makeCursorBeforeShellExecution({ command: longCommand })],
+      [
+        'pre_run_command',
+        JSON.stringify({
+          agent_action_name: 'pre_run_command',
+          tool_info: { command_line: longCommand, cwd: '/x' },
+        }),
+      ],
+    ])('caps a %s command at the content limit before redacting it', (_name, raw) => {
+      process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '50';
+      processHook(raw);
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.command).toBe(`deploy [REDACTED] ${'x'.repeat(25)}...[truncated]`);
+    });
+  });
+
   describe('processHook() — PowerShell (native Windows tool, no Git Bash)', () => {
     // PowerShell is a real, first-party Claude Code tool (see
     // code.claude.com/docs/en/tools-reference) — extractInputMeta() had no
