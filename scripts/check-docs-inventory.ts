@@ -11,8 +11,10 @@
  *      somewhere in src/ (no phantom metrics).
  *   3. Every `nr_observe_*` MCP tool name literal under src/ must be named in
  *      docs/COMMANDS_TABLE.md.
- *   4. Every `NEW_RELIC_AI_*` env var read in src/config.ts must be named in
- *      at least one of README.md, docs/ADVANCED.md, SECURITY.md, PRIVACY.md.
+ *   4. Every `NEW_RELIC_AI_*` env var named in any non-test file under src/
+ *      (including src/shared and src/web) must be named in at least one of
+ *      README.md, docs/ADVANCED.md, SECURITY.md, PRIVACY.md, unless it is in
+ *      INTERNAL_ENV_VARS.
  *
  * Does not adjudicate *which* tracker metrics are actually wired into the
  * harvest loop — that nuance stays prose in METRICS_TABLE.md.
@@ -25,7 +27,6 @@ const SRC_DIR = resolve(ROOT, 'src');
 const METRICS_DOC_PATH = resolve(ROOT, 'docs/METRICS_TABLE.md');
 const PRIVACY_DOC_PATH = resolve(ROOT, 'PRIVACY.md');
 const COMMANDS_DOC_PATH = resolve(ROOT, 'docs/COMMANDS_TABLE.md');
-const CONFIG_PATH = resolve(ROOT, 'src/config.ts');
 const ENV_DOC_PATHS = ['README.md', 'docs/ADVANCED.md', 'SECURITY.md', 'PRIVACY.md'].map((p) =>
   resolve(ROOT, p),
 );
@@ -38,17 +39,40 @@ const ENV_DOC_PATHS = ['README.md', 'docs/ADVANCED.md', 'SECURITY.md', 'PRIVACY.
 // mock data, not real emissions. All three would drown real drift in noise.
 const SKIP_DIR_NAMES = new Set(['web', 'shared', 'node_modules']);
 
+// Env vars the code names but that are not a Preflight setting. Each needs a
+// reason. These are read only by `loadConfig()` in the vendored src/shared/
+// snapshot, which Preflight never calls (it loads src/config.ts instead), so
+// setting them changes nothing.
+const INTERNAL_ENV_VARS = new Set([
+  'NEW_RELIC_AI_ATTRIBUTION_ENVIRONMENT',
+  'NEW_RELIC_AI_ATTRIBUTION_FEATURE',
+  'NEW_RELIC_AI_ATTRIBUTION_TEAM',
+  'NEW_RELIC_AI_ATTRIBUTION_USER',
+  'NEW_RELIC_AI_CLIENT_NAME',
+  'NEW_RELIC_AI_CLIENT_VERSION',
+  'NEW_RELIC_AI_CONVERSATION_TRACKING',
+  'NEW_RELIC_AI_COST_TRACKING',
+  'NEW_RELIC_AI_ENABLED',
+  'NEW_RELIC_AI_QUALITY_TRACKING',
+  'NEW_RELIC_AI_RECORD_CONTENT',
+  'NEW_RELIC_AI_THINKING_TRACKING',
+]);
+
 const EVENT_TYPE_RE = /eventType:\s*'([A-Za-z0-9_]+)'/g;
 const METRIC_TOKEN_RE = /\bai\.[a-z0-9_]+(?:\.[a-z0-9_]+)+\b/g;
 const TOOL_NAME_RE = /\bnr_observe_[a-z0-9_]+\b/g;
 const ENV_VAR_RE = /\bNEW_RELIC_AI_[A-Z0-9_]+\b/g;
 
-function collectSourceFiles(dir: string, out: string[] = []): string[] {
+function collectSourceFiles(
+  dir: string,
+  skipDirs: ReadonlySet<string> = SKIP_DIR_NAMES,
+  out: string[] = [],
+): string[] {
   for (const entry of readdirSync(dir)) {
-    if (SKIP_DIR_NAMES.has(entry)) continue;
+    if (skipDirs.has(entry)) continue;
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) {
-      collectSourceFiles(full, out);
+      collectSourceFiles(full, skipDirs, out);
     } else if (/\.tsx?$/.test(entry) && !/\.test\.tsx?$/.test(entry)) {
       out.push(full);
     }
@@ -69,7 +93,12 @@ function main(): void {
     for (const m of text.matchAll(TOOL_NAME_RE)) srcToolNames.add(m[0]);
   }
 
-  const configEnvVars = new Set(readFileSync(CONFIG_PATH, 'utf8').match(ENV_VAR_RE) ?? []);
+  const srcEnvVars = new Set<string>();
+  for (const file of collectSourceFiles(SRC_DIR, new Set(['node_modules']))) {
+    for (const m of readFileSync(file, 'utf8').matchAll(ENV_VAR_RE)) {
+      if (!INTERNAL_ENV_VARS.has(m[0])) srcEnvVars.add(m[0]);
+    }
+  }
 
   const metricsDoc = readFileSync(METRICS_DOC_PATH, 'utf8');
   const privacyDoc = readFileSync(PRIVACY_DOC_PATH, 'utf8');
@@ -86,7 +115,7 @@ function main(): void {
   const toolsMissingFromCommandsDoc = [...srcToolNames].filter((t) => !docToolNames.has(t)).sort();
 
   const docEnvVars = new Set(envDocText.match(ENV_VAR_RE) ?? []);
-  const envVarsMissingFromDocs = [...configEnvVars].filter((v) => !docEnvVars.has(v)).sort();
+  const envVarsMissingFromDocs = [...srcEnvVars].filter((v) => !docEnvVars.has(v)).sort();
 
   let ok = true;
 
@@ -113,7 +142,7 @@ function main(): void {
   if (envVarsMissingFromDocs.length > 0) {
     ok = false;
     console.error(
-      'NEW_RELIC_AI_* env vars read in src/config.ts but undocumented in ' +
+      'NEW_RELIC_AI_* env vars named in src/ but undocumented in ' +
         'README.md, docs/ADVANCED.md, SECURITY.md, or PRIVACY.md:',
     );
     for (const v of envVarsMissingFromDocs) console.error(`  - ${v}`);
@@ -128,7 +157,7 @@ function main(): void {
     `✓ OK: ${emittedEvents.size} emitted event types documented in both docs, ` +
       `${docMetricTokens.size} documented metric names all trace to src/, ` +
       `${srcToolNames.size} MCP tools documented in COMMANDS_TABLE.md, ` +
-      `${configEnvVars.size} config env vars documented.`,
+      `${srcEnvVars.size} src env vars documented.`,
   );
 }
 
