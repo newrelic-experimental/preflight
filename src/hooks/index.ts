@@ -4,9 +4,8 @@ export type { HookEventProcessorOptions } from './event-processor.js';
 export { parseToolSpecificFields } from './tool-parsers.js';
 export {
   resolveSessionId,
-  resolveFromJobDir,
-  resolveFromBreadcrumb,
+  sessionBreadcrumbs,
   nextDelayMs,
   isSyntheticSessionId,
 } from './session-resolver.js';
-export type { SessionResolverOptions } from './session-resolver.js';
+export type { SessionBreadcrumbs, SessionResolverOptions } from './session-resolver.js';

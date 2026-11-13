@@ -160,6 +160,7 @@ export interface FullSessionSummary extends SessionSummary {
    * path in the aggregate route.
    */
   readonly costByDayUsd?: Record<string, number>;
+  readonly firstActivityByDayMs?: Record<string, number>;
   /** Subagent-attributed cost by local-day key; today-scoped counterpart to
    * `subagentCostUsd`. Optional for the same backward-compat reason as
    * `costByDayUsd`. */
@@ -510,6 +511,33 @@ function addRecord(
   return out;
 }
 
+/**
+ * A day's first spend is only known when every side that spent that day
+ * recorded it. A side with spend but no saved first spend (a file written
+ * before the field existed) makes the other side's anchor a later guess, so
+ * that day stays unanchored and readers fall back to the first tool call.
+ */
+function mergeFirstActivity(
+  a: FullSessionSummary,
+  b: FullSessionSummary,
+): Record<string, number> | undefined {
+  if (a.firstActivityByDayMs === undefined && b.firstActivityByDayMs === undefined) {
+    return undefined;
+  }
+  const out: Record<string, number> = {};
+  const take = (own: FullSessionSummary, other: FullSessionSummary): void => {
+    for (const [day, ms] of Object.entries(own.firstActivityByDayMs ?? {})) {
+      const otherSpentUnanchored =
+        other.firstActivityByDayMs?.[day] === undefined && (other.costByDayUsd?.[day] ?? 0) > 0;
+      if (otherSpentUnanchored) continue;
+      out[day] = Math.min(out[day] ?? ms, ms);
+    }
+  };
+  take(a, b);
+  take(b, a);
+  return out;
+}
+
 /** Per-key `a - b`, clamped at zero. */
 function subtractRecord(
   a: Readonly<Record<string, number>>,
@@ -667,6 +695,7 @@ export function mergeSummaries(
     existing.subagentCostByDayUsd,
     incoming.subagentCostByDayUsd,
   );
+  const firstActivityByDayMs = mergeFirstActivity(existing, incoming);
 
   const unpricedByModel = mergeCallUsageWithLedger(
     [existing.unpricedByModel, existing.byteEstimates?.unpricedByModel],
@@ -793,6 +822,7 @@ export function mergeSummaries(
     subagentCostUsd: maxNum(existing.subagentCostUsd, incoming.subagentCostUsd),
     ...(costByDayUsd !== undefined ? { costByDayUsd } : {}),
     ...(subagentCostByDayUsd !== undefined ? { subagentCostByDayUsd } : {}),
+    ...(firstActivityByDayMs !== undefined ? { firstActivityByDayMs } : {}),
     unpricedByModel,
     estimatedByModel,
     unpricedByDay,
@@ -1435,6 +1465,9 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     estimatedCostUsd: costMetrics?.sessionTotalCostUsd ?? null,
     subagentCostUsd: costMetrics?.subagentCostUsd ?? 0,
     costByDayUsd: costMetrics?.costByDayUsd ?? {},
+    ...(costMetrics && Object.keys(costMetrics.firstActivityByDayMs).length > 0
+      ? { firstActivityByDayMs: costMetrics.firstActivityByDayMs }
+      : {}),
     subagentCostByDayUsd: costMetrics?.subagentCostByDayUsd ?? {},
     // A day map rides with its counts even when empty (all late arrivals):
     // readers treat an absent one as a summary written before day buckets.
@@ -1571,6 +1604,7 @@ interface SerializedFullSessionSummary {
   readonly estimatedCostUsd?: unknown;
   readonly subagentCostUsd?: unknown;
   readonly costByDayUsd?: unknown;
+  readonly firstActivityByDayMs?: unknown;
   readonly subagentCostByDayUsd?: unknown;
   readonly unpricedByModel?: unknown;
   readonly estimatedByModel?: unknown;
@@ -1979,6 +2013,7 @@ export function deserializeFullSessionSummary(
     estimatedCostUsd: typeof obj.estimatedCostUsd === 'number' ? obj.estimatedCostUsd : null,
     subagentCostUsd: typeof obj.subagentCostUsd === 'number' ? obj.subagentCostUsd : 0,
     costByDayUsd: parseNumberRecord(obj.costByDayUsd),
+    firstActivityByDayMs: parseNumberRecord(obj.firstActivityByDayMs),
     subagentCostByDayUsd: parseNumberRecord(obj.subagentCostByDayUsd),
     unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
     estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
