@@ -400,7 +400,7 @@
           }
         },
         {
-          "title": "Most Productive Day of Week",
+          "title": "Tool Calls by Weekday",
           "layout": {
             "column": 7,
             "row": 4,

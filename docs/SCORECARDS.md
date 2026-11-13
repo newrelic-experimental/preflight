@@ -126,7 +126,7 @@ FACET team_id, alert_type SINCE 7 DAYS AGO
 ## Notes
 
 - **Team ID matching:** Each scorecard rule facets by `team_id`, which must match an actual New Relic Team name or alias in your account for the FACET to line up. If you have not yet configured `team_id` in your Preflight config, all Preflight events will be missing the `team_id` attribute, and the scorecard will show no data. Set it via the `NEW_RELIC_AI_TEAM_ID` environment variable, or the `teamId` key in `~/.newrelic-preflight/config.json`, then restart your AI tool.
-- **Thresholds are starting points:** Adjust Green/Yellow/Red levels to match your organization's burn rate, code velocity, and risk tolerance. A fast team shipping many files may need higher USD thresholds; a compliance-heavy team may want Red to fire at 0 security alerts.
+- **Thresholds are starting points:** Adjust Green/Yellow/Red levels to match your organization's burn rate, code change rate, and risk tolerance. A fast team shipping many files may need higher USD thresholds; a compliance-heavy team may want Red to fire at 0 security alerts.
 - **Cross-team trends:** Create separate scorecard rules per team, or add additional NRQL rules scoped to `project_id` for per-repo cost attribution. See the `project_id` field in `docs/METRICS_TABLE.md` for the structure.
 
 ---
