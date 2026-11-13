@@ -27,6 +27,7 @@ import { hookEventFromArg } from '../hook-subcommands.js';
 import { breadcrumbRoot, breadcrumbWriter } from './session-breadcrumbs.js';
 import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
+import { mintToolUseId, takeMintedToolUseId } from './minted-tool-use-ids.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -1381,6 +1382,14 @@ function processHook(raw: string, cliEvent?: string): void {
     const bufferDir = dirname(bufferPath);
     if (!existsSync(bufferDir)) {
       mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
+    }
+
+    if (event.toolUseId === undefined && (event.mode === 'pre' || event.mode === 'post')) {
+      const id =
+        event.mode === 'pre'
+          ? mintToolUseId(bufferPath, String(event.tool), timestamp)
+          : takeMintedToolUseId(bufferPath, String(event.tool), timestamp);
+      if (id !== undefined) event.toolUseId = id;
     }
 
     const line = JSON.stringify(event) + '\n';

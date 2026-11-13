@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 // src/hooks/collector-script.ts
-import { readFileSync as readFileSync2, writeFileSync, mkdirSync, existsSync, utimesSync } from "node:fs";
-import { resolve as resolve2, dirname } from "node:path";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, mkdirSync as mkdirSync2, existsSync, utimesSync } from "node:fs";
+import { resolve as resolve2, dirname as dirname2 } from "node:path";
 import { homedir } from "node:os";
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 
 // src/redaction-patterns.ts
 var REDACTION_PATTERNS = [
@@ -177,6 +177,82 @@ function mcpPrToolAction(toolName) {
   return Object.hasOwn(MCP_PR_TOOL_ACTION, bare) ? MCP_PR_TOOL_ACTION[bare] : void 0;
 }
 
+// src/hooks/minted-tool-use-ids.ts
+import { createHash, randomUUID } from "node:crypto";
+import {
+  closeSync as closeSync2,
+  mkdirSync,
+  openSync as openSync2,
+  readdirSync,
+  rmSync,
+  unlinkSync as unlinkSync2,
+  writeFileSync
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
+var MINTED_IDS_DIR_PREFIX = "minted-ids-";
+var MINTED_ID_TTL_MS = 40 * 6e4;
+var MAX_LISTINGS = 5;
+function mintedIdsDir(bufferPath) {
+  return join(dirname(bufferPath), MINTED_IDS_DIR_PREFIX + basename(bufferPath, ".jsonl"));
+}
+function toolKey(tool) {
+  return createHash("sha256").update(tool.toLowerCase()).digest("hex").slice(0, 16);
+}
+function mintToolUseId(bufferPath, tool, at) {
+  const id = randomUUID();
+  try {
+    const dir = mintedIdsDir(bufferPath);
+    mkdirSync(dir, { recursive: true, mode: 448 });
+    writeFileSync(join(dir, `${at}.${toolKey(tool)}.${id}`), "", {
+      flag: "wx",
+      mode: 384
+    });
+    return id;
+  } catch {
+    return void 0;
+  }
+}
+function takeMintedToolUseId(bufferPath, tool, at) {
+  const dir = mintedIdsDir(bufferPath);
+  const key = toolKey(tool);
+  for (let listing = 0; listing < MAX_LISTINGS; listing++) {
+    let names;
+    try {
+      names = readdirSync(dir).sort();
+    } catch {
+      return void 0;
+    }
+    let contended = false;
+    for (const name of names) {
+      const [mintedAt, entryKey, id, claimed] = name.split(".");
+      if (entryKey !== key || id === void 0 || claimed !== void 0) continue;
+      if (!claim(join(dir, name))) {
+        contended = true;
+        continue;
+      }
+      if (at - Number(mintedAt) <= MINTED_ID_TTL_MS) return id;
+    }
+    if (!contended) return void 0;
+  }
+  return void 0;
+}
+function claim(entry) {
+  const claimPath = `${entry}.claimed`;
+  try {
+    closeSync2(openSync2(claimPath, "wx", 384));
+  } catch {
+    return false;
+  }
+  try {
+    unlinkSync2(entry);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(claimPath, { force: true });
+  }
+}
+
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
 var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -237,7 +313,7 @@ function redact(value) {
 }
 function hashInput(input) {
   const str = JSON.stringify(input) ?? "";
-  return createHash("sha256").update(str).digest("hex").slice(0, 16);
+  return createHash2("sha256").update(str).digest("hex").slice(0, 16);
 }
 function sizeOf(value) {
   if (value === void 0 || value === null) return 0;
@@ -288,7 +364,7 @@ function writePpidBreadcrumb(sessionId, root) {
   if (typeof ppid !== "number" || ppid <= 0) return;
   try {
     const breadcrumbDir = resolve2(root, "session-by-ppid");
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
+    mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const pids = getLinuxAncestorPids(ppid);
     let wroteAny = false;
     for (const pid of pids) {
@@ -307,7 +383,7 @@ function writePpidBreadcrumb(sessionId, root) {
         } catch {
         }
       }
-      writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
+      writeFileSync2(breadcrumbPath, sessionId, { mode: 384 });
       wroteAny = true;
     }
     if (wroteAny) _breadcrumbWriteFailed = false;
@@ -327,7 +403,7 @@ function writeCwdBreadcrumb(sessionId, cwd, root) {
   if (typeof cwd !== "string" || cwd.length === 0) return;
   try {
     const breadcrumbDir = resolve2(root, "session-by-cwd");
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
+    mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
     const breadcrumbPath = resolve2(breadcrumbDir, `${sanitizedCwd}.txt`);
     if (existsSync(breadcrumbPath)) {
@@ -339,7 +415,7 @@ function writeCwdBreadcrumb(sessionId, cwd, root) {
       } catch {
       }
     }
-    writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
+    writeFileSync2(breadcrumbPath, sessionId, { mode: 384 });
     _cwdBreadcrumbWriteFailed = false;
   } catch (err) {
     if (!_cwdBreadcrumbWriteFailed) {
@@ -937,9 +1013,13 @@ function processHook(raw, cliEvent) {
   if (data.agent_type) event.agentType = data.agent_type;
   try {
     const bufferPath = getBufferPath(sessionId);
-    const bufferDir = dirname(bufferPath);
+    const bufferDir = dirname2(bufferPath);
     if (!existsSync(bufferDir)) {
-      mkdirSync(bufferDir, { recursive: true, mode: 448 });
+      mkdirSync2(bufferDir, { recursive: true, mode: 448 });
+    }
+    if (event.toolUseId === void 0 && (event.mode === "pre" || event.mode === "post")) {
+      const id = event.mode === "pre" ? mintToolUseId(bufferPath, String(event.tool), timestamp) : takeMintedToolUseId(bufferPath, String(event.tool), timestamp);
+      if (id !== void 0) event.toolUseId = id;
     }
     const line = JSON.stringify(event) + "\n";
     appendToHookBuffer(bufferPath, line);

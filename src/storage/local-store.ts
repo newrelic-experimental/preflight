@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
   readdirSync,
@@ -28,6 +29,7 @@ import {
 } from './drain-claims.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
 import { BREADCRUMBS_DIR, breadcrumbRoot } from '../hooks/session-breadcrumbs.js';
+import { MINTED_IDS_DIR_PREFIX } from '../hooks/minted-tool-use-ids.js';
 import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
@@ -55,6 +57,7 @@ const SUBAGENT_CURSOR_RE = new RegExp(
 );
 const TRANSCRIPT_CURSOR_RE = /^\.transcript-pos-(.+)$/;
 const PARENT_TRANSCRIPT_CURSOR_RE = /^\.parent-transcript-pos-(.+)$/;
+const MINTED_IDS_DIR_RE = new RegExp(`^${MINTED_IDS_DIR_PREFIX}buffer-(.+)$`);
 
 /**
  * A buffer file is treated as orphan when its mtime is older than this AND
@@ -901,10 +904,19 @@ export class LocalStore {
   gcWatcherCursors(
     activeSessionIds: ReadonlySet<string>,
     discoveryHours: number,
-  ): { subagentCursors: number; transcriptCursors: number; parentTranscriptCursors: number } {
-    if (!existsSync(this.storagePath)) {
-      return { subagentCursors: 0, transcriptCursors: 0, parentTranscriptCursors: 0 };
-    }
+  ): {
+    subagentCursors: number;
+    transcriptCursors: number;
+    parentTranscriptCursors: number;
+    mintedIdDirs: number;
+  } {
+    const none = {
+      subagentCursors: 0,
+      transcriptCursors: 0,
+      parentTranscriptCursors: 0,
+      mintedIdDirs: 0,
+    };
+    if (!existsSync(this.storagePath)) return none;
     let entries: string[];
     try {
       entries = readdirSync(this.storagePath);
@@ -912,7 +924,7 @@ export class LocalStore {
       logger.warn('Failed to enumerate storage path for gcWatcherCursors', {
         error: String(err),
       });
-      return { subagentCursors: 0, transcriptCursors: 0, parentTranscriptCursors: 0 };
+      return none;
     }
 
     const cutoffMs = Date.now() - discoveryHours * 60 * 60 * 1000;
@@ -921,8 +933,25 @@ export class LocalStore {
     let subagentCursors = 0;
     let transcriptCursors = 0;
     let parentTranscriptCursors = 0;
+    let mintedIdDirs = 0;
 
     for (const name of entries) {
+      // A post can arrive long after its session's engine exits, so a minted id
+      // stays until the session is dead and idle past the discovery window.
+      const mintedMatch = MINTED_IDS_DIR_RE.exec(name);
+      if (mintedMatch) {
+        if (activeSessionIds.has(mintedMatch[1])) continue;
+        const path = resolve(this.storagePath, name);
+        try {
+          if (statSync(path).mtimeMs >= cutoffMs) continue;
+          rmSync(path, { recursive: true, force: true });
+          mintedIdDirs++;
+        } catch (err) {
+          logger.debug('Failed to delete stale minted ids', { error: String(err) });
+        }
+        continue;
+      }
+
       const subagentMatch = SUBAGENT_CURSOR_RE.exec(name);
       if (subagentMatch) {
         const parentSessionId = subagentMatch[1];
@@ -975,15 +1004,21 @@ export class LocalStore {
       }
     }
 
-    if (subagentCursors > 0 || transcriptCursors > 0 || parentTranscriptCursors > 0) {
+    if (
+      subagentCursors > 0 ||
+      transcriptCursors > 0 ||
+      parentTranscriptCursors > 0 ||
+      mintedIdDirs > 0
+    ) {
       logger.info('Cleaned up watcher cursor files', {
         subagentCursors,
         transcriptCursors,
         parentTranscriptCursors,
+        mintedIdDirs,
       });
     }
 
-    return { subagentCursors, transcriptCursors, parentTranscriptCursors };
+    return { subagentCursors, transcriptCursors, parentTranscriptCursors, mintedIdDirs };
   }
 
   /**

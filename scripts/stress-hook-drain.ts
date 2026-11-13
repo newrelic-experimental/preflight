@@ -5,7 +5,11 @@
  * times was lost, and one returned twice was doubled. Exits 1 on either, or on
  * a claim or `.migrating` file left behind.
  *
+ * `noid` instead runs four collector processes whose calls carry no
+ * tool_use_id, and exits 1 unless every post took exactly one minted pre id.
+ *
  *   npx tsx scripts/stress-hook-drain.ts [lines]
+ *   npx tsx scripts/stress-hook-drain.ts noid [calls per process]
  */
 import { spawn } from 'node:child_process';
 import {
@@ -20,6 +24,7 @@ import {
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
+import { processHook } from '../src/hooks/collector-script.js';
 import { LocalStore } from '../src/storage/local-store.js';
 import { appendToHookBuffer } from '../src/storage/hook-buffer.js';
 
@@ -93,7 +98,45 @@ async function runParent(lines: number): Promise<void> {
   }
 }
 
+function runHooker(dir: string, calls: number): void {
+  process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = dir;
+  for (let i = 0; i < calls; i++) {
+    for (const hook_event_name of ['PreToolUse', 'PostToolUse']) {
+      processHook(JSON.stringify({ hook_event_name, tool_name: 'Read', session_id: SESSION }));
+    }
+  }
+}
+
+async function runNoIdParent(calls: number): Promise<void> {
+  const dir = mkdtempSync(resolve(tmpdir(), 'stress-hook-noid-'));
+  try {
+    const codes = await Promise.all(
+      Array.from({ length: DRAINERS }, () => spawnRole('hooker', dir, [String(calls)])),
+    );
+    const events = new LocalStore(dir, SESSION).drainBuffer();
+    const ids = (mode: string) =>
+      events.filter((e) => e.mode === mode).map((e) => (e as { toolUseId?: string }).toolUseId);
+    const pres = new Set(ids('pre'));
+    const posts = ids('post');
+    const unstamped = posts.filter((id) => id === undefined).length;
+    const takenTwice = posts.length - new Set(posts).size;
+    const strays = posts.filter((id) => id !== undefined && !pres.has(id)).length;
+    const left = readdirSync(dir).flatMap((n) =>
+      n.startsWith('minted-ids-') ? readdirSync(resolve(dir, n)) : [],
+    ).length;
+    console.log(
+      `calls ${DRAINERS * calls}, pres ${pres.size}, unstamped ${unstamped}, taken twice ${takenTwice}, strays ${strays}, left ${left}`,
+    );
+    const ok = pres.size === DRAINERS * calls && !unstamped && !takenTwice && !strays && !left;
+    if (!ok || codes.some((c) => c !== 0)) process.exitCode = 1;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 const [role, dir, arg] = process.argv.slice(2);
 if (role === 'writer') runWriter(dir!, Number(arg));
 else if (role === 'drainer') runDrainer(dir!, Number(arg));
+else if (role === 'hooker') runHooker(dir!, Number(arg));
+else if (role === 'noid') await runNoIdParent(Number(dir ?? 500));
 else await runParent(Number(role && /^\d+$/.test(role) ? role : 20_000));
