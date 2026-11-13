@@ -9,7 +9,10 @@ import type { CliOptions } from './types.js';
 import type { UpstreamConfig } from './proxy/types.js';
 import type { PersonalAlertThresholds } from './alerts/types.js';
 import { DEFAULT_PERSONAL_THRESHOLDS } from './alerts/types.js';
-import { REDACTION_PATTERNS as DEFAULT_REDACTION_PATTERNS } from './redaction-patterns.js';
+import {
+  REDACTION_PATTERNS as DEFAULT_REDACTION_PATTERNS,
+  redactSecrets,
+} from './redaction-patterns.js';
 import { resolveRecordContent } from './record-content-gate.js';
 import { projectIdFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
 import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
@@ -1884,9 +1887,9 @@ const MAX_REDACT_LEN = 1_048_576; // 1 MB
 
 export function redactSensitive(value: string, patterns?: readonly RegExp[]): string {
   if (typeof value !== 'string') return String(value ?? '');
-  const pats = patterns ?? DEFAULT_REDACTION_PATTERNS;
   let result = value.length > MAX_REDACT_LEN ? value.slice(0, MAX_REDACT_LEN) : value;
-  for (const pattern of pats) {
+  if (patterns === undefined) return redactSecrets(result);
+  for (const pattern of patterns) {
     pattern.lastIndex = 0;
     result = result.replace(pattern, '[REDACTED]');
   }
@@ -1908,28 +1911,5 @@ const WORD_CHAR_RE = /[A-Za-z0-9]/;
  * colour code (`ESC[32m`) or `%3A`.
  */
 export function redactIdentifier(value: string): string {
-  let result = value;
-  for (const pattern of DEFAULT_REDACTION_PATTERNS) {
-    const re = new RegExp(
-      pattern.source,
-      pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`,
-    );
-    let out = '';
-    let last = 0;
-    let match: RegExpExecArray | null;
-    while ((match = re.exec(result)) !== null) {
-      if (match[0] === '') {
-        re.lastIndex++;
-        continue;
-      }
-      if (match.index > 0 && WORD_CHAR_RE.test(result[match.index - 1])) {
-        re.lastIndex = match.index + 1;
-        continue;
-      }
-      out += `${result.slice(last, match.index)}[REDACTED]`;
-      last = re.lastIndex;
-    }
-    result = out + result.slice(last);
-  }
-  return result;
+  return redactSecrets(value, (text, index) => index === 0 || !WORD_CHAR_RE.test(text[index - 1]));
 }
