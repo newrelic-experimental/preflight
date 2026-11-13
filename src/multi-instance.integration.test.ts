@@ -230,47 +230,94 @@ describe('multi-instance integration (proposal #11)', () => {
     }
   }, 30_000);
 
-  it('a pending engine leaves the live sessions it drained in progress when it exits', async () => {
-    const ownStorage = mkdtempSync(join(tmpdir(), 'nr-mi-pending-'));
-    const sessionId = 'live-owned-session';
-    const jobDir = resolve(jobDirRoot, sessionId);
-    mkdirSync(jobDir, { recursive: true, mode: 0o700 });
-    writeFileSync(
-      resolve(jobDir, 'state.json'),
-      JSON.stringify({ linkScanPath: `/fake/transcript/${sessionId}.jsonl` }),
-      { mode: 0o600 },
-    );
-    seedBuffer(ownStorage, sessionId, 5);
-    const port = await getFreePort();
-    const pending = spawnChild('pending', ownStorage, undefined, distIndex, port);
+  describe('the outcome a pending engine saves for a session it drained', () => {
+    const sessionId = 'drained-session';
+    let ownStorage: string;
+    let jobDir: string;
+    let port: number;
+    let pending: ChildHandle;
     let owner: ChildHandle | undefined;
-    try {
-      await waitForStderr(pending, 'Event processor started', BOOT_TIMEOUT_MS);
-      const bufferPath = resolve(ownStorage, `buffer-${sessionId}.jsonl`);
-      const drainDeadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
-      while (existsSync(bufferPath) && Date.now() < drainDeadline) await delay(50);
-      expect(existsSync(bufferPath)).toBe(false);
 
-      owner = spawnChild(sessionId, ownStorage, jobDir, distIndex, port);
-      await waitForStderr(owner, 'Event processor started', BOOT_TIMEOUT_MS);
-      pending.proc.stdin.end();
-      await waitExit(pending, 4000);
-
+    const savedOutcome = (): string | undefined => {
       const sessionsDir = resolve(ownStorage, 'sessions');
-      const saved = readdirSync(sessionsDir).filter((f) => f.endsWith(`_${sessionId}.json`));
-      expect(saved).toHaveLength(1);
-      const summary = JSON.parse(readFileSync(resolve(sessionsDir, saved[0]!), 'utf-8')) as {
-        outcome: string;
-        toolCallCount: number;
-      };
-      expect(summary).toMatchObject({ outcome: 'in progress', toolCallCount: 5 });
-    } finally {
-      pending.proc.stdin.end();
-      owner?.proc.stdin.end();
-      await Promise.all([waitExit(pending, 4000), owner && waitExit(owner, 4000)]);
+      const saved = existsSync(sessionsDir)
+        ? readdirSync(sessionsDir).filter((f) => f.endsWith(`_${sessionId}.json`))
+        : [];
+      if (saved.length !== 1) return undefined;
+      return (
+        JSON.parse(readFileSync(resolve(sessionsDir, saved[0]!), 'utf-8')) as { outcome: string }
+      ).outcome;
+    };
+    const startOwner = async (env?: NodeJS.ProcessEnv): Promise<ChildHandle> => {
+      const child = spawnChild(sessionId, ownStorage, jobDir, distIndex, port, env);
+      await waitForStderr(child, 'Event processor started', BOOT_TIMEOUT_MS);
+      return child;
+    };
+    const stop = async (child: ChildHandle): Promise<void> => {
+      child.proc.stdin.end();
+      await waitExit(child, 4000);
+    };
+
+    const waitForDrain = async (): Promise<void> => {
+      const bufferPath = resolve(ownStorage, `buffer-${sessionId}.jsonl`);
+      const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
+      while (existsSync(bufferPath) && Date.now() < deadline) await delay(50);
+      expect(existsSync(bufferPath)).toBe(false);
+    };
+
+    beforeEach(async () => {
+      ownStorage = mkdtempSync(join(tmpdir(), 'nr-mi-pending-'));
+      jobDir = resolve(jobDirRoot, sessionId);
+      mkdirSync(jobDir, { recursive: true, mode: 0o700 });
+      writeFileSync(
+        resolve(jobDir, 'state.json'),
+        JSON.stringify({ linkScanPath: `/fake/transcript/${sessionId}.jsonl` }),
+        { mode: 0o600 },
+      );
+      seedBuffer(ownStorage, sessionId, 5);
+      port = await getFreePort();
+      owner = undefined;
+      pending = spawnChild('pending', ownStorage, undefined, distIndex, port);
+      await waitForStderr(pending, 'Event processor started', BOOT_TIMEOUT_MS);
+      await waitForDrain();
+    });
+
+    afterEach(async () => {
+      await Promise.all([stop(pending), owner && stop(owner)]);
       rmSync(ownStorage, { recursive: true, force: true });
-    }
-  }, 30_000);
+    });
+
+    it('is in progress while the session runs in its own engine, which then completes it', async () => {
+      owner = await startOwner();
+      await stop(pending);
+      expect(savedOutcome()).toBe('in progress');
+
+      seedBuffer(ownStorage, sessionId, 3, 5);
+      await waitForDrain();
+      await stop(owner);
+      expect(savedOutcome()).toBe('completed');
+    }, 30_000);
+
+    it('is completed when no engine for the session is live', async () => {
+      await stop(pending);
+
+      expect(savedOutcome()).toBe('completed');
+    }, 30_000);
+
+    it('gives way to an engine that starts for the session later', async () => {
+      await stop(pending);
+      expect(savedOutcome()).toBe('completed');
+
+      owner = await startOwner({ NR_AI_SESSION_PERSIST_INTERVAL_MS: '200' });
+      seedBuffer(ownStorage, sessionId, 3, 5);
+      const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
+      while (savedOutcome() !== 'in progress' && Date.now() < deadline) await delay(50);
+      expect(savedOutcome()).toBe('in progress');
+
+      await stop(owner);
+      expect(savedOutcome()).toBe('completed');
+    }, 30_000);
+  });
 
   // -----------------------------------------------------------------------
   // Dashboard ownership re-poll. After this fix the second MCP runs
@@ -375,14 +422,14 @@ describe('multi-instance integration (proposal #11)', () => {
  * src/hooks/collector-script.ts so the event-processor pairs them into
  * 1 ToolCallRecord per pre+post pair.
  */
-function seedBuffer(storagePath: string, sessionId: string, count: number): void {
+function seedBuffer(storagePath: string, sessionId: string, count: number, from = 0): void {
   if (!existsSync(storagePath)) mkdirSync(storagePath, { recursive: true, mode: 0o700 });
   const bufferPath = resolve(storagePath, `buffer-${sessionId}.jsonl`);
   const lines: string[] = [];
   // Use a baseline timestamp safely in the past so orphan-sweep timeouts
   // (60s in event-processor) don't fire mid-test.
   const baseTs = Date.now() - 1000;
-  for (let i = 0; i < count; i++) {
+  for (let i = from; i < from + count; i++) {
     const toolUseId = `toolu_${sessionId}_${i}`;
     lines.push(
       JSON.stringify({
@@ -427,10 +474,12 @@ function spawnChild(
   jobDir: string | undefined,
   distPath: string,
   port: number,
+  extraEnv?: NodeJS.ProcessEnv,
 ): ChildHandle {
   const proc = spawn(process.execPath, [distPath, '--stdio'], {
     env: {
       ...process.env,
+      ...extraEnv,
       // mode=local skips cloud licenseKey requirement and confines the test
       // to the local pipeline (per index.privacy.test.ts pattern).
       NR_AI_MODE: 'local',

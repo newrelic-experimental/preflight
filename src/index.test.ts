@@ -1832,14 +1832,25 @@ describe('stdio integration', () => {
       expect(atCheckpoint).toBe('in progress');
     }, 30000);
 
-    it('saves the sessions it drained while pending in progress at shutdown', async () => {
+    it('saves a session it drained while pending in progress at shutdown while its engine is live', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      await drainCalls(storage, 'other-real-session', 1);
+      writeFileSync(resolve(storage, 'active-other-real-session.pid'), String(process.pid));
+      await client.close();
+      await waitFor(() => savedCalls(storage, 'other-real-session') === 1);
+
+      expect(savedField(storage, 'other-real-session', 'outcome')).toBe('in progress');
+    }, 30000);
+
+    it('saves a session it drained while pending completed at shutdown when no engine for it is live', async () => {
       const storage = makeStorage();
       const client = await startEngine(storage);
       await drainCalls(storage, 'other-real-session', 1);
       await client.close();
       await waitFor(() => savedCalls(storage, 'other-real-session') === 1);
 
-      expect(savedField(storage, 'other-real-session', 'outcome')).toBe('in progress');
+      expect(savedField(storage, 'other-real-session', 'outcome')).toBe('completed');
     }, 30000);
 
     it('keeps a call with no session id across its first adoption', async () => {
