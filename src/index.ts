@@ -2176,6 +2176,9 @@ async function main(): Promise<void> {
         // transcript has no meta sidecar (see onSubagentTurn). Its PostToolUse
         // normally fires only after a foreground subagent returns.
         subagentAttribution.recordAgentToolCall(rawRecord);
+        // Agent records reach the tracker through onWorkflowAgent, which also
+        // covers the late-post amend path that skips onRecord.
+        if (rawRecord.toolName !== 'Agent') workflowRunTracker.recordToolCall(rawRecord);
 
         if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
           // Emit tool call span — parent is the active task span (or session span if no task)
@@ -2512,8 +2515,10 @@ async function main(): Promise<void> {
       },
       // Feed each Agent-tool ToolCallRecord into the workflow tracker
       // so AiWorkflowRun events ship for `run_source='agent_tool'`.
-      onWorkflowAgent: (record) => {
-        workflowRunTracker.recordToolCall(record);
+      onWorkflowAgent: (incomingRecord) => {
+        // onRecord's intake read already populated the index for this record,
+        // so a plain backfill gives the tracker the same agentId.
+        workflowRunTracker.recordToolCall(subagentAttribution.backfill(incomingRecord));
         // Drain immediately — recordToolCall already pushes the completed run
         // into the drainable queue, so each Agent call yields exactly one
         // AiWorkflowRun event with no harvest-tick latency.
