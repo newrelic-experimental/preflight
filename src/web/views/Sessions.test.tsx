@@ -822,6 +822,12 @@ describe('Sessions view — workflow consolidation', () => {
     expect(screen.getAllByText('Costs are estimates.')).toHaveLength(1);
   });
 
+  it('hides the costs-are-estimates note when there are no sessions', async () => {
+    renderSessionsFull([], []);
+    expect(await screen.findByText('No sessions yet')).toBeInTheDocument();
+    expect(screen.queryByText('Costs are estimates.')).toBeNull();
+  });
+
   it('scopes the visible session list to the run-source filter', async () => {
     renderSessionsFull(SESSIONS, RUNS);
     await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());

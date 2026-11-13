@@ -99,10 +99,11 @@ describe('Today view', () => {
     expect(screen.getAllByText('Costs are estimates.')).toHaveLength(1);
   });
 
-  it('shows the costs-are-estimates note when there is no activity yet', () => {
-    useLiveStore.setState({ cost: null });
+  it('hides the costs-are-estimates note when there is no activity yet', async () => {
+    useLiveStore.setState({ cost: null, antiPatterns: [] });
     renderToday();
-    expect(screen.getAllByText('Costs are estimates.')).toHaveLength(1);
+    expect(await screen.findByText('No activity yet today')).toBeInTheDocument();
+    expect(screen.queryByText('Costs are estimates.')).toBeNull();
   });
 
   it('renders the efficiency score KPI', () => {
