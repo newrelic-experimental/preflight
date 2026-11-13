@@ -17,7 +17,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, utimesSync } from '
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { REDACTION_PATTERNS } from '../redaction-patterns.js';
+import { cutAtWord, redactSecrets } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import {
   CLAUDE_CODE_ENV_SIGNALS,
@@ -119,13 +119,10 @@ function redact(value: string): string {
   let result = value;
   if (Buffer.byteLength(value, 'utf8') > MAX_REDACT_BYTES) {
     const buf = Buffer.from(value, 'utf8').subarray(0, MAX_REDACT_BYTES);
-    result = buf.toString('utf8').replace(/�$/, ''); // drop any partial surrogate at cut point
+    const kept = buf.toString('utf8').replace(/�$/, ''); // drop any partial surrogate at cut point
+    result = cutAtWord(value, kept.length);
   }
-  for (const pattern of REDACTION_PATTERNS) {
-    const re = new RegExp(pattern.source, pattern.flags);
-    result = result.replace(re, '[REDACTED]');
-  }
-  return result;
+  return redactSecrets(result);
 }
 
 // ---------------------------------------------------------------------------
