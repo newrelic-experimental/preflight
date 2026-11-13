@@ -435,7 +435,7 @@ export function Today(): JSX.Element {
       <header className="flex items-baseline justify-between mb-4">
         <h1 className="text-xl font-semibold gradient-text">Today</h1>
         <span className="flex items-baseline gap-3">
-          <EstimateNote />
+          {!noActivityToday && <EstimateNote />}
           <span className="text-xs text-ink-muted">{headerTimestamp}</span>
         </span>
       </header>

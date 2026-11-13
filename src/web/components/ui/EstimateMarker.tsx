@@ -41,7 +41,7 @@ export function EstimateMarker({ withoutInfoButton = false }: EstimateMarkerProp
 
 export function EstimateNote(): JSX.Element {
   return (
-    <span className="inline-flex items-center gap-0.5 text-[10px] text-ink-muted">
+    <span className="inline-flex items-center gap-0.5 text-[10px] text-ink-subtle">
       <span>Costs are estimates.</span>
       <EstimateInfo />
     </span>

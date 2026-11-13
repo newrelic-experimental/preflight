@@ -490,6 +490,8 @@ export function Sessions(): JSX.Element {
     setOpenRunId(runId);
   }, []);
 
+  const hasSessions = visibleRows.length > 0 || liveSessionIds.size > 0;
+
   return (
     <section className="flex flex-col h-full">
       <div className="h-8 overflow-hidden rounded-lg mb-2 shrink-0">
@@ -497,7 +499,7 @@ export function Sessions(): JSX.Element {
       </div>
       <div className="flex items-baseline justify-between mb-2 shrink-0">
         <h1 className="text-lg font-semibold gradient-text">Sessions</h1>
-        <EstimateNote />
+        {hasSessions && <EstimateNote />}
       </div>
 
       {/* Fleet workflow KPIs + filters (consolidated from the former Workflows
