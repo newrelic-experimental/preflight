@@ -1672,7 +1672,7 @@ describe('breadcrumbs filed by writer', () => {
   });
 
   it("keeps an older collector's day-old cwd breadcrumb while its session's ppid breadcrumb stays fresh", () => {
-    const startedAt = Date.now();
+    const startedAt = Date.now() - 60_000;
     const old = new Date(startedAt - 13 * 60 * 60 * 1000);
     utimesSync(writeCrumb(null, 'cwd', '-projects-shared', 'sess-long-running'), old, old);
     writeCrumb(null, 'ppid', '424252', 'sess-long-running');
