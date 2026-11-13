@@ -7,6 +7,7 @@ import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import { LocalStore } from '../storage/local-store.js';
 import { HookEventProcessor } from './event-processor.js';
 import { SkillActivationTracker } from '../metrics/skill-activation-tracker.js';
+import { DEFAULT_IDLE_TIMEOUT_MS } from '../metrics/task-detector.js';
 import { AntigravityAdapter } from '../platforms/antigravity-adapter.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import {
@@ -2798,6 +2799,81 @@ describe('HookEventProcessor', () => {
         { tool: 'Read', skill: 'simplify' },
         { tool: 'Bash', skill: undefined },
       ]);
+    });
+
+    describe('idle gap between tool calls', () => {
+      const t0 = 1700000000000;
+      type Stamp = { tool: string; skill: string | undefined };
+
+      function stampsFor(gapMs: number, opts: { promptFirst?: boolean; promptAfter?: boolean }) {
+        const tracker = new SkillActivationTracker();
+        const stamped: Stamp[] = [];
+        const processor = new HookEventProcessor({
+          store,
+          onRecord: (record) => {
+            stamped.push({ tool: record.toolName, skill: tracker.recordToolCall(record)?.name });
+          },
+          onUserPromptSubmit: (f) => tracker.recordPrompt(f.sessionId, f.slashCommand ?? null),
+        });
+        const prompt = (timestamp: number): UserPromptSubmitHookEvent =>
+          ({
+            mode: 'user_prompt_submit',
+            tool: 'user_prompt_submit',
+            timestamp,
+            sessionId: 's1',
+          }) as UserPromptSubmitHookEvent;
+        const pair = (tool: string, id: string, at: number, extra?: Partial<PreHookEvent>) => [
+          makePreEvent({ tool, toolUseId: id, sessionId: 's1', timestamp: at, ...extra }),
+          makePostEvent({ tool, toolUseId: id, sessionId: 's1', timestamp: at + 50 }),
+        ];
+        processor.processEvents([
+          ...(opts.promptFirst ? [prompt(t0 - 500)] : []),
+          ...pair('Skill', 'k1', t0, { toolInput: { skill: 'review' } }),
+          ...pair('Read', 'r1', t0 + 1000),
+          ...(opts.promptAfter ? [prompt(t0 + 1000 + gapMs - 500)] : []),
+          ...pair('Bash', 'b1', t0 + 1000 + gapMs),
+        ]);
+        return stamped;
+      }
+
+      describe('in a session that has sent no prompt', () => {
+        it('closes the skill run once the session has been idle past the task idle timeout', () => {
+          expect(stampsFor(DEFAULT_IDLE_TIMEOUT_MS + 1000, {})).toEqual([
+            { tool: 'Skill', skill: 'review' },
+            { tool: 'Read', skill: 'review' },
+            { tool: 'Bash', skill: undefined },
+          ]);
+        });
+
+        it('keeps the run open across a gap under the idle timeout', () => {
+          expect(stampsFor(DEFAULT_IDLE_TIMEOUT_MS - 5000, {}).map((s) => s.skill)).toEqual([
+            'review',
+            'review',
+            'review',
+          ]);
+        });
+      });
+
+      describe('in a session that has sent a prompt', () => {
+        it.each([
+          ['just past the idle timeout', DEFAULT_IDLE_TIMEOUT_MS + 1000],
+          ['ten minutes', 10 * 60_000],
+        ])('keeps the run open across a gap of %s', (_label, gapMs) => {
+          expect(stampsFor(gapMs, { promptFirst: true }).map((s) => s.skill)).toEqual([
+            'review',
+            'review',
+            'review',
+          ]);
+        });
+
+        it('still closes the run on the next prompt', () => {
+          expect(stampsFor(5000, { promptFirst: true, promptAfter: true })).toEqual([
+            { tool: 'Skill', skill: 'review' },
+            { tool: 'Read', skill: 'review' },
+            { tool: 'Bash', skill: undefined },
+          ]);
+        });
+      });
     });
 
     it('omits slashCommand from onUserPromptSubmit frame when absent', () => {
