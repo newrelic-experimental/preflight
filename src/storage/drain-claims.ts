@@ -196,6 +196,11 @@ export class DrainHold {
     const taken = takeClaim(path);
     if (taken === 'gone') return 'skip';
     if (taken !== 'stuck') return taken;
+    return this.stuckAt(path, giveUpOrder);
+  }
+
+  /** Holds the claims after one this drain could not take or adopt, as `take` does. */
+  stuckAt(path: string, giveUpOrder: boolean): 'skip' | 'stop' {
     const parsed = parseClaimName(basename(path));
     const lines = parsed ? `${parsed.buffer}.${parsed.firstClaimedAt}` : path;
     if (!this.gaveUp.has(lines)) {
