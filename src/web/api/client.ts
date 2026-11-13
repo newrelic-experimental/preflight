@@ -10,9 +10,21 @@ export class NotFoundError extends Error {
   }
 }
 
+// Distinct error class for 503 responses: the server has the route but not its
+// backing feature wired (e.g. the experimental artifact index while it is off).
+export class UnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnavailableError';
+  }
+}
+
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(path, { signal });
   if (res.status === 404) throw new NotFoundError(path);
+  if (res.status === 503) {
+    throw new UnavailableError(`${res.status} ${res.statusText} for ${path}`);
+  }
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${path}`);
   return (await res.json()) as T;
 }
@@ -543,6 +555,38 @@ export interface AuditEntry {
 
 export const fetchAuditLog = (signal?: AbortSignal): Promise<AuditEntry[]> =>
   getJson<AuditEntry[]>('/api/audit', signal);
+
+// Mirrors src/artifacts/artifact-index.ts (not importable — tsconfig.web.json
+// excludes server source).
+export interface ArtifactEntry {
+  readonly path: string;
+  readonly name: string;
+  readonly relativePath: string;
+  readonly worktreeLabel: string | null;
+  readonly sessionIds: readonly string[];
+  readonly firstWrittenAt: number;
+  readonly lastWrittenAt: number;
+  readonly writeCount: number;
+  readonly sizeBytes: number;
+}
+
+export interface ArtifactGroup {
+  readonly key: string;
+  readonly kind: 'repo' | 'directory';
+  readonly label: string;
+  readonly lastWrittenAt: number;
+  readonly artifacts: readonly ArtifactEntry[];
+}
+
+export interface ArtifactsResponse {
+  readonly groups: readonly ArtifactGroup[];
+}
+
+export const fetchArtifacts = (signal?: AbortSignal): Promise<ArtifactsResponse> =>
+  getJson<ArtifactsResponse>('/api/artifacts', signal);
+
+export const artifactViewUrl = (path: string): string =>
+  `/api/artifacts/view?path=${encodeURIComponent(path)}`;
 
 // Mirrors WeeklySummary in src/storage/weekly-summary.ts (not importable —
 // tsconfig.web.json excludes server source). Only the fields the History
@@ -1316,6 +1360,7 @@ export interface SettingsResponse {
   readonly mode: string;
   readonly storagePath: string;
   readonly highSecurity: boolean;
+  readonly experimentalArtifacts: boolean;
   readonly licenseKey: string | null;
   readonly sessionBudgetUsd: number | null;
   readonly dailyBudgetUsd: number | null;
@@ -1600,6 +1645,7 @@ export const qk = {
   cacheHealth: ['cache-health'] as const,
   costPerTool: (days?: number) => ['cost-per-tool', days] as const,
   settings: ['settings'] as const,
+  artifacts: ['artifacts'] as const,
   sessionsLive: ['sessions', 'live'] as const,
   sessionsTodayAggregate: ['sessions', 'today', 'aggregate'] as const,
   workflows: ['workflows'] as const,
