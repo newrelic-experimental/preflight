@@ -664,4 +664,19 @@ describe('first spend today across a real restart', () => {
     after.seedFromPersisted(buildCostTrackerSeed(summaryOf(before)));
     expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBe(at(9));
   });
+
+  it('leaves the day unanchored when a legacy and an anchored session seed one process, in either order', () => {
+    const before = new CostTracker();
+    before.recordTokenUsage(SPEND, 'claude-sonnet-4', { timestampMs: at(9) });
+    const legacy = buildCostTrackerSeed(legacyOf(before));
+    const anchored = buildCostTrackerSeed(summaryOf(before));
+    for (const seeds of [
+      [legacy, anchored],
+      [anchored, legacy],
+    ]) {
+      const after = new CostTracker();
+      for (const seed of seeds) after.seedFromPersisted(seed);
+      expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBeNull();
+    }
+  });
 });
