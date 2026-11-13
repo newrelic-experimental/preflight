@@ -273,6 +273,10 @@ const ARGUMENTS = [
   'curl ',
   'env API_KEY=',
   'TOKEN=',
+  'TOKEN=\n',
+  'TOKEN:\r\n',
+  '  TOKEN =\r\n  ',
+  'PASSWORD\n= ',
   'deploy --client-secret=',
   'psql --db-password ',
 ];
