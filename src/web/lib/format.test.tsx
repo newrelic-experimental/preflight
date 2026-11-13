@@ -3,6 +3,7 @@ import {
   rateColor,
   scoreColor,
   fmtDateTime,
+  fmtReportedAsOf,
   fmtTimeOfDay,
   fmtElapsed,
   formatDuration,
@@ -68,6 +69,18 @@ describe('fmtTimeOfDay()', () => {
   it('formats epoch ms as time only, no date', () => {
     const ms = new Date(2026, 0, 5, 14, 30).getTime();
     expect(fmtTimeOfDay(ms)).toMatch(/^\d{1,2}:30\s?[AP]M$/);
+  });
+});
+
+describe('fmtReportedAsOf()', () => {
+  const asOf = new Date(2026, 10, 6, 15, 42).toISOString();
+
+  it('shows time only for a current value', () => {
+    expect(fmtReportedAsOf(asOf, false)).toMatch(/^\d{1,2}:42\s?[AP]M$/);
+  });
+
+  it('adds the date for a stale value', () => {
+    expect(fmtReportedAsOf(asOf, true)).toMatch(/^Nov 6, \d{1,2}:42\s?[AP]M$/);
   });
 });
 

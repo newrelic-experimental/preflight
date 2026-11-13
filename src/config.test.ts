@@ -428,6 +428,45 @@ describe('loadMcpConfig()', () => {
     expect(stderrOutput).not.toMatch(/Unknown keys in config file/);
   });
 
+  it('does not warn about a saved reportedSpend as an unknown config-file key', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const path = resolve(tmpDir, 'reported-spend.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        reportedSpend: [
+          { periodKind: 'daily', amountUsd: 42.5, asOf: '2026-11-07T10:00:00.000Z' },
+          { periodKind: 'weekly', amountUsd: 0, asOf: '2026-11-07T10:00:00.000Z' },
+        ],
+      }),
+    );
+    loadMcpConfig({ config: path });
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).not.toMatch(/Unknown keys in config file/);
+  });
+
+  it.each([
+    ['a negative amount', { periodKind: 'daily', amountUsd: -1, asOf: '2026-11-07T10:00:00Z' }],
+    [
+      'an amount over the limit',
+      { periodKind: 'daily', amountUsd: 2e9, asOf: '2026-11-07T10:00:00Z' },
+    ],
+    ['an unknown period', { periodKind: 'monthly', amountUsd: 1, asOf: '2026-11-07T10:00:00Z' }],
+    ['a bad timestamp', { periodKind: 'daily', amountUsd: 1, asOf: 'yesterday' }],
+  ])(
+    'rejects a reportedSpend entry with %s like any other invalid config field',
+    (_name, entry) => {
+      process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+      process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+      const path = resolve(tmpDir, 'bad-reported-spend.json');
+      writeFileSync(path, JSON.stringify({ reportedSpend: [entry] }));
+      expect(() => loadMcpConfig({ config: path })).toThrow(
+        /Config file validation failed.*reportedSpend/,
+      );
+    },
+  );
+
   it('does not warn for recognized keys in config file (task #22)', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';

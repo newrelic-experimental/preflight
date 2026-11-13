@@ -23,6 +23,7 @@ import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
 import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
 import { CostTracker } from '../../metrics/cost-tracker.js';
+import { BudgetTracker } from '../../metrics/budget-tracker.js';
 import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { buildCostTrackerSeed } from '../../metrics/cost-tracker-seed.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../../metrics/quality-proxy-tracker.js';
@@ -9795,5 +9796,172 @@ describe('api-handler Today aggregate git identity reuse', () => {
       Date.now = realNow;
     }
     expect(gitCallCount(logFile)).toBe(afterFirst);
+  });
+});
+
+describe('api-handler reported spend settings', () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tmpDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function makeConfigFilePath(initial: Record<string, unknown> = {}): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-reported-spend-test-'));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, 'config.json');
+    fs.writeFileSync(filePath, JSON.stringify(initial, null, 2));
+    return filePath;
+  }
+
+  const config = {
+    personalAlertThresholds: {},
+    secretSources: {},
+  } as unknown as NonNullable<Parameters<typeof createApiHandler>[0]['config']>;
+
+  async function call(
+    handler: ReturnType<typeof createApiHandler>,
+    method: 'GET' | 'PATCH',
+    url: string,
+    bodyObj?: unknown,
+  ): Promise<{ status: number; json: Record<string, unknown> }> {
+    const readable = Readable.from(
+      bodyObj === undefined ? [] : [Buffer.from(JSON.stringify(bodyObj))],
+    );
+    const req = readable as unknown as IncomingMessage;
+    req.method = method;
+    req.url = url;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    return { status: status(), json: JSON.parse(body()) as Record<string, unknown> };
+  }
+
+  const saved = (configFilePath: string): unknown =>
+    (JSON.parse(fs.readFileSync(configFilePath, 'utf-8')) as Record<string, unknown>).reportedSpend;
+
+  it('stamps asOf from the server clock on save and returns it from GET', async () => {
+    const configFilePath = makeConfigFilePath({ developer: 'kept' });
+    const handler = createApiHandler({ configFilePath, config });
+    const before = Date.now();
+
+    const patch = await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: 42.5 },
+    });
+    const after = Date.now();
+
+    expect(patch.status).toBe(200);
+    expect(patch.json).toEqual({ ok: true, restartRequired: false });
+    const stored = saved(configFilePath) as Array<{
+      periodKind: string;
+      amountUsd: number;
+      asOf: string;
+    }>;
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ periodKind: 'daily', amountUsd: 42.5 });
+    expect(Date.parse(stored[0]!.asOf)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(stored[0]!.asOf)).toBeLessThanOrEqual(after);
+    expect(JSON.parse(fs.readFileSync(configFilePath, 'utf-8')).developer).toBe('kept');
+
+    const get = await call(handler, 'GET', '/api/settings');
+    expect(get.json.reportedSpend).toEqual(stored);
+  });
+
+  it('keeps the daily and weekly values separate and replaces one on a second save', async () => {
+    const configFilePath = makeConfigFilePath();
+    const handler = createApiHandler({ configFilePath, config });
+
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: 1 },
+    });
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'weekly', amountUsd: 9 },
+    });
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: 2 },
+    });
+
+    const stored = saved(configFilePath) as Array<{ periodKind: string; amountUsd: number }>;
+    expect(stored.map((e) => [e.periodKind, e.amountUsd]).sort()).toEqual([
+      ['daily', 2],
+      ['weekly', 9],
+    ]);
+  });
+
+  it.each([
+    ['a negative amount', { periodKind: 'daily', amountUsd: -1 }],
+    ['a string amount', { periodKind: 'daily', amountUsd: '5' }],
+    ['an amount above the bound', { periodKind: 'daily', amountUsd: 1e12 }],
+    ['an unknown period', { periodKind: 'monthly', amountUsd: 5 }],
+    ['a client-supplied asOf', { periodKind: 'daily', amountUsd: 5, asOf: '2020-01-01T00:00:00Z' }],
+  ])('rejects %s and writes nothing', async (_name, reportedSpend) => {
+    const configFilePath = makeConfigFilePath({ developer: 'kept' });
+    const handler = createApiHandler({ configFilePath, config });
+
+    const { status, json } = await call(handler, 'PATCH', '/api/settings', { reportedSpend });
+
+    expect(status).toBe(400);
+    expect(json.error).toBe('validation_failed');
+    expect(saved(configFilePath)).toBeUndefined();
+  });
+
+  it('clears one period with a null amount and leaves the other', async () => {
+    const configFilePath = makeConfigFilePath();
+    const handler = createApiHandler({ configFilePath, config });
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: 1 },
+    });
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'weekly', amountUsd: 9 },
+    });
+
+    const cleared = await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: null },
+    });
+
+    expect(cleared.status).toBe(200);
+    const get = await call(handler, 'GET', '/api/settings');
+    expect(get.json.reportedSpend).toEqual([
+      expect.objectContaining({ periodKind: 'weekly', amountUsd: 9 }),
+    ]);
+  });
+
+  it('ignores malformed stored entries when reading settings', async () => {
+    const configFilePath = makeConfigFilePath({
+      reportedSpend: [
+        { periodKind: 'daily', amountUsd: 'x', asOf: '2026-01-01T00:00:00Z' },
+        { periodKind: 'weekly', amountUsd: 3, asOf: 'not a date' },
+        { periodKind: 'daily', amountUsd: 4, asOf: '2026-01-01T00:00:00Z' },
+      ],
+    });
+    const handler = createApiHandler({ configFilePath, config });
+
+    const get = await call(handler, 'GET', '/api/settings');
+
+    expect(get.json.reportedSpend).toEqual([
+      { periodKind: 'daily', amountUsd: 4, asOf: '2026-01-01T00:00:00Z' },
+    ]);
+  });
+
+  it('leaves budget status and alerts unchanged by a reported value', async () => {
+    const configFilePath = makeConfigFilePath();
+    const budgetTracker = new BudgetTracker({
+      sessionBudgetUsd: null,
+      dailyBudgetUsd: 10,
+      weeklyBudgetUsd: null,
+    });
+    budgetTracker.updateCost(0, 6, 6);
+    const handler = createApiHandler({ configFilePath, config, budgetTracker });
+    const before = await call(handler, 'GET', '/api/budget');
+
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: 500 },
+    });
+    const after = await call(handler, 'GET', '/api/budget');
+
+    expect(after.json).toEqual(before.json);
+    expect((after.json.daily as { spentUsd: number }).spentUsd).toBe(6);
+    expect((after.json.alerts as unknown[]).length).toBe(1);
   });
 });
