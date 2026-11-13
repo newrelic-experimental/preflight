@@ -211,11 +211,18 @@ function getRecordContent() {
     process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT === "true"
   );
 }
+var DEFAULT_MAX_CONTENT_LENGTH = 10240;
+var MIN_MAX_CONTENT_LENGTH = 256;
+var MAX_MAX_CONTENT_LENGTH = 1048576;
 function getMaxContentLength() {
   const val = process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
-  if (val === void 0) return 10240;
+  if (val === void 0) return DEFAULT_MAX_CONTENT_LENGTH;
   const parsed = parseInt(val, 10);
-  return Number.isNaN(parsed) ? 10240 : parsed;
+  if (Number.isNaN(parsed)) return DEFAULT_MAX_CONTENT_LENGTH;
+  if (parsed < MIN_MAX_CONTENT_LENGTH || parsed > MAX_MAX_CONTENT_LENGTH) {
+    return DEFAULT_MAX_CONTENT_LENGTH;
+  }
+  return parsed;
 }
 function detectStampPlatform() {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
