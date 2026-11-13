@@ -1,9 +1,10 @@
-import { useId, useRef, useState, type JSX } from 'react';
+import { useId, useRef, useState, type JSX, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Info } from 'lucide-react';
 
 export interface InfoTooltipProps {
-  readonly text: string;
+  readonly text: ReactNode;
+  readonly label?: string;
 }
 
 interface TooltipPosition {
@@ -11,7 +12,7 @@ interface TooltipPosition {
   readonly left: number;
 }
 
-export function InfoTooltip({ text }: InfoTooltipProps): JSX.Element {
+export function InfoTooltip({ text, label = 'What is this?' }: InfoTooltipProps): JSX.Element {
   const tooltipId = useId();
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [isOpen, setIsOpen] = useState(false);
@@ -34,7 +35,7 @@ export function InfoTooltip({ text }: InfoTooltipProps): JSX.Element {
       <button
         ref={buttonRef}
         type="button"
-        aria-label="What is this?"
+        aria-label={label}
         aria-describedby={tooltipId}
         onMouseEnter={openTooltip}
         onFocus={openTooltip}
