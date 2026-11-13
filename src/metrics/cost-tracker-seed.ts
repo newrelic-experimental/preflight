@@ -83,6 +83,7 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     persisted,
     dayKey,
   );
+  const dayFirstActivityMs = persisted.firstActivityByDayMs?.[dayKey];
   return {
     totalCostUsd,
     subagentCostUsd: persisted.subagentCostUsd,
@@ -98,6 +99,7 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     dayKey,
     dayCostUsd,
     daySubagentCostUsd,
+    ...(dayFirstActivityMs !== undefined && { dayFirstActivityMs }),
     legacyCallsDayKey: latestActivityDayKey(persisted) ?? dayKey,
     ...(persisted.unpricedByModel && { unpricedByModel: persisted.unpricedByModel }),
     ...(persisted.estimatedByModel && { estimatedByModel: persisted.estimatedByModel }),
