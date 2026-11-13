@@ -1,5 +1,13 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -222,6 +230,48 @@ describe('multi-instance integration (proposal #11)', () => {
     }
   }, 30_000);
 
+  it('a pending engine leaves the live sessions it drained in progress when it exits', async () => {
+    const ownStorage = mkdtempSync(join(tmpdir(), 'nr-mi-pending-'));
+    const sessionId = 'live-owned-session';
+    const jobDir = resolve(jobDirRoot, sessionId);
+    mkdirSync(jobDir, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      resolve(jobDir, 'state.json'),
+      JSON.stringify({ linkScanPath: `/fake/transcript/${sessionId}.jsonl` }),
+      { mode: 0o600 },
+    );
+    seedBuffer(ownStorage, sessionId, 5);
+    const port = await getFreePort();
+    const pending = spawnChild('pending', ownStorage, undefined, distIndex, port);
+    let owner: ChildHandle | undefined;
+    try {
+      await waitForStderr(pending, 'Event processor started', BOOT_TIMEOUT_MS);
+      const bufferPath = resolve(ownStorage, `buffer-${sessionId}.jsonl`);
+      const drainDeadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
+      while (existsSync(bufferPath) && Date.now() < drainDeadline) await delay(50);
+      expect(existsSync(bufferPath)).toBe(false);
+
+      owner = spawnChild(sessionId, ownStorage, jobDir, distIndex, port);
+      await waitForStderr(owner, 'Event processor started', BOOT_TIMEOUT_MS);
+      pending.proc.stdin.end();
+      await waitExit(pending, 4000);
+
+      const sessionsDir = resolve(ownStorage, 'sessions');
+      const saved = readdirSync(sessionsDir).filter((f) => f.endsWith(`_${sessionId}.json`));
+      expect(saved).toHaveLength(1);
+      const summary = JSON.parse(readFileSync(resolve(sessionsDir, saved[0]!), 'utf-8')) as {
+        outcome: string;
+        toolCallCount: number;
+      };
+      expect(summary).toMatchObject({ outcome: 'in progress', toolCallCount: 5 });
+    } finally {
+      pending.proc.stdin.end();
+      owner?.proc.stdin.end();
+      await Promise.all([waitExit(pending, 4000), owner && waitExit(owner, 4000)]);
+      rmSync(ownStorage, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   // -----------------------------------------------------------------------
   // Dashboard ownership re-poll. After this fix the second MCP runs
   // headless. This test verifies it takes over the dashboard if the owner
@@ -374,7 +424,7 @@ function getFreePort(): Promise<number> {
 function spawnChild(
   sessionId: string,
   storagePath: string,
-  jobDir: string,
+  jobDir: string | undefined,
   distPath: string,
   port: number,
 ): ChildHandle {
