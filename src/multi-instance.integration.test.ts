@@ -346,7 +346,6 @@ describe('multi-instance integration (proposal #11)', () => {
       children.push(exiting);
       await initialize(exiting);
       await waitForStderr(exiting, 'Awaiting session_id resolution', BOOT_TIMEOUT_MS);
-      await delay(1000);
       exiting.proc.stdin.end();
       await waitExit(exiting, 6000);
 
