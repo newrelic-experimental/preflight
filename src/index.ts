@@ -2763,10 +2763,9 @@ async function main(): Promise<void> {
           // This process owns no real session of its own, but it has been
           // draining other sessions' buffers destructively — so if it returns
           // here without writing them, those events are simply lost. Persist
-          // each real session it observed instead.
-          const persistedSessions = saveObservedSessions(
-            opts?.periodic ? 'in progress' : 'completed',
-          );
+          // each real session it observed instead, as in progress even at
+          // shutdown: those sessions run on, and only their owner ends them.
+          const persistedSessions = saveObservedSessions('in progress');
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
