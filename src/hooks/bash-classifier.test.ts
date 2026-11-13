@@ -369,6 +369,27 @@ describe('classifyBash', () => {
       expect(r.category).toBe('git');
     });
 
+    it('flags a destructive command after a comment containing an apostrophe', () => {
+      const cmd = "# Don't\nmysql -u root -p$'QX1\\'Y1' shop; rm -rf /tmp/x";
+      expect(classifyBash(cmd).isDestructive).toBe(true);
+    });
+
+    it('flags a destructive command after an ANSI-C quoted arg with an escaped quote', () => {
+      expect(classifyBash("echo $'a\\'b'; rm -rf /tmp/x").isDestructive).toBe(true);
+    });
+
+    it('flags a destructive command after a mid-word hash', () => {
+      expect(classifyBash('echo a#b ; rm -rf /tmp/x').isDestructive).toBe(true);
+    });
+
+    it('flags a destructive command after a quoted hash', () => {
+      expect(classifyBash('echo "# x" ; rm -rf /tmp/x').isDestructive).toBe(true);
+    });
+
+    it('does not flag a destructive phrase inside a trailing comment', () => {
+      expect(classifyBash('echo hi # rm -rf /tmp/x').isDestructive).toBe(false);
+    });
+
     it('git push --force-with-lease is NOT destructive (it is the safe form)', () => {
       expect(classifyBash('git push --force-with-lease').isDestructive).toBe(false);
       expect(classifyBash('git push origin main --force-with-lease').isDestructive).toBe(false);
