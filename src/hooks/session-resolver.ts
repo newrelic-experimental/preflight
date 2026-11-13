@@ -61,7 +61,8 @@ import { breadcrumbRoot } from './session-breadcrumbs.js';
 
 import { redactSensitive } from '../config.js';
 import { CLAUDE_CODE_PLATFORM_NAME } from '../platforms/claude-code-adapter.js';
-import { hasLiveOwningEngine } from '../storage/local-store.js';
+import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
+import { breadcrumbWriters, hasLiveOwningEngine } from '../storage/local-store.js';
 
 const logger = createLogger('session-resolver');
 
@@ -70,6 +71,7 @@ const DEFAULT_STORAGE_DIR = resolve(homedir(), '.newrelic-preflight');
 const POLL_SCHEDULE_MS = [100, 200, 500, 1000, 2000];
 const STEADY_POLL_MS = 2000;
 const WARN_AFTER_MS = 60_000;
+const TAGGED_CWD_BREADCRUMB_MAX_IDLE_MS = 12 * 60 * 60 * 1000;
 
 /**
  * How far above our own ppid to look for a breadcrumb. Deliberately shallower
@@ -251,6 +253,7 @@ export function resolveFromAncestorBreadcrumb(
   storagePath: string,
   ancestorPids: readonly number[],
   processStartMs?: number,
+  accept: (hit: AncestorBreadcrumbHit) => boolean = () => true,
 ): AncestorBreadcrumbHit | null {
   for (let depth = 1; depth < ancestorPids.length; depth++) {
     const pid = ancestorPids[depth]!;
@@ -258,7 +261,8 @@ export function resolveFromAncestorBreadcrumb(
       processStartMs === undefined
         ? resolveFromBreadcrumb(storagePath, pid)
         : resolveFromBreadcrumb(storagePath, pid, processStartMs);
-    if (sessionId) return { sessionId, pid, depth };
+    const hit = sessionId ? { sessionId, pid, depth } : null;
+    if (hit && accept(hit)) return hit;
   }
   return null;
 }
@@ -282,22 +286,11 @@ export function sanitizeCwdForFilename(cwd: string): string {
  * Fallback for platforms where the PPID breadcrumb never matches (see the
  * module doc comment above). Returns the validated session_id or null.
  */
-export function resolveFromCwd(
-  storagePath: string,
-  cwd: string | undefined,
-  writtenSinceMs?: number,
-): string | null {
+export function resolveFromCwd(storagePath: string, cwd: string | undefined): string | null {
   if (typeof cwd !== 'string' || cwd.length === 0) return null;
   const sanitizedCwd = sanitizeCwdForFilename(cwd);
   const breadcrumbPath = resolve(storagePath, 'session-by-cwd', `${sanitizedCwd}.txt`);
   if (!existsSync(breadcrumbPath)) return null;
-  if (writtenSinceMs !== undefined) {
-    try {
-      if (statSync(breadcrumbPath).mtimeMs < writtenSinceMs) return null;
-    } catch {
-      return null;
-    }
-  }
   let raw: string;
   try {
     raw = readFileSync(breadcrumbPath, 'utf-8');
@@ -317,39 +310,113 @@ export interface SessionBreadcrumbs {
   readonly cwd: (cwd: string | undefined) => string | null;
 }
 
-/**
- * Each breadcrumb source tries the writers' own directories first, then the
- * untagged layout older collectors wrote. An untagged breadcrumb names
- * no engine, so it counts only when written since this process started:
- * an older collector still running keeps rewriting its own, while one left
- * from before an upgrade never counts again.
- */
+function mtimeMs(path: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return -Infinity;
+  }
+}
+
+function readSessionId(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf-8').trim();
+  } catch {
+    return null;
+  }
+}
+
+function listFiles(dir: string): string[] {
+  try {
+    return readdirSync(dir).map((name) => resolve(dir, name));
+  } catch {
+    return [];
+  }
+}
+
 export function sessionBreadcrumbs(
   storagePath: string,
   writers: readonly string[],
   processStartMs: number = Date.now() - process.uptime() * 1000,
 ): SessionBreadcrumbs {
-  const roots: readonly { dir: string; writtenSinceMs?: number }[] =
-    writers.length === 0
-      ? []
-      : [
-          ...writers.map((w) => ({ dir: breadcrumbRoot(storagePath, w) })),
-          { dir: storagePath, writtenSinceMs: processStartMs },
-        ];
-  const first = <T>(read: (root: { dir: string; writtenSinceMs?: number }) => T | null) => {
-    for (const root of roots) {
-      const hit = read(root);
-      if (hit) return hit;
+  const tiers = [
+    writers.filter((w) => w !== UNATTRIBUTED_BREADCRUMB_WRITER),
+    writers.filter((w) => w === UNATTRIBUTED_BREADCRUMB_WRITER),
+  ]
+    .filter((tier) => tier.length > 0)
+    .map((tier) => tier.map((w) => breadcrumbRoot(storagePath, w)));
+  // Collectors from before the per-writer layout never touch an unchanged cwd breadcrumb, so a
+  // ppid breadcrumb naming the same session also proves it is live.
+  const writtenSinceStart = (crumb: string, sessionId: string) =>
+    mtimeMs(resolve(storagePath, crumb)) >= processStartMs ||
+    listFiles(resolve(storagePath, 'session-by-ppid')).some(
+      (path) => mtimeMs(path) >= processStartMs && readSessionId(path) === sessionId,
+    );
+  const everTaggedIds = new Set<string>();
+  const scanTaggedIds = () => {
+    for (const writer of breadcrumbWriters(storagePath)) {
+      for (const kind of ['session-by-ppid', 'session-by-cwd']) {
+        for (const path of listFiles(resolve(breadcrumbRoot(storagePath, writer), kind))) {
+          const id = readSessionId(path);
+          if (id) everTaggedIds.add(id);
+        }
+      }
     }
-    return null;
   };
+  const rootHitCounts = (crumb: string, sessionId: string) => {
+    if (everTaggedIds.has(sessionId) || !writtenSinceStart(crumb, sessionId)) return false;
+    scanTaggedIds();
+    return !everTaggedIds.has(sessionId);
+  };
+  const pick = <T>(
+    read: (root: string, accept: (hit: T) => boolean) => T | null,
+    crumbOf: (hit: T) => string,
+    sessionIdOf: (hit: T) => string,
+    depthOf: (hit: T) => number = () => 0,
+  ): T | null => {
+    if (writers.length === 0) return null;
+    for (const tier of tiers) {
+      let best: { hit: T; depth: number } | null = null;
+      for (const root of tier) {
+        const hit = read(root, () => true);
+        if (hit && (!best || depthOf(hit) < best.depth)) best = { hit, depth: depthOf(hit) };
+      }
+      if (best) return best.hit;
+    }
+    return read(storagePath, (hit) => rootHitCounts(crumbOf(hit), sessionIdOf(hit)));
+  };
+  const self = (sessionId: string) => sessionId;
+  const cwdCrumb = (cwd: string | undefined) =>
+    `session-by-cwd/${sanitizeCwdForFilename(cwd ?? '')}.txt`;
+  const isTaggedRoot = (dir: string) => dir !== storagePath;
+  const taggedCwdCrumbIdle = (dir: string, cwd: string | undefined) =>
+    isTaggedRoot(dir) &&
+    mtimeMs(resolve(dir, cwdCrumb(cwd))) < Date.now() - TAGGED_CWD_BREADCRUMB_MAX_IDLE_MS;
+  const kept = (id: string | null, accept: (id: string) => boolean) =>
+    id !== null && accept(id) ? id : null;
   return {
     jobDir: (claudeJobDir) =>
       writers.includes(CLAUDE_CODE_PLATFORM_NAME) ? resolveFromJobDir(claudeJobDir) : null,
-    ppid: (ppid) => first(({ dir }) => resolveFromBreadcrumb(dir, ppid, processStartMs)),
+    ppid: (ppid) =>
+      pick(
+        (dir, accept) => kept(resolveFromBreadcrumb(dir, ppid, processStartMs), accept),
+        () => `session-by-ppid/${ppid}.txt`,
+        self,
+      ),
     ancestors: (ancestorPids) =>
-      first(({ dir }) => resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs)),
-    cwd: (cwd) => first(({ dir, writtenSinceMs }) => resolveFromCwd(dir, cwd, writtenSinceMs)),
+      pick(
+        (dir, accept) => resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs, accept),
+        (hit) => `session-by-ppid/${hit.pid}.txt`,
+        (hit) => hit.sessionId,
+        (hit) => hit.depth,
+      ),
+    cwd: (cwd) =>
+      pick(
+        (dir, accept) =>
+          taggedCwdCrumbIdle(dir, cwd) ? null : kept(resolveFromCwd(dir, cwd), accept),
+        () => cwdCrumb(cwd),
+        self,
+      ),
   };
 }
 
