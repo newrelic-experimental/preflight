@@ -1,3 +1,5 @@
+import { localDateKey } from '../lib/date.js';
+
 export type BudgetPeriod = 'session' | 'daily' | 'weekly';
 
 export interface BudgetThresholdEvent {
@@ -77,27 +79,14 @@ export class BudgetTracker {
   }
 
   private currentPeriodId(period: BudgetPeriod): string {
-    const now = new Date();
     if (period === 'session') {
       return 'session:infinite';
     }
     if (period === 'daily') {
-      const year = now.getUTCFullYear();
-      const month = String(now.getUTCMonth() + 1).padStart(2, '0');
-      const day = String(now.getUTCDate()).padStart(2, '0');
-      return `day:${year}-${month}-${day}`;
+      return `day:${localDateKey()}`;
     }
     if (period === 'weekly') {
-      // ISO 8601 week number — correct across year boundaries.
-      // The ISO week year can differ from the calendar year in early Jan / late Dec.
-      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-      const dayOfWeek = d.getUTCDay() || 7; // 1=Mon … 7=Sun
-      d.setUTCDate(d.getUTCDate() + 4 - dayOfWeek); // nearest Thursday
-      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-      const week = Math.ceil(((d.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
-      const isoYear = d.getUTCFullYear();
-      const weekNum = String(week).padStart(2, '0');
-      return `week:${isoYear}-W${weekNum}`;
+      return 'week:rolling-7d';
     }
     return '';
   }
@@ -130,6 +119,7 @@ export class BudgetTracker {
     const currentPeriod = this.currentPeriodId(period);
     for (const level of THRESHOLD_LEVELS) {
       const key = `${period}_${level}`;
+      if (period === 'weekly' && pctUsed < level) this.firedThresholds.delete(key);
       if (pctUsed >= level && !this.firedThresholds.has(key)) {
         this.firedThresholds.set(key, currentPeriod);
         const event: BudgetThresholdEvent = {
