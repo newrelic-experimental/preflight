@@ -2304,7 +2304,7 @@ describe('stdio integration', () => {
         rmSync(tmpHome, { recursive: true, force: true });
       }
     }, 40000);
-    const withCursorEngine = async (
+    const withPendingEngine = async (
       persistIntervalMs: string,
       body: (
         env: Record<string, string>,
@@ -2319,7 +2319,7 @@ describe('stdio integration', () => {
       const tmpHome = mkdtempSync(join(tmpdir(), 'nr-adopt-report-home-'));
       const env = isolatedEnv({
         HOME: tmpHome,
-        MCP_CLIENT: 'cursor',
+        MCP_CLIENT: 'claude-code',
         NR_AI_DASHBOARD_PORT: '0',
         NR_AI_MODE: 'local',
         NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
@@ -2327,7 +2327,10 @@ describe('stdio integration', () => {
       });
       const client = new Client({ name: 'test-client', version: '1.0.0' });
       const adopt = async (id: string) => {
-        const breadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+        const breadcrumbDir = resolve(
+          breadcrumbRoot(tmpStoragePath, 'claude-code'),
+          'session-by-ppid',
+        );
         mkdirSync(breadcrumbDir, { recursive: true });
         writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), id);
         const toolNames = async () => (await client.listTools()).tools.map((t) => t.name);
@@ -2380,7 +2383,7 @@ describe('stdio integration', () => {
     ])(
       'a pending engine that drains a report and then adopts %s saves the report with outcome %s',
       async (_label, outcome, adoptedId) => {
-        await withCursorEngine('600000', async (env, adopt, close) => {
+        await withPendingEngine('600000', async (env, adopt, close) => {
           const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
           runHook(env, reportHook('conv-adopt', 'r-adopt-0001'));
           expect(await drained(storage, 'conv-adopt')).toBe('');
@@ -2401,11 +2404,11 @@ describe('stdio integration', () => {
     );
 
     it('a pending engine saves a drained report for its cwd guess once the ppid confirms the guess', async () => {
-      await withCursorEngine('600000', async (env, _adopt, close) => {
+      await withPendingEngine('600000', async (env, _adopt, close) => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
         runHook(env, reportHook('conv-guess', 'r-guess-0001'));
         expect(await drained(storage, 'conv-guess')).toBe('');
-        const crumbs = resolve(storage, 'session-by-cwd');
+        const crumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-cwd');
         mkdirSync(crumbs, { recursive: true });
         writeFileSync(
           resolve(crumbs, `${realpathSync(process.cwd()).replace(/[\\/:]/g, '-')}.txt`),
@@ -2416,8 +2419,9 @@ describe('stdio integration', () => {
           (alive) => alive,
         );
 
-        mkdirSync(resolve(storage, 'session-by-ppid'), { recursive: true });
-        writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'conv-guess');
+        const ppidCrumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-ppid');
+        mkdirSync(ppidCrumbs, { recursive: true });
+        writeFileSync(resolve(ppidCrumbs, `${process.pid}.txt`), 'conv-guess');
         const confirmed = await until(
           () => savedSession(storage, 'conv-guess')?.tokensInput,
           (tokens) => tokens === 1000,
@@ -2429,7 +2433,7 @@ describe('stdio integration', () => {
     }, 40000);
 
     it('a pending engine adds the report it drained before adopting its conversation to the ones after', async () => {
-      await withCursorEngine('600000', async (env, adopt, close) => {
+      await withPendingEngine('600000', async (env, adopt, close) => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
         runHook(env, reportHook('conv-own', 'r-own-00001'));
         expect(await drained(storage, 'conv-own')).toBe('');
@@ -2446,11 +2450,11 @@ describe('stdio integration', () => {
     }, 40000);
 
     it('a pending engine adds the report it drained before its cwd guess is confirmed to the ones after', async () => {
-      await withCursorEngine('600000', async (env, _adopt, close) => {
+      await withPendingEngine('600000', async (env, _adopt, close) => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
         runHook(env, reportHook('conv-guess', 'r-guess-0001'));
         expect(await drained(storage, 'conv-guess')).toBe('');
-        const crumbs = resolve(storage, 'session-by-cwd');
+        const crumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-cwd');
         mkdirSync(crumbs, { recursive: true });
         writeFileSync(
           resolve(crumbs, `${realpathSync(process.cwd()).replace(/[\\/:]/g, '-')}.txt`),
@@ -2460,8 +2464,9 @@ describe('stdio integration', () => {
           () => existsSync(resolve(storage, 'active-conv-guess.pid')),
           (alive) => alive,
         );
-        mkdirSync(resolve(storage, 'session-by-ppid'), { recursive: true });
-        writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'conv-guess');
+        const ppidCrumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-ppid');
+        mkdirSync(ppidCrumbs, { recursive: true });
+        writeFileSync(resolve(ppidCrumbs, `${process.pid}.txt`), 'conv-guess');
         await until(
           () => savedSession(storage, 'conv-guess')?.tokensInput,
           (tokens) => tokens === 1000,
@@ -2476,7 +2481,7 @@ describe('stdio integration', () => {
     }, 40000);
 
     it("a pending engine that drains another conversation's tool calls and then adopts saves them", async () => {
-      await withCursorEngine('600000', async (env, adopt, close) => {
+      await withPendingEngine('600000', async (env, adopt, close) => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
         const edit = { conversation_id: 'conv-edits', file_path: '/repo/a.ts' };
         runHook(env, { hook_event_name: 'afterFileEdit', ...edit });
@@ -2510,7 +2515,7 @@ describe('stdio integration', () => {
       );
       const preload = pathToFileURL(resolve(preloadDir, 'preload.mjs')).href;
       try {
-        await withCursorEngine(
+        await withPendingEngine(
           '600000',
           async (env, adopt, close) => {
             const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
@@ -2546,7 +2551,7 @@ describe('stdio integration', () => {
     }, 40000);
 
     it('a resumed engine saves a report for its own conversation once, on top of the saved total', async () => {
-      await withCursorEngine('600000', async (env, adopt, close) => {
+      await withPendingEngine('600000', async (env, adopt, close) => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
         const startTime = Date.now() - 60_000;
         const prior = {
