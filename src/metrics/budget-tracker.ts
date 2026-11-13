@@ -46,6 +46,11 @@ const THRESHOLD_LEVELS: Array<50 | 80 | 100> = [50, 80, 100];
 
 const MAX_ALERTS = 100;
 
+// Rolling 7-day spend moves in both directions, so a weekly threshold re-arms
+// only once spend falls this many percentage points below it. Without the gap
+// spend hovering at the threshold would re-alert on every update.
+const WEEKLY_REARM_MARGIN_PCT = 10;
+
 export class BudgetTracker {
   private readonly sessionBudgetUsd: number | null;
   private readonly dailyBudgetUsd: number | null;
@@ -119,7 +124,8 @@ export class BudgetTracker {
     const currentPeriod = this.currentPeriodId(period);
     for (const level of THRESHOLD_LEVELS) {
       const key = `${period}_${level}`;
-      if (period === 'weekly' && pctUsed < level) this.firedThresholds.delete(key);
+      if (period === 'weekly' && pctUsed < level - WEEKLY_REARM_MARGIN_PCT)
+        this.firedThresholds.delete(key);
       if (pctUsed >= level && !this.firedThresholds.has(key)) {
         this.firedThresholds.set(key, currentPeriod);
         const event: BudgetThresholdEvent = {

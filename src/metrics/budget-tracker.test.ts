@@ -387,5 +387,50 @@ describe('BudgetTracker', () => {
       t.updateCost(0, 0, 9);
       expect(fired(events)).toEqual(['weekly_50', 'weekly_80', 'weekly_80']);
     });
+
+    it('does not re-alert weekly when spend bounces across the threshold', () => {
+      const events: Array<{ period: string; thresholdPct: number }> = [];
+      const t = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: null,
+        weeklyBudgetUsd: 100,
+        onThreshold: (e) => events.push(e),
+      });
+      for (const spend of [79, 81, 79, 81, 79, 81, 79, 81, 79, 81]) {
+        t.updateCost(0, 0, spend);
+      }
+      expect(events.filter((e) => e.thresholdPct === 80)).toHaveLength(1);
+    });
+
+    it('re-alerts weekly after spend drops well below the threshold and rises again', () => {
+      const events: Array<{ period: string; thresholdPct: number }> = [];
+      const t = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: null,
+        weeklyBudgetUsd: 100,
+        onThreshold: (e) => events.push(e),
+      });
+      t.updateCost(0, 0, 81);
+      t.updateCost(0, 0, 60);
+      t.updateCost(0, 0, 81);
+      expect(events.filter((e) => e.thresholdPct === 80)).toHaveLength(2);
+    });
+
+    it('re-arms weekly only once spend is below the margin, not at it', () => {
+      const events: Array<{ period: string; thresholdPct: number }> = [];
+      const t = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: null,
+        weeklyBudgetUsd: 100,
+        onThreshold: (e) => events.push(e),
+      });
+      t.updateCost(0, 0, 81);
+      t.updateCost(0, 0, 70);
+      t.updateCost(0, 0, 81);
+      expect(events.filter((e) => e.thresholdPct === 80)).toHaveLength(1);
+      t.updateCost(0, 0, 69);
+      t.updateCost(0, 0, 81);
+      expect(events.filter((e) => e.thresholdPct === 80)).toHaveLength(2);
+    });
   });
 });
