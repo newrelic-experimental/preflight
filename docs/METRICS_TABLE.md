@@ -39,7 +39,11 @@ Source: `src/shared/harvest/harvest-scheduler.ts`, `src/transport/log-ingest.ts`
 
 ## Schema Versioning
 
-Every NR event type carries an `event_version` field (currently `1`). Within a version, changes are additive only: new attributes may appear, existing ones keep name and meaning. A rename, removal, or semantic change bumps the version. Consumers should tolerate unknown attributes and may branch on `event_version` in NRQL.
+Every NR event type carries an `event_version` field (currently `1`). Within a version, changes are additive only: new attributes may appear, existing ones keep name and meaning. A rename, removal, or semantic change bumps the version. The exception is an attribute the [unit of agent work schema](./UNIT_OF_WORK_SCHEMA.md#stable-attributes-bump-the-schema-version-and-experimental-ones-do-not) marks experimental, which can change under a `minor` changeset with no bump. Consumers should tolerate unknown attributes and may branch on `event_version` in NRQL.
+
+## Unit of Agent Work
+
+The [unit of agent work schema](./UNIT_OF_WORK_SCHEMA.md) is a versioned view over these events. It describes one skill run, slash command, or subagent invocation, marks each attribute stable or experimental, and states where a field has no source. It also has NRQL recipes for skill usage, cost per run, and before-and-after comparisons.
 
 ---
 
@@ -422,7 +426,7 @@ Emitted once per completed workflow run — either a Claude Code `Agent`-tool-sp
 | ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `subagent_type`     | string  | Subagent type requested (empty string if none)                                                                                                                                                          |
 | `agent_name`        | string  | Agent name (empty string if none)                                                                                                                                                                       |
-| `agent_model`       | string  | Model the agent ran on (empty string if unknown)                                                                                                                                                        |
+| `agent_model`       | string  | The `Agent` call's `model` input (empty string if it set none)                                                                                                                                          |
 | `agent_description` | string  | **Redacted free text.** The user-supplied `Agent` tool prompt/description, passed through the same credential-pattern redaction as `AiToolCall.command`. User-authored — not a fixed/declarative value. |
 | `run_in_background` | boolean | Whether the agent ran in background mode                                                                                                                                                                |
 | `tool_call_count`   | number  | Tool calls made during the run                                                                                                                                                                          |
@@ -513,7 +517,7 @@ Source: `src/transport/nr-ingest.ts` — `retryAlertToNrEvent()`
 
 **What it is:** The token cost of each assistant turn, attributed down to the individual tool call (an even share of the turn) and, when a skill is running, to that skill. Where `AiToolCall` shows what the assistant did, this event shows what it cost. Use it to find which tools or skills drive spend, and join it to `AiToolCall` on `tool_use_id` for per-call detail.
 
-Emitted for each tool call in an attributed turn, carrying the turn's cost and tokens split evenly across the calls, and once for each token report no tool call claimed (a response row). `tool_use_id` cross-references the call's `AiToolCall` row. Every call inside a skill run carries `skill_name`, so `sum(cost_usd) FACET skill_name` is the full cost of the work each skill drove.
+Emitted for each tool call in an attributed turn, carrying the turn's cost and tokens split evenly across the calls, and once for each token report no tool call claimed (a response row). `tool_use_id` cross-references the call's `AiToolCall` row. Every call inside a skill run carries `skill_name`, so `sum(cost_usd) FACET skill_name` is the cost of the tool rows in each skill's runs. It leaves out response rows and subagent spend. See the [unit of agent work schema](./UNIT_OF_WORK_SCHEMA.md#the-existing-events-leave-these-gaps).
 
 | Field                   | Type   | Description                                                                                                                                            |
 | ----------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
