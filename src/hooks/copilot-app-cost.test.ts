@@ -175,7 +175,31 @@ describe('Copilot app usage, from data.db to session cost', () => {
     expectCounted(new Engine(storagePath).cost, { input: 3_000, output: 400, cached: 900 });
   });
 
-  it('refuses a lost cursor re-reporting the session from zero, and keeps counting after', () => {
+  it('counts the growth a crash re-read carries past the range already counted', () => {
+    const w = watcher();
+    setTotals(dbPath, { input: 1_000, output: 100, cached: 200 });
+    w.poll();
+    setTotals(dbPath, { input: 3_000, output: 400, cached: 900 });
+    const before = join(storagePath, 'cursor-before');
+    copyFileSync(cursorPath(), before);
+    w.poll();
+    const a = new Engine(storagePath);
+    a.pump();
+    a.save();
+    // The cursor write was lost, and the app grew before the restart: the
+    // re-read covers the counted range and more.
+    copyFileSync(before, cursorPath());
+    setTotals(dbPath, { input: 3_600, output: 450, cached: 1_000 });
+    watcher().poll();
+    const b = new Engine(storagePath);
+    b.pump();
+    b.save();
+
+    expectCounted(b.cost, { input: 3_600, output: 450, cached: 1_000 });
+    expectCounted(new Engine(storagePath).cost, { input: 3_600, output: 450, cached: 1_000 });
+  });
+
+  it('counts only the new growth when a lost cursor re-reports the session from zero', () => {
     setTotals(dbPath, { input: 1_000, output: 100, cached: 0 });
     watcher().poll();
     setTotals(dbPath, { input: 2_500, output: 300, cached: 500 });
@@ -184,7 +208,10 @@ describe('Copilot app usage, from data.db to session cost', () => {
     a.pump();
     a.save();
 
+    // The cursor is lost after the app has grown again: the re-read from zero
+    // carries that growth.
     unlinkSync(cursorPath());
+    setTotals(dbPath, { input: 3_000, output: 400, cached: 600 });
     watcher().poll();
     setTotals(dbPath, { input: 4_000, output: 600, cached: 800 });
     watcher().poll();

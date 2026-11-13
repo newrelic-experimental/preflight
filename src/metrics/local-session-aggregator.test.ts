@@ -335,6 +335,35 @@ describe('LocalSessionAggregator', () => {
     expect(summary?.model).toBe('claude-opus-4.8');
   });
 
+  it('keeps id-less usages from two processes apart when their files merge', () => {
+    const record = (costUsd: number): FullSessionSummary => {
+      const agg = new LocalSessionAggregator();
+      agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
+      agg.recordTokenUsage(REAL_ID, { costUsd, model: 'claude-opus-4.8', inputTokens: 100 });
+      return summariesOf(agg)[0] as unknown as FullSessionSummary;
+    };
+    const merged = mergeSummaries(record(1), record(0.5));
+    expect(merged.estimatedCostUsd).toBeCloseTo(1.5);
+    expect(merged.tokensInput).toBe(200);
+  });
+
+  it("records a subagent turn's workflow run like CostTracker does", () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: Date.now() });
+    agg.recordTokenUsage(REAL_ID, {
+      costUsd: 0.5,
+      model: 'claude-opus-4.8',
+      inputTokens: 100,
+      timestamp: Date.now(),
+      agentId: 'agent-1',
+      agentType: 'Explore',
+      workflowRunId: 'run-1',
+      usageId: 'msg_sub',
+    });
+    const [summary] = summariesOf(agg);
+    expect(Object.keys(summary?.costByWorkflowRunId ?? {})).toEqual(['run-1']);
+  });
+
   it('counts unpriced-model calls on the session that made them', () => {
     const other = 'b0000000-0000-4000-8000-000000000000';
     const agg = new LocalSessionAggregator();

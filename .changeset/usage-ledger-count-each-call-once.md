@@ -9,3 +9,5 @@ Session cost and tokens now count each API call exactly once. Every usage is rec
 The unpriced and estimated-price call counts follow the same ledger, so calls from byte estimates that a real report replaced are no longer counted. Session files also keep them per day (`unpricedByDay`, `estimatedByDay`), and the dashboard's Today notice counts only today's calls for a session that crossed midnight. A session file written before this keeps counting its whole session.
 
 When a session file written by an earlier Preflight is merged with new usage, calls made after that file was last written are added to its totals instead of being treated as possibly already counted. A token report read more than 48 hours late is kept out of the day buckets by the `--local` dashboard too, as it already was by the session's own engine.
+
+Copilot app usage is named by the range of the app's counters it covers. When Preflight re-reads a range after a crash or a lost cursor, and the app has grown since, only the new growth is counted.

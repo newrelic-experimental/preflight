@@ -376,8 +376,8 @@ describe('CopilotAppUsageWatcher', () => {
     upsertRow(dbPath, { ...row, total_input_tokens: 2000, total_output_tokens: 100 });
     watcher.poll();
     expect(readTokenEvents().map((e) => e.messageId)).toEqual([
-      `copilot-app:${SESSION_ID}#0:0-1300`,
-      `copilot-app:${SESSION_ID}#0:1300-2110`,
+      `copilot-app:${SESSION_ID}#0:0.0.0.0-1234.56.10.0`,
+      `copilot-app:${SESSION_ID}#0:1234.56.10.0-2000.100.10.0`,
     ]);
   });
 
@@ -399,8 +399,8 @@ describe('CopilotAppUsageWatcher', () => {
     upsertRow(dbPath, { ...row, total_input_tokens: 300 });
     watcher.poll();
     expect(readTokenEvents().map((e) => e.messageId)).toEqual([
-      `copilot-app:${SESSION_ID}#0:0-500`,
-      `copilot-app:${SESSION_ID}#1:100-300`,
+      `copilot-app:${SESSION_ID}#0:0.0.0.0-500.0.0.0`,
+      `copilot-app:${SESSION_ID}#1:100.0.0.0-300.0.0.0`,
     ]);
   });
 });

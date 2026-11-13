@@ -22,11 +22,15 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+
+import type { TokenUsage } from '../shared/index.js';
+
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
 import { isAwaitingLatePost } from './session-tracker.js';
 import { costFieldsOfLedger, hasRecordedUsage } from '../storage/session-store.js';
-import { UsageLedger, dayOf } from './usage-ledger.js';
+import { UsageLedger, dayOf, tokenCount } from './usage-ledger.js';
 import type { PricingMark } from './usage-ledger.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import { resolvePricingDetail } from './pricing-overlay.js';
@@ -286,6 +290,8 @@ export class LocalSessionAggregator {
   private readonly gitTargetDirs = new Set<string>();
   /** Numbers the usages recorded without an id, which are never deduplicated. */
   private anonymousUsageSeq = 0;
+  /** Unique per process, so the ids it gives usages without one never collide across restarts. */
+  private readonly instanceId = randomUUID().slice(0, 8);
 
   private static isReal(sessionId: string | null | undefined): sessionId is string {
     if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
@@ -484,43 +490,75 @@ export class LocalSessionAggregator {
       agentId?: string;
       /** The API call's id (see `TokenRecordContext.usageId`); a repeat adds nothing. */
       usageId?: string;
+      /** A subagent turn's agent type and workflow run, as CostTracker records them. */
+      agentType?: string;
+      workflowRunId?: string;
+      /**
+       * Prices part of this usage, for when only the tail of a Copilot app
+       * range is new to this session. Without it the tail gets the whole
+       * usage's cost in proportion to its tokens.
+       */
+      priceTail?: (usage: TokenUsage) => { costUsd: number; cacheSavingsUsd: number };
     },
   ): void {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
     const timestamp = usage.timestamp ?? Date.now();
     const rollup = this.ensure(sessionId, timestamp);
     const model = usage.model ?? 'unknown';
-    const tokens =
-      (usage.inputTokens ?? 0) +
-      (usage.outputTokens ?? 0) +
-      (usage.thinkingTokens ?? 0) +
-      (usage.cacheReadTokens ?? 0) +
-      (usage.cacheCreationTokens ?? 0);
+    let id = usage.usageId ?? `anon:aggregator:${this.instanceId}:${++this.anonymousUsageSeq}`;
+    let tokens: TokenUsage = {
+      inputTokens: usage.inputTokens ?? 0,
+      outputTokens: usage.outputTokens ?? 0,
+      thinkingTokens: usage.thinkingTokens ?? 0,
+      cacheReadTokens: usage.cacheReadTokens ?? 0,
+      cacheCreationTokens: usage.cacheCreationTokens ?? 0,
+      totalTokens: 0,
+    };
+    let costUsd = usage.costUsd ?? 0;
+    let cacheSavingsUsd = usage.cacheSavingsUsd ?? 0;
+    if (usage.usageId !== undefined) {
+      const claim = rollup.ledger.claim(usage.usageId, tokens);
+      if (!claim) return;
+      if (claim.id !== usage.usageId) {
+        // Only the tail of a Copilot app range is new: price that part.
+        const whole = tokenCount(tokens);
+        const share = whole > 0 ? tokenCount(claim.usage) / whole : 0;
+        const priced = usage.priceTail?.(claim.usage);
+        id = claim.id;
+        tokens = claim.usage;
+        costUsd = priced?.costUsd ?? costUsd * share;
+        cacheSavingsUsd = priced?.cacheSavingsUsd ?? cacheSavingsUsd * share;
+      }
+    }
     let pricing: PricingMark | undefined;
-    if (usage.model && tokens > 0) {
+    if (usage.model && tokenCount(tokens) > 0) {
       const resolution = resolvePricingDetail(usage.model);
       if (resolution.kind === 'unpriced') pricing = { kind: 'unpriced' };
       else if (resolution.source === 'estimated') {
         pricing = { estimatedFrom: resolution.estimatedFrom };
       }
     }
+    // The same late-arrival rule as CostTracker, so both writers' copies of
+    // a call agree on its day.
+    const day = dayOf(timestamp, Date.now());
     const recorded = rollup.ledger.insert({
-      id: usage.usageId ?? `anon:aggregator:${++this.anonymousUsageSeq}`,
+      id,
       provisional: false,
       replaces: usage.agentId === undefined,
       ts: timestamp,
-      // The same late-arrival rule as CostTracker, so both writers' copies of
-      // a call agree on its day.
-      day: dayOf(timestamp, Date.now()),
+      day,
       model,
-      inputTokens: usage.inputTokens ?? 0,
-      outputTokens: usage.outputTokens ?? 0,
-      thinkingTokens: usage.thinkingTokens ?? 0,
-      cacheReadTokens: usage.cacheReadTokens ?? 0,
-      cacheCreationTokens: usage.cacheCreationTokens ?? 0,
-      costUsd: usage.costUsd ?? 0,
-      cacheSavingsUsd: usage.cacheSavingsUsd ?? 0,
+      inputTokens: tokens.inputTokens,
+      outputTokens: tokens.outputTokens,
+      thinkingTokens: tokens.thinkingTokens,
+      cacheReadTokens: tokens.cacheReadTokens,
+      cacheCreationTokens: tokens.cacheCreationTokens,
+      costUsd,
+      cacheSavingsUsd,
       ...(usage.agentId !== undefined && { agentId: usage.agentId }),
+      ...(usage.agentId !== undefined &&
+        usage.agentType !== undefined && { agentType: usage.agentType }),
+      ...(usage.workflowRunId && day !== null && { workflowRunId: usage.workflowRunId }),
       ...(pricing && { pricing }),
     });
     if (!recorded || !usage.model) return;
@@ -535,12 +573,12 @@ export class LocalSessionAggregator {
       thinking: 0,
     };
     entry.requestCount += 1;
-    entry.input += usage.inputTokens ?? 0;
-    entry.output += usage.outputTokens ?? 0;
-    entry.cost += usage.costUsd ?? 0;
-    entry.cacheRead += usage.cacheReadTokens ?? 0;
-    entry.cacheCreation += usage.cacheCreationTokens ?? 0;
-    entry.thinking += usage.thinkingTokens ?? 0;
+    entry.input += tokens.inputTokens;
+    entry.output += tokens.outputTokens;
+    entry.cost += costUsd;
+    entry.cacheRead += tokens.cacheReadTokens;
+    entry.cacheCreation += tokens.cacheCreationTokens;
+    entry.thinking += tokens.thinkingTokens;
     rollup.modelBreakdown.set(usage.model, entry);
   }
 
@@ -634,6 +672,9 @@ export class LocalSessionAggregator {
         ...(Object.keys(cost.costByDayUsd ?? {}).length > 0 && { costByDayUsd: cost.costByDayUsd }),
         ...(Object.keys(cost.firstActivityByDayMs ?? {}).length > 0 && {
           firstActivityByDayMs: cost.firstActivityByDayMs,
+        }),
+        ...(Object.keys(cost.costByWorkflowRunId).length > 0 && {
+          costByWorkflowRunId: cost.costByWorkflowRunId,
         }),
         ...(Object.keys(cost.subagentCostByDayUsd ?? {}).length > 0 && {
           subagentCostByDayUsd: cost.subagentCostByDayUsd,

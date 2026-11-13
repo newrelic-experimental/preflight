@@ -629,7 +629,9 @@ export function usageLedgerOf(s: FullSessionSummary): SessionUsageLedger {
     entries: estimates,
     base: isZeroTotals(exactBase) ? ZERO_TOTALS : exactBase,
     legacy: true,
-    legacyEndTime: s.endTime,
+    // 0 is the default for a file written without an end time (an older build
+    // or a crash): any of the other side's calls may then be in its totals.
+    ...(s.endTime > 0 && { legacyEndTime: s.endTime }),
     ...(syntheticDay !== null && { legacyCallsDay: syntheticDay }),
   };
 }

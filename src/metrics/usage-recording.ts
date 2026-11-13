@@ -6,7 +6,7 @@
  * test exercises the wiring rather than a copy of it.
  */
 
-import type { CostBreakdown } from '../shared/index.js';
+import type { CostBreakdown, TokenUsage } from '../shared/index.js';
 
 import type { SubagentTurnEvent } from '../hooks/event-processor.js';
 import type { TokenEvent } from '../storage/types.js';
@@ -32,9 +32,11 @@ export function recordTokenEventUsage(
   isOwnEvent: boolean,
 ): CostBreakdown {
   const usage = tokenUsageFromTokenEvent(event);
+  const price = (u: TokenUsage): CostBreakdown => sinks.costTracker.priceUsage(u, event.model);
   let breakdown: CostBreakdown;
+  let wholePrice: CostBreakdown;
   if (!isOwnEvent) {
-    breakdown = sinks.costTracker.priceUsage(usage, event.model);
+    breakdown = wholePrice = price(usage);
   } else {
     const result = sinks.costTracker.recordUsage(usage, event.model, {
       timestampMs: event.timestamp,
@@ -43,21 +45,28 @@ export function recordTokenEventUsage(
       ...(event.responseMs !== undefined && { responseMs: event.responseMs }),
     });
     breakdown = result.breakdown;
+    wholePrice = result.usage === usage ? breakdown : price(usage);
     // A call already in the ledger (a redelivered buffer line after a
     // restart) is not a new request for the model breakdown either.
     if (result.recorded)
-      sinks.modelUsageTracker.recordUsage(event.model, usage, breakdown.totalUsd);
+      sinks.modelUsageTracker.recordUsage(event.model, result.usage, breakdown.totalUsd);
   }
+  // The rollup is another copy of the session's ledger: it decides for itself
+  // which part of a Copilot app range is new, and prices that part.
   sinks.localSessionAggregator.recordTokenUsage(event.sessionId, {
     timestamp: event.timestamp,
-    costUsd: breakdown.totalUsd,
+    costUsd: wholePrice.totalUsd,
     ...(event.usageId !== undefined && { usageId: event.usageId }),
     model: event.model,
     inputTokens: event.inputTokens,
     outputTokens: event.outputTokens,
     cacheReadTokens: event.cacheReadTokens,
     cacheCreationTokens: event.cacheCreationTokens,
-    cacheSavingsUsd: breakdown.savingsFromCacheUsd,
+    cacheSavingsUsd: wholePrice.savingsFromCacheUsd,
+    priceTail: (u) => {
+      const b = price(u);
+      return { costUsd: b.totalUsd, cacheSavingsUsd: b.savingsFromCacheUsd };
+    },
   });
   return breakdown;
 }
@@ -96,6 +105,8 @@ export function recordSubagentTurnUsage(
     thinkingTokens: turn.reasoningTokens,
     cacheSavingsUsd: breakdown.savingsFromCacheUsd,
     agentId: turn.agentId,
+    ...(agentType !== undefined && { agentType }),
+    ...(turn.workflowRunId && { workflowRunId: turn.workflowRunId }),
     usageId: turn.messageId,
   });
   return breakdown;

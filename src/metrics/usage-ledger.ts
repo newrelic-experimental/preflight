@@ -10,9 +10,11 @@
  * Copilot SDK's `apiCallId`, or the `request_id` a self-report passes. Three
  * kinds are synthesized:
  *
- *   - `copilot-app:<session>:<from>-<to>`: the Copilot app only exposes
- *     cumulative counters, so a delta is named by the counter range it covers.
- *     A range overlapping one already present is refused (see `insert`).
+ *   - `copilot-app:<session>#<epoch>:<from>-<to>`: the Copilot app only
+ *     exposes cumulative counters, so a delta is named by the range of the
+ *     four counters (input.output.cached.reasoning) it covers. A recorder
+ *     counts only the part of a range past what the ledger already covers
+ *     (see `claim`), and a union keeps one set of non-overlapping ranges.
  *   - `est:<process>:<n>`: a byte-size estimate. It is provisional: it stands in
  *     for the model turn that will read the tool payload, and is retired once
  *     the ledger holds an exact parent report from a replaying watcher at or
@@ -26,6 +28,8 @@
  * with their unreplaced byte estimates as provisional `legacy-est:<day>`
  * entries. See `usageLedgerOf` in session-store.ts.
  */
+
+import type { TokenUsage } from '../shared/index.js';
 
 import { localDateKey } from '../lib/date.js';
 import { HIGH_CONTEXT_TOKENS } from '../storage/types.js';
@@ -177,7 +181,8 @@ const SCALAR_KEYS = [
   'cacheSavingsUsd',
 ] as const;
 const DAY_MAP_KEYS = ['costByModel', 'costByDayUsd', 'subagentCostByDayUsd'] as const;
-const COPILOT_APP_RANGE = /^copilot-app:(.+):(\d+)-(\d+)$/;
+const COPILOT_APP_RANGE =
+  /^copilot-app:(.+):(\d+)\.(\d+)\.(\d+)\.(\d+)-(\d+)\.(\d+)\.(\d+)\.(\d+)$/;
 
 function tokensOf(e: UsageEntry): number {
   return (
@@ -189,7 +194,8 @@ function tokensOf(e: UsageEntry): number {
  * Which of two entries for one id to keep. Deterministic and order-free, so a
  * union is the same whichever side it starts from: the one with more tokens
  * (a transcript line re-read after its usage grew), then the exact one, then
- * the one that replaces estimates.
+ * the one that replaces estimates, and so on down to the one that knows more
+ * of the call's attribution.
  */
 function preferred(a: UsageEntry, b: UsageEntry): UsageEntry {
   const ta = tokensOf(a);
@@ -201,7 +207,13 @@ function preferred(a: UsageEntry, b: UsageEntry): UsageEntry {
   // One writer recorded the call late and another did not: out of the day
   // buckets wins, whichever copy arrived first.
   if (a.day !== b.day) return a.day === null ? a : b.day === null ? b : a.day < b.day ? a : b;
-  return a;
+  // One writer knew the call's workflow run or agent type and another did not.
+  const ra = Number(a.workflowRunId !== undefined) + Number(a.agentType !== undefined);
+  const rb = Number(b.workflowRunId !== undefined) + Number(b.agentType !== undefined);
+  if (ra !== rb) return ra > rb ? a : b;
+  const ja = JSON.stringify(a);
+  const jb = JSON.stringify(b);
+  return ja <= jb ? a : b;
 }
 
 /** The unpriced and estimated-price calls an entry counts. */
@@ -215,10 +227,80 @@ function callsOf(e: UsageEntry, tokens: number): Required<EntryCalls> {
   };
 }
 
-function rangeOf(id: string): { readonly scope: string; from: number; to: number } | null {
+/** The Copilot app's four cumulative token counters at one poll. */
+export interface CopilotAppCounters {
+  readonly input: number;
+  readonly output: number;
+  readonly cached: number;
+  readonly reasoning: number;
+}
+
+const countersKey = (c: CopilotAppCounters): string =>
+  `${c.input}.${c.output}.${c.cached}.${c.reasoning}`;
+
+/** The usage id of the Copilot app's growth from `from` to `to` within one counter epoch. */
+export function copilotAppRangeId(
+  sessionId: string,
+  epoch: number,
+  from: CopilotAppCounters,
+  to: CopilotAppCounters,
+): string {
+  return `copilot-app:${sessionId}#${epoch}:${countersKey(from)}-${countersKey(to)}`;
+}
+
+/**
+ * The token usage the app's counters grew by. Its input counter is taken as
+ * cache-inclusive (see copilot-app-usage-watcher.ts); reasoning tokens have no
+ * TokenUsage field and are not counted.
+ */
+export function copilotAppRangeUsage(from: CopilotAppCounters, to: CopilotAppCounters): TokenUsage {
+  const cached = Math.max(0, to.cached - from.cached);
+  const inputTokens = Math.max(0, to.input - from.input - cached);
+  const outputTokens = Math.max(0, to.output - from.output);
+  return {
+    inputTokens,
+    outputTokens,
+    thinkingTokens: 0,
+    cacheReadTokens: cached,
+    cacheCreationTokens: 0,
+    totalTokens: inputTokens + outputTokens + cached,
+  };
+}
+
+/** All the tokens a usage counts. */
+export function tokenCount(u: TokenUsage): number {
+  return (
+    u.inputTokens + u.outputTokens + u.thinkingTokens + u.cacheReadTokens + u.cacheCreationTokens
+  );
+}
+
+interface CounterRange {
+  readonly id: string;
+  readonly scope: string;
+  /** Counter sums: the app's counters only grow within an epoch, so sums order the points. */
+  readonly from: number;
+  readonly to: number;
+  readonly toCounters: CopilotAppCounters;
+}
+
+function rangeOf(id: string): CounterRange | null {
   const m = COPILOT_APP_RANGE.exec(id);
   if (!m) return null;
-  return { scope: m[1]!, from: Number(m[2]), to: Number(m[3]) };
+  const n = m.slice(2).map(Number);
+  const counters = (i: number): CopilotAppCounters => ({
+    input: n[i]!,
+    output: n[i + 1]!,
+    cached: n[i + 2]!,
+    reasoning: n[i + 3]!,
+  });
+  const sum = (c: CopilotAppCounters): number => c.input + c.output + c.cached + c.reasoning;
+  const toCounters = counters(4);
+  return { id, scope: m[1]!, from: sum(counters(0)), to: sum(toCounters), toCounters };
+}
+
+/** Ranges ordered for a union: by start, the longest first, then by id. */
+function compareRanges(a: CounterRange, b: CounterRange): number {
+  return a.from - b.from || b.to - a.to || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
 function addTo(map: Map<string, number>, key: string, usd: number): void {
@@ -537,13 +619,35 @@ function addToFold(fold: UsageFold, entry: UsageEntry): UsageFold {
 /** A session's usage entries plus the legacy aggregate they sit on. */
 export class UsageLedger {
   private readonly entries = new Map<string, UsageEntry>();
+  /** Copilot app ranges per counter scope, sorted and non-overlapping. */
+  private readonly ranges = new Map<string, CounterRange[]>();
   private base: CostTotals = ZERO_TOTALS;
   private cache: UsageFold | null = null;
+
+  /**
+   * The part of a usage this ledger does not already hold. A Copilot app range
+   * that reaches past the ranges it overlaps comes back as the uncovered tail
+   * (a re-read after a crash or a lost cursor, once the app has grown), with
+   * the tail's own id and tokens; one that does not is null. Any other usage
+   * comes back unchanged: `insert` dedupes it by id.
+   */
+  claim(id: string, usage: TokenUsage): { readonly id: string; readonly usage: TokenUsage } | null {
+    if (this.entries.has(id)) return { id, usage };
+    const range = rangeOf(id);
+    if (!range) return { id, usage };
+    const held = this.overlapping(range);
+    if (held.length === 0) return { id, usage };
+    const last = held[held.length - 1]!;
+    if (last.to >= range.to) return null;
+    const tailId = `copilot-app:${range.scope}:${countersKey(last.toCounters)}-${countersKey(range.toCounters)}`;
+    return { id: tailId, usage: copilotAppRangeUsage(last.toCounters, range.toCounters) };
+  }
 
   /**
    * Adds `entry`. Returns false when its id was already present (the entry
    * kept is the `preferred` of the two) or it is a Copilot app range that
    * overlaps one already present, so the caller knows the call was counted.
+   * Recorders pass a range through `claim` first.
    */
   insert(entry: UsageEntry): boolean {
     const existing = this.entries.get(entry.id);
@@ -557,17 +661,8 @@ export class UsageLedger {
     }
     const range = rangeOf(entry.id);
     if (range) {
-      for (const id of this.entries.keys()) {
-        const other = rangeOf(id);
-        if (
-          other &&
-          other.scope === range.scope &&
-          range.from < other.to &&
-          other.from < range.to
-        ) {
-          return false;
-        }
-      }
+      if (this.overlapping(range).length > 0) return false;
+      this.addRange(range);
     }
     this.entries.set(entry.id, entry);
     this.cache =
@@ -575,13 +670,78 @@ export class UsageLedger {
     return true;
   }
 
-  /** Union with another copy of this session's ledger. Idempotent. */
+  /**
+   * Union with another copy of this session's ledger. Idempotent, and the
+   * same whichever copy goes first: where the two copies hold overlapping
+   * Copilot app ranges (each counted the app's growth without the other's
+   * lines), the scope keeps the ranges `compareRanges` picks from both.
+   */
   union(entries: Iterable<UsageEntry>, base: CostTotals = ZERO_TOTALS): void {
-    for (const e of entries) this.insert(e);
+    const incoming = new Map<string, UsageEntry[]>();
+    for (const e of entries) {
+      const range = this.entries.has(e.id) ? null : rangeOf(e.id);
+      if (!range) this.insert(e);
+      else if (this.overlapping(range).length === 0 && !incoming.has(range.scope)) {
+        this.insert(e);
+      } else {
+        const list = incoming.get(range.scope) ?? [];
+        list.push(e);
+        incoming.set(range.scope, list);
+      }
+    }
+    for (const [scope, list] of incoming) this.rebuildScope(scope, list);
     if (!isZeroTotals(base)) {
       this.base = maxTotals(this.base, base);
       this.cache = null;
     }
+  }
+
+  /** Re-picks one scope's ranges from the ones held and `extra`, by `compareRanges`. */
+  private rebuildScope(scope: string, extra: readonly UsageEntry[]): void {
+    const candidates = new Map<string, UsageEntry>();
+    for (const r of this.ranges.get(scope) ?? []) candidates.set(r.id, this.entries.get(r.id)!);
+    for (const e of extra) {
+      const held = candidates.get(e.id);
+      candidates.set(e.id, held ? preferred(held, e) : e);
+    }
+    const sorted = [...candidates.keys()].map((id) => rangeOf(id)!).sort(compareRanges);
+    const kept: CounterRange[] = [];
+    for (const r of sorted) {
+      const last = kept[kept.length - 1];
+      if (!last || r.from >= last.to) kept.push(r);
+    }
+    for (const r of this.ranges.get(scope) ?? []) this.entries.delete(r.id);
+    kept.sort((a, b) => a.from - b.from);
+    this.ranges.set(scope, kept);
+    for (const r of kept) this.entries.set(r.id, candidates.get(r.id)!);
+    this.cache = null;
+  }
+
+  /** The held ranges in `range`'s scope that overlap it, in order. */
+  private overlapping(range: CounterRange): CounterRange[] {
+    const list = this.ranges.get(range.scope);
+    if (!list) return [];
+    let lo = 0;
+    let hi = list.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (list[mid]!.to <= range.from) lo = mid + 1;
+      else hi = mid;
+    }
+    const out: CounterRange[] = [];
+    for (let i = lo; i < list.length && list[i]!.from < range.to; i++) out.push(list[i]!);
+    return out;
+  }
+
+  private addRange(range: CounterRange): void {
+    const list = this.ranges.get(range.scope);
+    if (!list) {
+      this.ranges.set(range.scope, [range]);
+      return;
+    }
+    let i = list.length;
+    while (i > 0 && list[i - 1]!.from > range.from) i--;
+    list.splice(i, 0, range);
   }
 
   /** Adds an aggregate that is not part of any other copy of the ledger. */

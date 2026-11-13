@@ -312,6 +312,8 @@ export interface RecordedUsage {
   readonly breakdown: CostBreakdown;
   /** False when the call's id was already in the ledger, so nothing was added. */
   readonly recorded: boolean;
+  /** The usage priced: the part of a Copilot app range the ledger did not already hold, else all of it. */
+  readonly usage: TokenUsage;
 }
 
 /**
@@ -400,7 +402,14 @@ export class CostTracker implements Resettable {
     return this.recordUsage(usage, model, ctx).breakdown;
   }
 
-  recordUsage(usage: TokenUsage, model: string, ctx?: TokenRecordContext): RecordedUsage {
+  recordUsage(whole: TokenUsage, model: string, ctx?: TokenRecordContext): RecordedUsage {
+    // A Copilot app range may reach past what the ledger holds: only the
+    // uncovered tail is new, so that tail is what gets priced and recorded.
+    const claim = ctx?.usageId === undefined ? null : this.ledger.claim(ctx.usageId, whole);
+    if (ctx?.usageId !== undefined && !claim) {
+      return { breakdown: this.price(whole, model).breakdown, recorded: false, usage: whole };
+    }
+    const usage = claim?.usage ?? whole;
     const { breakdown, pricing } = this.price(usage, model);
     const wallNowMs = Date.now();
     const ts = ctx?.timestampMs ?? wallNowMs;
@@ -411,7 +420,7 @@ export class CostTracker implements Resettable {
         deltaMs: wallNowMs - ts,
       });
     }
-    const id = ctx?.usageId ?? this.synthesizeId('anon');
+    const id = claim?.id ?? this.synthesizeId('anon');
     const recorded = this.ledger.insert({
       id,
       provisional: false,
@@ -439,7 +448,7 @@ export class CostTracker implements Resettable {
       this.currentModel = model;
       this.latestCostBreakdown = breakdown;
     }
-    return { breakdown, recorded };
+    return { breakdown, recorded, usage };
   }
 
   /** Whether an exact report from a watcher that replays history is in the ledger. */

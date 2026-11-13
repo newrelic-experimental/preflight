@@ -1,14 +1,18 @@
 import { describe, expect, it } from '@jest/globals';
 
+import type { TokenUsage } from '../shared/index.js';
+
 import {
   UsageLedger,
   ZERO_TOTALS,
+  copilotAppRangeId,
+  copilotAppRangeUsage,
   decodeUsageLedger,
   encodeUsageLedger,
   foldUsage,
   parsePersistedUsageLedger,
 } from './usage-ledger.js';
-import type { UsageEntry } from './usage-ledger.js';
+import type { CopilotAppCounters, UsageEntry } from './usage-ledger.js';
 import { mergeSummaries, usageLedgerOf } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 
@@ -30,6 +34,35 @@ function makeEntry(overrides: Partial<UsageEntry> = {}): UsageEntry {
     costUsd: 1,
     cacheSavingsUsd: 0,
     ...overrides,
+  };
+}
+
+/** A Copilot app range over the input, output and cached counters, at a cent per token. */
+function appRange(epoch: number, from: number[], to: number[]): UsageEntry {
+  const counters = (c: number[]): CopilotAppCounters => ({
+    input: c[0]!,
+    output: c[1]!,
+    cached: c[2]!,
+    reasoning: 0,
+  });
+  const usage = copilotAppRangeUsage(counters(from), counters(to));
+  return makeEntry({
+    id: copilotAppRangeId('s', epoch, counters(from), counters(to)),
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheReadTokens: usage.cacheReadTokens,
+    costUsd: usage.totalTokens / 100,
+  });
+}
+
+function usageOf(e: UsageEntry): TokenUsage {
+  return {
+    inputTokens: e.inputTokens,
+    outputTokens: e.outputTokens,
+    thinkingTokens: e.thinkingTokens,
+    cacheReadTokens: e.cacheReadTokens,
+    cacheCreationTokens: e.cacheCreationTokens,
+    totalTokens: e.inputTokens + e.outputTokens + e.cacheReadTokens,
   };
 }
 
@@ -98,11 +131,50 @@ describe('UsageLedger', () => {
 
   it('refuses a Copilot app range overlapping one it holds, in the same epoch only', () => {
     const ledger = new UsageLedger();
-    expect(ledger.insert(makeEntry({ id: 'copilot-app:s#0:0-500' }))).toBe(true);
-    expect(ledger.insert(makeEntry({ id: 'copilot-app:s#0:500-800' }))).toBe(true);
-    expect(ledger.insert(makeEntry({ id: 'copilot-app:s#0:0-800' }))).toBe(false);
-    expect(ledger.insert(makeEntry({ id: 'copilot-app:s#1:0-300' }))).toBe(true);
-    expect(ledger.fold().totals.costUsd).toBe(3);
+    expect(ledger.insert(appRange(0, [0, 0, 0], [500, 0, 0]))).toBe(true);
+    expect(ledger.insert(appRange(0, [500, 0, 0], [800, 0, 0]))).toBe(true);
+    expect(ledger.insert(appRange(0, [0, 0, 0], [800, 0, 0]))).toBe(false);
+    expect(ledger.insert(appRange(1, [0, 0, 0], [300, 0, 0]))).toBe(true);
+    expect(ledger.fold().totals.inputTokens).toBe(1_100);
+  });
+
+  it('claims only the part of a Copilot app range past the ranges it overlaps', () => {
+    const ledger = new UsageLedger();
+    ledger.insert(appRange(0, [0, 0, 0], [1_000, 100, 200]));
+    ledger.insert(appRange(0, [1_000, 100, 200], [2_000, 300, 500]));
+    const reread = appRange(0, [1_000, 100, 200], [2_600, 350, 600]);
+    const tail = ledger.claim(reread.id, usageOf(reread));
+    expect(tail?.id).toBe(appRange(0, [2_000, 300, 500], [2_600, 350, 600]).id);
+    expect(tail?.usage).toMatchObject({ inputTokens: 500, cacheReadTokens: 100, outputTokens: 50 });
+    expect(ledger.claim(appRange(0, [0, 0, 0], [2_000, 300, 500]).id, usageOf(reread))).toBeNull();
+    const fresh = appRange(0, [2_000, 300, 500], [2_100, 300, 500]);
+    expect(ledger.claim(fresh.id, usageOf(fresh))?.id).toBe(fresh.id);
+  });
+
+  it('unions overlapping Copilot app ranges the same whichever copy goes first', () => {
+    const x = [appRange(0, [0, 0, 0], [100, 0, 0]), appRange(0, [100, 0, 0], [200, 0, 0])];
+    const y = [appRange(0, [100, 0, 0], [250, 0, 0])];
+    const merged = (first: UsageEntry[], second: UsageEntry[]): number => {
+      const ledger = new UsageLedger();
+      ledger.union(first);
+      ledger.union(second);
+      return ledger.fold().totals.inputTokens;
+    };
+    expect(merged(x, y)).toBe(250);
+    expect(merged(y, x)).toBe(250);
+  });
+
+  it('keeps the copy of a call that knows its workflow run and agent type, whichever goes first', () => {
+    const bare = makeEntry({ id: 'msg_sub', agentId: 'a', replaces: false });
+    const rich = { ...bare, agentType: 'Explore', workflowRunId: 'run-1' };
+    for (const order of [
+      [bare, rich],
+      [rich, bare],
+    ]) {
+      const ledger = new UsageLedger();
+      for (const e of order) ledger.insert(e);
+      expect(ledger.fold().totals.costByWorkflowRunId).toEqual({ 'run-1': { [DAY]: 1 } });
+    }
   });
 
   it('retires an estimate once a replaying report is at or after it', () => {
@@ -268,6 +340,14 @@ describe('session files and the ledger', () => {
     const later = withLedger([makeEntry({ id: 'msg_new', ts: 6_000, costUsd: 2 })]);
     expect(mergeSummaries(legacy, later).estimatedCostUsd).toBe(7);
     expect(mergeSummaries(later, legacy).estimatedCostUsd).toBe(7);
+  });
+
+  it('takes the keyed calls out of a pre-ledger file with no end time before merging', () => {
+    // An older build or a crash leaves endTime 0: any keyed call may be in its totals.
+    const legacy = makeSummary({ endTime: 0, estimatedCostUsd: 5, tokensInput: 500 });
+    const keyed = withLedger([makeEntry({ id: 'msg_a', ts: 6_000, costUsd: 2 })]);
+    expect(mergeSummaries(legacy, keyed).estimatedCostUsd).toBe(5);
+    expect(mergeSummaries(keyed, legacy).estimatedCostUsd).toBe(5);
   });
 
   it('turns a pre-ledger byte-estimate ledger into estimates the next report retires', () => {
