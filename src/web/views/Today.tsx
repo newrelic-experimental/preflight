@@ -9,6 +9,7 @@ import {
   type AntiPatternEvent,
 } from '../store/liveStore';
 import { Kpi } from '../components/Kpi';
+import { TaskCompletionPanel } from '../components/TaskCompletionPanel';
 import { AnimatedCard } from '../components/AnimatedCard';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
 import { EmptyState } from '../components/EmptyState';
@@ -565,6 +566,10 @@ export function Today(): JSX.Element {
             <ComputeWasteCard liveSessions={liveSessions ?? []} />
             <LatencyCard aggregate={aggregate} />
             <ApiFailuresCard />
+          </AnimatedCard>
+
+          <AnimatedCard index={6}>
+            <TaskCompletionPanel />
           </AnimatedCard>
         </>
       )}

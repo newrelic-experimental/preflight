@@ -49,6 +49,7 @@ import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
 import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
 import type { ModelBreakdownEntry, ModelUsageMetrics } from '../../metrics/model-usage-tracker.js';
 import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
+import type { TaskCompletionMetrics } from '../../metrics/task-completion-tracker.js';
 import type {
   QualityEvent,
   QualityProxyMetrics,
@@ -511,6 +512,7 @@ export interface ApiHandlerDeps {
   readonly weeklySummaryGenerator?: WeeklySummaryGenerator;
   readonly budgetTracker?: { getStatus: () => BudgetStatus };
   readonly latencyTracker?: { getMetrics: () => LatencyMetrics };
+  readonly taskCompletionTracker?: { getMetrics: () => TaskCompletionMetrics };
   readonly personalCoach?: { generate: () => PersonalInsightsResult };
   readonly trendAnalyzer?: {
     computeTrends: () => {
@@ -2475,6 +2477,11 @@ export function createApiHandler(
       byTool: today.byTool,
       slowestCalls: live?.slowestCalls ?? [],
     });
+  });
+
+  routes.set('GET /api/task-completion', (_req, res) => {
+    if (!deps.taskCompletionTracker) return unavailable(res, 'taskCompletionTracker');
+    jsonOk(res, deps.taskCompletionTracker.getMetrics());
   });
 
   routes.set('GET /api/model-usage', (_req, res) => {
