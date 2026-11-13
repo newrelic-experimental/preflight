@@ -3242,6 +3242,8 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
     ['repeated --token line continuations', '--token \\\n'.repeat(105_000)],
     ["repeated unclosed --token $' quotes", "--token $'".repeat(105_000)],
     ['repeated unclosed escaped --token quotes', '--token \\"\\\\'.repeat(87_500)],
+    ['one --token value of escaped spaces', `--token ${'\\ '.repeat(524_000)}`],
+    ['one --token value of quotes, the last unclosed', `--token ${'"'.repeat(1_048_001)}`],
   ])('scans a 1 MB command of %s in linear time', (_shape, command) => {
     const start = performance.now();
     redactSensitive(command);
