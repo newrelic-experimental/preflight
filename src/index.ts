@@ -1456,6 +1456,20 @@ async function main(): Promise<void> {
       }
       return saved !== null;
     };
+    const liftObserverCompleted = (sessionId: string): void => {
+      if (!sessionStore) return;
+      try {
+        const saved = sessionStore.loadSession(sessionId);
+        if (saved?.completedByObserver !== true) return;
+        saveSessionRememberingBaseline({
+          ...saved,
+          outcome: 'in progress',
+          completedByObserver: undefined,
+        });
+      } catch (err) {
+        logger.warn('Failed to lift an observer-completed session', { error: String(err) });
+      }
+    };
     const rehydrateTrackersIfResumed = (sessionId: string): void => {
       if (isSyntheticSessionId(sessionId)) return;
       if (rehydratedTrackerSessionIds.has(sessionId)) return;
@@ -1488,7 +1502,10 @@ async function main(): Promise<void> {
         });
       }
     };
-    if (!isProvisional && !resolvedViaCwdOnly) rehydrateTrackersIfResumed(currentSessionId);
+    if (!isProvisional && !resolvedViaCwdOnly) {
+      rehydrateTrackersIfResumed(currentSessionId);
+      liftObserverCompleted(currentSessionId);
+    }
 
     // Each command is isolated so a slow/missing git or remote doesn't block
     // the others. Uses spawnSync (no shell) to avoid injection; stderr is
@@ -3096,7 +3113,10 @@ async function main(): Promise<void> {
       // startPpidCorrectionWatch right after this returns, whose
       // confirmation branch (ppidId === staleId) calls
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
-      if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
+      if (!opts?.viaCwdOnly) {
+        rehydrateTrackersIfResumed(realId);
+        liftObserverCompleted(realId);
+      }
       refreshPriorCostBaseline();
 
       try {

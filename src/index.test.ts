@@ -1555,6 +1555,21 @@ describe('stdio integration', () => {
       expect(savedCalls(storage, 'own-real-session')).toBe(2);
     }, 30000);
 
+    it('puts a session an observer completed back in progress as soon as it adopts that session', async () => {
+      const storage = makeStorage();
+      const observer = await startEngine(storage);
+      await drainCalls(storage, 'own-real-session', 1);
+      await observer.close();
+      await waitFor(() => savedField(storage, 'own-real-session', 'outcome') === 'completed');
+
+      const client = await startEngine(storage);
+      const heartbeat = resolve(storage, 'active-own-real-session.pid');
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'own-real-session');
+      await waitFor(() => existsSync(heartbeat));
+      await waitFor(() => savedField(storage, 'own-real-session', 'outcome') === 'in progress');
+      await client.close();
+    }, 30000);
+
     const guessFromCwd = (storage: string, cwd: string): void => {
       const crumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-cwd');
       mkdirSync(crumbs, { recursive: true });
