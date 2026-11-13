@@ -1,6 +1,7 @@
 import { useId, useRef, useState, type JSX } from 'react';
 import { createPortal } from 'react-dom';
 import { Info } from 'lucide-react';
+import { useEffect } from 'react';
 
 export interface InfoTooltipProps {
   readonly text: string;
@@ -28,6 +29,15 @@ export function InfoTooltip({ text }: InfoTooltipProps): JSX.Element {
   const closeTooltip = (): void => {
     setIsOpen(false);
   };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setIsOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isOpen]);
 
   return (
     <span className="relative inline-flex">
