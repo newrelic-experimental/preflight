@@ -773,6 +773,8 @@ export function mergeSummaries(
       : existing.toolSelectionMetrics;
 
   const timeline = mergeTimeline(existing.timeline, incoming.timeline);
+  const outcomeSource =
+    existing.outcome === 'completed' && !existing.completedByObserver ? existing : incoming;
 
   const startTime = Math.min(
     existing.startTime || incoming.startTime,
@@ -853,9 +855,8 @@ export function mergeSummaries(
       (incoming.antiPatterns?.length ?? 0) >= (existing.antiPatterns?.length ?? 0)
         ? incoming.antiPatterns
         : existing.antiPatterns,
-    ...(existing.outcome === 'completed' && !existing.completedByObserver
-      ? { outcome: existing.outcome, completedByObserver: undefined }
-      : { outcome: incoming.outcome, completedByObserver: incoming.completedByObserver }),
+    outcome: outcomeSource.outcome,
+    completedByObserver: outcomeSource.completedByObserver,
     ...(timeline ? { timeline } : {}),
     toolSelectionMetrics,
     modelBreakdown,
