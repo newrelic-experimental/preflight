@@ -504,8 +504,7 @@ export class LocalSessionAggregator {
     if (rollup.timeline.length >= MAX_TIMELINE_ENTRIES) rollup.timeline.shift();
     rollup.timeline.push({
       timestamp,
-      ...(typeof record.toolUseId === 'string' &&
-        record.toolUseId !== '' && { toolUseId: record.toolUseId }),
+      ...(typeof record.toolUseId === 'string' && { toolUseId: record.toolUseId }),
       toolName: tool,
       durationMs: record.durationMs ?? null,
       success: record.success !== false,

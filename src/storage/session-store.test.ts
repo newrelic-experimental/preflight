@@ -3393,6 +3393,7 @@ describe('buildSessionSummary timeline', () => {
     expect(summary.timeline![2]!.toolName).toBe('Bash');
     expect(summary.timeline![2]!.command).toBe('npm test');
     expect(summary.timeline![2]!.isTestCommand).toBe(true);
+    expect(summary.timeline!.map((e) => e.toolUseId)).toEqual(['tu1', 'tu2', 'tu3']);
   });
 
   it('returns undefined timeline when no tool calls are present', () => {
