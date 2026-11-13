@@ -65,11 +65,13 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 1. Per-action hook events — `beforeShellExecution`, `afterShellExecution`, `beforeMCPExecution`, `afterMCPExecution`, `beforeReadFile`, `afterFileEdit` — carry no generic `tool_name` field; the collector derives the tool name from the event name itself. `CURSOR_TOOL_MAP` is never consulted for these.
 2. Generic `preToolUse`/`postToolUse` events (confirmed to exist, payload only partially documented) — carry `tool_name` as one of `Shell`/`Read`/`Write`/`Task`/`MCP`. `MCP` is deliberately left unmapped (collapsing an arbitrary downstream MCP tool into the literal string "MCP" would discard information); it falls through to `'Unknown'` with the original name preserved.
 
-**Known gaps:** Cursor has no `afterReadFile` event (`beforeReadFile` is emitted as a completed read directly) and no `beforeFileEdit` event (`afterFileEdit` is post-only). `afterShellExecution`/`afterMCPExecution` have no documented failure-outcome field, so success is reported unconditionally `true`.
+**Self-reported tokens:** `afterMCPExecution` carries `conversation_id`, `mcp_server_name` (the server's key in `mcp.json`), `tool_input` and `result_json`. When the call is `nr_observe_report_tokens` to a server whose key contains `preflight` (or is exactly `nr-ai-observability`), and the reply accepted the report for the hook, the collector writes the report into that conversation's buffer, so it is saved to the chat that made the call. Every event from these Cursor-only hooks is stamped `cursor`, even when the hook inherits Claude Code's environment.
+
+**Known gaps:** Cursor has no `afterReadFile` event (`beforeReadFile` is emitted as a completed read directly) and no `beforeFileEdit` event (`afterFileEdit` is post-only). `afterShellExecution`/`afterMCPExecution` have no documented failure-outcome field, so success is reported unconditionally `true`. A self-report sent to a server registered under any other key, or by a Cursor version that sends no `mcp_server_name`, is not recorded.
 
 **Setup:**
 
-1. Register the Preflight MCP server for `nr_observe_*` tools: Cursor Settings → MCP → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
+1. Register the Preflight MCP server for `nr_observe_*` tools: Cursor Settings → MCP → add server under a key that contains `preflight` (the installer uses `newrelic-preflight`), command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
 2. Configure Cursor hooks so tool-call activity is captured — create `.cursor/hooks.json` (project) or `~/.cursor/hooks.json` (global):
    ```json
    {
@@ -95,15 +97,17 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Detection (`isSupported()`):** `WINDSURF_SESSION_ID` set, or `WINDSURF_CONTEXT_ID` set, or `MCP_CLIENT === 'windsurf'`.
 
-**Event vocabulary handled by `collector-script.ts`:** `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`. Windsurf sends the event name as `agent_action_name`, not `hook_event_name` — the collector checks both.
+**Event vocabulary handled by `collector-script.ts`:** `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`, `pre_mcp_tool_use`, `post_mcp_tool_use`. Windsurf sends the event name as `agent_action_name`, not `hook_event_name` — the collector checks both. Every event from these hooks is stamped `windsurf`.
 
-**Known gaps:** `post_read_code`/`post_run_command` report success `true` unconditionally, the same gap as Cursor's `afterShellExecution`. `pre_write_code` maps to `'Edit'` (it's typically a partial edit, not a full-file write).
+**Self-reported tokens:** `post_mcp_tool_use` carries `trajectory_id` and `tool_info.mcp_server_name`, `mcp_tool_arguments` and `mcp_result`. The collector records an `nr_observe_report_tokens` report from it under the same rules as Cursor's `afterMCPExecution`.
+
+**Known gaps:** `post_read_code`/`post_run_command` report success `true` unconditionally, the same gap as Cursor's `afterShellExecution`. `pre_write_code` maps to `'Edit'` (it's typically a partial edit, not a full-file write). Self-report recording from `post_mcp_tool_use` follows Windsurf's docs and has not been checked against a real Windsurf run: that `mcp_result` holds the reply text, that `mcp_server_name` is the `mcp_config.json` key, and that the hook does not fire for a denied call.
 
 **Setup:**
 
 1. Windsurf Settings → MCP Servers → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
 2. MCP tool calls via Cascade are captured automatically through the MCP connection
-3. Built-in tool calls (file reads/writes, terminal commands) require Cascade Hooks — create `.windsurf/hooks.json` and register `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`, each running `preflight-collector`
+3. Built-in tool calls (file reads/writes, terminal commands) and self-reported tokens require Cascade Hooks — create `.windsurf/hooks.json` (or `~/.codeium/windsurf/hooks.json`) and register `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`, `post_mcp_tool_use`, each running `preflight-collector`. Register the MCP server under a key that contains `preflight`.
 4. See [docs.windsurf.com/windsurf/cascade/hooks](https://docs.windsurf.com/windsurf/cascade/hooks) for the full schema
 
 ---

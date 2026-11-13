@@ -10,6 +10,10 @@ import {
   registerCostTools,
 } from './cost-tools.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
+import { CursorAdapter } from '../platforms/cursor-adapter.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import { BudgetTracker } from '../metrics/budget-tracker.js';
 import { SessionResumeTracker } from '../metrics/session-resume-tracker.js';
@@ -693,6 +697,29 @@ describe('registerCostTools()', () => {
       'nr_observe_get_prompt_cache_health',
       'nr_observe_report_tokens',
     ]);
+  });
+
+  it('on the hook path, records a report without report_id in process and leaves one with it to the hook', async () => {
+    const costTracker = new CostTracker();
+    const dir = mkdtempSync(join(tmpdir(), 'nr-cost-tools-hook-'));
+    const hook = new CursorAdapter().capabilities.tokenReportHook!;
+    const { tools, handlers } = registerCostTools({
+      costTracker,
+      hookRecordedReports: { hook, homeDir: dir, projectDir: dir },
+    });
+    const report = { input_tokens: 1000, output_tokens: 200, model: 'claude-sonnet-4-6' };
+    const reply = async (args: Record<string, unknown>) =>
+      JSON.parse((await handlers.nr_observe_report_tokens!(args)).content[0]!.text);
+
+    expect(await reply(report)).toMatchObject({ recorded: true });
+    expect(await reply({ ...report, report_id: 'r-12345678' })).toMatchObject({
+      accepted: true,
+      recorded_by: 'hook',
+    });
+    const listed = tools.find((t: { name: string }) => t.name === 'nr_observe_report_tokens');
+    expect(listed?.inputSchema.required).not.toContain('report_id');
+    expect(costTracker.getMetrics().reportCount).toBe(1);
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it('rejects an invalid token report the same way the raw handler does', async () => {

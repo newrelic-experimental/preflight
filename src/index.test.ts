@@ -2503,6 +2503,35 @@ describe('stdio integration', () => {
       });
     }, 40000);
 
+    it('a claude-code engine stops estimating its own session once a drained report for it arrives', async () => {
+      await withPendingEngine('600000', async (env, adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        await adopt('real-owner-session');
+        runHook(env, reportHook('real-owner-session', 'r-own-00001'));
+        expect(await drained(storage, 'real-owner-session')).toBe('');
+        const read = { session_id: 'real-owner-session', tool_name: 'Read', tool_use_id: 'tu-big' };
+        runHook(
+          env,
+          { hook_event_name: 'PreToolUse', ...read, tool_input: { file_path: '/repo/big.txt' } },
+          ['pre-tool'],
+        );
+        runHook(
+          env,
+          {
+            hook_event_name: 'PostToolUse',
+            ...read,
+            tool_response: { content: 'y'.repeat(40_000) },
+          },
+          ['post-tool'],
+        );
+        await close();
+
+        const saved = savedSession(storage, 'real-owner-session');
+        expect(saved).toMatchObject({ tokensInput: 1000 });
+        expect(saved?.estimatedCostUsd).toBeCloseTo(0.0075, 6);
+      });
+    }, 40000);
+
     it("a pending engine that drains another conversation's tool calls and then adopts saves them", async () => {
       await withPendingEngine('600000', async (env, adopt, close) => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
@@ -2606,6 +2635,250 @@ describe('stdio integration', () => {
         expect(saved?.estimatedCostUsd).toBeCloseTo(10.0075, 6);
       });
     }, 40000);
+  });
+
+  describe('nr_observe_report_tokens while the engine is pending', () => {
+    type Client = import('@modelcontextprotocol/sdk/client/index.js').Client;
+    const report = {
+      report_id: 'r-5f0c2a9e',
+      input_tokens: 1000,
+      output_tokens: 200,
+      thinking_tokens: 100,
+      model: 'claude-sonnet-4-6',
+    };
+
+    async function withPendingEngine(
+      mcpClient: string,
+      run: (
+        client: Client,
+        hook: (payload: Record<string, unknown>) => void,
+        sessionFile: (conversationId: string) => Promise<Record<string, unknown> | null>,
+        storagePath: string,
+      ) => Promise<void>,
+      engineEnv: Record<string, string> = { MCP_CLIENT: mcpClient },
+      homeFiles: Record<string, unknown> = {},
+    ): Promise<void> {
+      const { spawnSync } = await import('node:child_process');
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+      const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+      const distDir = resolve(__dirname, '..', 'dist');
+      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-pending-report-storage-'));
+      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-pending-report-home-'));
+      for (const [path, content] of Object.entries(homeFiles)) {
+        mkdirSync(resolve(tmpHome, path, '..'), { recursive: true });
+        writeFileSync(resolve(tmpHome, path), JSON.stringify(content));
+      }
+      const env = { ...process.env };
+      for (const name of Object.keys(env)) {
+        if (/^(CLAUDE|CURSOR|MCP_CLIENT$|NEW_RELIC_AI_PLATFORM$)/.test(name)) delete env[name];
+      }
+      const hook = (payload: Record<string, unknown>) => {
+        const run = spawnSync('node', [resolve(distDir, 'hooks', 'collector-script.js')], {
+          input: JSON.stringify(payload),
+          env: {
+            ...env,
+            HOME: tmpHome,
+            MCP_CLIENT: mcpClient,
+            NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+          },
+          cwd: tmpStoragePath,
+        });
+        expect(run.status).toBe(0);
+      };
+      const sessionFile = async (
+        conversationId: string,
+      ): Promise<Record<string, unknown> | null> => {
+        const dir = resolve(tmpStoragePath, 'sessions');
+        for (let i = 0; i < 40; i++) {
+          const name = existsSync(dir)
+            ? readdirSync(dir).find((f) => f.includes(conversationId))
+            : undefined;
+          const saved = name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
+          if (saved?.estimatedCostUsd || saved?.toolCallCount) return saved;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        return null;
+      };
+
+      const client = new Client({ name: mcpClient, version: '1.0.0' });
+      try {
+        await client.connect(
+          new StdioClientTransport({
+            command: 'node',
+            args: [resolve(distDir, 'index.js'), '--stdio'],
+            cwd: tmpStoragePath,
+            env: {
+              ...env,
+              HOME: tmpHome,
+              ...engineEnv,
+              NR_AI_DASHBOARD_PORT: '0',
+              NR_AI_MODE: 'local',
+              NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+              NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+            } as Record<string, string>,
+          }),
+        );
+        await run(client, hook, sessionFile, tmpStoragePath);
+      } finally {
+        await client.close();
+        rmSync(tmpStoragePath, { recursive: true, force: true });
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    }
+
+    it('saves a Cursor report once, to the conversation whose hook carried it', async () => {
+      await withPendingEngine('cursor', async (client, hook, sessionFile) => {
+        hook({
+          hook_event_name: 'beforeShellExecution',
+          conversation_id: 'conv-silent',
+          command: 'ls',
+        });
+        hook({ hook_event_name: 'afterShellExecution', conversation_id: 'conv-silent' });
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const result = await client.callTool({
+            name: 'nr_observe_report_tokens',
+            arguments: report,
+          });
+          hook({
+            hook_event_name: 'afterMCPExecution',
+            conversation_id: 'conv-reported',
+            mcp_server_name: 'newrelic-preflight',
+            tool_name: 'nr_observe_report_tokens',
+            tool_input: JSON.stringify(report),
+            result_json: JSON.stringify(result),
+          });
+        }
+
+        const reported = await sessionFile('conv-reported');
+        expect(reported?.tokensInput).toBe(1000);
+        expect(reported?.tokensOutput).toBe(200);
+        expect(reported?.tokensThinking).toBe(100);
+        expect(reported?.estimatedCostUsd).toBeGreaterThan(0);
+        const silent = await sessionFile('conv-silent');
+        expect(silent?.toolCallCount).toBe(1);
+        expect(silent?.tokensInput).toBe(0);
+        expect(silent?.estimatedCostUsd).toBeNull();
+      });
+    }, 30000);
+
+    it('leaves the report to the hook and stays pending even when a breadcrumb is written', async () => {
+      await withPendingEngine('cursor', async (client, hook, _sessionFile, storagePath) => {
+        for (const root of [storagePath, resolve(storagePath, 'breadcrumbs', 'claude-code')]) {
+          const dir = resolve(root, 'session-by-ppid');
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(resolve(dir, `${process.pid}.txt`), 'real-owner-session');
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+        const names = async () => (await client.listTools()).tools.map((t) => t.name);
+        expect(await names()).not.toContain('nr_observe_get_session_stats');
+
+        const result = await client.callTool({
+          name: 'nr_observe_report_tokens',
+          arguments: report,
+        });
+        const reply = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+        expect(reply).toMatchObject({
+          accepted: true,
+          recorded_by: 'hook',
+          report_id: report.report_id,
+        });
+        hook({
+          hook_event_name: 'afterMCPExecution',
+          conversation_id: 'conv-reported',
+          mcp_server_name: 'newrelic-preflight',
+          tool_name: 'nr_observe_report_tokens',
+          tool_input: JSON.stringify(report),
+          result_json: JSON.stringify(result),
+        });
+
+        const buffer = readFileSync(resolve(storagePath, 'buffer-conv-reported.jsonl'), 'utf-8');
+        const lines = buffer
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        expect(lines.filter((l) => l.mode === 'self_report')).toMatchObject([
+          { inputTokens: 1000 },
+        ]);
+      });
+    }, 30000);
+
+    it("a pending Cursor engine stops estimating a conversation once the hook saved that conversation's report", async () => {
+      await withPendingEngine('cursor', async (client, hook, sessionFile) => {
+        const result = await client.callTool({
+          name: 'nr_observe_report_tokens',
+          arguments: report,
+        });
+        hook({
+          hook_event_name: 'afterMCPExecution',
+          conversation_id: 'conv-reported',
+          mcp_server_name: 'newrelic-preflight',
+          tool_name: 'nr_observe_report_tokens',
+          tool_input: JSON.stringify(report),
+          result_json: JSON.stringify(result),
+        });
+        const read = { session_id: 'conv-reported', tool_name: 'Read', tool_use_id: 'tu-big' };
+        hook({
+          hook_event_name: 'PreToolUse',
+          ...read,
+          tool_input: { file_path: '/repo/big.txt' },
+        });
+        hook({ hook_event_name: 'PostToolUse', ...read, tool_response: 'y'.repeat(40_000) });
+
+        let saved = await sessionFile('conv-reported');
+        for (let i = 0; i < 40 && Number(saved?.toolCallCount ?? 0) < 2; i++) {
+          await new Promise((r) => setTimeout(r, 250));
+          saved = await sessionFile('conv-reported');
+        }
+        expect(saved?.toolCallCount).toBe(2);
+        expect(saved?.estimatedCostUsd).toBeCloseTo(0.0075, 6);
+      });
+    }, 40000);
+
+    it.each([
+      ['only an inherited CURSOR_TRACE_ID', false, {}],
+      [
+        'an inherited CURSOR_TRACE_ID and a hooks file that runs the collector',
+        true,
+        {
+          '.cursor/hooks.json': {
+            hooks: { afterMCPExecution: [{ command: 'preflight-collector' }] },
+          },
+        },
+      ],
+    ])(
+      'a pending engine with %s lists the tool: %s',
+      async (_label, listed, homeFiles) => {
+        await withPendingEngine(
+          'cursor',
+          async (client) => {
+            const names = (await client.listTools()).tools.map((t) => t.name);
+            expect(names.includes('nr_observe_report_tokens')).toBe(listed);
+          },
+          { CURSOR_TRACE_ID: 'inherited-from-terminal' },
+          homeFiles,
+        );
+      },
+      30000,
+    );
+
+    it.each([
+      ['cursor', true],
+      ['windsurf', true],
+      ['antigravity', false],
+      ['kiro', false],
+      ['zed', false],
+      ['claude-code', false],
+    ])(
+      'a pending %s engine lists the tool: %s',
+      async (mcpClient, listed) => {
+        await withPendingEngine(mcpClient, async (client) => {
+          const names = (await client.listTools()).tools.map((t) => t.name);
+          expect(names.includes('nr_observe_report_tokens')).toBe(listed);
+        });
+      },
+      30000,
+    );
   });
 
   it('self-corrects when the pending path resolves via the cwd fallback and a differing PPID breadcrumb appears later', async () => {
