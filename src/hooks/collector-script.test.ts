@@ -1378,7 +1378,7 @@ describe('collector-script', () => {
 
     it('truncates content exceeding max length', () => {
       process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
-      process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '50';
+      process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
 
       const longContent = 'x'.repeat(100_000);
       processHook(
@@ -1389,8 +1389,46 @@ describe('collector-script', () => {
 
       const event = readBufferEvents()[0]!;
       const content = event.outputContent as string;
-      expect(content.length).toBeLessThan(100);
+      expect(content.length).toBeLessThan(300);
       expect(content).toContain('...[truncated]');
+    });
+
+    describe('NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH bounds', () => {
+      const captured = (): string => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(1_000) } }));
+        return readBufferEvents()[0]!.outputContent as string;
+      };
+      const serialized = JSON.stringify({ data: 'x'.repeat(1_000) });
+
+      it.each(['0', '-5', '255', 'abc'])('falls back to 10,240 for %s', (raw) => {
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = raw;
+        expect(captured()).toBe(serialized);
+      });
+
+      it('falls back to 10,240 above the upper bound', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '2000000';
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(20_000) } }));
+        const serializedLong = JSON.stringify({ data: 'x'.repeat(20_000) });
+        expect(readBufferEvents()[0]!.outputContent).toBe(
+          serializedLong.slice(0, 10_240) + '...[truncated]',
+        );
+      });
+
+      it('accepts the upper bound itself', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '1048576';
+        const serializedAtBound = JSON.stringify({ data: 'x'.repeat(1_048_576 - 11) });
+        expect(serializedAtBound).toHaveLength(1_048_576);
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(1_048_576 - 11) } }));
+        expect(readBufferEvents()[0]!.outputContent).toBe(serializedAtBound);
+      });
+
+      it('cuts at the configured length when the value is within bounds', () => {
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+        expect(captured()).toBe(serialized.slice(0, 256) + '...[truncated]');
+      });
     });
   });
 
