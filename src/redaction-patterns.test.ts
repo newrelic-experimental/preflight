@@ -144,6 +144,18 @@ describe('secret arguments', () => {
     it.each(cases(REDACTS))('stores %s', (_title, row) => {
       expect(store(row[0]).command).toBe(stored(row));
     });
+
+    const SPLIT = `echo ${'x'.repeat(1_048_554)} `;
+    const WHOLE = `echo ${'x'.repeat(1_048_571)}`;
+
+    it.each([
+      ['redactSensitive()', (command: string) => redactSensitive(command)],
+      ['processHook()', (command: string) => store(command).command],
+    ])('%s drops only a word that the 1 MB cut splits', (_path, save) => {
+      expect(save(`${SPLIT}ghp_${'B'.repeat(36)} tail`)).toBe(SPLIT);
+      expect(save(`${WHOLE} rm -rf /tmp/x`)).toBe(WHOLE);
+      expect(save('B'.repeat(1_048_577))).toBe('');
+    });
   });
 });
 
