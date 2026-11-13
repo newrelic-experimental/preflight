@@ -239,11 +239,6 @@ export default {
     'secret/preflight',
   ],
 
-  // Cron expression for digest delivery schedule (server's local timezone).
-  // Env: NEW_RELIC_AI_DIGEST_SCHEDULE
-  // Default: "0 9 * * 1" (Monday 9am)
-  digestSchedule: '0 9 * * 1',
-
   // ── Local dashboard mode ───────────────────────────────────────────────────
   //
   // `mode` controls what destinations receive your AI-coding telemetry:

@@ -3202,8 +3202,6 @@ export function createApiHandler(
       // Where sends actually read the URL from. The value above is only the
       // file's; env or a command outranks it, and its value is never returned.
       digestWebhookUrlSource: overrideSource ?? (fileWebhookUrl ? 'file' : 'unset'),
-      digestSchedule:
-        typeof disk.digestSchedule === 'string' ? disk.digestSchedule : c.digestSchedule,
       alerts: {
         personal: {
           dailyCostUsd:
@@ -3340,14 +3338,6 @@ export function createApiHandler(
         } else {
           existing.digestWebhookUrl = body.digestWebhookUrl;
         }
-      }
-    }
-    if ('digestSchedule' in body) {
-      if (typeof body.digestSchedule !== 'string') {
-        errors.push('digestSchedule must be a string');
-      } else {
-        existing.digestSchedule = body.digestSchedule;
-        digestUrlOnly = false;
       }
     }
     if ('alerts' in body) {

@@ -6624,17 +6624,14 @@ describe('api-handler PATCH /api/settings', () => {
     expect(JSON.parse(body())).toEqual({ ok: true, restartRequired: true });
   });
 
-  it('rejects a non-string digestSchedule', async () => {
+  it('ignores a digestSchedule PATCH like any other unknown key', async () => {
     const configFilePath = makeConfigFilePath({});
     const handler = createApiHandler({ configFilePath });
-    const req = makePatchRequest({ digestSchedule: 42 });
+    const req = makePatchRequest({ digestSchedule: '0 8 * * 2' });
     const { res, status, body } = fakeRes();
     await handler(req, res);
-    expect(status()).toBe(400);
-    expect(JSON.parse(body())).toEqual({
-      error: 'validation_failed',
-      errors: ['digestSchedule must be a string'],
-    });
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({ ok: true, restartRequired: false });
   });
 
   it('validates alerts.personal.* fields, merging into any existing personal thresholds', async () => {
@@ -6788,7 +6785,6 @@ describe('api-handler GET /api/settings', () => {
       weeklyBudgetUsd: 200,
       retainSessionsDays: 30,
       digestWebhookUrl: 'https://hooks.slack.com/services/T/B/STARTUP',
-      digestSchedule: '0 9 * * 1',
       personalAlertThresholds: {
         dailyCostUsd: 2,
         sessionCostUsd: 0.5,
@@ -6948,7 +6944,7 @@ describe('api-handler GET /api/settings', () => {
     expect(result.retainSessionsDays).toBe(30);
     expect(result.digestWebhookUrl).toBeNull();
     expect(result.digestWebhookUrlSource).toBe('unset');
-    expect(result.digestSchedule).toBe('0 9 * * 1');
+    expect(result).not.toHaveProperty('digestSchedule');
     expect(result.alerts.personal).toEqual({
       dailyCostUsd: 2,
       sessionCostUsd: 0.5,
@@ -6967,7 +6963,6 @@ describe('api-handler GET /api/settings', () => {
       weeklyBudgetUsd: 9999,
       retainSessionsDays: 7,
       digestWebhookUrl: 'https://hooks.slack.com/services/T/B/DISK',
-      digestSchedule: '0 8 * * 2',
       alerts: {
         personal: {
           dailyCostUsd: 1,
@@ -6991,7 +6986,7 @@ describe('api-handler GET /api/settings', () => {
     expect(result.weeklyBudgetUsd).toBe(9999);
     expect(result.retainSessionsDays).toBe(7);
     expect(result.digestWebhookUrl).toBe('https://hooks.slack.com/services/T/B/DISK');
-    expect(result.digestSchedule).toBe('0 8 * * 2');
+    expect(result).not.toHaveProperty('digestSchedule');
     expect(result.alerts.personal).toEqual({
       dailyCostUsd: 1,
       sessionCostUsd: 0.1,
