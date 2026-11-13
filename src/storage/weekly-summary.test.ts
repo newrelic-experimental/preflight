@@ -349,6 +349,20 @@ describe('WeeklySummaryGenerator', () => {
     expect(leftovers).toEqual([]);
   });
 
+  it('generate() with persist: false returns the summary and writes no weekly_summaries file', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+    const { start } = getWeekDateRange('2026-W16');
+    store.saveSession(makeSummary({ sessionId: 'p01-sess', startTime: start.getTime() + 1000 }));
+    const summariesDir = join(tmpDir, 'weekly_summaries');
+    rmSync(summariesDir, { recursive: true, force: true });
+
+    const summary = generator.generate('2026-W16', { persist: false });
+
+    expect(summary.sessionCount).toBe(1);
+    expect(existsSync(summariesDir)).toBe(false);
+  });
+
   it('generate() called twice for the same week fully replaces the file (no corruption)', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
