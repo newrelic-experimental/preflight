@@ -899,8 +899,8 @@ describe('NrIngestManager', () => {
     });
   });
 
-  describe('ingestToolCall() securityAlertToNrEvent wiring', () => {
-    it('emits a SecurityAlert event when the audit record carries a security alert', async () => {
+  describe('ingestToolCall() security alerts', () => {
+    it('reports a triggered alert as AiAuditEvent attributes without a separate event', async () => {
       const manager = new NrIngestManager(makeIngestOptions());
 
       manager.ingestToolCall(makeRecord({ toolName: 'Bash', command: 'rm -rf /' }));
@@ -911,15 +911,16 @@ describe('NrIngestManager', () => {
       const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
         Record<string, unknown>
       >;
-      // AiToolCall + AiAuditEvent + SecurityAlert
-      expect(sentEvents).toHaveLength(3);
-      const alertEvent = sentEvents.find((e) => e.eventType === 'SecurityAlert')!;
-      expect(alertEvent).toBeDefined();
-      expect(alertEvent.severity).toBe('critical');
-      expect(alertEvent.alert_type).toBe('destructive_command');
+      expect(sentEvents.map((e) => e.eventType).sort()).toEqual(['AiAuditEvent', 'AiToolCall']);
+      const auditEvent = sentEvents.find((e) => e.eventType === 'AiAuditEvent')!;
+      expect(auditEvent).toMatchObject({
+        'audit.security_alert': true,
+        'audit.severity': 'critical',
+        'audit.alert_type': 'destructive_command',
+      });
     });
 
-    it('does not emit a SecurityAlert event for a benign tool call', async () => {
+    it('marks a benign tool call as not alerting, with no separate event', async () => {
       const manager = new NrIngestManager(makeIngestOptions());
 
       manager.ingestToolCall(makeRecord({ toolName: 'Read', filePath: '/src/index.ts' }));
@@ -932,7 +933,8 @@ describe('NrIngestManager', () => {
       >;
       // AiToolCall + AiAuditEvent only
       expect(sentEvents).toHaveLength(2);
-      expect(sentEvents.find((e) => e.eventType === 'SecurityAlert')).toBeUndefined();
+      const auditEvent = sentEvents.find((e) => e.eventType === 'AiAuditEvent')!;
+      expect(auditEvent['audit.security_alert']).toBe(false);
     });
   });
 

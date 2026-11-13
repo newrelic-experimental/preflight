@@ -17,7 +17,7 @@ describe('TierRouter.resolveEventType()', () => {
 
     expect(router.resolveEventType('AiToolCall')).toEqual(['default']);
     expect(router.resolveEventType('AiCodingTask')).toEqual(['default']);
-    expect(router.resolveEventType('SecurityAlert')).toEqual(['default']);
+    expect(router.resolveEventType('AiAuditEvent')).toEqual(['default']);
   });
 
   it('routes an event type to only the tiers that name it', () => {

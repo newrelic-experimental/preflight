@@ -108,9 +108,9 @@ FACET team_id SINCE 7 DAYS AGO
 **NRQL Query:**
 
 ```nrql
-FROM SecurityAlert SELECT count(*) AS 'Security Alerts (7 days)'
-WHERE team_id IS NOT NULL AND severity IN ('critical', 'high')
-FACET team_id, alert_type SINCE 7 DAYS AGO
+FROM AiAuditEvent SELECT count(*) AS 'Security Alerts (7 days)'
+WHERE team_id IS NOT NULL AND audit.security_alert = true AND audit.severity IN ('critical', 'high')
+FACET team_id, audit.alert_type SINCE 7 DAYS AGO
 ```
 
 **Progress Levels:**
@@ -119,7 +119,7 @@ FACET team_id, alert_type SINCE 7 DAYS AGO
 - **Yellow** (watch): 1–3 `sensitive_file` alerts
 - **Red** (action required): ≥ 1 `destructive_command` alert
 
-**Rationale:** Alerts when the AI tool suite detects attempts to delete code recursively, force-push, or access secrets. Zero is ideal; any destructive command is red. The `severity` filter leaves out the `medium` tier (`external_network` for every `curl` or `wget`, `file_deletion` for every non-recursive `rm`), which is routine in most sessions and would keep every team red. Query those with `WHERE severity = 'medium' FACET alert_type` when you want the full picture. Use this scorecard to audit AI tool privileges and update your security rules if the AI is flagged for legitimate high-risk operations.
+**Rationale:** Alerts when the AI tool suite detects attempts to delete code recursively, force-push, or access secrets. Zero is ideal; any destructive command is red. The `severity` filter leaves out the `medium` tier (`external_network` for every `curl` or `wget`, `file_deletion` for every non-recursive `rm`), which is routine in most sessions and would keep every team red. Query those with `WHERE audit.severity = 'medium' FACET audit.alert_type` when you want the full picture. Use this scorecard to audit AI tool privileges and update your security rules if the AI is flagged for legitimate high-risk operations.
 
 ---
 
@@ -133,6 +133,6 @@ FACET team_id, alert_type SINCE 7 DAYS AGO
 
 ## Additional Resources
 
-- **Event attributes:** See `docs/METRICS_TABLE.md` for the complete list of fields available on each event type (`AiCodingTask`, `AiAntiPattern`, `SecurityAlert`, etc.).
+- **Event attributes:** See `docs/METRICS_TABLE.md` for the complete list of fields available on each event type (`AiCodingTask`, `AiAntiPattern`, `AiAuditEvent`, etc.).
 - **Query builder:** Open New Relic's **Query Builder** and paste any NRQL query above to test it with your live data before creating the scorecard rule.
 - **NRQL docs:** [New Relic NRQL reference](https://docs.newrelic.com/docs/nrql/nrql-reference/nrql-syntax-clauses-functions/) for full query syntax and functions.
