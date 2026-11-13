@@ -1,4 +1,4 @@
-import type { TokenUsage } from '../shared/tokens.js';
+import type { TokenUsage } from '../core/tokens.js';
 
 export function makeUsage(overrides?: Partial<TokenUsage>): TokenUsage {
   return {

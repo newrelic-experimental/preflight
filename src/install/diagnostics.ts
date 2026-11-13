@@ -2,7 +2,7 @@ import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync
 import { platform } from 'node:os';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { checkNodeVersion, MIN_SUPPORTED_NODE_MAJOR } from './node-version-check.js';
 import { isNewerVersion, fetchLatestNpmVersion } from './npm-version-check.js';
 import { VERSION } from '../version.js';

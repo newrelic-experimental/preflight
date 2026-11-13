@@ -1,4 +1,4 @@
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { AmazonQAdapter } from './amazon-q-adapter.js';
 import { AntigravityAdapter } from './antigravity-adapter.js';
 import { ClaudeCodeAdapter } from './claude-code-adapter.js';

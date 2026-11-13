@@ -20,8 +20,6 @@ const ROOT = process.cwd();
 const TEST_FILE_RE = /\.test\.tsx?$/;
 
 const ALLOWLIST: Readonly<Record<string, string>> = {
-  'src/shared/index.test.ts':
-    'verifies VERSION against the upstream package.json, which does not exist in this layout (jest.config.ts testPathIgnorePatterns)',
   'src/multi-instance.integration.test.ts':
     "spawns real child processes against a built binary; run by `npm run test:integration` and CI's `processes` job",
 };

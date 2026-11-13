@@ -1,4 +1,4 @@
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import type { McpServerConfig } from '../config.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
 import type { AuditRecord } from '../security/audit-trail.js';

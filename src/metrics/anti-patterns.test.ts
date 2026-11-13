@@ -947,7 +947,7 @@ describe('emitMetrics()', () => {
       record(name: string, value: number, attrs: Record<string, string | number> = {}) {
         recorded.push({ name, value, attrs });
       },
-    } as unknown as import('../shared/index.js').MetricAggregator;
+    } as unknown as import('../core/index.js').MetricAggregator;
 
     detector.emitMetrics(aggregator, result.patterns);
 

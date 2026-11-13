@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 
 import type { AlertEvent } from '../dashboard/live-event-bus.js';
 

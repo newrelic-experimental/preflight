@@ -32,5 +32,5 @@ Preconditions:
 
 - `turn` refuses non-UUID ids, because the transcript watchers skip them. A hand-written transcript under a non-UUID filename is silently ignored.
 - Without a `turn`, `costByModel` still shows a small `claude-sonnet-4-6` entry. That is the tool-I/O estimate, not a transcript read. Do not mistake it for the feature working.
-- The expected dollar figure depends on `pricing-overlay/pricing.json` and `src/shared` pricing. If a pricing change is under test, recompute the expectation from that table instead of reusing `0.0096`.
+- The expected dollar figure depends on `pricing-overlay/pricing.json` and `src/core` pricing. If a pricing change is under test, recompute the expectation from that table instead of reusing `0.0096`.
 - Each `turn` mints a new message id, so repeated turns add up. Rerunning the same line does not dedupe.

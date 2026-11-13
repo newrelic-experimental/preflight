@@ -224,7 +224,7 @@ Self-report token usage for cost tracking. Called by Claude Code to report its o
 **How it works:**
 
 1. Constructs a `TokenUsage` object from the reported counts
-2. Calls `CostTracker.recordTokenUsage(usage, model)` which looks up per-token prices from the pricing table (`src/shared/pricing-data.ts`)
+2. Calls `CostTracker.recordTokenUsage(usage, model)` which looks up per-token prices from the pricing table (`src/core/pricing-data.ts`)
 3. Cost breakdown: `inputCost = inputTokens * inputPricePerToken`, similarly for output, thinking, cache read, and cache creation tokens
 4. Accumulates into session total and per-model totals
 5. Returns both the cost for this specific report and the running session total

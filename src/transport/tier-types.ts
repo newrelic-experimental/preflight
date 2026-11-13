@@ -5,7 +5,7 @@
 
 import { resolve } from 'node:path';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 
 const logger = createLogger('tier-types');
 

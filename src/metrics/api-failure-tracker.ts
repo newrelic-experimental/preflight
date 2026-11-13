@@ -1,5 +1,5 @@
-import { createLogger } from '../shared/index.js';
-import type { MetricAggregator } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
+import type { MetricAggregator } from '../core/index.js';
 import { computePercentile } from './percentile.js';
 
 const logger = createLogger('api-failure-tracker');

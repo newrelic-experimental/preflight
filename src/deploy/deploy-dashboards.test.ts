@@ -7,7 +7,7 @@ import {
   injectDeveloperDefault,
   escapeLuceneValue,
 } from './deploy-dashboards.js';
-import { stagingHost } from '../shared/transport/http-client.js';
+import { stagingHost } from '../core/transport/http-client.js';
 
 describe('escapeLuceneValue', () => {
   it('escapes backslashes before single quotes', () => {

@@ -16,7 +16,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { normalizeAgentType } from '../lib/agent-id.js';
 import { createDefaultRegistry, GENERIC_MCP_PLATFORM_NAME } from '../platforms/index.js';
 import type { PlatformAdapter } from '../platforms/types.js';
@@ -725,7 +725,7 @@ export class HookEventProcessor {
     if (this.pending.size >= this.maxPendingEvents) {
       // Prefer evicting events that are already past the orphan timeout
       const now = Date.now();
-      // Named to avoid shared/redact.ts's SECRET_KEY_RE (which matches any key
+      // Named to avoid core/redact.ts's SECRET_KEY_RE (which matches any key
       // name containing "key") — that would silently blank this diagnostic value.
       let evictedPairingId: string | undefined;
       for (const [key, entry] of this.pending) {

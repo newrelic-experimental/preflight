@@ -59,7 +59,7 @@ interface MutableModelStats {
   totalThinkingTokens: number;
 }
 
-import type { TokenUsage } from '../shared/tokens.js';
+import type { TokenUsage } from '../core/tokens.js';
 import type { Resettable } from './tracker-contracts.js';
 
 function zeroModelStats(): MutableModelStats {

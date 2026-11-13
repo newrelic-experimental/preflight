@@ -9,7 +9,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { ClaudeMdTracker, matchesInstructionFile } from './claudemd-tracker.js';
 import type { ToolCallRecord } from '../storage/types.js';
 

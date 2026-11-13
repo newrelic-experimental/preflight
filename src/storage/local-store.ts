@@ -10,7 +10,7 @@ import {
   statSync,
 } from 'node:fs';
 import { basename, dirname, resolve, sep } from 'node:path';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import {
   DRAINS_DIR,
   DrainHold,

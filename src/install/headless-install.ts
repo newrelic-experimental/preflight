@@ -1,6 +1,6 @@
 import { dirname } from 'node:path';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import type { AuditRecord, AuditTrailManager } from '../security/audit-trail.js';
 import {
   areHooksInstalled,

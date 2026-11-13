@@ -5,7 +5,7 @@ import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import type { TokenRecordContext, CostTrackerSeed } from './cost-tracker.js';
 import { localDateKey, localStartOfDay } from '../lib/date.js';
 import { SessionTracker } from './session-tracker.js';
-import { MetricAggregator } from '../shared/index.js';
+import { MetricAggregator } from '../core/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;

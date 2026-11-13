@@ -7,7 +7,7 @@
  * a `model` dimension.
  *
  * Two distinct naming shapes exist in this codebase's own pricing table
- * (`src/shared/pricing-data.ts`, vendored — read there, don't edit here):
+ * (`src/core/pricing-data.ts`):
  *   - Direct-API model IDs, e.g. `claude-sonnet-5`, `gpt-5.4`, `gemini-2.5-pro`.
  *   - AWS Bedrock IDs, always `<vendor>.<model>` or
  *     `<region>.<vendor>.<model>` (e.g. `anthropic.claude-sonnet-5`,
@@ -17,7 +17,7 @@
  * classifies as `'bedrock'` regardless of which vendor prefix it carries —
  * `'anthropic'`/`'mistral'` are reserved for that vendor's own direct API.
  */
-import type { AiProvider } from '../shared/index.js';
+import type { AiProvider } from '../core/index.js';
 
 const BEDROCK_REGION_PREFIXES = new Set(['us', 'eu', 'au', 'jp', 'apac', 'global']);
 const BEDROCK_VENDOR_PREFIXES = new Set(['anthropic', 'amazon', 'meta', 'mistral']);

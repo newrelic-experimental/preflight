@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createGunzip, createInflate, createBrotliDecompress } from 'node:zlib';
 import { timingSafeEqual } from 'node:crypto';
 import { Agent } from 'undici';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { validateSsrfUrl, createSsrfSafeLookup } from '../security/ssrf.js';
 import { decodeOtlpRequest, encodeOtlpRequest } from './otlp-protobuf.js';
 
@@ -376,7 +376,7 @@ export class OtlpReceiver {
   }
 
   private enrichProtobufPayload(body: Buffer, path: string): Buffer {
-    // Re-encoding through the vendored descriptor drops fields the descriptor
+    // Re-encoding through the bundled descriptor drops fields the descriptor
     // does not know about. A sender running a newer OTLP schema than
     // src/proxy/otlp-descriptor.ts loses those fields here (the JSON path has
     // no such limit). Regenerating the descriptor is documented in that file.

@@ -44,7 +44,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import { BilledTurnLedger } from './billed-turn-ledger.js';
 import { ThrottledWarning } from './throttled-warning.js';
@@ -463,7 +463,7 @@ export class CopilotUsageWatcher {
             // surface cache-CREATION (cache-write) tokens separately, so any turn
             // with a fresh cache write has those tokens folded into `inputTokens`
             // above and billed at the base input rate instead of the premium
-            // `cacheCreationPerMTok` rate (src/shared/pricing.ts). This causes a
+            // `cacheCreationPerMTok` rate (src/core/pricing.ts). This causes a
             // small, consistent UNDER-billing on cache-write turns. We report 0
             // rather than guess a split the source doesn't provide; revisit if VS
             // Code adds a cache-creation field to the schema.

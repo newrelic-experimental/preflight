@@ -16,7 +16,7 @@
  * payloads do not distinguish inner-subagent calls from parent calls).
  */
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { Resettable } from './tracker-contracts.js';
 

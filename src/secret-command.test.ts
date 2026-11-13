@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
-import { __resetLogLevelCache } from './shared/logger.js';
+import { __resetLogLevelCache } from './core/logger.js';
 import { CloudSecretCommandError, digestWebhookUrlOverride, loadMcpConfig } from './config.js';
 import { resolveSecretCommand, SecretCommandError } from './secret-command.js';
 import { detectCloudForwardingGap } from './transport/unforwarded-session-monitor.js';

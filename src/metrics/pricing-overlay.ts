@@ -15,15 +15,15 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { extname, join, resolve } from 'node:path';
 
-import { createLogger, DEFAULT_PRICING_TABLE } from '../shared/index.js';
+import { createLogger, DEFAULT_PRICING_TABLE } from '../core/index.js';
 import {
   calculateCost,
   initPricing,
   loadCustomPricing,
   resolveModelPricing,
-} from '../shared/pricing.js';
-import type { CostBreakdown, ModelPricing, PricingTable } from '../shared/pricing.js';
-import type { TokenUsage } from '../shared/index.js';
+} from '../core/pricing.js';
+import type { CostBreakdown, ModelPricing, PricingTable } from '../core/pricing.js';
+import type { TokenUsage } from '../core/index.js';
 import { resolveDataDir } from '../deploy/data-paths.js';
 import { estimateFromFamily, stripTrailingTag, type PricingResolution } from './model-pricing.js';
 
@@ -31,7 +31,7 @@ const logger = createLogger('pricing-overlay');
 
 const BEDROCK_SYSTEM_ARN_RE =
   /^arn:aws[a-z-]*:bedrock:[a-z0-9-]+:\d*:(?:inference-profile|foundation-model)\/(.+)$/;
-// Mirrors the private limit in src/shared/pricing.ts so an oversized file falls
+// Mirrors the private limit in src/core/pricing.ts so an oversized file falls
 // through to the shared loader, which logs the rejection. Keep the two equal.
 const MAX_PRICING_FILE_BYTES = 1_000_000;
 // Deliberately strips any one leading `<segment>/`, not a fixed provider list, so
@@ -40,7 +40,7 @@ const PROVIDER_PREFIX_RE = /^[a-z0-9_-]+\//;
 
 /**
  * Reduces the model strings gateways and Bedrock emit to the bare id the
- * vendored table knows. Application inference profile ARNs and gateway
+ * built-in table knows. Application inference profile ARNs and gateway
  * aliases are opaque and pass through unchanged; `pricingAliases` maps them.
  */
 export function normalizeModelId(raw: string): string {
@@ -76,12 +76,12 @@ function canonicalModelId(raw: string): string {
 const MAX_MEMOIZED_MODELS = 512;
 const pricingMemo = new Map<string, PricingResolution>();
 
-// Ids added by the gap-fill overlay or a custom pricing file. The vendored
+// Ids added by the gap-fill overlay or a custom pricing file. The pricing
 // singleton keeps its merged table private, so they are tracked here to let
 // them stand in as family siblings next to the bundled table.
 let extraPricingIds: readonly string[] = [];
 
-// Refreshed prices stay out of the vendored singleton: its prefix matching would
+// Refreshed prices stay out of the built-in singleton: its prefix matching would
 // let a refreshed key retarget ids the bundled table already resolves. They are
 // consulted only on an exact id match, after the bundled table has missed.
 let refreshedTable: PricingTable | null = null;
@@ -125,7 +125,7 @@ function computeResolution(model: string): PricingResolution {
 
 /**
  * Every Preflight-side pricing lookup goes through here, never `resolveModelPricing` directly.
- * Memoized per model id so the vendored resolver's "Unknown model" warning fires once per
+ * Memoized per model id so the built-in resolver's "Unknown model" warning fires once per
  * process rather than once per token event. A model the table misses is priced from the newest
  * release of its family when one is unambiguous, and flagged `estimated`.
  */
@@ -180,14 +180,13 @@ export function resolvePricingOverlayPath(): string | null {
 
 /**
  * Loads an overlay file and applies only the entries that don't already
- * resolve against the vendored/default pricing table — enforcing the
+ * resolve against the built-in pricing table — enforcing the
  * gap-fill-only contract at the code level instead of by convention alone.
  * Without this, `initPricing()`'s `Object.assign`-based merge would happily
- * let an overlay entry silently override a vendored price. This already
- * happened once: an upstream shared-code sync started vendoring 4 models
- * this overlay also covered, with different (stale) tier semantics — caught
- * only by a human noticing during a later merge, not by any test or runtime
- * check.
+ * let an overlay entry silently override a built-in price. This already
+ * happened once: the built-in table gained 4 models this overlay also
+ * covered, with different (stale) tier semantics — caught only by a human
+ * noticing during a later merge, not by any test or runtime check.
  *
  * Exported for direct testing of the collision guard without needing to
  * fake `resolvePricingOverlayPath()`'s resolution logic.
@@ -200,7 +199,7 @@ export function applyGapFilledOverlay(overlayPath: string): void {
   for (const [modelId, pricing] of Object.entries(overlay)) {
     if (resolveModelPricing(modelId)) {
       logger.warn(
-        'pricing overlay entry already resolves against the vendored pricing table — dropped to avoid overriding it',
+        'pricing overlay entry already resolves against the built-in pricing table — dropped to avoid overriding it',
         { modelId },
       );
       continue;

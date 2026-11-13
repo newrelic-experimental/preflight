@@ -1,4 +1,4 @@
-import type { TokenUsage } from '../shared/index.js';
+import type { TokenUsage } from '../core/index.js';
 import type { SubagentTurnEvent } from '../hooks/event-processor.js';
 import type { TokenEvent } from '../storage/types.js';
 

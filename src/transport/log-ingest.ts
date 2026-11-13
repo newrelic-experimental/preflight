@@ -1,11 +1,11 @@
 /**
  * Log Ingest — converts AuditRecords into NR Log entries and ships them
- * via the shared Logs API transport on a harvest interval.
+ * via the core Logs API transport on a harvest interval.
  */
 
-import { createLogger } from '../shared/index.js';
-import type { NrLogEntry, TransportOptions, TransportResult } from '../shared/index.js';
-import { sendLogs } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
+import type { NrLogEntry, TransportOptions, TransportResult } from '../core/index.js';
+import { sendLogs } from '../core/index.js';
 import { redactSensitive } from '../config.js';
 import type { AuditRecord } from '../security/audit-trail.js';
 import { attachAuditAttribution } from '../security/audit-trail.js';
@@ -28,7 +28,7 @@ export interface LogIngestOptions {
   developer: string;
   appName: string;
   logHarvestIntervalMs?: number;
-  /** Override for testing; defaults to the shared sendLogs transport. */
+  /** Override for testing; defaults to the core sendLogs transport. */
   sendLogsFn?: SendLogsFn;
 }
 

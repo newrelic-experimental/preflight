@@ -1,6 +1,6 @@
 import { type Span, SpanStatusCode, context, trace } from '@opentelemetry/api';
 import { getMcpTracer } from './mcp-tracer.js';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 
 const logger = createLogger('session-span');
 

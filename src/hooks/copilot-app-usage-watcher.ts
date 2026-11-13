@@ -45,7 +45,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { resolvePricing } from '../metrics/pricing-overlay.js';
 import { getCopilotAppDir } from '../platforms/copilot-app-adapter.js';
 import { appendToHookBuffer } from '../storage/hook-buffer.js';

@@ -632,7 +632,7 @@ describe('emitMetrics()', () => {
       record(name: string, value: number) {
         recorded.push({ name, value });
       },
-    } as unknown as import('../shared/index.js').MetricAggregator;
+    } as unknown as import('../core/index.js').MetricAggregator;
 
     detector.emitMetrics(aggregator);
 

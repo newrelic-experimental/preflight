@@ -15,7 +15,7 @@ Preflight provides **observability for AI coding assistants**. When developers u
 
 **MCP Server (this repo)** — Hooks into Claude Code via the Model Context Protocol. Captures every tool call, computes metrics like efficiency scores and anti-pattern detection, and exposes MCP tools that Claude Code can query directly.
 
-The MCP server uses a common transport layer (`src/shared/`) for event buffering, metric aggregation, and HTTP delivery to New Relic's APIs.
+The MCP server uses a common transport layer (`src/core/`) for event buffering, metric aggregation, and HTTP delivery to New Relic's APIs.
 
 ---
 
@@ -83,7 +83,7 @@ To run a single test file:
 
 ```bash
 npx jest -- src/metrics/cost-tracker.test.ts
-npx jest -- src/shared/harvest/harvest-scheduler.test.ts
+npx jest -- src/core/harvest/harvest-scheduler.test.ts
 ```
 
 To build directly without the chmod step:
@@ -103,12 +103,6 @@ cd ../preflight-my-feature
 npm ci             # Installs deps and regenerates .husky/_ via the prepare script
 ```
 
-### Working with shared code
-
-Do not edit `src/shared/` directly — it is a vendored snapshot. If you find a bug there, please open an issue at https://github.com/newrelic-experimental/preflight/issues.
-
----
-
 ## Project Structure
 
 This is a flat single-package repo. Source lives directly under `src/`. There is no `packages/` directory and no npm workspaces.
@@ -116,7 +110,7 @@ This is a flat single-package repo. Source lives directly under `src/`. There is
 ```
 preflight/
   src/
-    shared/        # Transport, events, pricing, harvest scheduler (vendored snapshot)
+    core/          # Transport, events, pricing, harvest scheduler, logger
     hooks/         # Hook collector + pre/post event pairing
     metrics/       # metric analyzer classes (session, cost, anti-patterns, efficiency, …)
     tools/         # MCP tool handlers
@@ -137,9 +131,9 @@ preflight/
 
 For a complete annotated tree, see [CLAUDE.md](./CLAUDE.md).
 
-### Shared transport layer (`src/shared/`)
+### Core layer (`src/core/`)
 
-The foundation layer is vendored in `src/shared/`. Provides:
+The foundation layer lives in `src/core/`. Provides:
 
 - **Event creation** — `createAiRequest()`, `createAiResponse()`, serialization to NR format
 - **Transport** — HTTP clients for New Relic's Events, Metric, and Logs APIs, plus an OTLP/HTTP exporter
@@ -218,7 +212,7 @@ The server communicates with Claude Code over stdio using JSON-RPC. It registers
 1. Node.js builtins (`node:fs`, `node:path`)
 2. External packages (`@modelcontextprotocol/sdk`, `zod`)
 3. _(blank line)_
-4. Shared imports (`../shared/index.js`)
+4. Core imports (`../core/index.js`)
 5. Local imports (`./types.js`)
 
 ### Logging
@@ -226,7 +220,7 @@ The server communicates with Claude Code over stdio using JSON-RPC. It registers
 Every module creates a scoped logger:
 
 ```typescript
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 const logger = createLogger('my-module');
 ```
 
@@ -255,10 +249,8 @@ Tests live next to the code they test (`foo.test.ts` alongside `foo.ts`).
 | Web     | `npm run test:web` | `src/web/**/*.test.{ts,tsx}`                                   | Vitest, `jsdom` env       |
 | Browser | `npm run test:e2e` | `e2e/*.spec.ts`                                                | Playwright, real Chromium |
 
-Two files sit outside all three: `jest.config.ts` also ignores `src/shared/index.test.ts`, which
-asserts an invariant that does not hold for vendored source, and
-`src/multi-instance.integration.test.ts`, which spawns real processes. CI runs it in the `processes` job, and you can run it via
-`npm run test:integration`. Both carry a comment saying why.
+One file sits outside all three: `src/multi-instance.integration.test.ts`, which spawns real processes. CI runs it in the `processes` job, and you can run it via
+`npm run test:integration`. It carries a comment saying why.
 
 `npm run test:e2e` installs its browser if needed, rebuilds, then starts two dashboards itself —
 one over an empty store, one over a seeded one — each against its own temp directory, which
@@ -730,4 +722,4 @@ Then restart Claude Code.
 - **[TEST_PATTERNS.md](./docs/TEST_PATTERNS.md)** — Testing conventions, factory patterns, mock strategies.
 - **[COMMANDS_TABLE.md](./docs/COMMANDS_TABLE.md)** — All MCP tools with parameters and return schemas.
 - **[METRICS_TABLE.md](./docs/METRICS_TABLE.md)** — Every NR event and metric, field definitions, delivery mechanism.
-- **The code itself** — Best examples of our patterns: `src/metrics/` (tracker pattern), `src/shared/harvest/` (scheduler/buffer pattern).
+- **The code itself** — Best examples of our patterns: `src/metrics/` (tracker pattern), `src/core/harvest/` (scheduler/buffer pattern).

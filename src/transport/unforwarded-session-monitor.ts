@@ -14,7 +14,7 @@
  * hint is logged once, by the caller's startup warning, not per session.
  */
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { CloudSecretCommandError, MissingCloudCredentialError, type Mode } from '../config.js';
 
 const logger = createLogger('unforwarded-session-monitor');

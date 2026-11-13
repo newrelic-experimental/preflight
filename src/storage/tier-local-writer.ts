@@ -15,8 +15,8 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { createLogger } from '../shared/index.js';
-import type { NrEventData } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
+import type { NrEventData } from '../core/index.js';
 
 const logger = createLogger('tier-local-writer');
 

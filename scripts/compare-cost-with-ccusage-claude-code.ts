@@ -41,8 +41,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 import { SessionStore } from '../src/storage/session-store.js';
-import { calculateCost } from '../src/shared/pricing.js';
-import type { TokenUsage } from '../src/shared/tokens.js';
+import { calculateCost } from '../src/core/pricing.js';
+import type { TokenUsage } from '../src/core/tokens.js';
 
 interface CcusageEntry {
   readonly model: string;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { calculateCost, resolveModelPricing } from '../shared/pricing.js';
+import { calculateCost, resolveModelPricing } from '../core/pricing.js';
 
 // Regression guard for sessions that reported $0 cost and a 200K context window
 // because the pricing table had no entry for these models (#797, #803).
