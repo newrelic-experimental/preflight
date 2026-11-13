@@ -84,46 +84,49 @@ Apply the same pattern to any user-supplied string that becomes a NR event field
 
 ## Secret Redaction
 
-### `REDACTION_PATTERNS` — `src/redaction-patterns.ts`
+### `redactSecrets()` — `src/redaction-patterns.ts`
 
-One list of compiled regular expressions, imported by `src/config.ts` (as `DEFAULT_REDACTION_PATTERNS`) and by `collector-script.ts`. It covers:
+One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `src/config.ts` and by `redact()` in `collector-script.ts`. It runs `REDACTION_PATTERNS`, token patterns that each redact their whole match, and four argument rules: `NAME=value`, secret flags, mysql `-p` and API-key headers. An argument rule's regex only finds where the secret starts. A scanner reads the value as one bash word, so quotes, escapes and line continuations stay in it, and an unquoted space or one of `; | & ( ) < >` and the backtick ends it. The scanner starts in the quote the text is in at the match, so a value inside a quoted string never reads past its closing quote. A `#` comment reads like a quote that the line break closes. The pass covers:
 
-| Pattern                                                                                                                                                                                  | What it catches                           |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| `API_KEY=`, `SECRET=`, `TOKEN=`, `PASSWORD=`, `PASSPHRASE=`, `PRIVATE_KEY=`, …                                                                                                           | Key-value secret assignments              |
-| `sk-`, `ghp_`, `gho_`, `ghs_`, `github_pat_`, `xoxb-`, `xoxp-`, `Bearer …`                                                                                                               | Common API token prefixes                 |
-| `-----BEGIN … -----END-----`                                                                                                                                                             | PEM-encoded private keys and certificates |
-| `AKIA[0-9A-Z]{16}`                                                                                                                                                                       | AWS access key IDs                        |
-| `AIzaSy…`                                                                                                                                                                                | Google API keys                           |
-| `eyJ…` (three-part)                                                                                                                                                                      | JWT tokens                                |
-| `npm_…`                                                                                                                                                                                  | npm auth tokens                           |
-| `xox[a-z]-…`                                                                                                                                                                             | All Slack token types                     |
-| `glpat-…`                                                                                                                                                                                | GitLab personal access tokens             |
-| `sk_live_` / `sk_test_` / `rk_live_` / `rk_test_`                                                                                                                                        | Stripe secret and restricted keys         |
-| `pypi-…`                                                                                                                                                                                 | PyPI upload tokens                        |
-| `hf_…`                                                                                                                                                                                   | Hugging Face tokens                       |
-| `vercel_`, `heroku_`, `dd_`, `pk_`                                                                                                                                                       | Vercel, Heroku, Datadog and similar keys  |
-| `AC…` / `SK…` (32 hex characters)                                                                                                                                                        | Twilio account SIDs and API keys          |
-| `user:pass@` in `https://`, `mongodb://`, `postgres://`, `mysql://`, `redis://`                                                                                                          | Credentials embedded in URLs              |
-| `?sig=`, `?se=`, `?sp=`, `?sv=`, …                                                                                                                                                       | Azure SAS token parameters                |
-| `--token`, `--password`, `--passwd`, `--secret`, `--api-key`, `--access-key`, `--secret-key`, `--private-key` and compounds such as `--access-token`, `--client-secret`, `--db-password` | Secret values passed as flags             |
-| `-p<password>` after `mysql`, `mysqldump`, `mysqladmin` or `mariadb`                                                                                                                     | MySQL client passwords                    |
-| `-H` or `--header` with `X-Api-Key`, `Api-Key`, `X-Auth-Token` or `X-Access-Token`                                                                                                       | API-key headers                           |
-| `aws_secret_access_key` followed by 40 characters                                                                                                                                        | AWS secret access keys                    |
+| Pattern                                                                         | What it catches                           |
+| ------------------------------------------------------------------------------- | ----------------------------------------- |
+| `API_KEY=`, `SECRET=`, `TOKEN=`, `PASSWORD=`, `PASSPHRASE=`, `PRIVATE_KEY=`, …  | Key-value secret assignments              |
+| `sk-`, `ghp_`, `gho_`, `ghs_`, `github_pat_`, `xoxb-`, `xoxp-`, `Bearer …`      | Common API token prefixes                 |
+| `-----BEGIN … -----END-----`                                                    | PEM-encoded private keys and certificates |
+| `AKIA[0-9A-Z]{16}`                                                              | AWS access key IDs                        |
+| `AIzaSy…`                                                                       | Google API keys                           |
+| `eyJ…` (three-part)                                                             | JWT tokens                                |
+| `npm_…`                                                                         | npm auth tokens                           |
+| `xox[a-z]-…`                                                                    | All Slack token types                     |
+| `glpat-…`                                                                       | GitLab personal access tokens             |
+| `sk_live_` / `sk_test_` / `rk_live_` / `rk_test_`                               | Stripe secret and restricted keys         |
+| `pypi-…`                                                                        | PyPI upload tokens                        |
+| `hf_…`                                                                          | Hugging Face tokens                       |
+| `vercel_`, `heroku_`, `dd_`, `pk_`                                              | Vercel, Heroku, Datadog and similar keys  |
+| `AC…` / `SK…` (32 hex characters)                                               | Twilio account SIDs and API keys          |
+| `user:pass@` in `https://`, `mongodb://`, `postgres://`, `mysql://`, `redis://` | Credentials embedded in URLs              |
+| `?sig=`, `?se=`, `?sp=`, `?sv=`, …                                              | Azure SAS token parameters                |
+| `--token`, `--password`, `--secret`, `--api-key` and the flags listed below     | Secret values passed as flags             |
+| Each `-p<password>` after `mysql`, `mysqldump`, `mysqladmin` or `mariadb`       | MySQL client passwords                    |
+| `-H`/`--header` with `X-Api-Key`, `Api-Key`, `X-Auth-Token`, `X-Access-Token`   | API-key headers                           |
+| `aws_secret_access_key` followed by 40 characters, bare or quoted               | AWS secret access keys                    |
+
+The secret flags are `--token`, `--password`, `--passwd`, `--secret`, `--api-key`, `--access-key`, `--secret-key` and `--private-key`, in single-dash, underscore and `=` forms, and the same flags with more words joined in front by `-` or `_`, such as `--db-password`. Flags that name a file or stdin, such as `--token-file` and `--password-stdin`, are left alone.
 
 **Where applied:**
 
 - `collector-script.ts` — redacts tool input/output before writing to the hook buffer
 - `src/config.ts` — `redactSensitive()` for free-form text, `redactIdentifier()` for identifiers
 
-**Rule:** Any string that might contain secrets and is heading to a log or NR event must pass through these patterns first. Use `redact(text, config.redactionPatterns)` (agent) or `redactSensitive(text)` (MCP server).
+**Rule:** Any string that might contain secrets and is heading to a log or NR event must pass through `redactSecrets()` first. Use `redactSensitive(text)` (MCP server) or the collector's `redact()`. A loop over `REDACTION_PATTERNS` alone misses the argument rules.
 
-**Identifiers use `redactIdentifier()`.** `project_id`, `repo_url` and repo names are stamped on events and used to group them, so a false positive renames the entity in NR on upgrade. Several patterns have no leading `\b` (`sk-` matches inside `risk-assessment-…`). `redactIdentifier()` runs the same patterns but skips a match that starts right after a letter or digit. Don't narrow a shared pattern to fix an identifier false positive instead: in recorded content, tokens routinely follow a letter or digit (after a JSON escape like `\n`, an ANSI colour code, or `%3A`), and a lookbehind stops them being redacted.
+**Identifiers use `redactIdentifier()`.** `project_id`, `repo_url` and repo names are stamped on events and used to group them, so a false positive renames the entity in NR on upgrade. Several patterns have no leading `\b` (`sk-` matches inside `risk-assessment-…`). `redactIdentifier()` runs the same rules but skips a match that starts right after a letter or digit. Don't narrow a shared pattern to fix an identifier false positive instead: in recorded content, tokens routinely follow a letter or digit (after a JSON escape like `\n`, an ANSI colour code, or `%3A`), and a lookbehind stops them being redacted.
 
 **Changing a pattern:**
 
 - Test a new pattern on its own: a token inside `https://user:token@host` is already caught by the URL-credentials pattern, so a test that only uses that form passes without the new pattern. Test the bare token too.
 - Run the changed set over ordinary identifiers (repo names, paths, branch names) and over tokens after `\n`, `\t`, an ANSI colour code and `%3A`.
+- An argument rule's value is read by the scanner, not by its regex. A change to how values are read must keep `src/redaction-patterns.test.ts` passing: random secret words must leave no character behind and must keep the `rm -rf` after them classifiable.
 - Update this table and CLAUDE.md § Security in the same PR. `npm run verify:plugin-hook` (run by the pre-push hook and the release workflow) checks that the plugin's bundled collector picked up the change.
 
 ### Credentials in logs
