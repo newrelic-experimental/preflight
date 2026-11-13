@@ -835,7 +835,7 @@ describe('hook writes racing a drain', () => {
     const drainer = new LocalStore(dir, SESSION);
     let duringWrite: HookEvent[] = [];
     mockHooks.write = (text) => {
-      if (text !== line('B')) return;
+      if (!text.includes('"B"')) return;
       mockHooks.write = null;
       duringWrite = drainer.drainBuffer();
     };
@@ -870,7 +870,7 @@ describe('hook writes racing a drain', () => {
     fs.writeFileSync(resolve(dir, `active-${SESSION}.pid`), String(DEAD_PID));
     const store = new LocalStore(dir, SESSION);
     mockHooks.write = (text) => {
-      if (text !== line('B')) return;
+      if (!text.includes('"B"')) return;
       mockHooks.write = null;
       expect(store.gcOrphanBuffers(new Set()).archived).toBe(1);
     };

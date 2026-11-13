@@ -134,7 +134,7 @@ function appendToHookBuffer(path, text) {
   if (!text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) {
     throw new Error(`Hook buffer text must be exactly one newline-terminated line: ${path}`);
   }
-  const data = Buffer.from(text);
+  const data = Buffer.from("\n" + text);
   let writes = 0;
   for (let opens = 0; opens < MAX_OPENS; opens++) {
     const landing = appendOnce(path, data);

@@ -1,14 +1,15 @@
 #!/usr/bin/env tsx
 /**
- * Races one hook writer against four drainer processes (two `drainBuffer`, two
- * `drainAllBuffers`) and counts what the drainers return. A line returned zero
- * times was lost, and one returned twice was doubled. Exits 1 on either, or on
- * a claim or `.migrating` file left behind.
+ * Races two hook writers against four drainer processes (two `drainBuffer`, two
+ * `drainAllBuffers`) and counts what the drainers return. The second writer tears
+ * every fifth line and fails the write that ends it, as a full disk can, so those
+ * lines are dropped. Any other line returned zero times was lost, and one returned
+ * twice was doubled. Exits 1 on either, or on a claim or `.migrating` file left behind.
  *
  *   npx tsx scripts/stress-hook-drain.ts [lines]
  */
 import { spawn } from 'node:child_process';
-import {
+import fs, {
   appendFileSync,
   existsSync,
   mkdtempSync,
@@ -17,6 +18,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -25,12 +27,43 @@ import { appendToHookBuffer } from '../src/storage/hook-buffer.js';
 
 const SESSION = 'stress-session';
 const DRAINERS = 4;
+const TORN_EVERY = 5;
 
-function runWriter(dir: string, lines: number): void {
+function runWriter(dir: string, lines: number, prefix = 'w', tear = false): void {
   const bufferPath = resolve(dir, `buffer-${SESSION}.jsonl`);
+  let cut = 0;
+  let failEnd = false;
+  if (tear) {
+    const write = fs.writeSync as (fd: number, ...args: unknown[]) => number;
+    fs.writeSync = ((fd: number, data: Buffer | string, ...rest: unknown[]) => {
+      if (failEnd && data === '\x1e\n') {
+        failEnd = false;
+        throw Object.assign(new Error('ENOSPC: injected'), { code: 'ENOSPC' });
+      }
+      if (cut === 0) return write(fd, data, ...rest);
+      const fragment = Buffer.from(data).subarray(0, cut);
+      cut = 0;
+      failEnd = true;
+      return write(fd, fragment);
+    }) as typeof fs.writeSync;
+    syncBuiltinESMExports();
+  }
   for (let i = 0; i < lines; i++) {
-    const event = { mode: 'post', tool: `w${i}`, input: {}, timestamp: 1, sessionId: SESSION };
-    appendToHookBuffer(bufferPath, JSON.stringify(event) + '\n');
+    const event = {
+      mode: 'post',
+      tool: `${prefix}${i}`,
+      input: {},
+      timestamp: 1,
+      sessionId: SESSION,
+    };
+    const text = JSON.stringify(event) + '\n';
+    const torn = tear && i % TORN_EVERY === 0;
+    if (torn) cut = 1 + (i % (text.length - 1));
+    try {
+      appendToHookBuffer(bufferPath, text);
+    } catch (err) {
+      if (!torn) throw err;
+    }
   }
 }
 
@@ -64,7 +97,10 @@ async function runParent(lines: number): Promise<void> {
     const drainers = Array.from({ length: DRAINERS }, (_, i) =>
       spawnRole('drainer', dir, [String(i)]),
     );
-    const writerCode = await spawnRole('writer', dir, [String(lines)]);
+    const writerCodes = await Promise.all([
+      spawnRole('writer', dir, [String(lines)]),
+      spawnRole('tearer', dir, [String(lines)]),
+    ]);
     writeFileSync(resolve(dir, 'done'), '');
     const drainerCodes = await Promise.all(drainers);
 
@@ -75,7 +111,12 @@ async function runParent(lines: number): Promise<void> {
       }
     }
     let lost = 0;
-    for (let i = 0; i < lines; i++) if (!seen.has(`w${i}`)) lost++;
+    let tornKept = 0;
+    for (let i = 0; i < lines; i++) {
+      if (!seen.has(`w${i}`)) lost++;
+      if (i % TORN_EVERY && !seen.has(`t${i}`)) lost++;
+      if (!(i % TORN_EVERY) && seen.has(`t${i}`)) tornKept++;
+    }
     const doubled = [...seen.values()].filter((n) => n > 1).length;
     const drainsDir = resolve(dir, 'drains');
     const leftBehind = [
@@ -84,9 +125,9 @@ async function runParent(lines: number): Promise<void> {
     ];
 
     console.log(
-      `lines ${lines}, lost ${lost}, doubled ${doubled}, left behind ${leftBehind.length}`,
+      `lines ${lines} x2, torn ${Math.ceil(lines / TORN_EVERY)} (kept ${tornKept}), lost ${lost}, doubled ${doubled}, left behind ${leftBehind.length}`,
     );
-    const failed = [writerCode, ...drainerCodes].some((c) => c !== 0);
+    const failed = [...writerCodes, ...drainerCodes].some((c) => c !== 0);
     if (lost || doubled || leftBehind.length || failed) process.exitCode = 1;
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -95,5 +136,6 @@ async function runParent(lines: number): Promise<void> {
 
 const [role, dir, arg] = process.argv.slice(2);
 if (role === 'writer') runWriter(dir!, Number(arg));
+else if (role === 'tearer') runWriter(dir!, Number(arg), 't', true);
 else if (role === 'drainer') runDrainer(dir!, Number(arg));
 else await runParent(Number(role && /^\d+$/.test(role) ? role : 20_000));
