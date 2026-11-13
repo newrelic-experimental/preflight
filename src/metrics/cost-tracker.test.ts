@@ -946,6 +946,19 @@ describe('CostTracker', () => {
       }
     });
 
+    it('records first activity only for usage that costs something', () => {
+      const tracker = new CostTracker();
+      const firstSpend = Date.now() - 60 * 60 * 1000;
+      const dayKey = localDateKey(firstSpend);
+      const usage = makeUsage({ inputTokens: 1000, outputTokens: 500, totalTokens: 1500 });
+      tracker.recordTokenUsage(usage, 'claude-foo-9-9', { timestampMs: firstSpend - 30 * 60_000 });
+      tracker.recordTokenUsage(makeUsage(), 'claude-sonnet-4', {
+        timestampMs: firstSpend - 20 * 60_000,
+      });
+      tracker.recordTokenUsage(usage, 'claude-sonnet-4', { timestampMs: firstSpend });
+      expect(tracker.getFirstActivityMsForDay(dayKey)).toBe(firstSpend);
+    });
+
     it('returns 0 for days with no recorded activity', () => {
       const tracker = new CostTracker();
       expect(tracker.getCostForDay('2026-01-01')).toBe(0);

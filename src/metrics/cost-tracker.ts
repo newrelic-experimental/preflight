@@ -182,6 +182,7 @@ export interface CostMetrics {
    * a single day when it has no timeline to pro-rate against.
    */
   readonly costByDayUsd: Record<string, number>;
+  readonly firstActivityByDayMs: Record<string, number>;
   /** Subagent-attributed cost bucketed by local-day key; today-scoped
    * counterpart to `subagentCostUsd`. Same rationale as `costByDayUsd`. */
   readonly subagentCostByDayUsd: Record<string, number>;
@@ -256,6 +257,7 @@ export interface CostTrackerSeed {
   /** Portion of `totalCostUsd`/`subagentCostUsd` attributable to `dayKey` (see `todayPortionOfSessionCost`). */
   readonly dayCostUsd: number;
   readonly daySubagentCostUsd: number;
+  readonly dayFirstActivityMs?: number;
   /**
    * Per-workflow-run cost, split by local-day, from the persisted checkpoint
    * — see `seedFromPersisted()`'s doc comment for why this is seeded (unlike
@@ -328,6 +330,8 @@ export class CostTracker implements Resettable {
   private estimationCount = 0;
   private latestCostBreakdown: CostBreakdown | null = null;
   private firstActivityMsByDay = new Map<string, number>();
+  /** Days seeded with spend but no persisted first spend: the real first spend is unknown, so no anchor is saved. */
+  private unanchoredDays = new Set<string>();
   /** Per-day mutation counter so dashboards can invalidate cached day cards. */
   private lastMutationMsByDay = new Map<string, number>();
   private totalLinesChanged = 0;
@@ -431,7 +435,7 @@ export class CostTracker implements Resettable {
     });
     if (recorded) {
       this.reportCount++;
-      this.noteActivity(day, ts, wallNowMs);
+      this.noteActivity(day, ts, wallNowMs, breakdown.totalUsd);
       this.currentModel = model;
       this.latestCostBreakdown = breakdown;
     }
@@ -480,19 +484,39 @@ export class CostTracker implements Resettable {
       ...(pricing && { pricing }),
     });
     this.estimationCount++;
-    this.noteActivity(day, nowMs, nowMs);
+    this.noteActivity(day, nowMs, nowMs, breakdown.totalUsd);
     this.currentModel = model;
     this.latestCostBreakdown = breakdown;
     return breakdown;
   }
 
-  private noteActivity(day: string | null, ts: number, wallNowMs: number): void {
+  /**
+   * Marks a day as mutated and, for a usage that cost something, keeps the
+   * day's first spend: the earliest event timestamp (not wall-clock arrival),
+   * so cross-midnight burn-rate denominators stay correct. A day seeded with
+   * spend but no saved first spend stays unanchored.
+   */
+  private noteActivity(day: string | null, ts: number, wallNowMs: number, usd: number): void {
     if (day === null) return;
     this.lastMutationMsByDay.set(day, wallNowMs);
+    if (usd <= 0 || this.unanchoredDays.has(day)) return;
     const existingFirst = this.firstActivityMsByDay.get(day);
-    // Use earliest event timestamp for the day so cross-midnight burn-rate
-    // denominators stay correct (NOT wall-clock arrival time).
     if (existingFirst === undefined || ts < existingFirst) this.firstActivityMsByDay.set(day, ts);
+  }
+
+  /** Applies the seeded day's saved first spend, or leaves the day unanchored when there is none. */
+  private seedDayAnchor(seed: CostTrackerSeed, daySpent: boolean, nowMs: number): void {
+    if (!daySpent) return;
+    this.lastMutationMsByDay.set(seed.dayKey, nowMs);
+    if (seed.dayFirstActivityMs === undefined) {
+      this.firstActivityMsByDay.delete(seed.dayKey);
+      this.unanchoredDays.add(seed.dayKey);
+      return;
+    }
+    const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
+    if (existingFirst === undefined || seed.dayFirstActivityMs < existingFirst) {
+      this.firstActivityMsByDay.set(seed.dayKey, seed.dayFirstActivityMs);
+    }
   }
 
   /**
@@ -518,8 +542,10 @@ export class CostTracker implements Resettable {
       const before = this.ledger.size;
       this.ledger.union(entries, base);
       if (this.ledger.size === before && isZeroTotals(base)) return;
-      for (const e of entries) this.noteActivity(e.day, e.ts, nowMs);
-      for (const day of Object.keys(base.costByDayUsd)) this.noteActivity(day, nowMs, nowMs);
+      // Entries carry their own timestamps; only a pre-ledger base's spend
+      // on the seeded day needs the saved first spend.
+      for (const e of entries) this.noteActivity(e.day, e.ts, nowMs, e.costUsd);
+      this.seedDayAnchor(seed, (base.costByDayUsd[seed.dayKey] ?? 0) > 0, nowMs);
     } else {
       const hasAnyTotal =
         seed.totalCostUsd !== 0 ||
@@ -570,7 +596,7 @@ export class CostTracker implements Resettable {
     const estimates = est === undefined ? [] : legacyEstimateEntries(est, nowMs, this.instanceId);
     this.ledger.addToBase(withoutEstimateCalls(base, estimates));
     for (const e of estimates) this.ledger.insert(e);
-    if (seed.dayCostUsd !== 0) this.noteActivity(seed.dayKey, nowMs, nowMs);
+    this.seedDayAnchor(seed, seed.dayCostUsd !== 0, nowMs);
   }
 
   private computeCacheHitRate(t: CostTotals): number | null {
@@ -737,6 +763,7 @@ export class CostTracker implements Resettable {
       parentCostUsd: Math.max(0, t.costUsd - t.subagentCostUsd),
       costByWorkflowRunId,
       costByDayUsd: { ...t.costByDayUsd },
+      firstActivityByDayMs: Object.fromEntries(this.firstActivityMsByDay),
       unpricedByModel: { ...t.unpricedByModel },
       estimatedByModel: { ...t.estimatedByModel },
       unpricedByDay: copyByDay(t.unpricedByDay),
@@ -814,6 +841,7 @@ export class CostTracker implements Resettable {
     this.estimationCount = 0;
     this.latestCostBreakdown = null;
     this.firstActivityMsByDay = new Map();
+    this.unanchoredDays = new Set();
     this.lastMutationMsByDay = new Map();
     this.totalLinesChanged = 0;
   }

@@ -89,6 +89,7 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     persisted,
     dayKey,
   );
+  const dayFirstActivityMs = persisted.firstActivityByDayMs?.[dayKey];
   const recovered = usageLedgerOf(persisted);
   let base: CostTotals = recovered.base;
   if (recovered.legacy && persisted.costByDayUsd === undefined && !isZeroTotals(base)) {
@@ -114,6 +115,8 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     dayKey,
     dayCostUsd,
     daySubagentCostUsd,
+    ...(dayFirstActivityMs !== undefined && { dayFirstActivityMs }),
+    ...(dayFirstActivityMs !== undefined && { dayFirstActivityMs }),
     legacyCallsDayKey: latestActivityDayKey(persisted) ?? dayKey,
     ...(persisted.unpricedByModel && { unpricedByModel: persisted.unpricedByModel }),
     ...(persisted.estimatedByModel && { estimatedByModel: persisted.estimatedByModel }),
