@@ -1349,7 +1349,7 @@ export class LocalStore {
     const events: HookEvent[] = [];
     const take = ({ path, stuck }: { readonly path: string; readonly stuck: boolean }): boolean => {
       const taken = stuck
-        ? hold.stuckAt(path, this.giveUpOrder)
+        ? hold.holdBehind(path, this.giveUpOrder)
         : hold.take(path, this.giveUpOrder);
       if (taken === 'stop') return false;
       if (taken !== 'skip') for (const event of parseHookEvents(taken.text)) events.push(event);
