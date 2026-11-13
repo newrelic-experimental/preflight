@@ -144,8 +144,17 @@ function bareWord(text: string, from: number, context: Quote): number {
   }
 }
 
-// Free text with an odd apostrophe, or a heredoc body, reads as an open quote. A value that starts
-// at that quote is still taken when it is one quoted run of plain characters, as in `'hunter2'`.
+// Free text with an odd apostrophe, or a heredoc body, reads as an open quote. A value that reaches
+// that quote still takes each quoted run of plain characters after it, and the word that follows,
+// as in `'hunter2'`, `-p'hunter2'` or `'hunter'"2"`.
+function valueEnd(text: string, from: number, quote: Quote): number {
+  let end = readValue(text, from, quote);
+  for (let run = quotedRun(text, end, quote); run > end; run = quotedRun(text, end, quote)) {
+    end = readValue(text, run, quote);
+  }
+  return end;
+}
+
 function quotedRun(text: string, from: number, quote: Quote): number {
   const end = skipPlain(text, from + 1);
   const run =
@@ -243,8 +252,7 @@ const FLAG = new RegExp(
 
 const wordValue: Redact = (text, match, quote, spans) => {
   const from = match.index + match[0].length;
-  const end = readValue(text, from, quote);
-  return pushValue(spans, match.index, from, end > from ? end : quotedRun(text, from, quote));
+  return pushValue(spans, match.index, from, valueEnd(text, from, quote));
 };
 
 const MYSQL = /\b(?:mysql(?:dump|admin)?|mariadb)\b/g;
@@ -266,7 +274,7 @@ const mysqlPasswords: Redact = (text, match, quote, spans) => {
       i = REDIRECT.lastIndex;
       continue;
     }
-    const end = readValue(text, i, quote);
+    const end = valueEnd(text, i, quote);
     if (end === i) return i;
     const flag = passwordFlag(text, i, end);
     if (flag >= 0) spans.push(flag, end);

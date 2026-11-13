@@ -80,6 +80,8 @@ const REDACTS: Row[] = [
   ['curl --token "abc && curl --password x\\ny', '--token "abc', '--password x\\ny'],
   ["# don't\ncurl --token 'S3CRET9' x", "--token 'S3CRET9'"],
   ["Don't pass --password 'hunter2' here", "--password 'hunter2'"],
+  ["echo o'clock && mysql -u root -p'S3CRET9' shop\nls", "-p'S3CRET9'"],
+  ["echo o'clock && tool --password 'S3'\"CR\"'ET9' x", "--password 'S3'\"CR\"'ET9'"],
   ["cat <<'EOF' > notes.md\nit's done\nEOF\ncurl --token 'S3CRET9' x", "--token 'S3CRET9'"],
   ['# --token \nabc\nls'],
   ['echo \\" && curl --token "a b" && rm -rf /tmp/x', '--token "a b"'],
