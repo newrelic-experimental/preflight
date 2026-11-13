@@ -34,11 +34,9 @@ import {
   isSyntheticSessionId,
   readJobState,
   readTranscriptTitle,
-  resolveFromBreadcrumb,
-  resolveFromCwd,
-  resolveFromJobDir,
   resolveSessionId,
   resolveSessionName,
+  sessionBreadcrumbs,
   watchCwdBreadcrumbForCorrection,
   watchPpidBreadcrumb,
 } from './hooks/session-resolver.js';
@@ -109,7 +107,9 @@ import { tokenUsageFromSubagentTurn, tokenUsageFromTokenEvent } from './metrics/
 import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
 import { TurnTracker } from './metrics/turn-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
+import { CLAUDE_CODE_PLATFORM_NAME } from './platforms/claude-code-adapter.js';
 import { ClaudeCodeAdapter, createDefaultRegistry, GenericMcpAdapter } from './platforms/index.js';
+import { sessionBreadcrumbWriters } from './platforms/types.js';
 import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
@@ -117,6 +117,7 @@ import { createServer } from './server.js';
 import type { CostBreakdown } from './shared/index.js';
 import { createLogger } from './shared/index.js';
 import { LocalStore } from './storage/index.js';
+import { hasLiveOwningEngine } from './storage/local-store.js';
 import { computeHistoricalCosts } from './storage/historical-costs.js';
 import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.js';
 import {
@@ -1055,6 +1056,8 @@ async function main(): Promise<void> {
     // synchronous setup completes, to decide whether to arm a background
     // correction watch (see `startPpidCorrectionWatch` below).
     let resolvedViaCwdOnly = false;
+    const activePlatform = createDefaultRegistry().getActive();
+    const breadcrumbWriters = sessionBreadcrumbWriters(activePlatform);
     // --local only: set when the config asked for cloud export but this
     // process fell back to local mode for want of credentials, so every
     // ownerless session it drains is kept locally and never sent to New
@@ -1089,10 +1092,10 @@ async function main(): Promise<void> {
 
       initModelPricing(config);
 
-      const fromJobDir = resolveFromJobDir(process.env.CLAUDE_JOB_DIR ?? null);
-      const fromPpid = fromJobDir ? null : resolveFromBreadcrumb(config.storagePath, process.ppid);
-      const fromCwd =
-        fromJobDir || fromPpid ? null : resolveFromCwd(config.storagePath, process.cwd());
+      const breadcrumbs = sessionBreadcrumbs(config.storagePath, breadcrumbWriters);
+      const fromJobDir = breadcrumbs.jobDir(process.env.CLAUDE_JOB_DIR ?? null);
+      const fromPpid = fromJobDir ? null : breadcrumbs.ppid(process.ppid);
+      const fromCwd = fromJobDir || fromPpid ? null : breadcrumbs.cwd(process.cwd());
       const synchronouslyResolved = fromJobDir ?? fromPpid ?? fromCwd;
       resolvedViaCwdOnly = !!fromCwd && !fromJobDir && !fromPpid;
       if (synchronouslyResolved) {
@@ -1116,8 +1119,11 @@ async function main(): Promise<void> {
       // span is a safe no-op on shutdown.
       if (config.otlp.transport !== 'nr-events-api') {
         initMcpTracer();
-        const detectedPlatform = createDefaultRegistry().getActive().platformName;
-        sessionSpan = new SessionSpan(sessionTraceId, config.developer, detectedPlatform);
+        sessionSpan = new SessionSpan(
+          sessionTraceId,
+          config.developer,
+          activePlatform.platformName,
+        );
         taskSpanTracker = new TaskSpanTracker();
         if (!sessionTraceId.startsWith('pending-')) {
           sessionSpan.start();
@@ -1192,12 +1198,20 @@ async function main(): Promise<void> {
     // dashboard owner's GC pass can tell which buffer files still have a live
     // owner. Removed in the shutdown handler below. Skipped during the
     // provisional window — the real heartbeat is written after resolution.
-    if (options.stdio && !isProvisional) {
-      localStore.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
-        value: config.companionMode,
-        source: config.companionModeSource,
+    // A cwd guess leaves a live engine's heartbeat for the guessed session in
+    // place, since a correction must not leave that engine without one.
+    let heartbeatSkipped = false;
+    const writeHeartbeat = (store: LocalStore, viaCwdOnly: boolean): void => {
+      const sessionId = store.getSessionId();
+      heartbeatSkipped =
+        viaCwdOnly && !!sessionId && hasLiveOwningEngine(config!.storagePath, sessionId);
+      if (heartbeatSkipped) return;
+      store.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
+        value: config!.companionMode,
+        source: config!.companionModeSource,
       });
-    }
+    };
+    if (options.stdio && !isProvisional) writeHeartbeat(localStore, resolvedViaCwdOnly);
     localStoreForShutdown = localStore;
 
     // Migrate any pre-existing events from the legacy shared `buffer.jsonl` into
@@ -1245,7 +1259,7 @@ async function main(): Promise<void> {
     const decisionTracker = new DecisionTracker({ recordContent: config.recordContent });
     const transcriptMessageTracker = new TranscriptMessageTracker();
     const instructionDriftTracker = new InstructionDriftTracker({
-      instructionFilePaths: createDefaultRegistry().getActive().capabilities.instructionFilePaths,
+      instructionFilePaths: activePlatform.capabilities.instructionFilePaths,
     });
     const toolSelectionScorer = new ToolSelectionScorer();
     const qualityProxyTracker = new QualityProxyTracker();
@@ -1286,9 +1300,11 @@ async function main(): Promise<void> {
         // highSecurity upstream — never bypass). resolveSessionName still uses
         // only name/nameSource, which are display labels; the intent is
         // surfaced separately as session_intent below.
-        const jobState = readJobState(process.env.CLAUDE_JOB_DIR ?? null, {
-          recordContent: config?.recordContent ?? false,
-        });
+        const jobState = breadcrumbWriters.includes(CLAUDE_CODE_PLATFORM_NAME)
+          ? readJobState(process.env.CLAUDE_JOB_DIR ?? null, {
+              recordContent: config?.recordContent ?? false,
+            })
+          : null;
         const transcriptTitle = readTranscriptTitle({ sessionId });
         const resolved = resolveSessionName({ jobState, transcriptTitle, cwd });
         if (!resolved) return;
@@ -1697,8 +1713,7 @@ async function main(): Promise<void> {
 
     const trendAnalyzer = new TrendAnalyzer({ sessionStore });
     const collaborationProfiler = new CollaborationProfiler({ sessionStore });
-    const activeInstructionFilePaths =
-      createDefaultRegistry().getActive().capabilities.instructionFilePaths;
+    const activeInstructionFilePaths = activePlatform.capabilities.instructionFilePaths;
     const claudeMdTracker = new ClaudeMdTracker({
       sessionStore,
       instructionFilePaths: activeInstructionFilePaths,
@@ -1844,7 +1859,7 @@ async function main(): Promise<void> {
       // getSnapshot() closure below, which fires on every dashboard poll
       // (10-30s) and would otherwise re-run full platform detection (and
       // its info-level log line) on every single request.
-      const activePlatformName = createDefaultRegistry().getActive().platformName;
+      const activePlatformName = activePlatform.platformName;
 
       dashboardServer = new DashboardServer({
         port: config.dashboard.port,
@@ -2118,6 +2133,7 @@ async function main(): Promise<void> {
     const subagentAttribution = new SubagentAttributionIndex();
     eventProcessor = new HookEventProcessor({
       store: localStore,
+      platformAdapter: activePlatform,
       // --local mode and the provisional --stdio window own no specific Claude
       // Code session; drain every per-session buffer so the dashboard sees all
       // live sessions' events. After real session ID resolution the processor
@@ -2832,6 +2848,8 @@ async function main(): Promise<void> {
     // is safe to arm immediately. unref'd so it never keeps the process alive.
     const SESSION_PERSIST_INTERVAL_MS = getSessionPersistIntervalMs();
     sessionPersistInterval = setInterval(() => {
+      // A cwd guess whose session had a live engine takes the heartbeat once that engine exits.
+      if (heartbeatSkipped && localStoreForShutdown) writeHeartbeat(localStoreForShutdown, true);
       // Skip while the live session id is an unconfirmed cwd-fallback guess —
       // see armPendingConfirmation's own comment. Persisting here would write
       // a real, non-synthetic checkpoint file under an identity that might
@@ -3080,10 +3098,9 @@ async function main(): Promise<void> {
       // Replace the current LocalStore with one scoped to the real id.
       const realLocalStore = new LocalStore(config!.storagePath, realId);
       realLocalStore.initialize();
-      realLocalStore.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
-        value: config!.companionMode,
-        source: config!.companionModeSource,
-      });
+      // A corrected guess's heartbeat would keep drain-all processes off its buffer.
+      localStoreForShutdown?.removeHeartbeat();
+      writeHeartbeat(realLocalStore, opts?.viaCwdOnly ?? false);
       localStoreForShutdown = realLocalStore;
       try {
         realLocalStore.migrateLegacyBuffer();
@@ -3133,8 +3150,7 @@ async function main(): Promise<void> {
       if (config!.otlp.transport !== 'nr-events-api') {
         sessionSpan?.end(0, 0);
         taskSpanTracker?.closeAll();
-        const detectedPlatform = createDefaultRegistry().getActive().platformName;
-        sessionSpan = new SessionSpan(realId, config!.developer, detectedPlatform);
+        sessionSpan = new SessionSpan(realId, config!.developer, activePlatform.platformName);
         taskSpanTracker = new TaskSpanTracker();
         sessionSpan.start();
       }
@@ -3266,6 +3282,7 @@ async function main(): Promise<void> {
       let corrected = false;
       let activityListener: typeof cwdGuessActivity = null;
       void watchPpidBreadcrumb({
+        writers: breadcrumbWriters,
         storagePath: config!.storagePath,
         signal: ppidCorrectionAbort.signal,
         includeParentOfPpid: true,
@@ -3289,6 +3306,7 @@ async function main(): Promise<void> {
             saveRolledUpBeforeSeeding(staleId);
             rehydrateTrackersIfResumed(staleId);
             refreshPriorCostBaseline();
+            if (localStoreForShutdown) writeHeartbeat(localStoreForShutdown, false);
             clearPendingConfirmation();
             return;
           }
@@ -3318,6 +3336,7 @@ async function main(): Promise<void> {
       if (process.platform === 'win32') {
         void watchCwdBreadcrumbForCorrection({
           staleId,
+          writers: breadcrumbWriters,
           storagePath: config!.storagePath,
           signal: ppidCorrectionAbort.signal,
         })
@@ -3369,13 +3388,11 @@ async function main(): Promise<void> {
           // A Claude Code session with no hooks never resolves, so this is
           // where the opt-in install has to work. Other stdio clients have no
           // Claude Code hooks to install or report missing.
-          ...(createDefaultRegistry().getActive() instanceof ClaudeCodeAdapter && {
+          ...(activePlatform instanceof ClaudeCodeAdapter && {
             hooksInstalledFn: () => areHooksInstalledAtAnyScope(),
             headlessInstaller: buildHeadlessInstaller(),
           }),
         });
-        logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
-
         sessionResolutionAbort = new AbortController();
         let resolvedSource: import('./hooks/session-resolver.js').SessionIdSource | undefined;
         void (async () => {
@@ -3383,6 +3400,7 @@ async function main(): Promise<void> {
             const realId = await resolveSessionId({
               storagePath: config!.storagePath,
               signal: sessionResolutionAbort!.signal,
+              writers: breadcrumbWriters,
               onResolutionSource: (info) => {
                 resolvedSource = info.source;
               },

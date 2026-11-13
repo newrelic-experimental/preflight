@@ -66,7 +66,7 @@ export interface SessionMetrics {
   bashCallsByCategory: Record<string, number>;
   searchQueries: number;
   toolCallTimeline: TimelineEntry[];
-  /** True when the timeline was capped at MAX_TIMELINE_ENTRIES; callers should not assume they have the full history. */
+  /** True when the oldest entries were dropped to stay within MAX_TIMELINE_ENTRIES; callers should not assume they have the full history. */
   timelineTruncated: boolean;
   /** Lifetime total of timeline entries, including those dropped by the cap. */
   timelineEntryCount: number;
@@ -183,7 +183,10 @@ export class SessionTracker implements Resettable {
   private readonly bashCallsByCategory = new Map<string, number>();
   private timeline: TimelineEntry[] = [];
   private timelineEntryCount = 0;
-  private readonly amendable = new Map<string, { record: ToolCallRecord; timelineIndex: number }>();
+  private readonly amendable = new Map<
+    string,
+    { record: ToolCallRecord; timelineSequence: number }
+  >();
   private readonly maxAmendable: number;
   /** What getMetrics() shows until this engine adopts a session, which some engines never do. */
   private drainedWhilePending: SessionTracker | null;
@@ -268,19 +271,18 @@ export class SessionTracker implements Resettable {
       this.searchQueries++;
     }
 
-    // Timeline (capped); always increment the lifetime counter.
+    // Timeline (capped, keeps the most recent entries); always increment the lifetime counter.
     this.timelineEntryCount++;
-    const timelineIndex = this.timeline.length < MAX_TIMELINE_ENTRIES ? this.timeline.length : -1;
-    if (timelineIndex >= 0) {
-      this.timeline.push({
-        timestamp: record.timestamp,
-        toolName: tool,
-        durationMs: record.durationMs,
-        success: record.success,
-      });
-    }
+    const timelineSequence = this.timelineEntryCount - 1;
+    if (this.timeline.length >= MAX_TIMELINE_ENTRIES) this.timeline.shift();
+    this.timeline.push({
+      timestamp: record.timestamp,
+      toolName: tool,
+      durationMs: record.durationMs,
+      success: record.success,
+    });
     if (isAwaitingLatePost(record)) {
-      this.amendable.set(record.id, { record, timelineIndex });
+      this.amendable.set(record.id, { record, timelineSequence });
       if (this.amendable.size > this.maxAmendable)
         this.amendable.delete(this.amendable.keys().next().value!);
     }
@@ -312,9 +314,11 @@ export class SessionTracker implements Resettable {
       if (durations.length < 500) durations.push(record.durationMs);
       this.toolDurationsByTool.set(record.toolName, durations);
     }
-    const entry = this.timeline[amended.timelineIndex];
+    const timelineIndex =
+      amended.timelineSequence - (this.timelineEntryCount - this.timeline.length);
+    const entry = this.timeline[timelineIndex];
     if (entry) {
-      this.timeline[amended.timelineIndex] = {
+      this.timeline[timelineIndex] = {
         ...entry,
         durationMs: record.durationMs,
         success: record.success,
