@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { SessionDetailDialog } from './SessionDetailDialog';
 import type {
   DecisionTreeResponse,
@@ -7,6 +7,7 @@ import type {
   ContextResponse,
   ContextCompositionResponse,
   ContextEfficiencyResponse,
+  SessionListEntry,
 } from '../api/client';
 
 function makeDecisionTree(overrides: Partial<DecisionTreeResponse> = {}): DecisionTreeResponse {
@@ -264,5 +265,323 @@ describe('SessionDetailDialog — context composition/efficiency section', () =>
       />,
     );
     expect(screen.getByText('No composition/efficiency data yet.')).toBeInTheDocument();
+  });
+});
+
+function makeSummary(overrides: Partial<SessionListEntry> = {}): SessionListEntry {
+  return {
+    sessionId: 'sess-abc',
+    sessionName: 'billing-refactor',
+    startTime: Date.UTC(2026, 10, 5, 14, 30),
+    durationMs: 198_000,
+    toolCallCount: 42,
+    estimatedCostUsd: 1.37,
+    model: 'claude-sonnet-5',
+    tokensInput: 120_000,
+    tokensOutput: 8_000,
+    tokensCacheRead: 900_000,
+    antiPatterns: [
+      { type: 're_reading', file: 'src/billing.ts', readCount: 5 },
+      { type: 'stuck_loop', command: 'npm test -- --token=secret123', iterations: 3 },
+    ],
+    ...overrides,
+  };
+}
+
+function installClipboard(): ReturnType<typeof vi.fn> {
+  const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', {
+    value: { writeText },
+    configurable: true,
+  });
+  return writeText;
+}
+
+describe('SessionDetailDialog — copy session', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('copies a Markdown summary of the session', async () => {
+    const writeText = installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as markdown/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const text = writeText.mock.calls[0]![0];
+    expect(text).toContain('billing-refactor');
+    expect(text).toContain('3m 18s');
+    expect(text).toContain('$1.37');
+    expect(text).toContain('42');
+    expect(text).toContain('claude-sonnet-5');
+    expect(text).toContain('re_reading');
+    expect(text).toContain('stuck_loop');
+    expect(text).not.toContain('secret123');
+    expect(text).not.toContain('npm test');
+  });
+
+  it('copies the session summary as pretty-printed JSON', async () => {
+    const writeText = installClipboard();
+    const summary = makeSummary();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={summary}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const text = writeText.mock.calls[0]![0];
+    expect(JSON.parse(text)).toEqual({
+      ...summary,
+      antiPatterns: [
+        { type: 're_reading', file: 'src/billing.ts', readCount: 5 },
+        { type: 'stuck_loop', iterations: 3 },
+      ],
+    });
+    expect(text).toContain('\n  "sessionId"');
+  });
+
+  it('leaves the anti-pattern command and its token out of the JSON copy', async () => {
+    const writeText = installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const text = writeText.mock.calls[0]![0];
+    expect(text).not.toContain('secret123');
+    expect(text).not.toContain('npm test');
+    expect(text).not.toContain('"command"');
+    expect(JSON.parse(text).antiPatterns[1]).toEqual({ type: 'stuck_loop', iterations: 3 });
+  });
+
+  it('copies valid JSON for a session that has no anti-pattern list', async () => {
+    const writeText = installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary({ antiPatterns: undefined })}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(writeText.mock.calls[0]![0]).sessionId).toBe('sess-abc');
+  });
+
+  it('copies a link that opens the session in the Sessions view', async () => {
+    const writeText = installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy link/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(writeText.mock.calls[0]![0]).toBe(`${window.location.origin}/sessions?session=sess-abc`);
+  });
+
+  it('shows a Copied state after a successful copy', async () => {
+    installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
+    expect(await screen.findByText('Copied')).toBeInTheDocument();
+  });
+
+  it('disables both copy buttons when there is no session summary', () => {
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /copy as markdown/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /copy as json/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /copy link/i })).toBeDisabled();
+  });
+
+  it('lists every model from the breakdown in the Markdown copy within fifteen lines', async () => {
+    const writeText = installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary({
+          modelBreakdown: {
+            'claude-sonnet-5': { requestCount: 3 },
+            'claude-opus-5': { requestCount: 1 },
+          },
+        })}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as markdown/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const text = writeText.mock.calls[0]![0];
+    expect(text).toContain('claude-sonnet-5');
+    expect(text).toContain('claude-opus-5');
+    expect(text.split('\n').length).toBeLessThan(15);
+  });
+
+  async function copyMarkdownOf(summary: SessionListEntry): Promise<string> {
+    const writeText = installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={summary}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as markdown/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    return writeText.mock.calls[0]![0];
+  }
+
+  it('writes the start time and every token total', async () => {
+    const text = await copyMarkdownOf(makeSummary());
+    expect(text).toContain('- Started: 2026-11-05T14:30:00.000Z');
+    expect(text).toContain('- Tokens: 120.0k in / 8.0k out / 900.0k cache read');
+  });
+
+  it('names the breakdown models rather than the single model field', async () => {
+    const text = await copyMarkdownOf(
+      makeSummary({ modelBreakdown: { 'claude-opus-5': { requestCount: 1 } } }),
+    );
+    expect(text).toContain('- Models: claude-opus-5');
+    expect(text).not.toContain('claude-sonnet-5');
+  });
+
+  it('omits the model line when no model is known', async () => {
+    const text = await copyMarkdownOf(makeSummary({ model: null }));
+    expect(text).not.toContain('- Model');
+  });
+
+  it('keeps the tokens line when only the input count is known', async () => {
+    const text = await copyMarkdownOf(makeSummary({ tokensOutput: undefined }));
+    expect(text).toContain('- Tokens: 120.0k in / 0 out / 900.0k cache read');
+  });
+
+  it('lists at most three anti-patterns, with the file path where one is known', async () => {
+    const text = await copyMarkdownOf(
+      makeSummary({
+        antiPatterns: [
+          { type: 'thrashing' },
+          { type: 're_reading', file: 'a.ts', readCount: 3 },
+          { type: 'blind_editing' },
+          { type: 'over_delegation' },
+        ],
+      }),
+    );
+    expect(text).toContain('- Anti-patterns: thrashing, re_reading (a.ts), blind_editing');
+    expect(text).not.toContain('over_delegation');
+  });
+
+  it('omits the anti-pattern line when there are none', async () => {
+    const text = await copyMarkdownOf(makeSummary({ antiPatterns: [] }));
+    expect(text).not.toContain('Anti-patterns');
+  });
+
+  it('shows Copy failed when the clipboard refuses the write', async () => {
+    const writeText = vi
+      .fn<(text: string) => Promise<void>>()
+      .mockRejectedValue(new Error('denied'));
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
+    expect(await screen.findByText('Copy failed')).toBeInTheDocument();
+    expect(screen.queryByText('Copied')).toBeNull();
+  });
+
+  it('returns the copy label to idle after 1.5 seconds', async () => {
+    installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
+    expect(await screen.findByText('Copied')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Copied')).toBeNull(), { timeout: 2500 });
+    expect(screen.getByRole('button', { name: /copy as json/i })).toHaveTextContent('Copy as JSON');
+  });
+
+  it('changes only the label of the button that was clicked', async () => {
+    installClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        summary={makeSummary()}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /copy as markdown/i }));
+    expect(await screen.findByText('Copied')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /copy as json/i })).toHaveTextContent('Copy as JSON');
+  });
+});
+
+describe('SessionDetailDialog — focus trap with copy buttons disabled', () => {
+  function renderWithoutSummary(): HTMLElement {
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        onClose={() => {}}
+      />,
+    );
+    return screen.getByRole('button', { name: /close session detail/i });
+  }
+
+  it('wraps Shift+Tab on Close instead of letting focus escape', () => {
+    const close = renderWithoutSummary();
+    expect(document.activeElement).toBe(close);
+    const notPrevented = fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(notPrevented).toBe(false);
+    expect(document.activeElement).toBe(close);
+  });
+
+  it('wraps Tab on Close back to the first enabled control', () => {
+    const close = renderWithoutSummary();
+    const notPrevented = fireEvent.keyDown(document, { key: 'Tab' });
+    expect(notPrevented).toBe(false);
+    expect(document.activeElement).toBe(close);
   });
 });
