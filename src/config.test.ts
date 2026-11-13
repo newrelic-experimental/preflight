@@ -3247,6 +3247,8 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
   ])('scans a 1 MB command of %s in linear time', (_shape, command) => {
     const start = performance.now();
     redactSensitive(command);
-    expect(performance.now() - start).toBeLessThan(100);
+    // A 1 MB scan takes about 14 ms locally and about 104 ms on a loaded CI runner. A quadratic
+    // scan takes minutes at this size, so a 1 s bound keeps the runner's noise from failing it.
+    expect(performance.now() - start).toBeLessThan(1000);
   });
 });
