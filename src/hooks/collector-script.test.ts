@@ -2769,7 +2769,7 @@ describe('collector-script', () => {
       expect(event.error).toBe('exit status 1');
     });
 
-    it('omits toolUseId from both events when stepIdx is not a number', () => {
+    it('gives both events one minted toolUseId when stepIdx is not a number', () => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
       processHook(makeAntigravityPreToolUse({ stepIdx: undefined }), 'PreToolUse');
@@ -2777,7 +2777,8 @@ describe('collector-script', () => {
 
       const events = readBufferLines('agy-conv-001');
       expect(events.map((e) => e.mode)).toEqual(['pre', 'post']);
-      for (const event of events) expect(event).not.toHaveProperty('toolUseId');
+      expect(events[0]!.toolUseId).toEqual(expect.any(String));
+      expect(events[1]!.toolUseId).toBe(events[0]!.toolUseId);
     });
 
     it('replies with only {} on stdout for PostToolUse, never a decision field (#793)', () => {
@@ -2894,6 +2895,13 @@ describe('a tool call without tool_use_id', () => {
     const [read1, bash, read2, ...posts] = bufferIds();
     expect(new Set([read1, bash, read2]).size).toBe(3);
     expect(posts).toEqual([read1, read2, bash]);
+  });
+
+  it('matches a post to its pre whatever the case of the tool name', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'read', 2_000);
+
+    expect(bufferIds()[1]).toBe(bufferIds()[0]);
   });
 
   it('leaves a post without an id when no pre of its tool minted one', () => {
