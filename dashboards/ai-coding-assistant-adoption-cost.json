@@ -946,7 +946,7 @@
             "id": "viz.markdown"
           },
           "rawConfiguration": {
-            "text": "A skill run opens on a named `Skill` call or a `/<skill>` prompt and lasts until the next prompt or the next skill. Every tool call inside the run carries `skill_name`, `skill_source` (`tool` or `slash`), and `skill_run_id`, so runs, time, and cost here cover all the work a skill drove, not only the call that loaded it. Cost comes from `AiTurnCost`, which splits each turn evenly across its tool calls; a run whose replies made no tool calls has no tool-call or cost rows, so it counts in Runs and Users through its `AiSkillRun` row but adds no spend or tool time. These widgets need a Preflight release with #895 and #950. Earlier events carry only `skillName` on the Skill call itself."
+            "text": "A skill run opens on a named `Skill` call or a `/<skill>` prompt and lasts until the next prompt or the next skill. Every tool call inside the run carries `skill_name`, `skill_source` (`tool` or `slash`), and `skill_run_id`, so runs, time, and cost here cover all the work a skill drove, not only the call that loaded it. Cost comes from `AiTurnCost`, which splits each turn evenly across its tool calls; a run whose replies made no tool calls has no tool-call rows, so it counts in Runs and Users through its `AiSkillRun` row but adds no tool time. Its replies still produce `AiTurnCost` rows, but those carry no `skill_name`, so their spend is not attributed to the skill and USD / Run is understated. These widgets need a Preflight release with #895 and #950. Earlier events carry only `skillName` on the Skill call itself."
           }
         },
         {
