@@ -385,27 +385,37 @@ describe('collector-script', () => {
       expect(toolInput.command).toBe(expected);
     });
 
-    const longCommand = `deploy --token secret123 ${'x'.repeat(100)}`;
+    const token = `ghp_${'A'.repeat(36)}`;
+    const straddling = `echo ${'x'.repeat(10_240 - 16 - 'echo '.length - 1)} ${token}`;
     it.each([
-      ['Bash', makePreToolUse({ tool_name: 'Bash', tool_input: { command: longCommand } })],
+      ['Bash', makePreToolUse({ tool_name: 'Bash', tool_input: { command: straddling } })],
       [
         'run_in_terminal',
-        makePreToolUse({ tool_name: 'run_in_terminal', tool_input: { command: longCommand } }),
+        makePreToolUse({ tool_name: 'run_in_terminal', tool_input: { command: straddling } }),
       ],
-      ['beforeShellExecution', makeCursorBeforeShellExecution({ command: longCommand })],
+      ['beforeShellExecution', makeCursorBeforeShellExecution({ command: straddling })],
       [
         'pre_run_command',
         JSON.stringify({
           agent_action_name: 'pre_run_command',
-          tool_info: { command_line: longCommand, cwd: '/x' },
+          tool_info: { command_line: straddling, cwd: '/x' },
         }),
       ],
-    ])('caps a %s command at the content limit before redacting it', (_name, raw) => {
-      process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '50';
+    ])('redacts a whole token that straddles the content limit in a %s command', (_name, raw) => {
       processHook(raw);
 
       const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
-      expect(toolInput.command).toBe(`deploy [REDACTED] ${'x'.repeat(25)}...[truncated]`);
+      expect(toolInput.command).not.toMatch(/ghp_|AAAA/);
+      expect(toolInput.command).toMatch(/\[REDACTED\]$/);
+    });
+
+    it('keeps a destructive command past the content limit classifiable', () => {
+      const command = `echo ${'x'.repeat(10_300)} && rm -rf /tmp/x`;
+      processHook(makePreToolUse({ tool_name: 'Bash', tool_input: { command } }));
+
+      const event = readBufferEvents()[0]!;
+      const fields = parseToolSpecificFields('Bash', event.toolInput, undefined);
+      expect(fields.bashDestructive).toBe(true);
     });
   });
 
