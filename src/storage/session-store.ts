@@ -2067,6 +2067,7 @@ export function deserializeFullSessionSummary(
           .map((e) => ({
             timestamp: e.timestamp as number,
             toolName: e.toolName as string,
+            toolUseId: typeof e.toolUseId === 'string' ? e.toolUseId : undefined,
             durationMs: typeof e.durationMs === 'number' ? e.durationMs : null,
             success: typeof e.success === 'boolean' ? e.success : true,
             filePath: typeof e.filePath === 'string' ? e.filePath : undefined,
