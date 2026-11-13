@@ -633,10 +633,13 @@ describe('Today view', () => {
     expect(screen.getByText(/^→ \$80\.53 by end of day/)).toBeInTheDocument();
   });
 
-  async function renderBehindAggregate(apiForecastUsd: number | null): Promise<void> {
+  async function renderBehindAggregate(
+    apiForecastUsd: number | null,
+    aggregateForecastUsd = 12,
+  ): Promise<void> {
     useLiveStore.setState({ cost: null });
     stubForecastSources(
-      { totalCostUsd: 10, forecastEndOfDayUsd: 12, sessionCount: 4 },
+      { totalCostUsd: 10, forecastEndOfDayUsd: aggregateForecastUsd, sessionCount: 4 },
       {
         cost: { sessionTotalCostUsd: 15 },
         forecast: apiForecastUsd === null ? null : { forecastEndOfDayUsd: apiForecastUsd },
@@ -663,6 +666,11 @@ describe('Today view', () => {
   it('falls through a stale aggregate forecast below spend to the /api/cost one, naming its source', async () => {
     await renderBehindAggregate(20);
     expect(screen.getByText(/^→ \$20\.00 by end of day \(this session\)/)).toBeInTheDocument();
+  });
+
+  it('keeps an aggregate forecast equal to spend rather than falling through to a later source', async () => {
+    await renderBehindAggregate(20, 15);
+    expect(screen.queryByText(/by end of day/)).toBeNull();
   });
 
   it('bridges with the SSE forecast while the aggregate has seen no spend today', async () => {
