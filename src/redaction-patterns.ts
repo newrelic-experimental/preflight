@@ -255,6 +255,26 @@ const wordValue: Redact = (text, match, quote, spans) => {
   return pushValue(spans, match.index, from, valueEnd(text, from, quote));
 };
 
+const QUOTING = charTable(`"'\\$`);
+
+// The value hides at least the word after NAME= up to an operator, as the earlier \S+ rule did.
+// Past where the shell word ends it keeps each quote, backslash and $, so the rest of the command
+// is still read in the same quote.
+const nameValue: Redact = (text, match, quote, spans) => {
+  let [start, floor] = [match.index, match.index + match[0].length];
+  let end = valueEnd(text, floor, quote);
+  let i = end;
+  for (; i < text.length && !isBlankOrOperator(text.charCodeAt(i)); i++) {
+    if (QUOTING[text.charCodeAt(i)] !== 1) end = i + 1;
+    else {
+      pushValue(spans, start, floor, end);
+      start = end = floor = i + 1;
+    }
+  }
+  pushValue(spans, start, floor, end);
+  return i;
+};
+
 const MYSQL = /\b(?:mysql(?:dump|admin)?|mariadb)\b/g;
 const ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, 'y');
 const PORT_MAPPING = /[\d.]+:\d/y;
@@ -297,7 +317,7 @@ type RedactionRule = RegExp | ArgumentRule;
 
 const RULES: readonly RedactionRule[] = [
   { start: HEADER, redact: headerValue },
-  { start: NAME, redact: wordValue },
+  { start: NAME, redact: nameValue },
   ...REDACTION_PATTERNS,
   { start: FLAG, redact: wordValue },
   { start: MYSQL, redact: mysqlPasswords },
