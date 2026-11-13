@@ -1702,7 +1702,16 @@ async function main(): Promise<void> {
       const expired = now - priorCostCache.lastRefreshMs > PRIOR_COST_CACHE_TTL_MS;
       if (dayChanged || expired) refreshPriorCostBaseline();
     };
-    refreshPriorCostBaseline();
+    // Rereads the baseline first: it moves with the seeded set and with sessions
+    // other engines saved since it was cached, which a stale cache would double count.
+    const seedBudgetPeriods = (): void => {
+      refreshPriorCostBaseline();
+      budgetTracker.seedPeriodSpend(
+        priorCostCache.priorDailyCostUsd + costTracker.getCostForDay(localDateKey()),
+        priorCostCache.priorWeeklyCostUsd + (costTracker.getMetrics().sessionTotalCostUsd ?? 0),
+      );
+    };
+    seedBudgetPeriods();
     weeklySummaryGenerator = new WeeklySummaryGenerator({
       storagePath: config.storagePath,
       sessionStore,
@@ -3090,7 +3099,7 @@ async function main(): Promise<void> {
       // confirmation branch (ppidId === staleId) calls
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
       if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
-      refreshPriorCostBaseline();
+      seedBudgetPeriods();
 
       try {
         saveObservedSessions('in progress', (id) =>
