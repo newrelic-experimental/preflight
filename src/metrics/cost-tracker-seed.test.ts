@@ -570,51 +570,54 @@ describe('first spend today across a real restart', () => {
     return JSON.parse(body) as Record<string, unknown>;
   }
 
-  it('keeps the 09:00 first spend after a 14:00 restart, so /api/cost matches the aggregate', async () => {
-    const before = new CostTracker();
-    for (const h of [9, 11]) {
-      before.recordTokenUsage(SPEND, 'claude-sonnet-4', { timestampMs: at(h) });
-    }
-    const store = new SessionStore({ storagePath: dir });
-    store.saveSession(summaryOf(before));
+  it.each([false, true])(
+    'gives /api/cost the aggregate forecast, restarted at 14:00: %s',
+    async (restart) => {
+      const before = new CostTracker();
+      for (const h of [9, 11]) {
+        before.recordTokenUsage(SPEND, 'claude-sonnet-4', { timestampMs: at(h) });
+      }
+      const store = new SessionStore({ storagePath: dir });
+      store.saveSession(summaryOf(before));
 
-    jest.setSystemTime(at(14));
-    const restartMs = Date.now();
-    const persisted = store.loadSession(SESSION_ID);
-    if (!persisted) throw new Error('session was not persisted');
-    const after = new CostTracker();
-    after.seedFromPersisted(buildCostTrackerSeed(persisted));
+      jest.setSystemTime(at(14));
+      const persisted = store.loadSession(SESSION_ID);
+      if (!persisted) throw new Error('session was not persisted');
+      const after = restart ? new CostTracker() : before;
+      if (restart) after.seedFromPersisted(buildCostTrackerSeed(persisted));
+      const startMs = restart ? Date.now() : at(9);
 
-    expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBe(at(9));
+      expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBe(at(9));
 
-    jest.setSystemTime(at(14) + 10 * 60_000);
-    const handler = createApiHandler({
-      localStore: { peekAllBuffers: () => [] },
-      sessionStore: {
-        loadTodaySessions: () => [persisted],
-        loadSessionsOverlappingToday: () => [persisted],
-        listSessions: () => [],
-        loadSession: () => null,
-      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-      sessionTracker,
-      costTracker: after,
-      costForecast: () =>
-        buildCostForecastFromInputs({
-          sessionSpentUsd: after.getMetrics().sessionTotalCostUsd ?? 0,
-          sessionStartMs: restartMs,
-          dailySpentUsd: after.getCostForDay(TODAY_KEY),
-          dailyFirstActivityMs: after.getFirstActivityMsForDay(TODAY_KEY),
-        }),
-    } as unknown as Parameters<typeof createApiHandler>[0]);
-    const cost = (await getJson(handler, '/api/cost')) as {
-      forecast: { forecastEndOfDayUsd: number };
-    };
-    const aggregate = (await getJson(handler, '/api/sessions/today/aggregate')) as {
-      forecastEndOfDayUsd: number;
-    };
-    expect(aggregate.forecastEndOfDayUsd).not.toBeNull();
-    expect(cost.forecast.forecastEndOfDayUsd).toBeCloseTo(aggregate.forecastEndOfDayUsd, 2);
-  });
+      jest.setSystemTime(at(14) + 10 * 60_000);
+      const handler = createApiHandler({
+        localStore: { peekAllBuffers: () => [] },
+        sessionStore: {
+          loadTodaySessions: () => [persisted],
+          loadSessionsOverlappingToday: () => [persisted],
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+        sessionTracker,
+        costTracker: after,
+        costForecast: () =>
+          buildCostForecastFromInputs({
+            sessionSpentUsd: after.getMetrics().sessionTotalCostUsd ?? 0,
+            sessionStartMs: startMs,
+            dailySpentUsd: after.getCostForDay(TODAY_KEY),
+            dailyFirstActivityMs: after.getFirstActivityMsForDay(TODAY_KEY),
+          }),
+      } as unknown as Parameters<typeof createApiHandler>[0]);
+      const cost = (await getJson(handler, '/api/cost')) as {
+        forecast: { forecastEndOfDayUsd: number };
+      };
+      const aggregate = (await getJson(handler, '/api/sessions/today/aggregate')) as {
+        forecastEndOfDayUsd: number;
+      };
+      expect(aggregate.forecastEndOfDayUsd).not.toBeNull();
+      expect(cost.forecast.forecastEndOfDayUsd).toBeCloseTo(aggregate.forecastEndOfDayUsd, 2);
+    },
+  );
 
   it('never saves the restart time as the first spend when the persisted day has none', () => {
     const before = new CostTracker();

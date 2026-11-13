@@ -332,14 +332,17 @@ export function Today(): JSX.Element {
     aggregate?.antiPatternCount ?? 0,
     persistedTodayFlags + currentSessionFlags,
   );
-  const chosenForecastUsd = spendLoading
-    ? null
-    : (aggregate?.forecastEndOfDayUsd ??
-      cost?.forecastEodUsd ??
-      costApi?.forecast?.forecastEndOfDayUsd ??
-      null);
-  const forecastBehindSpend = chosenForecastUsd !== null && chosenForecastUsd < todayTotal;
-  const forecastKpiUsd = forecastBehindSpend ? null : chosenForecastUsd;
+  // In order of preference. A source below the spend on the tile is stale, so
+  // the page shows the next one rather than a forecast under money spent.
+  const forecastSources = spendLoading
+    ? []
+    : [
+        { usd: aggregate?.forecastEndOfDayUsd, scope: 'all sessions' },
+        { usd: cost?.forecastEodUsd, scope: 'all sessions' },
+        { usd: costApi?.forecast?.forecastEndOfDayUsd, scope: 'this session' },
+      ].filter((source): source is { usd: number; scope: string } => source.usd != null);
+  const forecast = forecastSources.find((source) => source.usd >= todayTotal);
+  const forecastKpiUsd = forecast?.usd ?? null;
 
   // The subagent KPI must source from the polled aggregate
   // endpoint, not the liveStore — the SSE frames that would populate
@@ -367,8 +370,13 @@ export function Today(): JSX.Element {
   const weekForecastTotalUsd =
     aggregate && aggregate.totalCostUsd >= todayTotal ? aggregate.totalCostUsd : todayTotal;
   const weekForecast =
-    forecastKpiUsd !== null
-      ? buildWeekForecast(todaySessions ?? [], forecastKpiUsd, weekForecastTotalUsd, Date.now())
+    forecastSources.length > 0
+      ? buildWeekForecast(
+          todaySessions ?? [],
+          forecastKpiUsd ?? todayTotal,
+          weekForecastTotalUsd,
+          Date.now(),
+        )
       : null;
   const [headerTimestamp, setHeaderTimestamp] = useState(() =>
     new Date().toLocaleString(undefined, HEADER_TIMESTAMP_FORMAT),
@@ -476,10 +484,10 @@ export function Today(): JSX.Element {
                   tone="good"
                   value={spendLoading ? '…' : formatUsd(todayTotal)}
                   sub={
-                    forecastKpiUsd != null && forecastKpiUsd > todayTotal
+                    forecast && forecast.usd > todayTotal
                       ? weekForecast != null
-                        ? `→ ${formatUsd(forecastKpiUsd)} by end of day · ~${formatUsd(weekForecast)} by end of week`
-                        : `→ ${formatUsd(forecastKpiUsd)} by end of day`
+                        ? `→ ${formatUsd(forecast.usd)} by end of day (${forecast.scope}) · ~${formatUsd(weekForecast)} by end of week`
+                        : `→ ${formatUsd(forecast.usd)} by end of day (${forecast.scope})`
                       : undefined
                   }
                   {...(!spendLoading

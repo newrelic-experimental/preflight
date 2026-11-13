@@ -634,7 +634,7 @@ describe('Today view', () => {
     expect(screen.getByText(/^→ \$80\.53 by end of day/)).toBeInTheDocument();
   });
 
-  it('shows no forecast anywhere when the chosen forecast is below the spend on the tile', async () => {
+  async function renderBehindAggregate(apiForecastUsd: number | null): Promise<void> {
     useLiveStore.setState({ cost: null });
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
@@ -657,7 +657,11 @@ describe('Today view', () => {
         ]);
       }
       if (url.includes('/api/cost')) {
-        return json({ cost: { sessionTotalCostUsd: 15 }, forecast: null, sessionTodayUsd: 15 });
+        return json({
+          cost: { sessionTotalCostUsd: 15 },
+          forecast: apiForecastUsd === null ? null : { forecastEndOfDayUsd: apiForecastUsd },
+          sessionTodayUsd: 15,
+        });
       }
       return json([]);
     }) as typeof fetch;
@@ -669,8 +673,17 @@ describe('Today view', () => {
       expect(within(spendTile).getByText('$15.00')).toBeInTheDocument();
       expect(screen.getByText('4')).toBeInTheDocument();
     });
+  }
+
+  it('hides the day forecast but keeps the week forecast when every forecast is below spend', async () => {
+    await renderBehindAggregate(null);
     expect(screen.queryByText(/by end of day/)).toBeNull();
-    expect(screen.queryByText(/On pace for/)).toBeNull();
+    expect(screen.getByText(/On pace for ~\$\d/)).toBeInTheDocument();
+  });
+
+  it('falls through a stale aggregate forecast below spend to the /api/cost one, naming its source', async () => {
+    await renderBehindAggregate(20);
+    expect(screen.getByText(/^→ \$20\.00 by end of day \(this session\)/)).toBeInTheDocument();
   });
 
   it('bridges with the SSE forecast while the aggregate has seen no spend today', async () => {
@@ -691,7 +704,9 @@ describe('Today view', () => {
     stubForecastSources({ totalCostUsd: 5, forecastEndOfDayUsd: 9, sessionCount: 2 });
 
     renderToday();
-    await waitFor(() => expect(screen.getByText(/^→ \$9\.00 by end of day/)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText(/^→ \$9\.00 by end of day \(all sessions\)/)).toBeInTheDocument(),
+    );
   });
 
   function stubObservabilityHealth(body: Record<string, unknown>): void {
