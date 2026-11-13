@@ -3161,6 +3161,10 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
     'tool --db-password-file ./pw',
     'docker run --name mysql -p3306:3306 mysql:8',
     'docker run --name mysql -p127.0.0.1:3306:3306 mysql:8',
+    'git log -p',
+    'ls -p',
+    'grep -p foo file.txt',
+    'some-cli --token \\\n  --verbose',
   ])('leaves %s unchanged', (command) => {
     expect(redactSensitive(command)).toBe(command);
   });
@@ -3173,6 +3177,31 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
     ["curl -H 'X-Api-Key: abc def' https://x", "curl -H '[REDACTED]' https://x"],
     [
       JSON.stringify('curl --token "my secret" -H "Api-Key: abc def" x'),
+      '"curl [REDACTED] -H \\"[REDACTED]\\" x"',
+    ],
+    ['curl --token="my secret" x', 'curl --[REDACTED] x'],
+    ["tool --password='a b S3CRET9' x", 'tool --[REDACTED] x'],
+    ['API_KEY="a b S3CRET9" x', '[REDACTED] x'],
+    ['deploy --api-key="a b S3CRET9" x', 'deploy [REDACTED] x'],
+    ['curl --token "sec\\"S3CRET9" x', 'curl [REDACTED] x'],
+    ["curl --token $'a\\' S3CRET9' x", 'curl [REDACTED] x'],
+    ['curl --token "a \\\nS3CRET9" x', 'curl [REDACTED] x'],
+    ['mysql -p"sec\\"S3CRET9" shop', 'mysql [REDACTED] shop'],
+    ['curl -H "X-Api-Key: a\\"S3CRET9" x', 'curl -H "[REDACTED]" x'],
+    ['curl --token \\\n  S3CRET9 x', 'curl [REDACTED] x'],
+    ['curl -H \\\n    "X-Api-Key: S3CRET9" x', 'curl -H \\\n    "[REDACTED]" x'],
+    ['mysql -u root --password= db', 'mysql -u root --[REDACTED]'],
+    ['API_KEY="abc"S3CRET9 x', '[REDACTED] x'],
+    ['curl --token S3\\\nCRET9 x', 'curl [REDACTED] x'],
+    ['mysql -e "select \\"a;b\\"" -pS3CRET9 shop', 'mysql -e "select \\"a;b\\"" [REDACTED] shop'],
+    ['deploy --api-key= db', 'deploy [REDACTED]'],
+    [
+      JSON.stringify('curl --token "sec\\"S3CRET9" -H "X-Api-Key: a\\"S3CRET9" x'),
+      '"curl [REDACTED] -H \\"[REDACTED]\\" x"',
+    ],
+    [JSON.stringify('curl --token \\\n  S3CRET9 x'), '"curl [REDACTED] x"'],
+    [
+      JSON.stringify('curl --token "a\tS3CRET9" -H "X-Api-Key: k" x'),
       '"curl [REDACTED] -H \\"[REDACTED]\\" x"',
     ],
   ])('redacts the whole quoted value in %s', (command, expected) => {
@@ -3209,6 +3238,10 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
     ['a chain of hyphenated flag words', '--a-'.repeat(262_000)],
     ['repeated unclosed escaped header quotes', '-H \\"Api-Key: '.repeat(75_000)],
     ['repeated JSON escapes before a dash', '\\u0000-'.repeat(131_000)],
+    ['repeated unclosed --token= quotes', '--token="'.repeat(117_000)],
+    ['repeated --token line continuations', '--token \\\n'.repeat(105_000)],
+    ["repeated unclosed --token $' quotes", "--token $'".repeat(105_000)],
+    ['repeated unclosed escaped --token quotes', '--token \\"\\\\'.repeat(87_500)],
   ])('scans a 1 MB command of %s in linear time', (_shape, command) => {
     const start = performance.now();
     redactSensitive(command);
