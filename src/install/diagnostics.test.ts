@@ -15,6 +15,7 @@ jest.mock('node:fs', () => {
     readFileSync: jest.fn(),
     accessSync: jest.fn(),
     statSync: jest.fn(),
+    realpathSync: jest.fn(),
     constants: real.constants,
   };
 });
@@ -101,6 +102,7 @@ const mockedExistSync = nodeFs.existsSync as jest.Mock;
 const mockedReadFileSync = nodeFs.readFileSync as jest.Mock;
 const mockedAccessSync = nodeFs.accessSync as jest.Mock;
 const mockedStatSync = nodeFs.statSync as jest.Mock;
+const mockedRealpathSync = nodeFs.realpathSync as unknown as jest.Mock;
 const mockedPlatform = nodeOs.platform as jest.Mock;
 const mockedGetDaemonStatus = schedule.getDashboardDaemonStatus as jest.Mock;
 const mockedFindExecutableNodeDir = schedule.findExecutableNodeDir as jest.Mock;
@@ -133,6 +135,7 @@ describe('runDiagnostics', () => {
     configPath?: string;
     storagePath?: string;
     platform?: string;
+    resolveSecrets?: boolean;
   }) => Promise<DiagnosticCheck[]>;
 
   beforeEach(async () => {
@@ -141,6 +144,7 @@ describe('runDiagnostics', () => {
     mockedExistSync.mockReturnValue(false);
     mockedReadFileSync.mockReturnValue('{}');
     mockedAccessSync.mockImplementation(() => undefined);
+    mockedRealpathSync.mockImplementation((p) => String(p));
     mockedGetDaemonStatus.mockReturnValue({ installed: false, readable: false });
     mockedValidateConfig.mockReturnValue({
       fileExists: false,
@@ -320,7 +324,7 @@ describe('runDiagnostics', () => {
       const c = checks.find((x) => x.check === 'Companion mode')!;
       expect(c.status).toBe('ok');
       expect(c.detail).toBe(
-        "Resolved to false (source: default) from this shell's environment; no running Preflight MCP server to confirm.",
+        "Resolved to false (source: default) from this shell's environment and Claude Code settings; no running Preflight MCP server to confirm.",
       );
     });
 
@@ -908,6 +912,32 @@ describe('runDiagnostics', () => {
       expect(c.detail).toContain('/opt/other-node/bin');
       expect(c.fix).toBeDefined();
     });
+
+    it('returns ok when the hook sits in a version-manager alias that links to the current Node install', async () => {
+      const aliasDir = '/test-home/.local/share/fnm/aliases/default/bin';
+      const currentNodeDir = dirname(process.execPath);
+      settingsWithHookCommand(`"${aliasDir}/preflight-collector" pre-tool`);
+      mockedFindExecutableNodeDir.mockReturnValue({ dir: aliasDir, hasNonExecutable: false });
+      mockedRealpathSync.mockImplementation((p) => (p === aliasDir ? currentNodeDir : String(p)));
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hook node path')!;
+      expect(c.status).toBe('ok');
+    });
+
+    it('compares the paths unresolved when the hook directory no longer exists', async () => {
+      settingsWithHookCommand('"/opt/removed-node/bin/preflight-collector" pre-tool');
+      mockedFindExecutableNodeDir.mockReturnValue({
+        dir: '/opt/removed-node/bin',
+        hasNonExecutable: false,
+      });
+      mockedRealpathSync.mockImplementation((p) => {
+        if (p === '/opt/removed-node/bin') throw new Error('ENOENT');
+        return String(p);
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hook node path')!;
+      expect(c.status).toBe('warn');
+    });
   });
 
   describe('Check 7: Storage writable', () => {
@@ -1184,6 +1214,26 @@ describe('runDiagnostics', () => {
       const c = checks.find((x) => x.check === 'Preflight version')!;
       expect(c.status).toBe('skip');
     });
+  });
+
+  it('loads the config with secret helpers by default, as `doctor` does', async () => {
+    await runDiagnostics(makeOpts());
+
+    expect(mockedLoadMcpConfig).toHaveBeenCalledTimes(1);
+    expect(mockedLoadMcpConfig).toHaveBeenCalledWith(
+      { config: makeOpts().configPath },
+      { resolveSecrets: true },
+    );
+  });
+
+  it('loads the config without running secret helpers when resolveSecrets is false', async () => {
+    await runDiagnostics({ ...makeOpts(), resolveSecrets: false });
+
+    expect(mockedLoadMcpConfig).toHaveBeenCalledTimes(1);
+    expect(mockedLoadMcpConfig).toHaveBeenCalledWith(
+      { config: makeOpts().configPath },
+      { resolveSecrets: false },
+    );
   });
 
   it('returns every check on macOS', async () => {

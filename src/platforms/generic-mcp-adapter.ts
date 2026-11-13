@@ -1,9 +1,8 @@
-import {
-  UNATTRIBUTED_BREADCRUMB_WRITER,
-  type NormalizedToolCall,
-  type PlatformAdapter,
-  type PlatformConfig,
-  type PlatformSessionMetadata,
+import type {
+  NormalizedToolCall,
+  PlatformAdapter,
+  PlatformConfig,
+  PlatformSessionMetadata,
 } from './types.js';
 
 export interface ReportToolCallInput {
@@ -163,9 +162,9 @@ export class GenericMcpAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'self-reported' as const;
   readonly capabilities = {
     instructionFilePaths: [] as const,
-    // An engine whose MCP server sets no MCP_CLIENT lands here, and its hooks
-    // most likely stamp no engine either.
-    sessionBreadcrumbWriters: [UNATTRIBUTED_BREADCRUMB_WRITER] as const,
+    // No hook setup is documented for this adapter, so no breadcrumb is ever
+    // its own.
+    sessionBreadcrumbWriters: [] as const,
   };
 
   private sessionMetadata: PlatformSessionMetadata = { platform: 'generic-mcp' };

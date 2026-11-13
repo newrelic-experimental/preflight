@@ -45,7 +45,7 @@ export class WindsurfAdapter implements PlatformAdapter {
   // live in `.windsurfrules`.
   readonly capabilities = {
     instructionFilePaths: ['.windsurfrules'] as const,
-    // Windsurf's hooks send trajectory_id, never session_id, so they write no breadcrumb.
+    // docs.windsurf.com/windsurf/cascade/hooks: hooks send trajectory_id, never session_id, so they write no breadcrumb.
     sessionBreadcrumbWriters: [] as const,
     // post_mcp_tool_use carries trajectory_id and tool_info.mcp_tool_arguments/
     // mcp_result, and the user and workspace hooks files are

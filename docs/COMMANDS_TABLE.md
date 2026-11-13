@@ -1422,13 +1422,14 @@ Cost attribution per tool type — approximate, based on turn-level token correl
     }
   },
   "totalAttributedCost": 0.042,
-  "attributionRate": 0.85
+  "attributionRate": 0.85,
+  "evictedToolBursts": 0
 }
 ```
 
 **Data source:** `TurnCostAttributor`
 
-**How it works:** Attributes token costs reported via `nr_observe_report_tokens` to the tool calls that occurred within the same conversation turn. Each turn's cost is split evenly across its tool calls, then aggregated by tool type. `attributionRate` is the fraction of total session cost that could be attributed (turns with no token report are excluded). Results are approximate — cost is correlated at the turn level, not the individual call level.
+**How it works:** Attributes token costs reported via `nr_observe_report_tokens` to the tool calls that occurred within the same conversation turn. Each turn's cost is split evenly across its tool calls, then aggregated by tool type. `attributionRate` is the fraction of tool calls whose turn had a token report. Results are approximate — cost is correlated at the turn level, not the individual call level. `evictedToolBursts` counts tool-call bursts dropped without a closing token report, either because the burst went stale or the pending queue overflowed. Each one's cost is lost, so a value above zero means `totalAttributedCost` understates real spend. A token report that no burst claims is not counted: it becomes its own response turn.
 
 `costBySkill` has one row per skill name (`code-review`, `pstack:how`) and covers every tool call made inside that skill's runs. A run opens on a named `Skill` call or a `/<skill>` prompt and lasts until the next prompt or the next skill. `callCount` counts invocations, and `avgCost` is cost per invocation. `attributedCallCount`, `totalDurationMs`, cost, and tokens cover the tool calls inside the runs, each with the same even split of its turn that `costByToolType` uses, so a Read inside a skill run counts in both `costByToolType.Read` and that skill's row. Skill calls that arrive without a skill name (some non-Claude-Code adapters) open no run. Runs, calls, and time per skill over any window are also available in New Relic, since every `AiToolCall` inside a run carries `skill_name`, `skill_source`, and `skill_run_id`:
 
@@ -1801,6 +1802,35 @@ Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/api-failure-tracke
 
 ---
 
+### `nr_observe_get_compute_waste`
+
+Total tokens spent on retried tool calls and on anti-pattern activity, with a per-pattern breakdown and a status.
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "total_tokens_wasted": 5200,
+  "retry_tokens_wasted": 2400,
+  "anti_pattern_tokens_wasted": 2800,
+  "waste_ratio": 0.04,
+  "breakdown": [{ "type": "stuck_loop", "tokens_wasted": 2800, "instances": 2 }],
+  "status": "clean"
+}
+```
+
+**Data source:** `RetryDetector`, `AntiPatternDetector`, `CostTracker` (optional)
+
+**How it works:** Adds the tokens wasted by retries to the tokens wasted by anti-patterns. When the session has token counts from a `CostTracker`, `waste_ratio` is that total divided by all session tokens, and `status` is `clean`, `moderate`, or `needs_attention` from that ratio. Otherwise `waste_ratio` is `null` and `status` comes from absolute token counts.
+
+**Requires:** `RetryDetector`, `AntiPatternDetector`
+
+Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/retry-detector.ts`, `src/metrics/anti-patterns.ts`
+
+---
+
 ## Cross-Session and Team Tools
 
 ### `nr_observe_get_team_summary`
@@ -1846,6 +1876,89 @@ Aggregated AI coding cost and efficiency metrics for all developers in the confi
 - `NEW_RELIC_API_KEY` — User API key (NRAK-...) for NerdGraph queries
 
 Source: `src/tools/cross-session-tools.ts`
+
+---
+
+## Generic MCP Tools
+
+These tools cover activity that MCP does not capture on its own. An assistant calls them to report its non-MCP tool calls and its session boundaries. They need the `GenericMcpAdapter`.
+
+### `nr_observe_report_tool_call`
+
+Reports one non-MCP tool call, such as a file read, a file write, or a terminal command.
+
+**Parameters:**
+
+- `tool` (string, required): tool name, such as `Read`, `Edit`, or `Bash`
+- `success` (boolean, required): whether the call succeeded
+- `input` (object): tool input parameters
+- `input_size_bytes` (number): size of the input in bytes
+- `output_size_bytes` (number): size of the output in bytes
+- `duration_ms` (number): duration in milliseconds
+- `error` (string): error message for a failed call
+- `timestamp` (number): epoch milliseconds when the call occurred, defaults to now
+
+**Returns:**
+
+```json
+{ "recorded": true, "tool": "Edit", "timestamp": 1767225600000 }
+```
+
+**Data source:** `GenericMcpAdapter`, `SessionTracker`, NR ingest
+
+**How it works:** Normalizes the call through the adapter, records it in the session tracker. In cloud mode, it also sends the call to New Relic as an `AiToolCall` event. Local mode sends nothing.
+
+**Requires:** `GenericMcpAdapter`
+
+Source: `src/tools/generic-mcp-tools.ts`, `src/platforms/generic-mcp-adapter.ts`
+
+---
+
+### `nr_observe_report_session_start`
+
+Reports that a new AI coding session has begun and sets its platform metadata.
+
+**Parameters:**
+
+- `platform` (string, required): platform name, such as `my-ai-assistant`
+- `model` (string): AI model in use
+- `developer` (string): developer name or identifier
+
+**Returns:**
+
+```json
+{ "recorded": true, "platform": "my-ai-assistant" }
+```
+
+**Data source:** `GenericMcpAdapter`
+
+**How it works:** Validates the input and passes it to the adapter's session handler, which stores the session metadata that later events use.
+
+**Requires:** `GenericMcpAdapter`
+
+Source: `src/tools/generic-mcp-tools.ts`, `src/platforms/generic-mcp-adapter.ts`
+
+---
+
+### `nr_observe_report_session_end`
+
+Reports that the current AI coding session has ended.
+
+**Parameters:**
+
+- `summary` (string): brief summary of what was accomplished
+
+**Returns:**
+
+```json
+{ "recorded": true, "summary": "Fixed the login redirect." }
+```
+
+**Data source:** None. The handler validates the input and echoes the summary back. It does not change tracker state.
+
+**Requires:** `GenericMcpAdapter`
+
+Source: `src/tools/generic-mcp-tools.ts`
 
 ---
 

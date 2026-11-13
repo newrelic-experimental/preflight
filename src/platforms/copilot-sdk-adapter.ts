@@ -132,15 +132,11 @@ export class CopilotSdkAdapter implements PlatformAdapter {
       '.github/copilot-instructions.md',
     ] as const,
     // The documented hook command stamps NEW_RELIC_AI_PLATFORM=copilot, which
-    // commands documented before #557 (2026-09-04) lack. The desktop app's
+    // commands documented before 2026-09-04 lack. The desktop app's
     // setup stamps MCP_CLIENT=copilot-app into ~/.copilot/hooks/preflight.json,
-    // which this CLI reads too.
-    sessionBreadcrumbWriters: [
-      'copilot-sdk',
-      'copilot',
-      'copilot-app',
-      UNATTRIBUTED_BREADCRUMB_WRITER,
-    ] as const,
+    // which this CLI reads too. MCP_CLIENT=copilot-sdk is MCP server env, not
+    // hook env, so no breadcrumb carries it.
+    sessionBreadcrumbWriters: ['copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {
@@ -200,6 +196,9 @@ export class CopilotSdkAdapter implements PlatformAdapter {
       '   does not inherit env vars set on the MCP server registration in step 3',
       '   below, so without it every event falls through to the claude-code',
       '   platform default.',
+      '   On Windows, PowerShell cannot parse that prefix. Add a "powershell" field to',
+      "   each entry: $env:NEW_RELIC_AI_PLATFORM='copilot'; & 'preflight-collector.cmd' pre-tool",
+      '   (post-tool for PostToolUse).',
       '2. Ensure preflight-collector is on PATH (npm link, or npm install -g @newrelic/preflight)',
       '3. Register the Preflight MCP server:',
       '   copilot mcp add preflight \\',

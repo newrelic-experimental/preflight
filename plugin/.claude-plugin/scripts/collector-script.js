@@ -1,18 +1,8 @@
 #!/usr/bin/env node
 
 // src/hooks/collector-script.ts
-import {
-  readFileSync,
-  writeFileSync,
-  writeSync,
-  openSync as openSync2,
-  closeSync as closeSync2,
-  mkdirSync as mkdirSync2,
-  existsSync,
-  utimesSync,
-  constants as fsConstants
-} from "node:fs";
-import { resolve as resolve2, dirname as dirname2 } from "node:path";
+import { readFileSync as readFileSync2, writeFileSync, mkdirSync as mkdirSync2, existsSync, utimesSync } from "node:fs";
+import { resolve as resolve3, dirname as dirname2 } from "node:path";
 import { homedir } from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 
@@ -43,6 +33,7 @@ function resolveRecordContent(highSecurity, explicitValue) {
 }
 
 // src/platforms/claude-code-adapter.ts
+var CLAUDE_CODE_PLATFORM_NAME = "claude-code";
 var CLAUDE_CODE_ENV_SIGNALS = [
   "CLAUDECODE",
   "CLAUDE_CODE_ENTRYPOINT",
@@ -199,9 +190,138 @@ function releaseReport(storageDir, line) {
   }
 }
 
+// src/hooks/session-breadcrumbs.ts
+import { resolve as resolve2 } from "node:path";
+
+// src/platforms/types.ts
+var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
+
+// src/hooks/session-breadcrumbs.ts
+var BREADCRUMBS_DIR = "breadcrumbs";
+var WRITER_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+function breadcrumbRoot(storagePath, writer) {
+  return resolve2(storagePath, BREADCRUMBS_DIR, writer);
+}
+function breadcrumbWriter(engine) {
+  return engine !== void 0 && WRITER_RE.test(engine) ? engine : UNATTRIBUTED_BREADCRUMB_WRITER;
+}
+
+// src/storage/hook-buffer.ts
+import {
+  closeSync as closeSync2,
+  constants as constants2,
+  fstatSync,
+  openSync as openSync2,
+  readFileSync,
+  readSync,
+  statSync,
+  unlinkSync as unlinkSync2,
+  writeSync
+} from "node:fs";
+var DRAIN_SEAL = "\0preflight-drain-seal\n";
+var MAX_WRITES = 5;
+var MAX_OPENS = 100;
+var TORN_LINE_END = "\n";
+function readRange(fd, start, end) {
+  const buf = Buffer.alloc(Math.max(0, end - start));
+  let read = 0;
+  while (read < buf.length) {
+    const n = readSync(fd, buf, read, buf.length - read, start + read);
+    if (n === 0) break;
+    read += n;
+  }
+  return buf.subarray(0, read);
+}
+function readToEnd(fd, scratch) {
+  let total = 0;
+  for (let n; (n = readSync(fd, scratch, 0, scratch.length, null)) > 0; ) total += n;
+  return total;
+}
+function offsetAfterWrite(fd) {
+  const scratch = Buffer.alloc(64 * 1024);
+  let after = readToEnd(fd, scratch);
+  for (; ; ) {
+    const size = fstatSync(fd).size;
+    const more = readToEnd(fd, scratch);
+    if (more === 0) return size - after;
+    after += more;
+  }
+}
+function isAt(path, file) {
+  const now = statSync(path, { bigint: true, throwIfNoEntry: false });
+  return now !== void 0 && now.ino === file.ino && now.dev === file.dev;
+}
+var LineWrittenError = class extends Error {
+  constructor(cause) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+};
+function landedBeforeSeal(fd, sealFloor) {
+  return !readRange(fd, sealFloor, offsetAfterWrite(fd)).includes(DRAIN_SEAL);
+}
+function appendOnce(path, data) {
+  const fd = openSync2(path, constants2.O_RDWR | constants2.O_CREAT | constants2.O_APPEND, 384);
+  let landed = false;
+  try {
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      if (!isAt(path, opened)) return "moved";
+      const sealFloor = Number(opened.size);
+      const written = writeSync(fd, data);
+      try {
+        if (written < data.length) {
+          writeSync(fd, TORN_LINE_END);
+          return "redo";
+        }
+        landed = isAt(path, opened) || landedBeforeSeal(fd, sealFloor);
+      } catch (err) {
+        landed = written >= data.length - 1 && landedBeforeSeal(fd, sealFloor);
+        throw err;
+      }
+      return landed ? "kept" : "redo";
+    } finally {
+      closeSync2(fd);
+    }
+  } catch (err) {
+    throw landed ? new LineWrittenError(err) : err;
+  }
+}
+function appendToHookBuffer(path, text) {
+  if (text.includes("\0")) {
+    throw new Error(`Hook buffer text contains NUL, which marks a drain seal: ${path}`);
+  }
+  if (!text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) {
+    throw new Error(`Hook buffer text must be exactly one newline-terminated line: ${path}`);
+  }
+  const data = Buffer.from(text);
+  let writes = 0;
+  for (let opens = 0; opens < MAX_OPENS; opens++) {
+    const landing = appendOnce(path, data);
+    if (landing === "kept") return;
+    if (landing === "redo" && ++writes === MAX_WRITES) break;
+  }
+  throw new Error(`Hook buffer write raced a drain on all attempts and was not kept: ${path}`);
+}
+
+// src/metrics/mcp-pr-tools.ts
+var MCP_PR_TOOL_ACTION = {
+  create_pull_request: "create",
+  update_pull_request: "edit",
+  merge_pull_request: "merge"
+};
+function bareMcpToolName(toolName) {
+  const parts = toolName.split("__");
+  if (parts.length >= 3 && parts[0] === "mcp") return parts.slice(2).join("__");
+  return toolName;
+}
+function mcpPrToolAction(toolName) {
+  const bare = bareMcpToolName(toolName);
+  return Object.hasOwn(MCP_PR_TOOL_ACTION, bare) ? MCP_PR_TOOL_ACTION[bare] : void 0;
+}
+
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
-var DEFAULT_STORAGE_DIR = resolve2(homedir(), ".newrelic-preflight");
+var DEFAULT_STORAGE_DIR = resolve3(homedir(), ".newrelic-preflight");
 function getStorageDir() {
   return process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
 }
@@ -211,14 +331,14 @@ function getBufferPath(sessionId) {
   }
   const storageDir = getStorageDir();
   const safeId = typeof sessionId === "string" && SESSION_ID_RE.test(sessionId) ? sessionId : "unknown";
-  return resolve2(storageDir, `buffer-${safeId}.jsonl`);
+  return resolve3(storageDir, `buffer-${safeId}.jsonl`);
 }
 var HIGH_SECURITY_FROM_FILE = (() => {
   for (const dir of [".newrelic-preflight", ".nr-ai-observe"]) {
     try {
-      const configPath = resolve2(homedir(), dir, "config.json");
+      const configPath = resolve3(homedir(), dir, "config.json");
       if (existsSync(configPath)) {
-        const config = JSON.parse(readFileSync(configPath, "utf-8"));
+        const config = JSON.parse(readFileSync2(configPath, "utf-8"));
         return config.highSecurity === true;
       }
     } catch {
@@ -260,7 +380,7 @@ var HOOK_EVENT_PLATFORM = {
 function detectStampPlatform() {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
-  return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0) ? "claude-code" : void 0;
+  return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0) ? CLAUDE_CODE_PLATFORM_NAME : void 0;
 }
 var MAX_REDACT_BYTES = 1048576;
 function redact(value) {
@@ -300,7 +420,7 @@ function hasStringText(block) {
   return typeof block === "object" && block !== null && "text" in block && typeof block.text === "string";
 }
 var _procFs = {
-  readFile: (path) => readFileSync(path, "utf-8")
+  readFile: (path) => readFileSync2(path, "utf-8")
 };
 function getLinuxAncestorPids(startPpid, maxDepth = 5) {
   const pids = [startPpid];
@@ -322,21 +442,20 @@ function getLinuxAncestorPids(startPpid, maxDepth = 5) {
   return pids;
 }
 var _breadcrumbWriteFailed = false;
-function writePpidBreadcrumb(sessionId) {
+function writePpidBreadcrumb(sessionId, root) {
   if (!SESSION_ID_RE.test(sessionId)) return;
   const ppid = process.ppid;
   if (typeof ppid !== "number" || ppid <= 0) return;
   try {
-    const storageDir = getStorageDir();
-    const breadcrumbDir = resolve2(storageDir, "session-by-ppid");
+    const breadcrumbDir = resolve3(root, "session-by-ppid");
     mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const pids = getLinuxAncestorPids(ppid);
     let wroteAny = false;
     for (const pid of pids) {
-      const breadcrumbPath = resolve2(breadcrumbDir, `${pid}.txt`);
+      const breadcrumbPath = resolve3(breadcrumbDir, `${pid}.txt`);
       if (existsSync(breadcrumbPath)) {
         try {
-          if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
+          if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
             const now = /* @__PURE__ */ new Date();
             try {
               utimesSync(breadcrumbPath, now, now);
@@ -363,18 +482,17 @@ function writePpidBreadcrumb(sessionId) {
   }
 }
 var _cwdBreadcrumbWriteFailed = false;
-function writeCwdBreadcrumb(sessionId, cwd) {
+function writeCwdBreadcrumb(sessionId, cwd, root) {
   if (!SESSION_ID_RE.test(sessionId)) return;
   if (typeof cwd !== "string" || cwd.length === 0) return;
   try {
-    const storageDir = getStorageDir();
-    const breadcrumbDir = resolve2(storageDir, "session-by-cwd");
+    const breadcrumbDir = resolve3(root, "session-by-cwd");
     mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
-    const breadcrumbPath = resolve2(breadcrumbDir, `${sanitizedCwd}.txt`);
+    const breadcrumbPath = resolve3(breadcrumbDir, `${sanitizedCwd}.txt`);
     if (existsSync(breadcrumbPath)) {
       try {
-        if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
+        if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
           _cwdBreadcrumbWriteFailed = false;
           return;
         }
@@ -393,12 +511,27 @@ function writeCwdBreadcrumb(sessionId, cwd) {
     }
   }
 }
+var GITHUB_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
+function mcpPrInputMeta(input, action) {
+  const meta = {};
+  const { owner, repo, pullNumber } = input;
+  if (typeof owner === "string" && typeof repo === "string" && GITHUB_NAME_RE.test(owner) && GITHUB_NAME_RE.test(repo)) {
+    meta.prRepo = `${owner}/${repo}`;
+  }
+  if (action !== "create") {
+    const number = typeof pullNumber === "number" ? String(pullNumber) : pullNumber;
+    if (typeof number === "string" && /^[1-9]\d{0,8}$/.test(number)) meta.prNumber = number;
+  }
+  return meta;
+}
 function extractInputMeta(toolName, input) {
   if (input === null || input === void 0 || typeof input !== "object") return void 0;
   const obj = input;
   const meta = {};
   if (typeof obj.file_path === "string") meta.file_path = obj.file_path;
   else if (typeof obj.filePath === "string") meta.file_path = obj.filePath;
+  const prAction = mcpPrToolAction(toolName);
+  if (prAction !== void 0) Object.assign(meta, mcpPrInputMeta(obj, prAction));
   switch (toolName) {
     case "Read":
       if (typeof obj.offset === "number") meta.offset = obj.offset;
@@ -551,7 +684,7 @@ function findCreatedPrNumber(output) {
 function extractOutputMeta(toolName, output, input) {
   if (output === null || output === void 0 || typeof output !== "object") return void 0;
   const obj = output;
-  if (toolName.endsWith("create_pull_request")) {
+  if (mcpPrToolAction(toolName) === "create") {
     const createdPrNumber = findCreatedPrNumber(output);
     return createdPrNumber === void 0 ? void 0 : { createdPrNumber };
   }
@@ -616,6 +749,7 @@ function extractOutputMeta(toolName, output, input) {
 function getWindsurfToolInfo(data) {
   return data.tool_info !== null && typeof data.tool_info === "object" ? data.tool_info : {};
 }
+var stderrSinkInstalled = false;
 function processHook(raw, cliEvent) {
   let data;
   try {
@@ -625,8 +759,9 @@ function processHook(raw, cliEvent) {
   }
   const sessionId = data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
   if (typeof data.session_id === "string" && data.session_id.length > 0) {
-    writePpidBreadcrumb(data.session_id);
-    writeCwdBreadcrumb(data.session_id, data.cwd);
+    const root = breadcrumbRoot(getStorageDir(), breadcrumbWriter(detectStampPlatform()));
+    writePpidBreadcrumb(data.session_id, root);
+    writeCwdBreadcrumb(data.session_id, data.cwd, root);
   }
   const eventName = (data.hook_event_name ?? data.agent_action_name)?.toLowerCase();
   const toolName = data.tool_name ?? "unknown";
@@ -972,29 +1107,31 @@ function processHook(raw, cliEvent) {
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
   const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : void 0;
-  let written = 0;
-  let postBytes = 0;
+  let reportAttempted = false;
   try {
     const bufferPath = getBufferPath(sessionId);
     const bufferDir = dirname2(bufferPath);
     if (!existsSync(bufferDir)) {
       mkdirSync2(bufferDir, { recursive: true, mode: 448 });
     }
-    const post = Buffer.from(JSON.stringify(event) + "\n");
-    postBytes = post.length;
-    const line = newReport ? Buffer.concat([post, Buffer.from(JSON.stringify(newReport) + "\n")]) : post;
-    const fd = openSync2(
-      bufferPath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND,
-      384
-    );
-    try {
-      while (written < line.length) written += writeSync(fd, line, written);
-    } finally {
-      closeSync2(fd);
+    appendToHookBuffer(bufferPath, JSON.stringify(event) + "\n");
+    if (newReport) {
+      reportAttempted = true;
+      appendToHookBuffer(bufferPath, JSON.stringify(newReport) + "\n");
     }
-  } catch {
-    if (newReport && written <= postBytes) releaseReport(getStorageDir(), newReport);
+  } catch (err) {
+    if (newReport && !(reportAttempted && err instanceof LineWrittenError)) {
+      releaseReport(getStorageDir(), newReport);
+    }
+    if (!stderrSinkInstalled) {
+      stderrSinkInstalled = true;
+      process.stderr.on("error", () => void 0);
+    }
+    try {
+      process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}
+`);
+    } catch {
+    }
   }
   if (isGeminiCli) {
     try {
@@ -1023,7 +1160,7 @@ var _resolvedScript = (() => {
 })();
 var _isDirectExecution = _resolvedScript != null && /collector-script\.[jt]s$/.test(_resolvedScript);
 var _stdinFs = {
-  readFileSync: (pathOrFd) => readFileSync(pathOrFd, "utf-8")
+  readFileSync: (pathOrFd) => readFileSync2(pathOrFd, "utf-8")
 };
 function readStdinSync() {
   if (process.platform === "win32") {

@@ -13,23 +13,16 @@
  *   - Config via env vars only (no file reads for config)
  */
 
-import {
-  readFileSync,
-  writeFileSync,
-  writeSync,
-  openSync,
-  closeSync,
-  mkdirSync,
-  existsSync,
-  utimesSync,
-  constants as fsConstants,
-} from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, utimesSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
-import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
+import {
+  CLAUDE_CODE_ENV_SIGNALS,
+  CLAUDE_CODE_PLATFORM_NAME,
+} from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
 import {
   claimReport,
@@ -38,6 +31,9 @@ import {
   SESSION_ID_RE,
   type HookReportCall,
 } from './self-report.js';
+import { breadcrumbRoot, breadcrumbWriter } from './session-breadcrumbs.js';
+import { appendToHookBuffer, LineWrittenError } from '../storage/hook-buffer.js';
+import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -134,7 +130,7 @@ function detectStampPlatform(): string | undefined {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
   return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)
-    ? 'claude-code'
+    ? CLAUDE_CODE_PLATFORM_NAME
     : undefined;
 }
 
@@ -199,7 +195,7 @@ function hasStringText(block: unknown): block is { text: string } {
 }
 
 // ---------------------------------------------------------------------------
-// PPID + cwd breadcrumbs — let the MCP server learn the Claude Code session_id
+// PPID + cwd breadcrumbs — let the MCP server learn its engine's session_id
 //
 // Claude Code spawns its MCP server and hook collector scripts as children of
 // the same process; they share a PPID. The MCP can read its own process.ppid
@@ -266,14 +262,13 @@ export function getLinuxAncestorPids(startPpid: number, maxDepth = 5): number[] 
 
 let _breadcrumbWriteFailed = false;
 
-function writePpidBreadcrumb(sessionId: string): void {
+function writePpidBreadcrumb(sessionId: string, root: string): void {
   if (!SESSION_ID_RE.test(sessionId)) return;
   const ppid = process.ppid;
   if (typeof ppid !== 'number' || ppid <= 0) return;
 
   try {
-    const storageDir = getStorageDir();
-    const breadcrumbDir = resolve(storageDir, 'session-by-ppid');
+    const breadcrumbDir = resolve(root, 'session-by-ppid');
     mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
 
     // Walk ancestor PIDs. On Linux this includes any intermediate shell
@@ -330,13 +325,12 @@ function writePpidBreadcrumb(sessionId: string): void {
 
 let _cwdBreadcrumbWriteFailed = false;
 
-function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined): void {
+function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined, root: string): void {
   if (!SESSION_ID_RE.test(sessionId)) return;
   if (typeof cwd !== 'string' || cwd.length === 0) return;
 
   try {
-    const storageDir = getStorageDir();
-    const breadcrumbDir = resolve(storageDir, 'session-by-cwd');
+    const breadcrumbDir = resolve(root, 'session-by-cwd');
     mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
 
     // Same sanitization scheme as getTranscriptPath() above, so the MCP
@@ -492,6 +486,33 @@ interface HookInput {
   [key: string]: unknown;
 }
 
+// GitHub owner and repo names: letters, digits, `.`, `_` and `-`.
+const GITHUB_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
+
+/** The target of a GitHub MCP PR call (`owner`, `repo`, and for an update or
+ *  merge `pullNumber`; see mcp-pr-tools.ts), as `prRepo` (`owner/repo`) and
+ *  `prNumber` (digits). A value that isn't a plain name or number is dropped. */
+function mcpPrInputMeta(
+  input: Record<string, unknown>,
+  action: ReturnType<typeof mcpPrToolAction>,
+): Record<string, string> {
+  const meta: Record<string, string> = {};
+  const { owner, repo, pullNumber } = input;
+  if (
+    typeof owner === 'string' &&
+    typeof repo === 'string' &&
+    GITHUB_NAME_RE.test(owner) &&
+    GITHUB_NAME_RE.test(repo)
+  ) {
+    meta.prRepo = `${owner}/${repo}`;
+  }
+  if (action !== 'create') {
+    const number = typeof pullNumber === 'number' ? String(pullNumber) : pullNumber;
+    if (typeof number === 'string' && /^[1-9]\d{0,8}$/.test(number)) meta.prNumber = number;
+  }
+  return meta;
+}
+
 /**
  * Extract only the metadata fields from tool_input that the tool-specific
  * parsers need. Full content strings are replaced with their lengths to
@@ -507,6 +528,9 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
   // (https://code.visualstudio.com/docs/copilot/customization/hooks).
   if (typeof obj.file_path === 'string') meta.file_path = obj.file_path;
   else if (typeof obj.filePath === 'string') meta.file_path = obj.filePath;
+
+  const prAction = mcpPrToolAction(toolName);
+  if (prAction !== undefined) Object.assign(meta, mcpPrInputMeta(obj, prAction));
 
   switch (toolName) {
     case 'Read':
@@ -680,7 +704,7 @@ function extractOutputMeta(
   if (output === null || output === undefined || typeof output !== 'object') return undefined;
   const obj = output as Record<string, unknown>;
 
-  if (toolName.endsWith('create_pull_request')) {
+  if (mcpPrToolAction(toolName) === 'create') {
     const createdPrNumber = findCreatedPrNumber(output as Record<string, unknown> | unknown[]);
     return createdPrNumber === undefined ? undefined : { createdPrNumber };
   }
@@ -761,6 +785,8 @@ function getWindsurfToolInfo(data: HookInput): Record<string, unknown> {
   return data.tool_info !== null && typeof data.tool_info === 'object' ? data.tool_info : {};
 }
 
+let stderrSinkInstalled = false;
+
 /**
  * @param cliEvent The hook command's first argument (`process.argv[2]`), if
  *   any. Only consulted for Antigravity, whose payloads never name their own
@@ -789,7 +815,7 @@ function processHook(raw: string, cliEvent?: string): void {
     data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
 
   // Drop a PPID breadcrumb at the very top so the MCP server can resolve its
-  // Claude Code session_id without an env-var or initialize-payload extension.
+  // engine's session_id without an env-var or initialize-payload extension.
   // The function itself is a no-op when sessionId is missing or invalid, and
   // short-circuits if the breadcrumb is already current. Cursor's
   // conversation_id is deliberately excluded here — there is no confirmed
@@ -797,8 +823,9 @@ function processHook(raw: string, cliEvent?: string): void {
   // ancestry-based session-resolution model, so extending this to
   // conversation_id would be a guess, not a fix.
   if (typeof data.session_id === 'string' && data.session_id.length > 0) {
-    writePpidBreadcrumb(data.session_id);
-    writeCwdBreadcrumb(data.session_id, data.cwd);
+    const root = breadcrumbRoot(getStorageDir(), breadcrumbWriter(detectStampPlatform()));
+    writePpidBreadcrumb(data.session_id, root);
+    writeCwdBreadcrumb(data.session_id, data.cwd, root);
   }
 
   // Claude Code sends PascalCase hook names ('PreToolUse'); Kiro sends
@@ -1393,8 +1420,7 @@ function processHook(raw: string, cliEvent?: string): void {
 
   const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : undefined;
   // Write to buffer — wrapped in try/catch for resilience.
-  let written = 0;
-  let postBytes = 0;
+  let reportAttempted = false;
   try {
     const bufferPath = getBufferPath(sessionId);
     const bufferDir = dirname(bufferPath);
@@ -1402,25 +1428,26 @@ function processHook(raw: string, cliEvent?: string): void {
       mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
     }
 
-    const post = Buffer.from(JSON.stringify(event) + '\n');
-    postBytes = post.length;
-    const line = newReport
-      ? Buffer.concat([post, Buffer.from(JSON.stringify(newReport) + '\n')])
-      : post;
-
-    const fd = openSync(
-      bufferPath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND,
-      0o600,
-    );
-    try {
-      while (written < line.length) written += writeSync(fd, line, written);
-    } finally {
-      closeSync(fd);
+    appendToHookBuffer(bufferPath, JSON.stringify(event) + '\n');
+    if (newReport) {
+      reportAttempted = true;
+      appendToHookBuffer(bufferPath, JSON.stringify(newReport) + '\n');
     }
-  } catch {
-    // Silent failure — never block Claude Code
-    if (newReport && written <= postBytes) releaseReport(getStorageDir(), newReport);
+  } catch (err) {
+    // A report line a drain can read keeps its claim. Any other failure frees it for a retry.
+    if (newReport && !(reportAttempted && err instanceof LineWrittenError)) {
+      releaseReport(getStorageDir(), newReport);
+    }
+    // A closed stderr (EPIPE) must not turn a dropped event into a failed hook.
+    if (!stderrSinkInstalled) {
+      stderrSinkInstalled = true;
+      process.stderr.on('error', () => undefined);
+    }
+    try {
+      process.stderr.write(`[preflight-collector] Dropping a hook event: ${String(err)}\n`);
+    } catch {
+      // The hook still exits 0.
+    }
   }
 
   // Gemini CLI's own hook examples always print "{}" before exiting 0, even

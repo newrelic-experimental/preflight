@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   rmSync,
+  readFileSync,
   readdirSync,
   utimesSync,
   writeFileSync,
@@ -22,6 +23,7 @@ import type { FullSessionSummary } from './session-store.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { buildCostTrackerSeed } from '../metrics/cost-tracker-seed.js';
+import { makeUsage } from '../__test-utils__/token-usage.js';
 import type { CostMetrics } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
@@ -569,6 +571,32 @@ describe('SessionStore', () => {
     expect(files[0]).toBe('2026-04-15_abc-123.json');
   });
 
+  it('saveSession returns the file it merged against, or null when it writes nothing', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    const empty = makeSummary({ sessionId: 'reports-write', startTime, toolCallCount: 0 });
+    const noUsage = {
+      ...empty,
+      toolBreakdown: {},
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensThinking: 0,
+      estimatedCostUsd: 0,
+      subagentCostUsd: 0,
+      timeline: [],
+    };
+
+    expect(store.saveSession(noUsage)).toBeNull();
+    expect(store.saveSession(makeSummary({ sessionId: 'reports-write', startTime }))).toEqual({
+      previous: null,
+    });
+    const firstFile = store.loadSession('reports-write');
+    expect(
+      store.saveSession(makeSummary({ sessionId: 'reports-write', startTime, toolCallCount: 12 })),
+    ).toEqual({ previous: firstFile });
+    expect(store.saveSession(noUsage)).toBeNull();
+  });
+
   it('does not let an empty summary clobber a recorded session', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const startTime = new Date('2026-04-15T10:00:00Z').getTime();
@@ -581,6 +609,80 @@ describe('SessionStore', () => {
     );
 
     expect(store.loadSession('clobber-me')!.toolCallCount).toBe(12);
+  });
+
+  it('does not let an empty summary clobber a chat-only session', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    const noActivity = {
+      sessionId: 'chat-only',
+      startTime,
+      toolCallCount: 0,
+      toolBreakdown: {},
+      subagentCostUsd: 0,
+      tokensThinking: 0,
+    };
+    store.saveSession(
+      makeSummary({
+        ...noActivity,
+        estimatedCostUsd: 0.5,
+        tokensInput: 4000,
+        tokensOutput: 800,
+        modelBreakdown: {
+          'claude-sonnet-4-20250514': {
+            requestCount: 1,
+            totalInputTokens: 4000,
+            totalOutputTokens: 800,
+            totalCostUsd: 0.5,
+            totalCacheReadTokens: 0,
+            totalCacheCreationTokens: 0,
+            totalThinkingTokens: 0,
+          },
+        },
+      }),
+    );
+
+    store.saveSession(
+      makeSummary({
+        ...noActivity,
+        estimatedCostUsd: 0,
+        tokensInput: 0,
+        tokensOutput: 0,
+        modelBreakdown: {},
+      }),
+    );
+
+    const saved = store.loadSession('chat-only')!;
+    expect(saved.estimatedCostUsd).toBeCloseTo(0.5, 4);
+    expect(saved.tokensInput).toBe(4000);
+    expect(saved.modelBreakdown).not.toEqual({});
+  });
+
+  it('merges a summary with cost but no tool calls into a recorded session', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(
+      makeSummary({
+        sessionId: 'chat-after',
+        startTime,
+        toolCallCount: 12,
+        estimatedCostUsd: 0.0192,
+      }),
+    );
+
+    store.saveSession(
+      makeSummary({
+        sessionId: 'chat-after',
+        startTime,
+        toolCallCount: 0,
+        toolBreakdown: {},
+        estimatedCostUsd: 0.0288,
+      }),
+    );
+
+    const saved = store.loadSession('chat-after')!;
+    expect(saved.estimatedCostUsd).toBeCloseTo(0.0288, 4);
+    expect(saved.toolCallCount).toBe(12);
   });
 
   it('merges a self-reported summary with no tool calls into a recorded session', () => {
@@ -602,32 +704,22 @@ describe('SessionStore', () => {
     expect(store.loadSession('reported')).toMatchObject({ toolCallCount: 12, tokensInput: 99_000 });
   });
 
-  it("accepts the owner's summary with usage over a file that holds only self-reports", () => {
+  it('writes the first file of a session that holds only a self-report', () => {
     const store = new SessionStore({ storagePath: tmpDir });
-    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
-    const idle = { sessionId: 'reported-only', startTime, toolCallCount: 0, toolBreakdown: {} };
-    store.saveSession(makeSummary({ ...idle, tokensInput: 1000, selfReportCount: 1 }));
+    const idle = {
+      toolCallCount: 0,
+      toolBreakdown: {},
+      estimatedCostUsd: 0,
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensThinking: 0,
+    };
 
     const saved = store.saveSession(
-      makeSummary({ ...idle, tokensInput: 1100, outcome: 'completed' }),
+      makeSummary({ ...idle, sessionId: 'reported-only', selfReportCount: 1 }),
     );
 
-    expect(saved).toBe(true);
-    expect(store.loadSession('reported-only')).toMatchObject({
-      tokensInput: 1100,
-      outcome: 'completed',
-    });
-  });
-
-  it('keeps the existing outcome when a write carries none', () => {
-    const store = new SessionStore({ storagePath: tmpDir });
-    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
-    store.saveSession(makeSummary({ sessionId: 'observed', startTime, outcome: 'in progress' }));
-    const { outcome: _outcome, ...observed } = makeSummary({ sessionId: 'observed', startTime });
-
-    store.saveSession(observed as unknown as FullSessionSummary);
-
-    expect(store.loadSession('observed')?.outcome).toBe('in progress');
+    expect(saved).not.toBeNull();
   });
 
   it('keeps the larger selfReportCount', () => {
@@ -638,24 +730,6 @@ describe('SessionStore', () => {
     store.saveSession(makeSummary({ sessionId: 'counted', startTime, selfReportCount: 1 }));
 
     expect(store.loadSession('counted')?.selfReportCount).toBe(2);
-  });
-
-  it('returns whether it wrote the file', () => {
-    const store = new SessionStore({ storagePath: tmpDir });
-    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
-    const empty = { toolCallCount: 0, toolBreakdown: {}, estimatedCostUsd: 0 };
-    const idle = { ...empty, tokensInput: 0, tokensOutput: 0, tokensThinking: 0 };
-    mkdirSync(resolve(tmpDir, 'sessions', '2026-04-15_unwritable.json'));
-
-    const wrote = [
-      makeSummary({ sessionId: 'recorded', startTime }),
-      makeSummary({ sessionId: 'bad id', startTime }),
-      makeSummary({ sessionId: 'idle', startTime, ...idle }),
-      makeSummary({ sessionId: 'recorded', startTime, ...empty }),
-      makeSummary({ sessionId: 'unwritable', startTime }),
-    ].map((summary) => store.saveSession(summary));
-
-    expect(wrote).toEqual([true, false, false, false, false]);
   });
 
   it('does not create a file for a session that recorded no usage', () => {
@@ -1123,6 +1197,12 @@ describe('buildSessionSummary', () => {
         estimatedByModel: {
           'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
         },
+        unpricedByDay: { '2026-11-06': { 'claude-foo-9-9': { calls: 2, tokens: 30 } } },
+        estimatedByDay: {
+          '2026-11-06': {
+            'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+          },
+        },
       }),
     };
 
@@ -1210,6 +1290,9 @@ describe('buildSessionSummary', () => {
     expect(summary.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 2, tokens: 30 } });
     expect(summary.estimatedByModel).toEqual({
       'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+    });
+    expect(summary.unpricedByDay).toEqual({
+      '2026-11-06': { 'claude-foo-9-9': { calls: 2, tokens: 30 } },
     });
     expect(summary.toolCallCount).toBe(15);
     expect(summary.toolBreakdown).toEqual({ Read: 5, Edit: 7, Bash: 3 });
@@ -1751,6 +1834,283 @@ describe('buildSessionSummary', () => {
     ).toEqual(only);
   });
 
+  describe('call counts and the byte-estimate ledger', () => {
+    const ledger = (calls: number, tokens: number, day = '2026-11-06') => ({
+      costUsd: 0.01,
+      inputTokens: 10,
+      outputTokens: 5,
+      costByModel: {},
+      costByDayUsd: {},
+      unpricedByModel: { a: { calls, tokens } },
+      unpricedByDay: { [day]: { a: { calls, tokens } } },
+    });
+
+    it('mergeSummaries drops the calls of byte estimates a later write replaced', () => {
+      const existing = makeSummary({
+        unpricedByModel: { a: { calls: 3, tokens: 30 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 3, tokens: 30 } } },
+        byteEstimates: ledger(2, 20),
+      });
+      const incoming = makeSummary({
+        unpricedByModel: { a: { calls: 1, tokens: 10 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 1, tokens: 10 } } },
+        byteEstimates: {
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByModel: {},
+          costByDayUsd: {},
+        },
+      });
+
+      const merged = mergeSummaries(existing, incoming);
+
+      expect(merged.unpricedByModel).toEqual({ a: { calls: 1, tokens: 10 } });
+      expect(merged.unpricedByDay).toEqual({ '2026-11-06': { a: { calls: 1, tokens: 10 } } });
+    });
+
+    it('mergeSummaries drops every call when the later write replaced them all', () => {
+      const existing = makeSummary({
+        unpricedByModel: { a: { calls: 2, tokens: 200 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 2, tokens: 200 } } },
+        byteEstimates: ledger(2, 200),
+      });
+      const incoming = makeSummary({
+        byteEstimates: {
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByModel: {},
+          costByDayUsd: {},
+        },
+      });
+
+      const merged = mergeSummaries(existing, incoming);
+
+      expect(merged.unpricedByModel).toBeUndefined();
+      expect(merged.unpricedByDay).toEqual({});
+    });
+
+    it('saves, reloads, restarts and merges the calls of a replaced byte estimate once', () => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const startTime = new Date('2026-11-06T10:00:00Z').getTime();
+      const unpriced = 'claude-foo-9-9';
+      const summarize = (tracker: CostTracker): FullSessionSummary => ({
+        ...buildSessionSummary({
+          sessionTracker: makeSessionTracker(),
+          costTracker: tracker,
+          developer: 'alice',
+        }),
+        sessionId: 'sess-e2e',
+        startTime,
+      });
+
+      const first = new CostTracker();
+      first.recordEstimatedTokens(4_000, 2_000, unpriced);
+      first.recordEstimatedTokens(4_000, 2_000, unpriced);
+      store.saveSession(summarize(first));
+      const saved = store.loadSession('sess-e2e')!;
+      expect(saved.unpricedByModel?.[unpriced]?.calls).toBe(2);
+
+      const restarted = new CostTracker();
+      restarted.seedFromPersisted(buildCostTrackerSeed(saved));
+      expect(restarted.getMetrics().unpricedByModel[unpriced]?.calls).toBe(2);
+      restarted.recordTokenUsage(
+        makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 }),
+        'claude-sonnet-4',
+        { replacesEstimates: true },
+      );
+      expect(restarted.getMetrics().unpricedByModel).toEqual({});
+      store.saveSession(summarize(restarted));
+
+      const reloaded = store.loadSession('sess-e2e')!;
+      expect(reloaded.unpricedByModel).toBeUndefined();
+      expect(reloaded.unpricedByDay).toEqual({});
+      const afterSecondRestart = new CostTracker();
+      afterSecondRestart.seedFromPersisted(buildCostTrackerSeed(reloaded));
+      expect(afterSecondRestart.getMetrics().unpricedByModel).toEqual({});
+    });
+
+    it('mergeSummaries keeps the calls of byte estimates the latest write still holds', () => {
+      const existing = makeSummary({
+        unpricedByModel: { a: { calls: 1, tokens: 10 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 1, tokens: 10 } } },
+      });
+      const incoming = makeSummary({
+        unpricedByModel: { a: { calls: 3, tokens: 30 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 3, tokens: 30 } } },
+        byteEstimates: ledger(2, 20),
+      });
+
+      const merged = mergeSummaries(existing, incoming);
+
+      expect(merged.unpricedByModel).toEqual({ a: { calls: 3, tokens: 30 } });
+      expect(merged.unpricedByDay).toEqual({ '2026-11-06': { a: { calls: 3, tokens: 30 } } });
+    });
+
+    it('mergeSummaries drops the estimated-price calls of byte estimates a later write replaced', () => {
+      const e = (calls: number, tokens: number) => ({
+        b: { calls, tokens, estimatedFrom: 'claude-opus-5' },
+      });
+      const existing = makeSummary({
+        estimatedByModel: e(3, 30),
+        estimatedByDay: { '2026-11-06': e(3, 30) },
+        byteEstimates: {
+          ...ledger(0, 0),
+          unpricedByModel: {},
+          unpricedByDay: {},
+          estimatedByModel: e(2, 20),
+          estimatedByDay: { '2026-11-06': e(2, 20) },
+        },
+      });
+      const incoming = makeSummary({
+        estimatedByModel: e(1, 10),
+        estimatedByDay: { '2026-11-06': e(1, 10) },
+        byteEstimates: {
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByModel: {},
+          costByDayUsd: {},
+        },
+      });
+
+      const merged = mergeSummaries(existing, incoming);
+
+      expect(merged.estimatedByModel).toEqual(e(1, 10));
+      expect(merged.estimatedByDay).toEqual({ '2026-11-06': e(1, 10) });
+    });
+
+    it('mergeSummaries keeps an empty day map beside counts that have no day', () => {
+      const lateOnly = {
+        unpricedByModel: { a: { calls: 1, tokens: 10 } },
+        unpricedByDay: {},
+      };
+      const merged = mergeSummaries(makeSummary(lateOnly), makeSummary(lateOnly));
+      expect(merged.unpricedByModel).toEqual({ a: { calls: 1, tokens: 10 } });
+      expect(merged.unpricedByDay).toEqual({});
+    });
+
+    it('mergeSummaries drops the day split when a legacy side holds calls the other side lacks', () => {
+      const legacy = makeSummary({
+        unpricedByModel: { a: { calls: 5, tokens: 50 } },
+        estimatedByModel: { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } },
+        estimatedByDay: { '2026-11-06': { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } } },
+      });
+      const current = makeSummary({
+        unpricedByModel: { a: { calls: 1, tokens: 10 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 1, tokens: 10 } } },
+        estimatedByModel: { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } },
+        estimatedByDay: { '2026-11-06': { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } } },
+      });
+
+      for (const merged of [mergeSummaries(legacy, current), mergeSummaries(current, legacy)]) {
+        expect(merged.unpricedByModel).toEqual({ a: { calls: 5, tokens: 50 } });
+        expect(merged.unpricedByDay).toBeUndefined();
+        expect(merged.estimatedByDay).toEqual({
+          '2026-11-06': { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } },
+        });
+      }
+    });
+
+    it('mergeSummaries keeps the day split of a resumed session over its legacy file', () => {
+      const legacy = makeSummary({ unpricedByModel: { a: { calls: 5, tokens: 50 } } });
+      const resumed = makeSummary({
+        unpricedByModel: { a: { calls: 6, tokens: 60 } },
+        unpricedByDay: {
+          '2026-11-05': { a: { calls: 5, tokens: 50 } },
+          '2026-11-06': { a: { calls: 1, tokens: 10 } },
+        },
+      });
+
+      const merged = mergeSummaries(legacy, resumed);
+
+      expect(merged.unpricedByModel).toEqual({ a: { calls: 6, tokens: 60 } });
+      expect(merged.unpricedByDay).toEqual({
+        '2026-11-05': { a: { calls: 5, tokens: 50 } },
+        '2026-11-06': { a: { calls: 1, tokens: 10 } },
+      });
+    });
+
+    it('buildSessionSummary writes an empty day map when every counted call is a late arrival', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(makeUsage({ inputTokens: 10, totalTokens: 10 }), 'claude-foo-9-9', {
+        timestampMs: Date.now() - 72 * 60 * 60 * 1000,
+      });
+      const sessionTracker = {
+        getMetrics: () => ({
+          sessionId: 'sess-late',
+          sessionName: null,
+          sessionStartTime: Date.now(),
+          toolCallCount: 0,
+          toolCallCountByTool: {},
+          bashCommandsRun: 0,
+          toolSuccessRate: null,
+        }),
+      } as unknown as SessionTracker;
+
+      const summary = buildSessionSummary({ sessionTracker, costTracker: tracker, developer: 'd' });
+      const roundTripped = deserializeFullSessionSummary(
+        JSON.parse(JSON.stringify(summary)) as Parameters<typeof deserializeFullSessionSummary>[0],
+      );
+
+      expect(roundTripped.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 1, tokens: 10 } });
+      expect(roundTripped.unpricedByDay).toEqual({});
+      expect(roundTripped.estimatedByModel).toBeUndefined();
+      expect(roundTripped.estimatedByDay).toBeUndefined();
+    });
+
+    it('deserializeFullSessionSummary leaves the day counts undefined for a file written before them', () => {
+      const result = deserializeFullSessionSummary({
+        ...makeSummary(),
+        unpricedByModel: { a: { calls: 2, tokens: 4 } },
+      } as unknown as Parameters<typeof deserializeFullSessionSummary>[0]);
+      expect(result.unpricedByModel).toEqual({ a: { calls: 2, tokens: 4 } });
+      expect(result.unpricedByDay).toBeUndefined();
+    });
+
+    it('mergeSummaries leaves the day counts undefined when neither side has them', () => {
+      const merged = mergeSummaries(
+        makeSummary({ unpricedByModel: { a: { calls: 1, tokens: 1 } } }),
+        makeSummary(),
+      );
+      expect(merged.unpricedByDay).toBeUndefined();
+      expect(merged.estimatedByDay).toBeUndefined();
+    });
+
+    it('mergeSummaries takes the per-day max of calls', () => {
+      const merged = mergeSummaries(
+        makeSummary({
+          unpricedByDay: {
+            d1: { a: { calls: 2, tokens: 20 } },
+            d2: { a: { calls: 1, tokens: 5 } },
+          },
+        }),
+        makeSummary({ unpricedByDay: { d1: { a: { calls: 3, tokens: 10 } } } }),
+      );
+      expect(merged.unpricedByDay).toEqual({
+        d1: { a: { calls: 3, tokens: 20 } },
+        d2: { a: { calls: 1, tokens: 5 } },
+      });
+    });
+
+    it('deserializeFullSessionSummary round-trips the day counts and the ledger counts', () => {
+      const result = deserializeFullSessionSummary({
+        ...makeSummary(),
+        unpricedByDay: { d1: { a: { calls: 1, tokens: 2 }, bad: { calls: -1, tokens: 2 } } },
+        estimatedByDay: { d1: { b: { calls: 1, tokens: 2, estimatedFrom: 'c' } }, d2: 5 },
+        byteEstimates: ledger(2, 20, 'd1'),
+      } as unknown as Parameters<typeof deserializeFullSessionSummary>[0]);
+
+      expect(result.unpricedByDay).toEqual({ d1: { a: { calls: 1, tokens: 2 } } });
+      expect(result.estimatedByDay).toEqual({
+        d1: { b: { calls: 1, tokens: 2, estimatedFrom: 'c' } },
+      });
+      expect(result.byteEstimates?.unpricedByModel).toEqual({ a: { calls: 2, tokens: 20 } });
+      expect(result.byteEstimates?.unpricedByDay).toEqual({ d1: { a: { calls: 2, tokens: 20 } } });
+    });
+  });
+
   it('mergeSummaries takes the per-model max of estimated calls and keeps the incoming estimatedFrom', () => {
     const existing = makeSummary({
       estimatedByModel: { a: { calls: 3, tokens: 100, estimatedFrom: 'old' } },
@@ -2092,6 +2452,8 @@ describe('buildSessionSummary', () => {
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},
+      unpricedByDay: {},
+      estimatedByDay: {},
       subagentByAgentType: {},
       highContextCostUsd: 0,
       apiDurationMs: null,
@@ -2135,6 +2497,8 @@ describe('buildSessionSummary', () => {
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},
+      unpricedByDay: {},
+      estimatedByDay: {},
       subagentByAgentType: {},
       highContextCostUsd: 0,
       apiDurationMs: null,
@@ -3109,6 +3473,17 @@ describe('buildSessionSummary timeline', () => {
                 createdPrNumber: '42',
                 runInBackground: true,
               },
+              {
+                id: 'tc4',
+                sessionId: 'skill-agent-session',
+                toolName: 'mcp__github__merge_pull_request',
+                toolUseId: 'tu4',
+                timestamp: 1700000025000,
+                durationMs: 700,
+                success: true,
+                mcpPrNumber: '42',
+                mcpPrRepo: 'acme/app',
+              },
             ],
           },
         ],
@@ -3121,8 +3496,17 @@ describe('buildSessionSummary timeline', () => {
       developer: 'alice',
     });
 
-    expect(summary.timeline).toHaveLength(3);
+    expect(summary.timeline).toHaveLength(4);
     expect(summary.timeline![2]!.createdPrNumber).toBe('42');
+    expect(summary.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
+    expect(summary.timeline![0]!.mcpPrNumber).toBeUndefined();
+    expect(summary.timeline![0]!.mcpPrRepo).toBeUndefined();
+
+    // And through a save and reload.
+    const store = new SessionStore({ storagePath: tmpDir });
+    store.saveSession(summary);
+    const reloaded = store.loadSession(summary.sessionId);
+    expect(reloaded!.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
     expect(summary.timeline![0]!.createdPrNumber).toBeUndefined();
     expect(summary.timeline![2]!.runInBackground).toBe(true);
     expect(summary.timeline![0]!.runInBackground).toBeUndefined();
@@ -3181,6 +3565,33 @@ describe('SessionStore deserialization', () => {
     const session = store.loadSession('pr-num');
     expect(session!.timeline![0]!.createdPrNumber).toBe('42');
     expect(session!.timeline![1]!.createdPrNumber).toBeUndefined();
+  });
+
+  it('keeps a GitHub MCP PR target on timeline entries and drops a malformed one', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const raw = JSON.stringify({
+      sessionId: 'mcp-pr',
+      startTime: 1000,
+      endTime: 2000,
+      durationMs: 1000,
+      toolCallCount: 2,
+      developer: 'alice',
+      timeline: [
+        {
+          timestamp: 1100,
+          toolName: 'merge_pull_request',
+          mcpPrNumber: '12',
+          mcpPrRepo: 'acme/app',
+        },
+        { timestamp: 1200, toolName: 'merge_pull_request', mcpPrNumber: '1x', mcpPrRepo: 'a/b/c' },
+      ],
+    });
+    writeFileSync(join(tmpDir, 'sessions', '2026-01-01_mcp-pr.json'), raw + '\n');
+
+    const session = store.loadSession('mcp-pr');
+    expect(session!.timeline![0]).toMatchObject({ mcpPrNumber: '12', mcpPrRepo: 'acme/app' });
+    expect(session!.timeline![1]!.mcpPrNumber).toBeUndefined();
+    expect(session!.timeline![1]!.mcpPrRepo).toBeUndefined();
   });
 
   it('keeps runInBackground on timeline entries only when it is true', () => {
@@ -3869,6 +4280,8 @@ describe('attribution field', () => {
         apiDurationMs: 12_000,
         unpricedByModel: {},
         estimatedByModel: {},
+        unpricedByDay: {},
+        estimatedByDay: {},
       }),
     } as unknown as CostTracker;
 
@@ -4185,5 +4598,271 @@ describe('deserializeFullSessionSummary repoName', () => {
     ['tok3n@', null],
   ])('loads %s as %s', (stored, expected) => {
     expect(deserializeFullSessionSummary({ repoName: stored }).repoName).toBe(expected);
+  });
+});
+
+describe('SessionStore split and corrupt session files', () => {
+  const id = 'split-session-1';
+  const day0 = new Date('2026-02-28T10:00:00Z').getTime();
+  const day1 = new Date('2026-03-01T10:00:00Z').getTime();
+  const day2 = new Date('2026-03-02T10:00:00Z').getTime();
+  const tail = '"tail": 1\n}\n';
+
+  function sessionsDir(): string {
+    return join(tmpDir, 'sessions');
+  }
+
+  function writeSessionFile(date: string, summary: FullSessionSummary, trailing = ''): string {
+    const path = join(sessionsDir(), `${date}_${summary.sessionId}.json`);
+    writeFileSync(path, JSON.stringify(summary, null, 2) + '\n' + trailing);
+    return path;
+  }
+
+  function filesEndingIn(suffix: string): string[] {
+    return readdirSync(sessionsDir())
+      .filter((f) => f.endsWith(suffix))
+      .sort();
+  }
+
+  function totalToolCalls(store: SessionStore): number {
+    return store.loadAllSessions().reduce((sum, s) => sum + s.toolCallCount, 0);
+  }
+
+  it('recovers the first document from a file with a leftover tail', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const leftover = '  "toolBreakdown": { "Bash": 9 },\n  "note": "has } and \\" in it"\n}\n';
+    writeSessionFile(
+      '2026-03-01',
+      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 7 }),
+      leftover,
+    );
+
+    expect(store.loadSession(id)?.toolCallCount).toBe(7);
+    expect(store.loadAllSessions()).toHaveLength(1);
+  });
+
+  it('recovers a first document whose strings hold braces, quotes and backslashes', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const developer = 'a } b { c \\" d \\\\';
+    writeSessionFile(
+      '2026-03-01',
+      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 7, developer }),
+      tail,
+    );
+
+    const loaded = store.loadSession(id);
+    expect(loaded?.toolCallCount).toBe(7);
+    expect(loaded?.developer).toBe(developer);
+  });
+
+  it.each([
+    ['older', '2026-03-01', day1, '2026-03-02', day2],
+    ['newer', '2026-03-02', day2, '2026-03-01', day1],
+  ])(
+    'does not add a recovered %s split file to its readable sibling',
+    (_, recoveredDate, recoveredStart, readableDate, readableStart) => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const recovered = writeSessionFile(
+        recoveredDate,
+        makeSummary({ sessionId: id, startTime: recoveredStart, toolCallCount: 7 }),
+        tail,
+      );
+      const recoveredBytes = readFileSync(recovered, 'utf-8');
+      writeSessionFile(
+        readableDate,
+        makeSummary({ sessionId: id, startTime: readableStart, toolCallCount: 4 }),
+      );
+
+      expect(totalToolCalls(store)).toBe(4);
+      expect(store.loadSession(id)?.toolCallCount).toBe(4);
+
+      store.saveSession(makeSummary({ sessionId: id, startTime: readableStart, toolCallCount: 6 }));
+
+      expect(totalToolCalls(store)).toBe(6);
+      expect(readFileSync(recovered, 'utf-8')).toBe(recoveredBytes);
+    },
+  );
+
+  it('skips a corrupt file and finds the good one', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeFileSync(join(sessionsDir(), `2026-03-01_${id}.json`), '{ "sessionId": ');
+    writeSessionFile(
+      '2026-03-02',
+      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 4 }),
+    );
+
+    expect(store.loadSession(id)?.toolCallCount).toBe(4);
+  });
+
+  it('never moves or rewrites a file it cannot parse while only reading', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const path = join(sessionsDir(), `2026-03-01_${id}.json`);
+    writeFileSync(path, '{ "sessionId": ');
+
+    store.loadSession(id);
+    store.loadAllSessions();
+    store.listSessions({ developer: 'alice' });
+
+    expect(readdirSync(sessionsDir())).toEqual([`2026-03-01_${id}.json`]);
+    expect(readFileSync(path, 'utf-8')).toBe('{ "sessionId": ');
+  });
+
+  it('merges a save past an unreadable sibling into the readable file and leaves the sibling as it was', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const unreadable = join(sessionsDir(), `2026-03-01_${id}.json`);
+    writeFileSync(unreadable, '{ "sessionId": ');
+    writeSessionFile(
+      '2026-03-02',
+      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 9 }),
+    );
+
+    store.saveSession(makeSummary({ sessionId: id, startTime: day2, toolCallCount: 5 }));
+
+    expect(filesEndingIn('.json')).toEqual([`2026-03-01_${id}.json`, `2026-03-02_${id}.json`]);
+    expect(readFileSync(unreadable, 'utf-8')).toBe('{ "sessionId": ');
+    expect(store.loadSession(id)?.toolCallCount).toBe(9);
+  });
+
+  it('keeps the bytes of an unrecoverable file a save lands on as .corrupt', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeFileSync(join(sessionsDir(), `2026-03-01_${id}.json`), '{ "sessionId": ');
+
+    store.saveSession(makeSummary({ sessionId: id, startTime: day1, toolCallCount: 5 }));
+
+    const corrupt = filesEndingIn('.corrupt');
+    expect(corrupt).toHaveLength(1);
+    expect(readFileSync(join(sessionsDir(), corrupt[0]), 'utf-8')).toBe('{ "sessionId": ');
+    expect(store.loadSession(id)?.toolCallCount).toBe(5);
+  });
+
+  it.each([
+    ['in place', day1, `2026-03-01_${id}.json`],
+    ['at an earlier date', day0, `2026-02-28_${id}.json`],
+  ])(
+    'keeps the original bytes, tail included, of a recovered file a save replaces %s',
+    (_, startTime, savedAs) => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const recovered = writeSessionFile(
+        '2026-03-01',
+        makeSummary({ sessionId: id, startTime: day1, toolCallCount: 7 }),
+        tail,
+      );
+      const original = readFileSync(recovered, 'utf-8');
+
+      store.saveSession(makeSummary({ sessionId: id, startTime, toolCallCount: 8 }));
+
+      expect(filesEndingIn('.json')).toEqual([savedAs]);
+      expect(
+        filesEndingIn('.corrupt').map((f) => readFileSync(join(sessionsDir(), f), 'utf-8')),
+      ).toEqual([original]);
+      expect(store.loadSession(id)?.toolCallCount).toBe(8);
+    },
+  );
+
+  it('warns once per recovered file however many scans read it', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeSessionFile('2026-03-01', makeSummary({ sessionId: id, startTime: day1 }), tail);
+
+    store.loadAllSessions();
+    store.loadAllSessions();
+    store.listSessions({ developer: 'alice' });
+    store.loadSession(id);
+
+    const warnings = stderrSpy.mock.calls.filter((call: unknown[]) =>
+      String(call[0]).includes('Recovered first JSON document'),
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('lists the same files for a developer as loadAllSessions loads when an id has a recovered file and a clean sibling', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeSessionFile(
+      '2026-03-01',
+      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 7 }),
+      tail,
+    );
+    writeSessionFile(
+      '2026-03-02',
+      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 4 }),
+    );
+
+    const listed = store.listSessions({ developer: 'alice' }).map((f) => f.filename);
+
+    expect(listed).toEqual([`2026-03-02_${id}.json`]);
+    expect(store.loadAllSessions({ developer: 'alice' })).toHaveLength(listed.length);
+  });
+
+  it('reads a recovered file whose only sibling is unreadable, in every read path', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeSessionFile(
+      '2026-03-01',
+      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 7 }),
+      '{"tail":',
+    );
+    writeFileSync(join(sessionsDir(), `2026-03-02_${id}.json`), '{"trunc');
+
+    expect(store.loadSession(id)?.toolCallCount).toBe(7);
+    expect(store.loadAllSessions().map((s) => s.toolCallCount)).toEqual([7]);
+    expect(store.listSessions({ developer: 'alice' }).map((f) => f.filename)).toEqual([
+      `2026-03-01_${id}.json`,
+    ]);
+
+    const saved = store.saveSession(
+      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 9 }),
+    );
+
+    expect(saved?.previous?.toolCallCount).toBe(7);
+    expect(store.loadSession(id)?.toolCallCount).toBe(9);
+    expect(readFileSync(join(sessionsDir(), `2026-03-02_${id}.json`), 'utf-8')).toBe('{"trunc');
+  });
+
+  it('warns again when a file that was recovered later becomes unreadable', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const path = writeSessionFile(
+      '2026-03-01',
+      makeSummary({ sessionId: id, startTime: day1 }),
+      tail,
+    );
+    store.loadAllSessions();
+
+    writeFileSync(path, '{ "sessionId": ');
+    store.loadAllSessions();
+
+    const failed = stderrSpy.mock.calls.filter((call: unknown[]) =>
+      String(call[0]).includes('Failed to deserialize'),
+    );
+    expect(failed).toHaveLength(1);
+  });
+
+  it('saves past a .corrupt file already named for the same millisecond', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const path = join(sessionsDir(), `2026-03-01_${id}.json`);
+    writeFileSync(path, '{ "sessionId": ');
+    const now = Date.now();
+    jest.spyOn(Date, 'now').mockReturnValue(now);
+    writeFileSync(`${path}.${now}.corrupt`, 'someone else');
+
+    try {
+      store.saveSession(makeSummary({ sessionId: id, startTime: day1, toolCallCount: 5 }));
+    } finally {
+      jest.mocked(Date.now).mockRestore();
+    }
+
+    expect(store.loadSession(id)?.toolCallCount).toBe(5);
+    expect(filesEndingIn('.corrupt')).toHaveLength(2);
+  });
+
+  it('keeps disjoint split files for one id as separate records', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    writeSessionFile(
+      '2026-03-01',
+      makeSummary({ sessionId: id, startTime: day1, toolCallCount: 3 }),
+    );
+    writeSessionFile(
+      '2026-03-02',
+      makeSummary({ sessionId: id, startTime: day2, toolCallCount: 8 }),
+    );
+
+    expect(totalToolCalls(store)).toBe(11);
   });
 });

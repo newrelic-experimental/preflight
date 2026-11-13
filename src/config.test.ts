@@ -2,7 +2,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import { writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import {
   loadMcpConfig,
   MissingCloudCredentialError,
@@ -1822,6 +1822,44 @@ describe('developer sanitization via loadMcpConfig()', () => {
       }
     },
   );
+
+  it('keeps git stderr off the terminal when loaded outside a git repo', () => {
+    // git writes "fatal: not a git repository" straight to the inherited fd 2,
+    // past any process.stderr.write mock, so only a child process can see it.
+    const outsideRepo = mkdtempSync(resolve(tmpdir(), 'nr-mcp-test-norepo-'));
+    try {
+      const configPath = resolve(outsideRepo, 'config.json');
+      writeFileSync(configPath, JSON.stringify({ mode: 'local' }));
+      const script = `
+        const { loadMcpConfig } = await import(${JSON.stringify(resolve(process.cwd(), 'src/config.ts'))});
+        process.chdir(${JSON.stringify(outsideRepo)});
+        loadMcpConfig({ config: ${JSON.stringify(configPath)} });
+      `;
+      const result = spawnSync(
+        process.execPath,
+        ['--import', 'tsx', '--input-type=module', '-e', script],
+        {
+          cwd: process.cwd(),
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            GIT_DIR: undefined,
+            GIT_WORK_TREE: undefined,
+            // Stops git walking up into a repo that happens to enclose tmpdir.
+            GIT_CEILING_DIRECTORIES: outsideRepo,
+            NEW_RELIC_LICENSE_KEY: 'test-key',
+            NEW_RELIC_ACCOUNT_ID: '12345',
+            USER: undefined,
+            USERNAME: undefined,
+          },
+        },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain('fatal:');
+    } finally {
+      rmSync(outsideRepo, { recursive: true, force: true });
+    }
+  });
 
   it('orgId loaded from NEW_RELIC_AI_ORG_ID env var', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';

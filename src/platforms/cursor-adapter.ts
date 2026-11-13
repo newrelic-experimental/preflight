@@ -67,7 +67,7 @@ export class CursorAdapter implements PlatformAdapter {
   // (legacy, still supported) or `.cursor/rules/*.mdc`.
   readonly capabilities = {
     instructionFilePaths: ['.cursorrules', '.cursor/rules/'] as const,
-    // Cursor's hooks send conversation_id, never session_id, so they write no breadcrumb.
+    // cursor.com/docs/agent/hooks: hooks send conversation_id, never session_id, so they write no breadcrumb.
     sessionBreadcrumbWriters: [] as const,
     // afterMCPExecution carries conversation_id, tool_input and result_json
     // (https://cursor.com/docs/agent/hooks).

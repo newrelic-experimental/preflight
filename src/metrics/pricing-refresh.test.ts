@@ -15,7 +15,9 @@ import {
   fetchLiteLlmPrices,
   LITELLM_PRICES_URL,
   parseLiteLlmPrices,
+  schedulePricingRecheck,
   startPricingRefresh,
+  stopPricingRecheck,
 } from './pricing-refresh.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -69,6 +71,37 @@ describe('parseLiteLlmPrices', () => {
       cacheCreationPerMTok: 5,
       contextWindow: 1_000_000,
     });
+  });
+
+  it('keeps the 1-hour cache write rate and prices 1h writes at it', async () => {
+    const entry = {
+      ...OPUS,
+      cache_creation_input_token_cost: 3.75e-6,
+      cache_creation_input_token_cost_above_1hr: 6e-6,
+    };
+    expect(parseLiteLlmPrices({ 'claude-opus-8-5': entry })['claude-opus-8-5']).toMatchObject({
+      cacheCreationPerMTok: 3.75,
+      cacheCreation1hPerMTok: 6,
+    });
+
+    await startPricingRefresh({
+      enabled: true,
+      cachePath: join(tmpDir, 'pricing-cache.json'),
+      fetchImpl: fakeFetch({ 'claude-opus-8-5': entry }),
+    });
+    const usage = makeUsage({
+      cacheCreationTokens: 1_000_000,
+      cacheCreation1hTokens: 1_000_000,
+      totalTokens: 1_000_000,
+    });
+    expect(priceModelUsage('claude-opus-8-5', usage).breakdown.totalUsd).toBeCloseTo(6, 10);
+  });
+
+  it('skips an entry whose 1-hour cache write rate exceeds the cap', () => {
+    const result = parseLiteLlmPrices({
+      'claude-opus-8-5': { ...OPUS, cache_creation_input_token_cost_above_1hr: 1 },
+    });
+    expect(result).toEqual({});
   });
 
   it('converts 3e-6 to exactly 3', () => {
@@ -334,5 +367,80 @@ describe('startPricingRefresh', () => {
       expect(resolvePricingDetail('boom')).toEqual({ kind: 'unpriced' });
       expect(({} as Record<string, unknown>).inputPerMTok).toBeUndefined();
     });
+  });
+});
+
+describe('schedulePricingRecheck', () => {
+  let cachePath: string;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    cachePath = join(tmpDir, 'pricing-cache.json');
+  });
+
+  afterEach(() => {
+    stopPricingRecheck();
+    jest.useRealTimers();
+  });
+
+  it('prices a model released after startup once the cache is a day old', async () => {
+    const opts = {
+      enabled: true,
+      cachePath,
+      fetchImpl: jest
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse({ 'claude-opus-8-5': OPUS }))
+        .mockResolvedValue(jsonResponse({ 'claude-opus-8-5': OPUS, 'acme-chat-1': SONNET_5_5 })),
+    };
+    await startPricingRefresh(opts);
+    // The write stamps mtime from the real filesystem clock, which on Linux is
+    // coarse and can trail the faked Date.now() by a few ms. Pin it half an
+    // hour back so the cache is still fresh at the 23h tick and stale at the 24h tick.
+    const writtenAt = new Date(Date.now() - 30 * 60 * 1000);
+    utimesSync(cachePath, writtenAt, writtenAt);
+    schedulePricingRecheck(opts);
+    expect(resolvePricingDetail('acme-chat-1').kind).toBe('unpriced');
+
+    await jest.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+
+    expect(resolvePricingDetail('acme-chat-1')).toMatchObject({
+      kind: 'priced',
+      source: 'refreshed',
+    });
+    expect(opts.fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('refetches nothing while the cache is fresh', async () => {
+    const fetchImpl = fakeFetch({ 'claude-opus-8-5': OPUS });
+    const opts = { enabled: true, cachePath, fetchImpl };
+    await startPricingRefresh(opts);
+    schedulePricingRecheck(opts);
+
+    await jest.advanceTimersByTimeAsync(12 * 60 * 60 * 1000);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the pricing memo alone while the cache is unchanged and fresh', async () => {
+    const opts = { enabled: true, cachePath, fetchImpl: fakeFetch({ 'claude-opus-8-5': OPUS }) };
+    await startPricingRefresh(opts);
+    schedulePricingRecheck(opts);
+    const memoProbe = resolvePricingDetail('claude-opus-8-5');
+    const logsBefore = consoleError.mock.calls.length;
+
+    await jest.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
+
+    expect(resolvePricingDetail('claude-opus-8-5')).toBe(memoProbe);
+    expect(consoleError.mock.calls.length).toBe(logsBefore);
+  });
+
+  it('schedules nothing when disabled', async () => {
+    const fetchImpl = fakeFetch({ 'claude-opus-8-5': OPUS });
+    schedulePricingRecheck({ enabled: false, cachePath, fetchImpl });
+
+    await jest.advanceTimersByTimeAsync(3 * DAY_MS);
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(existsSync(cachePath)).toBe(false);
   });
 });

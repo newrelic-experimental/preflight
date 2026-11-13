@@ -67,7 +67,7 @@ export class CodexAdapter implements PlatformAdapter {
   // also read.
   readonly capabilities = {
     instructionFilePaths: ['AGENTS.md'] as const,
-    // The documented hook command names no engine.
+    // developers.openai.com/codex/hooks sends session_id; the documented command names no engine.
     sessionBreadcrumbWriters: ['codex', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
   };
 

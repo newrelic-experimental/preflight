@@ -52,7 +52,7 @@ export class GeminiCliAdapter implements PlatformAdapter {
   readonly visibilityLevel = 'full-hooks' as const;
   readonly capabilities = {
     instructionFilePaths: ['GEMINI.md'] as const,
-    // The documented hook command names no engine.
+    // Gemini CLI's hooks reference sends session_id; the documented command names no engine.
     sessionBreadcrumbWriters: ['gemini-cli', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
   };
 
