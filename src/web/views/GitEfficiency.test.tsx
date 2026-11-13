@@ -370,7 +370,7 @@ describe('GitEfficiency view — hero KPIs and gated sections', () => {
 });
 
 describe('GitEfficiency view — section ordering', () => {
-  it('places Best Practices and Suggestions after the data sections, not sandwiched between hero KPIs and Velocity & Workflow', async () => {
+  it('places Best Practices and Suggestions after the data sections, not sandwiched between hero KPIs and Commit Pacing & Workflow', async () => {
     const { container } = renderGitEfficiency(
       makeReport({
         metrics: {
@@ -390,7 +390,7 @@ describe('GitEfficiency view — section ordering', () => {
     await screen.findByText('Suggestions');
     const html = container.innerHTML;
     const heroKpiPos = html.indexOf('>commits<');
-    const velocityPos = html.indexOf('Velocity &amp; Workflow');
+    const velocityPos = html.indexOf('Commit Pacing &amp; Workflow');
     const destructivePos = html.indexOf('Destructive Operations');
     const bestPracticesPos = html.indexOf('Best Practices');
     const suggestionsPos = html.indexOf('Suggestions');
@@ -401,7 +401,7 @@ describe('GitEfficiency view — section ordering', () => {
       bestPracticesPos,
       suggestionsPos,
     ]).not.toContain(-1);
-    // Data sections (Velocity & Workflow, Destructive Operations) both come
+    // Data sections (Commit Pacing & Workflow, Destructive Operations) both come
     // directly after the hero KPIs and before the coaching sections (Best
     // Practices, Suggestions) — never sandwiched in between.
     expect(heroKpiPos).toBeLessThan(velocityPos);
@@ -411,8 +411,8 @@ describe('GitEfficiency view — section ordering', () => {
   });
 });
 
-describe('GitEfficiency view — Velocity & Workflow and Pull Requests copy', () => {
-  it('explains what Velocity & Workflow is showing, and what commit bursts / worktree ops mean', async () => {
+describe('GitEfficiency view — Commit Pacing & Workflow and Pull Requests copy', () => {
+  it('explains what Commit Pacing & Workflow is showing, and what commit bursts / worktree ops mean', async () => {
     renderGitEfficiency(
       makeReport({
         metrics: {
@@ -429,7 +429,7 @@ describe('GitEfficiency view — Velocity & Workflow and Pull Requests copy', ()
         },
       }),
     );
-    expect(await screen.findByText('Velocity & Workflow')).toBeInTheDocument();
+    expect(await screen.findByText('Commit Pacing & Workflow')).toBeInTheDocument();
     expect(screen.getByText(/How your commits were paced/)).toBeInTheDocument();
     expect(screen.getByText(/often splitting one change up after the fact/)).toBeInTheDocument();
     expect(screen.getByText(/git worktree add\/remove commands run/)).toBeInTheDocument();
@@ -454,7 +454,7 @@ describe('GitEfficiency view — Velocity & Workflow and Pull Requests copy', ()
         },
       }),
     );
-    await screen.findByText('Velocity & Workflow');
+    await screen.findByText('Commit Pacing & Workflow');
     expect(screen.getByText('4.4h')).toBeInTheDocument();
     expect(screen.getByText('1.0d')).toBeInTheDocument();
     expect(screen.queryByText(/^\d+\.\d+m$/)).toBeNull();
