@@ -7,6 +7,7 @@ import { redactSensitive } from './config.js';
 import { classifyBash } from './hooks/bash-classifier.js';
 import { processHook, redact } from './hooks/collector-script.js';
 import { parseToolSpecificFields } from './hooks/tool-parsers.js';
+import { REDACTION_PATTERNS } from './redaction-patterns.js';
 
 const AWS_KEY = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
 
@@ -239,4 +240,80 @@ describe('secret argument redaction over random shell words', () => {
       expect(failures).toEqual([]);
     },
   );
+});
+
+// The reviewer's shapes. The secret is the digits in each Q…Z, after a flag, a mysql -p, a header
+// or NAME=, in an optional wrapper, after a prefix that may leave a quote open.
+const SECRETS = [
+  'm',
+  '"m"',
+  "'m'",
+  '"m m"',
+  "'m m'",
+  'm\\ m',
+  '"m\\"m"',
+  "$'m\\'m'",
+  'm"m"',
+  '\\\nm',
+  '\\\r\nm',
+  '"m \\\n m"',
+  "'m\nm'",
+  '"m\nm"',
+  `'m'"m"`,
+  '"m\\\\m"',
+  "$'m\\nm'",
+  '-H "X-Api-Key: m"',
+  '-H "X-Api-Key: m m"',
+  "-H 'X-Auth-Token: m m'",
+];
+const ARGUMENTS = [
+  'curl --token ',
+  'tool --api-key=',
+  'mysql -u root -p',
+  'curl ',
+  'env API_KEY=',
+  'TOKEN=',
+  'deploy --client-secret=',
+  'psql --db-password ',
+];
+const PREFIXES = [
+  '',
+  "# Don't paste this key\n",
+  "Bob's box: ",
+  "echo o'clock && ",
+  'ls\r\n',
+  "cat <<'EOF' > n.txt\nDon't copy\nEOF\n",
+  'echo "it\'s fine" && ',
+  'npm run x \\\n  ',
+];
+const ENDS = [';', ' ; ', '|', ' && ', '&&', '\n', '\r\n', ' ', ' & '];
+
+function reviewerCommand(rand: Rand): string {
+  const secret = pick(rand, SECRETS).replace(/m/g, () => `Q${marker(rand)}Z`);
+  const body = `${pick(rand, ARGUMENTS)}${secret} x`;
+  const json = `bash -c \\"${JSON.stringify(body).slice(1, -1)}\\"`;
+  const wrapped = pick(rand, [body, body, `echo $(${body})`, `bash -c "${body}"`, json]);
+  return `${pick(rand, PREFIXES)}${wrapped}${pick(rand, ENDS)}rm -rf /tmp/x`;
+}
+
+describe('secret argument redaction against the earlier NAME=\\S+ rule', () => {
+  const EARLIER = [
+    /(?<![a-zA-Z])(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-zA-Z])[\s]*[=:]\s*\S+/gi,
+    ...REDACTION_PATTERNS,
+  ];
+  const digits = (text: string): number => text.replace(/\D/g, '').length;
+
+  it.each([
+    ['redactSensitive()', redactSensitive],
+    ["the collector's redact()", redact],
+  ])('%s never stores a secret digit more than the earlier rules did', (_path, redactor) => {
+    const rand = parkMiller(7166);
+    const worse: { command: string; stored: string; earlier: string }[] = [];
+    for (let n = 0; n < 4000; n++) {
+      const input = n % 2 === 0 ? reviewerCommand(rand) : command(rand);
+      const [stored, earlier] = [redactor(input), redactSensitive(input, EARLIER)];
+      if (digits(stored) > digits(earlier)) worse.push({ command: input, stored, earlier });
+    }
+    expect(worse).toEqual([]);
+  });
 });
