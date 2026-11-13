@@ -594,26 +594,25 @@ describe('Today view', () => {
     await waitFor(() => expect(screen.getByText(/^→ \$8\.00 by end of day/)).toBeInTheDocument());
   });
 
-  function stubForecastSources(aggregateBody: Record<string, unknown>): void {
+  function stubForecastSources(
+    aggregateBody: Record<string, unknown>,
+    costBody: Record<string, unknown> = {
+      cost: { sessionTotalCostUsd: 5 },
+      forecast: { forecastEndOfDayUsd: 27.62 },
+      sessionTodayUsd: 5,
+    },
+    sessions: unknown[] = [],
+  ): void {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
-      if (url.includes('/api/sessions/today/aggregate')) {
-        return new Response(JSON.stringify(aggregateBody), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      if (url.includes('/api/cost')) {
-        return new Response(
-          JSON.stringify({
-            cost: { sessionTotalCostUsd: 5 },
-            forecast: { forecastEndOfDayUsd: 27.62 },
-            sessionTodayUsd: 5,
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify([]), {
+      const body = url.includes('/api/sessions/today/aggregate')
+        ? aggregateBody
+        : url.includes('/api/sessions?limit=')
+          ? sessions
+          : url.includes('/api/cost')
+            ? costBody
+            : [];
+      return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -636,35 +635,15 @@ describe('Today view', () => {
 
   async function renderBehindAggregate(apiForecastUsd: number | null): Promise<void> {
     useLiveStore.setState({ cost: null });
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      const json = (body: unknown): Response =>
-        new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      if (url.includes('/api/sessions/today/aggregate')) {
-        return json({ totalCostUsd: 10, forecastEndOfDayUsd: 12, sessionCount: 4 });
-      }
-      if (url.includes('/api/sessions?limit=')) {
-        return json([
-          {
-            sessionId: 's1',
-            startTime: Date.now() - 60_000,
-            estimatedCostUsd: 10,
-            toolCallCount: 3,
-          },
-        ]);
-      }
-      if (url.includes('/api/cost')) {
-        return json({
-          cost: { sessionTotalCostUsd: 15 },
-          forecast: apiForecastUsd === null ? null : { forecastEndOfDayUsd: apiForecastUsd },
-          sessionTodayUsd: 15,
-        });
-      }
-      return json([]);
-    }) as typeof fetch;
+    stubForecastSources(
+      { totalCostUsd: 10, forecastEndOfDayUsd: 12, sessionCount: 4 },
+      {
+        cost: { sessionTotalCostUsd: 15 },
+        forecast: apiForecastUsd === null ? null : { forecastEndOfDayUsd: apiForecastUsd },
+        sessionTodayUsd: 15,
+      },
+      [{ sessionId: 's1', startTime: Date.now() - 60_000, estimatedCostUsd: 10, toolCallCount: 3 }],
+    );
 
     renderToday();
     await waitFor(() => expect(screen.getByText('Spend by hour')).toBeInTheDocument());
