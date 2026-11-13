@@ -816,6 +816,12 @@ describe('Sessions view — workflow consolidation', () => {
     expect(within(kpi).queryByRole('button', { name: 'Why this is an estimate' })).toBeNull();
   });
 
+  it('shows one costs-are-estimates note for the whole page', async () => {
+    renderSessionsFull(SESSIONS, RUNS);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    expect(screen.getAllByText('Costs are estimates.')).toHaveLength(1);
+  });
+
   it('scopes the visible session list to the run-source filter', async () => {
     renderSessionsFull(SESSIONS, RUNS);
     await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());

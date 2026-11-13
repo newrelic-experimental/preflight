@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { EstimateMarker } from './EstimateMarker';
+import { EstimateMarker, EstimateNote } from './EstimateMarker';
 
 describe('EstimateMarker', () => {
   it('shows an est. label beside a dollar figure', () => {
@@ -25,5 +25,12 @@ describe('EstimateMarker', () => {
     render(<EstimateMarker withoutInfoButton />);
     expect(screen.getByText('est.')).toBeInTheDocument();
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('EstimateNote states costs are estimates and explains why on hover', () => {
+    render(<EstimateNote />);
+    expect(screen.getByText('Costs are estimates.')).toBeInTheDocument();
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Why this is an estimate' }));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('unless a rate multiplier');
   });
 });

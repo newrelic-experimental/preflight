@@ -94,6 +94,17 @@ describe('Today view', () => {
     expect(within(tile).queryByText('est.')).toBeNull();
   });
 
+  it('shows one costs-are-estimates note for the whole page', () => {
+    renderToday();
+    expect(screen.getAllByText('Costs are estimates.')).toHaveLength(1);
+  });
+
+  it('shows the costs-are-estimates note when there is no activity yet', () => {
+    useLiveStore.setState({ cost: null });
+    renderToday();
+    expect(screen.getAllByText('Costs are estimates.')).toHaveLength(1);
+  });
+
   it('renders the efficiency score KPI', () => {
     renderToday();
     expect(screen.getByText('efficiency')).toBeInTheDocument();
