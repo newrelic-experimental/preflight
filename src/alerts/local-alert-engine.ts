@@ -3,6 +3,7 @@ import { createLogger } from '../shared/index.js';
 import type { AlertEvent } from '../dashboard/live-event-bus.js';
 import type { SnapshotWindowSpec } from './alert-snapshot-collector.js';
 import type { OsNotifier } from './os-notifier.js';
+import { budgetPeriodId, isThresholdRearmed, type BudgetPeriod } from '../metrics/budget-period.js';
 import type {
   LocalAlertRule,
   BudgetSessionRule,
@@ -43,8 +44,6 @@ export interface LocalAlertEngineOptions {
    */
   readonly osNotificationsEnabled?: boolean;
 }
-
-type BudgetPeriod = 'session' | 'daily' | 'weekly';
 
 function isBudgetRule(
   rule: LocalAlertRule,
@@ -96,6 +95,10 @@ interface RuleState {
   // When the next snapshot's session cost drops below this value, the
   // CostTracker has reset (a new session started) and the rule should clear.
   firedSpentUsd?: number;
+  // For budget.weekly rules: the threshold level and budget at fire time, so
+  // the rule clears once rolling spend re-arms it the way BudgetTracker does.
+  firedThresholdPct?: number;
+  firedBudgetUsd?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +451,7 @@ export class LocalAlertEngine {
       // fire twice in the same period unless deduplicateSeconds has elapsed
       // and a higher threshold crossed (BudgetTracker dedupes within a
       // period; this guards against duplicate calls into evaluate()).
-      const periodKey = `${matching.period}|${matching.thresholdPct}|${this.periodKey(matching.period, now)}`;
+      const periodKey = `${matching.period}|${matching.thresholdPct}|${budgetPeriodId(matching.period, now)}`;
       if (state.firedPeriodKey === periodKey) {
         return out;
       }
@@ -463,6 +466,8 @@ export class LocalAlertEngine {
       state.lastFiredAt = now;
       state.firedPeriodKey = periodKey;
       state.firedSpentUsd = matching.spentUsd;
+      state.firedThresholdPct = matching.thresholdPct;
+      state.firedBudgetUsd = matching.budgetUsd;
       out.push({
         id: rule.id,
         state: 'firing',
@@ -484,9 +489,9 @@ export class LocalAlertEngine {
       const stored = state.firedPeriodKey;
       if (stored) {
         const [, , storedPeriodKey] = stored.split('|');
-        const currentPeriodKey = this.periodKey(period, now);
+        const currentPeriodKey = budgetPeriodId(period, now);
         // Session period rolls over via CostTracker reset (new Claude Code
-        // session) rather than calendar turnover, so periodKey() returns the
+        // session) rather than calendar turnover, so budgetPeriodId() returns the
         // constant `'session:infinite'` and storedPeriodKey === currentPeriodKey
         // forever. Detect the reset by watching for sessionUsd dropping below
         // the spent value at fire time.
@@ -495,7 +500,17 @@ export class LocalAlertEngine {
           state.firedSpentUsd !== undefined &&
           snapshot.cost !== null &&
           snapshot.cost.sessionUsd < state.firedSpentUsd;
-        if (storedPeriodKey !== currentPeriodKey || sessionReset) {
+        const rearmed =
+          state.firedThresholdPct !== undefined &&
+          state.firedBudgetUsd !== undefined &&
+          state.firedBudgetUsd > 0 &&
+          snapshot.cost !== null &&
+          isThresholdRearmed(
+            period,
+            (snapshot.cost.weekUsd / state.firedBudgetUsd) * 100,
+            state.firedThresholdPct,
+          );
+        if (storedPeriodKey !== currentPeriodKey || sessionReset || rearmed) {
           state.status = 'idle';
           const lastFiredAt = state.lastFiredAt;
           // Do not update lastFiredAt here — it must reflect the fire time so
@@ -503,6 +518,8 @@ export class LocalAlertEngine {
           // from when the rule last fired, not when it cleared.
           state.firedPeriodKey = undefined;
           state.firedSpentUsd = undefined;
+          state.firedThresholdPct = undefined;
+          state.firedBudgetUsd = undefined;
           out.push({
             id: rule.id,
             state: 'cleared',
@@ -527,30 +544,6 @@ export class LocalAlertEngine {
       this.state.set(ruleId, state);
     }
     return state;
-  }
-
-  private periodKey(period: BudgetPeriod, now: number): string {
-    const d = new Date(now);
-    if (period === 'session') return 'session:infinite';
-    if (period === 'daily') {
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
-      return `${y}-${m}-${day}`;
-    }
-    // ISO 8601 week — the day/week boundary math intentionally matches
-    // BudgetTracker.currentPeriodId() so a period rolls over here at the same
-    // moment BudgetTracker considers it rolled over. The string format itself
-    // doesn't need to match: this key is only ever compared against its own
-    // prior output (above), never against BudgetTracker's period id.
-    const utc = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-    const dayOfWeek = utc.getUTCDay() || 7; // 1=Mon … 7=Sun
-    utc.setUTCDate(utc.getUTCDate() + 4 - dayOfWeek); // nearest Thursday
-    const yearStart = new Date(Date.UTC(utc.getUTCFullYear(), 0, 1));
-    const week = Math.ceil(((utc.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
-    const isoYear = utc.getUTCFullYear();
-    const weekNum = String(week).padStart(2, '0');
-    return `${isoYear}-W${weekNum}`;
   }
 
   // For tests: read-only view of currently firing rules.

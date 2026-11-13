@@ -1,6 +1,6 @@
-import { localDateKey } from '../lib/date.js';
+import { budgetPeriodId, isThresholdRearmed, type BudgetPeriod } from './budget-period.js';
 
-export type BudgetPeriod = 'session' | 'daily' | 'weekly';
+export type { BudgetPeriod };
 
 export interface BudgetThresholdEvent {
   readonly period: BudgetPeriod;
@@ -46,11 +46,6 @@ const THRESHOLD_LEVELS: Array<50 | 80 | 100> = [50, 80, 100];
 
 const MAX_ALERTS = 100;
 
-// Rolling 7-day spend moves in both directions, so a weekly threshold re-arms
-// only once spend falls this many percentage points below it. Without the gap
-// spend hovering at the threshold would re-alert on every update.
-const WEEKLY_REARM_MARGIN_PCT = 10;
-
 export class BudgetTracker {
   private readonly sessionBudgetUsd: number | null;
   private readonly dailyBudgetUsd: number | null;
@@ -83,19 +78,6 @@ export class BudgetTracker {
     this.checkThresholds();
   }
 
-  private currentPeriodId(period: BudgetPeriod): string {
-    if (period === 'session') {
-      return 'session:infinite';
-    }
-    if (period === 'daily') {
-      return `day:${localDateKey()}`;
-    }
-    if (period === 'weekly') {
-      return 'week:rolling-7d';
-    }
-    return '';
-  }
-
   // A threshold that already fired for a past period (e.g. yesterday's
   // "daily_80") must not suppress it firing again once a new period starts —
   // otherwise a session/day/week that repeatedly crosses 50/80/100% would
@@ -104,7 +86,7 @@ export class BudgetTracker {
   private pruneStaleThresholds(): void {
     for (const [key, periodId] of this.firedThresholds.entries()) {
       const period = key.split('_')[0] as BudgetPeriod;
-      const currentPeriod = this.currentPeriodId(period);
+      const currentPeriod = budgetPeriodId(period);
       if (periodId !== currentPeriod) {
         this.firedThresholds.delete(key);
       }
@@ -121,11 +103,10 @@ export class BudgetTracker {
   private checkPeriod(period: BudgetPeriod, spent: number, budget: number | null): void {
     if (budget === null || budget <= 0) return;
     const pctUsed = (spent / budget) * 100;
-    const currentPeriod = this.currentPeriodId(period);
+    const currentPeriod = budgetPeriodId(period);
     for (const level of THRESHOLD_LEVELS) {
       const key = `${period}_${level}`;
-      if (period === 'weekly' && pctUsed < level - WEEKLY_REARM_MARGIN_PCT)
-        this.firedThresholds.delete(key);
+      if (isThresholdRearmed(period, pctUsed, level)) this.firedThresholds.delete(key);
       if (pctUsed >= level && !this.firedThresholds.has(key)) {
         this.firedThresholds.set(key, currentPeriod);
         const event: BudgetThresholdEvent = {
@@ -196,7 +177,7 @@ export class BudgetTracker {
   ): void {
     if (budgetUsd === null || budgetUsd <= 0) return;
     const pctUsed = (spentUsd / budgetUsd) * 100;
-    const currentPeriod = this.currentPeriodId(period);
+    const currentPeriod = budgetPeriodId(period);
     for (const level of THRESHOLD_LEVELS) {
       if (pctUsed >= level) {
         this.firedThresholds.set(`${period}_${level}`, currentPeriod);

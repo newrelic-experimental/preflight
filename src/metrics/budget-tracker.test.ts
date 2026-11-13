@@ -325,7 +325,7 @@ describe('BudgetTracker', () => {
       expect(fired(events)).toEqual(['daily_50']);
     });
 
-    it('does not re-fire the weekly threshold at a calendar week boundary', () => {
+    it('does not re-fire the weekly threshold across a Sunday to Monday UTC boundary while spend stays above it', () => {
       jest.useFakeTimers();
       const events: Array<{ period: string; thresholdPct: number }> = [];
       const t = new BudgetTracker({
