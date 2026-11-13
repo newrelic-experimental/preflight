@@ -1253,9 +1253,13 @@ describe('LocalSessionAggregator first spend of a day against a saved file', () 
         firstActivityByDayMs: saved,
       });
       const agg = new LocalSessionAggregator({ persistedCostBaseline: () => file });
+      agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: yesterday - 3_600_000 });
       agg.recordTokenUsage(REAL_ID, { costUsd: usd, timestamp: RESTART, agentId: 'sub' });
       const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
-      expect(mergeSummaries(file, incoming!).firstActivityByDayMs).toEqual(saved);
+      expect(mergeSummaries(file, incoming!).firstActivityByDayMs).toEqual({
+        ...saved,
+        [localDateKey(yesterday)]: yesterday - 3_600_000,
+      });
     },
   );
 });
