@@ -2675,14 +2675,19 @@ async function main(): Promise<void> {
     });
 
     const saveObservedSessions = (
-      outcome: string,
+      atExit: boolean,
       savesSession?: (sessionId: string) => boolean,
     ): number => {
       if (!sessionStore || !config) return 0;
+      const storagePath = config.storagePath;
+      const outcomeOf = (sessionId: string): Partial<FullSessionSummary> =>
+        atExit && !hasLiveOwningEngine(storagePath, sessionId)
+          ? { outcome: 'completed', completedByObserver: true }
+          : { outcome: 'in progress' };
       const rollups = localSessionAggregator.toSummaries({
         developer: config.developer ?? 'unknown',
         platform: eventProcessor?.activePlatform,
-        outcome,
+        outcome: 'in progress',
         toolSelectionScorer,
         repoResolver: repoNameResolver,
         ...(savesSession !== undefined && { savesSession }),
@@ -2704,7 +2709,11 @@ async function main(): Promise<void> {
                   rollup,
                   localStoreForShutdown?.countedToolUseIds(sessionId) ?? new Set<string>(),
                 );
-          const summary = { ...kept, toolCallCount: prior + Number(kept.toolCallCount) };
+          const summary = {
+            ...kept,
+            ...outcomeOf(sessionId),
+            toolCallCount: prior + Number(kept.toolCallCount),
+          };
           if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary)) continue;
           saved += 1;
           if (prior === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
@@ -2763,9 +2772,9 @@ async function main(): Promise<void> {
           // This process owns no real session of its own, but it has been
           // draining other sessions' buffers destructively — so if it returns
           // here without writing them, those events are simply lost. Persist
-          // each real session it observed instead, as in progress even at
-          // shutdown: those sessions run on, and only their owner ends them.
-          const persistedSessions = saveObservedSessions('in progress');
+          // each real session it observed instead. At shutdown one whose own
+          // engine is still live stays in progress, so that engine ends it.
+          const persistedSessions = saveObservedSessions(!opts?.periodic);
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
@@ -3092,9 +3101,7 @@ async function main(): Promise<void> {
       refreshPriorCostBaseline();
 
       try {
-        saveObservedSessions('in progress', (id) =>
-          opts?.isCorrection ? id === staleId : id !== realId,
-        );
+        saveObservedSessions(false, (id) => (opts?.isCorrection ? id === staleId : id !== realId));
       } catch (err) {
         logger.warn('Failed to save observed sessions on adoption', { error: String(err) });
       }
