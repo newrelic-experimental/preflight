@@ -2312,6 +2312,7 @@ describe('stdio integration', () => {
         close: () => Promise<void>,
       ) => Promise<void>,
       nodeArgs: (env: Record<string, string>) => string[] = () => [],
+      mcpClient = 'claude-code',
     ): Promise<void> => {
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
       const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
@@ -2319,7 +2320,7 @@ describe('stdio integration', () => {
       const tmpHome = mkdtempSync(join(tmpdir(), 'nr-adopt-report-home-'));
       const env = isolatedEnv({
         HOME: tmpHome,
-        MCP_CLIENT: 'claude-code',
+        MCP_CLIENT: mcpClient,
         NR_AI_DASHBOARD_PORT: '0',
         NR_AI_MODE: 'local',
         NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
@@ -2376,6 +2377,28 @@ describe('stdio integration', () => {
       const pending = () => (existsSync(bufferPath) ? readFileSync(bufferPath, 'utf-8') : '');
       return until(pending, (v) => v === '');
     };
+
+    it('a cursor engine saves a self-report for its conversation on shutdown without adopting', async () => {
+      await withPendingEngine(
+        '600000',
+        async (env, _adopt, close) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          runHook(env, reportHook('conv-cursor', 'r-cursor-0001'));
+          expect(await drained(storage, 'conv-cursor')).toBe('');
+
+          await close();
+
+          expect(savedSession(storage, 'conv-cursor')).toMatchObject({
+            platform: 'cursor',
+            tokensInput: 1000,
+            tokensThinking: 100,
+            selfReportCount: 1,
+          });
+        },
+        () => [],
+        'cursor',
+      );
+    }, 40000);
 
     it.each([
       ['another session', 'in progress', 'real-owner-session'],
