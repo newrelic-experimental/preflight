@@ -234,6 +234,7 @@ export interface FullSessionSummary extends SessionSummary {
   readonly assistantMessages: number;
   readonly userCorrections: number;
   readonly outcome: string;
+  readonly completedByObserver?: true;
   readonly platform?: string;
   readonly instructionPromptHash?: string | null;
   readonly timeline?: ReplayTimelineEntry[];
@@ -772,6 +773,8 @@ export function mergeSummaries(
       : existing.toolSelectionMetrics;
 
   const timeline = mergeTimeline(existing.timeline, incoming.timeline);
+  const outcomeSource =
+    existing.outcome === 'completed' && !existing.completedByObserver ? existing : incoming;
 
   const startTime = Math.min(
     existing.startTime || incoming.startTime,
@@ -852,10 +855,8 @@ export function mergeSummaries(
       (incoming.antiPatterns?.length ?? 0) >= (existing.antiPatterns?.length ?? 0)
         ? incoming.antiPatterns
         : existing.antiPatterns,
-    outcome:
-      incoming.outcome === 'completed' || existing.outcome !== 'completed'
-        ? incoming.outcome
-        : existing.outcome,
+    outcome: outcomeSource.outcome,
+    completedByObserver: outcomeSource.completedByObserver,
     ...(timeline ? { timeline } : {}),
     toolSelectionMetrics,
     modelBreakdown,
@@ -1631,6 +1632,7 @@ interface SerializedFullSessionSummary {
   readonly assistantMessages?: unknown;
   readonly userCorrections?: unknown;
   readonly outcome?: unknown;
+  readonly completedByObserver?: unknown;
   readonly platform?: unknown;
   readonly instructionPromptHash?: unknown;
   readonly timeline?: Array<Record<string, unknown>>;
@@ -2044,6 +2046,7 @@ export function deserializeFullSessionSummary(
     assistantMessages: typeof obj.assistantMessages === 'number' ? obj.assistantMessages : 0,
     userCorrections: typeof obj.userCorrections === 'number' ? obj.userCorrections : 0,
     outcome: typeof obj.outcome === 'string' ? obj.outcome : 'unknown',
+    ...(obj.completedByObserver === true && { completedByObserver: true }),
     platform: typeof obj.platform === 'string' ? obj.platform : undefined,
     instructionPromptHash:
       typeof obj.instructionPromptHash === 'string' ? obj.instructionPromptHash : null,
