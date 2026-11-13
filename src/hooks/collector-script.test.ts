@@ -17,6 +17,7 @@ import {
   _stdinFs,
   getBufferPath,
   getLinuxAncestorPids,
+  getMaxContentLength,
   getRecordContent,
   hashInput,
   processHook,
@@ -1401,19 +1402,45 @@ describe('collector-script', () => {
       };
       const serialized = JSON.stringify({ data: 'x'.repeat(1_000) });
 
-      it.each(['0', '-5', '255', 'abc'])('falls back to 10,240 for %s', (raw) => {
+      it.each(['0', '-5', '255', '256'])('clamps %s up to the 256 floor', (raw) => {
         process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = raw;
-        expect(captured()).toBe(serialized);
+        expect(captured()).toBe(serialized.slice(0, 256) + '...[truncated]');
       });
 
-      it('falls back to 10,240 above the upper bound', () => {
+      it.each(['abc', ''])('falls back to 10,240 for %j', (raw) => {
         process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
-        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '2000000';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = raw;
         processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(20_000) } }));
         const serializedLong = JSON.stringify({ data: 'x'.repeat(20_000) });
         expect(readBufferEvents()[0]!.outputContent).toBe(
           serializedLong.slice(0, 10_240) + '...[truncated]',
         );
+      });
+
+      it('clamps a value above the upper bound to the ceiling instead of the default', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '2000000';
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(20_000) } }));
+        expect(readBufferEvents()[0]!.outputContent).toBe(
+          JSON.stringify({ data: 'x'.repeat(20_000) }),
+        );
+      });
+
+      it.each([
+        ['0', 256],
+        ['-5', 256],
+        ['255', 256],
+        ['256', 256],
+        ['1048576', 1_048_576],
+        ['1048577', 1_048_576],
+        ['2000000', 1_048_576],
+        ['abc', 10_240],
+        ['', 10_240],
+        [undefined, 10_240],
+      ])('getMaxContentLength with %j returns %i', (raw, expected) => {
+        if (raw === undefined) delete process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
+        else process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = raw;
+        expect(getMaxContentLength()).toBe(expected);
       });
 
       it('accepts the upper bound itself', () => {
