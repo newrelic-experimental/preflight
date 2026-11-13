@@ -88,24 +88,28 @@ Apply the same pattern to any user-supplied string that becomes a NR event field
 
 One list of compiled regular expressions, imported by `src/config.ts` (as `DEFAULT_REDACTION_PATTERNS`) and by `collector-script.ts`. It covers:
 
-| Pattern                                                                         | What it catches                           |
-| ------------------------------------------------------------------------------- | ----------------------------------------- |
-| `API_KEY=`, `SECRET=`, `TOKEN=`, `PASSWORD=`, `PASSPHRASE=`, `PRIVATE_KEY=`, …  | Key-value secret assignments              |
-| `sk-`, `ghp_`, `gho_`, `ghs_`, `github_pat_`, `xoxb-`, `xoxp-`, `Bearer …`      | Common API token prefixes                 |
-| `-----BEGIN … -----END-----`                                                    | PEM-encoded private keys and certificates |
-| `AKIA[0-9A-Z]{16}`                                                              | AWS access key IDs                        |
-| `AIzaSy…`                                                                       | Google API keys                           |
-| `eyJ…` (three-part)                                                             | JWT tokens                                |
-| `npm_…`                                                                         | npm auth tokens                           |
-| `xox[a-z]-…`                                                                    | All Slack token types                     |
-| `glpat-…`                                                                       | GitLab personal access tokens             |
-| `sk_live_` / `sk_test_` / `rk_live_` / `rk_test_`                               | Stripe secret and restricted keys         |
-| `pypi-…`                                                                        | PyPI upload tokens                        |
-| `hf_…`                                                                          | Hugging Face tokens                       |
-| `vercel_`, `heroku_`, `dd_`, `pk_`                                              | Vercel, Heroku, Datadog and similar keys  |
-| `AC…` / `SK…` (32 hex characters)                                               | Twilio account SIDs and API keys          |
-| `user:pass@` in `https://`, `mongodb://`, `postgres://`, `mysql://`, `redis://` | Credentials embedded in URLs              |
-| `?sig=`, `?se=`, `?sp=`, `?sv=`, …                                              | Azure SAS token parameters                |
+| Pattern                                                                                                                                                                                  | What it catches                           |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `API_KEY=`, `SECRET=`, `TOKEN=`, `PASSWORD=`, `PASSPHRASE=`, `PRIVATE_KEY=`, …                                                                                                           | Key-value secret assignments              |
+| `sk-`, `ghp_`, `gho_`, `ghs_`, `github_pat_`, `xoxb-`, `xoxp-`, `Bearer …`                                                                                                               | Common API token prefixes                 |
+| `-----BEGIN … -----END-----`                                                                                                                                                             | PEM-encoded private keys and certificates |
+| `AKIA[0-9A-Z]{16}`                                                                                                                                                                       | AWS access key IDs                        |
+| `AIzaSy…`                                                                                                                                                                                | Google API keys                           |
+| `eyJ…` (three-part)                                                                                                                                                                      | JWT tokens                                |
+| `npm_…`                                                                                                                                                                                  | npm auth tokens                           |
+| `xox[a-z]-…`                                                                                                                                                                             | All Slack token types                     |
+| `glpat-…`                                                                                                                                                                                | GitLab personal access tokens             |
+| `sk_live_` / `sk_test_` / `rk_live_` / `rk_test_`                                                                                                                                        | Stripe secret and restricted keys         |
+| `pypi-…`                                                                                                                                                                                 | PyPI upload tokens                        |
+| `hf_…`                                                                                                                                                                                   | Hugging Face tokens                       |
+| `vercel_`, `heroku_`, `dd_`, `pk_`                                                                                                                                                       | Vercel, Heroku, Datadog and similar keys  |
+| `AC…` / `SK…` (32 hex characters)                                                                                                                                                        | Twilio account SIDs and API keys          |
+| `user:pass@` in `https://`, `mongodb://`, `postgres://`, `mysql://`, `redis://`                                                                                                          | Credentials embedded in URLs              |
+| `?sig=`, `?se=`, `?sp=`, `?sv=`, …                                                                                                                                                       | Azure SAS token parameters                |
+| `--token`, `--password`, `--passwd`, `--secret`, `--api-key`, `--access-key`, `--secret-key`, `--private-key` and compounds such as `--access-token`, `--client-secret`, `--db-password` | Secret values passed as flags             |
+| `-p<password>` after `mysql`, `mysqldump`, `mysqladmin` or `mariadb`                                                                                                                     | MySQL client passwords                    |
+| `-H` or `--header` with `X-Api-Key`, `Api-Key`, `X-Auth-Token` or `X-Access-Token`                                                                                                       | API-key headers                           |
+| `aws_secret_access_key` followed by 40 characters                                                                                                                                        | AWS secret access keys                    |
 
 **Where applied:**
 
