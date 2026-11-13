@@ -47,6 +47,13 @@ var SPECIAL = charTable(`
 var isSpace = (c) => c === 32 || c >= 9 && c <= 13;
 var isOperator = (c) => c >= 0 && c < 128 && OPERATOR[c] === 1;
 var isBlankOrOperator = (c) => isSpace(c) || isOperator(c);
+function cutAtWord(text, end) {
+  let start = end;
+  if (!isSpace(text.charCodeAt(end))) {
+    while (start > 0 && !isSpace(text.charCodeAt(start - 1))) start--;
+  }
+  return text.slice(0, start);
+}
 function skipPlain(text, from) {
   let i = from;
   while (i < text.length) {
@@ -471,7 +478,8 @@ function redact(value) {
   let result = value;
   if (Buffer.byteLength(value, "utf8") > MAX_REDACT_BYTES) {
     const buf = Buffer.from(value, "utf8").subarray(0, MAX_REDACT_BYTES);
-    result = buf.toString("utf8").replace(/�$/, "");
+    const kept = buf.toString("utf8").replace(/�$/, "");
+    result = cutAtWord(value, kept.length);
   }
   return redactSecrets(result);
 }

@@ -11,6 +11,7 @@ import type { PersonalAlertThresholds } from './alerts/types.js';
 import { DEFAULT_PERSONAL_THRESHOLDS } from './alerts/types.js';
 import {
   REDACTION_PATTERNS as DEFAULT_REDACTION_PATTERNS,
+  cutAtWord,
   redactSecrets,
 } from './redaction-patterns.js';
 import { resolveRecordContent } from './record-content-gate.js';
@@ -1887,7 +1888,7 @@ const MAX_REDACT_LEN = 1_048_576; // 1 MB
 
 export function redactSensitive(value: string, patterns?: readonly RegExp[]): string {
   if (typeof value !== 'string') return String(value ?? '');
-  let result = value.length > MAX_REDACT_LEN ? value.slice(0, MAX_REDACT_LEN) : value;
+  let result = value.length > MAX_REDACT_LEN ? cutAtWord(value, MAX_REDACT_LEN) : value;
   if (patterns === undefined) return redactSecrets(result);
   for (const pattern of patterns) {
     pattern.lastIndex = 0;
