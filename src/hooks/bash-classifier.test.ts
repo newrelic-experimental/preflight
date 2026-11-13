@@ -449,6 +449,20 @@ describe('classifyBash', () => {
       expect(classifyBash('echo hi # rm -rf /tmp/x').isDestructive).toBe(false);
     });
 
+    it.each([
+      ['\\rm -rf /tmp/x', true],
+      ['x=$(# rm -rf /tmp/x\necho a)', false],
+      ['x=$( (echo a) )#; rm -rf /tmp/x', true],
+      ["cat <<EOF # note\nit's\nEOF\nrm -rf /tmp/x", true],
+      ["cat <<EOF\nEOF\necho a\necho 'rm -rf /tmp/x'", false],
+      ["cat <<-EOF\n\tx\n\tEOF\necho 'rm -rf /tmp/x'", false],
+      ["cat <<EOF\na\\\nEOF\nit's\nEOF\nrm -rf /tmp/x", true],
+      ["cat <<'EOF'\na\\\nEOF\necho 'rm -rf /tmp/x'", false],
+      ["cat <<<x\necho 'rm -rf /tmp/x'", false],
+    ])('matches whether bash runs rm: %j', (cmd, ran) => {
+      expect(classifyBash(cmd).isDestructive).toBe(ran);
+    });
+
     it('flags every generated command whose rm real bash runs', () => {
       const ran = ORACLE.filter(([, didRun]) => didRun).map(([cmd]) => cmd);
       expect(ran.length).toBeGreaterThan(50);

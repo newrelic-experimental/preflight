@@ -244,7 +244,7 @@ const CLOSED_BY: Record<Exclude<LexState, 'none'>, string> = {
 // Inside double quotes bash escapes only ` $ " \ and newline, but treating every
 // `\x` as a pair masks the same characters, since only `"` can close the quote.
 const ESCAPES_IN: ReadonlySet<LexState> = new Set(['none', 'double', 'ansi-c']);
-const METACHAR = /[\s;&|(<>]/;
+const METACHAR = /[\s;&|(]/;
 const HEREDOC_OPERATOR = /(?<!<)<<(-?)[ \t]*(['"]?)(\w+)\2/y;
 const LINE_CONTINUES = /(?<!\\)(?:\\\\)*\\$/;
 
