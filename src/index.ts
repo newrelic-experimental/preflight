@@ -1673,14 +1673,14 @@ async function main(): Promise<void> {
       lastDayKey: localDateKey(),
       lastRefreshMs: 0,
     };
+    // Sessions whose saved cost a --local process folded into its CostTracker
+    // on first sight. Each is counted by the tracker, so the baseline leaves it out.
+    const localSeededSessionIds = new Set<string>();
     // Excludes the session this process owns now once its saved cost is seeded
     // into CostTracker, which for a --stdio engine happens when it adopts or
     // confirms the id, not at startup. An unconfirmed cwd guess is not seeded
     // yet, so its file stays in, as it stood before this process's own cost
     // reached it.
-    // Sessions whose saved cost a --local process folded into its CostTracker
-    // on first sight. Each is counted by the tracker, so the baseline leaves it out.
-    const localSeededSessionIds = new Set<string>();
     const refreshPriorCostBaseline = (): void => {
       const now = Date.now();
       const ownIsSeeded =
