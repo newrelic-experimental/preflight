@@ -7,6 +7,12 @@ import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 
 // src/redaction-patterns.ts
+var AFTER_ESCAPE = String.raw`\\[nrt]|\\u[0-9a-fA-F]{4}|\x1b\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
+var ARG_VALUE = String.raw`(?:\\?"[^"\n]{0,1000}"|'[^'\n]{0,1000}'|\S+)`;
+var P_FLAG_START = String.raw`(?:\s|${AFTER_ESCAPE})-p`;
+var HEADER_FLAG = String.raw`(?:-H|--header)[\s=]{1,4}`;
+var HEADER_NAME = String.raw`(?:x-)?(?:api-?key|auth-token|access-token)`;
+var HEADER_SEP = String.raw`(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})`;
 var REDACTION_PATTERNS = [
   /(?<![a-zA-Z])(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-zA-Z])[\s]*[=:]\s*\S+/gi,
   /(?:sk-|ghp_|gho_|ghs_|github_pat_|xoxb-|xoxp-|Bearer\s+)[A-Za-z0-9_-]{20,200}/g,
@@ -25,12 +31,26 @@ var REDACTION_PATTERNS = [
   /\b(?:AC|SK)[a-f0-9]{32}\b/g,
   /(?:[?&])(?:sig|se|sp|srt|ss|sv|st)=[A-Za-z0-9%_-]+/gi,
   /\b(?:vercel_|heroku_|dd_|pk_)[A-Za-z0-9_-]{20,}\b/gi,
-  /(?<![\w-])--?(?:token|password|passwd|secret|api[-_]?key|access[-_]?key|auth[-_]?token)(?:[ \t]+|=)(?!-)\S+/gi,
+  new RegExp(
+    String.raw`-(?<=(?:^|[^\w-]|${AFTER_ESCAPE})-)-?(?:[a-z0-9]{1,30}[-_]){0,3}(?:token|password|passwd|secret|(?:api|access|secret|private)[-_]?key)(?:[ \t]+|=)(?!-)${ARG_VALUE}`,
+    "gi"
+  ),
   // -p is a port, parents or preserve flag everywhere else, so only a mysql client's -p<value> counts.
-  // The lookbehind stops at the previous " -p", so each scan covers new text and the cost stays linear.
-  /-p(?<=\b(?:mysql(?:dump|admin)?|mariadb)\b(?:(?!\s-p)[^\n;|&]){0,200}\s-p)\S+/g,
-  /(?<=(?:-H|--header)[\s=]{1,4}["']?)(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})[^\s"']+/gi,
-  /\baws_secret_access_key(?:[ \t]*[=:][ \t]*|[ \t]+)["']?[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/gi
+  // The lookbehind stops at the previous -p, so each scan covers new text and the cost stays linear.
+  new RegExp(
+    String.raw`-p(?<=\b(?:mysql(?:dump|admin)?|mariadb)\b(?:"[^"\n]{0,1000}"|'[^'\n]{0,1000}'|\\\r?\n|(?!${P_FLAG_START})[^\n;|&"'])*${P_FLAG_START})(?![\d.]+:\d)${ARG_VALUE}`,
+    "g"
+  ),
+  new RegExp(
+    String.raw`${HEADER_NAME}(?:${[
+      String.raw`(?<=${HEADER_FLAG}"${HEADER_NAME})${HEADER_SEP}[^"\n]{1,1000}`,
+      String.raw`(?<=${HEADER_FLAG}\\"${HEADER_NAME})${HEADER_SEP}(?:[^"\\\n]|\\(?!")){1,1000}`,
+      String.raw`(?<=${HEADER_FLAG}'${HEADER_NAME})${HEADER_SEP}[^'\n]{1,1000}`,
+      String.raw`(?<=${HEADER_FLAG}${HEADER_NAME})${HEADER_SEP}[^\s"']+`
+    ].join("|")})`,
+    "gi"
+  ),
+  /aws_secret_access_key(?:[ \t]*[=:][ \t]*|[ \t]+)["']?[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/gi
 ];
 
 // src/record-content-gate.ts
@@ -396,8 +416,7 @@ function extractInputMeta(toolName, input) {
       if (Array.isArray(obj.replacements)) meta.replacementsCount = obj.replacements.length;
       break;
     case "run_in_terminal":
-      if (typeof obj.command === "string")
-        meta.command = redact(truncate(obj.command, getMaxContentLength()));
+      if (typeof obj.command === "string") meta.command = redact(obj.command);
       if (typeof obj.explanation === "string") meta.description = redact(obj.explanation);
       if (typeof obj.isBackground === "boolean") meta.run_in_background = obj.isBackground;
       break;
@@ -454,8 +473,7 @@ function extractInputMeta(toolName, input) {
     // input shape as Bash.
     case "Bash":
     case "PowerShell":
-      if (typeof obj.command === "string")
-        meta.command = redact(truncate(obj.command, getMaxContentLength()));
+      if (typeof obj.command === "string") meta.command = redact(obj.command);
       if (typeof obj.description === "string") meta.description = redact(obj.description);
       if (typeof obj.timeout === "number") meta.timeout = obj.timeout;
       if (typeof obj.run_in_background === "boolean")
@@ -707,7 +725,7 @@ function processHook(raw, cliEvent) {
       timestamp,
       inputSize: sizeOf(command),
       inputHash: hashInput(command),
-      toolInput: { command: redact(truncate(command, maxContentLen)) }
+      toolInput: { command: redact(command) }
     };
   } else if (eventName === "aftershellexecution") {
     event = {
@@ -799,7 +817,7 @@ function processHook(raw, cliEvent) {
       timestamp,
       inputSize: sizeOf(commandLine),
       inputHash: hashInput(commandLine),
-      toolInput: { command: redact(truncate(commandLine, maxContentLen)) }
+      toolInput: { command: redact(commandLine) }
     };
   } else if (eventName === "post_run_command") {
     event = {
