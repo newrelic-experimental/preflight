@@ -66,8 +66,8 @@ export function computeHistoricalCosts(
   /** Left out of the baseline; null leaves nothing out. */
   currentSessionId: string | null,
   refTs: number = Date.now(),
-  /** Counts `summary` (nothing when null) in place of `sessionId`'s current file. */
-  substitute?: { readonly sessionId: string; readonly summary: FullSessionSummary | null },
+  /** Summaries to count (nothing for null) in place of those sessions' current files. */
+  substitutes: ReadonlyMap<string, FullSessionSummary | null> = new Map(),
 ): { priorDailyCostUsd: number; priorWeeklyCostUsd: number } {
   const weekAgo = new Date(refTs - 7 * 24 * 60 * 60 * 1000);
   let priorDailyCostUsd = 0;
@@ -79,7 +79,9 @@ export function computeHistoricalCosts(
     });
     for (const loaded of sessions) {
       if (loaded.sessionId === currentSessionId) continue;
-      const session = loaded.sessionId === substitute?.sessionId ? substitute.summary : loaded;
+      const session = substitutes.has(loaded.sessionId)
+        ? substitutes.get(loaded.sessionId)!
+        : loaded;
       if (session === null || session.estimatedCostUsd === null) continue;
       priorDailyCostUsd += dailyPortion(session, weekAgo, refTs);
       priorWeeklyCostUsd += weeklyPortion(session, weekAgo, refTs);

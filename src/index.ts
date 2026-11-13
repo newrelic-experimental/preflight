@@ -1449,6 +1449,14 @@ async function main(): Promise<void> {
       }
       return saved !== null;
     };
+    // Each other session whose spend costTracker holds, mapped to its saved
+    // file as it stood before that spend reached it. The budget baseline counts
+    // this in place of the current file, which by now holds the same spend too.
+    const savedBeforeHeld = new Map<string, FullSessionSummary | null>();
+    const holdSessionCost = (sessionId: string | null | undefined): void => {
+      if (!sessionId || sessionId === sessionTraceId || savedBeforeHeld.has(sessionId)) return;
+      savedBeforeHeld.set(sessionId, sessionStore!.loadSession(sessionId));
+    };
     const rehydrateTrackersIfResumed = (sessionId: string): void => {
       if (isSyntheticSessionId(sessionId)) return;
       if (rehydratedTrackerSessionIds.has(sessionId)) return;
@@ -1676,13 +1684,13 @@ async function main(): Promise<void> {
       const ownIsSeeded =
         isSyntheticSessionId(sessionTraceId) || rehydratedTrackerSessionIds.has(sessionTraceId);
       const ownFile = firstSaveBaselines.costFileBeforeOwnSave(sessionTraceId);
+      const substitutes = new Map(savedBeforeHeld);
+      if (!ownIsSeeded && ownFile !== undefined) substitutes.set(sessionTraceId, ownFile);
       const baseline = computeHistoricalCosts(
         sessionStoreForCostBaseline,
         ownIsSeeded ? sessionTraceId : null,
         now,
-        !ownIsSeeded && ownFile !== undefined
-          ? { sessionId: sessionTraceId, summary: ownFile }
-          : undefined,
+        substitutes,
       );
       priorCostCache.priorDailyCostUsd = baseline.priorDailyCostUsd;
       priorCostCache.priorWeeklyCostUsd = baseline.priorWeeklyCostUsd;
@@ -2436,6 +2444,7 @@ async function main(): Promise<void> {
         if (!isOwnEvent) {
           breakdown = costTracker.priceUsage(usage, tokenEvent.model);
         } else {
+          holdSessionCost(tokenEvent.sessionId);
           breakdown = costTracker.recordTokenUsage(usage, tokenEvent.model, {
             timestampMs: tokenEvent.timestamp,
             replacesEstimates: true,
@@ -2536,6 +2545,7 @@ async function main(): Promise<void> {
         subagentAttribution.recordSubagentTurn(turn);
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
         const usage = tokenUsageFromSubagentTurn(turn);
+        holdSessionCost(turn.parentSessionId);
         const breakdown = costTracker.recordTokenUsage(usage, turn.model, {
           timestampMs: turn.timestampMs,
           workflowRunId: turn.workflowRunId,

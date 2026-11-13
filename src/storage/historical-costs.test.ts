@@ -122,7 +122,7 @@ describe('computeHistoricalCosts', () => {
     const before = { ...store.loadSession('guess')!, estimatedCostUsd: 4 };
 
     const substitute = (summary: FullSessionSummary | null) =>
-      computeHistoricalCosts(store, null, REF_TS, { sessionId: 'guess', summary });
+      computeHistoricalCosts(store, null, REF_TS, new Map([['guess', summary]]));
 
     expect(substitute(before)).toEqual({ priorDailyCostUsd: 4, priorWeeklyCostUsd: 4 });
     expect(substitute(null)).toEqual({ priorDailyCostUsd: 0, priorWeeklyCostUsd: 0 });
