@@ -1,10 +1,6 @@
 /**
  * Maps GitHub Copilot SDK `assistant.usage` events to Preflight's `mode:
- * 'token'` buffer-line contract, and resolves the buffer file path — the
- * shared, tested logic behind `copilot-sdk-extension/extension.mjs` (a
- * hand-maintained plain-JS mirror of this file; Copilot SDK extensions must
- * be written in JavaScript, so the logic can't be imported directly — see
- * that file's header comment).
+ * 'token'` buffer-line contract, and resolves the buffer file path.
  *
  * Field mapping verified against two real `assistant.usage` events captured
  * live from a Copilot SDK session, via the Copilot CLI host (see

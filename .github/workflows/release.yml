@@ -50,6 +50,9 @@ jobs:
       - name: Verify plugin hook bundle is up to date
         run: npm run verify:plugin-hook
 
+      - name: Verify Copilot SDK extension bundle is up to date
+        run: npm run verify:copilot-extension
+
       # Checks that package-lock.json, server.json, both plugin manifests, and
       # the plugin's npx pin in plugin/.mcp.json carry package.json's version,
       # and that the newest CHANGELOG entry is for it. Also fails while

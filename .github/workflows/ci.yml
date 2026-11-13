@@ -142,6 +142,9 @@ jobs:
       - name: Verify plugin hook bundle
         run: npm run verify:plugin-hook
 
+      - name: Verify Copilot SDK extension bundle
+        run: npm run verify:copilot-extension
+
       # shellcheck for the tracked scripts under .claude/skills/, which neither
       # ESLint nor Prettier reaches. ubuntu-latest ships shellcheck.
       - name: Lint shell scripts

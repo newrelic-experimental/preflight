@@ -26,7 +26,7 @@
 
 import { dirname, resolve, win32 } from 'node:path';
 import { homedir } from 'node:os';
-import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { z } from 'zod';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
 import { entryContainsNrObserve, shimExtension, siblingBinPath } from './install-helper.js';
@@ -538,27 +538,38 @@ export function applyHookCollisionFix(opts: {
 // installCopilotSdkExtension — Copilot CLI only, for token-exact cost.
 // ---------------------------------------------------------------------------
 
-export interface SdkExtensionInstallResult {
-  copied: boolean;
-  reason?: string;
-}
+export type SdkExtensionInstallResult =
+  | { action: 'copied' }
+  | { action: 'updated' }
+  | { action: 'unchanged' }
+  | { action: 'skipped'; reason: 'not-preflight' }
+  | { action: 'failed'; reason: string };
+
+const PREFLIGHT_EXTENSION_MARKER = 'preflight extension:';
 
 export function installCopilotSdkExtension(): SdkExtensionInstallResult {
   const destPath = copilotSdkExtensionInstallPath();
-  if (existsSync(destPath)) return { copied: false, reason: 'exists' };
 
-  let sourceDir: string;
+  let bundle: Buffer;
   try {
-    sourceDir = resolveDataDir('copilot-sdk-extension');
+    bundle = readFileSync(resolve(resolveDataDir('copilot-sdk-extension'), 'extension.mjs'));
   } catch (err) {
-    return { copied: false, reason: errMsg(err) };
+    return { action: 'failed', reason: errMsg(err) };
   }
 
   try {
+    const installed = existsSync(destPath) ? readFileSync(destPath) : null;
+    if (installed?.equals(bundle)) return { action: 'unchanged' };
+    if (installed && !installed.includes(PREFLIGHT_EXTENSION_MARKER)) {
+      return { action: 'skipped', reason: 'not-preflight' };
+    }
+
     mkdirSync(dirname(destPath), { recursive: true, mode: 0o700 });
-    copyFileSync(resolve(sourceDir, 'extension.mjs'), destPath);
-    return { copied: true };
+    const tmpPath = `${destPath}.${process.pid}.tmp`;
+    writeFileSync(tmpPath, bundle, { mode: installed ? statSync(destPath).mode & 0o777 : 0o644 });
+    renameSync(tmpPath, destPath);
+    return { action: installed ? 'updated' : 'copied' };
   } catch (err) {
-    return { copied: false, reason: errMsg(err) };
+    return { action: 'failed', reason: errMsg(err) };
   }
 }
