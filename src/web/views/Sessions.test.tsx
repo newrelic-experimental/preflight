@@ -616,6 +616,7 @@ describe('Sessions view — workflow consolidation', () => {
     sessionList: unknown,
     workflowRuns: unknown,
     workflowDetails: WorkflowDetailMap = {},
+    liveSessions: readonly string[] = [],
   ) {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
     globalThis.fetch = ((url: string) => {
@@ -632,6 +633,14 @@ describe('Sessions view — workflow consolidation', () => {
       if (url === '/api/workflows') {
         return Promise.resolve(
           new Response(JSON.stringify(workflowRuns), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url === '/api/session/current') {
+        return Promise.resolve(
+          new Response(JSON.stringify({ sessionId: null, liveSessions }), {
             status: 200,
             headers: { 'content-type': 'application/json' },
           }),
@@ -826,6 +835,18 @@ describe('Sessions view — workflow consolidation', () => {
     renderSessionsFull([], []);
     expect(await screen.findByText('No sessions yet')).toBeInTheDocument();
     expect(screen.queryByText('Costs are estimates.')).toBeNull();
+  });
+
+  it('shows the costs-are-estimates note when a single session is listed', async () => {
+    renderSessionsFull([SESSIONS[0]], []);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    expect(screen.getByText('Costs are estimates.')).toBeInTheDocument();
+  });
+
+  it('shows the costs-are-estimates note when only a live session is running', async () => {
+    renderSessionsFull([], [], {}, ['live-1']);
+    expect(await screen.findByText('Costs are estimates.')).toBeInTheDocument();
+    expect(screen.queryByText('No sessions yet')).toBeNull();
   });
 
   it('scopes the visible session list to the run-source filter', async () => {
