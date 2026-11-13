@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { appendToHookBuffer } from './hook-buffer.js';
 import { LocalStore } from './local-store.js';
 import type { HookEvent, PostHookEvent, AuditEntry } from './types.js';
 
@@ -739,6 +740,22 @@ describe('LocalStore', () => {
       const drainAll = new LocalStore(tmpDir);
       const all = drainAll.drainAllBuffers();
       expect(all.map((e) => e.tool)).toEqual(['dead-owner']);
+    });
+
+    it('leaves buffer-unknown.jsonl while its own id is pending, stop included, and drains it once the id is known', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const line = (tool: string): string => JSON.stringify(makeEvent({ tool })) + '\n';
+      appendToHookBuffer(resolve(tmpDir, 'buffer-unknown.jsonl'), line('no-session'));
+      appendToHookBuffer(resolve(tmpDir, 'buffer-sess-1.jsonl'), line('one'));
+
+      const pending = new LocalStore(tmpDir);
+      pending.setOwnIdPending(true);
+      expect(pending.drainAllBuffers().map((e) => e.tool)).toEqual(['one']);
+      pending.giveUpHeldOrder();
+      expect(pending.drainAllBuffers()).toEqual([]);
+
+      pending.setOwnIdPending(false);
+      expect(pending.drainAllBuffers().map((e) => e.tool)).toEqual(['no-session']);
     });
   });
 

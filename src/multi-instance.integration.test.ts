@@ -1,11 +1,20 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { appendToHookBuffer } from './storage/hook-buffer.js';
 
 // ---------------------------------------------------------------------------
 // Multi-instance integration test (proposal task #11)
@@ -313,6 +322,58 @@ describe('multi-instance integration (proposal #11)', () => {
       }
     }
   }, 30_000);
+
+  it('a call with no session id outlives a pending engine that exits, and the engine that adopts a session saves it once', async () => {
+    const store = mkdtempSync(join(tmpdir(), 'nr-mi-unknown-'));
+    const sessionId = 'unknown-adopter';
+    const ts = Date.now() - 1000;
+    const id = 'toolu_no_session';
+    for (const line of [
+      { mode: 'pre', tool: 'Grep', timestamp: ts, toolUseId: id, inputSize: 4 },
+      {
+        mode: 'post',
+        tool: 'Grep',
+        timestamp: ts + 1,
+        toolUseId: id,
+        success: true,
+        outputSize: 4,
+      },
+    ]) {
+      appendToHookBuffer(resolve(store, 'buffer-unknown.jsonl'), JSON.stringify(line) + '\n');
+    }
+    try {
+      const exiting = spawnChild('pending-exit', store, undefined, distIndex, await getFreePort());
+      children.push(exiting);
+      await initialize(exiting);
+      await waitForStderr(exiting, 'Awaiting session_id resolution', BOOT_TIMEOUT_MS);
+      await delay(1000);
+      exiting.proc.stdin.end();
+      await waitExit(exiting, 6000);
+
+      const adopter = spawnChild(sessionId, store, undefined, distIndex, await getFreePort());
+      children.push(adopter);
+      await initialize(adopter);
+      await waitForStderr(adopter, 'Awaiting session_id resolution', BOOT_TIMEOUT_MS);
+      mkdirSync(resolve(store, 'session-by-ppid'), { recursive: true, mode: 0o700 });
+      writeFileSync(resolve(store, 'session-by-ppid', `${process.pid}.txt`), sessionId, {
+        mode: 0o600,
+      });
+      await waitForStderr(adopter, 'Session ID resolved', 8000);
+      adopter.proc.stdin.end();
+      await waitExit(adopter, 6000);
+
+      const saved = readdirSync(resolve(store, 'sessions')).find((f) =>
+        f.endsWith(`_${sessionId}.json`),
+      );
+      expect(saved).toBeDefined();
+      const session = JSON.parse(readFileSync(resolve(store, 'sessions', saved!), 'utf-8')) as {
+        toolCallCount?: number;
+      };
+      expect(session.toolCallCount).toBe(1);
+    } finally {
+      rmSync(store, { recursive: true, force: true });
+    }
+  }, 40_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -374,7 +435,7 @@ function getFreePort(): Promise<number> {
 function spawnChild(
   sessionId: string,
   storagePath: string,
-  jobDir: string,
+  jobDir: string | undefined,
   distPath: string,
   port: number,
 ): ChildHandle {
