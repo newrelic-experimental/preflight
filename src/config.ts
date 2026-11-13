@@ -530,13 +530,54 @@ function envInt(
   return clampNumber(parsed, bounds);
 }
 
-function envLogLevel(key: string, defaultValue: LogLevel): LogLevel {
+function envLogLevel(key: string): LogLevel | undefined {
   const val = process.env[key]?.toLowerCase();
   if (val === 'debug' || val === 'info' || val === 'warn' || val === 'error') return val;
-  return defaultValue;
+  return undefined;
 }
 
-function loadConfigFile(filePath: string): z.infer<typeof ConfigFileSchema> {
+/**
+ * Documented order: the CLI flag, then NEW_RELIC_AI_MCP_LOG_LEVEL, then
+ * NEW_RELIC_AI_LOG_LEVEL (the variable the shared logger reads), then the
+ * config file's logLevel, then 'info'.
+ */
+function resolveConfiguredLogLevel(
+  cliLevel: LogLevel | undefined,
+  fileLevel: LogLevel | undefined,
+): LogLevel {
+  return (
+    cliLevel ??
+    envLogLevel('NEW_RELIC_AI_MCP_LOG_LEVEL') ??
+    envLogLevel('NEW_RELIC_AI_LOG_LEVEL') ??
+    fileLevel ??
+    'info'
+  );
+}
+
+/**
+ * The level the logger starts with, before the full config loads. It follows
+ * the same order as loadMcpConfig(). A config file that fails to load counts as
+ * empty here, because loadMcpConfig() reports that error once the config loads.
+ */
+export function resolveStartupLogLevel(
+  cliLevel: LogLevel | undefined,
+  configPath: string | null,
+): LogLevel {
+  let file: z.infer<typeof ConfigFileSchema> = {};
+  try {
+    file = loadConfigFile(configPath ?? resolve(DEFAULT_STORAGE_PATH, 'config.json'), {
+      quiet: true,
+    });
+  } catch {
+    // Reported by loadMcpConfig() when the config loads.
+  }
+  return resolveConfiguredLogLevel(cliLevel, file.logLevel);
+}
+
+function loadConfigFile(
+  filePath: string,
+  options: { quiet?: boolean } = {},
+): z.infer<typeof ConfigFileSchema> {
   let raw: string;
   try {
     raw = readFileSync(filePath, 'utf-8');
@@ -548,10 +589,12 @@ function loadConfigFile(filePath: string): z.infer<typeof ConfigFileSchema> {
     parsed = JSON.parse(raw);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    logger.error('Invalid JSON in config file', {
-      filePath,
-      error: errorMsg,
-    });
+    if (!options.quiet) {
+      logger.error('Invalid JSON in config file', {
+        filePath,
+        error: errorMsg,
+      });
+    }
     throw new Error(`Config file parsing failed at ${filePath}: ${errorMsg}`);
   }
   const validation = ConfigFileSchema.safeParse(parsed);
@@ -562,10 +605,12 @@ function loadConfigFile(filePath: string): z.infer<typeof ConfigFileSchema> {
         return `${path || 'root'}: ${issue.message}`;
       })
       .join('; ');
-    logger.error('Config file validation failed', {
-      filePath,
-      issues,
-    });
+    if (!options.quiet) {
+      logger.error('Config file validation failed', {
+        filePath,
+        issues,
+      });
+    }
     throw new Error(`Config file validation failed at ${filePath}: ${issues}`);
   }
   return validation.data;
@@ -1256,15 +1301,7 @@ export function loadMcpConfig(
       { min: 1, max: 65535 },
     ),
 
-    logLevel:
-      cliOptions?.logLevel ??
-      envLogLevel(
-        'NEW_RELIC_AI_MCP_LOG_LEVEL',
-        typeof file.logLevel === 'string' &&
-          ['debug', 'info', 'warn', 'error'].includes(file.logLevel)
-          ? (file.logLevel as LogLevel)
-          : 'info',
-      ),
+    logLevel: resolveConfiguredLogLevel(cliOptions?.logLevel, file.logLevel),
 
     collectorHost: resolveCollectorHost(
       licenseKey,

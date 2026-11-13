@@ -13,6 +13,7 @@ import {
   validateConfigFile,
   resolveCompanionMode,
   findReceiverDoubleCount,
+  resolveStartupLogLevel,
 } from './config.js';
 import type { CompanionModeSource, McpServerConfig } from './config.js';
 
@@ -38,6 +39,7 @@ beforeEach(() => {
   delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   delete process.env.NEW_RELIC_AI_MCP_PORT;
   delete process.env.NEW_RELIC_AI_MCP_LOG_LEVEL;
+  delete process.env.NEW_RELIC_AI_LOG_LEVEL;
   delete process.env.NEW_RELIC_AI_MCP_HARVEST_EVENTS_MS;
   delete process.env.NEW_RELIC_AI_MCP_HARVEST_METRICS_MS;
   delete process.env.NEW_RELIC_HOST;
@@ -216,6 +218,37 @@ describe('loadMcpConfig()', () => {
     });
     expect(config.port).toBe(7777);
     expect(config.logLevel).toBe('error');
+  });
+
+  it('uses NEW_RELIC_AI_LOG_LEVEL when no flag or NEW_RELIC_AI_MCP_LOG_LEVEL is set', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'error';
+    const configPath = writeConfigFile({ logLevel: 'warn' });
+
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.logLevel).toBe('error');
+  });
+
+  it('prefers NEW_RELIC_AI_MCP_LOG_LEVEL over NEW_RELIC_AI_LOG_LEVEL', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_MCP_LOG_LEVEL = 'debug';
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'error';
+    const configPath = writeConfigFile({});
+
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.logLevel).toBe('debug');
+  });
+
+  it('uses the config file logLevel only when no flag or environment variable sets it', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ logLevel: 'warn' });
+    expect(loadMcpConfig({ config: configPath }).logLevel).toBe('warn');
+
+    process.env.NEW_RELIC_AI_MCP_LOG_LEVEL = 'debug';
+    expect(loadMcpConfig({ config: configPath }).logLevel).toBe('debug');
   });
 
   it('uses correct default values', () => {
@@ -3078,5 +3111,46 @@ describe('resolveCompanionMode()', () => {
     ['nothing set', {}, undefined, false, 'default'],
   ])('%s', (_name, env, fileValue, value, source) => {
     expect(resolveCompanionMode(env, fileValue)).toEqual({ value, source });
+  });
+});
+
+describe('resolveStartupLogLevel()', () => {
+  it('prefers the CLI level over every environment variable and the config file', () => {
+    process.env.NEW_RELIC_AI_MCP_LOG_LEVEL = 'debug';
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'error';
+    const configPath = writeConfigFile({ logLevel: 'info' });
+    expect(resolveStartupLogLevel('warn', configPath)).toBe('warn');
+  });
+
+  it('prefers NEW_RELIC_AI_MCP_LOG_LEVEL, then NEW_RELIC_AI_LOG_LEVEL, then the config file', () => {
+    const configPath = writeConfigFile({ logLevel: 'info' });
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'error';
+    process.env.NEW_RELIC_AI_MCP_LOG_LEVEL = 'debug';
+    expect(resolveStartupLogLevel(undefined, configPath)).toBe('debug');
+    delete process.env.NEW_RELIC_AI_MCP_LOG_LEVEL;
+    expect(resolveStartupLogLevel(undefined, configPath)).toBe('error');
+    delete process.env.NEW_RELIC_AI_LOG_LEVEL;
+    expect(resolveStartupLogLevel(undefined, configPath)).toBe('info');
+  });
+
+  it('reads logLevel from the config file when no flag or variable sets it', () => {
+    expect(resolveStartupLogLevel(undefined, writeConfigFile({ logLevel: 'warn' }))).toBe('warn');
+  });
+
+  it('ignores an invalid environment value and falls through to the next source', () => {
+    process.env.NEW_RELIC_AI_MCP_LOG_LEVEL = 'verbose';
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'Error';
+    expect(resolveStartupLogLevel(undefined, writeConfigFile({ logLevel: 'warn' }))).toBe('error');
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'loud';
+    expect(resolveStartupLogLevel(undefined, writeConfigFile({ logLevel: 'warn' }))).toBe('warn');
+  });
+
+  it('treats a config file that fails to load as empty instead of throwing', () => {
+    const configPath = resolve(tmpDir, 'broken.json');
+    writeFileSync(configPath, '{ not json');
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'error';
+    expect(resolveStartupLogLevel(undefined, configPath)).toBe('error');
+    delete process.env.NEW_RELIC_AI_LOG_LEVEL;
+    expect(resolveStartupLogLevel(undefined, configPath)).toBe('info');
   });
 });
