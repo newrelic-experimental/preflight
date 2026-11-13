@@ -451,19 +451,26 @@ const MAX_TIMELINE_ENTRIES = 10_000;
  * `--stdio` resume starts the new process with an empty in-memory timeline;
  * under longest-wins, every checkpoint the new process writes loses the merge
  * race to the old process's on-disk timeline until it outgrows it, silently
- * dropping entries from whichever side was shorter. Entries are deduped by
- * `(timestamp, toolName)` — no toolUseId is carried on `ReplayTimelineEntry`,
- * but two distinct real tool calls sharing a millisecond timestamp and tool
- * name is not a case that occurs in practice.
+ * dropping entries from whichever side was shorter.
+ *
+ * An entry is identified by its `toolUseId`, so parallel calls to one tool
+ * that share a millisecond all survive. Entries saved before the id existed
+ * have none and fall back to `(timestamp, toolName)`. A legacy entry whose
+ * `(timestamp, toolName)` an id-bearing entry also carries is the same call
+ * recorded before the upgrade, so it is dropped rather than doubled.
  */
 function mergeTimeline(
   existing: readonly ReplayTimelineEntry[] | undefined,
   incoming: readonly ReplayTimelineEntry[] | undefined,
 ): ReplayTimelineEntry[] | undefined {
   if (existing === undefined && incoming === undefined) return undefined;
+  const legacyKey = (e: ReplayTimelineEntry): string => `${e.timestamp}:${e.toolName}`;
+  const all = [...(existing ?? []), ...(incoming ?? [])];
+  const legacyKeysWithId = new Set(all.filter((e) => e.toolUseId).map(legacyKey));
   const byKey = new Map<string, ReplayTimelineEntry>();
-  for (const entry of [...(existing ?? []), ...(incoming ?? [])]) {
-    byKey.set(`${entry.timestamp}:${entry.toolName}`, entry);
+  for (const entry of all) {
+    if (entry.toolUseId) byKey.set(`id:${entry.toolUseId}`, entry);
+    else if (!legacyKeysWithId.has(legacyKey(entry))) byKey.set(legacyKey(entry), entry);
   }
   const merged = [...byKey.values()].sort((a, b) => a.timestamp - b.timestamp);
   return merged.length > MAX_TIMELINE_ENTRIES
@@ -1409,6 +1416,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
   // Enriched timeline for session replay
   const timeline: ReplayTimelineEntry[] = allToolCalls.map((tc) => ({
     timestamp: tc.timestamp,
+    toolUseId: tc.toolUseId || undefined,
     toolName: tc.toolName,
     durationMs: tc.durationMs,
     success: tc.success,
