@@ -194,7 +194,7 @@ var headerValue = (text, match, quote, spans) => {
   const end = readValue(text, from, quote, opener === "'" ? "single" : double ? "double" : "none");
   return pushValue(spans, match.index + match[1].length, from, end);
 };
-var NAME = /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-z])[ \t]*[=:][ \t]*/gi;
+var NAME = /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-z])\s*[=:]\s*/gi;
 var FLAG = new RegExp(
   String.raw`-(?<=(?:^|[^\w-]|${AFTER_ESCAPE})-)-?(?:[a-z0-9]+[-_])*(?:token|password|passwd|secret|(?:api|access|secret|private)[-_]?key)(?:=[ \t]*|(?:[ \t]|${CONTINUATION})+(?![ \t-]|${CONTINUATION}))`,
   "gi"

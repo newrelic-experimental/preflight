@@ -240,9 +240,9 @@ const headerValue: Redact = (text, match, quote, spans) => {
   return pushValue(spans, match.index + match[1].length, from, end);
 };
 
-// An = or : takes the next word even after a space, because free text such as PASSWORD = "x"
-// in a config file looks the same as an empty shell value. It never takes the next line.
-const NAME = /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-z])[ \t]*[=:][ \t]*/gi;
+// An = or : takes the next word even after a space or a line break, as the earlier rule did,
+// because free text such as PASSWORD = "x" in a config file looks the same as an empty value.
+const NAME = /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-z])\s*[=:]\s*/gi;
 
 // --password-file and --token-stdin name where the secret is, so the flag must end in a name.
 const FLAG = new RegExp(
