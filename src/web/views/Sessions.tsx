@@ -27,7 +27,15 @@ import {
 import { ContextBar } from '../components/ContextBar';
 import type { ContextResponse } from '../api/client';
 import type { AgentRow } from '../components/AgentTable';
-import { Card, EstimateMarker, Eyebrow, LiveBadge, Pill, Tabs } from '../components/ui';
+import {
+  Card,
+  EstimateMarker,
+  EstimateNote,
+  Eyebrow,
+  LiveBadge,
+  Pill,
+  Tabs,
+} from '../components/ui';
 import type { PillTone } from '../components/ui';
 import {
   fmtDateTime,
@@ -487,7 +495,10 @@ export function Sessions(): JSX.Element {
       <div className="h-8 overflow-hidden rounded-lg mb-2 shrink-0">
         <GeoBanner theme="sessions" />
       </div>
-      <h1 className="text-lg font-semibold gradient-text mb-2 shrink-0">Sessions</h1>
+      <div className="flex items-baseline justify-between mb-2 shrink-0">
+        <h1 className="text-lg font-semibold gradient-text">Sessions</h1>
+        <EstimateNote />
+      </div>
 
       {/* Fleet workflow KPIs + filters (consolidated from the former Workflows
           view). Filters scope the KPIs AND the master list below. */}

@@ -25,4 +25,4 @@ export type { SectionHeaderProps } from './SectionHeader';
 export { InfoTooltip } from './InfoTooltip';
 export type { InfoTooltipProps } from './InfoTooltip';
 
-export { EstimateMarker } from './EstimateMarker';
+export { EstimateMarker, EstimateNote } from './EstimateMarker';
