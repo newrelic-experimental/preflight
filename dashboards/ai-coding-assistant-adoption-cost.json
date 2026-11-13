@@ -1684,7 +1684,7 @@
           }
         },
         {
-          "title": "Assisted Hours per Developer (60d)",
+          "title": "Session Hours per Developer (60d)",
           "layout": {
             "column": 7,
             "row": 17,
