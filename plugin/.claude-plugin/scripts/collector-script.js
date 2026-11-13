@@ -219,9 +219,8 @@ function getMaxContentLength() {
   if (val === void 0) return DEFAULT_MAX_CONTENT_LENGTH;
   const parsed = parseInt(val, 10);
   if (Number.isNaN(parsed)) return DEFAULT_MAX_CONTENT_LENGTH;
-  if (parsed < MIN_MAX_CONTENT_LENGTH || parsed > MAX_MAX_CONTENT_LENGTH) {
-    return DEFAULT_MAX_CONTENT_LENGTH;
-  }
+  if (parsed < MIN_MAX_CONTENT_LENGTH) return MIN_MAX_CONTENT_LENGTH;
+  if (parsed > MAX_MAX_CONTENT_LENGTH) return MAX_MAX_CONTENT_LENGTH;
   return parsed;
 }
 function detectStampPlatform() {
@@ -1014,6 +1013,7 @@ export {
   _stdinFs,
   getBufferPath,
   getLinuxAncestorPids,
+  getMaxContentLength,
   getRecordContent,
   hashInput,
   processHook,

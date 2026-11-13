@@ -2,4 +2,4 @@
 '@newrelic/preflight': patch
 ---
 
-`NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH` is now bounded. A value below 256 or above 1,048,576, or one that is not a number, falls back to the 10,240 default. Before, `0` cut every captured input, output and error detail to the truncation marker, and a negative value kept the tail of the content instead of the head.
+`NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH` is now bounded. Before, `0` cut every captured detail to the truncation marker, and a negative value dropped the last few characters instead of limiting the length. A value below 256 now clamps up to 256, and a value above 1,048,576 clamps down to 1,048,576, the same clamping the other bounded integer settings use. A value that is not a number still falls back to the 10,240 default.
