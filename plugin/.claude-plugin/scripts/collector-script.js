@@ -122,6 +122,13 @@ function bareWord(text, from, context) {
     if (c === BACKSLASH) i = afterEscaped(text, i, context);
   }
 }
+function valueEnd(text, from, quote) {
+  let end = readValue(text, from, quote);
+  for (let run = quotedRun(text, end, quote); run > end; run = quotedRun(text, end, quote)) {
+    end = readValue(text, run, quote);
+  }
+  return end;
+}
 function quotedRun(text, from, quote) {
   const end = skipPlain(text, from + 1);
   const run = quote !== "comment" && unitAt(text, from, quote) === CLOSE && text[end] === text[from];
@@ -194,8 +201,7 @@ var FLAG = new RegExp(
 );
 var wordValue = (text, match, quote, spans) => {
   const from = match.index + match[0].length;
-  const end = readValue(text, from, quote);
-  return pushValue(spans, match.index, from, end > from ? end : quotedRun(text, from, quote));
+  return pushValue(spans, match.index, from, valueEnd(text, from, quote));
 };
 var MYSQL = /\b(?:mysql(?:dump|admin)?|mariadb)\b/g;
 var ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, "y");
@@ -212,7 +218,7 @@ var mysqlPasswords = (text, match, quote, spans) => {
       i = REDIRECT.lastIndex;
       continue;
     }
-    const end = readValue(text, i, quote);
+    const end = valueEnd(text, i, quote);
     if (end === i) return i;
     const flag = passwordFlag(text, i, end);
     if (flag >= 0) spans.push(flag, end);
