@@ -136,7 +136,7 @@ describe('publishModelRecommendation', () => {
     });
 
     it('removes a leftover older than a minute even when its pid is alive', () => {
-      const path = leftover(process.pid);
+      const path = leftover(process.ppid);
       writeFileSync(path, '{"partial"');
       const twoMinutesAgo = new Date(Date.now() - 2 * 60_000);
       utimesSync(path, twoMinutesAgo, twoMinutesAgo);
