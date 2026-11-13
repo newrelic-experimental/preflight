@@ -1,8 +1,8 @@
-import {
-  type NormalizedToolCall,
-  type PlatformAdapter,
-  type PlatformConfig,
-  type PlatformSessionMetadata,
+import type {
+  NormalizedToolCall,
+  PlatformAdapter,
+  PlatformConfig,
+  PlatformSessionMetadata,
 } from './types.js';
 
 export interface ReportToolCallInput {

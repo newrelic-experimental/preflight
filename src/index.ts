@@ -34,11 +34,9 @@ import {
   isSyntheticSessionId,
   readJobState,
   readTranscriptTitle,
-  resolveFromBreadcrumb,
-  resolveFromCwd,
-  resolveFromJobDir,
   resolveSessionId,
   resolveSessionName,
+  sessionBreadcrumbs,
   watchCwdBreadcrumbForCorrection,
   watchPpidBreadcrumb,
 } from './hooks/session-resolver.js';
@@ -100,6 +98,7 @@ import { RecommendationEngine } from './metrics/recommendation-engine.js';
 import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
+import { createSkillRunEmitter } from './metrics/skill-run-emitter.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
 import { TaskDetector } from './metrics/task-detector.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
@@ -109,7 +108,9 @@ import { tokenUsageFromSubagentTurn, tokenUsageFromTokenEvent } from './metrics/
 import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
 import { TurnTracker } from './metrics/turn-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
+import { CLAUDE_CODE_PLATFORM_NAME } from './platforms/claude-code-adapter.js';
 import { ClaudeCodeAdapter, createDefaultRegistry, GenericMcpAdapter } from './platforms/index.js';
+import { sessionBreadcrumbWriters } from './platforms/types.js';
 import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
@@ -1056,6 +1057,8 @@ async function main(): Promise<void> {
     // synchronous setup completes, to decide whether to arm a background
     // correction watch (see `startPpidCorrectionWatch` below).
     let resolvedViaCwdOnly = false;
+    const activePlatform = createDefaultRegistry().getActive();
+    const breadcrumbWriters = sessionBreadcrumbWriters(activePlatform);
     // --local only: set when the config asked for cloud export but this
     // process fell back to local mode for want of credentials, so every
     // ownerless session it drains is kept locally and never sent to New
@@ -1090,10 +1093,10 @@ async function main(): Promise<void> {
 
       initModelPricing(config);
 
-      const fromJobDir = resolveFromJobDir(process.env.CLAUDE_JOB_DIR ?? null);
-      const fromPpid = fromJobDir ? null : resolveFromBreadcrumb(config.storagePath, process.ppid);
-      const fromCwd =
-        fromJobDir || fromPpid ? null : resolveFromCwd(config.storagePath, process.cwd());
+      const breadcrumbs = sessionBreadcrumbs(config.storagePath, breadcrumbWriters);
+      const fromJobDir = breadcrumbs.jobDir(process.env.CLAUDE_JOB_DIR ?? null);
+      const fromPpid = fromJobDir ? null : breadcrumbs.ppid(process.ppid);
+      const fromCwd = fromJobDir || fromPpid ? null : breadcrumbs.cwd(process.cwd());
       const synchronouslyResolved = fromJobDir ?? fromPpid ?? fromCwd;
       resolvedViaCwdOnly = !!fromCwd && !fromJobDir && !fromPpid;
       if (synchronouslyResolved) {
@@ -1117,8 +1120,11 @@ async function main(): Promise<void> {
       // span is a safe no-op on shutdown.
       if (config.otlp.transport !== 'nr-events-api') {
         initMcpTracer();
-        const detectedPlatform = createDefaultRegistry().getActive().platformName;
-        sessionSpan = new SessionSpan(sessionTraceId, config.developer, detectedPlatform);
+        sessionSpan = new SessionSpan(
+          sessionTraceId,
+          config.developer,
+          activePlatform.platformName,
+        );
         taskSpanTracker = new TaskSpanTracker();
         if (!sessionTraceId.startsWith('pending-')) {
           sessionSpan.start();
@@ -1254,7 +1260,7 @@ async function main(): Promise<void> {
     const decisionTracker = new DecisionTracker({ recordContent: config.recordContent });
     const transcriptMessageTracker = new TranscriptMessageTracker();
     const instructionDriftTracker = new InstructionDriftTracker({
-      instructionFilePaths: createDefaultRegistry().getActive().capabilities.instructionFilePaths,
+      instructionFilePaths: activePlatform.capabilities.instructionFilePaths,
     });
     const toolSelectionScorer = new ToolSelectionScorer();
     const qualityProxyTracker = new QualityProxyTracker();
@@ -1295,9 +1301,11 @@ async function main(): Promise<void> {
         // highSecurity upstream — never bypass). resolveSessionName still uses
         // only name/nameSource, which are display labels; the intent is
         // surfaced separately as session_intent below.
-        const jobState = readJobState(process.env.CLAUDE_JOB_DIR ?? null, {
-          recordContent: config?.recordContent ?? false,
-        });
+        const jobState = breadcrumbWriters.includes(CLAUDE_CODE_PLATFORM_NAME)
+          ? readJobState(process.env.CLAUDE_JOB_DIR ?? null, {
+              recordContent: config?.recordContent ?? false,
+            })
+          : null;
         const transcriptTitle = readTranscriptTitle({ sessionId });
         const resolved = resolveSessionName({ jobState, transcriptTitle, cwd });
         if (!resolved) return;
@@ -1345,7 +1353,13 @@ async function main(): Promise<void> {
     // window is named later via adoptRealSessionId once its real id resolves.
     if (options.stdio) applyAuthoritativeSessionName(sessionTraceId);
     const turnCostAttributor = new TurnCostAttributor({ rateMultiplier });
-    const skillActivationTracker = new SkillActivationTracker();
+    const skillActivationTracker = new SkillActivationTracker({
+      onRunOpened: createSkillRunEmitter({
+        stdio: options.stdio === true,
+        getOwnSessionId: () => sessionTraceId,
+        getSink: () => capturedNrIngest,
+      }),
+    });
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
     const gitWorkspaceReporter = new GitWorkspaceReporter();
@@ -1703,8 +1717,7 @@ async function main(): Promise<void> {
 
     const trendAnalyzer = new TrendAnalyzer({ sessionStore });
     const collaborationProfiler = new CollaborationProfiler({ sessionStore });
-    const activeInstructionFilePaths =
-      createDefaultRegistry().getActive().capabilities.instructionFilePaths;
+    const activeInstructionFilePaths = activePlatform.capabilities.instructionFilePaths;
     const claudeMdTracker = new ClaudeMdTracker({
       sessionStore,
       instructionFilePaths: activeInstructionFilePaths,
@@ -1850,7 +1863,7 @@ async function main(): Promise<void> {
       // getSnapshot() closure below, which fires on every dashboard poll
       // (10-30s) and would otherwise re-run full platform detection (and
       // its info-level log line) on every single request.
-      const activePlatformName = createDefaultRegistry().getActive().platformName;
+      const activePlatformName = activePlatform.platformName;
 
       dashboardServer = new DashboardServer({
         port: config.dashboard.port,
@@ -2124,6 +2137,7 @@ async function main(): Promise<void> {
     const subagentAttribution = new SubagentAttributionIndex();
     eventProcessor = new HookEventProcessor({
       store: localStore,
+      platformAdapter: activePlatform,
       // --local mode and the provisional --stdio window own no specific Claude
       // Code session; drain every per-session buffer so the dashboard sees all
       // live sessions' events. After real session ID resolution the processor
@@ -2657,6 +2671,7 @@ async function main(): Promise<void> {
         const slashRun = skillActivationTracker.recordPrompt(
           frame.sessionId,
           frame.slashCommand ?? null,
+          frame.timestamp,
         );
         if (slashRun) turnCostAttributor.recordSkillRun(frame.sessionId, slashRun);
         taskDetector!.startTaskIfNone(frame.timestamp);
@@ -3098,8 +3113,7 @@ async function main(): Promise<void> {
       if (config!.otlp.transport !== 'nr-events-api') {
         sessionSpan?.end(0, 0);
         taskSpanTracker?.closeAll();
-        const detectedPlatform = createDefaultRegistry().getActive().platformName;
-        sessionSpan = new SessionSpan(realId, config!.developer, detectedPlatform);
+        sessionSpan = new SessionSpan(realId, config!.developer, activePlatform.platformName);
         taskSpanTracker = new TaskSpanTracker();
         sessionSpan.start();
       }
@@ -3231,6 +3245,7 @@ async function main(): Promise<void> {
       let corrected = false;
       let activityListener: typeof cwdGuessActivity = null;
       void watchPpidBreadcrumb({
+        writers: breadcrumbWriters,
         storagePath: config!.storagePath,
         signal: ppidCorrectionAbort.signal,
         includeParentOfPpid: true,
@@ -3283,6 +3298,7 @@ async function main(): Promise<void> {
       if (process.platform === 'win32') {
         void watchCwdBreadcrumbForCorrection({
           staleId,
+          writers: breadcrumbWriters,
           storagePath: config!.storagePath,
           signal: ppidCorrectionAbort.signal,
         })
@@ -3334,13 +3350,11 @@ async function main(): Promise<void> {
           // A Claude Code session with no hooks never resolves, so this is
           // where the opt-in install has to work. Other stdio clients have no
           // Claude Code hooks to install or report missing.
-          ...(createDefaultRegistry().getActive() instanceof ClaudeCodeAdapter && {
+          ...(activePlatform instanceof ClaudeCodeAdapter && {
             hooksInstalledFn: () => areHooksInstalledAtAnyScope(),
             headlessInstaller: buildHeadlessInstaller(),
           }),
         });
-        logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
-
         sessionResolutionAbort = new AbortController();
         let resolvedSource: import('./hooks/session-resolver.js').SessionIdSource | undefined;
         void (async () => {
@@ -3348,6 +3362,7 @@ async function main(): Promise<void> {
             const realId = await resolveSessionId({
               storagePath: config!.storagePath,
               signal: sessionResolutionAbort!.signal,
+              writers: breadcrumbWriters,
               onResolutionSource: (info) => {
                 resolvedSource = info.source;
               },

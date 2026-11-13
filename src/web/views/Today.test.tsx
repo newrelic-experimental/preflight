@@ -594,6 +594,110 @@ describe('Today view', () => {
     await waitFor(() => expect(screen.getByText(/^→ \$8\.00 by end of day/)).toBeInTheDocument());
   });
 
+  function stubForecastSources(
+    aggregateBody: Record<string, unknown>,
+    costBody: Record<string, unknown> = {
+      cost: { sessionTotalCostUsd: 5 },
+      forecast: { forecastEndOfDayUsd: 27.62 },
+      sessionTodayUsd: 5,
+    },
+    sessions: unknown[] = [],
+  ): void {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      const body = url.includes('/api/sessions/today/aggregate')
+        ? aggregateBody
+        : url.includes('/api/sessions?limit=')
+          ? sessions
+          : url.includes('/api/cost')
+            ? costBody
+            : [];
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+  }
+
+  it('falls back to the SSE forecast when the aggregate has today spend but a null forecast', async () => {
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 12.17, forecastEodUsd: 80.53 },
+    });
+    stubForecastSources({ totalCostUsd: 20, forecastEndOfDayUsd: null, sessionCount: 4 });
+
+    renderToday();
+    await waitFor(() => {
+      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+      expect(within(spendTile).getByText('$20.00')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/^→ \$80\.53 by end of day/)).toBeInTheDocument();
+  });
+
+  async function renderBehindAggregate(
+    apiForecastUsd: number | null,
+    aggregateForecastUsd = 12,
+  ): Promise<void> {
+    useLiveStore.setState({ cost: null });
+    stubForecastSources(
+      { totalCostUsd: 10, forecastEndOfDayUsd: aggregateForecastUsd, sessionCount: 4 },
+      {
+        cost: { sessionTotalCostUsd: 15 },
+        forecast: apiForecastUsd === null ? null : { forecastEndOfDayUsd: apiForecastUsd },
+        sessionTodayUsd: 15,
+      },
+      [{ sessionId: 's1', startTime: Date.now() - 60_000, estimatedCostUsd: 10, toolCallCount: 3 }],
+    );
+
+    renderToday();
+    await waitFor(() => expect(screen.getByText('Spend by hour')).toBeInTheDocument());
+    await waitFor(() => {
+      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+      expect(within(spendTile).getByText('$15.00')).toBeInTheDocument();
+      expect(screen.getByText('4')).toBeInTheDocument();
+    });
+  }
+
+  it('hides the day forecast but keeps the week forecast when every forecast is below spend', async () => {
+    await renderBehindAggregate(null);
+    expect(screen.queryByText(/by end of day/)).toBeNull();
+    expect(screen.getByText(/On pace for ~\$\d/)).toBeInTheDocument();
+  });
+
+  it('falls through a stale aggregate forecast below spend to the /api/cost one, naming its source', async () => {
+    await renderBehindAggregate(20);
+    expect(screen.getByText(/^→ \$20\.00 by end of day \(this session\)/)).toBeInTheDocument();
+  });
+
+  it('keeps an aggregate forecast equal to spend rather than falling through to a later source', async () => {
+    await renderBehindAggregate(20, 15);
+    expect(screen.queryByText(/by end of day/)).toBeNull();
+  });
+
+  it('bridges with the SSE forecast while the aggregate has seen no spend today', async () => {
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 4, forecastEodUsd: 8 },
+    });
+    stubForecastSources({ totalCostUsd: 0, forecastEndOfDayUsd: null, sessionCount: 3 });
+
+    renderToday();
+    await waitFor(() => expect(screen.getByText('3')).toBeInTheDocument());
+    expect(
+      screen.getByText(/^→ \$8\.00 by end of day \(all spend so far, this session's pace\)/),
+    ).toBeInTheDocument();
+  });
+
+  it('uses the aggregate forecast over the SSE forecast once the aggregate has one', async () => {
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 4, forecastEodUsd: 80.53 },
+    });
+    stubForecastSources({ totalCostUsd: 5, forecastEndOfDayUsd: 9, sessionCount: 2 });
+
+    renderToday();
+    await waitFor(() =>
+      expect(screen.getByText(/^→ \$9\.00 by end of day \(all sessions\)/)).toBeInTheDocument(),
+    );
+  });
+
   function stubObservabilityHealth(body: Record<string, unknown>): void {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);

@@ -11,6 +11,9 @@ import { CostTracker } from './cost-tracker.js';
 import { BudgetTracker, type BudgetThresholdEvent } from './budget-tracker.js';
 import { shouldApplyCostEstimate } from './cost-estimate-gate.js';
 import { handleReportTokens, handleGetPromptCacheHealth } from '../tools/cost-tools.js';
+import { buildCostForecastFromInputs } from './cost-forecast.js';
+import { createApiHandler } from '../dashboard/routes/api-handler.js';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -505,5 +508,178 @@ describe('buildCostTrackerSeed today attribution', () => {
     );
     expect(seed.dayCostUsd).toBeCloseTo(2, 6);
     expect(seed.daySubagentCostUsd).toBeLessThanOrEqual(seed.dayCostUsd);
+  });
+});
+
+describe('first spend today across a real restart', () => {
+  const DAY_START = localStartOfDay(new Date(2026, 9, 29, 12, 0, 0).getTime());
+  const TODAY_KEY = localDateKey(DAY_START);
+  const HOUR = 3_600_000;
+  const at = (h: number): number => DAY_START + h * HOUR;
+  const SESSION_ID = 'sess-restart-anchor';
+  const SPEND = makeUsage({ inputTokens: 100_000, outputTokens: 10_000, totalTokens: 110_000 });
+  const TRICKLE = makeUsage({ inputTokens: 1000, outputTokens: 100, totalTokens: 1100 });
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'preflight-restart-anchor-'));
+    jest.useFakeTimers({
+      now: at(13),
+      doNotFake: ['setTimeout', 'setInterval', 'setImmediate', 'nextTick', 'queueMicrotask'],
+    });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const sessionTracker = {
+    getMetrics: () => ({
+      sessionId: SESSION_ID,
+      sessionName: null,
+      sessionStartTime: at(9),
+      toolCallCount: 0,
+      toolCallCountByTool: {},
+      bashCommandsRun: 0,
+      toolSuccessRate: null,
+    }),
+  } as unknown as SessionTracker;
+
+  const summaryOf = (costTracker: CostTracker): FullSessionSummary =>
+    buildSessionSummary({ sessionTracker, costTracker, developer: 'dev' });
+
+  // A session file written before firstActivityByDayMs existed.
+  const legacyOf = (costTracker: CostTracker): FullSessionSummary => {
+    const { firstActivityByDayMs: _dropped, ...legacy } = summaryOf(costTracker);
+    return legacy;
+  };
+
+  async function getJson(
+    handler: ReturnType<typeof createApiHandler>,
+    url: string,
+  ): Promise<Record<string, unknown>> {
+    let body = '';
+    const res = {
+      writeHead: () => undefined,
+      setHeader: () => undefined,
+      end: (chunk?: string) => {
+        body = chunk ?? '';
+      },
+    } as unknown as ServerResponse;
+    await handler({ method: 'GET', url } as IncomingMessage, res);
+    return JSON.parse(body) as Record<string, unknown>;
+  }
+
+  it.each([false, true])(
+    'gives /api/cost the aggregate forecast, process restarted at 14:00 is %s',
+    async (restart) => {
+      const before = new CostTracker();
+      for (const h of [9, 11]) {
+        before.recordTokenUsage(SPEND, 'claude-sonnet-4', { timestampMs: at(h) });
+      }
+      const store = new SessionStore({ storagePath: dir });
+      store.saveSession(summaryOf(before));
+
+      jest.setSystemTime(at(14));
+      const persisted = store.loadSession(SESSION_ID);
+      if (!persisted) throw new Error('session was not persisted');
+      const after = restart ? new CostTracker() : before;
+      if (restart) after.seedFromPersisted(buildCostTrackerSeed(persisted));
+      const startMs = restart ? Date.now() : at(9);
+
+      expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBe(at(9));
+
+      jest.setSystemTime(at(14) + 10 * 60_000);
+      const handler = createApiHandler({
+        localStore: { peekAllBuffers: () => [] },
+        sessionStore: {
+          loadTodaySessions: () => [persisted],
+          loadSessionsOverlappingToday: () => [persisted],
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+        sessionTracker,
+        costTracker: after,
+        costForecast: () =>
+          buildCostForecastFromInputs({
+            sessionSpentUsd: after.getMetrics().sessionTotalCostUsd ?? 0,
+            sessionStartMs: startMs,
+            dailySpentUsd: after.getCostForDay(TODAY_KEY),
+            dailyFirstActivityMs: after.getFirstActivityMsForDay(TODAY_KEY),
+          }),
+      } as unknown as Parameters<typeof createApiHandler>[0]);
+      const cost = (await getJson(handler, '/api/cost')) as {
+        forecast: { forecastEndOfDayUsd: number };
+      };
+      const aggregate = (await getJson(handler, '/api/sessions/today/aggregate')) as {
+        forecastEndOfDayUsd: number;
+      };
+      expect(aggregate.forecastEndOfDayUsd).not.toBeNull();
+      expect(cost.forecast.forecastEndOfDayUsd).toBeCloseTo(aggregate.forecastEndOfDayUsd, 2);
+    },
+  );
+
+  it('never saves the restart time as the first spend when the persisted day has none', () => {
+    const before = new CostTracker();
+    before.recordTokenUsage(SPEND, 'claude-sonnet-4', { timestampMs: at(9) });
+
+    jest.setSystemTime(at(14));
+    const after = new CostTracker();
+    after.seedFromPersisted(buildCostTrackerSeed(legacyOf(before)));
+    expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBeNull();
+
+    jest.setSystemTime(at(15));
+    after.recordTokenUsage(SPEND, 'claude-sonnet-4', { timestampMs: at(15) });
+    expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBeNull();
+    expect(summaryOf(after).firstActivityByDayMs?.[TODAY_KEY]).toBeUndefined();
+  });
+
+  it('drops a live first spend recorded before a seed that has spend but no first', () => {
+    const before = new CostTracker();
+    before.recordTokenUsage(SPEND, 'claude-sonnet-4', { timestampMs: at(9) });
+    const after = new CostTracker();
+    after.recordTokenUsage(SPEND, 'claude-sonnet-4', { timestampMs: at(12) });
+    after.seedFromPersisted(buildCostTrackerSeed(legacyOf(before)));
+    expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBeNull();
+  });
+
+  it('anchors again after reset when the day was seeded without a first spend', () => {
+    const before = new CostTracker();
+    before.recordTokenUsage(SPEND, 'claude-sonnet-4', { timestampMs: at(9) });
+    const after = new CostTracker();
+    after.seedFromPersisted(buildCostTrackerSeed(legacyOf(before)));
+    after.reset('next-session');
+    after.recordTokenUsage(SPEND, 'claude-sonnet-4', { timestampMs: at(15) });
+    expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBe(at(15));
+  });
+
+  it('anchors a fresh process at its first spend when nothing was persisted', () => {
+    const fresh = new CostTracker();
+    fresh.recordTokenUsage(TRICKLE, 'claude-sonnet-4', { timestampMs: at(15) });
+    expect(fresh.getFirstActivityMsForDay(TODAY_KEY)).toBe(at(15));
+  });
+
+  it('moves an already-recorded first spend today back to the persisted earlier one', () => {
+    const before = new CostTracker();
+    before.recordTokenUsage(TRICKLE, 'claude-sonnet-4', { timestampMs: at(9) });
+    const after = new CostTracker();
+    after.recordTokenUsage(TRICKLE, 'claude-sonnet-4', { timestampMs: at(12) });
+    after.seedFromPersisted(buildCostTrackerSeed(summaryOf(before)));
+    expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBe(at(9));
+  });
+
+  it('leaves the day unanchored when a legacy and an anchored session seed one process, in either order', () => {
+    const before = new CostTracker();
+    before.recordTokenUsage(SPEND, 'claude-sonnet-4', { timestampMs: at(9) });
+    const legacy = buildCostTrackerSeed(legacyOf(before));
+    const anchored = buildCostTrackerSeed(summaryOf(before));
+    for (const seeds of [
+      [legacy, anchored],
+      [anchored, legacy],
+    ]) {
+      const after = new CostTracker();
+      for (const seed of seeds) after.seedFromPersisted(seed);
+      expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBeNull();
+    }
   });
 });

@@ -11,7 +11,7 @@ import {
 import { resolve } from 'node:path';
 
 describe('KNOWN_EVENT_TYPES', () => {
-  it('enumerates exactly the 14 event types NrIngestManager emits', () => {
+  it('enumerates exactly the 15 event types NrIngestManager emits', () => {
     expect([...KNOWN_EVENT_TYPES].sort()).toEqual(
       [
         'AiAntiPattern',
@@ -23,6 +23,7 @@ describe('KNOWN_EVENT_TYPES', () => {
         'AiObservabilityHealth',
         'AiProxyRequest',
         'AiRetryAlert',
+        'AiSkillRun',
         'AiSubagentTurn',
         'AiToolCall',
         'AiTurnCost',
@@ -53,6 +54,7 @@ describe('EVENT_TYPE_SENSITIVITY', () => {
         'AiSubagentTurn',
         'AiRetryAlert',
         'AiTurnCost',
+        'AiSkillRun',
         'AiContextSnapshot',
         'AiBudgetWarning',
         'AiObservabilityHealth',
