@@ -522,6 +522,8 @@ export class CostTracker implements Resettable {
       this.unanchoredDays.add(seed.dayKey);
       return;
     }
+    // A seed without a saved first spend already left the day unanchored.
+    if (this.unanchoredDays.has(seed.dayKey)) return;
     const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
     if (existingFirst === undefined || seed.dayFirstActivityMs < existingFirst) {
       this.firstActivityMsByDay.set(seed.dayKey, seed.dayFirstActivityMs);
