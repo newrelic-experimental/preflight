@@ -217,9 +217,11 @@ function getMaxContentLength() {
   const parsed = parseInt(val, 10);
   return Number.isNaN(parsed) ? 10240 : parsed;
 }
-function detectStampPlatform() {
+function detectStampPlatform(sessionId) {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
+  const claudeSessionId = process.env.CLAUDE_CODE_SESSION_ID;
+  if (claudeSessionId !== void 0 && claudeSessionId !== sessionId) return void 0;
   return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0) ? CLAUDE_CODE_PLATFORM_NAME : void 0;
 }
 var MAX_REDACT_BYTES = 1048576;
@@ -601,7 +603,7 @@ function processHook(raw, cliEvent) {
   if (typeof data.session_id === "string" && data.session_id.length > 0) {
     const root = breadcrumbRoot(
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR,
-      breadcrumbWriter(detectStampPlatform())
+      breadcrumbWriter(detectStampPlatform(data.session_id))
     );
     writePpidBreadcrumb(data.session_id, root);
     writeCwdBreadcrumb(data.session_id, data.cwd, root);
@@ -930,7 +932,7 @@ function processHook(raw, cliEvent) {
   if (data.transcript_path) event.transcriptPath = data.transcript_path;
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = detectStampPlatform(sessionId);
   if (stampedPlatform) event.platform = stampedPlatform;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;

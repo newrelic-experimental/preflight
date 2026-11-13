@@ -97,11 +97,15 @@ function getMaxContentLength(): number {
 /**
  * Ambient stamping is deliberately limited to Claude Code, the only platform
  * whose hook-process env signal is verified; other platforms stamp via
- * explicit MCP_CLIENT in their generated hook commands.
+ * explicit MCP_CLIENT in their generated hook commands. Anything started from
+ * a Claude Code shell inherits those signals, so a hook for a session other
+ * than the one CLAUDE_CODE_SESSION_ID names belongs to another engine.
  */
-function detectStampPlatform(): string | undefined {
+function detectStampPlatform(sessionId: string | undefined): string | undefined {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
+  const claudeSessionId = process.env.CLAUDE_CODE_SESSION_ID;
+  if (claudeSessionId !== undefined && claudeSessionId !== sessionId) return undefined;
   return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)
     ? CLAUDE_CODE_PLATFORM_NAME
     : undefined;
@@ -798,7 +802,7 @@ function processHook(raw: string, cliEvent?: string): void {
   if (typeof data.session_id === 'string' && data.session_id.length > 0) {
     const root = breadcrumbRoot(
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR,
-      breadcrumbWriter(detectStampPlatform()),
+      breadcrumbWriter(detectStampPlatform(data.session_id)),
     );
     writePpidBreadcrumb(data.session_id, root);
     writeCwdBreadcrumb(data.session_id, data.cwd, root);
@@ -1369,7 +1373,7 @@ function processHook(raw: string, cliEvent?: string): void {
   // only the light claude-code-adapter const, not the full registry) instead
   // of going through PlatformRegistry — registry-based detection adds
   // measurable overhead on this hot, pre+post-per-tool-call path.
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = detectStampPlatform(sessionId);
   if (stampedPlatform) event.platform = stampedPlatform;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;

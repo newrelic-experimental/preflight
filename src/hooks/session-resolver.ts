@@ -322,7 +322,8 @@ export interface SessionBreadcrumbs {
  * untagged layout older collectors wrote. An untagged breadcrumb names
  * no engine, so it counts only when written since this process started:
  * an older collector still running keeps rewriting its own, while one left
- * from before an upgrade never counts again.
+ * from before an upgrade never counts again. The ancestor source takes the
+ * closest ancestor across all of them, the earlier directory on a tie.
  */
 export function sessionBreadcrumbs(
   storagePath: string,
@@ -347,8 +348,14 @@ export function sessionBreadcrumbs(
     jobDir: (claudeJobDir) =>
       writers.includes(CLAUDE_CODE_PLATFORM_NAME) ? resolveFromJobDir(claudeJobDir) : null,
     ppid: (ppid) => first(({ dir }) => resolveFromBreadcrumb(dir, ppid, processStartMs)),
-    ancestors: (ancestorPids) =>
-      first(({ dir }) => resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs)),
+    ancestors: (ancestorPids) => {
+      let closest: AncestorBreadcrumbHit | null = null;
+      for (const { dir } of roots) {
+        const hit = resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs);
+        if (hit && (!closest || hit.depth < closest.depth)) closest = hit;
+      }
+      return closest;
+    },
     cwd: (cwd) => first(({ dir, writtenSinceMs }) => resolveFromCwd(dir, cwd, writtenSinceMs)),
   };
 }

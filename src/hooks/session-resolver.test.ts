@@ -1611,6 +1611,19 @@ describe('breadcrumbs filed by writer', () => {
     expect(sessionBreadcrumbs(tmpDir, KIRO).cwd('/projects/shared')).toBe('sess-kiro');
   });
 
+  it('hands an engine the closest ancestor breadcrumb across its writers, its own first on a tie', () => {
+    writeCrumb('unattributed', 'ppid', '2001', 'sess-closer');
+    writeCrumb('copilot', 'ppid', '3001', 'sess-farther');
+    const copilot = sessionBreadcrumbs(tmpDir, ['copilot', 'copilot-app', 'unattributed']);
+    expect(copilot.ancestors([1001, 2001, 3001])).toEqual({
+      sessionId: 'sess-closer',
+      pid: 2001,
+      depth: 1,
+    });
+    writeCrumb('copilot', 'ppid', '2001', 'sess-own');
+    expect(copilot.ancestors([1001, 2001, 3001])?.sessionId).toBe('sess-own');
+  });
+
   it('hands an engine whose hooks write no breadcrumb nothing, untagged ones included', () => {
     const jobDir = writeClaudeSession();
     writeCrumb(null, 'ppid', '424242', 'sess-old');
