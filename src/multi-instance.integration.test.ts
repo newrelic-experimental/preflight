@@ -317,6 +317,29 @@ describe('multi-instance integration (proposal #11)', () => {
       await stop(owner);
       expect(savedOutcome()).toBe('completed');
     }, 30_000);
+
+    it('goes back to in progress as soon as an engine for the session boots', async () => {
+      await stop(pending);
+      expect(savedOutcome()).toBe('completed');
+
+      owner = await startOwner();
+      const deadline = Date.now() + 2000;
+      while (savedOutcome() !== 'in progress' && Date.now() < deadline) await delay(50);
+      expect(savedOutcome()).toBe('in progress');
+    }, 30_000);
+
+    it('keeps a completed outcome that its own engine saved', async () => {
+      owner = await startOwner();
+      await stop(pending);
+      seedBuffer(ownStorage, sessionId, 3, 5);
+      await waitForDrain();
+      await stop(owner);
+      expect(savedOutcome()).toBe('completed');
+
+      owner = await startOwner();
+      await delay(1000);
+      expect(savedOutcome()).toBe('completed');
+    }, 30_000);
   });
 
   // -----------------------------------------------------------------------
