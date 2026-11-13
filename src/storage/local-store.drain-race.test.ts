@@ -950,6 +950,21 @@ describe('drain seals', () => {
     expect(tools(new LocalStore(dir, SESSION).drainBuffer()).sort()).toEqual(['A', 'B', 'C']);
   });
 
+  it('keeps the next line when the end of a torn line fails to write', () => {
+    appendToHookBuffer(bufferPath, line('A'));
+    mockHooks.shortWrite = (text) => (text.includes('"B"') ? 10 : null);
+    mockHooks.write = (text) => {
+      if (text !== '\x1e\n') return;
+      mockHooks.write = null;
+      throw failing('ENOSPC');
+    };
+
+    expect(() => appendToHookBuffer(bufferPath, line('B'))).toThrow(/ENOSPC/);
+    appendToHookBuffer(bufferPath, line('C'));
+
+    expect(tools(new LocalStore(dir, SESSION).drainBuffer())).toEqual(['A', 'C']);
+  });
+
   it('keeps the legacy migration file when an append cannot land', () => {
     const legacyPath = resolve(dir, 'buffer.jsonl');
     fs.writeFileSync(legacyPath, line('A'));
