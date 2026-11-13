@@ -332,12 +332,14 @@ export function Today(): JSX.Element {
     aggregate?.antiPatternCount ?? 0,
     persistedTodayFlags + currentSessionFlags,
   );
-  const forecastKpiUsd = spendLoading
+  const chosenForecastUsd = spendLoading
     ? null
     : (aggregate?.forecastEndOfDayUsd ??
       cost?.forecastEodUsd ??
       costApi?.forecast?.forecastEndOfDayUsd ??
       null);
+  const forecastBehindSpend = chosenForecastUsd !== null && chosenForecastUsd < todayTotal;
+  const forecastKpiUsd = forecastBehindSpend ? null : chosenForecastUsd;
 
   // The subagent KPI must source from the polled aggregate
   // endpoint, not the liveStore — the SSE frames that would populate
