@@ -234,10 +234,6 @@ export interface FullSessionSummary extends SessionSummary {
   readonly assistantMessages: number;
   readonly userCorrections: number;
   readonly outcome: string;
-  /**
-   * Set when the `'completed'` came from a process that does not own the session and saw no live
-   * engine for it at exit. Unlike its owner's, that end gives way to a later in-progress save.
-   */
   readonly completedByObserver?: true;
   readonly platform?: string;
   readonly instructionPromptHash?: string | null;
