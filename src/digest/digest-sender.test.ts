@@ -94,4 +94,64 @@ describe('digest-sender', () => {
       }
     });
   });
+
+  describe('sendSlackDigest() — redirects', () => {
+    const webhookUrl = 'https://hooks.slack.com/services/T000/B000/pf-verify-fake';
+
+    function redirectAwareFetch(): typeof fetch {
+      return (async (_url: unknown, init?: RequestInit) => {
+        if (init?.redirect === 'manual') {
+          return {
+            ok: false,
+            status: 302,
+            headers: new Headers({ location: 'https://api.slack.com/' }),
+          };
+        }
+        return { ok: true, status: 200, headers: new Headers() };
+      }) as unknown as typeof fetch;
+    }
+
+    it('rejects a redirect without leaking the webhook path', async () => {
+      const originalFetch = global.fetch;
+      global.fetch = redirectAwareFetch();
+      try {
+        const err = await sendSlackDigest(webhookUrl, { text: 'x' }).then(
+          () => null,
+          (e: unknown) => e as Error,
+        );
+        expect(err).not.toBeNull();
+        expect(err?.message).toMatch(/invalid or revoked/);
+        expect(err?.message).not.toContain('pf-verify-fake');
+        expect(err?.message).not.toContain('T000');
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
+    it.each([
+      [300, /invalid or revoked/],
+      [301, /invalid or revoked/],
+      [399, /invalid or revoked/],
+      [400, /^Slack webhook returned 400$/],
+      [404, /^Slack webhook returned 404$/],
+    ])('reports status %i with the matching message', async (status, message) => {
+      const originalFetch = global.fetch;
+      global.fetch = (async () => ({ ok: false, status })) as unknown as typeof fetch;
+      try {
+        await expect(sendSlackDigest(webhookUrl, { text: 'x' })).rejects.toThrow(message);
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
+    it('still resolves on a real 200', async () => {
+      const originalFetch = global.fetch;
+      global.fetch = (async () => ({ ok: true, status: 200 })) as unknown as typeof fetch;
+      try {
+        await expect(sendSlackDigest(webhookUrl, { text: 'x' })).resolves.toBeUndefined();
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+  });
 });
