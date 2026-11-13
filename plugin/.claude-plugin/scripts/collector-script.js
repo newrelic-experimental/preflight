@@ -210,6 +210,21 @@ var wordValue = (text, match, quote, spans) => {
   const from = match.index + match[0].length;
   return pushValue(spans, match.index, from, valueEnd(text, from, quote));
 };
+var QUOTING = charTable(`"'\\$`);
+var nameValue = (text, match, quote, spans) => {
+  let [start, floor] = [match.index, match.index + match[0].length];
+  let end = valueEnd(text, floor, quote);
+  let i = end;
+  for (; i < text.length && !isBlankOrOperator(text.charCodeAt(i)); i++) {
+    if (QUOTING[text.charCodeAt(i)] !== 1) end = i + 1;
+    else {
+      pushValue(spans, start, floor, end);
+      start = end = floor = i + 1;
+    }
+  }
+  pushValue(spans, start, floor, end);
+  return i;
+};
 var MYSQL = /\b(?:mysql(?:dump|admin)?|mariadb)\b/g;
 var ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, "y");
 var PORT_MAPPING = /[\d.]+:\d/y;
@@ -244,7 +259,7 @@ function passwordFlag(text, from, end) {
 }
 var RULES = [
   { start: HEADER, redact: headerValue },
-  { start: NAME, redact: wordValue },
+  { start: NAME, redact: nameValue },
   ...REDACTION_PATTERNS,
   { start: FLAG, redact: wordValue },
   { start: MYSQL, redact: mysqlPasswords }
