@@ -251,7 +251,7 @@ const WORD_BREAK = /[\s;&|()<>]/;
 const COMMAND_END = /[;&|()\n]/;
 const COMMAND_START = String.raw`(?:^|[;&|(\n])[ \t]*`;
 const NESTED_SCRIPT = new RegExp(
-  String.raw`(${COMMAND_START})(?:(eval)|(?:[^\s;&|()]*/)?(?:ba|z|da)?sh[ \t]+-[a-zA-Z]*c[a-zA-Z]*)`,
+  String.raw`(${COMMAND_START})(?:(?:command|builtin)[ \t]+)*(?:(eval)|(?:[^\s;&|()]*/)?(?:ba|z|da)?sh[ \t]+-[a-zA-Z]*c[a-zA-Z]*)`,
   'g',
 );
 const BRACE_COMMAND = new RegExp(String.raw`(${COMMAND_START})\{([^\s{}]*,[^\s{}]*)\}`, 'g');
@@ -418,10 +418,14 @@ function isDestructiveScript(command: string, depth: number): boolean {
   const lexed = lex(command);
   const expanded = expandCommandBraces(lexed);
   if (DESTRUCTIVE_PATTERNS.some((p) => p.test(expanded))) return true;
-  if (depth >= MAX_NESTED_SCRIPTS) return false;
   for (const match of lexed.masked.matchAll(NESTED_SCRIPT)) {
     const end = match.index + match[0].length;
     if (!isCommandWord(lexed.kept, match.index, match[1]!, end)) continue;
+    if (depth >= MAX_NESTED_SCRIPTS) {
+      // Past the bound the script is not unquoted. Fail closed on its raw text.
+      if (DESTRUCTIVE_PATTERNS.some((p) => p.test(command.slice(end)))) return true;
+      continue;
+    }
     const words = wordsFrom(lexed, end);
     const script = match[2] === undefined ? words[0] : words.join(' ');
     if (script !== undefined && isDestructiveScript(script, depth + 1)) return true;
@@ -562,10 +566,10 @@ export function classifyBash(command: string): BashClassification {
     return { category: 'shell-other', leading: '', isDestructive: false, isNetwork: false };
   }
 
-  // Destructive check runs against the full command with quoted regions
-  // masked out (so `git commit -m "rm -rf old"` doesn't fire) but otherwise
-  // unsplit (so pipe-to-shell patterns survive segment splitting and sudo
-  // stripping).
+  // Destructive check runs against the whole command, not a split segment (so
+  // pipe-to-shell patterns survive segment splitting and sudo stripping). Quoted
+  // text and comments are masked (so `git commit -m "rm -rf old"` doesn't fire),
+  // and eval, sh -c and command-position brace groups are looked into.
   const isDestructive = isDestructiveScript(trimmed, 0);
 
   const segment = firstSegment(trimmed);

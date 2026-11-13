@@ -508,10 +508,50 @@ describe('classifyBash', () => {
       expect(classifyBash(cmd).isDestructive).toBe(false);
     });
 
-    it('stops recursing into nested shells after three levels', () => {
-      const nest = (script: string): string => `eval ${JSON.stringify(script)}`;
-      expect(classifyBash(nest(nest(nest('rm -rf ./x')))).isDestructive).toBe(true);
-      expect(classifyBash(nest(nest(nest(nest('rm -rf ./x'))))).isDestructive).toBe(false);
+    it.each([1, 3, 4, 6])('flags rm nested %i levels deep in sh -c and eval', (levels) => {
+      const quote = (script: string): string => `'${script.replaceAll("'", "'\\''")}'`;
+      const wrap = (script: string, wrapper: (s: string) => string): string =>
+        Array.from({ length: levels }).reduce<string>((acc) => wrapper(acc), script);
+      expect(classifyBash(wrap('rm -rf ./x', (s) => `bash -c ${quote(s)}`)).isDestructive).toBe(
+        true,
+      );
+      expect(
+        classifyBash(wrap('rm -rf ./x', (s) => `eval ${JSON.stringify(s)}`)).isDestructive,
+      ).toBe(true);
+    });
+
+    it('still passes a harmless script nested past the depth bound', () => {
+      const quote = (script: string): string => `'${script.replaceAll("'", "'\\''")}'`;
+      const deep = Array.from({ length: 6 }).reduce<string>((acc) => `bash -c ${quote(acc)}`, 'ls');
+      expect(classifyBash(deep).isDestructive).toBe(false);
+    });
+
+    it('fails closed on rm text past the depth bound but only on the wrapper tail', () => {
+      const quote = (script: string): string => `'${script.replaceAll("'", "'\\''")}'`;
+      const wrap = (script: string, levels: number): string =>
+        Array.from({ length: levels }).reduce<string>((acc) => `bash -c ${quote(acc)}`, script);
+      expect(classifyBash(wrap('echo "rm -rf ./x"', 3)).isDestructive).toBe(false);
+      expect(classifyBash(wrap('echo "rm -rf ./x"', 4)).isDestructive).toBe(true);
+      const quotedBefore = 'echo "rm -rf ./x"; bash -c \'echo hi\'';
+      expect(classifyBash(wrap(quotedBefore, 3)).isDestructive).toBe(false);
+    });
+
+    it.each([
+      "command eval 'rm -rf ./x'",
+      "builtin eval 'rm -rf ./x'",
+      "command bash -c 'rm -rf ./x'",
+      "command command sh -c 'rm -rf ./x'",
+      'echo a; command eval \'bash -c "rm -rf ./x"\'',
+    ])('sees through a command or builtin prefix: %j', (cmd) => {
+      expect(classifyBash(cmd).isDestructive).toBe(true);
+    });
+
+    it.each([
+      "command eval 'echo hi'",
+      "command -v eval 'rm -rf ./x'",
+      "echo command eval 'rm -rf ./x'",
+    ])('does not flag a command prefix that runs nothing destructive: %j', (cmd) => {
+      expect(classifyBash(cmd).isDestructive).toBe(false);
     });
 
     it('git push --force-with-lease is NOT destructive (it is the safe form)', () => {
