@@ -232,51 +232,205 @@ const DESTRUCTIVE_PATTERNS: readonly RegExp[] = [
   /\b(?:curl|wget)\b.*\|\s*(?:\/[^\s]*\/)?(?:node|python3?|perl|ruby)\b/i,
 ];
 
-// Replace the contents of single- or double-quoted regions with spaces of
-// the same length so destructive-pattern matching can't be fooled by quoted
-// arguments — e.g. `git commit -m "rm -rf old code"` should NOT classify as
-// destructive. Heuristic: backslash-escapes inside quotes are honoured;
-// dollar-quoted, ANSI-quoted, and heredoc bodies are not handled.
-function maskQuotedRegions(command: string): string {
-  let out = '';
+type LexState = 'none' | 'single' | 'double' | 'ansi-c' | 'comment';
+type Heredoc = { delimiter: string; stripTabs: boolean; quoted: boolean };
+
+const CLOSED_BY: Record<Exclude<LexState, 'none'>, string> = {
+  single: "'",
+  double: '"',
+  'ansi-c': "'",
+  comment: '\n',
+};
+// Inside double quotes bash escapes only ` $ " \ and newline, but treating every
+// `\x` as a pair masks the same characters, since only `"` can close the quote.
+const ESCAPES_IN: ReadonlySet<LexState> = new Set(['none', 'double', 'ansi-c']);
+const METACHAR = /[\s;&|(]/;
+const HEREDOC_OPERATOR = /(?<!<)<<(-?)[ \t]*(['"]?)(\w+)\2/y;
+const LINE_CONTINUES = /(?<!\\)(?:\\\\)*\\$/;
+const WORD_BREAK = /[\s;&|()<>]/;
+const COMMAND_END = /[;&|()\n]/;
+const COMMAND_START = String.raw`(?:^|[;&|(\n])[ \t]*`;
+const NESTED_SCRIPT = new RegExp(
+  String.raw`(${COMMAND_START})(?:(?:command|builtin)[ \t]+)*(?:(eval)|(?:[^\s;&|()]*/)?(?:ba|z|da)?sh[ \t]+-[a-zA-Z]*c[a-zA-Z]*)`,
+  'g',
+);
+const BRACE_COMMAND = new RegExp(String.raw`(${COMMAND_START})\{([^\s{}]*,[^\s{}]*)\}`, 'g');
+const MAX_NESTED_SCRIPTS = 3;
+
+function stateOpenedAt(command: string, i: number, atWordStart: boolean): LexState {
+  const ch = command[i];
+  if (ch === "'") return 'single';
+  if (ch === '"') return 'double';
+  if (ch === '$' && command[i + 1] === "'") return 'ansi-c';
+  if (ch === '#' && atWordStart) return 'comment';
+  return 'none';
+}
+
+function heredocBodiesEnd(command: string, start: number, heredocs: readonly Heredoc[]): number {
+  let i = start;
+  for (const { delimiter, stripTabs, quoted } of heredocs) {
+    let line = '';
+    while (i < command.length) {
+      const eol = command.indexOf('\n', i);
+      const end = eol === -1 ? command.length : eol;
+      const segment = command.slice(i, end);
+      i = end + 1;
+      if (!quoted && LINE_CONTINUES.test(segment)) {
+        line += segment.slice(0, -1);
+        continue;
+      }
+      line += segment;
+      if ((stripTabs ? line.replace(/^\t+/, '') : line) === delimiter) break;
+      line = '';
+    }
+  }
+  return i;
+}
+
+// Replace quoted regions and `#` comments with spaces so destructive-pattern
+// matching can't be fooled by quoted arguments (`git commit -m "rm -rf old"`)
+// and an apostrophe in a comment can't open a quote. Outside single quotes a
+// backslash escapes the next character, and an escaped character never opens
+// a quote or a comment. Heredoc bodies are left unmasked: they are data, but an
+// unquoted body still runs its `$(...)` substitutions.
+interface Lexed {
+  readonly masked: string;
+  readonly kept: readonly (string | null)[];
+}
+
+function lex(command: string): Lexed {
+  let masked = '';
+  const kept: (string | null)[] = [];
+  const emit = (shown: string, keep: string | null): void => {
+    masked += shown;
+    kept.push(keep);
+  };
+  const emitCode = (end: number): void => {
+    for (; i < end; i++) emit(command[i]!, null);
+  };
+  let state: LexState = 'none';
+  let atWordStart = true;
+  const heredocs: Heredoc[] = [];
+  const parens: ('substitution' | 'group')[] = [];
   let i = 0;
   while (i < command.length) {
-    const ch = command[i];
-    if (ch === "'") {
-      out += ' ';
-      i++;
-      while (i < command.length && command[i] !== "'") {
-        out += ' ';
+    const ch = command[i]!;
+    if (ch === '\\' && ESCAPES_IN.has(state)) {
+      const escaped = command[i + 1];
+      emit(
+        state === 'none' ? ch : ' ',
+        state === 'double' && !'$`"\\\n'.includes(escaped ?? '') ? ch : '',
+      );
+      if (escaped !== undefined)
+        emit(state === 'none' ? escaped : ' ', escaped === '\n' ? '' : escaped);
+      i += 2;
+      atWordStart = false;
+      continue;
+    }
+    if (state === 'none') {
+      HEREDOC_OPERATOR.lastIndex = i;
+      const heredoc = HEREDOC_OPERATOR.exec(command);
+      if (heredoc) {
+        heredocs.push({
+          delimiter: heredoc[3]!,
+          stripTabs: heredoc[1] === '-',
+          quoted: heredoc[2] !== '',
+        });
+        emitCode(i + heredoc[0].length);
+        atWordStart = false;
+        continue;
+      }
+      state = stateOpenedAt(command, i, atWordStart);
+      if (state === 'ansi-c') {
+        emit(' ', '');
         i++;
       }
-      if (i < command.length) {
-        out += ' ';
+      if (state !== 'none') {
+        emit(' ', '');
         i++;
+        atWordStart = false;
+        continue;
+      }
+      if (ch === '$' && command[i + 1] === '(') {
+        parens.push('substitution');
+        emit('$', '$');
+        emit('(', null);
+        i += 2;
+        atWordStart = true;
+        continue;
+      }
+      if (ch === '(') parens.push('group');
+      emit(ch, WORD_BREAK.test(ch) ? null : ch);
+      i++;
+      atWordStart = ch === ')' ? parens.pop() !== 'substitution' : METACHAR.test(ch);
+      if (ch === '\n' && heredocs.length > 0) {
+        emitCode(heredocBodiesEnd(command, i, heredocs));
+        heredocs.length = 0;
       }
       continue;
     }
-    if (ch === '"') {
-      out += ' ';
-      i++;
-      while (i < command.length && command[i] !== '"') {
-        if (command[i] === '\\' && i + 1 < command.length) {
-          out += '  ';
-          i += 2;
-          continue;
-        }
-        out += ' ';
+    if (ch === CLOSED_BY[state]) {
+      if (state !== 'comment') {
+        emit(' ', '');
         i++;
       }
-      if (i < command.length) {
-        out += ' ';
-        i++;
-      }
+      state = 'none';
       continue;
     }
-    out += ch;
+    emit(' ', state === 'comment' ? null : ch);
     i++;
   }
-  return out;
+  return { masked, kept };
+}
+
+function wordsFrom({ masked, kept }: Lexed, start: number): string[] {
+  const words: string[] = [];
+  let word: string | undefined;
+  for (let i = start; i < kept.length; i++) {
+    const piece = kept[i];
+    if (typeof piece === 'string') {
+      word = (word ?? '') + piece;
+      continue;
+    }
+    if (word !== undefined) words.push(word);
+    word = undefined;
+    if (COMMAND_END.test(masked[i]!)) return words;
+  }
+  if (word !== undefined) words.push(word);
+  return words;
+}
+
+function isCommandWord(kept: Lexed['kept'], at: number, prefix: string, end: number): boolean {
+  return (
+    (prefix === '' || kept[at] === null) &&
+    typeof kept[at + prefix.length] === 'string' &&
+    typeof kept[end] !== 'string'
+  );
+}
+
+function expandCommandBraces({ masked, kept }: Lexed): string {
+  return masked.replace(BRACE_COMMAND, (group, prefix: string, body: string, at: number) =>
+    isCommandWord(kept, at, prefix, at + group.length) ? prefix + body.replaceAll(',', ' ') : group,
+  );
+}
+
+function isDestructiveScript(command: string, depth: number): boolean {
+  const lexed = lex(command);
+  const expanded = expandCommandBraces(lexed);
+  if (DESTRUCTIVE_PATTERNS.some((p) => p.test(expanded))) return true;
+  for (const match of lexed.masked.matchAll(NESTED_SCRIPT)) {
+    const end = match.index + match[0].length;
+    if (!isCommandWord(lexed.kept, match.index, match[1]!, end)) continue;
+    if (depth >= MAX_NESTED_SCRIPTS) {
+      // Past the bound the script is not unquoted. Fail closed on its raw text.
+      if (DESTRUCTIVE_PATTERNS.some((p) => p.test(command.slice(end)))) return true;
+      continue;
+    }
+    const words = wordsFrom(lexed, end);
+    const script = match[2] === undefined ? words[0] : words.join(' ');
+    if (script !== undefined && isDestructiveScript(script, depth + 1)) return true;
+  }
+  return false;
 }
 
 // Sudo short flags that take a value (-u nobody, -g wheel, etc.).
@@ -412,12 +566,11 @@ export function classifyBash(command: string): BashClassification {
     return { category: 'shell-other', leading: '', isDestructive: false, isNetwork: false };
   }
 
-  // Destructive check runs against the full command with quoted regions
-  // masked out (so `git commit -m "rm -rf old"` doesn't fire) but otherwise
-  // unsplit (so pipe-to-shell patterns survive segment splitting and sudo
-  // stripping).
-  const masked = maskQuotedRegions(trimmed);
-  const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(masked));
+  // Destructive check runs against the whole command, not a split segment (so
+  // pipe-to-shell patterns survive segment splitting and sudo stripping). Quoted
+  // text and comments are masked (so `git commit -m "rm -rf old"` doesn't fire),
+  // and eval, sh -c and command-position brace groups are looked into.
+  const isDestructive = isDestructiveScript(trimmed, 0);
 
   const segment = firstSegment(trimmed);
   const tokens = tokenize(segment);
