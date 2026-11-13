@@ -31,11 +31,14 @@ var REDACTION_PATTERNS = [
   /\b(?:AC|SK)[a-f0-9]{32}\b/g,
   /(?:[?&])(?:sig|se|sp|srt|ss|sv|st)=[A-Za-z0-9%_-]+/gi,
   /\b(?:vercel_|heroku_|dd_|pk_)[A-Za-z0-9_-]{20,}\b/gi,
+  // The argument rules start with a literal before any lookbehind. A leading lookbehind runs at
+  // every position and tripled the cost of a plain 1 MB command.
   new RegExp(
     String.raw`-(?<=(?:^|[^\w-]|${AFTER_ESCAPE})-)-?(?:[a-z0-9]{1,30}[-_]){0,3}(?:token|password|passwd|secret|(?:api|access|secret|private)[-_]?key)(?:[ \t]+|=)(?!-)${ARG_VALUE}`,
     "gi"
   ),
-  // -p is a port, parents or preserve flag everywhere else, so only a mysql client's -p<value> counts.
+  // -p is a port, parents or preserve flag everywhere else, so only a mysql client's -p<value> counts,
+  // and never a docker-style -p3306:3306 port mapping.
   // The lookbehind stops at the previous -p, so each scan covers new text and the cost stays linear.
   new RegExp(
     String.raw`-p(?<=\b(?:mysql(?:dump|admin)?|mariadb)\b(?:"[^"\n]{0,1000}"|'[^'\n]{0,1000}'|\\\r?\n|(?!${P_FLAG_START})[^\n;|&"'])*${P_FLAG_START})(?![\d.]+:\d)${ARG_VALUE}`,
