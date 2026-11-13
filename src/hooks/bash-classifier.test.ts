@@ -370,16 +370,38 @@ describe('classifyBash', () => {
     });
 
     it('flags a destructive command after a comment containing an apostrophe', () => {
-      const cmd = "# Don't\nmysql -u root -p$'QX1\\'Y1' shop; rm -rf /tmp/x";
+      const cmd = "# Don't\nmysql -u root [REDACTED] shop; rm -rf /tmp/x";
       expect(classifyBash(cmd).isDestructive).toBe(true);
+    });
+
+    it('flags a destructive command after a leading comment containing an apostrophe', () => {
+      expect(classifyBash("# Don't\nrm -rf /tmp/x").isDestructive).toBe(true);
+    });
+
+    it('does not treat a hash after an escaped space, tab or newline as a comment', () => {
+      expect(classifyBash('echo a\\ #b; rm -rf /tmp/x').isDestructive).toBe(true);
+      expect(classifyBash('echo a\\\t#b; rm -rf /tmp/x').isDestructive).toBe(true);
+      expect(classifyBash('echo a\\\n#b; rm -rf /tmp/x').isDestructive).toBe(true);
+    });
+
+    it('treats a hash after an escaped backslash and a space as a comment', () => {
+      expect(classifyBash('echo a\\\\ #b; rm -rf /tmp/x').isDestructive).toBe(false);
+    });
+
+    it('does not flag a destructive phrase on a hash line inside a heredoc body', () => {
+      expect(classifyBash('cat <<EOF\n# rm -rf /tmp/x\nEOF').isDestructive).toBe(false);
+    });
+
+    it('still flags a destructive command in a heredoc body before a trailing comment', () => {
+      expect(classifyBash('bash <<EOF\nrm -rf x # note\nEOF').isDestructive).toBe(true);
     });
 
     it('flags a destructive command after an ANSI-C quoted arg with an escaped quote', () => {
       expect(classifyBash("echo $'a\\'b'; rm -rf /tmp/x").isDestructive).toBe(true);
     });
 
-    it('treats a hash right after a separator as a comment', () => {
-      expect(classifyBash("ls;# Don't\nrm -rf /tmp/x").isDestructive).toBe(true);
+    it.each([';', '&', '|', '(', ')'])('treats a hash right after %s as a comment', (sep) => {
+      expect(classifyBash(`ls ${sep}# Don't\nrm -rf /tmp/x`).isDestructive).toBe(true);
     });
 
     it('flags a destructive command after a mid-word hash', () => {

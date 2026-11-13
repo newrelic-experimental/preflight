@@ -232,19 +232,27 @@ const DESTRUCTIVE_PATTERNS: readonly RegExp[] = [
   /\b(?:curl|wget)\b.*\|\s*(?:\/[^\s]*\/)?(?:node|python3?|perl|ruby)\b/i,
 ];
 
+function startsComment(command: string, i: number): boolean {
+  if (i === 0) return true;
+  if (!/[\s;&|()]/.test(command[i - 1]!)) return false;
+  let backslashes = 0;
+  for (let j = i - 2; j >= 0 && command[j] === '\\'; j--) backslashes++;
+  return backslashes % 2 === 0;
+}
+
 // Replace the contents of single- or double-quoted regions with spaces of
 // the same length so destructive-pattern matching can't be fooled by quoted
 // arguments — e.g. `git commit -m "rm -rf old code"` should NOT classify as
 // destructive. Heuristic: backslash-escapes inside double and ANSI-C
 // (`$'...'`) quotes are honoured, and `#` comments (a `#` that starts a word,
-// outside quotes) are blanked to end of line so an apostrophe in a comment
-// can't open a quote. Heredoc bodies are not handled.
+// outside quotes, after unescaped whitespace or a separator) are blanked to
+// end of line so an apostrophe in a comment can't open a quote. Heredoc bodies are not handled.
 function maskQuotedRegions(command: string): string {
   let out = '';
   let i = 0;
   while (i < command.length) {
     const ch = command[i];
-    if (ch === '#' && (i === 0 || /[\s;&|()]/.test(command[i - 1]!))) {
+    if (ch === '#' && startsComment(command, i)) {
       while (i < command.length && command[i] !== '\n') {
         out += ' ';
         i++;
