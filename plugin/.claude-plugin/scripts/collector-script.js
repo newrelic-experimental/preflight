@@ -8,13 +8,29 @@ import { createHash } from "node:crypto";
 
 // src/redaction-patterns.ts
 var AFTER_ESCAPE = String.raw`\\[nrt]|\\u[0-9a-fA-F]{4}|\x1b\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
-var ARG_VALUE = String.raw`(?:\\?"[^"\n]{0,1000}"|'[^'\n]{0,1000}'|\S+)`;
+var CONTINUATION = String.raw`(?:\\\r?\n|\\\\\\n)`;
+var DQ_CHAR = String.raw`(?:[^"\\\n]|${CONTINUATION}|\\.)`;
+var JSON_DQ_CHAR = String.raw`(?:[^"\\\n]|\\\\\\"|\\[^"\n])`;
+var SQ_CHAR = String.raw`[^'\n]`;
+var ANSI_SQ_CHAR = String.raw`(?:[^'\\\n]|\\.)`;
+var QUOTED = [
+  String.raw`\\"${JSON_DQ_CHAR}{0,1000}\\"`,
+  String.raw`"${DQ_CHAR}{0,1000}"`,
+  String.raw`\$'${ANSI_SQ_CHAR}{0,1000}'`,
+  String.raw`'${SQ_CHAR}{0,1000}'`
+].join("|");
+var VALUE = String.raw`(?!${CONTINUATION})(?:${QUOTED}|${CONTINUATION}|\S)+`;
+var AFTER_SEPARATOR = String.raw`\s*`;
+var FLAG_GAP = String.raw`(?:[ \t]|${CONTINUATION})+(?!-)`;
 var P_FLAG_START = String.raw`(?:\s|${AFTER_ESCAPE})-p`;
-var HEADER_FLAG = String.raw`(?:-H|--header)[\s=]{1,4}`;
+var HEADER_FLAG = String.raw`(?:-H|--header)(?:[\s=]|${CONTINUATION}){1,8}`;
 var HEADER_NAME = String.raw`(?:x-)?(?:api-?key|auth-token|access-token)`;
 var HEADER_SEP = String.raw`(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})`;
 var REDACTION_PATTERNS = [
-  /(?<![a-zA-Z])(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-zA-Z])[\s]*[=:]\s*\S+/gi,
+  new RegExp(
+    String.raw`(?<![a-zA-Z])(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-zA-Z])\s*[=:]${AFTER_SEPARATOR}${VALUE}`,
+    "gi"
+  ),
   /(?:sk-|ghp_|gho_|ghs_|github_pat_|xoxb-|xoxp-|Bearer\s+)[A-Za-z0-9_-]{20,200}/g,
   /-----BEGIN[^-\n]{0,100}-----[A-Za-z0-9+/=\r\n. ]{0,65536}-----END[^-\n]{0,100}-----/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
@@ -34,21 +50,21 @@ var REDACTION_PATTERNS = [
   // The argument rules start with a literal before any lookbehind. A leading lookbehind runs at
   // every position and tripled the cost of a plain 1 MB command.
   new RegExp(
-    String.raw`-(?<=(?:^|[^\w-]|${AFTER_ESCAPE})-)-?(?:[a-z0-9]{1,30}[-_]){0,3}(?:token|password|passwd|secret|(?:api|access|secret|private)[-_]?key)(?:[ \t]+|=)(?!-)${ARG_VALUE}`,
+    String.raw`-(?<=(?:^|[^\w-]|${AFTER_ESCAPE})-)-?(?:[a-z0-9]{1,30}[-_]){0,3}(?:token|password|passwd|secret|(?:api|access|secret|private)[-_]?key)(?:${FLAG_GAP}|=${AFTER_SEPARATOR})${VALUE}`,
     "gi"
   ),
   // -p is a port, parents or preserve flag everywhere else, so only a mysql client's -p<value> counts,
   // and never a docker-style -p3306:3306 port mapping.
   // The lookbehind stops at the previous -p, so each scan covers new text and the cost stays linear.
   new RegExp(
-    String.raw`-p(?<=\b(?:mysql(?:dump|admin)?|mariadb)\b(?:"[^"\n]{0,1000}"|'[^'\n]{0,1000}'|\\\r?\n|(?!${P_FLAG_START})[^\n;|&"'])*${P_FLAG_START})(?![\d.]+:\d)${ARG_VALUE}`,
+    String.raw`-p(?<=\b(?:mysql(?:dump|admin)?|mariadb)\b(?:${QUOTED}|${CONTINUATION}|(?!${P_FLAG_START})[^\n;|&"'])*${P_FLAG_START})(?![\d.]+:\d)${VALUE}`,
     "g"
   ),
   new RegExp(
     String.raw`${HEADER_NAME}(?:${[
-      String.raw`(?<=${HEADER_FLAG}"${HEADER_NAME})${HEADER_SEP}[^"\n]{1,1000}`,
-      String.raw`(?<=${HEADER_FLAG}\\"${HEADER_NAME})${HEADER_SEP}(?:[^"\\\n]|\\(?!")){1,1000}`,
-      String.raw`(?<=${HEADER_FLAG}'${HEADER_NAME})${HEADER_SEP}[^'\n]{1,1000}`,
+      String.raw`(?<=${HEADER_FLAG}"${HEADER_NAME})${HEADER_SEP}${DQ_CHAR}{1,1000}`,
+      String.raw`(?<=${HEADER_FLAG}\\"${HEADER_NAME})${HEADER_SEP}${JSON_DQ_CHAR}{1,1000}`,
+      String.raw`(?<=${HEADER_FLAG}'${HEADER_NAME})${HEADER_SEP}${SQ_CHAR}{1,1000}`,
       String.raw`(?<=${HEADER_FLAG}${HEADER_NAME})${HEADER_SEP}[^\s"']+`
     ].join("|")})`,
     "gi"
