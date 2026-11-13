@@ -1,8 +1,27 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { InfoTooltip } from './InfoTooltip';
 
+type KeydownListener = EventListenerOrEventListenerObject;
+
+function trackDocumentKeydownListeners(): Set<KeydownListener> {
+  const attached = new Set<KeydownListener>();
+  const realAdd = document.addEventListener.bind(document);
+  const realRemove = document.removeEventListener.bind(document);
+  vi.spyOn(document, 'addEventListener').mockImplementation((type, listener, options) => {
+    if (type === 'keydown' && listener) attached.add(listener);
+    realAdd(type, listener, options);
+  });
+  vi.spyOn(document, 'removeEventListener').mockImplementation((type, listener, options) => {
+    if (type === 'keydown' && listener) attached.delete(listener);
+    realRemove(type, listener, options);
+  });
+  return attached;
+}
+
 describe('InfoTooltip', () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it('renders an info button wired to the tooltip text via aria-describedby once hovered', () => {
     render(<InfoTooltip text="Explains the panel." />);
     const button = screen.getByRole('button', { name: 'What is this?' });
@@ -76,6 +95,22 @@ describe('InfoTooltip', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
 
     expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('opening and closing repeatedly leaves no document keydown listener behind, including after unmount', () => {
+    const attached = trackDocumentKeydownListeners();
+    const { unmount } = render(<InfoTooltip text="Explains the panel." />);
+    const button = screen.getByRole('button', { name: 'What is this?' });
+
+    for (let i = 0; i < 20; i++) {
+      fireEvent.mouseEnter(button);
+      fireEvent.mouseLeave(button);
+    }
+    expect(attached.size).toBe(0);
+
+    fireEvent.mouseEnter(button);
+    unmount();
+    expect(attached.size).toBe(0);
   });
 
   it('ignores keys other than Escape while the tooltip is open', () => {
