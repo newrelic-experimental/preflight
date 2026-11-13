@@ -55,6 +55,7 @@ const REDACTS: Row[] = [
   ["tool --password='a b S3CRET9' x", "password='a b S3CRET9'"],
   ['API_KEY="a b S3CRET9" x', 'API_KEY="a b S3CRET9"'],
   ['mysql -u root --password=\nrm -rf /tmp/x', 'password=\nrm'],
+  ['PASSWORD\n= S3CRET9 x', 'PASSWORD\n= S3CRET9'],
   ['curl --token \\\n  S3CRET9 x', '--token \\\n  S3CRET9'],
   ['curl -H \\\n    "X-Api-Key: S3CRET9" x', 'X-Api-Key: S3CRET9'],
   ['curl --token "sec\\"S3CRET9" x', '--token "sec\\"S3CRET9"'],
