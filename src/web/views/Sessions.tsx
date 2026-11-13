@@ -675,7 +675,7 @@ export function Sessions(): JSX.Element {
             {list.isLoading && (
               <EmptyState variant="loading" icon="timeline" title="Loading sessions" />
             )}
-            {!list.isLoading && visibleRows.length === 0 && liveSessionIds.size === 0 && (
+            {!list.isLoading && !hasSessions && (
               <EmptyState
                 icon="code"
                 title={filtersActive ? 'No matching sessions' : 'No sessions yet'}
