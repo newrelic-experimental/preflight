@@ -87,11 +87,20 @@ function getRecordContent(): boolean {
   );
 }
 
-function getMaxContentLength(): number {
+const DEFAULT_MAX_CONTENT_LENGTH = 10_240;
+const MIN_MAX_CONTENT_LENGTH = 256;
+const MAX_MAX_CONTENT_LENGTH = 1_048_576;
+
+// Clamps like envInt in src/config.ts. Not imported: config.ts pulls zod and the
+// config loader into the plugin bundle.
+export function getMaxContentLength(): number {
   const val = process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
-  if (val === undefined) return 10_240;
+  if (val === undefined) return DEFAULT_MAX_CONTENT_LENGTH;
   const parsed = parseInt(val, 10);
-  return Number.isNaN(parsed) ? 10_240 : parsed;
+  if (Number.isNaN(parsed)) return DEFAULT_MAX_CONTENT_LENGTH;
+  if (parsed < MIN_MAX_CONTENT_LENGTH) return MIN_MAX_CONTENT_LENGTH;
+  if (parsed > MAX_MAX_CONTENT_LENGTH) return MAX_MAX_CONTENT_LENGTH;
+  return parsed;
 }
 
 /**
