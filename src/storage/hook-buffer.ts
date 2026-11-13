@@ -63,22 +63,43 @@ function isAt(path: string, file: { readonly ino: bigint; readonly dev: bigint }
   return now !== undefined && now.ino === file.ino && now.dev === file.dev;
 }
 
+/** A failure after the line reached the file where a drain can read it, so writing it again could count it twice. */
+export class LineWrittenError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+}
+
+function landedBeforeSeal(fd: number, sealFloor: number): boolean {
+  return !readRange(fd, sealFloor, offsetAfterWrite(fd)).includes(DRAIN_SEAL);
+}
+
 function appendOnce(path: string, data: Buffer): Landing {
   const fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_APPEND, 0o600);
+  let landed = false;
   try {
-    const opened = fstatSync(fd, { bigint: true });
-    if (!isAt(path, opened)) return 'moved';
-    const sealFloor = Number(opened.size);
-    const written = writeSync(fd, data);
-    if (written < data.length) {
-      writeSync(fd, TORN_LINE_END);
-      return 'redo';
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      if (!isAt(path, opened)) return 'moved';
+      const sealFloor = Number(opened.size);
+      const written = writeSync(fd, data);
+      try {
+        if (written < data.length) {
+          writeSync(fd, TORN_LINE_END);
+          return 'redo';
+        }
+        landed = isAt(path, opened) || landedBeforeSeal(fd, sealFloor);
+      } catch (err) {
+        // A line short of only its newline still parses at the end of the file.
+        landed = written >= data.length - 1 && landedBeforeSeal(fd, sealFloor);
+        throw err;
+      }
+      return landed ? 'kept' : 'redo';
+    } finally {
+      closeSync(fd);
     }
-    if (isAt(path, opened)) return 'kept';
-    const start = offsetAfterWrite(fd) - data.length;
-    return readRange(fd, sealFloor, start).includes(DRAIN_SEAL) ? 'redo' : 'kept';
-  } finally {
-    closeSync(fd);
+  } catch (err) {
+    throw landed ? new LineWrittenError(err) : err;
   }
 }
 

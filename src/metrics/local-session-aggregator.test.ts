@@ -837,6 +837,30 @@ describe('LocalSessionAggregator subagent cost', () => {
     expect(summary?.subagentCostUsd).toBe(5);
   });
 
+  it('keeps subagent reasoning tokens out of the persisted tokensThinking', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, {
+      costUsd: 1,
+      timestamp: 1000,
+      inputTokens: 10,
+      thinkingTokens: 40,
+      agentId: 'agent-1',
+      model: 'claude-sonnet-4-6',
+    });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.tokensThinking).toBe(0);
+  });
+
+  it('takes the platform of a token usage that arrives first, and keeps it afterwards', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, inputTokens: 10, platform: 'cursor' });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, inputTokens: 10, platform: 'windsurf' });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.platform).toBe('cursor');
+  });
+
   it('omits costByDayUsd (undefined, not {}) for a rollup with only tool calls and no token usage', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });

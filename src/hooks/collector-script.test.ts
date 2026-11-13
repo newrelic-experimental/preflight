@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { execFileSync, spawn } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -29,6 +30,7 @@ import {
 } from './collector-script.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
+import { DRAIN_SEAL } from '../storage/hook-buffer.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let stdoutSpy: ReturnType<typeof jest.spyOn>;
@@ -1969,6 +1971,283 @@ describe('collector-script', () => {
       );
       expect(readBufferLines('traj-abc123')).toHaveLength(0);
     });
+  });
+
+  describe('self-reported token usage from post-MCP hooks', () => {
+    const report = {
+      report_id: 'r-7c1d9e42',
+      input_tokens: 1200,
+      output_tokens: 300,
+      thinking_tokens: 50,
+      cache_read_tokens: 4000,
+      model: 'claude-sonnet-4-6',
+    };
+    const hookReply = JSON.stringify({
+      accepted: true,
+      recorded_by: 'hook',
+      report_id: report.report_id,
+    });
+
+    beforeEach(() => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      process.env.MCP_CLIENT = 'cursor';
+    });
+
+    const expectedLine = (conversationId: string, platform: string) => ({
+      mode: 'self_report',
+      tool: 'nr_observe_report_tokens',
+      sessionId: conversationId,
+      reportId: report.report_id,
+      model: report.model,
+      inputTokens: report.input_tokens,
+      outputTokens: report.output_tokens,
+      thinkingTokens: report.thinking_tokens,
+      cacheReadTokens: report.cache_read_tokens,
+      cacheCreationTokens: 0,
+      platform,
+    });
+
+    const cursorReportHook = (conversationId: string, overrides: Record<string, unknown> = {}) =>
+      JSON.stringify({
+        hook_event_name: 'afterMCPExecution',
+        conversation_id: conversationId,
+        mcp_server_name: 'newrelic-preflight',
+        tool_name: 'nr_observe_report_tokens',
+        tool_input: JSON.stringify(report),
+        result_json: JSON.stringify({ content: [{ type: 'text', text: hookReply }] }),
+        ...overrides,
+      });
+    const windsurfReportHook = (trajectoryId: string) =>
+      JSON.stringify({
+        agent_action_name: 'post_mcp_tool_use',
+        trajectory_id: trajectoryId,
+        tool_info: {
+          mcp_server_name: 'preflight',
+          mcp_tool_name: 'nr_observe_report_tokens',
+          mcp_tool_arguments: report,
+          mcp_result: hookReply,
+        },
+      });
+
+    it.each([
+      ...['newrelic-preflight', 'preflight', 'nr-ai-observability'].map(
+        (server): [string, string, string] => [
+          `Cursor afterMCPExecution from the ${server} server`,
+          cursorReportHook('conv-reporting', { mcp_server_name: server }),
+          'cursor',
+        ],
+      ),
+      ['Windsurf post_mcp_tool_use', windsurfReportHook('conv-reporting'), 'windsurf'],
+    ])(
+      "%s adds a usage line to that conversation only, stamped with its platform under Claude Code's environment",
+      (_label, payload, platform) => {
+        process.env.MCP_CLIENT = 'claude-code';
+        process.env.CLAUDECODE = '1';
+        processHook(payload);
+
+        const events = readBufferLines('conv-reporting');
+        expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
+        expect(events.map((e) => e.platform)).toEqual([platform, platform]);
+        expect(events[1]).toMatchObject(expectedLine('conv-reporting', platform));
+        expect(readBufferLines('conv-other')).toEqual([]);
+      },
+    );
+
+    const errorReply = (text: string) =>
+      JSON.stringify({ isError: true, content: [{ type: 'text', text }] });
+
+    it.each([
+      ['a reply that recorded the report itself', { result_json: '{"recorded":true}' }],
+      [
+        'a reply not marked as recorded by the hook',
+        { result_json: hookReply.replace('"recorded_by":"hook"', '"recorded_by":"engine"') },
+      ],
+      ['a rejected call', { result_json: '{"error":"invalid_token_report","message":"bad"}' }],
+      ['a reply for another report_id', { result_json: hookReply.replace('7c1d', '0000') }],
+      ['a lookalike tool name', { tool_name: 'xnr_observe_report_tokens' }],
+      ['a prefixed tool name', { tool_name: 'preflight-nr_observe_report_tokens' }],
+      ["another server's tool of the same name", { mcp_server_name: 'github' }],
+      ['no server name', { mcp_server_name: undefined }],
+      ['a lookalike of the older server key', { mcp_server_name: 'my-nr-ai-observability-proxy' }],
+      ['no result at all', { result_json: undefined }],
+      [
+        "a pending engine's reply for a tool it does not list",
+        { result_json: errorReply(JSON.stringify({ error: 'session_id not yet resolved' })) },
+      ],
+      ['an error result that quotes the reply', { result_json: errorReply(hookReply) }],
+      [
+        'an error message that quotes the reply',
+        {
+          result_json: JSON.stringify({
+            content: [{ type: 'text', text: JSON.stringify({ error: 'x', message: hookReply }) }],
+          }),
+        },
+      ],
+      ...['pending-1', 'local-x', 'proxy-7', 'unknown'].map(
+        (id): [string, Record<string, unknown>] => [
+          `the synthetic conversation id ${id}`,
+          { conversation_id: id },
+        ],
+      ),
+    ])('adds no usage line for %s', (_label, overrides) => {
+      processHook(cursorReportHook('conv-reporting', overrides));
+
+      const id = overrides.conversation_id ?? 'conv-reporting';
+      expect(readBufferLines(String(id)).map((e) => e.mode)).toEqual(['post']);
+    });
+
+    it('records a reused report_id with different counts, but an exact retry once', () => {
+      processHook(cursorReportHook('conv-reporting'));
+      processHook(cursorReportHook('conv-reporting'));
+      const changed = JSON.stringify({ ...report, input_tokens: 1201 });
+      processHook(cursorReportHook('conv-reporting', { tool_input: changed }));
+
+      const lines = readBufferLines('conv-reporting').filter((e) => e.mode === 'self_report');
+      expect(lines.map((e) => e.inputTokens)).toEqual([1200, 1201]);
+    });
+
+    const bufferFds = [
+      "import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';",
+      'const { openSync, closeSync, writeSync, statSync } = fs; const buffers = new Map(); const paths = new Map(); let opened = 0;',
+      "fs.openSync = (p, ...a) => { const fd = openSync(p, ...a); if (String(p).includes('buffer-')) buffers.set(fd, ++opened), paths.set(fd, String(p)); return fd; };",
+      'const reportLine = (fd) => buffers.get(fd) >= 2;',
+      "const enospc = () => Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });",
+    ];
+    const bufferPath = () => resolve(tmpDir, 'buffer-conv-reporting.jsonl');
+    const modesIn = (path: string): unknown[] =>
+      (existsSync(path) ? readFileSync(path, 'utf-8') : '').split(/\n|\0[^]*/).flatMap((text) => {
+        try {
+          return [(JSON.parse(text) as { mode: string }).mode];
+        } catch {
+          return [];
+        }
+      });
+    const runWithBufferFault = (failure: string): unknown[] => {
+      const preload = [...bufferFds, failure, 'syncBuiltinESMExports();'].join('\n');
+      const script = resolve(__dirname, '..', '..', 'dist', 'hooks', 'collector-script.js');
+      execFileSync(
+        'node',
+        ['--import', `data:text/javascript,${encodeURIComponent(preload)}`, script],
+        {
+          input: cursorReportHook('conv-reporting'),
+          env: { ...process.env, NEW_RELIC_AI_MCP_STORAGE_PATH: tmpDir, MCP_CLIENT: 'cursor' },
+        },
+      );
+      const drained = [...modesIn(`${bufferPath()}.drained`), ...modesIn(bufferPath())];
+      rmSync(bufferPath(), { force: true });
+      processHook(cursorReportHook('conv-reporting'));
+      return [...drained, ...modesIn(bufferPath())];
+    };
+
+    const failClose = (lineFd: string, drain = '') =>
+      `fs.closeSync = (fd) => { closeSync(fd); if (${lineFd}) { const p = paths.get(fd); ${drain} throw new Error('EIO'); } };`;
+    const drainThenRestart = "fs.renameSync(p, p + '.drained'); fs.writeFileSync(p, '');";
+    const shortWrite = (keep: string, tornEnd = 'throw enospc()') =>
+      `fs.writeSync = (fd, b, off = 0, ...a) => { if (!reportLine(fd)) return writeSync(fd, b, off, ...a); if (typeof b === 'string') ${tornEnd}; return writeSync(fd, b, off, ${keep}); };`;
+    const sealAndFailStat = (sealFirst: boolean): string => {
+      const seal = `fs.renameSync(p, p + '.drained'); const s = openSync(p + '.drained', 'a'); writeSync(s, ${JSON.stringify(DRAIN_SEAL)}); closeSync(s); fs.writeFileSync(p, '');`;
+      const write = 'const n = writeSync(fd, b, ...a);';
+      return [
+        "fs.writeSync = (fd, b, ...a) => { if (!reportLine(fd) || typeof b === 'string') return writeSync(fd, b, ...a); const p = paths.get(fd);",
+        ...(sealFirst ? [seal, write] : [write, seal]),
+        "fs.statSync = (q, ...o) => { if (q === p) throw new Error('EIO'); return statSync(q, ...o); }; syncBuiltinESMExports(); return n; };",
+      ].join(' ');
+    };
+    it.each([
+      [
+        'a drain renames and seals the buffer before the usage line lands and the stat after it fails',
+        sealAndFailStat(true),
+        ['post', 'post', 'self_report'],
+      ],
+      [
+        'a drain renames and seals the buffer after the usage line lands and the stat after it fails',
+        sealAndFailStat(false),
+        ['post', 'self_report', 'post'],
+      ],
+      [
+        'closing the buffer fails after a drain took the usage line and a new hook began a fresh buffer',
+        failClose('reportLine(fd)', drainThenRestart),
+        ['post', 'self_report', 'post'],
+      ],
+      [
+        'the disk fills one byte short of the usage line and its torn end fails too',
+        shortWrite('b.length - 1 - off'),
+        ['post', 'self_report', 'post'],
+      ],
+      [
+        'every write of the usage line ends one byte short and is marked torn',
+        shortWrite('b.length - 1 - off', 'return writeSync(fd, b)'),
+        ['post', 'post', 'self_report'],
+      ],
+      [
+        'the disk fills before the usage line is whole',
+        shortWrite('10'),
+        ['post', 'post', 'self_report'],
+      ],
+      [
+        'closing the buffer fails after the post, before the usage line',
+        failClose('buffers.get(fd) === 1'),
+        ['post', 'post', 'self_report'],
+      ],
+    ])('counts the usage line once when %s', (_label, failure, modes) => {
+      expect(runWithBufferFault(failure)).toEqual(modes);
+    });
+
+    it('writes a retried report_id once, even after the buffer was drained', () => {
+      processHook(cursorReportHook('conv-reporting'));
+      rmSync(resolve(tmpDir, 'buffer-conv-reporting.jsonl'));
+      processHook(cursorReportHook('conv-reporting'));
+
+      expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post']);
+      const conversationDir = resolve(tmpDir, 'self-reports', 'conv-reporting');
+      const claims = readdirSync(conversationDir);
+      expect(claims).toHaveLength(1);
+      expect(statSync(conversationDir).mode & 0o777).toBe(0o700);
+      expect(statSync(resolve(conversationDir, claims[0]!)).mode & 0o777).toBe(0o600);
+    });
+
+    it.each([
+      ['the self-reports path is a file', () => writeFileSync(resolve(tmpDir, 'self-reports'), '')],
+      [
+        "the conversation's claim path is a file",
+        () => {
+          mkdirSync(resolve(tmpDir, 'self-reports'));
+          writeFileSync(resolve(tmpDir, 'self-reports', 'conv-reporting'), '');
+        },
+      ],
+      [
+        'the self-reports directory is unreadable',
+        () => mkdirSync(resolve(tmpDir, 'self-reports'), { mode: 0o000 }),
+      ],
+    ])('still writes the post but no usage line when %s', (_label, breakClaims) => {
+      breakClaims();
+      try {
+        processHook(cursorReportHook('conv-reporting'));
+      } finally {
+        chmodSync(resolve(tmpDir, 'self-reports'), 0o700);
+      }
+
+      expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post']);
+    });
+
+    it.each([
+      ['beforeMCPExecution', 'cursor'],
+      ['beforeShellExecution', 'cursor'],
+      ['afterFileEdit', 'cursor'],
+      ['pre_mcp_tool_use', 'windsurf'],
+      ['post_run_command', 'windsurf'],
+    ])(
+      "stamps %s with the hook's platform %s under Claude Code's environment",
+      (name, platform) => {
+        process.env.MCP_CLIENT = 'claude-code';
+        process.env.CLAUDECODE = '1';
+
+        processHook(JSON.stringify({ hook_event_name: name, conversation_id: 'conv-event' }));
+
+        expect(readBufferLines('conv-event').map((e) => e.platform)).toEqual([platform]);
+      },
+    );
   });
 
   describe('helper functions', () => {

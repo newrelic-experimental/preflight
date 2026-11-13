@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 // src/hooks/collector-script.ts
-import { readFileSync as readFileSync2, writeFileSync, mkdirSync, existsSync, utimesSync } from "node:fs";
-import { resolve as resolve2, dirname } from "node:path";
+import { readFileSync as readFileSync2, writeFileSync, mkdirSync as mkdirSync2, existsSync, utimesSync } from "node:fs";
+import { resolve as resolve3, dirname as dirname2 } from "node:path";
 import { homedir } from "node:os";
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 
 // src/redaction-patterns.ts
 var REDACTION_PATTERNS = [
@@ -65,8 +65,133 @@ function hookEventFromArg(arg) {
   );
 }
 
+// src/hooks/self-report.ts
+import { createHash } from "node:crypto";
+import { closeSync, constants, mkdirSync, openSync, unlinkSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+
+// src/hooks/synthetic-session-id.ts
+function isSyntheticSessionId(id) {
+  if (!id) return false;
+  return id.startsWith("local-") || id.startsWith("proxy-") || id.startsWith("pending-");
+}
+
+// src/hooks/self-report.ts
+var REPORT_TOKENS_TOOL_NAME = "nr_observe_report_tokens";
+var MAX_TOKENS = 1e7;
+var REPORT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
+var MODEL_RE = /^[a-zA-Z0-9._:-]{1,256}$/;
+var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
+var REQUIRED_COUNTS = ["input_tokens", "output_tokens"];
+var OPTIONAL_COUNTS = ["thinking_tokens", "cache_read_tokens", "cache_creation_tokens"];
+function clampToken(v) {
+  if (!Number.isFinite(v)) return 0;
+  return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
+}
+function isPreflightServerName(name) {
+  return typeof name === "string" && (/preflight/i.test(name) || name === "nr-ai-observability");
+}
+function reportKey(r) {
+  const counts = [r.model, r.inputTokens, r.outputTokens, r.thinkingTokens, r.cacheReadTokens];
+  const digest = createHash("sha256").update(JSON.stringify([...counts, r.cacheCreationTokens])).digest("hex");
+  return `${r.reportId}-${digest.slice(0, 16)}`;
+}
+function isConversationId(id) {
+  return typeof id === "string" && SESSION_ID_RE.test(id) && id !== "unknown" && !isSyntheticSessionId(id);
+}
+function decodeObject(raw) {
+  let value = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return void 0;
+    }
+  }
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function parseSelfReport(args) {
+  const fail = (reason) => ({ ok: false, reason });
+  const a = decodeObject(args);
+  if (!a) return fail("arguments are not a JSON object");
+  if (typeof a.report_id !== "string" || !REPORT_ID_RE.test(a.report_id)) {
+    return fail("report_id must be 8 to 128 characters of [A-Za-z0-9_-], new for every call");
+  }
+  if (typeof a.model !== "string" || !MODEL_RE.test(a.model)) {
+    return fail("model must be 1 to 256 characters of [a-zA-Z0-9._:-]");
+  }
+  const counts = {};
+  const readCounts = (fields, fallback) => {
+    for (const field of fields) {
+      const n = a[field] ?? fallback;
+      if (typeof n !== "number" || !Number.isFinite(n) || n < 0) return field;
+      counts[field] = clampToken(n);
+    }
+    return void 0;
+  };
+  const bad = readCounts(REQUIRED_COUNTS) ?? readCounts(OPTIONAL_COUNTS, 0);
+  if (bad) return fail(`${bad} must be a non-negative number`);
+  return {
+    ok: true,
+    report: {
+      reportId: a.report_id,
+      model: a.model,
+      inputTokens: counts.input_tokens,
+      outputTokens: counts.output_tokens,
+      thinkingTokens: counts.thinking_tokens,
+      cacheReadTokens: counts.cache_read_tokens,
+      cacheCreationTokens: counts.cache_creation_tokens
+    }
+  };
+}
+function hookAcknowledged(result, reportId) {
+  const value = decodeObject(result);
+  if (!value || value.isError === true) return false;
+  const replies = Array.isArray(value.content) ? value.content.map(
+    (block) => decodeObject(block?.text)
+  ) : [value];
+  return replies.some(
+    (reply) => reply?.accepted === true && reply.recorded_by === "hook" && reply.report_id === reportId
+  );
+}
+function hookSelfReportLine(call, conversationId, timestamp, platform) {
+  const isReport = call.tool === REPORT_TOKENS_TOOL_NAME && isPreflightServerName(call.server);
+  if (!isReport || !isConversationId(conversationId)) return void 0;
+  const parsed = parseSelfReport(call.args);
+  if (!parsed.ok || !hookAcknowledged(call.result, parsed.report.reportId)) return void 0;
+  const { report } = parsed;
+  return {
+    mode: "self_report",
+    tool: REPORT_TOKENS_TOOL_NAME,
+    timestamp,
+    sessionId: conversationId,
+    ...report,
+    platform
+  };
+}
+function claimPath(storageDir, line) {
+  return resolve(storageDir, "self-reports", line.sessionId, reportKey(line));
+}
+function claimReport(storageDir, line) {
+  const path = claimPath(storageDir, line);
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 448 });
+    closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 384));
+    return true;
+  } catch {
+    return false;
+  }
+}
+function releaseReport(storageDir, line) {
+  try {
+    unlinkSync(claimPath(storageDir, line));
+  } catch {
+    return;
+  }
+}
+
 // src/hooks/session-breadcrumbs.ts
-import { resolve } from "node:path";
+import { resolve as resolve2 } from "node:path";
 
 // src/platforms/types.ts
 var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
@@ -75,7 +200,7 @@ var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
 var BREADCRUMBS_DIR = "breadcrumbs";
 var WRITER_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 function breadcrumbRoot(storagePath, writer) {
-  return resolve(storagePath, BREADCRUMBS_DIR, writer);
+  return resolve2(storagePath, BREADCRUMBS_DIR, writer);
 }
 function breadcrumbWriter(engine) {
   return engine !== void 0 && WRITER_RE.test(engine) ? engine : UNATTRIBUTED_BREADCRUMB_WRITER;
@@ -83,14 +208,14 @@ function breadcrumbWriter(engine) {
 
 // src/storage/hook-buffer.ts
 import {
-  closeSync,
-  constants,
+  closeSync as closeSync2,
+  constants as constants2,
   fstatSync,
-  openSync,
+  openSync as openSync2,
   readFileSync,
   readSync,
   statSync,
-  unlinkSync,
+  unlinkSync as unlinkSync2,
   writeSync
 } from "node:fs";
 var DRAIN_SEAL = "\0preflight-drain-seal\n";
@@ -126,22 +251,39 @@ function isAt(path, file) {
   const now = statSync(path, { bigint: true, throwIfNoEntry: false });
   return now !== void 0 && now.ino === file.ino && now.dev === file.dev;
 }
+var LineWrittenError = class extends Error {
+  constructor(cause) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+};
+function landedBeforeSeal(fd, sealFloor) {
+  return !readRange(fd, sealFloor, offsetAfterWrite(fd)).includes(DRAIN_SEAL);
+}
 function appendOnce(path, data) {
-  const fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_APPEND, 384);
+  const fd = openSync2(path, constants2.O_RDWR | constants2.O_CREAT | constants2.O_APPEND, 384);
+  let landed = false;
   try {
-    const opened = fstatSync(fd, { bigint: true });
-    if (!isAt(path, opened)) return "moved";
-    const sealFloor = Number(opened.size);
-    const written = writeSync(fd, data);
-    if (written < data.length) {
-      writeSync(fd, TORN_LINE_END);
-      return "redo";
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      if (!isAt(path, opened)) return "moved";
+      const sealFloor = Number(opened.size);
+      const written = writeSync(fd, data);
+      try {
+        if (written < data.length) {
+          writeSync(fd, TORN_LINE_END);
+          return "redo";
+        }
+        landed = isAt(path, opened) || landedBeforeSeal(fd, sealFloor);
+      } catch (err) {
+        landed = written >= data.length - 1 && landedBeforeSeal(fd, sealFloor);
+        throw err;
+      }
+      return landed ? "kept" : "redo";
+    } finally {
+      closeSync2(fd);
     }
-    if (isAt(path, opened)) return "kept";
-    const start = offsetAfterWrite(fd) - data.length;
-    return readRange(fd, sealFloor, start).includes(DRAIN_SEAL) ? "redo" : "kept";
-  } finally {
-    closeSync(fd);
+  } catch (err) {
+    throw landed ? new LineWrittenError(err) : err;
   }
 }
 function appendToHookBuffer(path, text) {
@@ -179,20 +321,22 @@ function mcpPrToolAction(toolName) {
 
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
-var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
-var DEFAULT_STORAGE_DIR = resolve2(homedir(), ".newrelic-preflight");
+var DEFAULT_STORAGE_DIR = resolve3(homedir(), ".newrelic-preflight");
+function getStorageDir() {
+  return process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+}
 function getBufferPath(sessionId) {
   if (process.env.NEW_RELIC_AI_MCP_BUFFER_PATH !== void 0) {
     return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   }
-  const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+  const storageDir = getStorageDir();
   const safeId = typeof sessionId === "string" && SESSION_ID_RE.test(sessionId) ? sessionId : "unknown";
-  return resolve2(storageDir, `buffer-${safeId}.jsonl`);
+  return resolve3(storageDir, `buffer-${safeId}.jsonl`);
 }
 var HIGH_SECURITY_FROM_FILE = (() => {
   for (const dir of [".newrelic-preflight", ".nr-ai-observe"]) {
     try {
-      const configPath = resolve2(homedir(), dir, "config.json");
+      const configPath = resolve3(homedir(), dir, "config.json");
       if (existsSync(configPath)) {
         const config = JSON.parse(readFileSync2(configPath, "utf-8"));
         return config.highSecurity === true;
@@ -217,6 +361,22 @@ function getMaxContentLength() {
   const parsed = parseInt(val, 10);
   return Number.isNaN(parsed) ? 10240 : parsed;
 }
+var HOOK_EVENT_PLATFORM = {
+  beforeshellexecution: "cursor",
+  aftershellexecution: "cursor",
+  beforemcpexecution: "cursor",
+  aftermcpexecution: "cursor",
+  beforereadfile: "cursor",
+  afterfileedit: "cursor",
+  pre_read_code: "windsurf",
+  post_read_code: "windsurf",
+  pre_write_code: "windsurf",
+  post_write_code: "windsurf",
+  pre_run_command: "windsurf",
+  post_run_command: "windsurf",
+  pre_mcp_tool_use: "windsurf",
+  post_mcp_tool_use: "windsurf"
+};
 function detectStampPlatform() {
   const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
   if (explicit) return explicit;
@@ -237,7 +397,7 @@ function redact(value) {
 }
 function hashInput(input) {
   const str = JSON.stringify(input) ?? "";
-  return createHash("sha256").update(str).digest("hex").slice(0, 16);
+  return createHash2("sha256").update(str).digest("hex").slice(0, 16);
 }
 function sizeOf(value) {
   if (value === void 0 || value === null) return 0;
@@ -287,12 +447,12 @@ function writePpidBreadcrumb(sessionId, root) {
   const ppid = process.ppid;
   if (typeof ppid !== "number" || ppid <= 0) return;
   try {
-    const breadcrumbDir = resolve2(root, "session-by-ppid");
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
+    const breadcrumbDir = resolve3(root, "session-by-ppid");
+    mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const pids = getLinuxAncestorPids(ppid);
     let wroteAny = false;
     for (const pid of pids) {
-      const breadcrumbPath = resolve2(breadcrumbDir, `${pid}.txt`);
+      const breadcrumbPath = resolve3(breadcrumbDir, `${pid}.txt`);
       if (existsSync(breadcrumbPath)) {
         try {
           if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
@@ -326,10 +486,10 @@ function writeCwdBreadcrumb(sessionId, cwd, root) {
   if (!SESSION_ID_RE.test(sessionId)) return;
   if (typeof cwd !== "string" || cwd.length === 0) return;
   try {
-    const breadcrumbDir = resolve2(root, "session-by-cwd");
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
+    const breadcrumbDir = resolve3(root, "session-by-cwd");
+    mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
-    const breadcrumbPath = resolve2(breadcrumbDir, `${sanitizedCwd}.txt`);
+    const breadcrumbPath = resolve3(breadcrumbDir, `${sanitizedCwd}.txt`);
     if (existsSync(breadcrumbPath)) {
       try {
         if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
@@ -599,10 +759,7 @@ function processHook(raw, cliEvent) {
   }
   const sessionId = data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
   if (typeof data.session_id === "string" && data.session_id.length > 0) {
-    const root = breadcrumbRoot(
-      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR,
-      breadcrumbWriter(detectStampPlatform())
-    );
+    const root = breadcrumbRoot(getStorageDir(), breadcrumbWriter(detectStampPlatform()));
     writePpidBreadcrumb(data.session_id, root);
     writeCwdBreadcrumb(data.session_id, data.cwd, root);
   }
@@ -618,6 +775,7 @@ function processHook(raw, cliEvent) {
   const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
   const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: String(data.stepIdx) } : {};
   let event;
+  let selfReportCall;
   if (eventName === "pretooluse") {
     event = {
       mode: "pre",
@@ -744,6 +902,12 @@ function processHook(raw, cliEvent) {
       timestamp,
       success: true
     };
+    selfReportCall = {
+      tool: mcpTool,
+      server: data.mcp_server_name,
+      args: data.tool_input,
+      result: data.result_json
+    };
   } else if (eventName === "beforereadfile") {
     event = {
       mode: "post",
@@ -838,6 +1002,12 @@ function processHook(raw, cliEvent) {
       timestamp,
       success: true
     };
+    selfReportCall = {
+      tool: mcpTool,
+      server: toolInfo.mcp_server_name,
+      args: toolInfo.mcp_tool_arguments,
+      result: toolInfo.mcp_result
+    };
   } else if (isAntigravityPre) {
     const agyToolName = data.toolCall?.name ?? "unknown";
     event = {
@@ -930,20 +1100,29 @@ function processHook(raw, cliEvent) {
   if (data.transcript_path) event.transcriptPath = data.transcript_path;
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ""] ?? detectStampPlatform();
   if (stampedPlatform) event.platform = stampedPlatform;
+  const selfReport = selfReportCall && stampedPlatform && hookSelfReportLine(selfReportCall, sessionId, timestamp, stampedPlatform);
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
+  const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : void 0;
+  let reportAttempted = false;
   try {
     const bufferPath = getBufferPath(sessionId);
-    const bufferDir = dirname(bufferPath);
+    const bufferDir = dirname2(bufferPath);
     if (!existsSync(bufferDir)) {
-      mkdirSync(bufferDir, { recursive: true, mode: 448 });
+      mkdirSync2(bufferDir, { recursive: true, mode: 448 });
     }
-    const line = JSON.stringify(event) + "\n";
-    appendToHookBuffer(bufferPath, line);
+    appendToHookBuffer(bufferPath, JSON.stringify(event) + "\n");
+    if (newReport) {
+      reportAttempted = true;
+      appendToHookBuffer(bufferPath, JSON.stringify(newReport) + "\n");
+    }
   } catch (err) {
+    if (newReport && !(reportAttempted && err instanceof LineWrittenError)) {
+      releaseReport(getStorageDir(), newReport);
+    }
     if (!stderrSinkInstalled) {
       stderrSinkInstalled = true;
       process.stderr.on("error", () => void 0);

@@ -28,6 +28,7 @@ import type {
   PermissionRequestHookEvent,
   PermissionDeniedHookEvent,
   TokenHookEvent,
+  SelfReportHookEvent,
   SubagentTokenHookEvent,
   ObservabilityHealthHookEvent,
   ApiFailureHookEvent,
@@ -42,6 +43,7 @@ import type {
   WorkflowRunEvent,
 } from '../storage/types.js';
 import { DedupRingRegistry } from './dedup-ring.js';
+import { clampToken, MODEL_RE, reportKey } from './self-report.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 const logger = createLogger('event-processor');
@@ -75,6 +77,7 @@ export interface HookEventProcessorOptions {
   onRecord: (record: ToolCallRecord) => void;
   onRecordAmend?: (record: ToolCallRecord) => void;
   onTokenEvent?: (event: TokenEvent) => void;
+  onSelfReport?: (event: SelfReportHookEvent) => void;
   /**
    * Fires for every paired ToolCallRecord whose `toolName === 'Agent'` —
    * feeds WorkflowRunTracker without altering the existing onRecord pipeline.
@@ -217,6 +220,19 @@ export interface BoundaryFrame {
 
 function numAttr(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+}
+
+function tokenCount(v: unknown): number {
+  return clampToken(numAttr(v));
+}
+
+const MAX_REPORT_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_REPORT_SKEW_MS = 5 * 60 * 1000;
+
+function reportTimestamp(t: unknown, now: number): number {
+  return typeof t === 'number' && t >= now - MAX_REPORT_AGE_MS && t <= now + MAX_REPORT_SKEW_MS
+    ? t
+    : now;
 }
 
 /**
@@ -391,6 +407,7 @@ export class HookEventProcessor {
   private readonly onRecord: (record: ToolCallRecord) => void;
   private readonly onRecordAmend: ((record: ToolCallRecord) => void) | null;
   private readonly onTokenEvent: ((event: TokenEvent) => void) | null;
+  private readonly onSelfReport: ((event: SelfReportHookEvent) => void) | null;
   private readonly onWorkflowAgent: ((record: ToolCallRecord) => void) | null;
   private readonly onSubagentTurn: ((turn: SubagentTurnEvent) => void) | null;
   private readonly onObservabilityHealth: ((event: ObservabilityHealthFrame) => void) | null;
@@ -469,6 +486,7 @@ export class HookEventProcessor {
     this.onRecord = options.onRecord;
     this.onRecordAmend = options.onRecordAmend ?? null;
     this.onTokenEvent = options.onTokenEvent ?? null;
+    this.onSelfReport = options.onSelfReport ?? null;
     this.onWorkflowAgent = options.onWorkflowAgent ?? null;
     this.onSubagentTurn = options.onSubagentTurn ?? null;
     this.onObservabilityHealth = options.onObservabilityHealth ?? null;
@@ -658,6 +676,8 @@ export class HookEventProcessor {
       try {
         if (event.mode === 'token') {
           this.handleTokenEvent(event);
+        } else if (event.mode === 'self_report') {
+          this.handleSelfReportEvent(event);
         } else if (event.mode === 'pre') {
           this.handlePreEvent(event);
         } else if (event.mode === 'post') {
@@ -866,6 +886,30 @@ export class HookEventProcessor {
         ...toolFields,
       };
       this.emitRecord(record);
+    }
+  }
+
+  private handleSelfReportEvent(event: SelfReportHookEvent): void {
+    if (!this.onSelfReport) return;
+    const { sessionId, reportId, model } = event;
+    if (typeof sessionId !== 'string' || typeof reportId !== 'string') return;
+    if (typeof model !== 'string' || !MODEL_RE.test(model)) return;
+    const report = {
+      ...event,
+      timestamp: reportTimestamp(event.timestamp, Date.now()),
+      inputTokens: tokenCount(event.inputTokens),
+      outputTokens: tokenCount(event.outputTokens),
+      thinkingTokens: tokenCount(event.thinkingTokens),
+      cacheReadTokens: tokenCount(event.cacheReadTokens),
+      cacheCreationTokens: tokenCount(event.cacheCreationTokens),
+    };
+    if (this.tokenDedupRegistry.hasAndAdd(sessionId, reportKey(report))) return;
+    try {
+      this.onSelfReport(report);
+    } catch (err) {
+      logger.warn('onSelfReport callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
