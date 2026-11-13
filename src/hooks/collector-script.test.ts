@@ -29,6 +29,9 @@ import {
 } from './collector-script.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
+import { HookEventProcessor } from './event-processor.js';
+import { LocalStore } from '../storage/local-store.js';
+import type { ToolCallRecord } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let stdoutSpy: ReturnType<typeof jest.spyOn>;
@@ -2844,5 +2847,88 @@ describe('collector-script', () => {
       expect(events).toHaveLength(1);
       expect(events[0]!.tool).toBe('Read');
     });
+  });
+});
+
+describe('a tool call without tool_use_id', () => {
+  const SESSION = 'sess-noid';
+  let clock: ReturnType<typeof jest.spyOn>;
+
+  beforeEach(() => {
+    delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+    clock = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+  });
+
+  afterEach(() => clock.mockRestore());
+
+  function hook(mode: 'pre' | 'post', tool: string, at: number): void {
+    clock.mockReturnValue(at);
+    const make = mode === 'pre' ? makePreToolUse : makePostToolUse;
+    processHook(make({ tool_use_id: undefined, session_id: SESSION, tool_name: tool }));
+  }
+
+  function bufferIds(): unknown[] {
+    return readFileSync(resolve(tmpDir, `buffer-${SESSION}.jsonl`), 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => (JSON.parse(line) as Record<string, unknown>).toolUseId);
+  }
+
+  it('stamps the post with the id minted for its pre', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'Read', 2_000);
+
+    const [pre, post] = bufferIds();
+    expect(pre).toEqual(expect.any(String));
+    expect(post).toBe(pre);
+  });
+
+  it('gives parallel same-tool calls their ids oldest first, and only within a tool', () => {
+    hook('pre', 'Read', 1_000);
+    hook('pre', 'Bash', 2_000);
+    hook('pre', 'Read', 3_000);
+    hook('post', 'Read', 4_000);
+    hook('post', 'Read', 5_000);
+    hook('post', 'Bash', 6_000);
+
+    const [read1, bash, read2, ...posts] = bufferIds();
+    expect(new Set([read1, bash, read2]).size).toBe(3);
+    expect(posts).toEqual([read1, read2, bash]);
+  });
+
+  it('leaves a post without an id when no pre of its tool minted one', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'Bash', 2_000);
+
+    expect(bufferIds()[1]).toBeUndefined();
+  });
+
+  it('does not stamp a post with the id of a pre older than any pairing window', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'Read', 1_000 + 41 * 60_000);
+    hook('post', 'Read', 1_000 + 42 * 60_000);
+
+    expect(bufferIds().slice(1)).toEqual([undefined, undefined]);
+  });
+
+  it('counts a call once when one engine flushes its pre and another drains its post', () => {
+    const records: ToolCallRecord[] = [];
+    const onRecord = (record: ToolCallRecord) => records.push(record);
+    hook('pre', 'Read', 1_000);
+    const first = new HookEventProcessor({ store: new LocalStore(tmpDir, SESSION), onRecord });
+    first.processEvents(new LocalStore(tmpDir, SESSION).drainBuffer());
+    first.stop();
+    first.persistCountedIdsOfSavedSessions([SESSION]);
+
+    hook('post', 'Read', 2_000);
+    const restarted = new HookEventProcessor({
+      store: new LocalStore(tmpDir),
+      drainAllSessions: true,
+      onRecord,
+    });
+    restarted.processEvents(new LocalStore(tmpDir).drainAllBuffers());
+    restarted.stop();
+
+    expect(records).toHaveLength(1);
   });
 });
