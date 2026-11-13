@@ -954,6 +954,24 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
 
 describe('LocalSessionAggregator baseline fold after its own checkpoint', () => {
   const DAY = new Date(2026, 8, 10, 12).getTime();
+  const foldedAfter = (confirmed: boolean) => {
+    const agg = new LocalSessionAggregator({
+      persistedCostBaseline: () => ({ estimatedCostUsd: 5, subagentCostUsd: 0 }),
+    });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
+    summariesOf(agg);
+    if (confirmed) agg.markSaved(REAL_ID);
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
+    return summariesOf(agg)[0]?.estimatedCostUsd;
+  };
+
+  it.each([
+    ['a checkpoint the store did not confirm', false, 11],
+    ['a checkpoint the store confirmed', true, 6],
+  ])('folds the whole baseline after %s', (_label, confirmed, expected) => {
+    expect(foldedAfter(confirmed)).toBe(expected);
+  });
 
   it('does not re-add parent cost the aggregator already checkpointed', () => {
     let file: ReturnType<typeof summariesOf>[number] | undefined;
@@ -971,6 +989,7 @@ describe('LocalSessionAggregator baseline fold after its own checkpoint', () => 
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
     agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
     [file] = summariesOf(agg);
+    agg.markSaved(REAL_ID);
 
     agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
 
@@ -994,6 +1013,7 @@ describe('LocalSessionAggregator baseline fold after its own checkpoint', () => 
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
     agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
     summariesOf(agg);
+    agg.markSaved(REAL_ID);
     fileCost = 8;
 
     agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
@@ -1001,6 +1021,69 @@ describe('LocalSessionAggregator baseline fold after its own checkpoint', () => 
     const [summary] = summariesOf(agg);
     expect(summary?.estimatedCostUsd).toBe(9);
     expect(summary?.costByDayUsd).toEqual({ '2026-09-10': 9 });
+  });
+});
+
+describe('LocalSessionAggregator unsaved rollups', () => {
+  it.each([
+    [
+      'a tool call',
+      (agg: LocalSessionAggregator) =>
+        agg.recordToolCall({ sessionId: 'conv-a', toolName: 'Edit', timestamp: 2000 }),
+    ],
+    [
+      'a self-report',
+      (agg: LocalSessionAggregator) =>
+        agg.recordTokenUsage('conv-a', { timestamp: 2000, inputTokens: 10, selfReported: true }),
+    ],
+    [
+      'subagent usage',
+      (agg: LocalSessionAggregator) =>
+        agg.recordTokenUsage('conv-a', { timestamp: 2000, costUsd: 1, agentId: 'agent-1' }),
+    ],
+  ])('is unsaved from creation, clean once saved, and unsaved again after %s', (_label, change) => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: 'conv-a', toolName: 'Read', timestamp: 1000 });
+    const states = [agg.isUnsaved('conv-a')];
+    agg.markSaved('conv-a');
+    states.push(agg.isUnsaved('conv-a'));
+    change(agg);
+    states.push(agg.isUnsaved('conv-a'));
+
+    expect(states).toEqual([true, false, true]);
+  });
+
+  it('summarizes a self-report that carries no tokens', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { timestamp: 1000, selfReported: true });
+
+    expect(summariesOf(agg)).toMatchObject([{ sessionId: REAL_ID, selfReportCount: 1 }]);
+  });
+
+  it('is unsaved again after a late result amends a failed call', () => {
+    const agg = new LocalSessionAggregator();
+    const call = { sessionId: 'conv-a', id: 'call-1', toolName: 'Read', timestamp: 1000 };
+    agg.recordToolCall({ ...call, success: false });
+    agg.markSaved('conv-a');
+
+    agg.amendToolCall({ ...call, success: true, durationMs: 5 } as never);
+
+    expect(agg.isUnsaved('conv-a')).toBe(true);
+  });
+
+  it('summarizes a rollup that holds only a self-report', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { timestamp: 1000, inputTokens: 10, selfReported: true });
+
+    expect(summariesOf(agg)).toMatchObject([{ sessionId: REAL_ID, selfReportCount: 1 }]);
+  });
+
+  it('never makes a rollup for an id that cannot name a session file', () => {
+    const agg = new LocalSessionAggregator();
+    for (const id of ['bad id!', 'unknown', 'conv-a'])
+      agg.recordToolCall({ sessionId: id, toolName: 'Read', timestamp: 1000 });
+
+    expect(summariesOf(agg).map((s) => s.sessionId)).toEqual(['conv-a']);
   });
 });
 

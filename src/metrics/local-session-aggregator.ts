@@ -22,6 +22,8 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { SESSION_ID_RE } from '../hooks/self-report.js';
+import { isSyntheticSessionId } from '../hooks/synthetic-session-id.js';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
@@ -128,14 +130,17 @@ export interface LocalSessionRollup {
   /** Set once the persisted baseline has been folded in — see recordTokenUsage. */
   costBaselineApplied: boolean;
   /**
-   * The cost quadruple as of the last `toSummaries()` call, i.e. what this
-   * aggregator has already offered to the session file. A later baseline fold
+   * The cost quadruple as of the last `markSaved()` call, i.e. what this
+   * aggregator has already put in the session file. A later baseline fold
    * subtracts it, because the file may be this aggregator's own checkpoint.
    */
   lastEmittedCost: EmittedCost | null;
   tokensInput: number;
   tokensOutput: number;
   tokensThinking: number;
+  selfReportCount: number;
+  /** Holds something no confirmed save has written yet. */
+  unsaved: boolean;
   tokensCacheRead: number;
   tokensCacheCreation: number;
   cacheSavingsUsd: number;
@@ -342,12 +347,8 @@ export class LocalSessionAggregator {
   }
 
   private static isReal(sessionId: string | null | undefined): sessionId is string {
-    if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
-    return (
-      !sessionId.startsWith('local-') &&
-      !sessionId.startsWith('proxy-') &&
-      !sessionId.startsWith('pending-')
-    );
+    if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) return false;
+    return sessionId !== 'unknown' && !isSyntheticSessionId(sessionId);
   }
 
   private ensure(sessionId: string, timestamp: number): LocalSessionRollup {
@@ -376,6 +377,8 @@ export class LocalSessionAggregator {
         tokensInput: 0,
         tokensOutput: 0,
         tokensThinking: 0,
+        selfReportCount: 0,
+        unsaved: true,
         tokensCacheRead: 0,
         tokensCacheCreation: 0,
         cacheSavingsUsd: 0,
@@ -386,6 +389,7 @@ export class LocalSessionAggregator {
       };
       this.sessions.set(sessionId, rollup);
     }
+    rollup.unsaved = true;
     if (timestamp < rollup.startTime) rollup.startTime = timestamp;
     if (timestamp > rollup.endTime) rollup.endTime = timestamp;
     return rollup;
@@ -422,6 +426,23 @@ export class LocalSessionAggregator {
     };
   }
 
+  isUnsaved(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.unsaved === true;
+  }
+
+  /** Records that the store wrote this session's file with what the rollup holds now. */
+  markSaved(sessionId: string): void {
+    const rollup = this.sessions.get(sessionId);
+    if (!rollup) return;
+    rollup.lastEmittedCost = {
+      costUsd: rollup.costUsd,
+      subagentCostUsd: rollup.subagentCostUsd,
+      costByDayUsd: new Map(rollup.costByDayUsd),
+      subagentCostByDayUsd: new Map(rollup.subagentCostByDayUsd),
+    };
+    rollup.unsaved = false;
+  }
+
   amendToolCall(record: ToolCallRecord): void {
     const rollup = record.sessionId ? this.sessions.get(record.sessionId) : undefined;
     if (!rollup) return;
@@ -430,6 +451,7 @@ export class LocalSessionAggregator {
     const entry = rollup.timeline[index];
     if (previous?.success !== false || !entry) return;
     if (record.success) rollup.successCount += 1;
+    rollup.unsaved = true;
     rollup.records[index] = amendRecord(previous, record);
     const { errorType: _replaced, ...rest } = entry;
     rollup.timeline[index] = {
@@ -550,6 +572,7 @@ export class LocalSessionAggregator {
        */
       agentId?: string;
       platform?: string;
+      selfReported?: boolean;
     },
   ): void {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
@@ -576,6 +599,7 @@ export class LocalSessionAggregator {
     rollup.tokensInput += usage.inputTokens ?? 0;
     rollup.tokensOutput += usage.outputTokens ?? 0;
     if (usage.agentId === undefined) rollup.tokensThinking += usage.thinkingTokens ?? 0;
+    if (usage.selfReported) rollup.selfReportCount += 1;
     rollup.tokensCacheRead += usage.cacheReadTokens ?? 0;
     rollup.tokensCacheCreation += usage.cacheCreationTokens ?? 0;
     rollup.cacheSavingsUsd += usage.cacheSavingsUsd ?? 0;
@@ -704,16 +728,11 @@ export class LocalSessionAggregator {
           estimatedCostUsd: rollup.costUsd,
           tokensInput: rollup.tokensInput,
           tokensOutput: rollup.tokensOutput,
+          selfReportCount: rollup.selfReportCount,
         })
       )
         continue;
       const models = [...rollup.models];
-      rollup.lastEmittedCost = {
-        costUsd: rollup.costUsd,
-        subagentCostUsd: rollup.subagentCostUsd,
-        costByDayUsd: new Map(rollup.costByDayUsd),
-        subagentCostByDayUsd: new Map(rollup.subagentCostByDayUsd),
-      };
       out.push({
         sessionId: rollup.sessionId,
         sessionName: null,
@@ -762,6 +781,7 @@ export class LocalSessionAggregator {
         tokensInput: rollup.tokensInput,
         tokensOutput: rollup.tokensOutput,
         tokensThinking: rollup.tokensThinking,
+        ...(rollup.selfReportCount > 0 && { selfReportCount: rollup.selfReportCount }),
         tokensCacheRead: rollup.tokensCacheRead,
         tokensCacheCreation: rollup.tokensCacheCreation,
         cacheSavingsUsd: rollup.cacheSavingsUsd,

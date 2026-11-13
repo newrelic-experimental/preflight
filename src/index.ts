@@ -1441,7 +1441,10 @@ async function main(): Promise<void> {
     const firstSaveBaselines = new FirstSaveBaselines();
     // A session's calls in its file before this process first wrote it, none of them this process's.
     const callsBeforeFirstWrite = new Map<string, number>();
-    const saveSessionRememberingBaseline = (summary: FullSessionSummary): boolean => {
+    const saveSessionRememberingBaseline = (
+      summary: FullSessionSummary,
+      from: 'ownTrackers' | 'rollup',
+    ): boolean => {
       const saved = sessionStore!.saveSession(summary);
       if (saved && !callsBeforeFirstWrite.has(summary.sessionId)) {
         callsBeforeFirstWrite.set(summary.sessionId, saved.previous?.toolCallCount ?? 0);
@@ -1451,7 +1454,7 @@ async function main(): Promise<void> {
         firstSaveBaselines.recordSave({
           sessionId: summary.sessionId,
           previous: saved.previous,
-          ownSession: summary.sessionId === sessionTraceId,
+          ownSession: from === 'ownTrackers',
         });
       }
       return saved !== null;
@@ -2519,12 +2522,20 @@ async function main(): Promise<void> {
           cacheCreationTokens: report.cacheCreationTokens,
           totalTokens: report.inputTokens + report.outputTokens + report.thinkingTokens,
         };
+        if (report.sessionId === sessionTraceId) {
+          const breakdown = costTracker.recordTokenUsage(usage, report.model, {
+            timestampMs: report.timestamp,
+          });
+          modelUsageTracker.recordUsage(report.model, usage, breakdown.totalUsd);
+          return;
+        }
         localSessionAggregator.recordTokenUsage(report.sessionId, {
           ...usage,
           timestamp: report.timestamp,
           costUsd: costTracker.priceUsage(usage, report.model).totalUsd,
           model: report.model,
           ...(report.platform !== undefined && { platform: report.platform }),
+          selfReported: true,
         });
       },
       // Feed each Agent-tool ToolCallRecord into the workflow tracker
@@ -2722,7 +2733,9 @@ async function main(): Promise<void> {
                   localStoreForShutdown?.countedToolUseIds(sessionId) ?? new Set<string>(),
                 );
           const summary = { ...kept, toolCallCount: prior + Number(kept.toolCallCount) };
-          if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary)) continue;
+          if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary, 'rollup'))
+            continue;
+          localSessionAggregator.markSaved(sessionId);
           saved += 1;
           if (prior === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
         } catch (err) {
@@ -2730,6 +2743,16 @@ async function main(): Promise<void> {
         }
       }
       return saved;
+    };
+
+    const saveRolledUpBeforeSeeding = (sessionId: string): void => {
+      try {
+        saveObservedSessions('in progress', (id) => id === sessionId);
+      } catch (err) {
+        logger.warn('Failed to save what the session rolled up while pending', {
+          error: String(err),
+        });
+      }
     };
 
     persistSession = (opts?: { periodic?: boolean }) => {
@@ -2792,7 +2815,11 @@ async function main(): Promise<void> {
           }
           return;
         }
-        if (saveSessionRememberingBaseline(summary)) {
+        saveObservedSessions(
+          'in progress',
+          (id) => id !== summary.sessionId && localSessionAggregator.isUnsaved(id),
+        );
+        if (saveSessionRememberingBaseline(summary, 'ownTrackers')) {
           eventProcessor?.persistCountedIdsOfSavedSessions([summary.sessionId]);
         }
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
@@ -3098,6 +3125,7 @@ async function main(): Promise<void> {
       // against the corrected id's own transcript, replacing any name derived
       // for the previously-adopted (wrong) id.
       applyAuthoritativeSessionName(realId);
+      if (!opts?.viaCwdOnly) saveRolledUpBeforeSeeding(realId);
       // viaCwdOnly means this id came from the collision-prone cwd fallback
       // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
       // resolvedViaCwdOnly gate on the synchronous resolution path's own
@@ -3275,6 +3303,7 @@ async function main(): Promise<void> {
             // the resolvedViaCwdOnly gate on rehydrateTrackersIfResumed's
             // first call site) precisely because it wasn't confirmed yet —
             // seed it now that it is.
+            saveRolledUpBeforeSeeding(staleId);
             rehydrateTrackersIfResumed(staleId);
             refreshPriorCostBaseline();
             if (localStoreForShutdown) writeHeartbeat(localStoreForShutdown, false);
