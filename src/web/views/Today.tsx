@@ -29,7 +29,15 @@ import {
   type ModelShareRow,
 } from '../components/UsageContributionPanel';
 import { AttentionList, type AttentionRow } from '../components/AttentionList';
-import { Card, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
+import {
+  Card,
+  EstimateMarker,
+  EstimateNote,
+  Eyebrow,
+  InfoTooltip,
+  LiveBadge,
+  Pill,
+} from '../components/ui';
 import {
   fetchRecentAlerts,
   fetchCacheHealth,
@@ -426,7 +434,10 @@ export function Today(): JSX.Element {
       <GeoBanner />
       <header className="flex items-baseline justify-between mb-4">
         <h1 className="text-xl font-semibold gradient-text">Today</h1>
-        <span className="text-xs text-ink-muted">{headerTimestamp}</span>
+        <span className="flex items-baseline gap-3">
+          {!noActivityToday && <EstimateNote />}
+          <span className="text-xs text-ink-muted">{headerTimestamp}</span>
+        </span>
       </header>
       <UnpricedSpendNotice
         unpricedByModel={aggregate?.unpricedByModel}
@@ -474,6 +485,7 @@ export function Today(): JSX.Element {
                 <Kpi
                   label="spend today"
                   tone="good"
+                  marker={spendLoading ? undefined : <EstimateMarker />}
                   value={spendLoading ? '…' : formatUsd(todayTotal)}
                   sub={
                     forecastKpiUsd != null && forecastKpiUsd > todayTotal

@@ -616,6 +616,7 @@ describe('Sessions view — workflow consolidation', () => {
     sessionList: unknown,
     workflowRuns: unknown,
     workflowDetails: WorkflowDetailMap = {},
+    liveSessions: readonly string[] = [],
   ) {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
     globalThis.fetch = ((url: string) => {
@@ -632,6 +633,14 @@ describe('Sessions view — workflow consolidation', () => {
       if (url === '/api/workflows') {
         return Promise.resolve(
           new Response(JSON.stringify(workflowRuns), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url === '/api/session/current') {
+        return Promise.resolve(
+          new Response(JSON.stringify({ sessionId: null, liveSessions }), {
             status: 200,
             headers: { 'content-type': 'application/json' },
           }),
@@ -774,6 +783,70 @@ describe('Sessions view — workflow consolidation', () => {
     renderSessionsFull(SESSIONS, runsWithConfirmedZero);
     await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
     expect(screen.queryByText(/partial/i)).not.toBeInTheDocument();
+  });
+
+  it('shows the est. marker in a session row without nesting a button in the row button', async () => {
+    const { container } = renderSessionsFull(SESSIONS, RUNS);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    const rowButton = within(container)
+      .getByText(/sess-a/)
+      .closest('button');
+    expect(rowButton).not.toBeNull();
+    expect(rowButton).toHaveTextContent('est.');
+    expect(rowButton?.querySelector('button')).toBeNull();
+  });
+
+  it('shows no est. marker in a session row whose cost is unknown', async () => {
+    const { container } = renderSessionsFull(
+      [SESSIONS[0], { ...SESSIONS[1], estimatedCostUsd: null }],
+      RUNS,
+    );
+    await waitFor(() => expect(screen.getByText(/sess-b/)).toBeInTheDocument());
+    const unknownRow = within(container)
+      .getByText(/sess-b/)
+      .closest('button');
+    expect(unknownRow).not.toBeNull();
+    expect(unknownRow).not.toHaveTextContent('est.');
+  });
+
+  it('marks the Workflow spend KPI as an estimate when a run has a cost', async () => {
+    renderSessionsFull(SESSIONS, RUNS);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    const kpi = screen.getByText('Workflow spend').closest('div.px-1') as HTMLElement;
+    expect(
+      within(kpi).getByRole('button', { name: 'Why this is an estimate' }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows no estimate marker on the Workflow spend KPI when no run has a cost', async () => {
+    renderSessionsFull(SESSIONS, []);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    const kpi = screen.getByText('Workflow spend').closest('div.px-1') as HTMLElement;
+    expect(within(kpi).queryByRole('button', { name: 'Why this is an estimate' })).toBeNull();
+  });
+
+  it('shows one costs-are-estimates note for the whole page', async () => {
+    renderSessionsFull(SESSIONS, RUNS);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    expect(screen.getAllByText('Costs are estimates.')).toHaveLength(1);
+  });
+
+  it('hides the costs-are-estimates note when there are no sessions', async () => {
+    renderSessionsFull([], []);
+    expect(await screen.findByText('No sessions yet')).toBeInTheDocument();
+    expect(screen.queryByText('Costs are estimates.')).toBeNull();
+  });
+
+  it('shows the costs-are-estimates note when a single session is listed', async () => {
+    renderSessionsFull([SESSIONS[0]], []);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    expect(screen.getByText('Costs are estimates.')).toBeInTheDocument();
+  });
+
+  it('shows the costs-are-estimates note when only a live session is running', async () => {
+    renderSessionsFull([], [], {}, ['live-1']);
+    expect(await screen.findByText('Costs are estimates.')).toBeInTheDocument();
+    expect(screen.queryByText('No sessions yet')).toBeNull();
   });
 
   it('scopes the visible session list to the run-source filter', async () => {

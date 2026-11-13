@@ -27,7 +27,15 @@ import {
 import { ContextBar } from '../components/ContextBar';
 import type { ContextResponse } from '../api/client';
 import type { AgentRow } from '../components/AgentTable';
-import { Card, Eyebrow, LiveBadge, Pill, Tabs } from '../components/ui';
+import {
+  Card,
+  EstimateMarker,
+  EstimateNote,
+  Eyebrow,
+  LiveBadge,
+  Pill,
+  Tabs,
+} from '../components/ui';
 import type { PillTone } from '../components/ui';
 import {
   fmtDateTime,
@@ -482,12 +490,17 @@ export function Sessions(): JSX.Element {
     setOpenRunId(runId);
   }, []);
 
+  const hasSessions = visibleRows.length > 0 || liveSessionIds.size > 0;
+
   return (
     <section className="flex flex-col h-full">
       <div className="h-8 overflow-hidden rounded-lg mb-2 shrink-0">
         <GeoBanner theme="sessions" />
       </div>
-      <h1 className="text-lg font-semibold gradient-text mb-2 shrink-0">Sessions</h1>
+      <div className="flex items-baseline justify-between mb-2 shrink-0">
+        <h1 className="text-lg font-semibold gradient-text">Sessions</h1>
+        {hasSessions && <EstimateNote />}
+      </div>
 
       {/* Fleet workflow KPIs + filters (consolidated from the former Workflows
           view). Filters scope the KPIs AND the master list below. */}
@@ -512,6 +525,7 @@ export function Sessions(): JSX.Element {
           <div className="px-3">
             <Kpi
               label="Workflow spend"
+              marker={kpis.totalSpend !== null ? <EstimateMarker /> : undefined}
               value={formatUsdOrDash(kpis.totalSpend) + (kpis.spendIsPartial ? '*' : '')}
               tone={kpis.totalSpend !== null ? 'warn' : 'neutral'}
               sub={
@@ -661,7 +675,7 @@ export function Sessions(): JSX.Element {
             {list.isLoading && (
               <EmptyState variant="loading" icon="timeline" title="Loading sessions" />
             )}
-            {!list.isLoading && visibleRows.length === 0 && liveSessionIds.size === 0 && (
+            {!list.isLoading && !hasSessions && (
               <EmptyState
                 icon="code"
                 title={filtersActive ? 'No matching sessions' : 'No sessions yet'}
@@ -845,7 +859,10 @@ function SessionListRow({
                   ? fmtDateTime(lastActiveMs(row))
                   : fmtDateTime(row.startTime)}
             </span>
-            <span>{formatUsdOrDash(row.estimatedCostUsd)}</span>
+            <span>
+              {formatUsdOrDash(row.estimatedCostUsd)}
+              {row.estimatedCostUsd != null && <EstimateMarker withoutInfoButton />}
+            </span>
           </div>
         </button>
       </div>
