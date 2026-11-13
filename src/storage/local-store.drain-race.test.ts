@@ -167,6 +167,17 @@ function refuseUnlinkOf(...tools: string[]): void {
   mockHooks.unlink = refuse;
 }
 
+function refuseAdoptionOf(claim: string, times: number): void {
+  const real = jest.requireActual<typeof fs>('node:fs');
+  let refusals = 0;
+  const refuse = (from: fs.PathLike, to: fs.PathLike): void => {
+    mockHooks.rename = refuse;
+    if (String(from) === claim && refusals++ < times) throw failing('EPERM');
+    real.renameSync(from, to);
+  };
+  mockHooks.rename = refuse;
+}
+
 function gaveUpWarnings(): unknown[] {
   return warnings().filter((entry) =>
     String((entry as { message?: string }).message).startsWith('Gave up holding hook events'),
@@ -644,6 +655,60 @@ describe('concurrent drainers of one buffer', () => {
 
     expect(tools(polls.flat())).toEqual(['A:pre', 'B:pre', 'B']);
     expect(leftovers()).toEqual([]);
+  });
+
+  it('returns nothing after a claim it cannot adopt, so a post never precedes its pre', () => {
+    const claim = writeClaim(DEAD_PID, Date.now() - 10_000, line('A', 'pre'));
+    fs.writeFileSync(bufferPath, line('B', 'pre') + line('A'));
+    refuseAdoptionOf(claim, 1);
+
+    const store = new LocalStore(dir, SESSION);
+    const firstPoll = store.drainBuffer();
+    const secondPoll = store.drainBuffer();
+
+    expect(tools(firstPoll)).toEqual([]);
+    expect(tools(secondPoll)).toEqual(['A:pre', 'B:pre', 'A']);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('takes the claims older than one it cannot adopt and holds the rest', () => {
+    const now = Date.now();
+    writeClaim(DEAD_PID, now - 20_000, line('A', 'pre'));
+    const stuck = writeClaim(DEAD_PID - 1, now - 10_000, line('B', 'pre'));
+    writeClaim(DEAD_PID - 2, now - 5_000, line('C', 'pre'));
+    fs.writeFileSync(bufferPath, line('B'));
+    refuseAdoptionOf(stuck, 1);
+
+    const store = new LocalStore(dir, SESSION);
+
+    expect(tools(store.drainBuffer())).toEqual(['A:pre']);
+    expect(tools(store.drainBuffer())).toEqual(['B:pre', 'C:pre', 'B']);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('holds the buffer behind a claim it cannot adopt for 50 polls, then warns once and drains it', () => {
+    const claim = writeClaim(DEAD_PID, Date.now() - 10_000, line('A', 'pre'));
+    fs.writeFileSync(bufferPath, line('B', 'pre'));
+    refuseAdoptionOf(claim, Number.POSITIVE_INFINITY);
+    const store = new LocalStore(dir, SESSION);
+
+    for (let poll = 1; poll <= 50; poll++) expect(store.drainBuffer()).toEqual([]);
+    expect(gaveUpWarnings()).toEqual([]);
+
+    expect(tools(store.drainBuffer())).toEqual(['B:pre']);
+    for (let poll = 1; poll <= 5; poll++) expect(store.drainBuffer()).toEqual([]);
+    expect(gaveUpWarnings()).toEqual([expect.objectContaining({ claim })]);
+    expect(fs.existsSync(claim)).toBe(true);
+  });
+
+  it('drains the buffer past a claim it cannot adopt on the final drain', () => {
+    const claim = writeClaim(DEAD_PID, Date.now() - 10_000, line('A', 'pre'));
+    fs.writeFileSync(bufferPath, line('B', 'pre'));
+    refuseAdoptionOf(claim, Number.POSITIVE_INFINITY);
+    const store = new LocalStore(dir, SESSION);
+    store.giveUpHeldOrder();
+
+    expect(tools(store.drainBuffer())).toEqual(['B:pre']);
   });
 
   it("takes its own leftover claims of other sessions' buffers after it switches to a scoped drain", () => {
