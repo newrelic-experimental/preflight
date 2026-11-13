@@ -2,10 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type {
-  ModelRecommendationConfidence,
-  ModelRecommendationReport,
-} from './trend-analyzer.js';
+import type { ModelRecommendationConfidence, ModelRecommendationReport } from './trend-analyzer.js';
 import { publishModelRecommendation } from './model-recommendation-publisher.js';
 
 let storagePath: string;
