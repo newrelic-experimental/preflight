@@ -51,4 +51,40 @@ describe('InfoTooltip', () => {
     fireEvent.blur(button);
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
+
+  it('closes an open tooltip on Escape and keeps focus on its trigger', () => {
+    render(<InfoTooltip text="Explains the panel." />);
+    const button = screen.getByRole('button', { name: 'What is this?' });
+
+    button.focus();
+    fireEvent.focus(button);
+    expect(screen.getByRole('tooltip')).toBeInTheDocument();
+
+    fireEvent.keyDown(button, { key: 'Escape' });
+
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    expect(document.activeElement).toBe(button);
+  });
+
+  it('closes a hover-opened tooltip on Escape without the pointer leaving', () => {
+    render(<InfoTooltip text="Explains the panel." />);
+    const button = screen.getByRole('button', { name: 'What is this?' });
+
+    fireEvent.mouseEnter(button);
+    expect(screen.getByRole('tooltip')).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('ignores keys other than Escape while the tooltip is open', () => {
+    render(<InfoTooltip text="Explains the panel." />);
+    const button = screen.getByRole('button', { name: 'What is this?' });
+
+    fireEvent.focus(button);
+    fireEvent.keyDown(button, { key: 'Enter' });
+
+    expect(screen.getByRole('tooltip')).toBeInTheDocument();
+  });
 });
