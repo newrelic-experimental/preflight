@@ -47,6 +47,8 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { createLogger } from '../shared/index.js';
 import { resolvePricing } from '../metrics/pricing-overlay.js';
+import { copilotAppRangeId, copilotAppRangeUsage } from '../metrics/usage-ledger.js';
+import type { CopilotAppCounters } from '../metrics/usage-ledger.js';
 import { getCopilotAppDir } from '../platforms/copilot-app-adapter.js';
 import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import type { LocalStore } from '../storage/local-store.js';
@@ -109,7 +111,16 @@ interface CursorState {
   readonly outputTokens: number;
   readonly cachedTokens: number;
   readonly reasoningTokens: number;
+  /** Times the counters were re-baselined after shrinking; scopes the usage ids. */
+  readonly epoch?: number;
 }
+
+const countersOf = (c: CursorState): CopilotAppCounters => ({
+  input: c.inputTokens,
+  output: c.outputTokens,
+  cached: c.cachedTokens,
+  reasoning: c.reasoningTokens,
+});
 
 const ZERO_CURSOR: CursorState = {
   inputTokens: 0,
@@ -253,6 +264,7 @@ export class CopilotAppUsageWatcher {
   private processRow(row: SessionTotalsRow): void {
     const sessionId = row.id;
     const cursor = this.readCursor(sessionId);
+    const epoch = cursor.epoch ?? 0;
     const totals: CursorState = {
       inputTokens: num(row.total_input_tokens),
       outputTokens: num(row.total_output_tokens),
@@ -269,8 +281,9 @@ export class CopilotAppUsageWatcher {
       // A total below the cursor means the session id was reused after a
       // fork/reset, or the app's own counters were reset — not a real
       // negative delta. Re-baseline without emitting so the next real growth
-      // reports only its own delta.
-      this.writeCursor(sessionId, totals);
+      // reports only its own delta, in a new epoch so its counter ranges
+      // cannot collide with the old ones.
+      this.writeCursor(sessionId, { ...totals, epoch: epoch + 1 });
       return;
     }
 
@@ -299,10 +312,11 @@ export class CopilotAppUsageWatcher {
         promptTokens: dInput,
         tierThreshold,
       });
-      this.writeCursor(sessionId, totals);
+      this.writeCursor(sessionId, { ...totals, epoch });
       return;
     }
 
+    const usage = copilotAppRangeUsage(countersOf(cursor), countersOf(totals));
     const updatedMs = Date.parse(row.updated_at);
     const timestamp = Number.isFinite(updatedMs) ? updatedMs : Date.now();
 
@@ -315,27 +329,28 @@ export class CopilotAppUsageWatcher {
       // CostTracker simply can't price them, but the exact token counts
       // still land. Never invent a model mapping here.
       model: row.model ?? 'unknown',
-      // Deterministic from the cumulative totals at emit time (not the
-      // delta), so a crash between this append and the cursor write below
-      // dedups downstream via HookEventProcessor's (sessionId, messageId)
-      // ring instead of double-billing on the next poll's re-read.
-      messageId: `copilot-app:${sessionId}:${totals.inputTokens}:${totals.outputTokens}`,
+      // The app exposes no per-request id, so the delta is named by the range
+      // of the cumulative counters it covers. A re-read after a crash between
+      // this append and the cursor write below, or after a lost cursor,
+      // repeats part of a range the ledger holds, and the ledger counts only
+      // the part past it (see UsageLedger.claim).
+      messageId: copilotAppRangeId(sessionId, epoch, countersOf(cursor), countersOf(totals)),
       // Mirrors CopilotUsageWatcher's verified cache-inclusive inputTokens
       // semantics from the same vendor's VS Code pipeline (see its comment at
       // the equivalent emission site in copilot-usage-watcher.ts) — inferred
       // here for the app DB, not independently verified. If
       // total_input_tokens turns out cache-exclusive the split under-reports
       // plain input, never double-bills.
-      inputTokens: Math.max(0, dInput - dCached),
-      cacheReadTokens: dCached,
+      inputTokens: usage.inputTokens,
+      cacheReadTokens: usage.cacheReadTokens,
       cacheCreationTokens: 0,
-      outputTokens: dOutput,
+      outputTokens: usage.outputTokens,
       // dReasoning is tracked in the cursor above but not emitted here —
       // TokenEvent has no reasoning-token field.
     });
     this.linesEmitted += 1;
 
-    this.writeCursor(sessionId, totals);
+    this.writeCursor(sessionId, { ...totals, epoch });
   }
 
   // -------------------------------------------------------------------------
@@ -359,6 +374,7 @@ export class CopilotAppUsageWatcher {
         outputTokens: num(parsed.outputTokens),
         cachedTokens: num(parsed.cachedTokens),
         reasoningTokens: num(parsed.reasoningTokens),
+        epoch: num(parsed.epoch),
       };
     } catch {
       return ZERO_CURSOR;

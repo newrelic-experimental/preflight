@@ -360,19 +360,47 @@ describe('CopilotAppUsageWatcher', () => {
     expect(readTokenEvents()[0]).toMatchObject({ model: 'unknown' });
   });
 
-  it('builds a deterministic messageId from the session id and cumulative totals', () => {
+  it('names each delta by the range of cumulative counters it covers', () => {
     createDb(dbPath);
-    upsertRow(dbPath, {
+    const row = {
       id: SESSION_ID,
       model: 'claude-opus-4-7',
       total_input_tokens: 1234,
       total_output_tokens: 56,
+      total_cached_tokens: 10,
+      total_reasoning_tokens: 0,
+    };
+    upsertRow(dbPath, row);
+    const watcher = makeWatcher();
+    watcher.poll();
+    upsertRow(dbPath, { ...row, total_input_tokens: 2000, total_output_tokens: 100 });
+    watcher.poll();
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual([
+      `copilot-app:${SESSION_ID}#0:0.0.0.0-1234.56.10.0`,
+      `copilot-app:${SESSION_ID}#0:1234.56.10.0-2000.100.10.0`,
+    ]);
+  });
+
+  it('starts a new id epoch when the counters shrink', () => {
+    createDb(dbPath);
+    const row = {
+      id: SESSION_ID,
+      model: 'claude-opus-4-7',
+      total_input_tokens: 500,
+      total_output_tokens: 0,
       total_cached_tokens: 0,
       total_reasoning_tokens: 0,
-    });
-    makeWatcher().poll();
-    expect(readTokenEvents()[0]).toMatchObject({
-      messageId: `copilot-app:${SESSION_ID}:1234:56`,
-    });
+    };
+    upsertRow(dbPath, row);
+    const watcher = makeWatcher();
+    watcher.poll();
+    upsertRow(dbPath, { ...row, total_input_tokens: 100 });
+    watcher.poll();
+    upsertRow(dbPath, { ...row, total_input_tokens: 300 });
+    watcher.poll();
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual([
+      `copilot-app:${SESSION_ID}#0:0.0.0.0-500.0.0.0`,
+      `copilot-app:${SESSION_ID}#1:100.0.0.0-300.0.0.0`,
+    ]);
   });
 });

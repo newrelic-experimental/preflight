@@ -104,7 +104,7 @@ import { TaskDetector } from './metrics/task-detector.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
-import { tokenUsageFromSubagentTurn, tokenUsageFromTokenEvent } from './metrics/token-usage.js';
+import { recordSubagentTurnUsage, recordTokenEventUsage } from './metrics/usage-recording.js';
 import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
 import { TurnTracker } from './metrics/turn-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
@@ -115,7 +115,6 @@ import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 import { createServer } from './server.js';
-import type { CostBreakdown } from './shared/index.js';
 import { createLogger } from './shared/index.js';
 import { LocalStore } from './storage/index.js';
 import { hasLiveOwningEngine } from './storage/local-store.js';
@@ -1408,10 +1407,6 @@ async function main(): Promise<void> {
     };
 
     sessionStore = new SessionStore({ storagePath: config.storagePath });
-    // Non-null capture so the aggregator's callback (invoked lazily, long
-    // after this point) doesn't have to re-narrow `sessionStore: SessionStore
-    // | undefined` — same pattern as sessionStoreForCostBaseline below.
-    const sessionStoreForAggregator = sessionStore;
     const currentSessionId = sessionTracker.getMetrics().sessionId;
     let currentRepoName: string | null = null;
 
@@ -1420,13 +1415,8 @@ async function main(): Promise<void> {
     // persistSession() skips a synthetic id, so without this rollup the
     // sessions it observes are never written to disk at all. See
     // local-session-aggregator.ts for why that hits Copilot but not Claude Code.
-    const localSessionAggregator = new LocalSessionAggregator({
-      // Restart survival: the first subagent turn this process sees for a
-      // session folds in whatever that session's file already says (a
-      // --stdio engine's final write, or this daemon's own last checkpoint)
-      // before adding the tail — see applyPersistedBaseline's doc comment.
-      persistedCostBaseline: (id) => sessionStoreForAggregator.loadSession(id),
-    });
+    const localSessionAggregator = new LocalSessionAggregator();
+    const usageSinks = { costTracker, modelUsageTracker, localSessionAggregator };
     const repoNameResolver = new RepoNameResolver();
 
     const budgetTracker = new BudgetTracker({
@@ -2436,28 +2426,7 @@ async function main(): Promise<void> {
         });
         const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
         if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
-        const usage = tokenUsageFromTokenEvent(tokenEvent);
-        let breakdown: CostBreakdown;
-        if (!isOwnEvent) {
-          breakdown = costTracker.priceUsage(usage, tokenEvent.model);
-        } else {
-          breakdown = costTracker.recordTokenUsage(usage, tokenEvent.model, {
-            timestampMs: tokenEvent.timestamp,
-            replacesEstimates: true,
-            ...(tokenEvent.responseMs !== undefined && { responseMs: tokenEvent.responseMs }),
-          });
-          modelUsageTracker.recordUsage(tokenEvent.model, usage, breakdown.totalUsd);
-        }
-        localSessionAggregator.recordTokenUsage(tokenEvent.sessionId, {
-          timestamp: tokenEvent.timestamp,
-          costUsd: breakdown.totalUsd,
-          model: tokenEvent.model,
-          inputTokens: tokenEvent.inputTokens,
-          outputTokens: tokenEvent.outputTokens,
-          cacheReadTokens: tokenEvent.cacheReadTokens,
-          cacheCreationTokens: tokenEvent.cacheCreationTokens,
-          cacheSavingsUsd: breakdown.savingsFromCacheUsd,
-        });
+        recordTokenEventUsage(usageSinks, tokenEvent, isOwnEvent);
         contextCompositionTracker.recordTokenEvent(tokenEvent);
 
         const ctxSnapshot = contextTracker.recordTurn(tokenEvent);
@@ -2540,34 +2509,7 @@ async function main(): Promise<void> {
         // the buffer.
         subagentAttribution.recordSubagentTurn(turn);
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
-        const usage = tokenUsageFromSubagentTurn(turn);
-        const breakdown = costTracker.recordTokenUsage(usage, turn.model, {
-          timestampMs: turn.timestampMs,
-          workflowRunId: turn.workflowRunId,
-          agentId: turn.agentId,
-          agentType,
-        });
-        // Subagent turns are real model requests and cost real money, so they
-        // belong in the model breakdown too — recording them only in the cost
-        // tracker left Model Usage blind to every subagent-only session.
-        modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
-        // The only line that makes an orphan session's subagent spend durable:
-        // without it, an unscoped process's aggregator never learns about this
-        // session's subagent cost and persistSession() has nothing to write.
-        // `agentId` is the same discriminator costTracker.recordTokenUsage
-        // splits parent-vs-subagent on above, so the two trackers can't drift.
-        localSessionAggregator.recordTokenUsage(turn.parentSessionId, {
-          timestamp: turn.timestampMs,
-          costUsd: breakdown.totalUsd,
-          model: turn.model,
-          inputTokens: turn.inputTokens,
-          outputTokens: turn.outputTokens,
-          cacheReadTokens: turn.cacheReadTokens,
-          cacheCreationTokens: turn.cacheCreationTokens,
-          thinkingTokens: turn.reasoningTokens,
-          cacheSavingsUsd: breakdown.savingsFromCacheUsd,
-          agentId: turn.agentId,
-        });
+        const breakdown = recordSubagentTurnUsage(usageSinks, turn, agentType);
         // Pricing miss → usd:null on the wire; we recompute here so
         // the breakdown view distinguishes "0 because pricing absent" from
         // "0 because the turn truly had zero cost".

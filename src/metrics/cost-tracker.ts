@@ -1,22 +1,45 @@
 /**
  * Cost Tracking — maintains running token counts and cost calculations.
  *
- * Two paths feed into the tracker:
- *   1. Self-reporting via the `nr_observe_report_tokens` MCP tool (primary)
- *   2. Estimation from hook input/output byte sizes (fallback)
+ * Three paths feed into the tracker, all into one `UsageLedger` keyed by each
+ * API call's id (see usage-ledger.ts):
+ *   1. Token reports from the transcript, Copilot and subagent watchers
+ *   2. Self-reporting via the `nr_observe_report_tokens` MCP tool
+ *   3. Estimation from hook input/output byte sizes (fallback)
  *
  * Cost calculation delegates to `calculateModelCost()` (pricing-overlay.ts), which normalizes the model id and wraps the shared `calculateCost()`.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import type { TokenUsage, CostBreakdown, MetricAggregator } from '../shared/index.js';
 import { createLogger } from '../shared/index.js';
-import { CallUsageBook, type CallUsageByDay } from './call-usage.js';
+
 import { priceModelUsage } from './pricing-overlay.js';
 import { localDateKey } from '../lib/date.js';
 import type { SessionTracker } from './session-tracker.js';
 import type { Resettable } from './tracker-contracts.js';
-import { HIGH_CONTEXT_TOKENS } from '../storage/types.js';
 import type { AttributionBucket } from '../storage/types.js';
+import {
+  LATE_ARRIVAL_MS,
+  UsageLedger,
+  ZERO_TOTALS,
+  dayOf,
+  foldUsage,
+  isZeroTotals,
+  subtractTotals,
+} from './usage-ledger.js';
+import type {
+  ByteEstimateLedger,
+  CallUsageByDay,
+  CostTotals,
+  EntryCalls,
+  EstimatedModelUsage,
+  PersistedUsageLedger,
+  PricingMark,
+  UnpricedModelUsage,
+  UsageEntry,
+} from './usage-ledger.js';
 
 const logger = createLogger('cost-tracker');
 
@@ -74,9 +97,16 @@ export interface TokenRecordContext {
    * estimates for earlier turns in place.
    */
   readonly replacesEstimates?: boolean;
+  /**
+   * The API call's own id (Anthropic message id, Copilot `responseId`, Copilot
+   * SDK `apiCallId`, a self-report's `request_id`). A usage whose id is
+   * already in the ledger adds nothing. Omitted, the usage gets an id of its
+   * own and is never deduplicated. See `UsageLedger`.
+   */
+  readonly usageId?: string;
 }
 
-const LATE_ARRIVAL_REJECTION_MS = 48 * 60 * 60 * 1000;
+const LATE_ARRIVAL_REJECTION_MS = LATE_ARRIVAL_MS;
 
 /**
  * Scales every dollar field of a `CostBreakdown` by `factor`, leaving token
@@ -98,53 +128,11 @@ function scaleCostBreakdown(breakdown: CostBreakdown, factor: number): CostBreak
   };
 }
 
-function subtractFromMap(target: Map<string, number>, amounts: ReadonlyMap<string, number>): void {
-  for (const [key, usd] of amounts) {
-    const remaining = (target.get(key) ?? 0) - usd;
-    if (remaining > 1e-12) target.set(key, remaining);
-    else target.delete(key);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export interface UnpricedModelUsage {
-  readonly calls: number;
-  /** input + output + thinking + cache-read + cache-creation tokens of the unpriced calls */
-  readonly tokens: number;
-}
-
-export interface EstimatedModelUsage extends UnpricedModelUsage {
-  /** Table id whose price stood in for this model's missing one. */
-  readonly estimatedFrom: string;
-}
-
-/**
- * The part of the session total that came from byte-size estimates
- * (`recordEstimatedTokens`) rather than a real token report. Kept as its own
- * ledger so a transcript replay can take it back out: the same turns arrive
- * again as exact usage once the transcript watcher reads from byte 0. A
- * self-report (`nr_observe_report_tokens`) describes one response and leaves
- * the ledger in place.
- */
-export interface ByteEstimateLedger {
-  readonly costUsd: number;
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly costByModel: Readonly<Record<string, number>>;
-  readonly costByDayUsd: Readonly<Record<string, number>>;
-  /**
-   * The unpriced and estimated-price calls those estimates counted, so the
-   * report that replaces them takes the counts back out with the cost. Absent
-   * on a ledger written before they were kept.
-   */
-  readonly unpricedByModel?: Readonly<Record<string, UnpricedModelUsage>>;
-  readonly estimatedByModel?: Readonly<Record<string, EstimatedModelUsage>>;
-  readonly unpricedByDay?: Readonly<CallUsageByDay<UnpricedModelUsage>>;
-  readonly estimatedByDay?: Readonly<CallUsageByDay<EstimatedModelUsage>>;
-}
+export type { UnpricedModelUsage, EstimatedModelUsage, ByteEstimateLedger, CallUsageByDay };
 
 export interface CostMetrics {
   readonly sessionTotalCostUsd: number | null;
@@ -169,9 +157,8 @@ export interface CostMetrics {
   readonly estimationCount: number;
   /**
    * Byte-estimated share of the totals still awaiting a real report. Present
-   * once any estimate has been recorded or seeded; all-zero after a real
-   * report took the estimates back out, so a persisted copy is overwritten
-   * rather than left stale.
+   * once any estimate has been recorded or seeded; all-zero once real reports
+   * retired every estimate.
    */
   readonly byteEstimates?: ByteEstimateLedger;
   readonly latestCostBreakdown: CostBreakdown | null;
@@ -223,8 +210,8 @@ export interface CostMetrics {
    * known type when recorded land here; the rest are counted in
    * `subagentCostUsd` but not broken out by type. `count` is the number of
    * token events attributed to that agent type; `durationMs` is always 0 (no
-   * per-call duration signal reaches this tracker). In-memory only — unlike
-   * `costByModel`, this does NOT survive a process restart.
+   * per-call duration signal reaches this tracker). Survives a restart for
+   * the calls whose usage-ledger entries carry their agent type.
    */
   readonly subagentByAgentType: Record<string, AttributionBucket>;
   /**
@@ -296,6 +283,12 @@ export interface CostTrackerSeed {
    * summaries written before the exact/estimate split counted as reported.
    */
   readonly hadExactReport?: boolean;
+  /**
+   * The persisted usage ledger (see `usageLedgerOf` in session-store.ts). When
+   * present it is what gets seeded, as a union, and the flat totals above are
+   * ignored: seeding the same ledger twice changes nothing.
+   */
+  readonly ledger?: { readonly entries: readonly UsageEntry[]; readonly base: CostTotals };
 }
 
 export interface SubagentMetrics {
@@ -314,67 +307,35 @@ export interface SubagentMetrics {
 // CostTracker
 // ---------------------------------------------------------------------------
 
+/** What `recordUsage` did with a usage. */
+export interface RecordedUsage {
+  readonly breakdown: CostBreakdown;
+  /** False when the call's id was already in the ledger, so nothing was added. */
+  readonly recorded: boolean;
+  /** The usage priced: the part of a Copilot app range the ledger did not already hold, else all of it. */
+  readonly usage: TokenUsage;
+}
+
+/**
+ * Every total this tracker reports is computed from its `UsageLedger`: a map
+ * from each API call's id to its usage. See usage-ledger.ts for why.
+ */
 export class CostTracker implements Resettable {
   private sessionTracker: SessionTracker | null;
 
-  private totalCostUsd = 0;
-  private totalInputTokens = 0;
-  private totalOutputTokens = 0;
-  private totalThinkingTokens = 0;
-  private totalCacheReadTokens = 0;
-  private totalCacheCreationTokens = 0;
-  private totalCacheSavingsUsd = 0;
+  private ledger = new UsageLedger();
+  /** Unique per tracker, so ids it synthesizes never collide with another process's. */
+  private readonly instanceId = randomUUID().slice(0, 8);
+  private synthesizedSeq = 0;
   private currentModel: string | null = null;
   private reportCount = 0;
   private estimationCount = 0;
-  private byteEstimateCostUsd = 0;
-  private byteEstimateInputTokens = 0;
-  private byteEstimateOutputTokens = 0;
-  private byteEstimateCostByModel = new Map<string, number>();
-  private byteEstimateCostByDay = new Map<string, number>();
-  /** True once a ledger exists to report, even if a real report has since emptied it. */
-  private hasByteEstimateHistory = false;
   private latestCostBreakdown: CostBreakdown | null = null;
-  private costByModel = new Map<string, number>();
-  private readonly unpriced = new CallUsageBook<UnpricedModelUsage>();
-  private readonly estimated = new CallUsageBook<EstimatedModelUsage>();
-  /** The share of `unpriced` and `estimated` that came from byte estimates. */
-  private readonly byteEstimateUnpriced = new CallUsageBook<UnpricedModelUsage>();
-  private readonly byteEstimateEstimated = new CallUsageBook<EstimatedModelUsage>();
-  // Per-day cost attribution. Each token event is bucketed into the local-day
-  // it was recorded in, so consumers asking "how much did this session spend
-  // today" can get a real answer when a session crosses midnight. Without
-  // this, dashboard "Today Spend" counts the entire session against today,
-  // including tokens spent before midnight.
-  private costByDayUsd = new Map<string, number>();
   private firstActivityMsByDay = new Map<string, number>();
   /** Days seeded with spend but no persisted first spend: the real first spend is unknown, so no anchor is saved. */
   private unanchoredDays = new Set<string>();
-  /**
-   * Per-workflow-run cost attribution split by local-day so a run that crosses
-   * midnight contributes to each day's bucket independently. Two-level map:
-   * `costByWorkflowRunId.get(runId).get(dayKey) → usd`. Restart-resets to
-   * empty UNLESS `seedFromPersisted()` restores it from a persisted
-   * checkpoint for this same session (see that method's doc comment).
-   */
-  private costByWorkflowRunId = new Map<string, Map<string, number>>();
   /** Per-day mutation counter so dashboards can invalidate cached day cards. */
   private lastMutationMsByDay = new Map<string, number>();
-  /**
-   * Subagent-attributed spend: accumulated when `ctx.agentId` is set.
-   * Parent spend covers all other token reports.
-   */
-  private subagentCostUsd = 0;
-
-  /** Subagent-attributed spend per local-day key, for a today-scoped KPI. */
-  private subagentCostByDayUsd = new Map<string, number>();
-  /** Subagent-attributed spend per `ctx.agentType` — see `CostMetrics.subagentByAgentType`. */
-  private subagentByAgentType = new Map<string, AttributionBucket>();
-  /** See `CostMetrics.highContextCostUsd`. */
-  private highContextCostUsd = 0;
-  /** See `CostMetrics.apiDurationMs`; null until the first `ctx.responseMs` observation. */
-  private apiDurationMs: number | null = null;
-  private parentCostUsd = 0;
   private totalLinesChanged = 0;
   private readonly rateMultiplier: number;
 
@@ -404,14 +365,33 @@ export class CostTracker implements Resettable {
    * into this process-wide total.
    */
   priceUsage(usage: TokenUsage, model: string): CostBreakdown {
-    const { breakdown } = priceModelUsage(model, usage);
-    return this.rateMultiplier === 1
-      ? breakdown
-      : scaleCostBreakdown(breakdown, this.rateMultiplier);
+    return this.price(usage, model).breakdown;
+  }
+
+  private price(
+    usage: TokenUsage,
+    model: string,
+  ): { breakdown: CostBreakdown; pricing: PricingMark | undefined } {
+    const { breakdown: raw, resolution } = priceModelUsage(model, usage);
+    const breakdown =
+      this.rateMultiplier === 1 ? raw : scaleCostBreakdown(raw, this.rateMultiplier);
+    const pricing: PricingMark | undefined =
+      resolution.kind === 'unpriced'
+        ? { kind: 'unpriced' }
+        : resolution.source === 'estimated'
+          ? { estimatedFrom: resolution.estimatedFrom }
+          : undefined;
+    return { breakdown, pricing };
+  }
+
+  private synthesizeId(kind: 'anon' | 'est'): string {
+    return `${kind}:${this.instanceId}:${++this.synthesizedSeq}`;
   }
 
   /**
-   * Primary path: record exact token usage from self-reporting.
+   * Primary path: record exact token usage from a watcher or a self-report.
+   * Returns this usage's price whether or not its id was new; use
+   * `recordUsage` to learn which.
    *
    * The optional `ctx` argument lets the subagent watcher attribute tokens
    * to the actual JSONL `timestamp` (rather than `Date.now()`) so a run
@@ -419,14 +399,68 @@ export class CostTracker implements Resettable {
    * `agentId` for per-run and subagent/parent cost attribution.
    */
   recordTokenUsage(usage: TokenUsage, model: string, ctx?: TokenRecordContext): CostBreakdown {
-    this.reportCount++;
-    if (ctx?.replacesEstimates === true && ctx.agentId === undefined) this.discardByteEstimates();
-    return this.accumulateTokens(usage, model, ctx);
+    return this.recordUsage(usage, model, ctx).breakdown;
+  }
+
+  recordUsage(whole: TokenUsage, model: string, ctx?: TokenRecordContext): RecordedUsage {
+    // A Copilot app range may reach past what the ledger holds: only the
+    // uncovered tail is new, so that tail is what gets priced and recorded.
+    const claim = ctx?.usageId === undefined ? null : this.ledger.claim(ctx.usageId, whole);
+    if (ctx?.usageId !== undefined && !claim) {
+      return { breakdown: this.price(whole, model).breakdown, recorded: false, usage: whole };
+    }
+    const usage = claim?.usage ?? whole;
+    const { breakdown, pricing } = this.price(usage, model);
+    const wallNowMs = Date.now();
+    const ts = ctx?.timestampMs ?? wallNowMs;
+    const day = dayOf(ts, wallNowMs, LATE_ARRIVAL_REJECTION_MS);
+    if (day === null) {
+      logger.warn('Late-arrival token event dropped from day bucket', {
+        timestampMs: ts,
+        deltaMs: wallNowMs - ts,
+      });
+    }
+    const id = claim?.id ?? this.synthesizeId('anon');
+    const recorded = this.ledger.insert({
+      id,
+      provisional: false,
+      replaces: ctx?.replacesEstimates === true && ctx.agentId === undefined,
+      ts,
+      day,
+      model,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      thinkingTokens: usage.thinkingTokens,
+      cacheReadTokens: usage.cacheReadTokens,
+      cacheCreationTokens: usage.cacheCreationTokens,
+      costUsd: breakdown.totalUsd,
+      cacheSavingsUsd: breakdown.savingsFromCacheUsd,
+      ...(ctx?.agentId !== undefined && { agentId: ctx.agentId }),
+      ...(ctx?.agentId !== undefined &&
+        ctx.agentType !== undefined && { agentType: ctx.agentType }),
+      ...(ctx?.workflowRunId && day !== null && { workflowRunId: ctx.workflowRunId }),
+      ...(pricing && { pricing }),
+      ...(ctx?.responseMs !== undefined && { responseMs: ctx.responseMs }),
+    });
+    if (recorded) {
+      this.reportCount++;
+      this.noteActivity(day, ts, wallNowMs, breakdown.totalUsd);
+      this.currentModel = model;
+      this.latestCostBreakdown = breakdown;
+    }
+    return { breakdown, recorded, usage };
+  }
+
+  /** Whether an exact report from a watcher that replays history is in the ledger. */
+  hasReplayingUsage(): boolean {
+    return this.ledger.hasReplayingEntry();
   }
 
   /**
    * Fallback path: estimate tokens from character counts.
-   * Uses the heuristic: tokens ≈ characters / 4.
+   * Uses the heuristic: tokens ≈ characters / 4. The estimate is provisional:
+   * the next exact parent report from a replaying watcher retires it (see
+   * usage-ledger.ts).
    */
   recordEstimatedTokens(inputChars: number, outputChars: number, model: string): CostBreakdown {
     const inputTokens = Math.round(inputChars / 4);
@@ -439,324 +473,153 @@ export class CostTracker implements Resettable {
       cacheCreationTokens: 0,
       totalTokens: inputTokens + outputTokens,
     };
-
-    this.estimationCount++;
+    const { breakdown, pricing } = this.price(usage, model);
     const nowMs = Date.now();
-    const breakdown = this.accumulateTokens(usage, model, { timestampMs: nowMs }, true);
-    this.hasByteEstimateHistory = true;
-    this.byteEstimateCostUsd += breakdown.totalUsd;
-    this.byteEstimateInputTokens += inputTokens;
-    this.byteEstimateOutputTokens += outputTokens;
-    this.byteEstimateCostByModel.set(
+    const day = localDateKey(nowMs);
+    this.ledger.insert({
+      id: this.synthesizeId('est'),
+      provisional: true,
+      replaces: false,
+      ts: nowMs,
+      day,
       model,
-      (this.byteEstimateCostByModel.get(model) ?? 0) + breakdown.totalUsd,
-    );
-    const dayKey = localDateKey(nowMs);
-    this.byteEstimateCostByDay.set(
-      dayKey,
-      (this.byteEstimateCostByDay.get(dayKey) ?? 0) + breakdown.totalUsd,
-    );
-    return breakdown;
-  }
-
-  /**
-   * Takes the byte-estimated share back out of the totals. Subtraction clamps
-   * at zero because a seeded ledger can name a day or model the seeded totals
-   * bucketed differently.
-   */
-  private discardByteEstimates(): void {
-    this.totalCostUsd = Math.max(0, this.totalCostUsd - this.byteEstimateCostUsd);
-    this.parentCostUsd = Math.max(0, this.parentCostUsd - this.byteEstimateCostUsd);
-    this.totalInputTokens = Math.max(0, this.totalInputTokens - this.byteEstimateInputTokens);
-    this.totalOutputTokens = Math.max(0, this.totalOutputTokens - this.byteEstimateOutputTokens);
-    subtractFromMap(this.costByModel, this.byteEstimateCostByModel);
-    subtractFromMap(this.costByDayUsd, this.byteEstimateCostByDay);
-    this.byteEstimateCostUsd = 0;
-    this.byteEstimateInputTokens = 0;
-    this.byteEstimateOutputTokens = 0;
-    this.byteEstimateCostByModel = new Map();
-    this.byteEstimateCostByDay = new Map();
-    this.unpriced.subtract(this.byteEstimateUnpriced);
-    this.estimated.subtract(this.byteEstimateEstimated);
-    this.byteEstimateUnpriced.clear();
-    this.byteEstimateEstimated.clear();
-  }
-
-  /**
-   * Shared by both the late-arrival and normal paths of `accumulateTokens`:
-   * per-agent-type subagent bucketing, high-context spend, and API-duration
-   * accumulation. All three are session-level totals like `subagentCostUsd`/
-   * `parentCostUsd` above, so — like those — they still accumulate on a late
-   * arrival even though day bucketing is skipped for one.
-   */
-  private recordAttributionSideEffects(
-    usage: TokenUsage,
-    ctx: TokenRecordContext | undefined,
-    breakdown: CostBreakdown,
-  ): void {
-    if (ctx?.agentId !== undefined && ctx.agentType !== undefined) {
-      const tokens =
-        usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
-      const existing = this.subagentByAgentType.get(ctx.agentType);
-      const existingBreakdown = existing?.breakdown;
-      this.subagentByAgentType.set(ctx.agentType, {
-        costUsd: (existing?.costUsd ?? 0) + breakdown.totalUsd,
-        tokens: (existing?.tokens ?? 0) + tokens,
-        count: (existing?.count ?? 0) + 1,
-        durationMs: 0,
-        breakdown: {
-          inputTokens: (existingBreakdown?.inputTokens ?? 0) + usage.inputTokens,
-          outputTokens: (existingBreakdown?.outputTokens ?? 0) + usage.outputTokens,
-          cacheReadTokens: (existingBreakdown?.cacheReadTokens ?? 0) + usage.cacheReadTokens,
-          cacheCreationTokens:
-            (existingBreakdown?.cacheCreationTokens ?? 0) + usage.cacheCreationTokens,
-        },
-      });
-    }
-
-    if (
-      usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens >
-      HIGH_CONTEXT_TOKENS
-    ) {
-      this.highContextCostUsd += breakdown.totalUsd;
-    }
-
-    if (ctx?.responseMs !== undefined) {
-      this.apiDurationMs = (this.apiDurationMs ?? 0) + ctx.responseMs;
-    }
-  }
-
-  private accumulateTokens(
-    usage: TokenUsage,
-    model: string,
-    ctx?: TokenRecordContext,
-    isByteEstimate = false,
-  ): CostBreakdown {
-    const { breakdown: rawBreakdown, resolution } = priceModelUsage(model, usage);
-    const tokens =
-      usage.inputTokens +
-      usage.outputTokens +
-      usage.thinkingTokens +
-      usage.cacheReadTokens +
-      usage.cacheCreationTokens;
-    const breakdown =
-      this.rateMultiplier === 1
-        ? rawBreakdown
-        : scaleCostBreakdown(rawBreakdown, this.rateMultiplier);
-    const wallNowMs = Date.now();
-
-    // Late-arrival rejection: a `ctx.timestampMs` more than 48h before now is
-    // dropped from day buckets to bound retroactive mutation. Session-level
-    // totals (totalCostUsd, subagentCostUsd, etc.) still accumulate because
-    // they are session-scoped and the cost is real.
-    const tsMs = ctx?.timestampMs ?? wallNowMs;
-    const isLate =
-      ctx?.timestampMs !== undefined && wallNowMs - ctx.timestampMs > LATE_ARRIVAL_REJECTION_MS;
-
-    if (tokens > 0) {
-      const callDayKey = isLate ? null : localDateKey(tsMs);
-      if (resolution.kind === 'unpriced') {
-        const call = { calls: 1, tokens };
-        this.unpriced.add(model, callDayKey, call);
-        if (isByteEstimate) this.byteEstimateUnpriced.add(model, callDayKey, call);
-      } else if (resolution.source === 'estimated') {
-        const call = { calls: 1, tokens, estimatedFrom: resolution.estimatedFrom };
-        this.estimated.add(model, callDayKey, call);
-        if (isByteEstimate) this.byteEstimateEstimated.add(model, callDayKey, call);
-      }
-    }
-
-    if (isLate) {
-      logger.warn('Late-arrival token event dropped from day bucket', {
-        timestampMs: ctx?.timestampMs,
-        deltaMs: wallNowMs - (ctx?.timestampMs ?? wallNowMs),
-      });
-      // Still accumulate session-level totals, but skip day bucketing and
-      // workflow-run maps.
-      this.totalCostUsd += breakdown.totalUsd;
-      this.totalInputTokens += usage.inputTokens;
-      this.totalOutputTokens += usage.outputTokens;
-      this.totalThinkingTokens += usage.thinkingTokens;
-      this.totalCacheReadTokens += usage.cacheReadTokens;
-      this.totalCacheCreationTokens += usage.cacheCreationTokens;
-      this.currentModel = model;
-      this.latestCostBreakdown = breakdown;
-      this.costByModel.set(model, (this.costByModel.get(model) ?? 0) + breakdown.totalUsd);
-      this.totalCacheSavingsUsd += breakdown.savingsFromCacheUsd;
-      if (ctx?.agentId !== undefined) {
-        this.subagentCostUsd += breakdown.totalUsd;
-      } else {
-        this.parentCostUsd += breakdown.totalUsd;
-      }
-      this.recordAttributionSideEffects(usage, ctx, breakdown);
-      return breakdown;
-    }
-
-    this.totalCostUsd += breakdown.totalUsd;
-    this.totalInputTokens += usage.inputTokens;
-    this.totalOutputTokens += usage.outputTokens;
-    this.totalThinkingTokens += usage.thinkingTokens;
-    this.totalCacheReadTokens += usage.cacheReadTokens;
-    this.totalCacheCreationTokens += usage.cacheCreationTokens;
+      inputTokens,
+      outputTokens,
+      thinkingTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      costUsd: breakdown.totalUsd,
+      cacheSavingsUsd: breakdown.savingsFromCacheUsd,
+      ...(pricing && { pricing }),
+    });
+    this.estimationCount++;
+    this.noteActivity(day, nowMs, nowMs, breakdown.totalUsd);
     this.currentModel = model;
     this.latestCostBreakdown = breakdown;
-    this.costByModel.set(model, (this.costByModel.get(model) ?? 0) + breakdown.totalUsd);
-    this.totalCacheSavingsUsd += breakdown.savingsFromCacheUsd;
-
-    // Subagent vs parent split
-    if (ctx?.agentId !== undefined) {
-      this.subagentCostUsd += breakdown.totalUsd;
-    } else {
-      this.parentCostUsd += breakdown.totalUsd;
-    }
-    this.recordAttributionSideEffects(usage, ctx, breakdown);
-
-    // Day bucketing
-    const dayKey = localDateKey(tsMs);
-    this.costByDayUsd.set(dayKey, (this.costByDayUsd.get(dayKey) ?? 0) + breakdown.totalUsd);
-    if (ctx?.agentId !== undefined) {
-      this.subagentCostByDayUsd.set(
-        dayKey,
-        (this.subagentCostByDayUsd.get(dayKey) ?? 0) + breakdown.totalUsd,
-      );
-    }
-    this.lastMutationMsByDay.set(dayKey, wallNowMs);
-    const existingFirst = this.firstActivityMsByDay.get(dayKey);
-    if (
-      breakdown.totalUsd > 0 &&
-      !this.unanchoredDays.has(dayKey) &&
-      (existingFirst === undefined || tsMs < existingFirst)
-    ) {
-      // Use earliest event timestamp for the day so cross-midnight burn-rate
-      // denominators stay correct (NOT wall-clock arrival time).
-      this.firstActivityMsByDay.set(dayKey, tsMs);
-    }
-
-    // Per-workflow-run day bucketing
-    if (ctx?.workflowRunId) {
-      const runMap = this.costByWorkflowRunId.get(ctx.workflowRunId) ?? new Map<string, number>();
-      runMap.set(dayKey, (runMap.get(dayKey) ?? 0) + breakdown.totalUsd);
-      this.costByWorkflowRunId.set(ctx.workflowRunId, runMap);
-    }
-
     return breakdown;
   }
 
   /**
-   * Seeds cumulative totals from a previous process's last checkpoint for
-   * this same session. Adds to current state rather than overwriting, so
-   * callers must invoke this at most once per (re)adopted session id, with
-   * totals this tracker has not already counted — see
-   * `rehydrateTrackersIfResumed` in `index.ts`.
+   * Marks a day as mutated and, for a usage that cost something, keeps the
+   * day's first spend: the earliest event timestamp (not wall-clock arrival),
+   * so cross-midnight burn-rate denominators stay correct. A day seeded with
+   * spend but no saved first spend stays unanchored.
+   */
+  private noteActivity(day: string | null, ts: number, wallNowMs: number, usd: number): void {
+    if (day === null) return;
+    this.lastMutationMsByDay.set(day, wallNowMs);
+    if (usd <= 0 || this.unanchoredDays.has(day)) return;
+    const existingFirst = this.firstActivityMsByDay.get(day);
+    if (existingFirst === undefined || ts < existingFirst) this.firstActivityMsByDay.set(day, ts);
+  }
+
+  /** Applies the seeded day's saved first spend, or leaves the day unanchored when there is none. */
+  private seedDayAnchor(seed: CostTrackerSeed, daySpent: boolean, nowMs: number): void {
+    if (!daySpent) return;
+    this.lastMutationMsByDay.set(seed.dayKey, nowMs);
+    if (seed.dayFirstActivityMs === undefined) {
+      this.firstActivityMsByDay.delete(seed.dayKey);
+      this.unanchoredDays.add(seed.dayKey);
+      return;
+    }
+    // A seed without a saved first spend already left the day unanchored.
+    if (this.unanchoredDays.has(seed.dayKey)) return;
+    const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
+    if (existingFirst === undefined || seed.dayFirstActivityMs < existingFirst) {
+      this.firstActivityMsByDay.set(seed.dayKey, seed.dayFirstActivityMs);
+    }
+  }
+
+  /**
+   * Seeds a previous process's last checkpoint for this same session.
    *
    * Restart data-loss fix: `ParentTranscriptWatcher`'s transcript-read cursor
    * is durably persisted across process restarts so a resumed session never
-   * re-reads old transcript lines — but this tracker's totals are pure
-   * in-memory state with no equivalent persistence. Without this seed, every
-   * dollar/token attributed to lines a now-dead prior process already
-   * consumed is silently and permanently lost the moment a session gets
-   * paused and resumed (sleep, closing a terminal, `claude --resume`,
-   * a crash) — the longer/more-interrupted the session, the worse the loss.
+   * re-reads old transcript lines — but this tracker's totals are in-memory
+   * state. Without this seed, every dollar/token attributed to lines a
+   * now-dead prior process already consumed is lost the moment a session
+   * gets paused and resumed (sleep, closing a terminal, `claude --resume`,
+   * a crash).
    *
-   * `costByWorkflowRunId` IS seeded (additively, per run+day) — this used to
-   * be the one dimension left to reset on restart, but `WorkflowStore`'s
-   * `cost_unknown` flag (see its doc comment in `src/dashboard/workflow-store.ts`)
-   * depends on `hasCostForWorkflowRun()` staying accurate across a restart
-   * too, so it gets the same treatment as everything else here.
+   * A seed carrying a ledger is folded in as a union, so seeding it twice, or
+   * seeding a checkpoint that holds calls this process already counted,
+   * changes nothing. A seed without one (a hand-built seed) adds its totals.
    */
   seedFromPersisted(seed: CostTrackerSeed): void {
-    const hasAnyTotal =
-      seed.totalCostUsd !== 0 ||
-      seed.totalInputTokens !== 0 ||
-      seed.totalOutputTokens !== 0 ||
-      seed.totalThinkingTokens !== 0 ||
-      seed.totalCacheReadTokens !== 0 ||
-      seed.totalCacheCreationTokens !== 0;
-    if (!hasAnyTotal) return;
-
-    this.totalCostUsd += seed.totalCostUsd;
-    this.subagentCostUsd += seed.subagentCostUsd;
-    this.parentCostUsd += seed.parentCostUsd;
-    this.totalInputTokens += seed.totalInputTokens;
-    this.totalOutputTokens += seed.totalOutputTokens;
-    this.totalThinkingTokens += seed.totalThinkingTokens;
-    this.totalCacheReadTokens += seed.totalCacheReadTokens;
-    this.totalCacheCreationTokens += seed.totalCacheCreationTokens;
-    this.totalCacheSavingsUsd += seed.totalCacheSavingsUsd;
+    const nowMs = Date.now();
+    if (seed.ledger) {
+      const { entries, base } = seed.ledger;
+      if (entries.length === 0 && isZeroTotals(base)) return;
+      const before = this.ledger.size;
+      this.ledger.union(entries, base);
+      if (this.ledger.size === before && isZeroTotals(base)) return;
+      // Entries carry their own timestamps; only a pre-ledger base's spend
+      // on the seeded day needs the saved first spend.
+      for (const e of entries) this.noteActivity(e.day, e.ts, nowMs, e.costUsd);
+      this.seedDayAnchor(seed, (base.costByDayUsd[seed.dayKey] ?? 0) > 0, nowMs);
+    } else {
+      const hasAnyTotal =
+        seed.totalCostUsd !== 0 ||
+        seed.totalInputTokens !== 0 ||
+        seed.totalOutputTokens !== 0 ||
+        seed.totalThinkingTokens !== 0 ||
+        seed.totalCacheReadTokens !== 0 ||
+        seed.totalCacheCreationTokens !== 0;
+      if (!hasAnyTotal) return;
+      this.seedFlatTotals(seed, nowMs);
+    }
     if (seed.hadExactReport === false) this.estimationCount += 1;
     else this.reportCount += 1;
-    const legacyCallsDayKey = seed.legacyCallsDayKey ?? seed.dayKey;
-    if (seed.byteEstimates !== undefined) {
-      this.hasByteEstimateHistory = true;
-      this.byteEstimateCostUsd += seed.byteEstimates.costUsd;
-      this.byteEstimateInputTokens += seed.byteEstimates.inputTokens;
-      this.byteEstimateOutputTokens += seed.byteEstimates.outputTokens;
-      for (const [model, usd] of Object.entries(seed.byteEstimates.costByModel)) {
-        this.byteEstimateCostByModel.set(
-          model,
-          (this.byteEstimateCostByModel.get(model) ?? 0) + usd,
-        );
-      }
-      for (const [day, usd] of Object.entries(seed.byteEstimates.costByDayUsd)) {
-        this.byteEstimateCostByDay.set(day, (this.byteEstimateCostByDay.get(day) ?? 0) + usd);
-      }
-      this.byteEstimateUnpriced.addRecords(
-        seed.byteEstimates.unpricedByModel,
-        seed.byteEstimates.unpricedByDay,
-        legacyCallsDayKey,
-      );
-      this.byteEstimateEstimated.addRecords(
-        seed.byteEstimates.estimatedByModel,
-        seed.byteEstimates.estimatedByDay,
-        legacyCallsDayKey,
-      );
-    }
-
-    for (const [model, usd] of Object.entries(seed.costByModel)) {
-      this.costByModel.set(model, (this.costByModel.get(model) ?? 0) + usd);
-    }
-
-    this.unpriced.addRecords(seed.unpricedByModel, seed.unpricedByDay, legacyCallsDayKey);
-    this.estimated.addRecords(seed.estimatedByModel, seed.estimatedByDay, legacyCallsDayKey);
-
-    if (seed.dayCostUsd !== 0) {
-      this.costByDayUsd.set(
-        seed.dayKey,
-        (this.costByDayUsd.get(seed.dayKey) ?? 0) + seed.dayCostUsd,
-      );
-      this.lastMutationMsByDay.set(seed.dayKey, Date.now());
-      if (seed.dayFirstActivityMs === undefined) {
-        this.firstActivityMsByDay.delete(seed.dayKey);
-        this.unanchoredDays.add(seed.dayKey);
-      } else if (!this.unanchoredDays.has(seed.dayKey)) {
-        const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
-        if (existingFirst === undefined || seed.dayFirstActivityMs < existingFirst) {
-          this.firstActivityMsByDay.set(seed.dayKey, seed.dayFirstActivityMs);
-        }
-      }
-    }
-    if (seed.daySubagentCostUsd !== 0) {
-      this.subagentCostByDayUsd.set(
-        seed.dayKey,
-        (this.subagentCostByDayUsd.get(seed.dayKey) ?? 0) + seed.daySubagentCostUsd,
-      );
-    }
-
-    for (const [runId, days] of Object.entries(seed.costByWorkflowRunId)) {
-      const runMap = this.costByWorkflowRunId.get(runId) ?? new Map<string, number>();
-      for (const [dayKey, usd] of Object.entries(days)) {
-        runMap.set(dayKey, (runMap.get(dayKey) ?? 0) + usd);
-      }
-      this.costByWorkflowRunId.set(runId, runMap);
-    }
   }
 
-  private computeCacheHitRate(): number | null {
-    const denominator =
-      this.totalInputTokens + this.totalCacheReadTokens + this.totalCacheCreationTokens;
+  private seedFlatTotals(seed: CostTrackerSeed, nowMs: number): void {
+    const est = seed.byteEstimates;
+    const legacyDay = seed.legacyCallsDayKey ?? seed.dayKey;
+    const base: CostTotals = {
+      costUsd: Math.max(0, seed.totalCostUsd - (est?.costUsd ?? 0)),
+      subagentCostUsd: seed.subagentCostUsd,
+      inputTokens: Math.max(0, seed.totalInputTokens - (est?.inputTokens ?? 0)),
+      outputTokens: Math.max(0, seed.totalOutputTokens - (est?.outputTokens ?? 0)),
+      thinkingTokens: seed.totalThinkingTokens,
+      cacheReadTokens: seed.totalCacheReadTokens,
+      cacheCreationTokens: seed.totalCacheCreationTokens,
+      cacheSavingsUsd: seed.totalCacheSavingsUsd,
+      costByModel: subtractRecord(seed.costByModel, est?.costByModel ?? {}),
+      costByDayUsd:
+        seed.dayCostUsd !== 0
+          ? {
+              [seed.dayKey]: Math.max(0, seed.dayCostUsd - (est?.costByDayUsd[seed.dayKey] ?? 0)),
+            }
+          : {},
+      subagentCostByDayUsd:
+        seed.daySubagentCostUsd !== 0 ? { [seed.dayKey]: seed.daySubagentCostUsd } : {},
+      costByWorkflowRunId: seed.costByWorkflowRunId,
+      unpricedByModel: seed.unpricedByModel ?? {},
+      estimatedByModel: seed.estimatedByModel ?? {},
+      // A seed with no day split books its calls to its own latest day.
+      unpricedByDay:
+        seed.unpricedByDay ??
+        (seed.unpricedByModel ? { [legacyDay]: { ...seed.unpricedByModel } } : {}),
+      estimatedByDay:
+        seed.estimatedByDay ??
+        (seed.estimatedByModel ? { [legacyDay]: { ...seed.estimatedByModel } } : {}),
+    };
+    const estimates = est === undefined ? [] : legacyEstimateEntries(est, nowMs, this.instanceId);
+    this.ledger.addToBase(withoutEstimateCalls(base, estimates));
+    for (const e of estimates) this.ledger.insert(e);
+    this.seedDayAnchor(seed, seed.dayCostUsd !== 0, nowMs);
+  }
+
+  private computeCacheHitRate(t: CostTotals): number | null {
+    const denominator = t.inputTokens + t.cacheReadTokens + t.cacheCreationTokens;
     if (denominator === 0) return null;
-    if (this.totalCacheReadTokens === 0 && this.totalCacheCreationTokens === 0) return null;
-    return this.totalCacheReadTokens / denominator;
+    if (t.cacheReadTokens === 0 && t.cacheCreationTokens === 0) return null;
+    return t.cacheReadTokens / denominator;
+  }
+
+  /** The ledger as written to a session file. */
+  getUsageLedger(): PersistedUsageLedger | undefined {
+    return this.ledger.isEmpty() ? undefined : this.ledger.toPersisted();
   }
 
   /**
@@ -766,7 +629,7 @@ export class CostTracker implements Resettable {
    * today, this returns only today's portion.
    */
   getCostForDay(dayKey: string): number {
-    return this.costByDayUsd.get(dayKey) ?? 0;
+    return this.ledger.fold().totals.costByDayUsd[dayKey] ?? 0;
   }
 
   /**
@@ -776,7 +639,7 @@ export class CostTracker implements Resettable {
    * "spend today" total.
    */
   getSubagentCostForDay(dayKey: string): number {
-    return this.subagentCostByDayUsd.get(dayKey) ?? 0;
+    return this.ledger.fold().totals.subagentCostByDayUsd[dayKey] ?? 0;
   }
 
   /**
@@ -800,10 +663,10 @@ export class CostTracker implements Resettable {
    * touched. Returns 0 for unknown runIds.
    */
   getCostForWorkflowRun(runId: string): number {
-    const m = this.costByWorkflowRunId.get(runId);
+    const m = this.ledger.fold().totals.costByWorkflowRunId[runId];
     if (!m) return 0;
     let total = 0;
-    for (const v of m.values()) total += v;
+    for (const v of Object.values(m)) total += v;
     return total;
   }
 
@@ -822,13 +685,15 @@ export class CostTracker implements Resettable {
    * "unknown" as "zero".
    */
   hasCostForWorkflowRun(runId: string): boolean {
-    return this.costByWorkflowRunId.has(runId);
+    if (runId in this.ledger.getBase().costByWorkflowRunId) return true;
+    for (const e of this.ledger.values()) if (e.workflowRunId === runId) return true;
+    return false;
   }
 
   /** Iterable view of every (runId, dayKey, usd) tuple — for dashboard joins. */
   *iterCostByWorkflowRun(): IterableIterator<{ runId: string; dayKey: string; usd: number }> {
-    for (const [runId, m] of this.costByWorkflowRunId) {
-      for (const [dayKey, usd] of m) {
+    for (const [runId, m] of Object.entries(this.ledger.fold().totals.costByWorkflowRunId)) {
+      for (const [dayKey, usd] of Object.entries(m)) {
         yield { runId, dayKey, usd };
       }
     }
@@ -842,12 +707,14 @@ export class CostTracker implements Resettable {
    * cost to detect attribution gaps. Returns null until that data is available.
    */
   getSubagentMetrics(): SubagentMetrics {
-    const total = this.subagentCostUsd + this.parentCostUsd;
-    const subagentSharePct = total > 0 ? (this.subagentCostUsd / total) * 100 : 0;
+    const t = this.ledger.fold().totals;
+    const subagentUsd = t.subagentCostUsd;
+    const parentUsd = Math.max(0, t.costUsd - t.subagentCostUsd);
+    const total = subagentUsd + parentUsd;
     return {
-      subagentUsd: this.subagentCostUsd,
-      parentUsd: this.parentCostUsd,
-      subagentSharePct,
+      subagentUsd,
+      parentUsd,
+      subagentSharePct: total > 0 ? (subagentUsd / total) * 100 : 0,
       reconciliationDeltaPct: null,
     };
   }
@@ -861,72 +728,61 @@ export class CostTracker implements Resettable {
 
   getMetrics(): CostMetrics {
     const hasData = this.reportCount > 0 || this.estimationCount > 0;
+    const fold = this.ledger.fold();
+    const t = fold.totals;
 
     const uniqueFilesWritten = this.sessionTracker
       ? this.sessionTracker.getMetrics().uniqueFilesWritten
       : 0;
 
-    // Serialise the two-level Map into a plain Record for JSON compatibility.
     const costByWorkflowRunId: Record<string, Record<string, number>> = {};
-    for (const [runId, dayMap] of this.costByWorkflowRunId) {
-      costByWorkflowRunId[runId] = Object.fromEntries(dayMap);
+    for (const [runId, days] of Object.entries(t.costByWorkflowRunId)) {
+      costByWorkflowRunId[runId] = { ...days };
     }
 
     const totalTokensAllTypes =
-      this.totalInputTokens +
-      this.totalOutputTokens +
-      this.totalThinkingTokens +
-      this.totalCacheReadTokens +
-      this.totalCacheCreationTokens;
+      t.inputTokens + t.outputTokens + t.thinkingTokens + t.cacheReadTokens + t.cacheCreationTokens;
 
     return {
-      sessionTotalCostUsd: hasData ? this.totalCostUsd : null,
-      costByModel: Object.fromEntries(this.costByModel),
+      sessionTotalCostUsd: hasData ? t.costUsd : null,
+      costByModel: { ...t.costByModel },
       costPerLineOfCode:
-        hasData && this.totalLinesChanged > 0 ? this.totalCostUsd / this.totalLinesChanged : null,
+        hasData && this.totalLinesChanged > 0 ? t.costUsd / this.totalLinesChanged : null,
       costPerFileModified:
-        hasData && uniqueFilesWritten > 0 ? this.totalCostUsd / uniqueFilesWritten : null,
+        hasData && uniqueFilesWritten > 0 ? t.costUsd / uniqueFilesWritten : null,
       costPerMillionTokens:
-        hasData && totalTokensAllTypes > 0
-          ? (this.totalCostUsd / totalTokensAllTypes) * 1_000_000
-          : null,
+        hasData && totalTokensAllTypes > 0 ? (t.costUsd / totalTokensAllTypes) * 1_000_000 : null,
       model: this.currentModel,
-      totalInputTokens: this.totalInputTokens,
-      totalOutputTokens: this.totalOutputTokens,
-      totalThinkingTokens: this.totalThinkingTokens,
-      totalCacheReadTokens: this.totalCacheReadTokens,
-      totalCacheCreationTokens: this.totalCacheCreationTokens,
-      cacheHitRate: this.computeCacheHitRate(),
-      totalCacheSavingsUsd: this.totalCacheSavingsUsd,
+      totalInputTokens: t.inputTokens,
+      totalOutputTokens: t.outputTokens,
+      totalThinkingTokens: t.thinkingTokens,
+      totalCacheReadTokens: t.cacheReadTokens,
+      totalCacheCreationTokens: t.cacheCreationTokens,
+      cacheHitRate: this.computeCacheHitRate(t),
+      totalCacheSavingsUsd: t.cacheSavingsUsd,
       reportCount: this.reportCount,
       estimationCount: this.estimationCount,
-      ...(this.hasByteEstimateHistory && {
+      ...(fold.byteEstimates !== undefined && {
         byteEstimates: {
-          costUsd: this.byteEstimateCostUsd,
-          inputTokens: this.byteEstimateInputTokens,
-          outputTokens: this.byteEstimateOutputTokens,
-          costByModel: Object.fromEntries(this.byteEstimateCostByModel),
-          costByDayUsd: Object.fromEntries(this.byteEstimateCostByDay),
-          unpricedByModel: this.byteEstimateUnpriced.byModel(),
-          estimatedByModel: this.byteEstimateEstimated.byModel(),
-          unpricedByDay: this.byteEstimateUnpriced.byDay(),
-          estimatedByDay: this.byteEstimateEstimated.byDay(),
+          ...fold.byteEstimates,
+          costByModel: { ...fold.byteEstimates.costByModel },
+          costByDayUsd: { ...fold.byteEstimates.costByDayUsd },
         },
       }),
       latestCostBreakdown: this.latestCostBreakdown,
-      subagentCostUsd: this.subagentCostUsd,
-      parentCostUsd: this.parentCostUsd,
+      subagentCostUsd: t.subagentCostUsd,
+      parentCostUsd: Math.max(0, t.costUsd - t.subagentCostUsd),
       costByWorkflowRunId,
-      costByDayUsd: Object.fromEntries(this.costByDayUsd),
+      costByDayUsd: { ...t.costByDayUsd },
       firstActivityByDayMs: Object.fromEntries(this.firstActivityMsByDay),
-      unpricedByModel: this.unpriced.byModel(),
-      estimatedByModel: this.estimated.byModel(),
-      unpricedByDay: this.unpriced.byDay(),
-      estimatedByDay: this.estimated.byDay(),
-      subagentCostByDayUsd: Object.fromEntries(this.subagentCostByDayUsd),
-      subagentByAgentType: Object.fromEntries(this.subagentByAgentType),
-      highContextCostUsd: this.highContextCostUsd,
-      apiDurationMs: this.apiDurationMs,
+      unpricedByModel: { ...t.unpricedByModel },
+      estimatedByModel: { ...t.estimatedByModel },
+      unpricedByDay: copyByDay(t.unpricedByDay),
+      estimatedByDay: copyByDay(t.estimatedByDay),
+      subagentCostByDayUsd: { ...t.subagentCostByDayUsd },
+      subagentByAgentType: { ...fold.subagentByAgentType },
+      highContextCostUsd: fold.highContextCostUsd,
+      apiDurationMs: fold.apiDurationMs,
       costRateMultiplierApplied: this.rateMultiplier,
     };
   }
@@ -936,6 +792,8 @@ export class CostTracker implements Resettable {
     if (this.currentModel) {
       attrs.model = this.currentModel;
     }
+    const m = this.getMetrics();
+    const totalCostUsd = m.sessionTotalCostUsd ?? 0;
 
     // Deliberately not emitted as its own NR metric: cost-per-million-tokens
     // is a pure ratio of session_total_usd and the tokens_* counts already
@@ -945,18 +803,18 @@ export class CostTracker implements Resettable {
     // flexible and adds ingest volume for no analytical benefit. It's still
     // computed locally (see getMetrics().costPerMillionTokens) for the MCP
     // tool responses and local dashboard, which have no NRQL alternative.
-    aggregator.record('ai.cost.session_total_usd', this.totalCostUsd, attrs);
-    aggregator.record('ai.cost.tokens_input', this.totalInputTokens, attrs);
-    aggregator.record('ai.cost.tokens_output', this.totalOutputTokens, attrs);
-    aggregator.record('ai.cost.tokens_thinking', this.totalThinkingTokens, attrs);
-    aggregator.record('ai.cost.tokens_cache_read', this.totalCacheReadTokens, attrs);
-    aggregator.record('ai.cost.tokens_cache_creation', this.totalCacheCreationTokens, attrs);
-    aggregator.record('ai.cost.cache_savings_usd', this.totalCacheSavingsUsd, attrs);
+    aggregator.record('ai.cost.session_total_usd', totalCostUsd, attrs);
+    aggregator.record('ai.cost.tokens_input', m.totalInputTokens, attrs);
+    aggregator.record('ai.cost.tokens_output', m.totalOutputTokens, attrs);
+    aggregator.record('ai.cost.tokens_thinking', m.totalThinkingTokens, attrs);
+    aggregator.record('ai.cost.tokens_cache_read', m.totalCacheReadTokens, attrs);
+    aggregator.record('ai.cost.tokens_cache_creation', m.totalCacheCreationTokens, attrs);
+    aggregator.record('ai.cost.cache_savings_usd', m.totalCacheSavingsUsd, attrs);
 
     if (this.totalLinesChanged > 0) {
       aggregator.record(
         'ai.cost.cost_per_line_of_code',
-        this.totalCostUsd / this.totalLinesChanged,
+        totalCostUsd / this.totalLinesChanged,
         attrs,
       );
     }
@@ -966,7 +824,7 @@ export class CostTracker implements Resettable {
       if (uniqueFilesWritten > 0) {
         aggregator.record(
           'ai.cost.cost_per_file_modified',
-          this.totalCostUsd / uniqueFilesWritten,
+          totalCostUsd / uniqueFilesWritten,
           attrs,
         );
       }
@@ -974,12 +832,12 @@ export class CostTracker implements Resettable {
 
     aggregator.record('ai.cost.report_count', this.reportCount, attrs);
     aggregator.record('ai.cost.estimation_count', this.estimationCount, attrs);
-    aggregator.record('ai.cost.subagent_usd', this.subagentCostUsd, attrs);
-    aggregator.record('ai.cost.parent_usd', this.parentCostUsd, attrs);
-    for (const [model, entry] of this.unpriced.entries()) {
+    aggregator.record('ai.cost.subagent_usd', m.subagentCostUsd, attrs);
+    aggregator.record('ai.cost.parent_usd', m.parentCostUsd, attrs);
+    for (const [model, entry] of Object.entries(m.unpricedByModel)) {
       aggregator.record('ai.cost.unpriced_calls', entry.calls, { model });
     }
-    for (const [model, entry] of this.estimated.entries()) {
+    for (const [model, entry] of Object.entries(m.estimatedByModel)) {
       aggregator.record('ai.cost.estimated_calls', entry.calls, {
         model,
         estimatedFrom: entry.estimatedFrom,
@@ -988,39 +846,131 @@ export class CostTracker implements Resettable {
   }
 
   reset(_sessionId: string): void {
-    this.totalCostUsd = 0;
-    this.totalInputTokens = 0;
-    this.totalOutputTokens = 0;
-    this.totalThinkingTokens = 0;
-    this.totalCacheReadTokens = 0;
-    this.totalCacheCreationTokens = 0;
-    this.totalCacheSavingsUsd = 0;
+    this.ledger = new UsageLedger();
     this.currentModel = null;
     this.reportCount = 0;
     this.estimationCount = 0;
-    this.byteEstimateCostUsd = 0;
-    this.byteEstimateInputTokens = 0;
-    this.byteEstimateOutputTokens = 0;
-    this.byteEstimateCostByModel = new Map();
-    this.byteEstimateCostByDay = new Map();
-    this.hasByteEstimateHistory = false;
     this.latestCostBreakdown = null;
-    this.costByModel = new Map();
-    this.unpriced.clear();
-    this.estimated.clear();
-    this.byteEstimateUnpriced.clear();
-    this.byteEstimateEstimated.clear();
-    this.costByDayUsd = new Map();
-    this.subagentCostByDayUsd = new Map();
-    this.subagentByAgentType = new Map();
-    this.highContextCostUsd = 0;
-    this.apiDurationMs = null;
     this.firstActivityMsByDay = new Map();
     this.unanchoredDays = new Set();
-    this.costByWorkflowRunId = new Map();
     this.lastMutationMsByDay = new Map();
-    this.subagentCostUsd = 0;
-    this.parentCostUsd = 0;
     this.totalLinesChanged = 0;
   }
+}
+
+function copyByDay<T>(
+  byDay: Readonly<Record<string, Readonly<Record<string, T>>>>,
+): Record<string, Record<string, T>> {
+  return Object.fromEntries(Object.entries(byDay).map(([day, m]) => [day, { ...m }]));
+}
+
+/** Per-key `a - b`, clamped at zero. */
+function subtractRecord(
+  a: Readonly<Record<string, number>>,
+  b: Readonly<Record<string, number>>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(a)) {
+    const left = v - (b[k] ?? 0);
+    if (left > 1e-12) out[k] = left;
+  }
+  return out;
+}
+
+/**
+ * Provisional entries for a summary's byte-estimate ledger written before the
+ * usage ledger existed: one per day, timestamped `ts`, so the next exact
+ * report retires them. The ledger has no per-entry split of model and day, so
+ * each day's entry carries the ledger's costliest model and a share of its
+ * tokens in proportion to that day's cost. The unpriced and estimated-price
+ * calls the estimates counted ride on the entry of their day (`calls`); calls
+ * with no day split ride on the last entry.
+ */
+export function legacyEstimateEntries(
+  est: ByteEstimateLedger,
+  ts: number,
+  scope = 'legacy',
+): UsageEntry[] {
+  const callsByDay = new Map<string, EntryCalls>();
+  const addCalls = (day: string, key: 'unpriced' | 'estimated', perModel: object): void => {
+    if (Object.keys(perModel).length === 0) return;
+    callsByDay.set(day, { ...callsByDay.get(day), [key]: perModel });
+  };
+  for (const [day, perModel] of Object.entries(est.unpricedByDay ?? {})) {
+    addCalls(day, 'unpriced', perModel);
+  }
+  for (const [day, perModel] of Object.entries(est.estimatedByDay ?? {})) {
+    addCalls(day, 'estimated', perModel);
+  }
+  const hasCalls =
+    Object.keys(est.unpricedByModel ?? {}).length > 0 ||
+    Object.keys(est.estimatedByModel ?? {}).length > 0;
+  if (est.costUsd <= 0 && est.inputTokens <= 0 && est.outputTokens <= 0 && !hasCalls) return [];
+  const model = Object.entries(est.costByModel).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'unknown';
+  const costDays = new Map(Object.entries(est.costByDayUsd).filter(([, usd]) => usd > 0));
+  const dayKeys = [...new Set([...costDays.keys(), ...callsByDay.keys()])].sort();
+  if (dayKeys.length === 0) dayKeys.push(localDateKey(ts));
+  const lastDay = dayKeys[dayKeys.length - 1]!;
+  if (est.unpricedByDay === undefined && est.unpricedByModel) {
+    addCalls(lastDay, 'unpriced', est.unpricedByModel);
+  }
+  if (est.estimatedByDay === undefined && est.estimatedByModel) {
+    addCalls(lastDay, 'estimated', est.estimatedByModel);
+  }
+  const totalUsd = [...costDays.values()].reduce((sum, usd) => sum + usd, 0);
+  let inputLeft = est.inputTokens;
+  let outputLeft = est.outputTokens;
+  return dayKeys.map((day) => {
+    const last = day === lastDay;
+    const usd = costDays.get(day) ?? (costDays.size === 0 && last ? est.costUsd : 0);
+    const share = totalUsd > 0 ? usd / totalUsd : last ? 1 : 0;
+    const inputTokens = last ? inputLeft : Math.round(est.inputTokens * share);
+    const outputTokens = last ? outputLeft : Math.round(est.outputTokens * share);
+    inputLeft -= inputTokens;
+    outputLeft -= outputTokens;
+    const calls = callsByDay.get(day);
+    return {
+      id: `legacy-est:${scope === 'legacy' ? '' : `${scope}:`}${day}`,
+      provisional: true,
+      replaces: false,
+      ts,
+      day,
+      model,
+      inputTokens: Math.max(0, inputTokens),
+      outputTokens: Math.max(0, outputTokens),
+      thinkingTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      costUsd: usd,
+      cacheSavingsUsd: 0,
+      ...(calls && { calls }),
+    };
+  });
+}
+
+/**
+ * `base` without the unpriced and estimated-price calls `estimates` stand for:
+ * a pre-ledger total counted the estimates' calls, which now ride on the
+ * provisional entries so they retire with them.
+ */
+export function withoutEstimateCalls(
+  base: CostTotals,
+  estimates: readonly UsageEntry[],
+): CostTotals {
+  if (!estimates.some((e) => e.calls)) return base;
+  const calls = foldUsage(estimates).totals;
+  const rest = subtractTotals(base, {
+    ...ZERO_TOTALS,
+    unpricedByModel: calls.unpricedByModel,
+    estimatedByModel: calls.estimatedByModel,
+    unpricedByDay: calls.unpricedByDay,
+    estimatedByDay: calls.estimatedByDay,
+  });
+  return {
+    ...base,
+    unpricedByModel: rest.unpricedByModel,
+    estimatedByModel: rest.estimatedByModel,
+    unpricedByDay: rest.unpricedByDay,
+    estimatedByDay: rest.estimatedByDay,
+  };
 }

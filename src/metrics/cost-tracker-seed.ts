@@ -1,7 +1,9 @@
-import { exactTotalsOf, hasAttributableActivity } from '../storage/session-store.js';
+import { exactTotalsOf, hasAttributableActivity, usageLedgerOf } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import type { CostTrackerSeed } from './cost-tracker.js';
 import { localDateKey, todayPortionRatio } from '../lib/date.js';
+import { ZERO_TOTALS, isZeroTotals } from './usage-ledger.js';
+import type { CostTotals } from './usage-ledger.js';
 
 export interface TodayCostSource {
   readonly startTime: number;
@@ -72,6 +74,10 @@ function latestActivityDayKey(persisted: FullSessionSummary): string | undefined
 //
 // dayCostUsd/daySubagentCostUsd come from todayCostOfSummary, so Spend Today
 // is unchanged by a restart.
+//
+// `ledger` is what CostTracker actually seeds from. A summary old enough to
+// have no day buckets books its pro-rated today share there instead, as the
+// flat fields always did.
 export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTrackerSeed {
   const totalCostUsd = persisted.estimatedCostUsd ?? 0;
   const costByModel: Record<string, number> = {};
@@ -84,7 +90,17 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     dayKey,
   );
   const dayFirstActivityMs = persisted.firstActivityByDayMs?.[dayKey];
+  const recovered = usageLedgerOf(persisted);
+  let base: CostTotals = recovered.base;
+  if (recovered.legacy && persisted.costByDayUsd === undefined && !isZeroTotals(base)) {
+    base = {
+      ...base,
+      costByDayUsd: dayCostUsd > 0 ? { [dayKey]: dayCostUsd } : {},
+      subagentCostByDayUsd: daySubagentCostUsd > 0 ? { [dayKey]: daySubagentCostUsd } : {},
+    };
+  }
   return {
+    ledger: { entries: recovered.entries, base: isZeroTotals(base) ? ZERO_TOTALS : base },
     totalCostUsd,
     subagentCostUsd: persisted.subagentCostUsd,
     parentCostUsd: totalCostUsd - persisted.subagentCostUsd,

@@ -426,8 +426,9 @@ export class HookEventProcessor {
   private registeredAdaptersByName: Map<string, PlatformAdapter> | null = null;
   /**
    * In-memory, per-agent dedup of subagent turns by messageId (one DedupRing
-   * per agent, LRU-bounded across agents). It cannot stop a double count
-   * across a restart; SubagentWatcher gets that from the BilledTurnLedger.
+   * per agent, LRU-bounded across agents). Session cost does not depend on
+   * it: CostTracker keys each subagent turn by its messageId, across restarts
+   * too.
    */
   private readonly subagentDedupRegistry = new DedupRingRegistry(50, 4096);
   /**
@@ -444,9 +445,11 @@ export class HookEventProcessor {
   private readonly workflowRunDedup = new Set<string>();
   private readonly workflowRunDedupOrder: string[] = [];
   /**
-   * In-memory, per-session dedup of token events by messageId. It cannot stop
-   * a double count across a restart or across sessions; parent-transcript
-   * turns get that from the BilledTurnLedger in ParentTranscriptWatcher.
+   * In-memory, per-session dedup of token events by messageId, a cheap first
+   * filter for consumers such as AiTurnCost. Session cost does not depend on
+   * it: CostTracker keys every usage by the same id (`TokenEvent.usageId`),
+   * across restarts too. Across sessions (a fork), the BilledTurnLedger in
+   * the watchers decides.
    */
   private readonly tokenDedupRegistry = new DedupRingRegistry(50, 4096);
 
@@ -899,6 +902,8 @@ export class HookEventProcessor {
       ...(cacheCreation1hTokens > 0 && { cacheCreation1hTokens }),
       model: event.model ?? 'unknown',
       sessionId: event.sessionId,
+      ...(typeof event.messageId === 'string' &&
+        event.messageId.length > 0 && { usageId: event.messageId.slice(0, 256) }),
       ...(event.responseMs !== undefined && { responseMs: event.responseMs }),
       ...(platform !== undefined && { platform }),
     };

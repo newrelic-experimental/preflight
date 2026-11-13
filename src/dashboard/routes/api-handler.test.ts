@@ -3717,6 +3717,52 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     });
   });
 
+  it("counts only today's unpriced calls for sessions with day buckets", async () => {
+    const todayKey = localDateKey(Date.now());
+    const yesterdayKey = localDateKey(localStartOfDay() - 1);
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'crossed-midnight',
+            unpricedByModel: { m: { calls: 5, tokens: 500 } },
+            unpricedByDay: {
+              [yesterdayKey]: { m: { calls: 3, tokens: 300 } },
+              [todayKey]: { m: { calls: 2, tokens: 200 } },
+            },
+          },
+          {
+            sessionId: 'late-only',
+            unpricedByModel: { m: { calls: 7, tokens: 70 } },
+            unpricedByDay: {},
+          },
+          { sessionId: 'legacy', unpricedByModel: { m: { calls: 1, tokens: 10 } } },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      costTracker: {
+        getMetrics: () => ({
+          sessionTotalCostUsd: 0,
+          unpricedByModel: { m: { calls: 4, tokens: 40 } },
+          unpricedByDay: {
+            [yesterdayKey]: { m: { calls: 3, tokens: 30 } },
+            [todayKey]: { m: { calls: 1, tokens: 10 } },
+          },
+        }),
+        getCostForDay: () => 0,
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const parsed = JSON.parse(body()) as {
+      unpricedByModel: Record<string, { calls: number; tokens: number }>;
+    };
+    expect(parsed.unpricedByModel).toEqual({ m: { calls: 4, tokens: 220 } });
+  });
+
   // A NEW-format session with day buckets contributes exactly its today-bucket
   // for both total and subagent, even with an empty timeline.
   it('uses day buckets for subagent spend regardless of timeline presence', async () => {

@@ -1133,6 +1133,7 @@ describe('buildSessionSummary', () => {
     };
 
     const mockCostTracker = {
+      getUsageLedger: () => undefined,
       getMetrics: () => ({
         sessionTotalCostUsd: 0.12,
         costPerLineOfCode: null,
@@ -1918,7 +1919,8 @@ describe('buildSessionSummary', () => {
 
       const reloaded = store.loadSession('sess-e2e')!;
       expect(reloaded.unpricedByModel).toBeUndefined();
-      expect(reloaded.unpricedByDay).toEqual({});
+      // With no counts left, an absent day map and an empty one read the same.
+      expect(reloaded.unpricedByDay ?? {}).toEqual({});
       const afterSecondRestart = new CostTracker();
       afterSecondRestart.seedFromPersisted(buildCostTrackerSeed(reloaded));
       expect(afterSecondRestart.getMetrics().unpricedByModel).toEqual({});
@@ -4334,6 +4336,7 @@ describe('attribution field', () => {
         unpricedByDay: {},
         estimatedByDay: {},
       }),
+      getUsageLedger: () => undefined,
     } as unknown as CostTracker;
 
     const summary = buildSessionSummary({

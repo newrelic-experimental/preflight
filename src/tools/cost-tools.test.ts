@@ -44,6 +44,68 @@ describe('REPORT_TOKENS_TOOL', () => {
   });
 });
 
+describe('handleReportTokens() request ids', () => {
+  const REPORT: TokenReport = { input_tokens: 1_000, output_tokens: 100, model: 'claude-sonnet-4' };
+  const bodyOf = (result: ReturnType<typeof handleReportTokens>) =>
+    JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+  const recordTranscriptTurn = (tracker: CostTracker, usageId: string): void => {
+    tracker.recordTokenUsage(
+      {
+        inputTokens: 1_000,
+        outputTokens: 100,
+        thinkingTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalTokens: 1_100,
+      },
+      'claude-sonnet-4',
+      { replacesEstimates: true, usageId },
+    );
+  };
+
+  it('counts a response the transcript already reported once when its id is passed', () => {
+    const tracker = new CostTracker();
+    recordTranscriptTurn(tracker, 'msg_1');
+    const before = tracker.getMetrics().sessionTotalCostUsd;
+
+    const body = bodyOf(handleReportTokens(tracker, { ...REPORT, request_id: 'msg_1' }));
+
+    expect(body).toMatchObject({ recorded: false, reason: 'duplicate_request_id' });
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBe(before);
+  });
+
+  it('ignores an id-less report once the session is costed from its transcript', () => {
+    const tracker = new CostTracker();
+    recordTranscriptTurn(tracker, 'msg_1');
+    const before = tracker.getMetrics().sessionTotalCostUsd;
+
+    const body = bodyOf(handleReportTokens(tracker, REPORT));
+
+    expect(body).toMatchObject({ recorded: false, reason: 'already_counted_from_transcript' });
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBe(before);
+  });
+
+  it('counts id-less reports when no watcher covers the session', () => {
+    const tracker = new CostTracker();
+    handleReportTokens(tracker, REPORT);
+    handleReportTokens(tracker, REPORT);
+    expect(tracker.getMetrics().reportCount).toBe(2);
+  });
+
+  it('counts a report whose id the transcript does not hold', () => {
+    const tracker = new CostTracker();
+    recordTranscriptTurn(tracker, 'msg_1');
+    const body = bodyOf(handleReportTokens(tracker, { ...REPORT, request_id: 'req_other' }));
+    expect(body.recorded).toBe(true);
+    expect(tracker.getMetrics().reportCount).toBe(2);
+  });
+
+  it('rejects a malformed request id', () => {
+    const result = handleReportTokens(new CostTracker(), { ...REPORT, request_id: 'a b' });
+    expect(result.isError).toBe(true);
+  });
+});
+
 describe('handleReportTokens()', () => {
   it('records token usage and returns cost data', () => {
     const tracker = new CostTracker();

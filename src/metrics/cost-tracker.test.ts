@@ -687,8 +687,13 @@ describe('CostTracker', () => {
           },
         }),
       );
+      // The live call's stand-in comes from the current pricing table, so it wins.
       expect(tracker.getMetrics().estimatedByModel).toEqual({
-        'claude-opus-5-9': { calls: 4, tokens: 410, estimatedFrom: 'claude-opus-5' },
+        'claude-opus-5-9': {
+          calls: 4,
+          tokens: 410,
+          estimatedFrom: estimatedFromOf('claude-opus-5-9'),
+        },
       });
       tracker.reset('s');
       expect(tracker.getMetrics().estimatedByModel).toEqual({});
