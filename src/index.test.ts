@@ -2503,6 +2503,35 @@ describe('stdio integration', () => {
       });
     }, 40000);
 
+    it('a claude-code engine stops estimating its own session once a drained report for it arrives', async () => {
+      await withPendingEngine('600000', async (env, adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        await adopt('real-owner-session');
+        runHook(env, reportHook('real-owner-session', 'r-own-00001'));
+        expect(await drained(storage, 'real-owner-session')).toBe('');
+        const read = { session_id: 'real-owner-session', tool_name: 'Read', tool_use_id: 'tu-big' };
+        runHook(
+          env,
+          { hook_event_name: 'PreToolUse', ...read, tool_input: { file_path: '/repo/big.txt' } },
+          ['pre-tool'],
+        );
+        runHook(
+          env,
+          {
+            hook_event_name: 'PostToolUse',
+            ...read,
+            tool_response: { content: 'y'.repeat(40_000) },
+          },
+          ['post-tool'],
+        );
+        await close();
+
+        const saved = savedSession(storage, 'real-owner-session');
+        expect(saved).toMatchObject({ tokensInput: 1000 });
+        expect(saved?.estimatedCostUsd).toBeCloseTo(0.0075, 6);
+      });
+    }, 40000);
+
     it("a pending engine that drains another conversation's tool calls and then adopts saves them", async () => {
       await withPendingEngine('600000', async (env, adopt, close) => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
@@ -2733,17 +2762,16 @@ describe('stdio integration', () => {
       });
     }, 30000);
 
-    it('leaves the report to the hook after a Cursor engine adopts a real session id', async () => {
+    it('leaves the report to the hook and stays pending even when a breadcrumb is written', async () => {
       await withPendingEngine('cursor', async (client, hook, _sessionFile, storagePath) => {
-        const breadcrumbDir = resolve(storagePath, 'session-by-ppid');
-        mkdirSync(breadcrumbDir, { recursive: true });
-        writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), 'real-owner-session');
-        const adopted = async () =>
-          (await client.listTools()).tools.some((t) => t.name === 'nr_observe_get_session_stats');
-        for (let i = 0; i < 40 && !(await adopted()); i++) {
-          await new Promise((r) => setTimeout(r, 250));
+        for (const root of [storagePath, resolve(storagePath, 'breadcrumbs', 'claude-code')]) {
+          const dir = resolve(root, 'session-by-ppid');
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(resolve(dir, `${process.pid}.txt`), 'real-owner-session');
         }
-        expect(await adopted()).toBe(true);
+        await new Promise((r) => setTimeout(r, 1500));
+        const names = async () => (await client.listTools()).tools.map((t) => t.name);
+        expect(await names()).not.toContain('nr_observe_get_session_stats');
 
         const result = await client.callTool({
           name: 'nr_observe_report_tokens',
@@ -2775,34 +2803,21 @@ describe('stdio integration', () => {
       });
     }, 30000);
 
-    it('stops estimating a resolved Cursor engine once its own conversation reported', async () => {
-      await withPendingEngine('cursor', async (client, hook, sessionFile, storagePath) => {
-        const breadcrumbDir = resolve(storagePath, 'session-by-ppid');
-        mkdirSync(breadcrumbDir, { recursive: true });
-        writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), 'real-owner-session');
-        const adopted = async () =>
-          (await client.listTools()).tools.some((t) => t.name === 'nr_observe_get_session_stats');
-        for (let i = 0; i < 40 && !(await adopted()); i++) {
-          await new Promise((r) => setTimeout(r, 250));
-        }
+    it("a pending Cursor engine stops estimating a conversation once the hook saved that conversation's report", async () => {
+      await withPendingEngine('cursor', async (client, hook, sessionFile) => {
         const result = await client.callTool({
           name: 'nr_observe_report_tokens',
           arguments: report,
         });
         hook({
           hook_event_name: 'afterMCPExecution',
-          conversation_id: 'real-owner-session',
+          conversation_id: 'conv-reported',
           mcp_server_name: 'newrelic-preflight',
           tool_name: 'nr_observe_report_tokens',
           tool_input: JSON.stringify(report),
           result_json: JSON.stringify(result),
         });
-        const buffer = resolve(storagePath, 'buffer-real-owner-session.jsonl');
-        const pending = () => existsSync(buffer) && readFileSync(buffer, 'utf-8') !== '';
-        for (let i = 0; i < 40 && pending(); i++) {
-          await new Promise((r) => setTimeout(r, 250));
-        }
-        const read = { session_id: 'real-owner-session', tool_name: 'Read', tool_use_id: 'tu-big' };
+        const read = { session_id: 'conv-reported', tool_name: 'Read', tool_use_id: 'tu-big' };
         hook({
           hook_event_name: 'PreToolUse',
           ...read,
@@ -2810,10 +2825,10 @@ describe('stdio integration', () => {
         });
         hook({ hook_event_name: 'PostToolUse', ...read, tool_response: 'y'.repeat(40_000) });
 
-        let saved = await sessionFile('real-owner-session');
+        let saved = await sessionFile('conv-reported');
         for (let i = 0; i < 40 && Number(saved?.toolCallCount ?? 0) < 2; i++) {
           await new Promise((r) => setTimeout(r, 250));
-          saved = await sessionFile('real-owner-session');
+          saved = await sessionFile('conv-reported');
         }
         expect(saved?.toolCallCount).toBe(2);
         expect(saved?.estimatedCostUsd).toBeCloseTo(0.0075, 6);
