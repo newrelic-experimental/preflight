@@ -3104,6 +3104,14 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
     ['curl --header "Api-Key secret123" https://api.example.com', 'secret123'],
     [`aws configure set aws_secret_access_key ${AWS_SECRET}`, AWS_SECRET],
     [`AWS_SECRET_ACCESS_KEY=${AWS_SECRET} aws s3 ls`, AWS_SECRET],
+    ['deploy --access-token secret123', 'secret123'],
+    ['deploy --client-secret secret123', 'secret123'],
+    ['deploy --secret-key secret123', 'secret123'],
+    ['deploy --private-key secret123', 'secret123'],
+    ['deploy --db-password secret123', 'secret123'],
+    ['mysql -h db -e "use shop; select 1" -psecret123', 'secret123'],
+    ['mysql -u root \\\n  -psecret123 db', 'secret123'],
+    [`mysql ${'-h db '.repeat(50)}-psecret123`, 'secret123'],
   ])('redacts the value in %s', (command, secret) => {
     const result = redactSensitive(command);
     expect(result).not.toContain(secret);
@@ -3150,14 +3158,60 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
     'mysqldump shop | pv -pt > dump.sql',
     'ls pymysql -pa',
     'ls mysqlbackups -pa',
+    'tool --db-password-file ./pw',
+    'docker run --name mysql -p3306:3306 mysql:8',
+    'docker run --name mysql -p127.0.0.1:3306:3306 mysql:8',
   ])('leaves %s unchanged', (command) => {
     expect(redactSensitive(command)).toBe(command);
   });
 
-  it('scans a 1 MB command of repeated mysql -p flags in linear time', () => {
-    const command = `mysql${' -p'.repeat(349_000)}`;
+  it.each([
+    ['curl --token "my secret" https://x', 'curl [REDACTED] https://x'],
+    ["curl --token 'my secret' https://x", 'curl [REDACTED] https://x'],
+    ['mysql -p"sec ret" shop', 'mysql [REDACTED] shop'],
+    ['curl -H "Api-Key: abc def" https://x', 'curl -H "[REDACTED]" https://x'],
+    ["curl -H 'X-Api-Key: abc def' https://x", "curl -H '[REDACTED]' https://x"],
+    [
+      JSON.stringify('curl --token "my secret" -H "Api-Key: abc def" x'),
+      '"curl [REDACTED] -H \\"[REDACTED]\\" x"',
+    ],
+  ])('redacts the whole quoted value in %s', (command, expected) => {
+    expect(redactSensitive(command)).toBe(expected);
+  });
+
+  // The collector redacts tool input after JSON.stringify, and terminal output carries
+  // colour codes, so a flag often follows a letter or digit.
+  describe.each([
+    ['--token', 'echo hi', '--token Zq7Xw9secret'],
+    ['--db-password', 'echo hi', '--db-password Zq7Xw9secret'],
+    ['mysql -p', 'mysql -u root', '-pZq7Xw9secret'],
+    ['-H', 'curl', '-H "X-Api-Key: Zq7Xw9 secret"'],
+    ['aws_secret_access_key', 'echo hi', `aws_secret_access_key=Zq7Xw9${'a'.repeat(34)}`],
+  ])('a %s argument right after a letter or digit', (_rule, before, argument) => {
+    it.each([
+      ['a JSON-escaped line break', JSON.stringify({ command: `${before}\n${argument}` })],
+      ['a JSON-escaped tab', JSON.stringify({ command: `${before}\t${argument}` })],
+      ['a JSON \\u escape', JSON.stringify({ command: `${before}\u0007${argument}` })],
+      ['an ANSI colour code', `${before} \u001b[32m${argument}`],
+      ['a percent-escape', `${before}%3A${argument}`],
+    ])('is redacted after %s', (_context, input) => {
+      expect(input).toContain('Zq7Xw9');
+      expect(redactSensitive(input)).not.toContain('Zq7Xw9');
+    });
+  });
+
+  it.each([
+    ['repeated mysql -p flags', `mysql${' -p'.repeat(349_000)}`],
+    ['repeated quoted mysql -p flags', `mysql${' " -p'.repeat(209_000)}`],
+    ['a mysql -e quote that never closes', `mysql -e "${'x -p '.repeat(209_000)}`],
+    ['repeated line continuations', `mysql${' \\\n -p'.repeat(150_000)}`],
+    ['repeated unclosed --token quotes', '--token "'.repeat(116_000)],
+    ['a chain of hyphenated flag words', '--a-'.repeat(262_000)],
+    ['repeated unclosed escaped header quotes', '-H \\"Api-Key: '.repeat(75_000)],
+    ['repeated JSON escapes before a dash', '\\u0000-'.repeat(131_000)],
+  ])('scans a 1 MB command of %s in linear time', (_shape, command) => {
     const start = performance.now();
-    expect(redactSensitive(command)).toBe(command);
+    redactSensitive(command);
     expect(performance.now() - start).toBeLessThan(100);
   });
 });
