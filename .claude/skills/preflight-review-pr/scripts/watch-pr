@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# Track a reviewed PR for new commits, replies and review requests. See ../SKILL.md § 7.
+#
+#   watch-pr snapshot <N> [<sha> [<time>]]  record the head you reviewed (default: current head) and
+#                                           treat activity up to <time> (ISO 8601 UTC, default now) as seen
+#   watch-pr check <N>                      one poll: print what is new and exit 0, or exit 3 if nothing is
+#   watch-pr wait <N>                       poll until something is new, let it settle, print it, exit 0
+#   watch-pr reviewed <N>                   print the head sha recorded as last reviewed
+#
+# Exit codes: 0 changes printed, 2 error, 3 nothing new, 4 gave up after PR_WATCH_MAX_HOURS,
+# 5 another watcher already holds this PR.
+#
+# Env: PR_WATCH_REPO (newrelic-experimental/preflight), PR_WATCH_INTERVAL seconds between polls (300),
+# PR_WATCH_SETTLE seconds of quiet before reporting (600), PR_WATCH_MAX_HOURS (168),
+# PR_WATCH_STATE_DIR (~/.claude/review-pr-watch).
+#
+# Bash 3.2 compatible (macOS /bin/bash). All JSON work goes through jq.
+set -euo pipefail
+umask 077 # the state files list who said what on the PR
+
+REPO="${PR_WATCH_REPO:-newrelic-experimental/preflight}"
+INTERVAL="${PR_WATCH_INTERVAL:-300}"
+SETTLE="${PR_WATCH_SETTLE:-600}"
+MAX_HOURS="${PR_WATCH_MAX_HOURS:-168}"
+STATE_DIR="${PR_WATCH_STATE_DIR:-$HOME/.claude/review-pr-watch}"
+
+die() { echo "watch-pr: $*" >&2; exit 2; }
+
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+state_file() { echo "$STATE_DIR/${REPO//\//_}-$1.json"; }
+
+# Current PR state as one JSON object. Activity by the reviewer and by bots is left out,
+# so the reviewer's own comments never count as news.
+fetch_state() {
+  local n="$1" me pr comments
+  me=$(gh api user --jq .login) || return 1
+  pr=$(gh api "repos/$REPO/pulls/$n" --jq '{ head: .head.sha, merged, state, draft,
+    requested: [.requested_reviewers[]?.login] }') || return 1
+  comments=$(
+    {
+      gh api --paginate "repos/$REPO/pulls/$n/comments" --jq '.[] | {
+        id: ("inline-" + (.id|tostring)), author: .user.login, url: .html_url,
+        where: (.path + ":" + ((.line // .original_line // 0)|tostring)),
+        reply_to: (if .in_reply_to_id then ("inline-" + (.in_reply_to_id|tostring)) else null end),
+        at: .created_at, body: (.body // "")[0:400] }' &&
+        gh api --paginate "repos/$REPO/issues/$n/comments" --jq '.[] | {
+        id: ("conv-" + (.id|tostring)), author: .user.login, url: .html_url,
+        where: "conversation", reply_to: null, at: .created_at, body: (.body // "")[0:400] }' &&
+        gh api --paginate "repos/$REPO/pulls/$n/reviews" --jq '.[] | select(.state != "PENDING" and (.state != "COMMENTED" or (.body // "") != "")) | {
+        id: ("review-" + (.id|tostring)), author: .user.login, url: .html_url,
+        where: ("review: " + .state), reply_to: null, at: .submitted_at, body: (.body // "")[0:400] }'
+    } | jq -s .
+  ) || return 1
+  jq -n --arg me "$me" --argjson pr "$pr" --argjson all "$comments" '
+    ($all | map(select(.author == $me) | .id)) as $mine
+    | {
+        me: $me,
+        head: $pr.head,
+        state: (if $pr.merged then "merged" else $pr.state end),
+        draft: $pr.draft,
+        rereq: ($pr.requested | index($me) != null),
+        activity: [ $all[]
+          | select(.author != $me and (.author | endswith("[bot]") | not))
+          | . + { to_me: (.reply_to != null and ((.reply_to as $r | $mine | index($r)) != null)) }
+          | .body = (.body | gsub("\\s+"; " ") | .[0:160]) ]
+      }'
+}
+
+# What is in $2 (current) that $1 (seen) did not have, as JSON. Empty object means nothing.
+delta() {
+  jq -n --argjson seen "$1" --argjson cur "$2" '
+    ($seen.activity | map(.id)) as $old
+    | {}
+    + (if $cur.head != $seen.head then { head: { from: $seen.head, to: $cur.head } } else {} end)
+    + (if $cur.state != $seen.state then { state: $cur.state } else {} end)
+    + (if $cur.draft != $seen.draft then { draft: $cur.draft } else {} end)
+    + (if $cur.rereq and ($seen.rereq | not) then { rereq: true } else {} end)
+    + ([ $cur.activity[] | select(.id as $i | $old | index($i) | not) ]
+       | if length > 0 then { activity: . } else {} end)'
+}
+
+report() {
+  local n="$1" d="$2" from to commits
+  echo "PR #$n ($REPO) has news since you last looked: https://github.com/$REPO/pull/$n"
+  if [ "$(jq -r '.state // empty' <<<"$d")" != "" ]; then
+    echo "- PR is now $(jq -r .state <<<"$d")"
+  fi
+  if [ "$(jq -r '.rereq // false' <<<"$d")" = "true" ]; then
+    echo "- The author re-requested your review"
+  fi
+  if [ "$(jq -r '.draft // empty' <<<"$d")" != "" ]; then
+    echo "- Draft: $(jq -r .draft <<<"$d")"
+  fi
+  from=$(jq -r '.head.from // empty' <<<"$d")
+  to=$(jq -r '.head.to // empty' <<<"$d")
+  if [ -n "$to" ]; then
+    if commits=$(gh api "repos/$REPO/compare/$from...$to" \
+      --jq '(if .status == "diverged" then "  (force-pushed: old head is no longer an ancestor)\n" else "" end)
+            + ([.commits[] | "  " + .sha[0:7] + " " + (.commit.message | split("\n")[0])] | join("\n"))' 2>/dev/null); then
+      echo "- New commits ${from:0:7}..${to:0:7}:"
+      echo "$commits"
+    else
+      echo "- Head moved ${from:0:7} -> ${to:0:7} (could not list commits; likely a force-push)"
+    fi
+  fi
+  jq -r '.activity // [] | .[] |
+    "- " + .author + (if .to_me then " replied to you" else "" end) + " (" + .where + "): "
+    + (if .body == "" then "(no text)" else "\"" + .body + "\"" end) + "\n  " + .url' <<<"$d"
+}
+
+LOCKFILE=""
+release_lock() { [ -z "$LOCKFILE" ] || rm -f "$LOCKFILE"; }
+
+lock() {
+  local pid
+  LOCKFILE="$(state_file "$1").lock"
+  if [ -f "$LOCKFILE" ]; then
+    pid=$(cat "$LOCKFILE")
+    if kill -0 "$pid" 2>/dev/null; then
+      LOCKFILE=""
+      echo "watch-pr: PR #$1 is already being watched (pid $pid)" >&2
+      exit 5
+    fi
+  fi
+  echo "$$" >"$LOCKFILE"
+  trap release_lock EXIT
+}
+
+save_seen() {
+  local file="$1" cur="$2" tmp
+  tmp="$file.tmp"
+  jq --argjson cur "$cur" '.seen = $cur' "$file" >"$tmp" && mv "$tmp" "$file"
+}
+
+# A review request the reviewer has since answered isn't news, but it has to be remembered:
+# otherwise the snapshot's "requested" state hides a later re-request.
+remember_answered_request() {
+  local file="$1" seen="$2" cur="$3"
+  if [ "$(jq -r .rereq <<<"$seen")" = "true" ] && [ "$(jq -r .rereq <<<"$cur")" = "false" ]; then
+    save_seen "$file" "$cur"
+  fi
+}
+
+cmd_snapshot() {
+  local n="$1" reviewed="${2:-}" since="${3:-}" cur file
+  mkdir -p "$STATE_DIR"
+  file=$(state_file "$n")
+  cur=$(fetch_state "$n") || die "could not read PR #$n from $REPO"
+  [ -n "$reviewed" ] || reviewed=$(jq -r .head <<<"$cur")
+  [ -n "$since" ] || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  jq -n --argjson cur "$cur" --arg reviewed "$reviewed" --arg since "$since" \
+    '{ reviewed_head: $reviewed,
+       seen: ($cur | .head = $reviewed | .activity |= map(select(.at <= $since))) }' >"$file"
+  echo "watch-pr: PR #$n snapshot saved (reviewed head ${reviewed:0:7}, activity seen up to $since)"
+}
+
+cmd_check() {
+  local n="$1" file seen cur d
+  file=$(state_file "$n")
+  [ -f "$file" ] || die "no snapshot for PR #$n; run: watch-pr snapshot $n"
+  seen=$(jq .seen "$file")
+  cur=$(fetch_state "$n") || die "could not read PR #$n from $REPO"
+  d=$(delta "$seen" "$cur")
+  if [ "$d" = "{}" ]; then
+    remember_answered_request "$file" "$seen" "$cur"
+    exit 3
+  fi
+  report "$n" "$d"
+  save_seen "$file" "$cur"
+}
+
+cmd_wait() {
+  local n="$1" file seen cur d last_d="" changed_at=0 failures=0 now deadline
+  file=$(state_file "$n")
+  [ -f "$file" ] || die "no snapshot for PR #$n; run: watch-pr snapshot $n"
+  lock "$n"
+  deadline=$(($(date +%s) + MAX_HOURS * 3600))
+  while :; do
+    now=$(date +%s)
+    if [ "$now" -ge "$deadline" ]; then
+      echo "watch-pr: stopped watching PR #$n after ${MAX_HOURS}h with nothing new"
+      exit 4
+    fi
+    seen=$(jq .seen "$file")
+    if cur=$(fetch_state "$n"); then
+      failures=0
+      d=$(delta "$seen" "$cur")
+      if [ "$d" != "{}" ]; then
+        # Report at once for a closed or merged PR or a re-request; otherwise wait until the
+        # author has gone quiet for SETTLE seconds, so a burst of pushes and replies is one alert.
+        if [ "$d" != "$last_d" ]; then
+          last_d="$d"
+          changed_at="$now"
+        fi
+        if [ "$(jq -r '.state // "" | test("merged|closed")' <<<"$d")" = "true" ] ||
+          [ "$(jq -r '.rereq // false' <<<"$d")" = "true" ] ||
+          [ $((now - changed_at)) -ge "$SETTLE" ]; then
+          report "$n" "$d"
+          save_seen "$file" "$cur"
+          exit 0
+        fi
+      else
+        remember_answered_request "$file" "$seen" "$cur"
+      fi
+    else
+      failures=$((failures + 1))
+      [ "$failures" -lt 5 ] || die "gave up on PR #$n after 5 failed polls in a row (gh auth or network?)"
+    fi
+    sleep "$INTERVAL"
+  done
+}
+
+cmd_reviewed() {
+  local file
+  file=$(state_file "$1")
+  [ -f "$file" ] || die "no snapshot for PR #$1"
+  jq -r .reviewed_head "$file"
+}
+
+[ $# -ge 2 ] || usage
+command -v gh >/dev/null || die "gh is not installed"
+command -v jq >/dev/null || die "jq is not installed"
+case "$2" in '' | *[!0-9]*) die "PR number must be numeric: $2" ;; esac
+
+case "$1" in
+  snapshot) cmd_snapshot "$2" "${3:-}" "${4:-}" ;;
+  check) cmd_check "$2" ;;
+  wait) cmd_wait "$2" ;;
+  reviewed) cmd_reviewed "$2" ;;
+  *) usage ;;
+esac

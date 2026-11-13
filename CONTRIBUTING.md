@@ -266,13 +266,20 @@ also stands in for `HOME`. So it needs no running server, and it reads none of y
 your real `~/.newrelic-preflight`, or your Claude Code and Copilot transcripts. See
 [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md#browser-tests-playwright) for adding a test.
 
-`.claude/skills/verify-preflight/` is the only project skill tracked in git. It launches an isolated
-Preflight from your checkout and drives it through the collector, the dashboard, and the stdio MCP
-tools (`.claude/skills/verify-preflight/SKILL.md`). Any other skill in `.claude/skills/`, including
-symlinks to skills kept elsewhere, stays ignored. To track a new project skill, add a
-`!.claude/skills/<name>/` line to `.gitignore`. Keep personal skills untracked through
-`.git/info/exclude`. Tracked skill Markdown is covered by `npm run format:check`, and tracked shell
-scripts by `npm run lint:shell` (shellcheck).
+Three project skills are tracked in git, under `.claude/skills/`:
+
+- `preflight-verify` launches an isolated Preflight from your checkout and drives it through the
+  collector, the dashboard, and the stdio MCP tools.
+- `preflight-self-review` reviews your own branch before you open a PR or mark it ready (see
+  [Reviewing pull requests](#reviewing-pull-requests)).
+- `preflight-review-pr` drafts a review of someone else's PR for you to edit and post. Its retro renders
+  proposed edits to the skill with `scripts/word-diff.ts`.
+
+Any other skill in `.claude/skills/`, including symlinks to skills kept elsewhere, stays ignored. To
+track a new project skill, add a `!.claude/skills/<name>/` line to both `.gitignore` and
+`.prettierignore`. Keep personal skills untracked through `.git/info/exclude`. Tracked skill
+Markdown is covered by `npm run format:check`, and tracked shell scripts by `npm run lint:shell`
+(shellcheck).
 
 Screenshot assertions compare against per-platform baselines in `e2e/*-snapshots/`. Two are
 committed for each screenshot: `-darwin`, recorded on a Mac, and `-linux`, recorded in the
@@ -333,7 +340,7 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 - [ ] `npm run check:tz-tests` passes (if you added or changed a test that uses local-time APIs such as `getHours`, `new Date(y, m, d)` or `toLocale*`; see [Time-zone-dependent tests](./docs/TEST_PATTERNS.md#time-zone-dependent-tests))
 - [ ] `package-lock.json` is unchanged by `npm install --package-lock-only` unless you changed dependencies
 - [ ] You added a changeset if the PR changes anything that ships, and left the version, `CHANGELOG.md`, and other PRs' pending changesets alone (see [Changesets](#changesets); CI's `changeset` job checks all three)
-- [ ] You've reviewed your own diff
+- [ ] You've reviewed your own diff (the `preflight-self-review` skill does this; see [Reviewing pull requests](#reviewing-pull-requests))
 
 ---
 
@@ -357,7 +364,47 @@ Types: `Fix`, `Feat`, `Refactor`, `Chore`, `Test`, `Docs`
 
 ### AI-authored pull requests
 
-An AI agent opens every pull request as a draft (`gh pr create --draft`). A human marks it ready for review once they have read, proofread and tested the changes.
+An AI agent opens every pull request as a draft (`gh pr create --draft`), after reviewing its own diff (in Claude Code, with the `preflight-self-review` skill). A human marks it ready for review once they have read, proofread and tested the changes.
+
+### Reviewing pull requests
+
+**As the author**, review your own diff before you ask anyone else to. Run the checks in
+[Before opening a PR](#before-opening-a-pr), and show your evidence in the PR body: a test plan you
+ran, a repro, a screenshot for a UI change. For an AI-assisted change, the `preflight-self-review` project
+skill does this. It reviews the branch with the same lenses a reviewer's agent uses, fixes what's
+blocking, and drafts a test plan that lists only what actually ran.
+
+**As the reviewer:**
+
+- Start with the design: should this change exist in this form, and is it in the right place? If
+  the approach is wrong, say that first and on its own. Line comments on code that will be
+  rewritten waste the author's time.
+- Approve once the PR clearly improves the code overall, even if it isn't perfect.
+- A blocking comment needs no label. Prefix anything that isn't blocking with `Non-blocking:`,
+  `Nit:` or `Optional:`, so the author can triage it. A question needs no label either.
+- Back a claim before you raise it: run the case, or ask it as a question. A plausible but
+  unverified finding costs the author more time than it saves.
+- Keep comments to the diff. Something real but out of scope becomes a follow-up issue, not a
+  request in this PR.
+- Be humane and specific. Talk about the code, not the author, and call out work that's
+  especially well done, saying why.
+
+What to look for, roughly in order:
+
+- the small part of the change that carries most of the risk, where it meets code it didn't change
+- tests: do they go through the real path, cover edge cases and failures, and fail without the
+  change?
+- failure handling: errors and edge cases handled, with sensible fallbacks and messages
+- compatibility: will it break existing installs or configs, or the dashboards and alerts that
+  query an event attribute?
+- security: [SECURITY.md's review checklist](./SECURITY.md#quick-reference-for-code-review)
+- performance: regressions, or expensive work on a hot path
+- readability and maintainability
+
+**A person writes and posts every review comment and reply.** AI tools can draft them, but a human
+reads, edits and posts each one, and decides whether to approve or request changes. The
+`preflight-review-pr` project skill drafts a review this way: it reproduces each finding against the branch
+and writes the comments to a file for you to edit and post. It never posts or edits anything on the PR.
 
 ### Branches
 

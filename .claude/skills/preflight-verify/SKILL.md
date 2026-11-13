@@ -1,5 +1,5 @@
 ---
-name: verify-preflight
+name: preflight-verify
 description: Launch an isolated Preflight instance built from this checkout and prove behavior on its real surfaces (the web dashboard, the dashboard HTTP API, hook capture through the collector, token cost from transcripts, and the stdio MCP tools). Use when shipping or reviewing any user-visible Preflight change, reproducing a dashboard or MCP bug, or when asked to "verify", "run", or "screenshot" Preflight.
 ---
 
@@ -10,7 +10,7 @@ Preflight watches an AI coding agent. The Claude Code hooks pipe every tool call
 Verification drives those same inputs. You never call internal setters or test endpoints. Everything runs through one helper, `scripts/pf-verify`, which pins each process to a throwaway `HOME` and storage dir.
 
 ```bash
-PF=.claude/skills/verify-preflight/scripts/pf-verify   # run from the repo or worktree root
+PF=.claude/skills/preflight-verify/scripts/pf-verify   # run from the repo or worktree root
 ```
 
 ## Isolation rules
@@ -92,7 +92,7 @@ $PF down        # kills only the PID this run recorded, after checking its argv 
 
 ## Helpers
 
-`scripts/pf-verify` drives the server, and it is executable. `scripts/nr-turn-cost-payloads.mjs` is a standalone proof: `node .claude/skills/verify-preflight/scripts/nr-turn-cost-payloads.mjs dist` runs the built `TurnCostAttributor` into a real `NrIngestManager` with only the HTTP send replaced, prints the `AiTurnCost` rows its Events API batch carries, and asserts one row per token report. Local mode never sends events, so run it for any change to `AiTurnCost`. `$PF` with no arguments prints its subcommands. `$PF where` prints the repo, URL, run dir, and evidence dir for the current `PF_PORT`. Two knobs exist. `PF_PERSIST_MS` (default `3000`) sets `NR_AI_SESSION_PERSIST_INTERVAL_MS`, which is 30s in production. `PF_MCP_SETTLE_MS` (default `5000`) sets how long `mcp` waits after the handshake before calling the tool. The stdio transcript watcher first polls 2s after start, so shorter settles miss seeded turns.
+`scripts/pf-verify` drives the server, and it is executable. `scripts/nr-turn-cost-payloads.mjs` is a standalone proof: `node .claude/skills/preflight-verify/scripts/nr-turn-cost-payloads.mjs dist` runs the built `TurnCostAttributor` into a real `NrIngestManager` with only the HTTP send replaced, prints the `AiTurnCost` rows its Events API batch carries, and asserts one row per token report. Local mode never sends events, so run it for any change to `AiTurnCost`. `$PF` with no arguments prints its subcommands. `$PF where` prints the repo, URL, run dir, and evidence dir for the current `PF_PORT`. Two knobs exist. `PF_PERSIST_MS` (default `3000`) sets `NR_AI_SESSION_PERSIST_INTERVAL_MS`, which is 30s in production. `PF_MCP_SETTLE_MS` (default `5000`) sets how long `mcp` waits after the handshake before calling the tool. The stdio transcript watcher first polls 2s after start, so shorter settles miss seeded turns.
 
 ## Gotchas
 

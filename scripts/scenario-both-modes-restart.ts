@@ -7,7 +7,7 @@
  *
  *   npm run test:scenario
  *
- * Three scenarios, each in a fresh isolated run (see .claude/skills/verify-preflight):
+ * Three scenarios, each in a fresh isolated run (see .claude/skills/preflight-verify):
  *   local-only   `--local` tails the transcript alone, then restarts.
  *   stdio-only   `--stdio` bills both turns alone, then restarts. It is the control that
  *                shows the split-turns failure comes from splitting turns across processes.
@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const PF = join(REPO, '.claude/skills/verify-preflight/scripts/pf-verify');
+const PF = join(REPO, '.claude/skills/preflight-verify/scripts/pf-verify');
 const PORT = process.env.PF_PORT ?? '7795';
 const MODEL = 'claude-sonnet-4-5-20250929';
 const PERSIST_MS = 3000;

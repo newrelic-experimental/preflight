@@ -2,11 +2,13 @@ dist/
 plugin/.claude-plugin/scripts/collector-script.js
 coverage/
 node_modules/
-# Mirrors .gitignore: only the tracked project skill is formatted.
+# Mirrors .gitignore: only the tracked project skills are formatted.
 .claude/*
 !.claude/skills/
 .claude/skills/*
-!.claude/skills/verify-preflight/
+!.claude/skills/preflight-verify/
+!.claude/skills/preflight-review-pr/
+!.claude/skills/preflight-self-review/
 package-lock.json
 *.tsbuildinfo
 *_IDEATION.md
