@@ -426,6 +426,24 @@ describe('classifyBash', () => {
       expect(classifyBash(cmd).isDestructive).toBe(false);
     });
 
+    it('keeps a heredoc open past an indented delimiter line when the operator has no dash', () => {
+      expect(classifyBash("cat <<EOF\n\tEOF\nit's\nEOF\nrm -rf /tmp/x").isDestructive).toBe(true);
+    });
+
+    it('ends the delimiter word at a semicolon', () => {
+      expect(
+        classifyBash('cat <<EOF;echo "x"\nbody\nEOF\necho \'rm -rf /tmp/x\'').isDestructive,
+      ).toBe(false);
+    });
+
+    it('reads an ANSI-C quoted delimiter as a quoted word', () => {
+      expect(classifyBash("cat <<$'EOF'\nit's\nEOF\nrm -rf /tmp/x").isDestructive).toBe(true);
+    });
+
+    it('does not treat an unterminated delimiter quote as a heredoc', () => {
+      expect(classifyBash("cat <<'EOF\nrm -rf /tmp/x").isDestructive).toBe(false);
+    });
+
     it('treats a quoted-delimiter heredoc body as literal, so a line continuation does not join lines', () => {
       expect(classifyBash("cat <<\\EOF\na\\\nEOF\necho 'rm -rf /tmp/x'").isDestructive).toBe(false);
     });
