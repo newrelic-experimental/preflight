@@ -407,6 +407,30 @@ describe('classifyBash', () => {
     });
 
     it.each([
+      "cat <<\\EOF\nit's\nEOF\nrm -rf /tmp/x",
+      "cat <<'EOF-1'\nit's\nEOF-1\nrm -rf /tmp/x",
+      'cat <<"E-F"\nit\'s\nE-F\nrm -rf /tmp/x',
+      "cat <<E.F\nit's\nE.F\nrm -rf /tmp/x",
+      "cat <<-\\EOF\n\tit's\n\tEOF\nrm -rf /tmp/x",
+      "cat <<E\\OF\nit's\nEOF\nrm -rf /tmp/x",
+      "cat <<'E'\"O\"F\nit's\nEOF\nrm -rf /tmp/x",
+    ])('flags a destructive command after a heredoc with a shell-word delimiter: %j', (cmd) => {
+      expect(classifyBash(cmd).isDestructive).toBe(true);
+    });
+
+    it.each([
+      "cat <<\\EOF\nEOF\necho 'rm -rf /tmp/x'",
+      "cat <<'EOF-1'\nEOF-1\necho 'rm -rf /tmp/x'",
+      'cat <<"E-F"\nE-F\necho \'rm -rf /tmp/x\'',
+    ])('does not flag a quoted command after a heredoc that closes early: %j', (cmd) => {
+      expect(classifyBash(cmd).isDestructive).toBe(false);
+    });
+
+    it('treats a quoted-delimiter heredoc body as literal, so a line continuation does not join lines', () => {
+      expect(classifyBash("cat <<\\EOF\na\\\nEOF\necho 'rm -rf /tmp/x'").isDestructive).toBe(false);
+    });
+
+    it.each([
       "echo it\\'s && tool x ; rm -rf /tmp/x",
       "echo 'it'\\''s' ; rm -rf /tmp/x",
       'echo "it\\"s" ; rm -rf /tmp/x',
