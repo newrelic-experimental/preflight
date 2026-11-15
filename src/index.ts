@@ -66,9 +66,15 @@ import { initModelPricing } from './metrics/pricing-init.js';
 import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
 import { CostTracker } from './metrics/cost-tracker.js';
+import {
+  addHeldCost,
+  heldSessionCostOf,
+  settledCostTrackerSeed,
+} from './metrics/cost-tracker-seed.js';
+import type { HeldSessionCost } from './metrics/cost-tracker-seed.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
-import { FirstSaveBaselines, costSeedOf } from './metrics/first-save-baselines.js';
+import { FirstSaveBaselines } from './metrics/first-save-baselines.js';
 import type { RepoContext } from './metrics/git-efficiency-tracker.js';
 import {
   GitEfficiencyTracker,
@@ -1680,9 +1686,10 @@ async function main(): Promise<void> {
       lastDayKey: localDateKey(),
       lastRefreshMs: 0,
     };
-    // Sessions whose saved cost a --local process folded into its CostTracker
-    // on first sight. Each is counted by the tracker, so the baseline leaves it out.
-    const localSeededSessionIds = new Set<string>();
+    // The cost a --local process's CostTracker holds for each session it has
+    // seen: the saved file it seeded from on first sight, plus every turn it
+    // priced since. The baseline counts only what each file adds beyond this.
+    const localHeldCosts = new Map<string, HeldSessionCost>();
     // Excludes the session this process owns now once its saved cost is seeded
     // into CostTracker, which for a --stdio engine happens when it adopts or
     // confirms the id, not at startup. An unconfirmed cwd guess is not seeded
@@ -1695,11 +1702,12 @@ async function main(): Promise<void> {
       const ownFile = firstSaveBaselines.costFileBeforeOwnSave(sessionTraceId);
       const baseline = computeHistoricalCosts(
         sessionStoreForCostBaseline,
-        new Set([...localSeededSessionIds, ...(ownIsSeeded ? [sessionTraceId] : [])]),
+        ownIsSeeded ? sessionTraceId : null,
         now,
         !ownIsSeeded && ownFile !== undefined
           ? { sessionId: sessionTraceId, summary: ownFile }
           : undefined,
+        localHeldCosts,
       );
       priorCostCache.priorDailyCostUsd = baseline.priorDailyCostUsd;
       priorCostCache.priorWeeklyCostUsd = baseline.priorWeeklyCostUsd;
@@ -1711,13 +1719,20 @@ async function main(): Promise<void> {
     // its file's total. Runs once per session before its first turn is priced.
     const seedLocalTrackersFromFile = (sessionId: string | null | undefined): void => {
       if (options.stdio || !sessionId || isSyntheticSessionId(sessionId)) return;
-      if (localSeededSessionIds.has(sessionId)) return;
-      localSeededSessionIds.add(sessionId);
+      if (localHeldCosts.has(sessionId)) return;
       const persisted = sessionStoreForCostBaseline.loadSession(sessionId);
-      if (!persisted) return;
-      const seed = costSeedOf(persisted);
-      costTracker.seedFromPersisted(seed.costTracker);
+      if (!persisted) {
+        localHeldCosts.set(sessionId, heldSessionCostOf(null, Date.now()));
+        return;
+      }
+      const seed = settledCostTrackerSeed(persisted);
+      costTracker.seedFromPersisted(seed);
+      localHeldCosts.set(sessionId, heldSessionCostOf(persisted, Date.now(), seed));
       refreshPriorCostBaseline();
+    };
+    const holdLocalCost = (sessionId: string | null | undefined, usd: number, ms: number): void => {
+      const held = sessionId ? localHeldCosts.get(sessionId) : undefined;
+      if (held) addHeldCost(held, usd, ms);
     };
     const refreshPriorCostBaselineIfStale = (): void => {
       const now = Date.now();
@@ -2464,6 +2479,7 @@ async function main(): Promise<void> {
             ...(tokenEvent.responseMs !== undefined && { responseMs: tokenEvent.responseMs }),
           });
           modelUsageTracker.recordUsage(tokenEvent.model, usage, breakdown.totalUsd);
+          holdLocalCost(tokenEvent.sessionId, breakdown.totalUsd, tokenEvent.timestamp);
         }
         localSessionAggregator.recordTokenUsage(tokenEvent.sessionId, {
           timestamp: tokenEvent.timestamp,
@@ -2569,6 +2585,7 @@ async function main(): Promise<void> {
         // belong in the model breakdown too — recording them only in the cost
         // tracker left Model Usage blind to every subagent-only session.
         modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
+        holdLocalCost(turn.parentSessionId, breakdown.totalUsd, turn.timestampMs);
         // The only line that makes an orphan session's subagent spend durable:
         // without it, an unscoped process's aggregator never learns about this
         // session's subagent cost and persistSession() has nothing to write.

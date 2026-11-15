@@ -81,12 +81,13 @@ interface EmittedCost {
 
 export interface LocalSessionAggregatorOptions {
   /**
-   * Called at most once per session, on that session's first subagent
-   * (`agentId`-tagged) usage — not at rollup creation, because an unscoped
-   * process creates a rollup from a session's first drained hook event,
-   * before that session's engine has written anything to disk (see
-   * `recordTokenUsage`'s doc comment). Returning null means "nothing on
-   * disk yet"; the rollup then starts at 0 as before.
+   * Called on a session's first usage of any kind, and again on each later
+   * usage until a fold closes the baseline (see `applyPersistedBaseline`).
+   * Not called at rollup creation, because an unscoped process creates a
+   * rollup from a session's first drained hook event, before that session's
+   * engine has written anything to disk (see `recordTokenUsage`'s doc
+   * comment). Returning null means "nothing on disk yet"; the rollup then
+   * starts at 0 as before.
    */
   readonly persistedCostBaseline?: (sessionId: string) => PersistedCostBaseline | null;
 }
@@ -562,8 +563,8 @@ export class LocalSessionAggregator {
     // mergeSummaries. Parent usage seeds too: a restarted process reads only
     // the transcript lines after its saved cursor, so without the file's total
     // the merge keeps the file's total and drops this turn's cost. A parent
-    // turn that finds no saved cost leaves the baseline open for a later
-    // subagent turn, which still folds whatever another writer saved by then.
+    // turn that finds no saved cost leaves the baseline open, so any later
+    // usage still folds whatever another writer saved by then.
     if (!rollup.costBaselineApplied) {
       this.applyPersistedBaseline(sessionId, rollup, usage.agentId !== undefined);
     }
@@ -626,10 +627,12 @@ export class LocalSessionAggregator {
   }
 
   /**
-   * Folds a session's on-disk cost quadruple into the rollup, additively,
-   * once. Additive (not assigned) because the rollup may already hold parent
-   * cost this process drained during the engine's pending-session window,
-   * which no other process saw — assigning would discard it. The whole
+   * Folds a session's on-disk cost quadruple into the rollup, additively.
+   * The baseline closes once a fold finds saved cost or adds any, so the
+   * saved cost is folded once. Additive (not assigned) because the rollup
+   * may already hold parent cost this process drained during the engine's
+   * pending-session window, which no other process saw — assigning would
+   * discard it. The whole
    * quadruple (not just the subagent pair) is seeded so the persisted
    * invariant `estimatedCostUsd >= subagentCostUsd` survives the fold; seeding
    * only the subagent pair could leave a merged file whose subagent figure
@@ -645,14 +648,15 @@ export class LocalSessionAggregator {
     closeWhenEmpty: boolean,
   ): void {
     const baseline = this.persistedCostBaseline?.(sessionId) ?? null;
-    const exact = baseline && exactTotalsOf(baseline);
-    rollup.costBaselineApplied = closeWhenEmpty || (exact !== null && exact.costUsd > 0);
-    if (baseline === null || exact === null) return;
+    if (baseline === null) {
+      rollup.costBaselineApplied = closeWhenEmpty;
+      return;
+    }
+    const exact = exactTotalsOf(baseline);
     const emitted = rollup.lastEmittedCost;
-    rollup.costUsd += excessOver(
-      Math.max(exact.costUsd, baseline.subagentCostUsd),
-      emitted?.costUsd,
-    );
+    const folded = excessOver(Math.max(exact.costUsd, baseline.subagentCostUsd), emitted?.costUsd);
+    rollup.costBaselineApplied = closeWhenEmpty || exact.costUsd > 0 || folded > 0;
+    rollup.costUsd += folded;
     rollup.subagentCostUsd += excessOver(baseline.subagentCostUsd, emitted?.subagentCostUsd);
     const subagentByDay = baseline.subagentCostByDayUsd ?? {};
     const seedDays = new Set([...Object.keys(exact.costByDayUsd), ...Object.keys(subagentByDay)]);
