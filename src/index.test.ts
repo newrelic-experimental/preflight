@@ -4090,11 +4090,9 @@ describe('--local restart', () => {
 
 describe('--local budget for a session resumed from its saved file', () => {
   const DAY_MS = 24 * 60 * 60 * 1000;
-  const localDay = (daysAgo: number): string => {
-    const date = new Date();
-    date.setDate(date.getDate() - daysAgo);
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-  };
+  // The child runs in UTC, so its local day is the UTC date.
+  const localDay = (daysAgo: number): string =>
+    new Date(Date.now() - daysAgo * DAY_MS).toISOString().slice(0, 10);
 
   interface LocalRun {
     readonly sessionId: string;
@@ -4138,6 +4136,7 @@ describe('--local budget for a session resumed from its saved file', () => {
       NR_AI_SESSION_PERSIST_INTERVAL_MS: '500',
       NEW_RELIC_LICENSE_KEY: '',
       NEW_RELIC_ACCOUNT_ID: '',
+      TZ: 'UTC',
       ...env,
     };
     for (const key of Object.keys(childEnv)) if (key.startsWith('CLAUDE')) delete childEnv[key];
