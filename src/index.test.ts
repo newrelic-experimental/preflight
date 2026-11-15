@@ -4088,6 +4088,239 @@ describe('--local restart', () => {
   }, 90000);
 });
 
+describe('--local budget for a session resumed from its saved file', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const localDay = (daysAgo: number): string => {
+    const date = new Date();
+    date.setDate(date.getDate() - daysAgo);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  };
+
+  interface LocalRun {
+    readonly sessionId: string;
+    readonly appendTurn: (outputTokens: number) => void;
+    readonly writeSessionFile: (summary: Record<string, unknown>) => void;
+    readonly savedCostUsd: () => number | null;
+    readonly getJson: <T>(path: string) => Promise<T>;
+    readonly poll: (predicate: () => boolean | Promise<boolean>) => Promise<boolean>;
+    readonly start: () => Promise<void>;
+    readonly stop: () => void;
+  }
+
+  async function makeLocalRun(env: Record<string, string>): Promise<LocalRun> {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+    const tmpHome = mkdtempSync(join(tmpdir(), 'nr-local-resume-home-'));
+    const storagePath = mkdtempSync(join(tmpdir(), 'nr-local-resume-storage-'));
+    const sessionsDir = resolve(storagePath, 'sessions');
+    mkdirSync(sessionsDir, { recursive: true });
+    const projectDir = resolve(tmpHome, '.claude', 'projects', '-tmp-resume');
+    mkdirSync(projectDir, { recursive: true });
+    const sessionId = 'c1d2e3f4-0000-4000-8000-000000000001';
+    const transcript = resolve(projectDir, `${sessionId}.jsonl`);
+    let turns = 0;
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+    const childEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: tmpHome,
+      USERPROFILE: tmpHome,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: storagePath,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_MODE: 'local',
+      NR_AI_ALERTS_ENABLED: 'false',
+      NR_AI_SESSION_PERSIST_INTERVAL_MS: '500',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+      ...env,
+    };
+    for (const key of Object.keys(childEnv)) if (key.startsWith('CLAUDE')) delete childEnv[key];
+    let child: ChildProcess | undefined;
+    const fileName = (): string | undefined =>
+      readdirSync(sessionsDir).find((f) => f.endsWith(`_${sessionId}.json`));
+    const getJson = async <T>(path: string): Promise<T> =>
+      (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as T;
+    return {
+      sessionId,
+      appendTurn: (outputTokens) => {
+        turns += 1;
+        appendFileSync(
+          transcript,
+          JSON.stringify({
+            type: 'assistant',
+            sessionId,
+            isSidechain: false,
+            uuid: `uuid-resume-${turns}`,
+            timestamp: new Date().toISOString(),
+            message: {
+              id: `msg_resume_${turns}`,
+              model: 'claude-sonnet-4-5-20250929',
+              role: 'assistant',
+              stop_reason: 'end_turn',
+              content: [{ type: 'text', text: 'ok' }],
+              usage: { input_tokens: 0, output_tokens: outputTokens },
+            },
+          }) + '\n',
+        );
+      },
+      writeSessionFile: (summary) => {
+        const startTime = summary.startTime as number;
+        const name =
+          fileName() ?? `${new Date(startTime).toISOString().slice(0, 10)}_${sessionId}.json`;
+        writeFileSync(
+          resolve(sessionsDir, name),
+          JSON.stringify({ sessionId, toolCallCount: 1, ...summary }),
+        );
+      },
+      savedCostUsd: () => {
+        const name = fileName();
+        if (!name) return null;
+        return (
+          JSON.parse(readFileSync(resolve(sessionsDir, name), 'utf-8')) as {
+            estimatedCostUsd: number | null;
+          }
+        ).estimatedCostUsd;
+      },
+      getJson,
+      poll: async (predicate) => {
+        for (const deadline = Date.now() + 20_000; Date.now() < deadline;) {
+          try {
+            if (await predicate()) return true;
+          } catch {
+            // Not listening or not saved yet.
+          }
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        return false;
+      },
+      start: async () => {
+        child = spawn(process.execPath, [resolve(__dirname, '..', 'dist', 'index.js'), '--local'], {
+          env: childEnv,
+          stdio: ['ignore', 'ignore', 'ignore'],
+        });
+        for (const deadline = Date.now() + 20_000; Date.now() < deadline;) {
+          try {
+            if ((await fetch(`http://127.0.0.1:${port}/api/health`)).ok) return;
+          } catch {
+            // Not listening yet.
+          }
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        throw new Error('--local did not start');
+      },
+      stop: () => {
+        child?.kill('SIGKILL');
+        rmSync(tmpHome, { recursive: true, force: true });
+        rmSync(storagePath, { recursive: true, force: true });
+      },
+    };
+  }
+
+  interface Budget {
+    readonly daily: { readonly spentUsd: number };
+    readonly weekly: { readonly spentUsd: number };
+    readonly alerts: ReadonlyArray<{ readonly period: string }>;
+  }
+  const sessionCostUsd = async (run: LocalRun): Promise<number> =>
+    (await run.getJson<{ cost: { sessionTotalCostUsd: number | null } }>('/api/cost')).cost
+      .sessionTotalCostUsd ?? 0;
+
+  it('counts only the in-window days of a session resumed from three weeks ago in the weekly budget', async () => {
+    const run = await makeLocalRun({
+      NEW_RELIC_AI_DAILY_BUDGET_USD: '100',
+      NEW_RELIC_AI_WEEKLY_BUDGET_USD: '40',
+    });
+    try {
+      const costByDayUsd = { [localDay(21)]: 38, [localDay(2)]: 2 };
+      run.writeSessionFile({
+        startTime: Date.now() - 21 * DAY_MS,
+        endTime: Date.now() - 2 * DAY_MS,
+        estimatedCostUsd: 40,
+        costByDayUsd,
+        exactTotals: { costUsd: 40, inputTokens: 0, outputTokens: 0, costByDayUsd },
+      });
+      await run.start();
+      // 266666 output tokens at $15 per million.
+      run.appendTurn(266_666);
+      expect(await run.poll(async () => (await sessionCostUsd(run)) > 43.9)).toBe(true);
+
+      const budget = await run.getJson<Budget>('/api/budget');
+      expect(await sessionCostUsd(run)).toBeCloseTo(44, 3);
+      expect(budget.daily.spentUsd).toBeCloseTo(4, 3);
+      expect(budget.weekly.spentUsd).toBeCloseTo(6, 3);
+      expect(budget.alerts.filter((a) => a.period === 'weekly')).toEqual([]);
+    } finally {
+      run.stop();
+    }
+  }, 60000);
+
+  it("keeps a saved file's byte estimates when an exact report arrives, as the file does", async () => {
+    const run = await makeLocalRun({});
+    try {
+      const today = localDay(0);
+      run.writeSessionFile({
+        startTime: Date.now() - 60 * 60 * 1000,
+        endTime: Date.now() - 30 * 60 * 1000,
+        estimatedCostUsd: 5,
+        costByDayUsd: { [today]: 5 },
+        exactTotals: { costUsd: 3, inputTokens: 0, outputTokens: 0, costByDayUsd: { [today]: 3 } },
+        byteEstimates: {
+          costUsd: 2,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByModel: {},
+          costByDayUsd: { [today]: 2 },
+        },
+      });
+      await run.start();
+      // 20000 output tokens at $15 per million.
+      run.appendTurn(20_000);
+      expect(
+        await run.poll(async () => (await sessionCostUsd(run)) > 3 && run.savedCostUsd()! > 5.29),
+      ).toBe(true);
+
+      expect(await sessionCostUsd(run)).toBeCloseTo(5.3, 6);
+      expect(run.savedCostUsd()).toBeCloseTo(5.3, 6);
+    } finally {
+      run.stop();
+    }
+  }, 60000);
+
+  it('counts cost another writer saves for a session this process first saw with no file', async () => {
+    const run = await makeLocalRun({});
+    try {
+      await run.start();
+      // 66666 output tokens at $15 per million.
+      run.appendTurn(66_666);
+      expect(await run.poll(() => run.savedCostUsd() !== null)).toBe(true);
+      const today = localDay(0);
+      run.writeSessionFile({
+        startTime: Date.now() - 60_000,
+        endTime: Date.now(),
+        estimatedCostUsd: 5,
+        costByDayUsd: { [today]: 5 },
+        exactTotals: { costUsd: 5, inputTokens: 0, outputTokens: 0, costByDayUsd: { [today]: 5 } },
+      });
+      // Past the baseline cache's 30 s lifetime, so the next cost update rereads it.
+      await new Promise((r) => setTimeout(r, 31_000));
+      run.appendTurn(66_666);
+      expect(await run.poll(async () => (await sessionCostUsd(run)) > 1.9)).toBe(true);
+
+      const budget = await run.getJson<Budget>('/api/budget');
+      expect(budget.daily.spentUsd).toBeCloseTo(5, 3);
+      expect(budget.weekly.spentUsd).toBeCloseTo(5, 3);
+    } finally {
+      run.stop();
+    }
+  }, 90000);
+});
+
 describe('deploy-dashboards/deploy-alerts --staging is hidden from --help', () => {
   async function expectHelpHidesStaging(sub: 'deploy-dashboards' | 'deploy-alerts'): Promise<void> {
     const exitSpy = jest

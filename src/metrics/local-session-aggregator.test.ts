@@ -943,6 +943,20 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
     expect(summary?.subagentCostUsd).toBe(0);
   });
 
+  it('folds a saved subagent-only cost once when the stored exact share is empty', () => {
+    const agg = new LocalSessionAggregator({
+      persistedCostBaseline: () => ({
+        estimatedCostUsd: 5,
+        subagentCostUsd: 5,
+        exactTotals: { costUsd: 0, inputTokens: 0, outputTokens: 0, costByDayUsd: {} },
+      }),
+    });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 1000 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 2000 });
+
+    expect(summariesOf(agg)[0]?.estimatedCostUsd).toBe(7);
+  });
+
   it('does not seed on rollup creation, and keeps looking while parent turns find no saved cost', () => {
     let calls = 0;
     const agg = new LocalSessionAggregator({
