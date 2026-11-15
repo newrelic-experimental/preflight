@@ -70,7 +70,7 @@ export interface ModelBreakdownTally {
  * can be passed as `persistedCostBaseline` unchanged.
  */
 export type PersistedCostBaseline = ExactTotalsSource &
-  Pick<FullSessionSummary, 'subagentCostUsd' | 'subagentCostByDayUsd'>;
+  Pick<FullSessionSummary, 'subagentCostUsd' | 'subagentCostByDayUsd' | 'firstActivityByDayMs'>;
 
 interface EmittedCost {
   readonly costUsd: number;
@@ -653,6 +653,12 @@ export class LocalSessionAggregator {
       rollup.costByDayUsd.set(
         day,
         (rollup.costByDayUsd.get(day) ?? 0) + excessOver(usd, emitted?.costByDayUsd.get(day)),
+      );
+    }
+    for (const [day, ms] of Object.entries(baseline.firstActivityByDayMs ?? {})) {
+      rollup.firstActivityByDayMs.set(
+        day,
+        Math.min(rollup.firstActivityByDayMs.get(day) ?? ms, ms),
       );
     }
     for (const [day, usd] of Object.entries(baseline.subagentCostByDayUsd ?? {})) {

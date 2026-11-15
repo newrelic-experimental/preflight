@@ -377,6 +377,41 @@ describe('collector-script', () => {
     });
   });
 
+  describe('processHook() — secrets passed as Bash arguments', () => {
+    const token = `ghp_${'A'.repeat(36)}`;
+    const straddling = `echo ${'x'.repeat(10_240 - 16 - 'echo '.length - 1)} ${token}`;
+    it.each([
+      ['Bash', makePreToolUse({ tool_name: 'Bash', tool_input: { command: straddling } })],
+      [
+        'run_in_terminal',
+        makePreToolUse({ tool_name: 'run_in_terminal', tool_input: { command: straddling } }),
+      ],
+      ['beforeShellExecution', makeCursorBeforeShellExecution({ command: straddling })],
+      [
+        'pre_run_command',
+        JSON.stringify({
+          agent_action_name: 'pre_run_command',
+          tool_info: { command_line: straddling, cwd: '/x' },
+        }),
+      ],
+    ])('redacts a whole token that straddles the content limit in a %s command', (_name, raw) => {
+      processHook(raw);
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.command).not.toMatch(/ghp_|AAAA/);
+      expect(toolInput.command).toMatch(/\[REDACTED\]$/);
+    });
+
+    it('keeps a destructive command past the content limit classifiable', () => {
+      const command = `echo ${'x'.repeat(10_300)} && rm -rf /tmp/x`;
+      processHook(makePreToolUse({ tool_name: 'Bash', tool_input: { command } }));
+
+      const event = readBufferEvents()[0]!;
+      const fields = parseToolSpecificFields('Bash', event.toolInput, undefined);
+      expect(fields.bashDestructive).toBe(true);
+    });
+  });
+
   describe('processHook() — PowerShell (native Windows tool, no Git Bash)', () => {
     // PowerShell is a real, first-party Claude Code tool (see
     // code.claude.com/docs/en/tools-reference) — extractInputMeta() had no
