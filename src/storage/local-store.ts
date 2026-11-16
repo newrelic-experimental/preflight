@@ -124,6 +124,24 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+let warnedUnlistableWriters = false;
+
+export function breadcrumbWriters(storagePath: string): string[] {
+  try {
+    const writers = readdirSync(resolve(storagePath, BREADCRUMBS_DIR), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+    warnedUnlistableWriters = false;
+    return writers;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT' && !warnedUnlistableWriters) {
+      warnedUnlistableWriters = true;
+      logger.warn('Failed to list breadcrumb writers', { error: String(err) });
+    }
+    return [];
+  }
+}
+
 /**
  * True when `<storagePath>/active-<sessionId>.pid` names a live process, i.e.
  * some `--stdio` engine has adopted `sessionId` and is still running. An
@@ -1116,21 +1134,9 @@ export class LocalStore {
    * @returns the number of breadcrumb files deleted
    */
   gcStaleBreadcrumbs(): number {
-    let writers: string[] = [];
-    try {
-      writers = readdirSync(resolve(this.storagePath, BREADCRUMBS_DIR), { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        logger.warn('Failed to enumerate breadcrumb writers for gcStaleBreadcrumbs', {
-          error: String(err),
-        });
-      }
-    }
     const breadcrumbDirs = [
       resolve(this.storagePath, 'session-by-ppid'),
-      ...writers.map((writer) =>
+      ...breadcrumbWriters(this.storagePath).map((writer) =>
         resolve(breadcrumbRoot(this.storagePath, writer), 'session-by-ppid'),
       ),
     ];
