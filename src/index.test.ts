@@ -3307,6 +3307,33 @@ describe('stdio integration', () => {
       }
     }, 60000);
 
+    it('saves the turns a cwd guess resolved at startup drained before confirmation once', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        writeCwdBreadcrumb(storagePath, projectCwd, 'startup-guess-id');
+        const engine = await startEngine(storagePath, projectCwd, {
+          NR_AI_PENDING_CONFIRMATION_CAP_MS: '120000',
+        });
+        appendTokenEvent(storagePath, 'startup-guess-id', 'msg_before_confirm', 50);
+        const buffer = resolve(storagePath, 'buffer-startup-guess-id.jsonl');
+        expect(
+          await waitUntil(() => !existsSync(buffer) || readFileSync(buffer, 'utf8') === ''),
+        ).toBe(true);
+
+        await confirmViaPpid(storagePath, engine, 'startup-guess-id');
+        appendTokenEvent(storagePath, 'startup-guess-id', 'msg_after_confirm', 50);
+        expect(
+          await waitUntil(() => readSaved(storagePath, 'startup-guess-id')?.tokensInput === 100),
+        ).toBe(true);
+        await engine.settle();
+
+        expect(readSaved(storagePath, 'startup-guess-id')?.tokensInput).toBe(100);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
     it("counts a never-confirmed cwd guess's saved cost once after it checkpoints its own", async () => {
       const { storagePath, projectCwd, cleanup } = makeDirs();
       try {
