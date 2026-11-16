@@ -350,7 +350,7 @@ export class LocalStore {
       ? this.bufferPath
       : resolve(
           this.storagePath,
-          `buffer-${sessionId !== undefined && SESSION_ID_RE.test(sessionId) ? sessionId : 'unknown'}.jsonl`,
+          `buffer-${typeof sessionId === 'string' && SESSION_ID_RE.test(sessionId) ? sessionId : 'unknown'}.jsonl`,
         );
     countMintedToolUseId(bufferPath, id, lateUntil);
   }

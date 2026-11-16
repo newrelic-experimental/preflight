@@ -3101,7 +3101,9 @@ describe('a tool call without tool_use_id', () => {
   function startEngine(
     records: Outcome[],
     amends: Outcome[],
-    store = new LocalStore(tmpDir, SESSION),
+    { store, drainAllSessions = false }: { store: LocalStore; drainAllSessions?: boolean } = {
+      store: new LocalStore(tmpDir, SESSION),
+    },
   ) {
     jest.useFakeTimers({ doNotFake: ['Date'] });
     const outcome = ({ timestamp, success, durationMs }: ToolCallRecord) => ({
@@ -3111,6 +3113,7 @@ describe('a tool call without tool_use_id', () => {
     });
     const engine = new HookEventProcessor({
       store,
+      drainAllSessions,
       pollIntervalMs: POLL_MS,
       onRecord: (r) => records.push(outcome(r)),
       onRecordAmend: (r) => amends.push(outcome(r)),
@@ -3169,16 +3172,19 @@ describe('a tool call without tool_use_id', () => {
     expect(ids[1]).toBeUndefined();
   });
 
-  it('never gives the id of a pending Read to a Cursor file read, which has no pre', () => {
+  it.each([
+    ['Read', 'beforeReadFile'],
+    ['Edit', 'afterFileEdit'],
+  ])('never gives the id of a pending %s to Cursor %s, which has no pre', (tool, postOnlyEvent) => {
     const cursor = (hook_event_name: string, extra: Record<string, unknown>) =>
       processHook(JSON.stringify({ hook_event_name, conversation_id: SESSION, ...extra }));
-    cursor('preToolUse', { tool_name: 'Read' });
-    cursor('beforeReadFile', { file_path: '/projects/test/a.ts' });
-    cursor('postToolUse', { tool_name: 'Read' });
+    cursor('preToolUse', { tool_name: tool });
+    cursor(postOnlyEvent, { file_path: '/projects/test/a.ts' });
+    cursor('postToolUse', { tool_name: tool });
 
-    const [pre, fileRead, post] = bufferIds();
+    const [pre, postOnly, post] = bufferIds();
     expect(pre).toEqual(expect.any(String));
-    expect(fileRead).toBeUndefined();
+    expect(postOnly).toBeUndefined();
     expect(post).toBe(pre);
   });
 
@@ -3205,20 +3211,21 @@ describe('a tool call without tool_use_id', () => {
   });
 
   it.each([
-    ['its session buffer', () => new LocalStore(tmpDir, SESSION)],
+    ['its session buffer', () => ({ store: new LocalStore(tmpDir, SESSION) })],
+    ['a drain-all engine', () => ({ store: new LocalStore(tmpDir), drainAllSessions: true })],
     [
       'a buffer path override',
       () => {
         process.env.NEW_RELIC_AI_MCP_BUFFER_PATH = bufferPath;
-        return new LocalStore(tmpDir, bufferPath);
+        return { store: new LocalStore(tmpDir, bufferPath) };
       },
     ],
   ])(
     'pairs each later call with its own pre after a pre that never got a post times out, in %s',
-    (_, makeStore) => {
+    (_, makeEngineStore) => {
       const records: Outcome[] = [];
       const amends: Outcome[] = [];
-      const engine = startEngine(records, amends, makeStore());
+      const engine = startEngine(records, amends, makeEngineStore());
       hook('pre', 'Read', 1_000);
       engine.pollAt(62_000);
       hook('pre', 'Read', 63_000);
@@ -3261,6 +3268,29 @@ describe('a tool call without tool_use_id', () => {
       { at: 4_000, success: true, durationMs: 50 },
     ]);
     expect(amends).toEqual([]);
+  });
+
+  it('pairs later calls with their own pres when the hooks send a numeric session id', () => {
+    const records: Outcome[] = [];
+    const engine = startEngine(records, [], {
+      store: new LocalStore(tmpDir),
+      drainAllSessions: true,
+    });
+    const numeric = (make: typeof makePreToolUse, at: number) => {
+      clock.mockReturnValue(at);
+      processHook(make({ tool_use_id: undefined, session_id: 12345, tool_name: 'Read' }));
+    };
+    numeric(makePreToolUse, 1_000);
+    engine.pollAt(62_000);
+    numeric(makePreToolUse, 63_000);
+    numeric(makePostToolUse, 63_400);
+    engine.pollAt(63_500);
+    engine.stop();
+
+    expect(records).toEqual([
+      { at: 1_000, success: false, durationMs: null },
+      { at: 63_000, success: true, durationMs: 400 },
+    ]);
   });
 
   it('amends a timed-out call when its own post arrives late', () => {
@@ -3307,7 +3337,9 @@ describe('a tool call without tool_use_id', () => {
     }
     hook('post', 'Read', 2_000);
 
-    expect(bufferIds()).toEqual([(redelivered[0] as { toolUseId?: string }).toolUseId]);
+    const minted = (redelivered[0] as { toolUseId?: string }).toolUseId;
+    expect(minted).toEqual(expect.any(String));
+    expect(bufferIds()).toEqual([minted]);
   });
 
   it('pairs a minted pre with an unstamped post of its tool in one engine', () => {

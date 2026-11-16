@@ -69,7 +69,7 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 
 **Known gaps:** Cursor has no `afterReadFile` event (`beforeReadFile` is emitted as a completed read directly) and no `beforeFileEdit` event (`afterFileEdit` is post-only). `afterShellExecution`/`afterMCPExecution` have no documented failure-outcome field, so success is reported unconditionally `true`.
 
-**Pairing:** None of these events carries a `tool_use_id`, so the collector mints one at `beforeShellExecution` or `beforeMCPExecution` and hands it to the oldest open pre of the same tool at `afterShellExecution` or `afterMCPExecution`. A denied command or MCP call fires no `after*` event, so its pre is recorded as a timeout. `beforeReadFile` and `afterFileEdit` have no pre to pair with.
+**Pairing:** None of these events carries a `tool_use_id`, so the collector mints one at `beforeShellExecution` or `beforeMCPExecution` and hands it to the oldest open pre of the same tool at `afterShellExecution` or `afterMCPExecution`. A denied command or MCP call fires no `after*` event, so its pre is recorded as a timeout once its wait runs out (11 minutes for a shell command, 60 seconds otherwise). Until then, the next `after*` event of the same tool pairs with it, as the processor's own FIFO does for any call without an id. `beforeReadFile` and `afterFileEdit` have no pre to pair with.
 
 **Setup:**
 

@@ -7,7 +7,7 @@
  * extracts key fields, and appends a single JSONL line to the buffer file.
  *
  * Design constraints:
- *   - <5ms execution budget — must never slow Claude Code
+ *   - ~5ms in-process execution budget — must never slow Claude Code
  *   - No heavy imports (no core imports, no commander, no zod)
  *   - All errors caught silently — always exits 0
  *   - Config via env vars only (no file reads for config)
@@ -59,7 +59,7 @@ function getBufferPath(sessionId?: string): string {
 }
 
 // Cache only the file-read result to avoid repeated disk I/O on the hot path
-// (<5ms budget per hook invocation) while keeping the env-var check dynamic
+// (~5ms budget per hook invocation) while keeping the env-var check dynamic
 // so runtime changes in tests (and future dynamic config) are respected.
 // This also eliminates the TOCTOU window between existsSync and readFileSync.
 const HIGH_SECURITY_FROM_FILE: boolean = (() => {
@@ -194,7 +194,7 @@ function hasStringText(block: unknown): block is { text: string } {
 //
 // Hot-path: every PreToolUse / PostToolUse hook runs this. The
 // existsSync + content-equality short-circuit makes the steady state a single
-// stat() and one read per breadcrumb — well under the <5ms budget.
+// stat() and one read per breadcrumb — well under the ~5ms budget.
 // ---------------------------------------------------------------------------
 
 /**

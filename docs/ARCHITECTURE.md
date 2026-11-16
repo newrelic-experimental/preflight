@@ -24,7 +24,7 @@ Preflight runs as a sidecar to your AI coding session. It collects hook events f
  │   (hook path — not MCP)   │                       │
  │                           │                       │
  │   collector-script.ts     │                       │
- │   < 5 ms · stdin → disk   │                       │
+ │   ~5 ms · stdin → disk    │                       │
  │           │               │                       │
  │           ▼               │                       │
  │   buffer-SESSION.jsonl    │                       │
