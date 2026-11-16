@@ -79,6 +79,7 @@ export interface RehydrationSeeds {
 export class FirstSaveBaselines {
   private readonly toolCalls = new Map<string, ToolCallSeed | null>();
   private readonly cost = new Map<string, CostSeed | null>();
+  private readonly costFile = new Map<string, FullSessionSummary | null>();
 
   /** `previous` is the file the save merged against, null for a new file. */
   recordSave(save: {
@@ -90,8 +91,20 @@ export class FirstSaveBaselines {
     if (!this.toolCalls.has(sessionId)) {
       this.toolCalls.set(sessionId, previous && toolCallSeedOf(previous));
     }
-    if (ownSession && !this.cost.has(sessionId))
+    if (ownSession && !this.cost.has(sessionId)) {
       this.cost.set(sessionId, previous && costSeedOf(previous));
+      this.costFile.set(sessionId, previous);
+    }
+  }
+
+  /**
+   * The file `sessionId`'s cost seed will come from: the file before this
+   * process's first own save (null for a new file), or undefined when there
+   * has been no own save yet and the current file still holds none of this
+   * process's cost.
+   */
+  costFileBeforeOwnSave(sessionId: string): FullSessionSummary | null | undefined {
+    return this.costFile.get(sessionId);
   }
 
   /** Seeds for `sessionId`, falling back to `loadCurrent()` per family, and forgets it. */
@@ -108,6 +121,7 @@ export class FirstSaveBaselines {
     };
     this.toolCalls.delete(sessionId);
     this.cost.delete(sessionId);
+    this.costFile.delete(sessionId);
     return seeds;
   }
 }

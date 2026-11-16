@@ -12,7 +12,7 @@ import {
 import { resolve, join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { errMsg } from './json-utils.js';
 
 const logger = createLogger('schedule');

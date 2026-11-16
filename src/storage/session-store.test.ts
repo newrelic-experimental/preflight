@@ -1146,6 +1146,7 @@ describe('buildSessionSummary', () => {
         reportCount: 3,
         estimationCount: 0,
         latestCostBreakdown: null,
+        firstActivityByDayMs: {},
         unpricedByModel: { 'claude-foo-9-9': { calls: 2, tokens: 30 } },
         estimatedByModel: {
           'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
@@ -1756,6 +1757,45 @@ describe('buildSessionSummary', () => {
     // aggregate route instead of falling back to the timeline pro-rate.
     expect(merged.costByDayUsd).toBeUndefined();
     expect(merged.subagentCostByDayUsd).toBeUndefined();
+  });
+
+  it('mergeSummaries keeps the earliest firstActivityByDayMs per day key', () => {
+    const existing = makeSummary({
+      firstActivityByDayMs: { '2026-09-10': 1_000, '2026-09-11': 5_000 },
+    });
+    const incoming = makeSummary({
+      firstActivityByDayMs: { '2026-09-11': 9_000, '2026-09-12': 7_000 },
+    });
+    expect(mergeSummaries(existing, incoming).firstActivityByDayMs).toEqual({
+      '2026-09-10': 1_000,
+      '2026-09-11': 5_000,
+      '2026-09-12': 7_000,
+    });
+    expect(mergeSummaries(incoming, existing).firstActivityByDayMs).toEqual({
+      '2026-09-10': 1_000,
+      '2026-09-11': 5_000,
+      '2026-09-12': 7_000,
+    });
+  });
+
+  it('mergeSummaries drops a first spend when the other side spent that day without saving one', () => {
+    const legacy = makeSummary({ costByDayUsd: { '2026-09-10': 2, '2026-09-11': 1 } });
+    const anchored = makeSummary({
+      costByDayUsd: { '2026-09-10': 3 },
+      firstActivityByDayMs: { '2026-09-10': 9_000 },
+    });
+    for (const merged of [mergeSummaries(legacy, anchored), mergeSummaries(anchored, legacy)]) {
+      expect(merged.firstActivityByDayMs).toEqual({});
+    }
+  });
+
+  it('mergeSummaries keeps a first spend when the other side spent nothing that day', () => {
+    const quiet = makeSummary({ costByDayUsd: { '2026-09-10': 0 } });
+    const anchored = makeSummary({
+      costByDayUsd: { '2026-09-10': 3 },
+      firstActivityByDayMs: { '2026-09-10': 9_000 },
+    });
+    expect(mergeSummaries(quiet, anchored).firstActivityByDayMs).toEqual({ '2026-09-10': 9_000 });
   });
 
   it('mergeSummaries takes the per-model max of unpriced calls and tokens', () => {
@@ -2377,6 +2417,41 @@ describe('buildSessionSummary', () => {
     expect(summary.taskCount).toBe(1);
   });
 
+  it('omits firstActivityByDayMs when CostTracker has no spend, so a legacy file keeps its fallback', () => {
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      costTracker: new CostTracker(),
+      developer: 'dev',
+    });
+    expect(summary.firstActivityByDayMs).toBeUndefined();
+    expect(mergeSummaries(makeSummary(), summary).firstActivityByDayMs).toBeUndefined();
+  });
+
+  it('persists the earliest token event per local day from CostTracker', () => {
+    const nowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date(2026, 8, 10, 12, 0, 0).getTime());
+    try {
+      const costTracker = new CostTracker();
+      const first = new Date(2026, 8, 10, 9, 0, 0).getTime();
+      for (const timestampMs of [first + 30 * 60_000, first]) {
+        costTracker.recordTokenUsage(
+          makeUsage({ inputTokens: 1_000, outputTokens: 100, totalTokens: 1_100 }),
+          'claude-sonnet-4',
+          { timestampMs },
+        );
+      }
+      const summary = buildSessionSummary({
+        sessionTracker: makeSessionTracker(),
+        costTracker,
+        developer: 'dev',
+      });
+      expect(summary.firstActivityByDayMs).toEqual({ '2026-09-10': first });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('includes cache token fields from CostTracker', () => {
     const sessionTracker = makeSessionTracker();
     const costTracker = new CostTracker();
@@ -2402,6 +2477,7 @@ describe('buildSessionSummary', () => {
       parentCostUsd: 0.029,
       costByWorkflowRunId: {},
       costByDayUsd: {},
+      firstActivityByDayMs: {},
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},
@@ -2447,6 +2523,7 @@ describe('buildSessionSummary', () => {
       parentCostUsd: 0.029,
       costByWorkflowRunId: { wf_test_run: { '2026-08-14': 0.05 } },
       costByDayUsd: { '2026-08-14': 0.05 },
+      firstActivityByDayMs: {},
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},
@@ -2676,6 +2753,26 @@ describe('buildSessionSummary', () => {
     };
     const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
     expect(result.costByDayUsd).toBeUndefined();
+  });
+
+  it('deserializeFullSessionSummary round-trips firstActivityByDayMs and drops non-finite entries', () => {
+    const raw = {
+      sessionId: 'sess-first-activity',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+      firstActivityByDayMs: { '2026-08-18': 1_700_000_500_000, bad: 'nope', worse: null },
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.firstActivityByDayMs).toEqual({ '2026-08-18': 1_700_000_500_000 });
+
+    const legacy = deserializeFullSessionSummary({
+      ...raw,
+      firstActivityByDayMs: undefined,
+    } as unknown as Record<string, unknown>);
+    expect(legacy.firstActivityByDayMs).toBeUndefined();
   });
 
   it('deserializeFullSessionSummary keeps valid unpricedByModel entries and drops malformed ones', () => {
@@ -3426,6 +3523,17 @@ describe('buildSessionSummary timeline', () => {
                 createdPrNumber: '42',
                 runInBackground: true,
               },
+              {
+                id: 'tc4',
+                sessionId: 'skill-agent-session',
+                toolName: 'mcp__github__merge_pull_request',
+                toolUseId: 'tu4',
+                timestamp: 1700000025000,
+                durationMs: 700,
+                success: true,
+                mcpPrNumber: '42',
+                mcpPrRepo: 'acme/app',
+              },
             ],
           },
         ],
@@ -3438,8 +3546,17 @@ describe('buildSessionSummary timeline', () => {
       developer: 'alice',
     });
 
-    expect(summary.timeline).toHaveLength(3);
+    expect(summary.timeline).toHaveLength(4);
     expect(summary.timeline![2]!.createdPrNumber).toBe('42');
+    expect(summary.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
+    expect(summary.timeline![0]!.mcpPrNumber).toBeUndefined();
+    expect(summary.timeline![0]!.mcpPrRepo).toBeUndefined();
+
+    // And through a save and reload.
+    const store = new SessionStore({ storagePath: tmpDir });
+    store.saveSession(summary);
+    const reloaded = store.loadSession(summary.sessionId);
+    expect(reloaded!.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
     expect(summary.timeline![0]!.createdPrNumber).toBeUndefined();
     expect(summary.timeline![2]!.runInBackground).toBe(true);
     expect(summary.timeline![0]!.runInBackground).toBeUndefined();
@@ -3498,6 +3615,33 @@ describe('SessionStore deserialization', () => {
     const session = store.loadSession('pr-num');
     expect(session!.timeline![0]!.createdPrNumber).toBe('42');
     expect(session!.timeline![1]!.createdPrNumber).toBeUndefined();
+  });
+
+  it('keeps a GitHub MCP PR target on timeline entries and drops a malformed one', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const raw = JSON.stringify({
+      sessionId: 'mcp-pr',
+      startTime: 1000,
+      endTime: 2000,
+      durationMs: 1000,
+      toolCallCount: 2,
+      developer: 'alice',
+      timeline: [
+        {
+          timestamp: 1100,
+          toolName: 'merge_pull_request',
+          mcpPrNumber: '12',
+          mcpPrRepo: 'acme/app',
+        },
+        { timestamp: 1200, toolName: 'merge_pull_request', mcpPrNumber: '1x', mcpPrRepo: 'a/b/c' },
+      ],
+    });
+    writeFileSync(join(tmpDir, 'sessions', '2026-01-01_mcp-pr.json'), raw + '\n');
+
+    const session = store.loadSession('mcp-pr');
+    expect(session!.timeline![0]).toMatchObject({ mcpPrNumber: '12', mcpPrRepo: 'acme/app' });
+    expect(session!.timeline![1]!.mcpPrNumber).toBeUndefined();
+    expect(session!.timeline![1]!.mcpPrRepo).toBeUndefined();
   });
 
   it('keeps runInBackground on timeline entries only when it is true', () => {
@@ -4184,6 +4328,7 @@ describe('attribution field', () => {
         },
         highContextCostUsd: 0.75,
         apiDurationMs: 12_000,
+        firstActivityByDayMs: {},
         unpricedByModel: {},
         estimatedByModel: {},
         unpricedByDay: {},

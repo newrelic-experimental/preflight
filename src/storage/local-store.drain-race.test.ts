@@ -620,9 +620,11 @@ describe('concurrent drainers of one buffer', () => {
 
     processor.start();
     processor.replaceStore(new LocalStore(dir, SESSION), false);
+    const atSwap = [...outcomes.values()];
     mockHooks.unlink = null;
     processor.stop();
 
+    expect(atSwap).toEqual(['other:A:timeout']);
     expect([...outcomes.values()]).toEqual(['other:A:paired', 'other:X:timeout']);
   });
 

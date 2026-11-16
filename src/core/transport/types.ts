@@ -6,7 +6,7 @@
  * widen the union here.
  *
  * **This is a TypeScript-only type alias, not a runtime value.** Consumers
- * import it with `import type { TransportMode } from '@newrelic/ai-telemetry'`
+ * import it with `import type { TransportMode } from '../core/index.js'`
  * and pass the bare string literals at runtime — `transport: 'otlp'` rather
  * than `transport: TransportMode.OTLP`. There is no enum-like object to
  * dot-access; a runtime membership check should compare against the

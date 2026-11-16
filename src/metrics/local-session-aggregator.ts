@@ -25,8 +25,13 @@ import { spawnSync } from 'node:child_process';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
+import {
+  exactTotalsOf,
+  hasRecordedUsage,
+  type ExactTotalsSource,
+  type FullSessionSummary,
+} from '../storage/session-store.js';
 import { isAwaitingLatePost } from './session-tracker.js';
-import { hasRecordedUsage, type FullSessionSummary } from '../storage/session-store.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
 import { CallUsageBook } from './call-usage.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
@@ -64,10 +69,8 @@ export interface ModelBreakdownTally {
  * `FullSessionSummary` structurally satisfies this, so `SessionStore.loadSession`
  * can be passed as `persistedCostBaseline` unchanged.
  */
-export type PersistedCostBaseline = Pick<
-  FullSessionSummary,
-  'estimatedCostUsd' | 'subagentCostUsd' | 'costByDayUsd' | 'subagentCostByDayUsd'
->;
+export type PersistedCostBaseline = ExactTotalsSource &
+  Pick<FullSessionSummary, 'subagentCostUsd' | 'subagentCostByDayUsd' | 'firstActivityByDayMs'>;
 
 interface EmittedCost {
   readonly costUsd: number;
@@ -78,12 +81,13 @@ interface EmittedCost {
 
 export interface LocalSessionAggregatorOptions {
   /**
-   * Called at most once per session, on that session's first subagent
-   * (`agentId`-tagged) usage — not at rollup creation, because an unscoped
-   * process creates a rollup from a session's first drained hook event,
-   * before that session's engine has written anything to disk (see
-   * `recordTokenUsage`'s doc comment). Returning null means "nothing on
-   * disk yet"; the rollup then starts at 0 as before.
+   * Called on a session's first usage of any kind, and again on each later
+   * usage until a fold closes the baseline (see `applyPersistedBaseline`).
+   * Not called at rollup creation, because an unscoped process creates a
+   * rollup from a session's first drained hook event, before that session's
+   * engine has written anything to disk (see `recordTokenUsage`'s doc
+   * comment). Returning null means "nothing on disk yet"; the rollup then
+   * starts at 0 as before.
    */
   readonly persistedCostBaseline?: (sessionId: string) => PersistedCostBaseline | null;
 }
@@ -118,6 +122,7 @@ export interface LocalSessionRollup {
    *  space as `CostTracker.recordTokenUsage`, so a `--stdio`-written bucket
    *  and a `--local`-written bucket for the same turn agree on the day. */
   costByDayUsd: Map<string, number>;
+  firstActivityByDayMs: Map<string, number>;
   /** Portion of costUsd from agentId-tagged (subagent) usage. */
   subagentCostUsd: number;
   /** Subagent-attributed portion of costByDayUsd, same key space. */
@@ -134,6 +139,7 @@ export interface LocalSessionRollup {
   tokensOutput: number;
   tokensCacheRead: number;
   tokensCacheCreation: number;
+  cacheSavingsUsd: number;
   models: Set<string>;
   unpriced: CallUsageBook<UnpricedModelUsage>;
   estimated: CallUsageBook<EstimatedModelUsage>;
@@ -364,6 +370,7 @@ export class LocalSessionAggregator {
         modelBreakdown: new Map(),
         costUsd: 0,
         costByDayUsd: new Map(),
+        firstActivityByDayMs: new Map(),
         subagentCostUsd: 0,
         subagentCostByDayUsd: new Map(),
         costBaselineApplied: false,
@@ -372,6 +379,7 @@ export class LocalSessionAggregator {
         tokensOutput: 0,
         tokensCacheRead: 0,
         tokensCacheCreation: 0,
+        cacheSavingsUsd: 0,
         models: new Set(),
         unpriced: new CallUsageBook(),
         estimated: new CallUsageBook(),
@@ -449,6 +457,8 @@ export class LocalSessionAggregator {
     platform?: string | null;
     agentId?: unknown;
     createdPrNumber?: unknown;
+    mcpPrNumber?: unknown;
+    mcpPrRepo?: unknown;
     runInBackground?: unknown;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
@@ -490,33 +500,35 @@ export class LocalSessionAggregator {
     // Persisting the per-call timeline is what lets a restarted process replay
     // this session (git activity, anti-pattern analysis). Capped the same way
     // SessionTracker caps its own timeline so a long session can't grow the
-    // session file without bound.
-    if (rollup.timeline.length < MAX_TIMELINE_ENTRIES) {
-      rollup.timeline.push({
-        timestamp,
-        toolName: tool,
-        durationMs: record.durationMs ?? null,
-        success: record.success !== false,
-        ...(typeof record.filePath === 'string' && { filePath: record.filePath }),
-        ...(typeof record.command === 'string' && { command: record.command }),
-        ...(typeof record.cwd === 'string' && { cwd: record.cwd }),
-        ...(record.isTestCommand === true && { isTestCommand: true }),
-        ...(record.isBuildCommand === true && { isBuildCommand: true }),
-        ...(record.isLintCommand === true && { isLintCommand: true }),
-        ...(typeof record.errorType === 'string' && { errorType: record.errorType }),
-        ...(typeof record.agentId === 'string' && { agentId: record.agentId }),
-        ...(typeof record.createdPrNumber === 'string' && {
-          createdPrNumber: record.createdPrNumber,
-        }),
-        ...(record.runInBackground === true && { runInBackground: true }),
-      });
-    }
+    // session file without bound. Keeps the most recent entries.
+    if (rollup.timeline.length >= MAX_TIMELINE_ENTRIES) rollup.timeline.shift();
+    rollup.timeline.push({
+      timestamp,
+      toolName: tool,
+      durationMs: record.durationMs ?? null,
+      success: record.success !== false,
+      ...(typeof record.filePath === 'string' && { filePath: record.filePath }),
+      ...(typeof record.command === 'string' && { command: record.command }),
+      ...(typeof record.cwd === 'string' && { cwd: record.cwd }),
+      ...(record.isTestCommand === true && { isTestCommand: true }),
+      ...(record.isBuildCommand === true && { isBuildCommand: true }),
+      ...(record.isLintCommand === true && { isLintCommand: true }),
+      ...(typeof record.errorType === 'string' && { errorType: record.errorType }),
+      ...(typeof record.agentId === 'string' && { agentId: record.agentId }),
+      ...(typeof record.createdPrNumber === 'string' && {
+        createdPrNumber: record.createdPrNumber,
+      }),
+      ...(typeof record.mcpPrNumber === 'string' && { mcpPrNumber: record.mcpPrNumber }),
+      ...(typeof record.mcpPrRepo === 'string' && { mcpPrRepo: record.mcpPrRepo }),
+      ...(record.runInBackground === true && { runInBackground: true }),
+    });
 
     // Feed the real trackers rather than reimplementing their heuristics, so a
     // rehydrated panel shows exactly what the live one would have shown.
     const fullRecord = record as unknown as ToolCallRecord;
     rollup.quality.recordToolCall(fullRecord);
-    if (rollup.records.length < MAX_TIMELINE_ENTRIES) rollup.records.push(fullRecord);
+    if (rollup.records.length >= MAX_TIMELINE_ENTRIES) rollup.records.shift();
+    rollup.records.push(fullRecord);
   }
 
   recordTokenUsage(
@@ -530,6 +542,7 @@ export class LocalSessionAggregator {
       cacheReadTokens?: number;
       cacheCreationTokens?: number;
       thinkingTokens?: number;
+      cacheSavingsUsd?: number;
       /**
        * Present iff this usage came from a subagent transcript turn — the SAME
        * discriminator `CostTracker.recordTokenUsage`'s `ctx.agentId` uses, so
@@ -542,19 +555,27 @@ export class LocalSessionAggregator {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
     const timestamp = usage.timestamp ?? Date.now();
     const rollup = this.ensure(sessionId, timestamp);
-    // Seed from disk on this session's first subagent-attributed usage, not at
-    // rollup creation: an unscoped process creates a rollup from a session's
-    // first drained hook event, which happens before that session's own
-    // engine has written anything to sessions/*.json — seeding at creation
-    // would read nothing and lose the engine's eventual total on restart
-    // under the max-based merge in mergeSummaries.
-    if (usage.agentId !== undefined && !rollup.costBaselineApplied) {
-      this.applyPersistedBaseline(sessionId, rollup);
+    // Seed from disk on this session's first usage, not at rollup creation: an
+    // unscoped process creates a rollup from a session's first drained hook
+    // event, which happens before that session's own engine has written
+    // anything to sessions/*.json — seeding at creation would read nothing and
+    // lose the engine's eventual total on restart under the max-based merge in
+    // mergeSummaries. Parent usage seeds too: a restarted process reads only
+    // the transcript lines after its saved cursor, so without the file's total
+    // the merge keeps the file's total and drops this turn's cost. A parent
+    // turn that finds no saved cost leaves the baseline open, so any later
+    // usage still folds whatever another writer saved by then.
+    if (!rollup.costBaselineApplied) {
+      this.applyPersistedBaseline(sessionId, rollup, usage.agentId !== undefined);
     }
     const dayKey = localDateKey(timestamp);
     const usd = usage.costUsd ?? 0;
     rollup.costUsd += usd;
     rollup.costByDayUsd.set(dayKey, (rollup.costByDayUsd.get(dayKey) ?? 0) + usd);
+    const firstForDay = rollup.firstActivityByDayMs.get(dayKey);
+    if (usd > 0 && (firstForDay === undefined || timestamp < firstForDay)) {
+      rollup.firstActivityByDayMs.set(dayKey, timestamp);
+    }
     if (usage.agentId !== undefined) {
       rollup.subagentCostUsd += usd;
       rollup.subagentCostByDayUsd.set(dayKey, (rollup.subagentCostByDayUsd.get(dayKey) ?? 0) + usd);
@@ -563,6 +584,7 @@ export class LocalSessionAggregator {
     rollup.tokensOutput += usage.outputTokens ?? 0;
     rollup.tokensCacheRead += usage.cacheReadTokens ?? 0;
     rollup.tokensCacheCreation += usage.cacheCreationTokens ?? 0;
+    rollup.cacheSavingsUsd += usage.cacheSavingsUsd ?? 0;
     if (usage.model) {
       rollup.models.add(usage.model);
       const entry = rollup.modelBreakdown.get(usage.model) ?? {
@@ -605,26 +627,50 @@ export class LocalSessionAggregator {
   }
 
   /**
-   * Folds a session's on-disk cost quadruple into the rollup, additively,
-   * once. Additive (not assigned) because the rollup may already hold parent
-   * cost this process drained during the engine's pending-session window,
-   * which no other process saw — assigning would discard it. The whole
+   * Folds a session's on-disk cost quadruple into the rollup, additively.
+   * The baseline closes once a fold finds saved cost or adds any, so the
+   * saved cost is folded once. Additive (not assigned) because the rollup
+   * may already hold parent cost this process drained during the engine's
+   * pending-session window, which no other process saw — assigning would
+   * discard it. The whole
    * quadruple (not just the subagent pair) is seeded so the persisted
    * invariant `estimatedCostUsd >= subagentCostUsd` survives the fold; seeding
    * only the subagent pair could leave a merged file whose subagent figure
-   * exceeds its all-in figure.
+   * exceeds its all-in figure. Cost and day costs are seeded from the file's
+   * exact share: mergeSummaries adds the byte-estimate ledger back on top of
+   * the merged exact totals, so seeding the ledger too counts it twice. Never
+   * below the saved subagent figures, so a stale stored `exactTotals` cannot
+   * seed a total under them.
    */
-  private applyPersistedBaseline(sessionId: string, rollup: LocalSessionRollup): void {
-    rollup.costBaselineApplied = true;
+  private applyPersistedBaseline(
+    sessionId: string,
+    rollup: LocalSessionRollup,
+    closeWhenEmpty: boolean,
+  ): void {
     const baseline = this.persistedCostBaseline?.(sessionId) ?? null;
-    if (baseline === null) return;
+    if (baseline === null) {
+      rollup.costBaselineApplied = closeWhenEmpty;
+      return;
+    }
+    const exact = exactTotalsOf(baseline);
     const emitted = rollup.lastEmittedCost;
-    rollup.costUsd += excessOver(baseline.estimatedCostUsd ?? 0, emitted?.costUsd);
+    const folded = excessOver(Math.max(exact.costUsd, baseline.subagentCostUsd), emitted?.costUsd);
+    rollup.costBaselineApplied = closeWhenEmpty || exact.costUsd > 0 || folded > 0;
+    rollup.costUsd += folded;
     rollup.subagentCostUsd += excessOver(baseline.subagentCostUsd, emitted?.subagentCostUsd);
-    for (const [day, usd] of Object.entries(baseline.costByDayUsd ?? {})) {
+    const subagentByDay = baseline.subagentCostByDayUsd ?? {};
+    const seedDays = new Set([...Object.keys(exact.costByDayUsd), ...Object.keys(subagentByDay)]);
+    for (const day of seedDays) {
+      const usd = Math.max(exact.costByDayUsd[day] ?? 0, subagentByDay[day] ?? 0);
       rollup.costByDayUsd.set(
         day,
         (rollup.costByDayUsd.get(day) ?? 0) + excessOver(usd, emitted?.costByDayUsd.get(day)),
+      );
+    }
+    for (const [day, ms] of Object.entries(baseline.firstActivityByDayMs ?? {})) {
+      rollup.firstActivityByDayMs.set(
+        day,
+        Math.min(rollup.firstActivityByDayMs.get(day) ?? ms, ms),
       );
     }
     for (const [day, usd] of Object.entries(baseline.subagentCostByDayUsd ?? {})) {
@@ -728,6 +774,9 @@ export class LocalSessionAggregator {
         ...(rollup.costByDayUsd.size > 0
           ? { costByDayUsd: Object.fromEntries(rollup.costByDayUsd) }
           : {}),
+        ...(rollup.firstActivityByDayMs.size > 0
+          ? { firstActivityByDayMs: Object.fromEntries(rollup.firstActivityByDayMs) }
+          : {}),
         ...(rollup.subagentCostByDayUsd.size > 0
           ? { subagentCostByDayUsd: Object.fromEntries(rollup.subagentCostByDayUsd) }
           : {}),
@@ -737,7 +786,7 @@ export class LocalSessionAggregator {
         tokensThinking: 0,
         tokensCacheRead: rollup.tokensCacheRead,
         tokensCacheCreation: rollup.tokensCacheCreation,
-        cacheSavingsUsd: 0,
+        cacheSavingsUsd: rollup.cacheSavingsUsd,
         efficiencyScore: null,
         antiPatterns: [],
         taskCount: 0,

@@ -24,7 +24,7 @@ import {
 } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
 import { isSyntheticSessionId, type SessionNameSource } from '../hooks/session-resolver.js';
@@ -160,6 +160,7 @@ export interface FullSessionSummary extends SessionSummary {
    * path in the aggregate route.
    */
   readonly costByDayUsd?: Record<string, number>;
+  readonly firstActivityByDayMs?: Record<string, number>;
   /** Subagent-attributed cost by local-day key; today-scoped counterpart to
    * `subagentCostUsd`. Optional for the same backward-compat reason as
    * `costByDayUsd`. */
@@ -478,12 +479,18 @@ export interface ExactTotals {
   readonly costByDayUsd: Readonly<Record<string, number>>;
 }
 
+export type ExactTotalsSource = Pick<
+  FullSessionSummary,
+  'exactTotals' | 'byteEstimates' | 'estimatedCostUsd' | 'costByDayUsd'
+> &
+  Partial<Pick<FullSessionSummary, 'tokensInput' | 'tokensOutput'>>;
+
 /**
  * `exactTotals` as stored, or derived as total minus ledger for a summary that
  * predates the field. A merged total cannot be split afterwards (the file does
  * not record which writer's figure won the max), so writers persist the split.
  */
-export function exactTotalsOf(s: FullSessionSummary): ExactTotals {
+export function exactTotalsOf(s: ExactTotalsSource): ExactTotals {
   if (s.exactTotals) return s.exactTotals;
   const ledger = s.byteEstimates;
   return {
@@ -501,6 +508,33 @@ function addRecord(
 ): Record<string, number> {
   const out: Record<string, number> = { ...a };
   for (const [k, v] of Object.entries(b)) out[k] = (out[k] ?? 0) + v;
+  return out;
+}
+
+/**
+ * A day's first spend is only known when every side that spent that day
+ * recorded it. A side with spend but no saved first spend (a file written
+ * before the field existed) makes the other side's anchor a later guess, so
+ * that day stays unanchored and readers fall back to the first tool call.
+ */
+function mergeFirstActivity(
+  a: FullSessionSummary,
+  b: FullSessionSummary,
+): Record<string, number> | undefined {
+  if (a.firstActivityByDayMs === undefined && b.firstActivityByDayMs === undefined) {
+    return undefined;
+  }
+  const out: Record<string, number> = {};
+  const take = (own: FullSessionSummary, other: FullSessionSummary): void => {
+    for (const [day, ms] of Object.entries(own.firstActivityByDayMs ?? {})) {
+      const otherSpentUnanchored =
+        other.firstActivityByDayMs?.[day] === undefined && (other.costByDayUsd?.[day] ?? 0) > 0;
+      if (otherSpentUnanchored) continue;
+      out[day] = Math.min(out[day] ?? ms, ms);
+    }
+  };
+  take(a, b);
+  take(b, a);
   return out;
 }
 
@@ -661,6 +695,7 @@ export function mergeSummaries(
     existing.subagentCostByDayUsd,
     incoming.subagentCostByDayUsd,
   );
+  const firstActivityByDayMs = mergeFirstActivity(existing, incoming);
 
   const unpricedByModel = mergeCallUsageWithLedger(
     [existing.unpricedByModel, existing.byteEstimates?.unpricedByModel],
@@ -787,6 +822,7 @@ export function mergeSummaries(
     subagentCostUsd: maxNum(existing.subagentCostUsd, incoming.subagentCostUsd),
     ...(costByDayUsd !== undefined ? { costByDayUsd } : {}),
     ...(subagentCostByDayUsd !== undefined ? { subagentCostByDayUsd } : {}),
+    ...(firstActivityByDayMs !== undefined ? { firstActivityByDayMs } : {}),
     unpricedByModel,
     estimatedByModel,
     unpricedByDay,
@@ -1386,6 +1422,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     skillName: tc.toolName === 'Skill' && tc.skillName ? tc.skillName : undefined,
     agentType: tc.toolName === 'Agent' && tc.agentType ? tc.agentType : undefined,
     createdPrNumber: tc.createdPrNumber,
+    mcpPrNumber: tc.mcpPrNumber,
+    mcpPrRepo: tc.mcpPrRepo,
     runInBackground: tc.runInBackground === true || undefined,
   }));
 
@@ -1427,6 +1465,9 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     estimatedCostUsd: costMetrics?.sessionTotalCostUsd ?? null,
     subagentCostUsd: costMetrics?.subagentCostUsd ?? 0,
     costByDayUsd: costMetrics?.costByDayUsd ?? {},
+    ...(costMetrics && Object.keys(costMetrics.firstActivityByDayMs).length > 0
+      ? { firstActivityByDayMs: costMetrics.firstActivityByDayMs }
+      : {}),
     subagentCostByDayUsd: costMetrics?.subagentCostByDayUsd ?? {},
     // A day map rides with its counts even when empty (all late arrivals):
     // readers treat an absent one as a summary written before day buckets.
@@ -1563,6 +1604,7 @@ interface SerializedFullSessionSummary {
   readonly estimatedCostUsd?: unknown;
   readonly subagentCostUsd?: unknown;
   readonly costByDayUsd?: unknown;
+  readonly firstActivityByDayMs?: unknown;
   readonly subagentCostByDayUsd?: unknown;
   readonly unpricedByModel?: unknown;
   readonly estimatedByModel?: unknown;
@@ -1971,6 +2013,7 @@ export function deserializeFullSessionSummary(
     estimatedCostUsd: typeof obj.estimatedCostUsd === 'number' ? obj.estimatedCostUsd : null,
     subagentCostUsd: typeof obj.subagentCostUsd === 'number' ? obj.subagentCostUsd : 0,
     costByDayUsd: parseNumberRecord(obj.costByDayUsd),
+    firstActivityByDayMs: parseNumberRecord(obj.firstActivityByDayMs),
     subagentCostByDayUsd: parseNumberRecord(obj.subagentCostByDayUsd),
     unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
     estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
@@ -2030,6 +2073,14 @@ export function deserializeFullSessionSummary(
             createdPrNumber:
               typeof e.createdPrNumber === 'string' && /^\d{1,9}$/.test(e.createdPrNumber)
                 ? e.createdPrNumber
+                : undefined,
+            mcpPrNumber:
+              typeof e.mcpPrNumber === 'string' && /^\d{1,9}$/.test(e.mcpPrNumber)
+                ? e.mcpPrNumber
+                : undefined,
+            mcpPrRepo:
+              typeof e.mcpPrRepo === 'string' && /^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(e.mcpPrRepo)
+                ? e.mcpPrRepo
                 : undefined,
             runInBackground: e.runInBackground === true || undefined,
           }))

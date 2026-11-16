@@ -1,8 +1,9 @@
-import type {
-  NormalizedToolCall,
-  PlatformAdapter,
-  PlatformConfig,
-  PlatformSessionMetadata,
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformConfig,
+  type PlatformSessionMetadata,
 } from './types.js';
 
 /**
@@ -76,7 +77,11 @@ export class KiloCodeAdapter implements PlatformAdapter {
   // kilocode.ai/docs/code-with-ai/platforms/cli's Built-in Commands table:
   // `/init` — "Create/update AGENTS.md file for the project." Same
   // convention opencode, Codex, Droid, Cursor, and Gemini CLI already read.
-  readonly capabilities = { instructionFilePaths: ['AGENTS.md'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['AGENTS.md'] as const,
+    // The documented plugin spawns the collector without naming an engine.
+    sessionBreadcrumbWriters: ['kilocode', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Kilo Code's tool-call capture is delivered via a user-installed

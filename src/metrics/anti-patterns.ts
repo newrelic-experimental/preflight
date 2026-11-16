@@ -15,7 +15,7 @@
  * `getCurrentPatterns()`/`reset()`), so the instance itself is not stateless.
  */
 
-import type { MetricAggregator } from '../shared/index.js';
+import type { MetricAggregator } from '../core/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import { partitionByAgent } from './agent-partition.js';
 import type { Resettable } from './tracker-contracts.js';

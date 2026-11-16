@@ -377,6 +377,10 @@ export interface ToolCallRecord {
   readonly skillArgsLength?: number;
   /** Number of the PR a `gh pr create` or MCP create_pull_request call opened, parsed from the PR URL in its output. */
   readonly createdPrNumber?: string;
+  /** Number of the PR a GitHub MCP update_pull_request or merge_pull_request call named, from its `pullNumber` input. */
+  readonly mcpPrNumber?: string;
+  /** `owner/repo` a GitHub MCP PR tool call named, from its `owner` and `repo` inputs. */
+  readonly mcpPrRepo?: string;
   readonly [key: string]: unknown;
 }
 
@@ -411,6 +415,10 @@ export interface ReplayTimelineEntry {
   readonly agentType?: string;
   /** Same as `ToolCallRecord.createdPrNumber`; absent in sessions persisted before it existed. */
   readonly createdPrNumber?: string;
+  /** Same as `ToolCallRecord.mcpPrNumber`; absent in sessions persisted before it existed. */
+  readonly mcpPrNumber?: string;
+  /** Same as `ToolCallRecord.mcpPrRepo`; absent in sessions persisted before it existed. */
+  readonly mcpPrRepo?: string;
   /** Only when true: a Bash call run in the background, whose `success` was reported when it started. */
   readonly runInBackground?: boolean;
 }
