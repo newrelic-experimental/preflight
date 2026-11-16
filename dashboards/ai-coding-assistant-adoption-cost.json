@@ -1,6 +1,6 @@
 {
   "name": "AI Coding Assistant — Adoption & Cost",
-  "description": "Org-wide adoption, spend, tool, skill, and MCP usage, and team leaderboard built entirely from Preflight events. Works on every supported platform with no additional telemetry.",
+  "description": "Org-wide adoption, spend, tool, skill, and MCP usage, and team activity leaderboard built entirely from Preflight events. Works on every supported platform with no additional telemetry.",
   "permissions": "PUBLIC_READ_WRITE",
   "pages": [
     {
@@ -1221,7 +1221,7 @@
       ]
     },
     {
-      "name": "Team Leaderboard",
+      "name": "Team Activity",
       "description": null,
       "widgets": [
         {
@@ -1251,7 +1251,7 @@
           }
         },
         {
-          "title": "Outcome Leaderboard (7d)",
+          "title": "Task Activity Leaderboard (7d)",
           "layout": {
             "column": 7,
             "row": 1,
@@ -1372,7 +1372,7 @@
             "id": "viz.markdown"
           },
           "rawConfiguration": {
-            "text": "Adoption momentum over 8 weeks and a 60-day look at who is compounding value. Leaderboards are normalized by **active days** (days with at least one recorded task), so a quiet calendar week is not mistaken for a productivity drop. Coding tasks are the output unit: one task is a detected unit of work (a feature, fix, or investigation inside a session). **Git outcomes** (bottom rows) read the `ai.git.*` gauges and the edit-rejection signal — both need a Preflight release recent enough to export them; upgrade with `preflight update` if these rows are empty. The gauges are per-session running totals, so tables show per-session maxima and Cost per PR divides one sum by another (both sums snapshot at the same cadence, so the ratio holds). Edit accept rate counts Edit/Write calls without a 'rejected'/'denied'/'interrupted' error_type. Model-level drill-down lives on the **Models** page."
+            "text": "Adoption momentum over 8 weeks and a 60-day look at each developer's usage pattern. Leaderboards are normalized by **active days** (days with at least one recorded task), so a quiet calendar week does not read as lower activity. Coding tasks are the counting unit: one task is a detected unit of work (a feature, fix, or investigation inside a session). **Git outcomes** (bottom rows) read the `ai.git.*` gauges and the edit-rejection signal — both need a Preflight release recent enough to export them; upgrade with `preflight update` if these rows are empty. The gauges are per-session running totals, so tables show per-session maxima and Cost per PR divides one sum by another (both sums snapshot at the same cadence, so the ratio holds). Edit accept rate counts Edit/Write calls without a 'rejected'/'denied'/'interrupted' error_type. Model-level drill-down lives on the **Models** page."
           }
         },
         {
@@ -1684,7 +1684,7 @@
           }
         },
         {
-          "title": "Assisted Hours per Developer (60d)",
+          "title": "Session Hours per Developer (60d)",
           "layout": {
             "column": 7,
             "row": 17,

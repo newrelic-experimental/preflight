@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { TierLocalWriter } from './tier-local-writer.js';
-import type { NrEventData } from '../shared/index.js';
+import type { NrEventData } from '../core/index.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;

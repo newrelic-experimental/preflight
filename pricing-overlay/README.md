@@ -1,18 +1,18 @@
 # Pricing overlay
 
-`pricing.json` fills gaps in the vendored `src/shared/pricing-data.ts` table
-for model IDs a platform reports that the vendored table doesn't resolve —
+`pricing.json` fills gaps in the built-in `src/core/pricing-data.ts` table
+for model IDs a platform reports that the built-in table doesn't resolve —
 confirmed live via `PricingTable.resolve()`'s four resolution paths (exact /
 alias / forward-prefix / reverse-prefix). It's applied automatically at
 startup (`applyPricingOverlay()` in `src/metrics/pricing-overlay.ts`) unless
 a user has configured their own custom pricing file, and is gap-fill-only:
 `applyGapFilledOverlay()` drops any entry that already resolves against the
-vendored table instead of overriding it, so it can never silently mask a
-correction made upstream.
+built-in table instead of overriding it, so it can never silently mask a
+correction made to the table.
 
 It's currently empty (`{}`). This isn't tied to any one platform — add an
 entry here whenever you hit a real model ID that Preflight resolves to `$0`
-cost because the vendored table doesn't have it yet, regardless of which
+cost because the built-in table doesn't have it yet, regardless of which
 platform surfaced it.
 
 ## Adding an entry
@@ -25,23 +25,17 @@ platform surfaced it.
    checked it in your commit or PR description — pricing pages change
    without much notice.
 2. Add the entry to `pricing.json`, matching the `ModelPricing` shape
-   (`src/shared/pricing.ts`). Only add IDs confirmed missing from the
-   vendored table — never duplicate or "correct" an existing vendored entry
-   here; that needs a fix upstream, in whatever repo maintains
-   `src/shared/pricing-data.ts` for you.
+   (`src/core/pricing.ts`). Only add IDs confirmed missing from the
+   built-in table — never duplicate or "correct" an existing entry here;
+   fix it in `src/core/pricing-data.ts` instead.
 3. `contextWindow` is a non-billing-critical best-effort default (not used
    in `calculateCost()`'s pricing math, only validated as a positive
    integer) — it's fine to estimate it if you can't verify it precisely.
 
-This file is exactly the place to add an entry if you can't push directly to
-wherever the vendored table's source lives (e.g. an external contributor) —
-a maintainer with access can upstream it later, and the collision guard
-above makes that safe even if the sync lags.
-
 ## Known, unavoidable limitation
 
 Inherited from `ModelPricing`'s shape, which this overlay reuses as-is — not
-fixable here without a schema change upstream: `ModelPricing` has no tiered
+fixable here without a schema change: `ModelPricing` has no tiered
 cache-read field, so a model whose cached-input rate is _higher_ at its
 long-context tier than at its default tier can't have that modeled — the
 base (lower) cache rate would apply at every tier. If you hit this, note it

@@ -1,6 +1,6 @@
 # NR AI Coding Observability: Preflight
 
-Flat single-package repo providing observability for AI coding assistants (MCP server + metrics engine + HTTP proxy). Source lives directly in `src/`. Shared transport/events/pricing code lives in `src/shared/`. All telemetry flows to New Relic.
+Flat single-package repo providing observability for AI coding assistants (MCP server + metrics engine + HTTP proxy). Source lives directly in `src/`. Foundation code (events, transport, harvest, pricing, logger) lives in `src/core/`. All telemetry flows to New Relic.
 
 ## Development Commands
 
@@ -24,16 +24,8 @@ Run tests for a single file:
 
 ```bash
 npx jest -- src/metrics/cost-tracker.test.ts
-npx jest -- src/shared/harvest/harvest-scheduler.test.ts
+npx jest -- src/core/harvest/harvest-scheduler.test.ts
 ```
-
-## Shared Code (`src/shared/`)
-
-**`src/shared/` is a vendored snapshot — do not edit directly.**
-
-**Rules:**
-
-1. **Never edit files under `src/shared/` in this repo.** It is a vendored snapshot. If you find a bug there, open an issue.
 
 ## Architecture
 
@@ -97,7 +89,7 @@ Claude Code
 1. Node.js builtins (`node:fs`, `node:path`, `node:crypto`)
 2. External packages (`@modelcontextprotocol/sdk`, `zod`, `commander`)
 3. Blank line
-4. Shared module imports (`./shared/index.js` or `../shared/index.js`)
+4. Core module imports (`./core/index.js` or `../core/index.js`)
 5. Local imports (`./types.js`, `../metrics/session-tracker.js`)
 
 ### Logger Pattern
@@ -105,7 +97,7 @@ Claude Code
 Every module creates a scoped logger at module level:
 
 ```typescript
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 const logger = createLogger('module-name');
 ```
 
@@ -163,7 +155,7 @@ The config file path defaults to `~/.newrelic-preflight/config.json` or can be p
 Key config interfaces:
 
 - `McpServerConfig` in `src/config.ts`
-- `AgentConfig` in `src/shared/config.ts`
+- `AgentConfig` in `src/core/config.ts`
 
 ### Additional Configuration Fields
 
@@ -198,7 +190,7 @@ Every write to a `buffer-*.jsonl` file from `src/` goes through `appendToHookBuf
 
 ## Harvest and Ingestion
 
-`HarvestScheduler` (in `src/shared/harvest/`) manages periodic flush of events and metrics to New Relic:
+`HarvestScheduler` (in `src/core/harvest/`) manages periodic flush of events and metrics to New Relic:
 
 - Events flush every 5 seconds (configurable)
 - Metrics flush every 60 seconds (configurable)
