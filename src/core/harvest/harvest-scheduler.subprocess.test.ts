@@ -13,17 +13,18 @@ import type { NrEventData } from '../events/types.js';
 // terminated. The fixture writes each flushed event as a JSON line to a
 // tmp file we then read here.
 //
-// The fixture imports `dist/harvest/harvest-scheduler.js`. If `dist/`
+// The fixture imports `dist/core/harvest/harvest-scheduler.js`. If `dist/`
 // hasn't been built (e.g. someone ran `npm test` directly on a fresh
 // clone), we skip with a descriptive message rather than fail — `npm
 // run prepublishOnly` and CI both build before testing, so the smoke
 // test runs there.
 
-const projectRoot = resolve(__dirname, '..', '..');
-const distSchedulerPath = resolve(projectRoot, 'dist', 'harvest', 'harvest-scheduler.js');
+const projectRoot = resolve(__dirname, '..', '..', '..');
+const distSchedulerPath = resolve(projectRoot, 'dist', 'core', 'harvest', 'harvest-scheduler.js');
 const fixturePath = resolve(
   projectRoot,
   'src',
+  'core',
   'harvest',
   '__fixtures__',
   'subprocess-exit-fixture.mjs',
