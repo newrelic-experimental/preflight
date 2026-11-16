@@ -9,7 +9,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { isPidAlive } from '../storage/local-store.js';
 import type { ModelOutcomeStats, TrendAnalyzer } from './trend-analyzer.js';
 
