@@ -66,6 +66,12 @@ import { initModelPricing } from './metrics/pricing-init.js';
 import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
 import { CostTracker } from './metrics/cost-tracker.js';
+import {
+  addHeldCost,
+  heldSessionCostOf,
+  settledCostTrackerSeed,
+} from './metrics/cost-tracker-seed.js';
+import type { HeldSessionCost } from './metrics/cost-tracker-seed.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
 import { FirstSaveBaselines } from './metrics/first-save-baselines.js';
@@ -98,6 +104,7 @@ import { RecommendationEngine } from './metrics/recommendation-engine.js';
 import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
+import { createSkillRunEmitter } from './metrics/skill-run-emitter.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
 import { TaskDetector } from './metrics/task-detector.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
@@ -114,8 +121,8 @@ import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 import { createServer } from './server.js';
-import type { CostBreakdown } from './shared/index.js';
-import { createLogger } from './shared/index.js';
+import type { CostBreakdown } from './core/index.js';
+import { createLogger } from './core/index.js';
 import { LocalStore } from './storage/index.js';
 import { hasLiveOwningEngine } from './storage/local-store.js';
 import { computeHistoricalCosts } from './storage/historical-costs.js';
@@ -1352,7 +1359,13 @@ async function main(): Promise<void> {
     // window is named later via adoptRealSessionId once its real id resolves.
     if (options.stdio) applyAuthoritativeSessionName(sessionTraceId);
     const turnCostAttributor = new TurnCostAttributor({ rateMultiplier });
-    const skillActivationTracker = new SkillActivationTracker();
+    const skillActivationTracker = new SkillActivationTracker({
+      onRunOpened: createSkillRunEmitter({
+        stdio: options.stdio === true,
+        getOwnSessionId: () => sessionTraceId,
+        getSink: () => capturedNrIngest,
+      }),
+    });
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
     const gitWorkspaceReporter = new GitWorkspaceReporter();
@@ -1673,6 +1686,10 @@ async function main(): Promise<void> {
       lastDayKey: localDateKey(),
       lastRefreshMs: 0,
     };
+    // The cost a --local process's CostTracker holds for each session it has
+    // seen: the saved file it seeded from on first sight, plus every turn it
+    // priced since. The baseline counts only what each file adds beyond this.
+    const localHeldCosts = new Map<string, HeldSessionCost>();
     // Excludes the session this process owns now once its saved cost is seeded
     // into CostTracker, which for a --stdio engine happens when it adopts or
     // confirms the id, not at startup. An unconfirmed cwd guess is not seeded
@@ -1690,11 +1707,32 @@ async function main(): Promise<void> {
         !ownIsSeeded && ownFile !== undefined
           ? { sessionId: sessionTraceId, summary: ownFile }
           : undefined,
+        localHeldCosts,
       );
       priorCostCache.priorDailyCostUsd = baseline.priorDailyCostUsd;
       priorCostCache.priorWeeklyCostUsd = baseline.priorWeeklyCostUsd;
       priorCostCache.lastDayKey = localDateKey(now);
       priorCostCache.lastRefreshMs = now;
+    };
+    // A --local process reads only the transcript lines after its saved cursor,
+    // so a session resumed from an earlier process starts at zero here without
+    // its file's total. Runs once per session before its first turn is priced.
+    const seedLocalTrackersFromFile = (sessionId: string | null | undefined): void => {
+      if (options.stdio || !sessionId || isSyntheticSessionId(sessionId)) return;
+      if (localHeldCosts.has(sessionId)) return;
+      const persisted = sessionStoreForCostBaseline.loadSession(sessionId);
+      if (!persisted) {
+        localHeldCosts.set(sessionId, heldSessionCostOf(null, Date.now()));
+        return;
+      }
+      const seed = settledCostTrackerSeed(persisted);
+      costTracker.seedFromPersisted(seed);
+      localHeldCosts.set(sessionId, heldSessionCostOf(persisted, Date.now(), seed));
+      refreshPriorCostBaseline();
+    };
+    const holdLocalCost = (sessionId: string | null | undefined, usd: number, ms: number): void => {
+      const held = sessionId ? localHeldCosts.get(sessionId) : undefined;
+      if (held) addHeldCost(held, usd, ms);
     };
     const refreshPriorCostBaselineIfStale = (): void => {
       const now = Date.now();
@@ -2429,6 +2467,7 @@ async function main(): Promise<void> {
         });
         const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
         if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
+        seedLocalTrackersFromFile(tokenEvent.sessionId);
         const usage = tokenUsageFromTokenEvent(tokenEvent);
         let breakdown: CostBreakdown;
         if (!isOwnEvent) {
@@ -2440,6 +2479,7 @@ async function main(): Promise<void> {
             ...(tokenEvent.responseMs !== undefined && { responseMs: tokenEvent.responseMs }),
           });
           modelUsageTracker.recordUsage(tokenEvent.model, usage, breakdown.totalUsd);
+          holdLocalCost(tokenEvent.sessionId, breakdown.totalUsd, tokenEvent.timestamp);
         }
         localSessionAggregator.recordTokenUsage(tokenEvent.sessionId, {
           timestamp: tokenEvent.timestamp,
@@ -2533,6 +2573,7 @@ async function main(): Promise<void> {
         // the buffer.
         subagentAttribution.recordSubagentTurn(turn);
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
+        seedLocalTrackersFromFile(turn.parentSessionId);
         const usage = tokenUsageFromSubagentTurn(turn);
         const breakdown = costTracker.recordTokenUsage(usage, turn.model, {
           timestampMs: turn.timestampMs,
@@ -2544,6 +2585,7 @@ async function main(): Promise<void> {
         // belong in the model breakdown too — recording them only in the cost
         // tracker left Model Usage blind to every subagent-only session.
         modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
+        holdLocalCost(turn.parentSessionId, breakdown.totalUsd, turn.timestampMs);
         // The only line that makes an orphan session's subagent spend durable:
         // without it, an unscoped process's aggregator never learns about this
         // session's subagent cost and persistSession() has nothing to write.
@@ -2664,6 +2706,7 @@ async function main(): Promise<void> {
         const slashRun = skillActivationTracker.recordPrompt(
           frame.sessionId,
           frame.slashCommand ?? null,
+          frame.timestamp,
         );
         if (slashRun) turnCostAttributor.recordSkillRun(frame.sessionId, slashRun);
         taskDetector!.startTaskIfNone(frame.timestamp);
