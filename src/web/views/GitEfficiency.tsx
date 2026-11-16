@@ -747,14 +747,14 @@ export function GitEfficiency(): JSX.Element {
             </Card>
           </AnimatedCard>
 
-          {/* Velocity & workflow — grouped with the other "what happened" data
+          {/* Commit pacing & workflow — grouped with the other "what happened" data
               sections (this, Pull Requests, Conflict Resolution, Destructive
               Operations), all ahead of the coaching sections below. */}
           {metrics.commitCount >= 2 && (
             <AnimatedCard index={2} className="mb-3">
               <Card padding="md">
                 <SectionHeader
-                  title="Velocity & Workflow"
+                  title="Commit Pacing & Workflow"
                   subtitle="How your commits were paced — steady, incremental work is easier to review and revert than one big batch at the end."
                 />
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
