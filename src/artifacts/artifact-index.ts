@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, relative, sep } from 'node:path';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import type { AuditRecord } from '../security/audit-trail.js';
 import {
   isPlaceholderIdentity,
