@@ -49,7 +49,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { AGENT_ID_RE, normalizeAgentType } from '../lib/agent-id.js';
 import { claudeProjectsDir } from '../lib/claude-config-dir.js';
 import { BilledTurnLedger } from './billed-turn-ledger.js';
