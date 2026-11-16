@@ -245,7 +245,8 @@ const CLOSED_BY: Record<Exclude<LexState, 'none'>, string> = {
 // `\x` as a pair masks the same characters, since only `"` can close the quote.
 const ESCAPES_IN: ReadonlySet<LexState> = new Set(['none', 'double', 'ansi-c']);
 const METACHAR = /[\s;&|(]/;
-const HEREDOC_OPERATOR = /(?<!<)<<(-?)[ \t]*(['"]?)(\w+)\2/y;
+const HEREDOC_OPERATOR = /(?<!<)<<(-?)[ \t]*/y;
+const WORD_END = /[\s;&|()<>]/;
 const LINE_CONTINUES = /(?<!\\)(?:\\\\)*\\$/;
 
 function stateOpenedAt(command: string, i: number, atWordStart: boolean): LexState {
@@ -255,6 +256,37 @@ function stateOpenedAt(command: string, i: number, atWordStart: boolean): LexSta
   if (ch === '$' && command[i + 1] === "'") return 'ansi-c';
   if (ch === '#' && atWordStart) return 'comment';
   return 'none';
+}
+
+// The delimiter is the next shell word with its quotes and backslashes removed.
+// Any quoting makes the body literal. An unterminated quote is not a heredoc.
+function readHeredocWord(
+  command: string,
+  start: number,
+): { delimiter: string; quoted: boolean; end: number } | undefined {
+  let delimiter = '';
+  let quoted = false;
+  let i = start;
+  while (i < command.length && !WORD_END.test(command[i]!)) {
+    const ch = command[i]!;
+    if (ch === '\\') {
+      if (i + 1 >= command.length) return undefined;
+      delimiter += command[i + 1];
+      i += 2;
+    } else if (ch === "'" || ch === '"' || (ch === '$' && command[i + 1] === "'")) {
+      const open = ch === '$' ? i + 1 : i;
+      const close = command.indexOf(command[open]!, open + 1);
+      if (close === -1) return undefined;
+      delimiter += command.slice(open + 1, close);
+      i = close + 1;
+    } else {
+      delimiter += ch;
+      i++;
+      continue;
+    }
+    quoted = true;
+  }
+  return i === start ? undefined : { delimiter, quoted, end: i };
 }
 
 function heredocBodiesEnd(command: string, start: number, heredocs: readonly Heredoc[]): number {
@@ -301,15 +333,16 @@ function maskQuotedRegions(command: string): string {
     }
     if (state === 'none') {
       HEREDOC_OPERATOR.lastIndex = i;
-      const heredoc = HEREDOC_OPERATOR.exec(command);
-      if (heredoc) {
+      const operator = HEREDOC_OPERATOR.exec(command);
+      const word = operator && readHeredocWord(command, i + operator[0].length);
+      if (operator && word) {
         heredocs.push({
-          delimiter: heredoc[3]!,
-          stripTabs: heredoc[1] === '-',
-          quoted: heredoc[2] !== '',
+          delimiter: word.delimiter,
+          stripTabs: operator[1] === '-',
+          quoted: word.quoted,
         });
-        out += heredoc[0];
-        i += heredoc[0].length;
+        out += command.slice(i, word.end);
+        i = word.end;
         atWordStart = false;
         continue;
       }
