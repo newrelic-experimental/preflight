@@ -28,6 +28,9 @@ import {
   writePpidBreadcrumb,
 } from './collector-script.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
+import { createDefaultRegistry } from '../platforms/platform-registry.js';
+import { PLATFORM_NAMES } from '../platforms/platform-names.js';
+import { sessionBreadcrumbWriters } from '../platforms/types.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -304,10 +307,25 @@ describe('collector-script', () => {
       expect(readBufferEvents()[0]!.platform).toBe('cursor');
     });
 
+    it('stamps the registered spelling of an engine named in another case', () => {
+      process.env.MCP_CLIENT = 'Kiro';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('kiro');
+    });
+
     it('stamps event.platform "claude-code" when only CLAUDECODE is set', () => {
       // jest itself runs under Claude Code, so CLAUDECODE is already set in
       // this process env — set it explicitly for clarity and to survive a
       // future test environment that doesn't carry it ambiently.
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('claude-code');
+    });
+
+    it('stamps the engine the breadcrumb is filed under when MCP_CLIENT names no known engine', () => {
+      process.env.MCP_CLIENT = 'vscode';
       process.env.CLAUDECODE = '1';
       processHook(makePreToolUse());
 
@@ -2411,14 +2429,30 @@ describe('collector-script', () => {
       cwd: resolve(tmpDir, 'breadcrumbs', writer, 'session-by-cwd', '-projects-test.txt'),
     });
 
-    it('files a Claude Code hook under claude-code, never the untagged layout', () => {
+    it('files a Claude Code hook under claude-code and in the untagged layout older servers read', () => {
       process.env.CLAUDECODE = '1';
       processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
       expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
       expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
-      expect(existsSync(resolve(tmpDir, 'session-by-ppid'))).toBe(false);
-      expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
+      const legacyPpid = resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`);
+      expect(readFileSync(legacyPpid, 'utf-8')).toBe('sess-claude');
+      const legacyCwd = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
+      expect(readFileSync(legacyCwd, 'utf-8')).toBe('sess-claude');
     });
+
+    it.each(createDefaultRegistry().getRegistered())(
+      'files a hook naming $platformName in any case or separator where its server reads',
+      (adapter) => {
+        process.env.MCP_CLIENT = adapter.platformName.toUpperCase().replace(/-/g, '_');
+        processHook(makePreToolUse({ session_id: 'sess-alias', cwd: '/projects/test' }));
+        const writer =
+          adapter.platformName === 'generic-mcp' ? 'unattributed' : adapter.platformName;
+        expect(readFileSync(crumbs(writer).cwd, 'utf-8')).toBe('sess-alias');
+        const reads = sessionBreadcrumbWriters(adapter);
+        // A copilot-sdk server reads its host's copilot breadcrumbs, so no server reads a copilot-sdk writer.
+        if (reads.length > 0 && writer !== 'copilot-sdk') expect(reads).toContain(writer);
+      },
+    );
 
     it('files a hook under the engine its command names, over an inherited Claude Code env', () => {
       process.env.CLAUDECODE = '1';
@@ -2433,11 +2467,80 @@ describe('collector-script', () => {
       expect(readFileSync(crumbs('unattributed').ppid, 'utf-8')).toBe('sess-codex');
     });
 
-    it('files an engine name unsafe as a path segment as unattributed', () => {
+    it('ignores an engine name it does not know and keeps detecting Claude Code', () => {
+      process.env.MCP_CLIENT = 'vscode';
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
+    });
+
+    it('files a hook naming only unknown engines as unattributed and warns once, naming each', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const warnings = () =>
+        stderrWriteSpy.mock.calls
+          .map((args) => String(args[0]))
+          .filter((line) => line.includes('no engine Preflight knows'));
       process.env.MCP_CLIENT = '../escape';
+      process.env.NEW_RELIC_AI_PLATFORM = 'vscode';
+      processHook(makePreToolUse({ session_id: undefined, cwd: '/projects/test' }));
+      expect(warnings()).toHaveLength(0);
       processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+      process.env.MCP_CLIENT = 'not-an-engine';
+      processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0]).toContain('MCP_CLIENT="../escape"');
+      expect(warnings()[0]).toContain('NEW_RELIC_AI_PLATFORM="vscode"');
       expect(readFileSync(crumbs('unattributed').cwd, 'utf-8')).toBe('sess-x');
+      expect(readFileSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'), 'utf-8')).toBe(
+        'sess-x',
+      );
       expect(existsSync(resolve(tmpDir, 'escape'))).toBe(false);
+      stderrWriteSpy.mockRestore();
+    });
+
+    it('reads the ancestor pids once per event for both breadcrumb layouts', () => {
+      process.env.CLAUDECODE = '1';
+      const origReadFile = _procFs.readFile;
+      const reads: string[] = [];
+      _procFs.readFile = (path: string): string => {
+        reads.push(path);
+        throw new Error('ENOENT');
+      };
+      try {
+        processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      } finally {
+        _procFs.readFile = origReadFile;
+      }
+      expect(reads).toEqual([`/proc/${process.ppid}/stat`]);
+      expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
+      expect(readFileSync(resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`), 'utf-8')).toBe(
+        'sess-claude',
+      );
+    });
+
+    it('writes no untagged copy when the tagged write fails', () => {
+      process.env.CLAUDECODE = '1';
+      mkdirSync(resolve(tmpDir, 'breadcrumbs'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'breadcrumbs', 'claude-code'), '');
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(existsSync(resolve(tmpDir, 'session-by-ppid'))).toBe(false);
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
+    });
+
+    it("refreshes an unchanged cwd breadcrumb's mtime on every event", () => {
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(crumbs('claude-code').cwd, old, old);
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(statSync(crumbs('claude-code').cwd).mtimeMs).toBeGreaterThan(old.getTime() + 30_000);
+    });
+
+    it('knows exactly the registered platforms', () => {
+      const registered = createDefaultRegistry()
+        .getRegistered()
+        .map((a) => a.platformName);
+      expect([...registered].sort()).toEqual([...PLATFORM_NAMES].sort());
     });
   });
 
@@ -2735,6 +2838,12 @@ describe('collector-script', () => {
   describe('collector-script — Gemini CLI stdout contract (https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/index.md)', () => {
     it('writes "{}" to stdout when MCP_CLIENT is "gemini-cli"', () => {
       process.env.MCP_CLIENT = 'gemini-cli';
+      processHook(makeGeminiAfterTool());
+      expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
+    });
+
+    it('writes "{}" to stdout when MCP_CLIENT spells Gemini CLI another way', () => {
+      process.env.MCP_CLIENT = 'Gemini_CLI';
       processHook(makeGeminiAfterTool());
       expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
     });
