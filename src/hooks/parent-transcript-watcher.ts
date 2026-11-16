@@ -39,7 +39,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { BilledTurnLedger } from './billed-turn-ledger.js';
 import { ThrottledWarning } from './throttled-warning.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';

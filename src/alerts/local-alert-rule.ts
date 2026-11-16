@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 
 const logger = createLogger('local-alert-rule');
 
