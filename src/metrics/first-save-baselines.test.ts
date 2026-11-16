@@ -116,6 +116,19 @@ describe('FirstSaveBaselines', () => {
     expect(seedsB.toolCalls).toEqual(toolCallSeedOf(beforeB));
   });
 
+  it('reports the file before its own first save, and nothing before any own save', () => {
+    const baselines = new FirstSaveBaselines();
+    baselines.recordSave({ sessionId: 'sess-a', previous: beforeSave, ownSession: false });
+    expect(baselines.costFileBeforeOwnSave('sess-a')).toBeUndefined();
+
+    baselines.recordSave({ sessionId: 'sess-a', previous: current, ownSession: true });
+    baselines.recordSave({ sessionId: 'sess-a', previous: beforeSave, ownSession: true });
+    expect(baselines.costFileBeforeOwnSave('sess-a')).toBe(current);
+
+    baselines.take('sess-a', () => current);
+    expect(baselines.costFileBeforeOwnSave('sess-a')).toBeUndefined();
+  });
+
   it('forgets a session once taken', () => {
     const baselines = new FirstSaveBaselines();
     baselines.recordSave({ sessionId: 'sess-a', previous: beforeSave, ownSession: true });

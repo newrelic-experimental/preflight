@@ -3,7 +3,7 @@ import { resolvePricingDetail } from '../metrics/pricing-overlay.js';
 /**
  * The sibling the resolver currently estimates `model` from. Tests that check
  * the estimate is carried through use this instead of a literal, because the
- * newest priced sibling changes with every vendored pricing-table sync.
+ * newest priced sibling changes with every pricing-table update.
  */
 export function estimatedFromOf(model: string): string {
   const r = resolvePricingDetail(model);

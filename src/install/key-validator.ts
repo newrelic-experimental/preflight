@@ -1,4 +1,4 @@
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { validateSsrfUrl } from '../security/index.js';
 import { getRegion } from './regions.js';
 

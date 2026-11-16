@@ -10,6 +10,7 @@
  */
 
 import { normalizeAgentType } from '../lib/agent-id.js';
+import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
 import { classifyBash } from './bash-classifier.js';
 
 type ToolFields = Record<string, string | number | boolean>;
@@ -276,6 +277,15 @@ export function parseToolSpecificFields(
         : undefined;
     if (typeof createdPrNumber === 'string' && /^\d{1,9}$/.test(createdPrNumber)) {
       fields.createdPrNumber = createdPrNumber;
+    }
+    // Set by the collector from a GitHub MCP PR call's owner, repo and
+    // pullNumber inputs.
+    if (mcpPrToolAction(toolName) !== undefined && input !== null && typeof input === 'object') {
+      const { prRepo, prNumber } = input as Record<string, unknown>;
+      if (typeof prRepo === 'string' && /^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(prRepo)) {
+        fields.mcpPrRepo = prRepo;
+      }
+      if (typeof prNumber === 'string' && /^\d{1,9}$/.test(prNumber)) fields.mcpPrNumber = prNumber;
     }
 
     return fields;

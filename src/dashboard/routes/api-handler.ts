@@ -27,6 +27,7 @@ import type { EstimatedModelUsage, UnpricedModelUsage } from '../../metrics/cost
 import { sumCallUsageInto } from '../../metrics/call-usage.js';
 import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { attributeSessionCosts } from '../../metrics/cost-per-outcome.js';
+import { calculateModelCost } from '../../metrics/pricing-overlay.js';
 import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
 import {
   GitActivityRecorder,
@@ -430,8 +431,8 @@ export interface ApiHandlerDeps {
       totalCacheCreationTokens?: number;
       totalCacheSavingsUsd?: number;
       totalInputTokens?: number;
-      unpricedByModel?: Record<string, UnpricedModelUsage>;
-      estimatedByModel?: Record<string, EstimatedModelUsage>;
+      unpricedByDay?: Record<string, Record<string, UnpricedModelUsage>>;
+      estimatedByDay?: Record<string, Record<string, EstimatedModelUsage>>;
     };
     // Optional: per-day cost attribution. Fixes the cross-midnight bug where
     // a session that started yesterday counted its full cost as today's. When
@@ -1510,6 +1511,40 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
   return { counts, sessionIds: idsByStatus };
 }
 
+function firstActivityTodayMs(
+  s: {
+    readonly firstActivityByDayMs?: Record<string, number>;
+    readonly timeline?: ReadonlyArray<{ timestamp: number }>;
+  },
+  todayKey: string,
+  startMs: number,
+  now: number,
+): number | null {
+  const persisted = s.firstActivityByDayMs?.[todayKey];
+  if (persisted !== undefined) return Math.min(Math.max(persisted, startMs), now);
+  let first: number | null = null;
+  for (const entry of s.timeline ?? []) {
+    if (entry.timestamp >= startMs && (first === null || entry.timestamp < first)) {
+      first = entry.timestamp;
+    }
+  }
+  return first;
+}
+
+function bufferTokenCostUsd(ev: { readonly [key: string]: unknown }): number {
+  const count = (v: unknown): number => (typeof v === 'number' ? v : 0);
+  const inputTokens = count(ev.inputTokens);
+  const outputTokens = count(ev.outputTokens);
+  return calculateModelCost(typeof ev.model === 'string' ? ev.model : 'unknown', {
+    inputTokens,
+    outputTokens,
+    thinkingTokens: 0,
+    cacheReadTokens: count(ev.cacheReadTokens),
+    cacheCreationTokens: count(ev.cacheCreationTokens),
+    totalTokens: inputTokens + outputTokens,
+  }).totalUsd;
+}
+
 export function createApiHandler(
   deps: ApiHandlerDeps,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
@@ -1804,7 +1839,6 @@ export function createApiHandler(
     for (const ev of peeked) {
       const ts = typeof ev.timestamp === 'number' ? ev.timestamp : 0;
       if (ts < startMs) continue;
-      if (dailyFirstActivityMs === null || ts < dailyFirstActivityMs) dailyFirstActivityMs = ts;
       const sid = ev.sessionId;
       if (typeof sid === 'string' && sid.length > 0) {
         sessionsSeen.add(sid);
@@ -1828,6 +1862,12 @@ export function createApiHandler(
           });
         }
       } else if (ev.mode === 'token') {
+        if (
+          (dailyFirstActivityMs === null || ts < dailyFirstActivityMs) &&
+          bufferTokenCostUsd(ev) > 0
+        ) {
+          dailyFirstActivityMs = ts;
+        }
         cacheReadTokensSum += typeof ev.cacheReadTokens === 'number' ? ev.cacheReadTokens : 0;
         cacheCreationTokensSum +=
           typeof ev.cacheCreationTokens === 'number' ? ev.cacheCreationTokens : 0;
@@ -1874,9 +1914,6 @@ export function createApiHandler(
         for (const entry of session.timeline) {
           if (entry.timestamp < startMs) continue;
           if (bufferCutoff !== undefined && entry.timestamp >= bufferCutoff) continue;
-          if (dailyFirstActivityMs === null || entry.timestamp < dailyFirstActivityMs) {
-            dailyFirstActivityMs = entry.timestamp;
-          }
           toolCallCount++;
           const idx = Math.floor((entry.timestamp - startMs) / 60_000);
           if (idx >= 0 && idx < sparkline.length) sparkline[idx]++;
@@ -1928,28 +1965,17 @@ export function createApiHandler(
         subagentCostByDayUsd?: Record<string, number>;
         unpricedByModel?: Record<string, UnpricedModelUsage>;
         estimatedByModel?: Record<string, EstimatedModelUsage>;
+        unpricedByDay?: Record<string, Record<string, UnpricedModelUsage>>;
+        estimatedByDay?: Record<string, Record<string, EstimatedModelUsage>>;
         toolCallCount?: number;
         tokensInput?: number;
         tokensCacheRead?: number;
         tokensCacheCreation?: number;
         cacheSavingsUsd?: number;
         antiPatterns?: ReadonlyArray<unknown>;
+        firstActivityByDayMs?: Record<string, number>;
         timeline?: ReadonlyArray<{ timestamp: number }>;
       };
-      // Cross-midnight sessions that started before today aren't covered by
-      // the todaySessions timeline walk above (loadTodaySessions() filters
-      // by file-date = start date, so a session that started yesterday never
-      // appears there). Derive its first-today activity from its OWN
-      // timeline, not `s.startTime` — using startTime here would reintroduce
-      // the exact dilution bug dailyFirstActivityMs exists to avoid.
-      if (s.startTime < startMs && Array.isArray(s.timeline)) {
-        for (const entry of s.timeline) {
-          if (entry.timestamp < startMs) continue;
-          if (dailyFirstActivityMs === null || entry.timestamp < dailyFirstActivityMs) {
-            dailyFirstActivityMs = entry.timestamp;
-          }
-        }
-      }
       // Cost attributed to TODAY: the persisted per-day bucket, else a guarded
       // pro-rate (see todayCostOfSummary). The same helper seeds CostTracker, so
       // a restart cannot change what a checkpoint contributes.
@@ -1960,6 +1986,14 @@ export function createApiHandler(
       // drop the checkpoint's today cost, and a seeded one is not counted twice.
       // This is per-key max, the same rule mergeSummaries uses.
       const todayCost = todayCostOfSummary(s, todayKey, now);
+      const sessionFirstActivityMs =
+        todayCost.costUsd > 0 ? firstActivityTodayMs(s, todayKey, startMs, now) : null;
+      if (
+        sessionFirstActivityMs !== null &&
+        (dailyFirstActivityMs === null || sessionFirstActivityMs < dailyFirstActivityMs)
+      ) {
+        dailyFirstActivityMs = sessionFirstActivityMs;
+      }
       if (s.sessionId === liveSid) {
         liveCheckpointTodayUsd = todayCost.costUsd;
         liveCheckpointSubagentUsd = todayCost.subagentCostUsd;
@@ -1970,8 +2004,17 @@ export function createApiHandler(
         liveCheckpointInputTokens = (s.tokensInput ?? 0) * liveRatio;
         continue;
       }
-      sumCallUsageInto(unpricedByModel, s.unpricedByModel);
-      sumCallUsageInto(estimatedByModel, s.estimatedByModel);
+      // Today's calls only, so a session that started yesterday doesn't put its
+      // earlier calls in a notice beside a today-only dollar figure. A summary
+      // written before day buckets existed has only the whole-session counts.
+      sumCallUsageInto(
+        unpricedByModel,
+        s.unpricedByDay === undefined ? s.unpricedByModel : s.unpricedByDay[todayKey],
+      );
+      sumCallUsageInto(
+        estimatedByModel,
+        s.estimatedByDay === undefined ? s.estimatedByModel : s.estimatedByDay[todayKey],
+      );
       totalCostUsd += todayCost.costUsd;
       // Subagent-only portion of the same session. This is what makes the KPI
       // cross-session: each `--stdio` process persists its own subagent cost, so
@@ -2044,8 +2087,8 @@ export function createApiHandler(
 
     if (!liveIsUnscopedAggregator) {
       const liveMetrics = deps.costTracker?.getMetrics();
-      sumCallUsageInto(unpricedByModel, liveMetrics?.unpricedByModel);
-      sumCallUsageInto(estimatedByModel, liveMetrics?.estimatedByModel);
+      sumCallUsageInto(unpricedByModel, liveMetrics?.unpricedByDay?.[todayKey]);
+      sumCallUsageInto(estimatedByModel, liveMetrics?.estimatedByDay?.[todayKey]);
       // Reuses `todayKey` from the enclosing scope (declared above the
       // persisted-session loop) so the persisted-loop and this live top-up can
       // never split onto two independently-derived day keys.
@@ -3652,7 +3695,7 @@ export function createApiHandler(
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'not_found' }));
     } catch (err) {
-      const logger = (await import('../../shared/index.js')).createLogger('api-handler');
+      const logger = (await import('../../core/index.js')).createLogger('api-handler');
       logger.error('Unhandled error in API route handler', { error: String(err) });
       if (!res.headersSent) {
         res.writeHead(500, { 'content-type': 'application/json' });

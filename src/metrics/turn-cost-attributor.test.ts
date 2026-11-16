@@ -130,7 +130,7 @@ describe('TurnCostAttributor', () => {
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(0);
       expect(metrics.totalAttributedCost).toBe(0);
-      expect(metrics.droppedTokenEvents).toBe(0);
+      expect(metrics.evictedToolBursts).toBe(0);
     });
 
     it('returns a response turn for a token event that predates the pending turn it would close', () => {
@@ -149,7 +149,7 @@ describe('TurnCostAttributor', () => {
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(0);
       expect(metrics.totalAttributedCost).toBe(0);
-      expect(metrics.droppedTokenEvents).toBe(0);
+      expect(metrics.evictedToolBursts).toBe(0);
     });
 
     it('leaves the pending turn queued for the token event that does postdate it', () => {
@@ -228,7 +228,7 @@ describe('TurnCostAttributor', () => {
 
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(2);
-      expect(metrics.droppedTokenEvents).toBe(0);
+      expect(metrics.evictedToolBursts).toBe(0);
     });
 
     it('evicts a pending turn that has sat unclosed far longer than any plausible thinking time', () => {
@@ -249,7 +249,7 @@ describe('TurnCostAttributor', () => {
 
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(1);
-      expect(metrics.droppedTokenEvents).toBe(1);
+      expect(metrics.evictedToolBursts).toBe(1);
     });
 
     it('counts a burst as dropped when only a report that predates it ever arrives before it goes stale', () => {
@@ -268,7 +268,7 @@ describe('TurnCostAttributor', () => {
       expect(early.id).not.toBe(late.id);
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(0);
-      expect(metrics.droppedTokenEvents).toBe(1);
+      expect(metrics.evictedToolBursts).toBe(1);
     });
 
     it('evicts the oldest queued burst once more than MAX_PENDING_TURNS bursts are outstanding', () => {
@@ -284,7 +284,7 @@ describe('TurnCostAttributor', () => {
       }
 
       const metrics = attributor.getMetrics();
-      expect(metrics.droppedTokenEvents).toBe(1);
+      expect(metrics.evictedToolBursts).toBe(1);
 
       // The oldest (toolu_0) was evicted; the next token event closes
       // whatever is now the front of the queue (toolu_1).
@@ -302,7 +302,7 @@ describe('TurnCostAttributor', () => {
       expect(metrics.costByToolType).toEqual({});
       expect(metrics.totalAttributedCost).toBe(0);
       expect(metrics.attributionRate).toBe(0);
-      expect(metrics.droppedTokenEvents).toBe(0);
+      expect(metrics.evictedToolBursts).toBe(0);
     });
 
     it('tracks costByToolType across multiple turns', () => {
@@ -373,7 +373,7 @@ describe('TurnCostAttributor', () => {
       expect(metrics.costByToolType).toEqual({});
       expect(metrics.totalAttributedCost).toBe(0);
       expect(metrics.attributionRate).toBe(0);
-      expect(metrics.droppedTokenEvents).toBe(0);
+      expect(metrics.evictedToolBursts).toBe(0);
     });
   });
 

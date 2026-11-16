@@ -58,6 +58,13 @@ function hadExactReport(persisted: FullSessionSummary): boolean {
   );
 }
 
+// Day keys are zero-padded YYYY-MM-DD, so the string max is the latest day.
+function latestActivityDayKey(persisted: FullSessionSummary): string | undefined {
+  const days = Object.keys(persisted.costByDayUsd ?? {});
+  if (days.length > 0) return days.reduce((latest, day) => (day > latest ? day : latest));
+  return persisted.endTime > 0 ? localDateKey(persisted.endTime) : undefined;
+}
+
 // Builds the seed a freshly-started process's CostTracker needs to recover a
 // resumed session's pre-restart totals — see CostTracker.seedFromPersisted()
 // for why this exists (ParentTranscriptWatcher's read cursor durably survives
@@ -76,6 +83,7 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     persisted,
     dayKey,
   );
+  const dayFirstActivityMs = persisted.firstActivityByDayMs?.[dayKey];
   return {
     totalCostUsd,
     subagentCostUsd: persisted.subagentCostUsd,
@@ -91,9 +99,55 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     dayKey,
     dayCostUsd,
     daySubagentCostUsd,
+    ...(dayFirstActivityMs !== undefined && { dayFirstActivityMs }),
+    legacyCallsDayKey: latestActivityDayKey(persisted) ?? dayKey,
     ...(persisted.unpricedByModel && { unpricedByModel: persisted.unpricedByModel }),
     ...(persisted.estimatedByModel && { estimatedByModel: persisted.estimatedByModel }),
+    ...(persisted.unpricedByDay && { unpricedByDay: persisted.unpricedByDay }),
+    ...(persisted.estimatedByDay && { estimatedByDay: persisted.estimatedByDay }),
     ...(persisted.byteEstimates && { byteEstimates: persisted.byteEstimates }),
     ...(!hadExactReport(persisted) && { hadExactReport: false }),
   };
+}
+
+// A process that never writes a session's byte-estimate ledger holds it the way
+// the session file does, as spend: only the ledger's own writer replays the
+// turns it stood in for, and only that writer's save takes it back out.
+export function settledCostTrackerSeed(persisted: FullSessionSummary): CostTrackerSeed {
+  const { byteEstimates: _ledger, ...seed } = buildCostTrackerSeed(persisted);
+  return seed;
+}
+
+/** The cost a process's CostTracker holds for one session, split by local day. */
+export interface HeldSessionCost {
+  readonly startTime: number;
+  endTime: number;
+  estimatedCostUsd: number;
+  readonly costByDayUsd: Record<string, number>;
+}
+
+// Seeded from `persisted` when there is one. A summary with no day map books
+// the seed's day share, the one figure the tracker put on a day.
+export function heldSessionCostOf(
+  persisted: FullSessionSummary | null,
+  nowMs: number,
+  seed?: CostTrackerSeed,
+): HeldSessionCost {
+  if (!persisted)
+    return { startTime: nowMs, endTime: nowMs, estimatedCostUsd: 0, costByDayUsd: {} };
+  return {
+    startTime: persisted.startTime,
+    endTime: persisted.endTime,
+    estimatedCostUsd: persisted.estimatedCostUsd ?? 0,
+    costByDayUsd: {
+      ...(persisted.costByDayUsd ?? (seed ? { [seed.dayKey]: seed.dayCostUsd } : {})),
+    },
+  };
+}
+
+export function addHeldCost(held: HeldSessionCost, usd: number, timestampMs: number): void {
+  const dayKey = localDateKey(timestampMs);
+  held.estimatedCostUsd += usd;
+  held.costByDayUsd[dayKey] = (held.costByDayUsd[dayKey] ?? 0) + usd;
+  held.endTime = Math.max(held.endTime, timestampMs);
 }
