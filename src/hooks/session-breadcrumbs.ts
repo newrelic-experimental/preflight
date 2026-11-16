@@ -1,5 +1,10 @@
 import { resolve } from 'node:path';
 
+import {
+  CLAUDE_CODE_ENV_SIGNALS,
+  CLAUDE_CODE_PLATFORM_NAME,
+} from '../platforms/claude-code-adapter.js';
+import { canonicalPlatformName, ENGINE_ENV_KEYS } from '../platforms/platform-names.js';
 import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
 
 /**
@@ -11,12 +16,17 @@ import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
  */
 export const BREADCRUMBS_DIR = 'breadcrumbs';
 
-const WRITER_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
-
 export function breadcrumbRoot(storagePath: string, writer: string): string {
   return resolve(storagePath, BREADCRUMBS_DIR, writer);
 }
 
-export function breadcrumbWriter(engine: string | undefined): string {
-  return engine !== undefined && WRITER_RE.test(engine) ? engine : UNATTRIBUTED_BREADCRUMB_WRITER;
+export function breadcrumbWriter(env: NodeJS.ProcessEnv): string {
+  for (const key of ENGINE_ENV_KEYS) {
+    const name = canonicalPlatformName(env[key]);
+    if (name === 'generic-mcp') return UNATTRIBUTED_BREADCRUMB_WRITER;
+    if (name !== undefined) return name;
+  }
+  return CLAUDE_CODE_ENV_SIGNALS.some((key) => env[key] !== undefined)
+    ? CLAUDE_CODE_PLATFORM_NAME
+    : UNATTRIBUTED_BREADCRUMB_WRITER;
 }

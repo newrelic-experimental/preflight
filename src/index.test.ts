@@ -2055,7 +2055,9 @@ describe('stdio integration', () => {
       const cwd = makeCwd();
       guessFromCwd(storage, cwd);
       const guessing = await startEngine(storage, cwd);
-      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'guessed-session');
+      const ppidCrumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-ppid');
+      mkdirSync(ppidCrumbs, { recursive: true });
+      writeFileSync(resolve(ppidCrumbs, `${process.pid}.txt`), 'guessed-session');
       await waitFor(() => readFileSync(heartbeat, 'utf-8') !== previousPid);
       await previous.close();
       await new Promise((r) => setTimeout(r, 1000));
