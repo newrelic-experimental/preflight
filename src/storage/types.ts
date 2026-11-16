@@ -439,6 +439,14 @@ export interface TokenBreakdown {
   readonly cacheCreationTokens: number;
 }
 
+/** Dollar cost of each {@link TokenBreakdown} category, priced per model at attribution time. */
+export interface UsdBreakdown {
+  readonly inputUsd: number;
+  readonly outputUsd: number;
+  readonly cacheReadUsd: number;
+  readonly cacheCreationUsd: number;
+}
+
 export interface AttributionBucket {
   readonly costUsd: number;
   /** input + output + cache-read + cache-creation tokens; 0 when the facet has no token signal. */
@@ -449,6 +457,8 @@ export interface AttributionBucket {
   readonly durationMs: number;
   /** Per-category split of `tokens`; absent on legacy files and when the facet has no per-category signal. */
   readonly breakdown?: TokenBreakdown;
+  /** Per-category dollars of `costUsd`; absent on files written before it existed. */
+  readonly breakdownUsd?: UsdBreakdown;
 }
 
 export interface SessionAttribution {

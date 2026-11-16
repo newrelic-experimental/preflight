@@ -36,6 +36,7 @@ import type {
   AttributionFacet,
   AttributionBucket,
   TokenBreakdown,
+  UsdBreakdown,
 } from './types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type {
@@ -396,6 +397,20 @@ function mergeTokenBreakdown(
   };
 }
 
+function mergeUsdBreakdown(
+  a: UsdBreakdown | undefined,
+  b: UsdBreakdown | undefined,
+): UsdBreakdown | undefined {
+  if (!a && !b) return undefined;
+  const maxNum = (x: number | undefined, y: number | undefined): number => Math.max(x ?? 0, y ?? 0);
+  return {
+    inputUsd: maxNum(a?.inputUsd, b?.inputUsd),
+    outputUsd: maxNum(a?.outputUsd, b?.outputUsd),
+    cacheReadUsd: maxNum(a?.cacheReadUsd, b?.cacheReadUsd),
+    cacheCreationUsd: maxNum(a?.cacheCreationUsd, b?.cacheCreationUsd),
+  };
+}
+
 function mergeAttribution(
   existing: SessionAttribution | undefined,
   incoming: SessionAttribution | undefined,
@@ -423,12 +438,14 @@ function mergeAttribution(
       const ba = facetA[key];
       const bb = facetB[key];
       const breakdown = mergeTokenBreakdown(ba?.breakdown, bb?.breakdown);
+      const breakdownUsd = mergeUsdBreakdown(ba?.breakdownUsd, bb?.breakdownUsd);
       merged[key] = {
         costUsd: maxNum(ba?.costUsd, bb?.costUsd),
         tokens: maxNum(ba?.tokens, bb?.tokens),
         count: maxNum(ba?.count, bb?.count),
         durationMs: maxNum(ba?.durationMs, bb?.durationMs),
         ...(breakdown ? { breakdown } : {}),
+        ...(breakdownUsd ? { breakdownUsd } : {}),
       };
     }
     if (Object.keys(merged).length > 0) buckets[facet] = merged;
@@ -1297,6 +1314,7 @@ function buildAttribution(
           cacheReadTokens: entry.cacheReadTokens,
           cacheCreationTokens: entry.cacheCreationTokens,
         },
+        ...(entry.breakdownUsd ? { breakdownUsd: entry.breakdownUsd } : {}),
       };
     }
     if (Object.keys(skillBuckets).length > 0) buckets.skill = skillBuckets;
@@ -1665,6 +1683,25 @@ function parseTokenBreakdown(raw: unknown): TokenBreakdown | undefined {
   return undefined;
 }
 
+/** Same all-or-nothing rule as {@link parseTokenBreakdown}, over the four dollar fields. */
+function parseUsdBreakdown(raw: unknown): UsdBreakdown | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const { inputUsd, outputUsd, cacheReadUsd, cacheCreationUsd } = raw as Record<string, unknown>;
+  if (
+    typeof inputUsd === 'number' &&
+    Number.isFinite(inputUsd) &&
+    typeof outputUsd === 'number' &&
+    Number.isFinite(outputUsd) &&
+    typeof cacheReadUsd === 'number' &&
+    Number.isFinite(cacheReadUsd) &&
+    typeof cacheCreationUsd === 'number' &&
+    Number.isFinite(cacheCreationUsd)
+  ) {
+    return { inputUsd, outputUsd, cacheReadUsd, cacheCreationUsd };
+  }
+  return undefined;
+}
+
 /**
  * Accept a bucket only when all four core fields are finite numbers; any
  * other shape is dropped rather than partially hydrated. Used to parse each
@@ -1687,7 +1724,15 @@ function parseAttributionBucket(raw: unknown): AttributionBucket | undefined {
     Number.isFinite(durationMs)
   ) {
     const breakdown = parseTokenBreakdown(r.breakdown);
-    return { costUsd, tokens, count, durationMs, ...(breakdown ? { breakdown } : {}) };
+    const breakdownUsd = parseUsdBreakdown(r.breakdownUsd);
+    return {
+      costUsd,
+      tokens,
+      count,
+      durationMs,
+      ...(breakdown ? { breakdown } : {}),
+      ...(breakdownUsd ? { breakdownUsd } : {}),
+    };
   }
   return undefined;
 }
