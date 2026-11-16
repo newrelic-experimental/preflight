@@ -370,6 +370,7 @@ describe('handleGetPromptCacheHealth()', () => {
       parentCostUsd: 0,
       costByWorkflowRunId: {},
       costByDayUsd: {},
+      firstActivityByDayMs: {},
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},

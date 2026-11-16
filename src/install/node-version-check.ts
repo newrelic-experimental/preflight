@@ -13,7 +13,7 @@ export const MIN_SUPPORTED_NODE_MAJOR = 22;
  * earlier, during ESM's evaluation of the whole static import graph — before
  * this check ever runs — with a less clear error, e.g.
  * `ReferenceError: structuredClone is not defined` (Node 16, from
- * src/shared/pricing.ts) or `ReferenceError: File is not defined` (Node 18,
+ * src/core/pricing.ts) or `ReferenceError: File is not defined` (Node 18,
  * from undici). Still valuable for the most common real-world case: a stale
  * nvm default resolving to a merely-slightly-old Node.
  */

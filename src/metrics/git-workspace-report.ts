@@ -1,4 +1,4 @@
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { GIT_LOG_SESSION_ID, type GitActivityRecord } from './git-activity-recorder.js';
 import {
   isAmendCommit,
