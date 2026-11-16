@@ -19,7 +19,7 @@ import type { SessionResumeTracker } from '../metrics/session-resume-tracker.js'
 import { buildCostForecastFromInputs } from '../metrics/cost-forecast.js';
 import { localDateKey } from '../lib/date.js';
 import { resolvePricing } from '../metrics/pricing-overlay.js';
-import type { TokenUsage } from '../shared/index.js';
+import type { TokenUsage } from '../core/index.js';
 import {
   errorResult,
   requireTracker,
@@ -225,6 +225,7 @@ export const COST_FORECAST_TOOL = {
   name: 'nr_observe_get_cost_forecast',
   description:
     'Project AI spending forward based on current session rate. Returns forecast cost for end-of-day, end-of-week, and end-of-session (8h), with a confidence note. ' +
+    "Forecasts can be null while held: end-of-day and end-of-week need 10 minutes of today's data, and session-end needs 10 minutes of session age. When end-of-day and end-of-week are held for lack of data, heldReason says why. " +
     "When this session was resumed after being stale, also includes resumeContext: Claude Code's own report of how long it had been and its estimated cost to re-warm the prompt cache — context for a cost spike the rate-based forecast alone would not explain.",
   inputSchema: {
     type: 'object' as const,

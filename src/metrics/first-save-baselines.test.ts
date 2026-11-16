@@ -116,28 +116,25 @@ describe('FirstSaveBaselines', () => {
     expect(seedsB.toolCalls).toEqual(toolCallSeedOf(beforeB));
   });
 
+  it('reports the file before its own first save, and nothing before any own save', () => {
+    const baselines = new FirstSaveBaselines();
+    baselines.recordSave({ sessionId: 'sess-a', previous: beforeSave, ownSession: false });
+    expect(baselines.costFileBeforeOwnSave('sess-a')).toBeUndefined();
+
+    baselines.recordSave({ sessionId: 'sess-a', previous: current, ownSession: true });
+    baselines.recordSave({ sessionId: 'sess-a', previous: beforeSave, ownSession: true });
+    expect(baselines.costFileBeforeOwnSave('sess-a')).toBe(current);
+
+    baselines.take('sess-a', () => current);
+    expect(baselines.costFileBeforeOwnSave('sess-a')).toBeUndefined();
+  });
+
   it('forgets a session once taken', () => {
     const baselines = new FirstSaveBaselines();
     baselines.recordSave({ sessionId: 'sess-a', previous: beforeSave, ownSession: true });
     baselines.take('sess-a', () => current);
 
     expect(baselines.take('sess-a', () => current)).toEqual({
-      toolCalls: toolCallSeedOf(current),
-      cost: costSeedOf(current),
-    });
-  });
-});
-
-describe('FirstSaveBaselines.forget', () => {
-  it('holds no entries for a corrected-away id', () => {
-    const baselines = new FirstSaveBaselines();
-    const before = makeSummary({ toolCallCount: 2, estimatedCostUsd: 0.4 });
-    const current = makeSummary({ toolCallCount: 6, estimatedCostUsd: 1.4 });
-    baselines.recordSave({ sessionId: 'guess', previous: before, ownSession: true });
-
-    baselines.forget('guess');
-
-    expect(baselines.take('guess', () => current)).toEqual({
       toolCalls: toolCallSeedOf(current),
       cost: costSeedOf(current),
     });

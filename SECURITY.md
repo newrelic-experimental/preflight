@@ -25,7 +25,7 @@ This document captures the security practices and invariants baked into this cod
 
 ## Input Validation
 
-### Account ID — `src/shared/config.ts`, `src/config.ts`
+### Account ID — `src/core/config.ts`, `src/config.ts`
 
 `accountId` is interpolated into New Relic API URLs. Both config loaders validate it at startup before any use:
 
@@ -51,7 +51,7 @@ envInt('NEW_RELIC_AI_MCP_HARVEST_EVENTS_MS', 5000, { min: 100, max: 3_600_000 })
 envInt('NEW_RELIC_AI_SOME_INTERVAL', 5000);
 ```
 
-### Token counts — `safeInt()` in `src/shared/tokens.ts`
+### Token counts — `safeInt()` in `src/core/tokens.ts`
 
 SDK responses occasionally contain unexpected values. `safeInt` enforces finite, non-negative, integer semantics:
 
@@ -84,27 +84,50 @@ Apply the same pattern to any user-supplied string that becomes a NR event field
 
 ## Secret Redaction
 
-### `DEFAULT_REDACTION_PATTERNS` — `src/config.ts`
+### `redactSecrets()` — `src/redaction-patterns.ts`
 
-A set of compiled regular expressions that cover:
+One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `src/config.ts` and by `redact()` in `collector-script.ts`. It runs `REDACTION_PATTERNS`, token patterns that each redact their whole match, and four argument rules: `NAME=value`, secret flags, mysql `-p` and API-key headers. An argument rule's regex only finds where the secret starts. A scanner reads the value as one bash word, so quotes, escapes and line continuations stay in it, and an unquoted space, tab, line break, one of `; | & ( ) < >` or the backtick ends it. The scanner starts in the quote the text is in at the match, so a value inside a quoted string never reads past its closing quote. A `#` comment reads like a quote that the line break closes. The pass covers:
 
-| Pattern                                                                        | What it catches                           |
-| ------------------------------------------------------------------------------ | ----------------------------------------- |
-| `API_KEY=`, `SECRET=`, `TOKEN=`, `PASSWORD=`, `PASSPHRASE=`, `PRIVATE_KEY=`, … | Key-value secret assignments              |
-| `sk-`, `ghp_`, `gho_`, `github_pat_`, `Bearer …`                               | Common API token prefixes                 |
-| `-----BEGIN … -----END-----`                                                   | PEM-encoded private keys and certificates |
-| `AKIA[0-9A-Z]{16}`                                                             | AWS access key IDs                        |
-| `AIzaSy…`                                                                      | Google API keys                           |
-| `eyJ…` (three-part)                                                            | JWT tokens                                |
-| `npm_…`                                                                        | npm auth tokens                           |
-| `xox[a-z]-…`                                                                   | All Slack token types                     |
+| Pattern                                                                         | What it catches                           |
+| ------------------------------------------------------------------------------- | ----------------------------------------- |
+| `API_KEY=`, `SECRET=`, `TOKEN=`, `PASSWORD=`, `PASSPHRASE=`, `PRIVATE_KEY=`, …  | Key-value secret assignments              |
+| `sk-`, `ghp_`, `gho_`, `ghs_`, `github_pat_`, `xoxb-`, `xoxp-`, `Bearer …`      | Common API token prefixes                 |
+| `-----BEGIN … -----END-----`                                                    | PEM-encoded private keys and certificates |
+| `AKIA[0-9A-Z]{16}`                                                              | AWS access key IDs                        |
+| `AIzaSy…`                                                                       | Google API keys                           |
+| `eyJ…` (three-part)                                                             | JWT tokens                                |
+| `npm_…`                                                                         | npm auth tokens                           |
+| `xox[a-z]-…`                                                                    | All Slack token types                     |
+| `glpat-…`                                                                       | GitLab personal access tokens             |
+| `sk_live_` / `sk_test_` / `rk_live_` / `rk_test_`                               | Stripe secret and restricted keys         |
+| `pypi-…`                                                                        | PyPI upload tokens                        |
+| `hf_…`                                                                          | Hugging Face tokens                       |
+| `vercel_`, `heroku_`, `dd_`, `pk_`                                              | Vercel, Heroku, Datadog and similar keys  |
+| `AC…` / `SK…` (32 hex characters)                                               | Twilio account SIDs and API keys          |
+| `user:pass@` in `https://`, `mongodb://`, `postgres://`, `mysql://`, `redis://` | Credentials embedded in URLs              |
+| `?sig=`, `?se=`, `?sp=`, `?sv=`, …                                              | Azure SAS token parameters                |
+| `--token`, `--password`, `--secret`, `--api-key` and the flags listed below     | Secret values passed as flags             |
+| Each `-p<password>` after `mysql`, `mysqldump`, `mysqladmin` or `mariadb`       | MySQL client passwords                    |
+| `-H`/`--header` with `X-Api-Key`, `Api-Key`, `X-Auth-Token`, `X-Access-Token`   | API-key headers                           |
+| `aws_secret_access_key` followed by 40 characters, bare or quoted               | AWS secret access keys                    |
+
+The secret flags are `--token`, `--password`, `--passwd`, `--secret`, `--api-key`, `--access-key`, `--secret-key` and `--private-key`, in single-dash, underscore and `=` forms, and the same flags with more words joined in front by `-` or `_`, such as `--db-password`. Flags that name a file or stdin, such as `--token-file` and `--password-stdin`, are left alone.
 
 **Where applied:**
 
 - `collector-script.ts` — redacts tool input/output before writing to the hook buffer
-- `src/config.ts` — `redactSensitive()` for config-level redaction
+- `src/config.ts` — `redactSensitive()` for free-form text, `redactIdentifier()` for identifiers
 
-**Rule:** Any string that might contain secrets and is heading to a log or NR event must pass through these patterns first. Use `redact(text, config.redactionPatterns)` (agent) or `redactSensitive(text)` (MCP server).
+**Rule:** Any string that might contain secrets and is heading to a log or NR event must pass through `redactSecrets()` first. Use `redactSensitive(text)` (MCP server) or the collector's `redact()`. A loop over `REDACTION_PATTERNS` alone misses the argument rules.
+
+**Identifiers use `redactIdentifier()`.** `project_id`, `repo_url` and repo names are stamped on events and used to group them, so a false positive renames the entity in NR on upgrade. Several patterns have no leading `\b` (`sk-` matches inside `risk-assessment-…`). `redactIdentifier()` runs the same rules but skips a match that starts right after a letter or digit. Don't narrow a shared pattern to fix an identifier false positive instead: in recorded content, tokens routinely follow a letter or digit (after a JSON escape like `\n`, an ANSI colour code, or `%3A`), and a lookbehind stops them being redacted.
+
+**Changing a pattern:**
+
+- Test a new pattern on its own: a token inside `https://user:token@host` is already caught by the URL-credentials pattern, so a test that only uses that form passes without the new pattern. Test the bare token too.
+- Run the changed set over ordinary identifiers (repo names, paths, branch names) and over tokens after `\n`, `\t`, an ANSI colour code and `%3A`.
+- An argument rule's value is read by the scanner, not by its regex. A change to how values are read must keep `src/redaction-patterns.test.ts` passing. Its random secret words, each followed by a shell operator or a line break and `rm -rf`, must leave no character behind and keep the `rm` classifiable. A `NAME=` value must also hide every secret character that main's `\s*[=:]\s*\S+` rule hid, including a value on the next line after a bare `NAME=` or `NAME:`.
+- Update this table and CLAUDE.md § Security in the same PR. `npm run verify:plugin-hook` (run by the pre-push hook and the release workflow) checks that the plugin's bundled collector picked up the change.
 
 ### Credentials in logs
 
@@ -128,7 +151,7 @@ openSync(path, O_WRONLY | O_CREAT | O_APPEND, 0o600);
 
 Follow this pattern for any new storage paths the MCP server creates.
 
-### Custom pricing file path — `src/shared/pricing.ts`
+### Custom pricing file path — `src/core/pricing.ts`
 
 `loadCustomPricing` validates that the caller-supplied path ends with `.json` before reading, preventing accidental (or deliberate) reads of arbitrary files via the `NEW_RELIC_AI_CUSTOM_PRICING_FILE` env var or config file. If you add other user-configurable file paths, apply at minimum an extension check and preferably a directory containment check with `path.resolve()`.
 
@@ -157,7 +180,7 @@ This is used by both `HttpUpstream` (MCP proxy forwarding) and `OtlpReceiver` (`
 An outbound request made by default, unlike the opt-in webhook and forwarding clients. It fetches LiteLLM's community price file to price models the bundled table does not know.
 
 - The host and path are fixed (`raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`). The request uses `redirect: 'error'`, a 30 s timeout that also covers the body read, and an 8 MB cap enforced while streaming.
-- The response is mapped by `parseLiteLlmPrices` and the cache is re-validated by the vendored custom-pricing loader, which applies its own size cap and rate ceiling.
+- The response is mapped by `parseLiteLlmPrices` and the cache is re-validated by the custom-pricing loader, which applies its own size cap and rate ceiling.
 - Refreshed entries are exact-id gap fill. They live in their own table and cannot change a price the bundled table, overlay, or user custom file resolves. They do take precedence over family estimates. Context windows above 10M tokens and rates above 10,000 USD/MTok are dropped. A tampered entry can still misprice a model only the refresh knows, within those bounds, and each such model is logged once as "Pricing from the LiteLLM refresh".
 - The cache is `<storagePath>/pricing-cache.json`, written atomically through a per-process temp file with mode `0o600`. It is refetched at server start when older than a day. A long-running server rechecks hourly, does nothing while the cache is unchanged and under a day old, and otherwise refetches only once the cache is a day old.
 - Opt out with `NEW_RELIC_AI_PRICING_REFRESH=false` or `pricingRefresh: false`. `highSecurity=true` forces it off. When off, nothing is fetched and no cache file is read or written.
@@ -239,7 +262,7 @@ The full key list lives in `DANGEROUS_ENV_KEYS` (`src/lib/child-env.ts`). If you
 
 For the full inventory of what fields are sent to New Relic, who can query them, and privacy-relevant configuration settings, see [PRIVACY.md](./PRIVACY.md).
 
-### Metric values — `src/shared/harvest/metric-aggregator.ts`
+### Metric values — `src/core/harvest/metric-aggregator.ts`
 
 `MetricAggregator.record()` rejects non-finite values before they can corrupt metric buckets:
 
@@ -293,7 +316,7 @@ Apply the same pattern to any new `EventEmitter`-based stream wrappers: `once` f
 
 ## Logger Safety
 
-The logger (`src/shared/logger.ts`) writes structured JSON to **stderr**. Two invariants:
+The logger (`src/core/logger.ts`) writes structured JSON to **stderr**. Two invariants:
 
 1. **Circular reference guard** — `JSON.stringify` is wrapped in a try/catch. If serialization fails, the fallback logs only the known-safe scalar fields (`timestamp`, `level`, `component`, `message`) with `data: '[unserializable]'`. This ensures the logger itself cannot throw.
 

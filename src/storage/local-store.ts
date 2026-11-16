@@ -10,7 +10,7 @@ import {
   statSync,
 } from 'node:fs';
 import { basename, dirname, resolve, sep } from 'node:path';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import {
   DRAINS_DIR,
   DrainHold,
@@ -27,6 +27,7 @@ import {
   type DrainClaim,
 } from './drain-claims.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
+import { BREADCRUMBS_DIR, breadcrumbRoot } from '../hooks/session-breadcrumbs.js';
 import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
@@ -120,6 +121,24 @@ function isPidAlive(pid: number): boolean {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'EPERM') return true; // exists, owned by another uid
     return false;
+  }
+}
+
+let warnedUnlistableWriters = false;
+
+export function breadcrumbWriters(storagePath: string): string[] {
+  try {
+    const writers = readdirSync(resolve(storagePath, BREADCRUMBS_DIR), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+    warnedUnlistableWriters = false;
+    return writers;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT' && !warnedUnlistableWriters) {
+      warnedUnlistableWriters = true;
+      logger.warn('Failed to list breadcrumb writers', { error: String(err) });
+    }
+    return [];
   }
 }
 
@@ -320,12 +339,15 @@ export class LocalStore {
   }
 
   hasCountedToolUseId(sessionId: string, toolUseId: string): boolean {
-    if (!SESSION_ID_RE.test(sessionId)) return false;
-    return this.countedFileNames().some(
-      (name) =>
-        name.startsWith(`${sessionId}.`) &&
-        name.endsWith('.json') &&
-        readCountedToolUseIds(resolve(this.countedDir, name)).includes(toolUseId),
+    return this.countedToolUseIds(sessionId).has(toolUseId);
+  }
+
+  countedToolUseIds(sessionId: string): Set<string> {
+    if (!SESSION_ID_RE.test(sessionId)) return new Set();
+    return new Set(
+      this.countedFileNames()
+        .filter((name) => name.startsWith(`${sessionId}.`) && name.endsWith('.json'))
+        .flatMap((name) => readCountedToolUseIds(resolve(this.countedDir, name))),
     );
   }
 
@@ -489,14 +511,18 @@ export class LocalStore {
    * Called from the shutdown handler so the next maintenance GC pass knows
    * the buffer is up for adoption.
    *
-   * No-op if no heartbeat was ever written or if the file is already gone.
+   * No-op if no heartbeat was ever written, if the file is already gone, or
+   * if it names a process other than `pid`, which now owns the session.
    */
-  removeHeartbeat(): void {
+  removeHeartbeat(pid: number = process.pid): void {
     if (!this.sessionId) return;
     const heartbeatPath = resolve(this.storagePath, `active-${this.sessionId}.pid`);
     const metaPath = resolve(this.storagePath, `active-${this.sessionId}.meta.json`);
     try {
-      if (existsSync(heartbeatPath)) unlinkSync(heartbeatPath);
+      if (existsSync(heartbeatPath)) {
+        if (readFileSync(heartbeatPath, 'utf-8').trim() !== String(pid)) return;
+        unlinkSync(heartbeatPath);
+      }
       if (existsSync(metaPath)) unlinkSync(metaPath);
     } catch (err) {
       logger.debug('Failed to remove heartbeat file', { error: String(err) });
@@ -1100,38 +1126,44 @@ export class LocalStore {
 
   /**
    * Garbage-collect stale per-PPID breadcrumb files at
-   * `<storage>/session-by-ppid/<pid>.txt`. A breadcrumb is stale when its
-   * PID names a process that no longer exists (Claude Code session ended).
+   * `<storage>/breadcrumbs/<writer>/session-by-ppid/<pid>.txt`, and at
+   * `<storage>/session-by-ppid/<pid>.txt` where older collectors wrote
+   * them. A breadcrumb is stale when its PID names a process that no longer
+   * exists (its engine's session ended).
    *
    * @returns the number of breadcrumb files deleted
    */
   gcStaleBreadcrumbs(): number {
-    const breadcrumbDir = resolve(this.storagePath, 'session-by-ppid');
-    if (!existsSync(breadcrumbDir)) return 0;
-
-    let entries: string[];
-    try {
-      entries = readdirSync(breadcrumbDir);
-    } catch (err) {
-      logger.warn('Failed to enumerate breadcrumb dir for gcStaleBreadcrumbs', {
-        error: String(err),
-      });
-      return 0;
-    }
+    const breadcrumbDirs = [
+      resolve(this.storagePath, 'session-by-ppid'),
+      ...breadcrumbWriters(this.storagePath).map((writer) =>
+        resolve(breadcrumbRoot(this.storagePath, writer), 'session-by-ppid'),
+      ),
+    ];
 
     let deleted = 0;
-    for (const name of entries) {
-      if (!name.endsWith('.txt')) continue;
-      const pidStr = name.slice(0, -'.txt'.length);
-      const pid = Number.parseInt(pidStr, 10);
-      if (!Number.isFinite(pid) || pid <= 0) continue;
-      if (isPidAlive(pid)) continue;
-      const path = resolve(breadcrumbDir, name);
+    for (const breadcrumbDir of breadcrumbDirs) {
+      let entries: string[];
       try {
-        unlinkSync(path);
-        deleted++;
+        entries = readdirSync(breadcrumbDir);
       } catch (err) {
-        logger.debug('Failed to delete stale breadcrumb', { pid, error: String(err) });
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        logger.warn('Failed to enumerate breadcrumb dir for gcStaleBreadcrumbs', {
+          error: String(err),
+        });
+        continue;
+      }
+      for (const name of entries) {
+        if (!name.endsWith('.txt')) continue;
+        const pid = Number.parseInt(name.slice(0, -'.txt'.length), 10);
+        if (!Number.isFinite(pid) || pid <= 0) continue;
+        if (isPidAlive(pid)) continue;
+        try {
+          unlinkSync(resolve(breadcrumbDir, name));
+          deleted++;
+        } catch (err) {
+          logger.debug('Failed to delete stale breadcrumb', { pid, error: String(err) });
+        }
       }
     }
     if (deleted > 0) {

@@ -117,9 +117,9 @@ function drainsDir(): string {
   return resolve(dir, 'drains');
 }
 
-function writeClaim(pid: number, claimedAt: number, content: string): string {
+function writeClaim(pid: number, claimedAt: number, content: string, session = SESSION): string {
   fs.mkdirSync(drainsDir(), { recursive: true });
-  const path = resolve(drainsDir(), formatClaimName(`buffer-${SESSION}.jsonl`, pid, claimedAt));
+  const path = resolve(drainsDir(), formatClaimName(`buffer-${session}.jsonl`, pid, claimedAt));
   fs.writeFileSync(path, content);
   return path;
 }
@@ -596,6 +596,36 @@ describe('concurrent drainers of one buffer', () => {
       'A:paired',
       'X:timeout',
     ]);
+  });
+
+  it("counts another session's call once when its post waits behind a stuck claim at the swap", () => {
+    const outcomes = new Map<string, string>();
+    const outcome = (r: ToolCallRecord): void => {
+      outcomes.set(r.id, `${r.sessionId}:${r.toolName}:${r.success ? 'paired' : r.errorType}`);
+    };
+    const pending = new LocalStore(dir);
+    const processor = new HookEventProcessor({
+      store: pending,
+      drainAllSessions: true,
+      pollIntervalMs: 3_600_000,
+      onRecord: outcome,
+      onRecordAmend: outcome,
+    });
+    appendToHookBuffer(resolve(dir, 'buffer-other.jsonl'), line('A', 'pre', 'other'));
+    processor.processEvents(pending.drainAllBuffers());
+    const now = Date.now();
+    writeClaim(REAL_PID, now - 2_000, line('X', 'pre', 'other'), 'other');
+    writeClaim(REAL_PID, now - 1_000, line('A', 'post', 'other'), 'other');
+    refuseUnlinkOf('X');
+
+    processor.start();
+    processor.replaceStore(new LocalStore(dir, SESSION), false);
+    const atSwap = [...outcomes.values()];
+    mockHooks.unlink = null;
+    processor.stop();
+
+    expect(atSwap).toEqual(['other:A:timeout']);
+    expect([...outcomes.values()]).toEqual(['other:A:paired', 'other:X:timeout']);
   });
 
   it('keeps two adopted claims oldest first when the first take fails', () => {

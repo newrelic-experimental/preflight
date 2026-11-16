@@ -5,12 +5,12 @@
  *   1. Self-reporting via the `nr_observe_report_tokens` MCP tool (primary)
  *   2. Estimation from hook input/output byte sizes (fallback)
  *
- * Cost calculation delegates to `calculateModelCost()` (pricing-overlay.ts), which normalizes the model id and wraps the shared `calculateCost()`.
+ * Cost calculation delegates to `calculateModelCost()` (pricing-overlay.ts), which normalizes the model id and wraps `calculateCost()`.
  */
 
-import type { TokenUsage, CostBreakdown, MetricAggregator } from '../shared/index.js';
-import { createLogger } from '../shared/index.js';
-import { addCallUsage } from './call-usage.js';
+import type { TokenUsage, CostBreakdown, MetricAggregator } from '../core/index.js';
+import { createLogger } from '../core/index.js';
+import { CallUsageBook, type CallUsageByDay } from './call-usage.js';
 import { priceModelUsage } from './pricing-overlay.js';
 import { localDateKey } from '../lib/date.js';
 import type { SessionTracker } from './session-tracker.js';
@@ -83,8 +83,8 @@ const LATE_ARRIVAL_REJECTION_MS = 48 * 60 * 60 * 1000;
  * counts and everything else untouched. Used to correct Preflight's own
  * list-price computation to an org's real contracted rate (see
  * `CostTrackerOptions.rateMultiplier`) — `calculateCost()` itself lives in
- * `src/shared/`, a vendored snapshot this repo must not edit, so the
- * correction is applied to its output here instead of inside it.
+ * `src/core/`, so the correction is applied to its output here instead of
+ * inside it.
  */
 function scaleCostBreakdown(breakdown: CostBreakdown, factor: number): CostBreakdown {
   return {
@@ -135,6 +135,15 @@ export interface ByteEstimateLedger {
   readonly outputTokens: number;
   readonly costByModel: Readonly<Record<string, number>>;
   readonly costByDayUsd: Readonly<Record<string, number>>;
+  /**
+   * The unpriced and estimated-price calls those estimates counted, so the
+   * report that replaces them takes the counts back out with the cost. Absent
+   * on a ledger written before they were kept.
+   */
+  readonly unpricedByModel?: Readonly<Record<string, UnpricedModelUsage>>;
+  readonly estimatedByModel?: Readonly<Record<string, EstimatedModelUsage>>;
+  readonly unpricedByDay?: Readonly<CallUsageByDay<UnpricedModelUsage>>;
+  readonly estimatedByDay?: Readonly<CallUsageByDay<EstimatedModelUsage>>;
 }
 
 export interface CostMetrics {
@@ -186,6 +195,7 @@ export interface CostMetrics {
    * a single day when it has no timeline to pro-rate against.
    */
   readonly costByDayUsd: Record<string, number>;
+  readonly firstActivityByDayMs: Record<string, number>;
   /** Subagent-attributed cost bucketed by local-day key; today-scoped
    * counterpart to `subagentCostUsd`. Same rationale as `costByDayUsd`. */
   readonly subagentCostByDayUsd: Record<string, number>;
@@ -199,6 +209,14 @@ export interface CostMetrics {
    * totals but is an estimate.
    */
   readonly estimatedByModel: Record<string, EstimatedModelUsage>;
+  /**
+   * `unpricedByModel` split by the local day each call was recorded in, the way
+   * `costByDayUsd` splits cost, so a consumer scoped to one day counts only that
+   * day's calls. A late arrival counts in `unpricedByModel` but in no day.
+   */
+  readonly unpricedByDay: CallUsageByDay<UnpricedModelUsage>;
+  /** `estimatedByModel` split by local day; see `unpricedByDay`. */
+  readonly estimatedByDay: CallUsageByDay<EstimatedModelUsage>;
   /**
    * Subagent-attributed spend bucketed by `ctx.agentType` (best-effort — see
    * `TokenRecordContext.agentType`). Only token events whose `agentId` had a
@@ -252,6 +270,7 @@ export interface CostTrackerSeed {
   /** Portion of `totalCostUsd`/`subagentCostUsd` attributable to `dayKey` (see `todayPortionOfSessionCost`). */
   readonly dayCostUsd: number;
   readonly daySubagentCostUsd: number;
+  readonly dayFirstActivityMs?: number;
   /**
    * Per-workflow-run cost, split by local-day, from the persisted checkpoint
    * — see `seedFromPersisted()`'s doc comment for why this is seeded (unlike
@@ -261,6 +280,14 @@ export interface CostTrackerSeed {
   readonly costByWorkflowRunId: Readonly<Record<string, Readonly<Record<string, number>>>>;
   readonly unpricedByModel?: Readonly<Record<string, UnpricedModelUsage>>;
   readonly estimatedByModel?: Readonly<Record<string, EstimatedModelUsage>>;
+  /**
+   * Absent on a checkpoint written before day buckets existed; its counts then
+   * book to `legacyCallsDayKey`.
+   */
+  readonly unpricedByDay?: Readonly<CallUsageByDay<UnpricedModelUsage>>;
+  readonly estimatedByDay?: Readonly<CallUsageByDay<EstimatedModelUsage>>;
+  /** The checkpoint's own latest day, so a resumed legacy session's calls stay off today. Defaults to `dayKey`. */
+  readonly legacyCallsDayKey?: string;
   /** Restored separately so the seed can tell exact tokens from estimated ones. See `ByteEstimateLedger`. */
   readonly byteEstimates?: ByteEstimateLedger;
   /**
@@ -309,8 +336,11 @@ export class CostTracker implements Resettable {
   private hasByteEstimateHistory = false;
   private latestCostBreakdown: CostBreakdown | null = null;
   private costByModel = new Map<string, number>();
-  private unpricedByModel = new Map<string, UnpricedModelUsage>();
-  private estimatedByModel = new Map<string, EstimatedModelUsage>();
+  private readonly unpriced = new CallUsageBook<UnpricedModelUsage>();
+  private readonly estimated = new CallUsageBook<EstimatedModelUsage>();
+  /** The share of `unpriced` and `estimated` that came from byte estimates. */
+  private readonly byteEstimateUnpriced = new CallUsageBook<UnpricedModelUsage>();
+  private readonly byteEstimateEstimated = new CallUsageBook<EstimatedModelUsage>();
   // Per-day cost attribution. Each token event is bucketed into the local-day
   // it was recorded in, so consumers asking "how much did this session spend
   // today" can get a real answer when a session crosses midnight. Without
@@ -318,6 +348,8 @@ export class CostTracker implements Resettable {
   // including tokens spent before midnight.
   private costByDayUsd = new Map<string, number>();
   private firstActivityMsByDay = new Map<string, number>();
+  /** Days seeded with spend but no persisted first spend: the real first spend is unknown, so no anchor is saved. */
+  private unanchoredDays = new Set<string>();
   /**
    * Per-workflow-run cost attribution split by local-day so a run that crosses
    * midnight contributes to each day's bucket independently. Two-level map:
@@ -410,7 +442,7 @@ export class CostTracker implements Resettable {
 
     this.estimationCount++;
     const nowMs = Date.now();
-    const breakdown = this.accumulateTokens(usage, model, { timestampMs: nowMs });
+    const breakdown = this.accumulateTokens(usage, model, { timestampMs: nowMs }, true);
     this.hasByteEstimateHistory = true;
     this.byteEstimateCostUsd += breakdown.totalUsd;
     this.byteEstimateInputTokens += inputTokens;
@@ -433,7 +465,6 @@ export class CostTracker implements Resettable {
    * bucketed differently.
    */
   private discardByteEstimates(): void {
-    if (this.byteEstimateCostUsd === 0 && this.byteEstimateInputTokens === 0) return;
     this.totalCostUsd = Math.max(0, this.totalCostUsd - this.byteEstimateCostUsd);
     this.parentCostUsd = Math.max(0, this.parentCostUsd - this.byteEstimateCostUsd);
     this.totalInputTokens = Math.max(0, this.totalInputTokens - this.byteEstimateInputTokens);
@@ -445,6 +476,10 @@ export class CostTracker implements Resettable {
     this.byteEstimateOutputTokens = 0;
     this.byteEstimateCostByModel = new Map();
     this.byteEstimateCostByDay = new Map();
+    this.unpriced.subtract(this.byteEstimateUnpriced);
+    this.estimated.subtract(this.byteEstimateEstimated);
+    this.byteEstimateUnpriced.clear();
+    this.byteEstimateEstimated.clear();
   }
 
   /**
@@ -495,6 +530,7 @@ export class CostTracker implements Resettable {
     usage: TokenUsage,
     model: string,
     ctx?: TokenRecordContext,
+    isByteEstimate = false,
   ): CostBreakdown {
     const { breakdown: rawBreakdown, resolution } = priceModelUsage(model, usage);
     const tokens =
@@ -503,17 +539,6 @@ export class CostTracker implements Resettable {
       usage.thinkingTokens +
       usage.cacheReadTokens +
       usage.cacheCreationTokens;
-    if (tokens > 0) {
-      if (resolution.kind === 'unpriced') {
-        addCallUsage(this.unpricedByModel, model, { calls: 1, tokens });
-      } else if (resolution.source === 'estimated') {
-        addCallUsage(this.estimatedByModel, model, {
-          calls: 1,
-          tokens,
-          estimatedFrom: resolution.estimatedFrom,
-        });
-      }
-    }
     const breakdown =
       this.rateMultiplier === 1
         ? rawBreakdown
@@ -527,6 +552,19 @@ export class CostTracker implements Resettable {
     const tsMs = ctx?.timestampMs ?? wallNowMs;
     const isLate =
       ctx?.timestampMs !== undefined && wallNowMs - ctx.timestampMs > LATE_ARRIVAL_REJECTION_MS;
+
+    if (tokens > 0) {
+      const callDayKey = isLate ? null : localDateKey(tsMs);
+      if (resolution.kind === 'unpriced') {
+        const call = { calls: 1, tokens };
+        this.unpriced.add(model, callDayKey, call);
+        if (isByteEstimate) this.byteEstimateUnpriced.add(model, callDayKey, call);
+      } else if (resolution.source === 'estimated') {
+        const call = { calls: 1, tokens, estimatedFrom: resolution.estimatedFrom };
+        this.estimated.add(model, callDayKey, call);
+        if (isByteEstimate) this.byteEstimateEstimated.add(model, callDayKey, call);
+      }
+    }
 
     if (isLate) {
       logger.warn('Late-arrival token event dropped from day bucket', {
@@ -584,7 +622,11 @@ export class CostTracker implements Resettable {
     }
     this.lastMutationMsByDay.set(dayKey, wallNowMs);
     const existingFirst = this.firstActivityMsByDay.get(dayKey);
-    if (existingFirst === undefined || tsMs < existingFirst) {
+    if (
+      breakdown.totalUsd > 0 &&
+      !this.unanchoredDays.has(dayKey) &&
+      (existingFirst === undefined || tsMs < existingFirst)
+    ) {
       // Use earliest event timestamp for the day so cross-midnight burn-rate
       // denominators stay correct (NOT wall-clock arrival time).
       this.firstActivityMsByDay.set(dayKey, tsMs);
@@ -643,6 +685,7 @@ export class CostTracker implements Resettable {
     this.totalCacheSavingsUsd += seed.totalCacheSavingsUsd;
     if (seed.hadExactReport === false) this.estimationCount += 1;
     else this.reportCount += 1;
+    const legacyCallsDayKey = seed.legacyCallsDayKey ?? seed.dayKey;
     if (seed.byteEstimates !== undefined) {
       this.hasByteEstimateHistory = true;
       this.byteEstimateCostUsd += seed.byteEstimates.costUsd;
@@ -657,18 +700,24 @@ export class CostTracker implements Resettable {
       for (const [day, usd] of Object.entries(seed.byteEstimates.costByDayUsd)) {
         this.byteEstimateCostByDay.set(day, (this.byteEstimateCostByDay.get(day) ?? 0) + usd);
       }
+      this.byteEstimateUnpriced.addRecords(
+        seed.byteEstimates.unpricedByModel,
+        seed.byteEstimates.unpricedByDay,
+        legacyCallsDayKey,
+      );
+      this.byteEstimateEstimated.addRecords(
+        seed.byteEstimates.estimatedByModel,
+        seed.byteEstimates.estimatedByDay,
+        legacyCallsDayKey,
+      );
     }
 
     for (const [model, usd] of Object.entries(seed.costByModel)) {
       this.costByModel.set(model, (this.costByModel.get(model) ?? 0) + usd);
     }
 
-    for (const [model, entry] of Object.entries(seed.unpricedByModel ?? {})) {
-      addCallUsage(this.unpricedByModel, model, entry);
-    }
-    for (const [model, entry] of Object.entries(seed.estimatedByModel ?? {})) {
-      addCallUsage(this.estimatedByModel, model, entry);
-    }
+    this.unpriced.addRecords(seed.unpricedByModel, seed.unpricedByDay, legacyCallsDayKey);
+    this.estimated.addRecords(seed.estimatedByModel, seed.estimatedByDay, legacyCallsDayKey);
 
     if (seed.dayCostUsd !== 0) {
       this.costByDayUsd.set(
@@ -676,9 +725,14 @@ export class CostTracker implements Resettable {
         (this.costByDayUsd.get(seed.dayKey) ?? 0) + seed.dayCostUsd,
       );
       this.lastMutationMsByDay.set(seed.dayKey, Date.now());
-      const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
-      if (existingFirst === undefined) {
-        this.firstActivityMsByDay.set(seed.dayKey, Date.now());
+      if (seed.dayFirstActivityMs === undefined) {
+        this.firstActivityMsByDay.delete(seed.dayKey);
+        this.unanchoredDays.add(seed.dayKey);
+      } else if (!this.unanchoredDays.has(seed.dayKey)) {
+        const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
+        if (existingFirst === undefined || seed.dayFirstActivityMs < existingFirst) {
+          this.firstActivityMsByDay.set(seed.dayKey, seed.dayFirstActivityMs);
+        }
       }
     }
     if (seed.daySubagentCostUsd !== 0) {
@@ -853,6 +907,10 @@ export class CostTracker implements Resettable {
           outputTokens: this.byteEstimateOutputTokens,
           costByModel: Object.fromEntries(this.byteEstimateCostByModel),
           costByDayUsd: Object.fromEntries(this.byteEstimateCostByDay),
+          unpricedByModel: this.byteEstimateUnpriced.byModel(),
+          estimatedByModel: this.byteEstimateEstimated.byModel(),
+          unpricedByDay: this.byteEstimateUnpriced.byDay(),
+          estimatedByDay: this.byteEstimateEstimated.byDay(),
         },
       }),
       latestCostBreakdown: this.latestCostBreakdown,
@@ -860,8 +918,11 @@ export class CostTracker implements Resettable {
       parentCostUsd: this.parentCostUsd,
       costByWorkflowRunId,
       costByDayUsd: Object.fromEntries(this.costByDayUsd),
-      unpricedByModel: Object.fromEntries(this.unpricedByModel),
-      estimatedByModel: Object.fromEntries(this.estimatedByModel),
+      firstActivityByDayMs: Object.fromEntries(this.firstActivityMsByDay),
+      unpricedByModel: this.unpriced.byModel(),
+      estimatedByModel: this.estimated.byModel(),
+      unpricedByDay: this.unpriced.byDay(),
+      estimatedByDay: this.estimated.byDay(),
       subagentCostByDayUsd: Object.fromEntries(this.subagentCostByDayUsd),
       subagentByAgentType: Object.fromEntries(this.subagentByAgentType),
       highContextCostUsd: this.highContextCostUsd,
@@ -915,10 +976,10 @@ export class CostTracker implements Resettable {
     aggregator.record('ai.cost.estimation_count', this.estimationCount, attrs);
     aggregator.record('ai.cost.subagent_usd', this.subagentCostUsd, attrs);
     aggregator.record('ai.cost.parent_usd', this.parentCostUsd, attrs);
-    for (const [model, entry] of this.unpricedByModel) {
+    for (const [model, entry] of this.unpriced.entries()) {
       aggregator.record('ai.cost.unpriced_calls', entry.calls, { model });
     }
-    for (const [model, entry] of this.estimatedByModel) {
+    for (const [model, entry] of this.estimated.entries()) {
       aggregator.record('ai.cost.estimated_calls', entry.calls, {
         model,
         estimatedFrom: entry.estimatedFrom,
@@ -945,14 +1006,17 @@ export class CostTracker implements Resettable {
     this.hasByteEstimateHistory = false;
     this.latestCostBreakdown = null;
     this.costByModel = new Map();
-    this.unpricedByModel = new Map();
-    this.estimatedByModel = new Map();
+    this.unpriced.clear();
+    this.estimated.clear();
+    this.byteEstimateUnpriced.clear();
+    this.byteEstimateEstimated.clear();
     this.costByDayUsd = new Map();
     this.subagentCostByDayUsd = new Map();
     this.subagentByAgentType = new Map();
     this.highContextCostUsd = 0;
     this.apiDurationMs = null;
     this.firstActivityMsByDay = new Map();
+    this.unanchoredDays = new Set();
     this.costByWorkflowRunId = new Map();
     this.lastMutationMsByDay = new Map();
     this.subagentCostUsd = 0;

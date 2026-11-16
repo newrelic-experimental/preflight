@@ -3,6 +3,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -27,6 +28,9 @@ import {
   writePpidBreadcrumb,
 } from './collector-script.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
+import { createDefaultRegistry } from '../platforms/platform-registry.js';
+import { PLATFORM_NAMES } from '../platforms/platform-names.js';
+import { sessionBreadcrumbWriters } from '../platforms/types.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -256,7 +260,13 @@ describe('collector-script', () => {
   describe('processHook() — PreToolUse', () => {
     it('lands its session breadcrumbs in the test temp dir, not the default storage dir', () => {
       processHook(makePreToolUse());
-      expect(existsSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'))).toBe(true);
+      const writers = readdirSync(resolve(tmpDir, 'breadcrumbs'));
+      expect(writers).toHaveLength(1);
+      expect(
+        existsSync(
+          resolve(tmpDir, 'breadcrumbs', writers[0]!, 'session-by-cwd', '-projects-test.txt'),
+        ),
+      ).toBe(true);
       expect(existsSync(resolve(homedir(), '.newrelic-preflight'))).toBe(false);
     });
 
@@ -297,10 +307,25 @@ describe('collector-script', () => {
       expect(readBufferEvents()[0]!.platform).toBe('cursor');
     });
 
+    it('stamps the registered spelling of an engine named in another case', () => {
+      process.env.MCP_CLIENT = 'Kiro';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('kiro');
+    });
+
     it('stamps event.platform "claude-code" when only CLAUDECODE is set', () => {
       // jest itself runs under Claude Code, so CLAUDECODE is already set in
       // this process env — set it explicitly for clarity and to survive a
       // future test environment that doesn't carry it ambiently.
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('claude-code');
+    });
+
+    it('stamps the engine the breadcrumb is filed under when MCP_CLIENT names no known engine', () => {
+      process.env.MCP_CLIENT = 'vscode';
       process.env.CLAUDECODE = '1';
       processHook(makePreToolUse());
 
@@ -367,6 +392,41 @@ describe('collector-script', () => {
       expect(toolInput.contentLength).toBe(17);
       expect(toolInput.lineCount).toBe(3);
       expect(toolInput.file_path).toBe('/a.ts');
+    });
+  });
+
+  describe('processHook() — secrets passed as Bash arguments', () => {
+    const token = `ghp_${'A'.repeat(36)}`;
+    const straddling = `echo ${'x'.repeat(10_240 - 16 - 'echo '.length - 1)} ${token}`;
+    it.each([
+      ['Bash', makePreToolUse({ tool_name: 'Bash', tool_input: { command: straddling } })],
+      [
+        'run_in_terminal',
+        makePreToolUse({ tool_name: 'run_in_terminal', tool_input: { command: straddling } }),
+      ],
+      ['beforeShellExecution', makeCursorBeforeShellExecution({ command: straddling })],
+      [
+        'pre_run_command',
+        JSON.stringify({
+          agent_action_name: 'pre_run_command',
+          tool_info: { command_line: straddling, cwd: '/x' },
+        }),
+      ],
+    ])('redacts a whole token that straddles the content limit in a %s command', (_name, raw) => {
+      processHook(raw);
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.command).not.toMatch(/ghp_|AAAA/);
+      expect(toolInput.command).toMatch(/\[REDACTED\]$/);
+    });
+
+    it('keeps a destructive command past the content limit classifiable', () => {
+      const command = `echo ${'x'.repeat(10_300)} && rm -rf /tmp/x`;
+      processHook(makePreToolUse({ tool_name: 'Bash', tool_input: { command } }));
+
+      const event = readBufferEvents()[0]!;
+      const fields = parseToolSpecificFields('Bash', event.toolInput, undefined);
+      expect(fields.bashDestructive).toBe(true);
     });
   });
 
@@ -499,6 +559,54 @@ describe('collector-script', () => {
       );
 
       expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '57' });
+    });
+
+    it('keeps the repo and PR number an MCP merge_pull_request call names', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'mcp__github__merge_pull_request',
+          tool_input: { owner: 'acme', repo: 'app.js', pullNumber: 57, merge_method: 'squash' },
+          tool_response: [{ type: 'text', text: '{"merged":true}' }],
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolInput).toEqual({ prRepo: 'acme/app.js', prNumber: '57' });
+    });
+
+    it('keeps only the repo of an MCP create_pull_request call, which names no PR yet', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'mcp__github__create_pull_request',
+          tool_input: { owner: 'acme', repo: 'app', pullNumber: 3, title: 't' },
+          tool_response: [],
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolInput).toEqual({ prRepo: 'acme/app' });
+    });
+
+    it.each([
+      ['an owner with a slash', { owner: 'acme/x', repo: 'app', pullNumber: 5 }, { prNumber: '5' }],
+      [
+        'a fractional pullNumber',
+        { owner: 'acme', repo: 'app', pullNumber: 5.5 },
+        { prRepo: 'acme/app' },
+      ],
+      [
+        'a pullNumber of 0',
+        { owner: 'acme', repo: 'app', pullNumber: '0' },
+        { prRepo: 'acme/app' },
+      ],
+    ])('drops a PR target field that is not a plain name or number (%s)', (_label, input, kept) => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'mcp__github__update_pull_request',
+          tool_input: input,
+          tool_response: [],
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolInput).toEqual(kept);
     });
 
     it('omits toolOutput when no parseable output fields exist', () => {
@@ -2180,7 +2288,7 @@ describe('collector-script', () => {
     });
 
     it('writes <storage>/session-by-ppid/<ppid>.txt with the sessionId', () => {
-      writePpidBreadcrumb('sess-bread');
+      writePpidBreadcrumb('sess-bread', tmpDir);
       const ppid = process.ppid;
       const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`);
       expect(existsSync(breadcrumbPath)).toBe(true);
@@ -2188,20 +2296,20 @@ describe('collector-script', () => {
     });
 
     it('rejects malformed sessionIds without writing', () => {
-      writePpidBreadcrumb('../../escape');
+      writePpidBreadcrumb('../../escape', tmpDir);
       const ppid = process.ppid;
       expect(existsSync(resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`))).toBe(false);
     });
 
     it('short-circuits when content already matches', () => {
-      writePpidBreadcrumb('sess-stable');
+      writePpidBreadcrumb('sess-stable', tmpDir);
       const ppid = process.ppid;
       const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`);
       const firstStat = statSync(breadcrumbPath).mtimeMs;
       // Tight loop — most calls should observe the existsSync + readFileSync
       // short-circuit and not rewrite the file. mtimeMs has 1ms resolution so
       // we just assert that we don't error and the content is unchanged.
-      for (let i = 0; i < 50; i++) writePpidBreadcrumb('sess-stable');
+      for (let i = 0; i < 50; i++) writePpidBreadcrumb('sess-stable', tmpDir);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-stable');
       // The mtime may or may not change depending on filesystem — the key
       // assertion is correctness; the perf claim is documented separately.
@@ -2209,7 +2317,7 @@ describe('collector-script', () => {
     });
 
     it('refreshes mtime on the short-circuit path so an active session never goes stale', () => {
-      writePpidBreadcrumb('sess-active');
+      writePpidBreadcrumb('sess-active', tmpDir);
       const ppid = process.ppid;
       const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`);
 
@@ -2224,18 +2332,9 @@ describe('collector-script', () => {
       // resolveFromBreadcrumb()'s staleness check (session-resolver.ts)
       // would reject this breadcrumb forever after any MCP restart that
       // keeps the same ppid and session_id.
-      writePpidBreadcrumb('sess-active');
+      writePpidBreadcrumb('sess-active', tmpDir);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-active');
       expect(statSync(breadcrumbPath).mtimeMs).toBeGreaterThan(Date.now() - 5_000);
-    });
-
-    it('processHook() drops the breadcrumb on every fire (idempotent overwrite)', () => {
-      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
-      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
-
-      processHook(makePreToolUse({ session_id: 'sess-bc' }));
-      const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`);
-      expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-bc');
     });
 
     it('writes breadcrumb at each ancestor PID (end-to-end WSL+fish path)', () => {
@@ -2250,7 +2349,7 @@ describe('collector-script', () => {
         throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
       };
       try {
-        writePpidBreadcrumb('sess-ancestor');
+        writePpidBreadcrumb('sess-ancestor', tmpDir);
       } finally {
         _procFs.readFile = origReadFile;
       }
@@ -2274,21 +2373,21 @@ describe('collector-script', () => {
     });
 
     it('writes <storage>/session-by-cwd/<sanitized-cwd>.txt with the sessionId', () => {
-      writeCwdBreadcrumb('sess-bread', '/projects/test');
+      writeCwdBreadcrumb('sess-bread', '/projects/test', tmpDir);
       const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
       expect(existsSync(breadcrumbPath)).toBe(true);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-bread');
     });
 
     it('sanitizes a backslash-separated (Windows) cwd, stripping the drive-letter colon too', () => {
-      writeCwdBreadcrumb('sess-win', 'C:\\Users\\test\\myproject');
+      writeCwdBreadcrumb('sess-win', 'C:\\Users\\test\\myproject', tmpDir);
       const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', 'C--Users-test-myproject.txt');
       expect(existsSync(breadcrumbPath)).toBe(true);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-win');
     });
 
     it('strips the drive-letter colon so the breadcrumb filename has no embedded colon', () => {
-      writeCwdBreadcrumb('sess-colon', 'C:\\Users\\test\\myproject');
+      writeCwdBreadcrumb('sess-colon', 'C:\\Users\\test\\myproject', tmpDir);
       expect(existsSync(resolve(tmpDir, 'session-by-cwd', 'C--Users-test-myproject.txt'))).toBe(
         true,
       );
@@ -2298,30 +2397,150 @@ describe('collector-script', () => {
     });
 
     it('no-ops when cwd is missing or empty', () => {
-      writeCwdBreadcrumb('sess-nocwd', undefined);
-      writeCwdBreadcrumb('sess-nocwd', '');
+      writeCwdBreadcrumb('sess-nocwd', undefined, tmpDir);
+      writeCwdBreadcrumb('sess-nocwd', '', tmpDir);
       expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
     });
 
     it('rejects malformed sessionIds without writing', () => {
-      writeCwdBreadcrumb('../../escape', '/projects/test');
+      writeCwdBreadcrumb('../../escape', '/projects/test', tmpDir);
       expect(existsSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'))).toBe(false);
     });
 
     it('short-circuits when content already matches', () => {
-      writeCwdBreadcrumb('sess-stable', '/projects/test');
+      writeCwdBreadcrumb('sess-stable', '/projects/test', tmpDir);
       const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
-      for (let i = 0; i < 50; i++) writeCwdBreadcrumb('sess-stable', '/projects/test');
+      for (let i = 0; i < 50; i++) writeCwdBreadcrumb('sess-stable', '/projects/test', tmpDir);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-stable');
     });
+  });
 
-    it('processHook() drops the cwd breadcrumb on every fire', () => {
+  describe('processHook() breadcrumb writer', () => {
+    beforeEach(() => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      for (const key of [...CLAUDE_CODE_ENV_SIGNALS, 'MCP_CLIENT', 'NEW_RELIC_AI_PLATFORM']) {
+        delete process.env[key];
+      }
+    });
 
-      processHook(makePreToolUse({ session_id: 'sess-bc', cwd: '/projects/test' }));
-      const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
-      expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-bc');
+    const crumbs = (writer: string) => ({
+      ppid: resolve(tmpDir, 'breadcrumbs', writer, 'session-by-ppid', `${process.ppid}.txt`),
+      cwd: resolve(tmpDir, 'breadcrumbs', writer, 'session-by-cwd', '-projects-test.txt'),
+    });
+
+    it('files a Claude Code hook under claude-code and in the untagged layout older servers read', () => {
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
+      expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
+      const legacyPpid = resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`);
+      expect(readFileSync(legacyPpid, 'utf-8')).toBe('sess-claude');
+      const legacyCwd = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
+      expect(readFileSync(legacyCwd, 'utf-8')).toBe('sess-claude');
+    });
+
+    it.each(createDefaultRegistry().getRegistered())(
+      'files a hook naming $platformName in any case or separator where its server reads',
+      (adapter) => {
+        process.env.MCP_CLIENT = adapter.platformName.toUpperCase().replace(/-/g, '_');
+        processHook(makePreToolUse({ session_id: 'sess-alias', cwd: '/projects/test' }));
+        const writer =
+          adapter.platformName === 'generic-mcp' ? 'unattributed' : adapter.platformName;
+        expect(readFileSync(crumbs(writer).cwd, 'utf-8')).toBe('sess-alias');
+        const reads = sessionBreadcrumbWriters(adapter);
+        // A copilot-sdk server reads its host's copilot breadcrumbs, so no server reads a copilot-sdk writer.
+        if (reads.length > 0 && writer !== 'copilot-sdk') expect(reads).toContain(writer);
+      },
+    );
+
+    it('files a hook under the engine its command names, over an inherited Claude Code env', () => {
+      process.env.CLAUDECODE = '1';
+      process.env.MCP_CLIENT = 'kiro';
+      processHook(makePreToolUse({ session_id: 'sess-kiro', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('kiro').cwd, 'utf-8')).toBe('sess-kiro');
+      expect(existsSync(crumbs('claude-code').cwd)).toBe(false);
+    });
+
+    it('files a hook that names no engine as unattributed', () => {
+      processHook(makePreToolUse({ session_id: 'sess-codex', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('unattributed').ppid, 'utf-8')).toBe('sess-codex');
+    });
+
+    it('ignores an engine name it does not know and keeps detecting Claude Code', () => {
+      process.env.MCP_CLIENT = 'vscode';
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
+    });
+
+    it('files a hook naming only unknown engines as unattributed and warns once, naming each', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const warnings = () =>
+        stderrWriteSpy.mock.calls
+          .map((args) => String(args[0]))
+          .filter((line) => line.includes('no engine Preflight knows'));
+      process.env.MCP_CLIENT = '../escape';
+      process.env.NEW_RELIC_AI_PLATFORM = 'vscode';
+      processHook(makePreToolUse({ session_id: undefined, cwd: '/projects/test' }));
+      expect(warnings()).toHaveLength(0);
+      processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+      process.env.MCP_CLIENT = 'not-an-engine';
+      processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0]).toContain('MCP_CLIENT="../escape"');
+      expect(warnings()[0]).toContain('NEW_RELIC_AI_PLATFORM="vscode"');
+      expect(readFileSync(crumbs('unattributed').cwd, 'utf-8')).toBe('sess-x');
+      expect(readFileSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'), 'utf-8')).toBe(
+        'sess-x',
+      );
+      expect(existsSync(resolve(tmpDir, 'escape'))).toBe(false);
+      stderrWriteSpy.mockRestore();
+    });
+
+    it('reads the ancestor pids once per event for both breadcrumb layouts', () => {
+      process.env.CLAUDECODE = '1';
+      const origReadFile = _procFs.readFile;
+      const reads: string[] = [];
+      _procFs.readFile = (path: string): string => {
+        reads.push(path);
+        throw new Error('ENOENT');
+      };
+      try {
+        processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      } finally {
+        _procFs.readFile = origReadFile;
+      }
+      expect(reads).toEqual([`/proc/${process.ppid}/stat`]);
+      expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
+      expect(readFileSync(resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`), 'utf-8')).toBe(
+        'sess-claude',
+      );
+    });
+
+    it('writes no untagged copy when the tagged write fails', () => {
+      process.env.CLAUDECODE = '1';
+      mkdirSync(resolve(tmpDir, 'breadcrumbs'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'breadcrumbs', 'claude-code'), '');
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(existsSync(resolve(tmpDir, 'session-by-ppid'))).toBe(false);
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
+    });
+
+    it("refreshes an unchanged cwd breadcrumb's mtime on every event", () => {
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(crumbs('claude-code').cwd, old, old);
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(statSync(crumbs('claude-code').cwd).mtimeMs).toBeGreaterThan(old.getTime() + 30_000);
+    });
+
+    it('knows exactly the registered platforms', () => {
+      const registered = createDefaultRegistry()
+        .getRegistered()
+        .map((a) => a.platformName);
+      expect([...registered].sort()).toEqual([...PLATFORM_NAMES].sort());
     });
   });
 
@@ -2619,6 +2838,12 @@ describe('collector-script', () => {
   describe('collector-script — Gemini CLI stdout contract (https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/index.md)', () => {
     it('writes "{}" to stdout when MCP_CLIENT is "gemini-cli"', () => {
       process.env.MCP_CLIENT = 'gemini-cli';
+      processHook(makeGeminiAfterTool());
+      expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
+    });
+
+    it('writes "{}" to stdout when MCP_CLIENT spells Gemini CLI another way', () => {
+      process.env.MCP_CLIENT = 'Gemini_CLI';
       processHook(makeGeminiAfterTool());
       expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
     });

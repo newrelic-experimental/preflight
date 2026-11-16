@@ -16,7 +16,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { normalizeAgentType } from '../lib/agent-id.js';
 import { createDefaultRegistry, GENERIC_MCP_PLATFORM_NAME } from '../platforms/index.js';
 import type { PlatformAdapter } from '../platforms/types.js';
@@ -620,10 +620,14 @@ export class HookEventProcessor {
    * unscoped store is replaced by the real session-scoped store once the
    * Claude Code session ID is resolved asynchronously. The last drain of the
    * old store still holds claims in order, and the new store takes them later,
-   * so pending pre events stay pending for the posts in those claims.
+   * so the new session's pending pres stay pending for the posts in those
+   * claims. A scoped store never drains another session's buffer, so that
+   * session's pending pres count once now, as timeouts. A post of theirs left
+   * in this process's claims amends its timeout record.
    */
   replaceStore(newStore: LocalStore, drainAllSessions: boolean): void {
     this.halt();
+    if (!drainAllSessions) this.flushPending(newStore.getSessionId());
     this.store = newStore;
     this.drainAllSessions = drainAllSessions;
     this.start();
@@ -721,7 +725,7 @@ export class HookEventProcessor {
     if (this.pending.size >= this.maxPendingEvents) {
       // Prefer evicting events that are already past the orphan timeout
       const now = Date.now();
-      // Named to avoid shared/redact.ts's SECRET_KEY_RE (which matches any key
+      // Named to avoid core/redact.ts's SECRET_KEY_RE (which matches any key
       // name containing "key") — that would silently blank this diagnostic value.
       let evictedPairingId: string | undefined;
       for (const [key, entry] of this.pending) {
@@ -993,11 +997,14 @@ export class HookEventProcessor {
     }
   }
 
-  private flushPending(): void {
+  private flushPending(keptSessionId?: string | null): void {
     for (const [key, entry] of this.pending) {
+      const { sessionId } = entry.event;
+      if (keptSessionId !== undefined && (sessionId === undefined || sessionId === keptSessionId))
+        continue;
+      this.pending.delete(key);
       this.emitUnpairedPreRecord(key, entry);
     }
-    this.pending.clear();
   }
 
   private pairingKey(event: PreHookEvent): string {

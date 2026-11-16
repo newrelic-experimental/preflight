@@ -56,7 +56,11 @@ export class PiAdapter implements PlatformAdapter {
   // (or CLAUDE.md) at startup" from global, parent-directory-walk, and cwd
   // locations. Same convention opencode, Codex, Droid, Cursor, and Gemini
   // CLI already read.
-  readonly capabilities = { instructionFilePaths: ['AGENTS.md'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['AGENTS.md'] as const,
+    // The documented Pi extension reports no session_id, so it writes no breadcrumb.
+    sessionBreadcrumbWriters: [] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Pi's tool-call capture is delivered via a user-installed extension

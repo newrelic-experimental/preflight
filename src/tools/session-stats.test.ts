@@ -1044,6 +1044,7 @@ describe('MCP protocol integration — direct registerTools() dispatch', () => {
   });
 
   afterEach(async () => {
+    jest.useRealTimers();
     await client?.close();
     await server?.close();
     if (existsSync(tmpDir)) {
@@ -1093,6 +1094,22 @@ describe('MCP protocol integration — direct registerTools() dispatch', () => {
   });
 
   it('nr_observe_get_cost_forecast returns a real forecast when CostTracker and sessionStartMs are provided', async () => {
+    jest.useFakeTimers({
+      now: new Date(2024, 0, 3, 14).getTime(),
+      doNotFake: [
+        'nextTick',
+        'setImmediate',
+        'clearImmediate',
+        'setTimeout',
+        'clearTimeout',
+        'setInterval',
+        'clearInterval',
+        'queueMicrotask',
+        'performance',
+        'hrtime',
+      ],
+    });
+    const twentyMinAgo = Date.now() - 20 * 60 * 1000;
     const costTracker = new CostTracker();
     costTracker.recordTokenUsage(
       {
@@ -1104,8 +1121,9 @@ describe('MCP protocol integration — direct registerTools() dispatch', () => {
         totalTokens: 1_200,
       },
       'claude-sonnet-4',
+      { timestampMs: twentyMinAgo },
     );
-    await connectDirect({ costTracker, sessionStartMs: Date.now() - 20 * 60 * 1000 });
+    await connectDirect({ costTracker, sessionStartMs: twentyMinAgo });
 
     const result = await client.callTool({ name: 'nr_observe_get_cost_forecast', arguments: {} });
     expect(result.isError).toBeUndefined();

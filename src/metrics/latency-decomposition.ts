@@ -7,7 +7,7 @@
  * turn's total wall-clock duration.
  */
 
-import type { MetricAggregator } from '../shared/index.js';
+import type { MetricAggregator } from '../core/index.js';
 import { computePercentile } from './percentile.js';
 
 // ---------------------------------------------------------------------------

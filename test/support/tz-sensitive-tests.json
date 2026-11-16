@@ -35,6 +35,7 @@
     "src/web/App.test.tsx",
     "src/web/api/client.test.ts",
     "src/web/components/ActivityHeatmap.test.tsx",
+    "src/web/components/ConcurrencyIndicator.test.tsx",
     "src/web/lib/bucket.test.ts",
     "src/web/lib/forecast.test.tsx",
     "src/web/lib/format.test.tsx",
