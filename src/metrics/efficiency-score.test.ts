@@ -463,7 +463,7 @@ describe('emitMetrics()', () => {
       record(name: string, value: number) {
         recorded.push({ name, value });
       },
-    } as unknown as import('../shared/index.js').MetricAggregator;
+    } as unknown as import('../core/index.js').MetricAggregator;
 
     scorer.emitMetrics(aggregator);
 
@@ -490,7 +490,7 @@ describe('emitMetrics()', () => {
       record(name: string, _value: number, attrs: Record<string, unknown> = {}) {
         recorded.push({ name, attrs });
       },
-    } as unknown as import('../shared/index.js').MetricAggregator;
+    } as unknown as import('../core/index.js').MetricAggregator;
 
     scorer.emitMetrics(aggregator);
 
@@ -517,7 +517,7 @@ describe('emitMetrics()', () => {
       record(name: string, _value: number, attrs: Record<string, unknown> = {}) {
         recorded.push({ name, attrs });
       },
-    } as unknown as import('../shared/index.js').MetricAggregator;
+    } as unknown as import('../core/index.js').MetricAggregator;
 
     scorer.emitMetrics(aggregator);
 
@@ -543,7 +543,7 @@ describe('emitMetrics()', () => {
         record(_name: string, _value: number, attrs: Record<string, unknown> = {}) {
           recorded.push(attrs);
         },
-      } as unknown as import('../shared/index.js').MetricAggregator;
+      } as unknown as import('../core/index.js').MetricAggregator;
 
       scorer.emitMetrics(aggregator);
 
@@ -563,7 +563,7 @@ describe('emitMetrics()', () => {
       record(_name: string, _value: number, attrs: Record<string, unknown> = {}) {
         recorded.push(attrs);
       },
-    } as unknown as import('../shared/index.js').MetricAggregator;
+    } as unknown as import('../core/index.js').MetricAggregator;
 
     scorer.emitMetrics(aggregator);
 
@@ -784,7 +784,7 @@ describe('scores cap (MAX_SCORES = 1000)', () => {
       record(name: string) {
         recorded1.push(name);
       },
-    } as unknown as import('../shared/index.js').MetricAggregator;
+    } as unknown as import('../core/index.js').MetricAggregator;
     scorer.emitMetrics(agg1);
     expect(recorded1).toHaveLength(10); // 2 tasks × 5 metrics
 
@@ -795,7 +795,7 @@ describe('scores cap (MAX_SCORES = 1000)', () => {
       record(name: string) {
         recorded2.push(name);
       },
-    } as unknown as import('../shared/index.js').MetricAggregator;
+    } as unknown as import('../core/index.js').MetricAggregator;
     scorer.emitMetrics(agg2);
     expect(recorded2).toHaveLength(5); // only t3
   });
@@ -804,7 +804,7 @@ describe('scores cap (MAX_SCORES = 1000)', () => {
     const scorer = new EfficiencyScorer();
 
     scorer.computeScore(makeTask({ taskId: 't1' }));
-    const agg1 = { record() {} } as unknown as import('../shared/index.js').MetricAggregator;
+    const agg1 = { record() {} } as unknown as import('../core/index.js').MetricAggregator;
     scorer.emitMetrics(agg1);
 
     scorer.reset('test-session');
@@ -816,7 +816,7 @@ describe('scores cap (MAX_SCORES = 1000)', () => {
       record(name: string) {
         recorded.push(name);
       },
-    } as unknown as import('../shared/index.js').MetricAggregator;
+    } as unknown as import('../core/index.js').MetricAggregator;
     scorer.emitMetrics(agg2);
     expect(recorded).toHaveLength(5); // only t2, not t1 again
   });

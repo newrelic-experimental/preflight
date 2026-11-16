@@ -43,7 +43,7 @@ In the MCP server today, the config field `otlp.transport` (legacy flat `transpo
 
 OTLP targets any OpenTelemetry-compatible backend. New Relic OTLP: US `https://otlp.nr-data.net`, EU `https://otlp.eu01.nr-data.net`.
 
-Source: `src/transport/nr-ingest.ts`, `src/shared/harvest/harvest-scheduler.ts`, `src/transport/log-ingest.ts`
+Source: `src/transport/nr-ingest.ts`, `src/core/harvest/harvest-scheduler.ts`, `src/transport/log-ingest.ts`
 
 ---
 
@@ -744,7 +744,7 @@ Recorded by `HarvestScheduler` itself when data is lost, so loss is visible in N
 | `nr.ai.dropped_events`  | dropped count | `{source: event_buffer \| retry_buffer, transport?: nr-events-api \| otlp}`       | Oldest events dropped when the event buffer or a retry buffer overflowed, drained once per harvest                                                           | Events lost before they could be sent. Non-zero means data is missing.  |
 | `nr.ai.dropped_metrics` | dropped count | `{source: metric_aggregator \| retry_buffer, transport?: nr-metrics-api \| otlp}` | Invalid samples (non-finite values or invalid attribute types) rejected by the aggregator, or oldest metric snapshots dropped when a retry buffer overflowed | Metrics lost before they could be sent. Non-zero means data is missing. |
 
-Source: `src/shared/harvest/harvest-scheduler.ts`
+Source: `src/core/harvest/harvest-scheduler.ts`
 
 ### Metric Aggregation
 
@@ -759,7 +759,7 @@ All metrics pass through the `MetricAggregator` before being sent. For each uniq
 
 The metric `type` is `summary` (not gauge). All four aggregated values are packed into a single NR Metric API record per (name + attributes) per harvest interval. The record also carries the configured metric harvest interval (default 60 seconds) as the top-level `interval.ms` key that the Metric API requires. It is the configured interval, not a measured window.
 
-Source: `src/shared/harvest/metric-aggregator.ts`
+Source: `src/core/harvest/metric-aggregator.ts`
 
 ### Local-only Metrics (Defined, Not Exported)
 

@@ -8,7 +8,7 @@
  *
  * Design constraints:
  *   - <5ms execution budget — must never slow Claude Code
- *   - No heavy imports (no shared package, no commander, no zod)
+ *   - No heavy imports (no core imports, no commander, no zod)
  *   - All errors caught silently — always exits 0
  *   - Config via env vars only (no file reads for config)
  */

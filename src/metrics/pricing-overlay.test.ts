@@ -2,12 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import {
-  calculateCost,
-  initPricing,
-  PricingTable,
-  resolveModelPricing,
-} from '../shared/pricing.js';
+import { calculateCost, initPricing, PricingTable, resolveModelPricing } from '../core/pricing.js';
 import { makeUsage } from '../__test-utils__/token-usage.js';
 import {
   applyGapFilledOverlay,
@@ -32,7 +27,7 @@ describe('resolvePricingOverlayPath', () => {
 
   it('the resolved file is valid JSON (a plain object, possibly empty)', () => {
     // Deliberately not asserting on specific model keys — the bundled file is
-    // gap-fill-only, so its contents shrink to {} whenever the vendored table
+    // gap-fill-only, so its contents shrink to {} whenever the built-in table
     // catches up (see pricing-overlay/README.md).
     const path = resolvePricingOverlayPath();
     const parsed: unknown = JSON.parse(readFileSync(path!, 'utf-8'));
@@ -50,7 +45,7 @@ describe('applyGapFilledOverlay', () => {
     if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('gap-fills a model missing from the vendored table', () => {
+  it('gap-fills a model missing from the built-in table', () => {
     expect(resolveModelPricing('a-brand-new-test-gap-model')).toBeNull();
 
     tmpDir = mkdtempSync(join(tmpdir(), 'preflight-overlay-test-'));
@@ -76,7 +71,7 @@ describe('applyPricingOverlay', () => {
     initPricing(null);
   });
 
-  it('applies the bundled overlay when no user customPricingFile is configured, without disturbing vendored entries', () => {
+  it('applies the bundled overlay when no user customPricingFile is configured, without disturbing built-in entries', () => {
     expect(() => applyPricingOverlay(null)).not.toThrow();
     expect(resolveModelPricing('claude-opus-4-8')).toMatchObject({
       inputPerMTok: 5,
@@ -257,7 +252,7 @@ describe('pricing memo', () => {
     expect(calculateModelCost('claude-foo-9-9', USAGE).totalUsd).toBe(0);
   });
 
-  it('prices a bundled model the same as the vendored calculateCost', () => {
+  it('prices a bundled model the same as the built-in calculateCost', () => {
     expect(calculateModelCost('claude-sonnet-5', USAGE)).toEqual(
       calculateCost('claude-sonnet-5', USAGE),
     );
@@ -322,7 +317,7 @@ describe('family fallback', () => {
     dir = null;
   });
 
-  // Which sibling is newest changes with every vendored table sync, so these
+  // Which sibling is newest changes with every built-in table sync, so these
   // assert the contract and leave sibling selection to estimateFromFamily.
   it.each(['claude-opus-5-9', 'claude-sonnet-5-9[1m]'])(
     'prices %s at the exact rate of a priced same-family, same-major release',

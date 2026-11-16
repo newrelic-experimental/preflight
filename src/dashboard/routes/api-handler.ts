@@ -3695,7 +3695,7 @@ export function createApiHandler(
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'not_found' }));
     } catch (err) {
-      const logger = (await import('../../shared/index.js')).createLogger('api-handler');
+      const logger = (await import('../../core/index.js')).createLogger('api-handler');
       logger.error('Unhandled error in API route handler', { error: String(err) });
       if (!res.headersSent) {
         res.writeHead(500, { 'content-type': 'application/json' });
