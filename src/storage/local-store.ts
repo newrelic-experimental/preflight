@@ -29,7 +29,7 @@ import {
 } from './drain-claims.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
 import { BREADCRUMBS_DIR, breadcrumbRoot } from '../hooks/session-breadcrumbs.js';
-import { MINTED_IDS_DIR_PREFIX } from '../hooks/minted-tool-use-ids.js';
+import { countMintedToolUseId, MINTED_IDS_DIR_PREFIX } from '../hooks/minted-tool-use-ids.js';
 import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
@@ -168,6 +168,7 @@ export function hasLiveOwningEngine(storagePath: string, sessionId: string): boo
 export class LocalStore {
   private readonly storagePath: string;
   private readonly bufferPath: string;
+  private readonly bufferPathIsOverride: boolean;
   private readonly sessionId: string | null;
   private readonly countedDir: string;
   private readonly ownCountedIds = new Map<string, Set<string>>();
@@ -224,6 +225,8 @@ export class LocalStore {
     }
 
     this.bufferPath = resolvedBufferPath;
+    this.bufferPathIsOverride =
+      bufferPathOrSessionId !== undefined && bufferPathOrSessionId.includes(sep);
     this.sessionId = resolvedSessionId;
   }
 
@@ -339,6 +342,17 @@ export class LocalStore {
       logger.warn('Failed to save counted toolUseIds', { sessionId, error: String(err) });
       return false;
     }
+  }
+
+  /** See `countMintedToolUseId`. The collector keeps minted ids beside the buffer it writes. */
+  countMintedToolUseId(sessionId: string | undefined, id: string, lateUntil: number): void {
+    const bufferPath = this.bufferPathIsOverride
+      ? this.bufferPath
+      : resolve(
+          this.storagePath,
+          `buffer-${sessionId !== undefined && SESSION_ID_RE.test(sessionId) ? sessionId : 'unknown'}.jsonl`,
+        );
+    countMintedToolUseId(bufferPath, id, lateUntil);
   }
 
   hasCountedToolUseId(sessionId: string, toolUseId: string): boolean {

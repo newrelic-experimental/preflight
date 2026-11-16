@@ -770,6 +770,9 @@ function getWindsurfToolInfo(data: HookInput): Record<string, unknown> {
 
 let stderrSinkInstalled = false;
 
+// Cursor fires no pre for these, so their post has no minted id to take.
+const POST_ONLY_EVENTS: ReadonlySet<string> = new Set(['beforereadfile', 'afterfileedit']);
+
 /**
  * @param cliEvent The hook command's first argument (`process.argv[2]`), if
  *   any. Only consulted for Antigravity, whose payloads never name their own
@@ -1404,7 +1407,11 @@ function processHook(raw: string, cliEvent?: string): void {
       mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
     }
 
-    if (event.toolUseId === undefined && (event.mode === 'pre' || event.mode === 'post')) {
+    if (
+      event.toolUseId === undefined &&
+      (event.mode === 'pre' || event.mode === 'post') &&
+      !POST_ONLY_EVENTS.has(eventName ?? '')
+    ) {
       const id =
         event.mode === 'pre'
           ? mintToolUseId(bufferPath, String(event.tool), timestamp)

@@ -4,7 +4,7 @@
 import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, mkdirSync as mkdirSync2, existsSync, utimesSync } from "node:fs";
 import { resolve as resolve2, dirname as dirname2 } from "node:path";
 import { homedir } from "node:os";
-import { createHash as createHash2 } from "node:crypto";
+import { createHash } from "node:crypto";
 
 // src/redaction-patterns.ts
 var AFTER_ESCAPE = String.raw`\\[nrt]|\\u[0-9a-fA-F]{4}|\x1b\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
@@ -470,28 +470,56 @@ function mcpPrToolAction(toolName) {
 }
 
 // src/hooks/minted-tool-use-ids.ts
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   closeSync as closeSync2,
   mkdirSync,
   openSync as openSync2,
   readdirSync,
-  rmSync,
+  renameSync,
   unlinkSync as unlinkSync2,
   writeFileSync
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 var MINTED_IDS_DIR_PREFIX = "minted-ids-";
-var MINTED_ID_TTL_MS = 40 * 6e4;
+var MINTED_ID_PREFIX = "minted-";
+var CLAIM_SUFFIX = ".claimed";
+var OPEN_ENTRY_TTL_MS = 40 * 6e4;
 var MAX_LISTINGS = 5;
 function mintedIdsDir(bufferPath) {
   return join(dirname(bufferPath), MINTED_IDS_DIR_PREFIX + basename(bufferPath, ".jsonl"));
 }
 function toolKey(tool) {
-  return createHash("sha256").update(tool.toLowerCase()).digest("hex").slice(0, 16);
+  const name = tool.toLowerCase();
+  let a = 2166136261;
+  let b = 16777619;
+  for (let i = 0; i < name.length; i++) {
+    a = Math.imul(a ^ name.charCodeAt(i), 16777619);
+    b = Math.imul(b ^ name.charCodeAt(i), 16777619);
+  }
+  return (a >>> 0).toString(16).padStart(8, "0") + (b >>> 0).toString(16).padStart(8, "0");
+}
+function parseEntry(name) {
+  if (name.endsWith(CLAIM_SUFFIX)) return void 0;
+  const [mintedAt, key, id, lateUntil, extra] = name.split(".");
+  if (key === void 0 || id === void 0 || extra !== void 0) return void 0;
+  return {
+    name,
+    mintedAt: Number(mintedAt),
+    key,
+    id,
+    lateUntil: lateUntil === void 0 ? void 0 : Number(lateUntil)
+  };
+}
+function listEntries(dir) {
+  try {
+    return readdirSync(dir).sort().flatMap((name) => parseEntry(name) ?? []);
+  } catch {
+    return void 0;
+  }
 }
 function mintToolUseId(bufferPath, tool, at) {
-  const id = randomUUID();
+  const id = MINTED_ID_PREFIX + randomUUID();
   try {
     const dir = mintedIdsDir(bufferPath);
     mkdirSync(dir, { recursive: true, mode: 448 });
@@ -508,40 +536,40 @@ function takeMintedToolUseId(bufferPath, tool, at) {
   const dir = mintedIdsDir(bufferPath);
   const key = toolKey(tool);
   for (let listing = 0; listing < MAX_LISTINGS; listing++) {
-    let names;
-    try {
-      names = readdirSync(dir).sort();
-    } catch {
-      return void 0;
-    }
+    const entries = listEntries(dir)?.filter((entry) => entry.key === key);
+    if (entries === void 0) return void 0;
+    const open = entries.filter((entry) => entry.lateUntil === void 0);
+    const counted = entries.filter((entry) => entry.lateUntil !== void 0);
     let contended = false;
-    for (const name of names) {
-      const [mintedAt, entryKey, id, claimed] = name.split(".");
-      if (entryKey !== key || id === void 0 || claimed !== void 0) continue;
-      if (!claim(join(dir, name))) {
+    for (const entry of [...open, ...counted]) {
+      if (!claim(join(dir, entry.name), unlinkSync2)) {
         contended = true;
         continue;
       }
-      if (at - Number(mintedAt) <= MINTED_ID_TTL_MS) return id;
+      const expired = entry.lateUntil === void 0 ? at - entry.mintedAt > OPEN_ENTRY_TTL_MS : at > entry.lateUntil;
+      if (!expired) return entry.id;
     }
     if (!contended) return void 0;
   }
   return void 0;
 }
-function claim(entry) {
-  const claimPath = `${entry}.claimed`;
+function claim(entry, act) {
+  const claimPath = entry + CLAIM_SUFFIX;
   try {
     closeSync2(openSync2(claimPath, "wx", 384));
   } catch {
     return false;
   }
   try {
-    unlinkSync2(entry);
+    act(entry);
     return true;
   } catch {
     return false;
   } finally {
-    rmSync(claimPath, { force: true });
+    try {
+      unlinkSync2(claimPath);
+    } catch {
+    }
   }
 }
 
@@ -606,7 +634,7 @@ function redact(value) {
 }
 function hashInput(input) {
   const str = JSON.stringify(input) ?? "";
-  return createHash2("sha256").update(str).digest("hex").slice(0, 16);
+  return createHash("sha256").update(str).digest("hex").slice(0, 16);
 }
 function sizeOf(value) {
   if (value === void 0 || value === null) return 0;
@@ -964,6 +992,7 @@ function getWindsurfToolInfo(data) {
   return data.tool_info !== null && typeof data.tool_info === "object" ? data.tool_info : {};
 }
 var stderrSinkInstalled = false;
+var POST_ONLY_EVENTS = /* @__PURE__ */ new Set(["beforereadfile", "afterfileedit"]);
 function processHook(raw, cliEvent) {
   let data;
   try {
@@ -1328,7 +1357,7 @@ function processHook(raw, cliEvent) {
     if (!existsSync(bufferDir)) {
       mkdirSync2(bufferDir, { recursive: true, mode: 448 });
     }
-    if (event.toolUseId === void 0 && (event.mode === "pre" || event.mode === "post")) {
+    if (event.toolUseId === void 0 && (event.mode === "pre" || event.mode === "post") && !POST_ONLY_EVENTS.has(eventName ?? "")) {
       const id = event.mode === "pre" ? mintToolUseId(bufferPath, String(event.tool), timestamp) : takeMintedToolUseId(bufferPath, String(event.tool), timestamp);
       if (id !== void 0) event.toolUseId = id;
     }

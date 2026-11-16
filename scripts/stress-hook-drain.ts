@@ -119,7 +119,8 @@ async function runNoIdParent(calls: number): Promise<void> {
     const pres = new Set(ids('pre'));
     const posts = ids('post');
     const unstamped = posts.filter((id) => id === undefined).length;
-    const takenTwice = posts.length - new Set(posts).size;
+    const stamped = posts.filter((id) => id !== undefined);
+    const takenTwice = stamped.length - new Set(stamped).size;
     const strays = posts.filter((id) => id !== undefined && !pres.has(id)).length;
     const left = readdirSync(dir).flatMap((n) =>
       n.startsWith('minted-ids-') ? readdirSync(resolve(dir, n)) : [],
