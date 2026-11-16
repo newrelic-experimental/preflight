@@ -10,8 +10,8 @@
  *   4. Metric emission for NR dashboards
  */
 
-import type { MetricAggregator } from '../shared/index.js';
-import { createLogger } from '../shared/index.js';
+import type { MetricAggregator } from '../core/index.js';
+import { createLogger } from '../core/index.js';
 import type { SessionStore } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import type { CollaborationProfiler } from './collaboration-profile.js';

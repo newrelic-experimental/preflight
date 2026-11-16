@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { TokenUsage } from '../shared/index.js';
+import type { TokenUsage } from '../core/index.js';
 import { calculateModelCost } from './pricing-overlay.js';
 import type { SkillStamp, ToolCallRecord, TokenEvent } from '../storage/types.js';
 
