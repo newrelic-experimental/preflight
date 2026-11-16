@@ -1023,12 +1023,14 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
 describe('LocalSessionAggregator baseline fold after its own checkpoint', () => {
   const DAY = new Date(2026, 8, 10, 12).getTime();
   const foldedAfter = (confirmed: boolean) => {
+    let written = false;
     const agg = new LocalSessionAggregator({
-      persistedCostBaseline: () => ({ estimatedCostUsd: 5, subagentCostUsd: 0 }),
+      persistedCostBaseline: () => (written ? { estimatedCostUsd: 5, subagentCostUsd: 0 } : null),
     });
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
     agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
     summariesOf(agg);
+    written = true;
     if (confirmed) agg.markSaved(REAL_ID);
     agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
     return summariesOf(agg)[0]?.estimatedCostUsd;
