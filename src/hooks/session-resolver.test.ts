@@ -1738,13 +1738,37 @@ describe('breadcrumbs filed by writer', () => {
     expect(sessionBreadcrumbs(tmpDir, writers, startedAt).cwd('/projects/shared')).toBe('sess-sdk');
   });
 
-  it("skips the engine's own cwd breadcrumb once no event has touched it for a day's work", () => {
+  it.each([
+    [11 * 60, 'sess-kiro'],
+    [12 * 60 - 1, 'sess-kiro'],
+    [13 * 60, 'sess-live'],
+  ])(
+    "reads past the engine's own cwd breadcrumb only once its session is idle past 12 hours (%i minutes)",
+    (idleMinutes, expected) => {
+      const idleSince = new Date(Date.now() - idleMinutes * 60_000);
+      utimesSync(writeCrumb('kiro', 'cwd', '-projects-shared', 'sess-kiro'), idleSince, idleSince);
+      utimesSync(writeCrumb('kiro', 'ppid', '424290', 'sess-kiro'), idleSince, idleSince);
+      writeCrumb('unattributed', 'cwd', '-projects-shared', 'sess-live');
+      expect(sessionBreadcrumbs(tmpDir, ['kiro', 'unattributed']).cwd('/projects/shared')).toBe(
+        expected,
+      );
+    },
+  );
+
+  it("keeps an older collector's day-old tagged cwd breadcrumb while its session's ppid breadcrumb stays fresh", () => {
+    const old = new Date(Date.now() - 30 * 60 * 60 * 1000);
+    utimesSync(writeCrumb('claude-code', 'cwd', '-projects-shared', 'sess-long'), old, old);
+    utimesSync(writeCrumb('claude-code', 'ppid', '424291', 'sess-long'), old, old);
+    writeCrumb('claude-code', 'ppid', '424292', 'sess-long');
+    expect(sessionBreadcrumbs(tmpDir, CLAUDE).cwd('/projects/shared')).toBe('sess-long');
+  });
+
+  it('skips a tagged cwd breadcrumb whose session went quiet 13 hours ago', () => {
     const stale = new Date(Date.now() - 13 * 60 * 60 * 1000);
-    utimesSync(writeCrumb('kiro', 'cwd', '-projects-shared', 'sess-kiro-yesterday'), stale, stale);
-    writeCrumb('unattributed', 'cwd', '-projects-shared', 'sess-live');
-    expect(sessionBreadcrumbs(tmpDir, ['kiro', 'unattributed']).cwd('/projects/shared')).toBe(
-      'sess-live',
-    );
+    utimesSync(writeCrumb('claude-code', 'cwd', '-projects-shared', 'sess-over'), stale, stale);
+    utimesSync(writeCrumb('claude-code', 'ppid', '424293', 'sess-over'), stale, stale);
+    writeCrumb('claude-code', 'ppid', '424294', 'sess-someone-else');
+    expect(sessionBreadcrumbs(tmpDir, CLAUDE).cwd('/projects/shared')).toBeNull();
   });
 
   it('walks past a tagged closest untagged ancestor to an acceptable farther one', () => {
