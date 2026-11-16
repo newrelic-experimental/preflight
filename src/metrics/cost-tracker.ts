@@ -5,11 +5,11 @@
  *   1. Self-reporting via the `nr_observe_report_tokens` MCP tool (primary)
  *   2. Estimation from hook input/output byte sizes (fallback)
  *
- * Cost calculation delegates to `calculateModelCost()` (pricing-overlay.ts), which normalizes the model id and wraps the shared `calculateCost()`.
+ * Cost calculation delegates to `calculateModelCost()` (pricing-overlay.ts), which normalizes the model id and wraps `calculateCost()`.
  */
 
-import type { TokenUsage, CostBreakdown, MetricAggregator } from '../shared/index.js';
-import { createLogger } from '../shared/index.js';
+import type { TokenUsage, CostBreakdown, MetricAggregator } from '../core/index.js';
+import { createLogger } from '../core/index.js';
 import { CallUsageBook, type CallUsageByDay } from './call-usage.js';
 import { priceModelUsage } from './pricing-overlay.js';
 import { localDateKey } from '../lib/date.js';
@@ -83,8 +83,8 @@ const LATE_ARRIVAL_REJECTION_MS = 48 * 60 * 60 * 1000;
  * counts and everything else untouched. Used to correct Preflight's own
  * list-price computation to an org's real contracted rate (see
  * `CostTrackerOptions.rateMultiplier`) — `calculateCost()` itself lives in
- * `src/shared/`, a vendored snapshot this repo must not edit, so the
- * correction is applied to its output here instead of inside it.
+ * `src/core/`, so the correction is applied to its output here instead of
+ * inside it.
  */
 function scaleCostBreakdown(breakdown: CostBreakdown, factor: number): CostBreakdown {
   return {

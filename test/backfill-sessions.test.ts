@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { isMainModule, resolveNerdgraphUrl } from '../scripts/backfill-sessions.js';
-import { stagingHost } from '../src/shared/transport/http-client.js';
+import { stagingHost } from '../src/core/transport/http-client.js';
 
 describe('resolveNerdgraphUrl', () => {
   it('returns the production NerdGraph URL by default', () => {
