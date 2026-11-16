@@ -2997,6 +2997,7 @@ describe('collector-script', () => {
 
 describe('a tool call without tool_use_id', () => {
   const SESSION = 'sess-noid';
+  const POLL_MS = 10;
   let clock: ReturnType<typeof jest.spyOn>;
 
   beforeEach(() => {
@@ -3004,7 +3005,10 @@ describe('a tool call without tool_use_id', () => {
     clock = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
   });
 
-  afterEach(() => clock.mockRestore());
+  afterEach(() => {
+    clock.mockRestore();
+    jest.useRealTimers();
+  });
 
   function hook(mode: 'pre' | 'post', tool: string, at: number): void {
     clock.mockReturnValue(at);
@@ -3017,6 +3021,46 @@ describe('a tool call without tool_use_id', () => {
       .trim()
       .split('\n')
       .map((line) => (JSON.parse(line) as Record<string, unknown>).toolUseId);
+  }
+
+  function mintedEntries(): string[] {
+    return readdirSync(resolve(tmpDir, `minted-ids-buffer-${SESSION}`));
+  }
+
+  interface Outcome {
+    readonly at: number;
+    readonly success: boolean;
+    readonly durationMs: number | null;
+  }
+
+  function startEngine(
+    records: Outcome[],
+    amends: Outcome[],
+    store = new LocalStore(tmpDir, SESSION),
+  ) {
+    jest.useFakeTimers({ doNotFake: ['Date'] });
+    const outcome = ({ timestamp, success, durationMs }: ToolCallRecord) => ({
+      at: timestamp,
+      success,
+      durationMs,
+    });
+    const engine = new HookEventProcessor({
+      store,
+      pollIntervalMs: POLL_MS,
+      onRecord: (r) => records.push(outcome(r)),
+      onRecordAmend: (r) => amends.push(outcome(r)),
+    });
+    engine.start();
+    return {
+      pollAt(at: number) {
+        clock.mockReturnValue(at);
+        jest.advanceTimersByTime(POLL_MS);
+      },
+      stop() {
+        engine.stop();
+        engine.persistCountedIdsOfSavedSessions([SESSION]);
+      },
+    };
   }
 
   it('stamps the post with the id minted for its pre', () => {
@@ -3045,14 +3089,32 @@ describe('a tool call without tool_use_id', () => {
     hook('pre', 'Read', 1_000);
     hook('post', 'read', 2_000);
 
-    expect(bufferIds()[1]).toBe(bufferIds()[0]);
+    const [pre, post] = bufferIds();
+    expect(pre).toEqual(expect.any(String));
+    expect(post).toBe(pre);
   });
 
   it('leaves a post without an id when no pre of its tool minted one', () => {
     hook('pre', 'Read', 1_000);
     hook('post', 'Bash', 2_000);
 
-    expect(bufferIds()[1]).toBeUndefined();
+    const ids = bufferIds();
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toEqual(expect.any(String));
+    expect(ids[1]).toBeUndefined();
+  });
+
+  it('never gives the id of a pending Read to a Cursor file read, which has no pre', () => {
+    const cursor = (hook_event_name: string, extra: Record<string, unknown>) =>
+      processHook(JSON.stringify({ hook_event_name, conversation_id: SESSION, ...extra }));
+    cursor('preToolUse', { tool_name: 'Read' });
+    cursor('beforeReadFile', { file_path: '/projects/test/a.ts' });
+    cursor('postToolUse', { tool_name: 'Read' });
+
+    const [pre, fileRead, post] = bufferIds();
+    expect(pre).toEqual(expect.any(String));
+    expect(fileRead).toBeUndefined();
+    expect(post).toBe(pre);
   });
 
   it('does not stamp a post with the id of a pre older than any pairing window', () => {
@@ -3060,27 +3122,155 @@ describe('a tool call without tool_use_id', () => {
     hook('post', 'Read', 1_000 + 41 * 60_000);
     hook('post', 'Read', 1_000 + 42 * 60_000);
 
-    expect(bufferIds().slice(1)).toEqual([undefined, undefined]);
+    const ids = bufferIds();
+    expect(ids).toHaveLength(3);
+    expect(ids[0]).toEqual(expect.any(String));
+    expect(ids.slice(1)).toEqual([undefined, undefined]);
   });
 
-  it('counts a call once when one engine flushes its pre and another drains its post', () => {
-    const records: ToolCallRecord[] = [];
-    const onRecord = (record: ToolCallRecord) => records.push(record);
+  it('deletes an expired id and gives the post the next one of its tool', () => {
     hook('pre', 'Read', 1_000);
-    const first = new HookEventProcessor({ store: new LocalStore(tmpDir, SESSION), onRecord });
-    first.processEvents(new LocalStore(tmpDir, SESSION).drainBuffer());
-    first.stop();
-    first.persistCountedIdsOfSavedSessions([SESSION]);
+    hook('pre', 'Read', 1_000 + 39 * 60_000);
+    hook('post', 'Read', 1_000 + 41 * 60_000);
 
-    hook('post', 'Read', 2_000);
-    const restarted = new HookEventProcessor({
-      store: new LocalStore(tmpDir),
-      drainAllSessions: true,
-      onRecord,
-    });
-    restarted.processEvents(new LocalStore(tmpDir).drainAllBuffers());
+    const [, second, post] = bufferIds();
+    expect(second).toEqual(expect.any(String));
+    expect(post).toBe(second);
+    expect(mintedEntries()).toEqual([]);
+  });
+
+  it.each([
+    ['its session buffer', () => new LocalStore(tmpDir, SESSION)],
+    [
+      'a buffer path override',
+      () => {
+        process.env.NEW_RELIC_AI_MCP_BUFFER_PATH = bufferPath;
+        return new LocalStore(tmpDir, bufferPath);
+      },
+    ],
+  ])(
+    'pairs each later call with its own pre after a pre that never got a post times out, in %s',
+    (_, makeStore) => {
+      const records: Outcome[] = [];
+      const amends: Outcome[] = [];
+      const engine = startEngine(records, amends, makeStore());
+      hook('pre', 'Read', 1_000);
+      engine.pollAt(62_000);
+      hook('pre', 'Read', 63_000);
+      hook('post', 'Read', 63_400);
+      engine.pollAt(63_500);
+      hook('pre', 'Read', 64_000);
+      hook('post', 'Read', 64_050);
+      engine.pollAt(64_100);
+      engine.stop();
+
+      expect(records).toEqual([
+        { at: 1_000, success: false, durationMs: null },
+        { at: 63_000, success: true, durationMs: 400 },
+        { at: 64_000, success: true, durationMs: 50 },
+      ]);
+      expect(amends).toEqual([]);
+    },
+  );
+
+  it('pairs each later call with its own pre after an engine flushes a pre that never got a post', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    hook('pre', 'Read', 1_000);
+    const first = startEngine(records, amends);
+    first.pollAt(1_100);
+    first.stop();
+
+    const restarted = startEngine(records, amends);
+    hook('pre', 'Read', 3_000);
+    hook('post', 'Read', 3_400);
+    restarted.pollAt(3_500);
+    hook('pre', 'Read', 4_000);
+    hook('post', 'Read', 4_050);
+    restarted.pollAt(4_100);
     restarted.stop();
 
-    expect(records).toHaveLength(1);
+    expect(records).toEqual([
+      { at: 1_000, success: false, durationMs: null },
+      { at: 3_000, success: true, durationMs: 400 },
+      { at: 4_000, success: true, durationMs: 50 },
+    ]);
+    expect(amends).toEqual([]);
+  });
+
+  it('amends a timed-out call when its own post arrives late', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    const engine = startEngine(records, amends);
+    hook('pre', 'Read', 1_000);
+    engine.pollAt(62_000);
+    hook('post', 'Read', 70_000);
+    engine.pollAt(70_100);
+    engine.stop();
+
+    expect(records).toEqual([{ at: 1_000, success: false, durationMs: null }]);
+    expect(amends).toEqual([{ at: 1_000, success: true, durationMs: 69_000 }]);
+  });
+
+  it('records a post as unpaired once its timed-out pre is past the late-post window', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    const engine = startEngine(records, amends);
+    hook('pre', 'Read', 1_000);
+    engine.pollAt(62_000);
+    hook('post', 'Read', 200_000);
+    engine.pollAt(200_100);
+    engine.stop();
+
+    expect(records).toEqual([
+      { at: 1_000, success: false, durationMs: null },
+      { at: 200_000, success: true, durationMs: null },
+    ]);
+    expect(amends).toEqual([]);
+  });
+
+  it('still hands a pre to its late post after two engines both counted it', () => {
+    hook('pre', 'Read', 1_000);
+    const redelivered = new LocalStore(tmpDir, SESSION).drainBuffer();
+    for (const _ of [1, 2]) {
+      const engine = new HookEventProcessor({
+        store: new LocalStore(tmpDir, SESSION),
+        onRecord: () => undefined,
+      });
+      engine.processEvents(redelivered);
+      engine.stop();
+    }
+    hook('post', 'Read', 2_000);
+
+    expect(bufferIds()).toEqual([(redelivered[0] as { toolUseId?: string }).toolUseId]);
+  });
+
+  it('pairs a minted pre with an unstamped post of its tool in one engine', () => {
+    const records: Outcome[] = [];
+    const engine = startEngine(records, []);
+    hook('pre', 'Read', 1_000);
+    rmSync(resolve(tmpDir, `minted-ids-buffer-${SESSION}`), { recursive: true });
+    hook('post', 'Read', 1_250);
+    engine.pollAt(1_300);
+    engine.stop();
+
+    expect(records).toEqual([{ at: 1_000, success: true, durationMs: 250 }]);
+  });
+
+  it('counts a call once, as the first engine timeout, when another engine drains its post', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    hook('pre', 'Read', 1_000);
+    const first = startEngine(records, amends);
+    first.pollAt(1_100);
+    first.stop();
+
+    hook('post', 'Read', 2_000);
+    const restarted = startEngine(records, amends);
+    restarted.pollAt(2_100);
+    restarted.stop();
+
+    expect(records).toEqual([{ at: 1_000, success: false, durationMs: null }]);
+    expect(amends).toEqual([]);
   });
 });
