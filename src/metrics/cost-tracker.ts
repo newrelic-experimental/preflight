@@ -728,7 +728,7 @@ export class CostTracker implements Resettable {
       if (seed.dayFirstActivityMs === undefined) {
         this.firstActivityMsByDay.delete(seed.dayKey);
         this.unanchoredDays.add(seed.dayKey);
-      } else {
+      } else if (!this.unanchoredDays.has(seed.dayKey)) {
         const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
         if (existingFirst === undefined || seed.dayFirstActivityMs < existingFirst) {
           this.firstActivityMsByDay.set(seed.dayKey, seed.dayFirstActivityMs);

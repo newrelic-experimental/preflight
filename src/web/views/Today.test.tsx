@@ -594,26 +594,25 @@ describe('Today view', () => {
     await waitFor(() => expect(screen.getByText(/^→ \$8\.00 by end of day/)).toBeInTheDocument());
   });
 
-  function stubForecastSources(aggregateBody: Record<string, unknown>): void {
+  function stubForecastSources(
+    aggregateBody: Record<string, unknown>,
+    costBody: Record<string, unknown> = {
+      cost: { sessionTotalCostUsd: 5 },
+      forecast: { forecastEndOfDayUsd: 27.62 },
+      sessionTodayUsd: 5,
+    },
+    sessions: unknown[] = [],
+  ): void {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
-      if (url.includes('/api/sessions/today/aggregate')) {
-        return new Response(JSON.stringify(aggregateBody), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      if (url.includes('/api/cost')) {
-        return new Response(
-          JSON.stringify({
-            cost: { sessionTotalCostUsd: 5 },
-            forecast: { forecastEndOfDayUsd: 27.62 },
-            sessionTodayUsd: 5,
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify([]), {
+      const body = url.includes('/api/sessions/today/aggregate')
+        ? aggregateBody
+        : url.includes('/api/sessions?limit=')
+          ? sessions
+          : url.includes('/api/cost')
+            ? costBody
+            : [];
+      return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -634,33 +633,20 @@ describe('Today view', () => {
     expect(screen.getByText(/^→ \$80\.53 by end of day/)).toBeInTheDocument();
   });
 
-  it('shows no forecast anywhere when the chosen forecast is below the spend on the tile', async () => {
+  async function renderBehindAggregate(
+    apiForecastUsd: number | null,
+    aggregateForecastUsd = 12,
+  ): Promise<void> {
     useLiveStore.setState({ cost: null });
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      const json = (body: unknown): Response =>
-        new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      if (url.includes('/api/sessions/today/aggregate')) {
-        return json({ totalCostUsd: 10, forecastEndOfDayUsd: 12, sessionCount: 4 });
-      }
-      if (url.includes('/api/sessions?limit=')) {
-        return json([
-          {
-            sessionId: 's1',
-            startTime: Date.now() - 60_000,
-            estimatedCostUsd: 10,
-            toolCallCount: 3,
-          },
-        ]);
-      }
-      if (url.includes('/api/cost')) {
-        return json({ cost: { sessionTotalCostUsd: 15 }, forecast: null, sessionTodayUsd: 15 });
-      }
-      return json([]);
-    }) as typeof fetch;
+    stubForecastSources(
+      { totalCostUsd: 10, forecastEndOfDayUsd: aggregateForecastUsd, sessionCount: 4 },
+      {
+        cost: { sessionTotalCostUsd: 15 },
+        forecast: apiForecastUsd === null ? null : { forecastEndOfDayUsd: apiForecastUsd },
+        sessionTodayUsd: 15,
+      },
+      [{ sessionId: 's1', startTime: Date.now() - 60_000, estimatedCostUsd: 10, toolCallCount: 3 }],
+    );
 
     renderToday();
     await waitFor(() => expect(screen.getByText('Spend by hour')).toBeInTheDocument());
@@ -669,8 +655,22 @@ describe('Today view', () => {
       expect(within(spendTile).getByText('$15.00')).toBeInTheDocument();
       expect(screen.getByText('4')).toBeInTheDocument();
     });
+  }
+
+  it('hides the day forecast but keeps the week forecast when every forecast is below spend', async () => {
+    await renderBehindAggregate(null);
     expect(screen.queryByText(/by end of day/)).toBeNull();
-    expect(screen.queryByText(/On pace for/)).toBeNull();
+    expect(screen.getByText(/On pace for ~\$\d/)).toBeInTheDocument();
+  });
+
+  it('falls through a stale aggregate forecast below spend to the /api/cost one, naming its source', async () => {
+    await renderBehindAggregate(20);
+    expect(screen.getByText(/^→ \$20\.00 by end of day \(this session\)/)).toBeInTheDocument();
+  });
+
+  it('keeps an aggregate forecast equal to spend rather than falling through to a later source', async () => {
+    await renderBehindAggregate(20, 15);
+    expect(screen.queryByText(/by end of day/)).toBeNull();
   });
 
   it('bridges with the SSE forecast while the aggregate has seen no spend today', async () => {
@@ -681,7 +681,9 @@ describe('Today view', () => {
 
     renderToday();
     await waitFor(() => expect(screen.getByText('3')).toBeInTheDocument());
-    expect(screen.getByText(/^→ \$8\.00 by end of day/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/^→ \$8\.00 by end of day \(all spend so far, this session's pace\)/),
+    ).toBeInTheDocument();
   });
 
   it('uses the aggregate forecast over the SSE forecast once the aggregate has one', async () => {
@@ -691,7 +693,9 @@ describe('Today view', () => {
     stubForecastSources({ totalCostUsd: 5, forecastEndOfDayUsd: 9, sessionCount: 2 });
 
     renderToday();
-    await waitFor(() => expect(screen.getByText(/^→ \$9\.00 by end of day/)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText(/^→ \$9\.00 by end of day \(all sessions\)/)).toBeInTheDocument(),
+    );
   });
 
   function stubObservabilityHealth(body: Record<string, unknown>): void {
