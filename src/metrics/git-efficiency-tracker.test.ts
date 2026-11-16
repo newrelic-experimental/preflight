@@ -12,7 +12,7 @@ import { HookEventProcessor } from '../hooks/event-processor.js';
 import { ClaudeCodeAdapter } from '../platforms/claude-code-adapter.js';
 import { LocalStore } from '../storage/local-store.js';
 import type { HookEvent, ToolCallRecord, ReplayTimelineEntry } from '../storage/types.js';
-import { MetricAggregator } from '../shared/index.js';
+import { MetricAggregator } from '../core/index.js';
 
 const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
 afterAll(() => stderrSpy.mockRestore());

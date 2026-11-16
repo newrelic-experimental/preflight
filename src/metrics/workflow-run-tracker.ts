@@ -18,7 +18,7 @@
  * its run counts only the calls that finished before that, usually none.
  */
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { BoundedMap } from '../lib/bounded-map.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { Resettable } from './tracker-contracts.js';
