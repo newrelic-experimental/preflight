@@ -10,7 +10,7 @@ import { createLogger } from '../shared/index.js';
 const logger = createLogger('tier-types');
 
 /**
- * Every `eventType` string `NrIngestManager` can emit today (14 values).
+ * Every `eventType` string `NrIngestManager` can emit today (15 values).
  *
  * When a new event type is added to `nr-ingest.ts` (or to the
  * `auditRecordToNrEvent` / `securityAlertToNrEvent` serializers in
@@ -32,6 +32,7 @@ export const KNOWN_EVENT_TYPES = [
   'AiAntiPattern',
   'AiRetryAlert',
   'AiTurnCost',
+  'AiSkillRun',
   'AiContextSnapshot',
   'AiBudgetWarning',
   'AiAuditEvent',
@@ -54,6 +55,7 @@ export const EVENT_TYPE_SENSITIVITY: Readonly<Record<KnownEventType, EventSensit
   AiSubagentTurn: 'safe-shared',
   AiRetryAlert: 'safe-shared',
   AiTurnCost: 'safe-shared',
+  AiSkillRun: 'safe-shared',
   AiContextSnapshot: 'safe-shared',
   AiBudgetWarning: 'safe-shared',
   AiObservabilityHealth: 'safe-shared',

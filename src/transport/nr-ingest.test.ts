@@ -2,6 +2,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import {
   toolCallToNrEvent,
   turnCostToNrEvents,
+  skillRunToNrEvent,
   codingTaskToNrEvent,
   antiPatternToNrEvent,
   retryAlertToNrEvent,
@@ -4081,5 +4082,123 @@ describe('AiTurnCost coverage of token reports', () => {
     const [row] = turnCostToNrEvents(turn, { ...attrs, companionMode: true });
 
     expect(row).toMatchObject({ platform: 'claude-code', cost_authority: 'external' });
+  });
+});
+
+describe('skillRunToNrEvent()', () => {
+  const runAttrs = { timestamp: 1_700_000_000_000, developer: 'dev1', appName: 'my-app' };
+
+  it('emits a slash run with the run attributes and no parent run id', () => {
+    const event = skillRunToNrEvent(
+      { name: 'simplify', source: 'slash', runId: 'run-1' },
+      runAttrs,
+    );
+
+    expect(event).toStrictEqual({
+      eventType: 'AiSkillRun',
+      event_version: 1,
+      timestamp: 1_700_000_000_000,
+      skill_name: 'simplify',
+      skill_source: 'slash',
+      skill_run_id: 'run-1',
+      developer: 'dev1',
+      app_name: 'my-app',
+      platform: 'claude-code',
+    });
+  });
+
+  it('carries the parent run id, session and team attribution when set', () => {
+    const event = skillRunToNrEvent(
+      { name: 'unslop', source: 'tool', runId: 'run-2', parentRunId: 'run-1' },
+      {
+        ...runAttrs,
+        sessionId: 'sess-1',
+        platform: 'copilot',
+        teamId: 'team-a',
+        projectId: 'proj-b',
+        orgId: 'org-c',
+      },
+    );
+
+    expect(event).toStrictEqual({
+      eventType: 'AiSkillRun',
+      event_version: 1,
+      timestamp: 1_700_000_000_000,
+      skill_name: 'unslop',
+      skill_source: 'tool',
+      skill_run_id: 'run-2',
+      skill_parent_run_id: 'run-1',
+      developer: 'dev1',
+      app_name: 'my-app',
+      platform: 'copilot',
+      session_id: 'sess-1',
+      team_id: 'team-a',
+      project_id: 'proj-b',
+      org_id: 'org-c',
+    });
+  });
+
+  it('redacts secrets in skill_name', () => {
+    // Same long-token shape the skill_name redaction test above uses.
+    const secret = 'sk-test-deadbeef0123456789abcdef0123456789';
+    const event = skillRunToNrEvent(
+      { name: `api-key-${secret}`, source: 'slash', runId: 'run-3' },
+      runAttrs,
+    );
+
+    expect(event.skill_name as string).not.toContain(secret);
+    expect(event.skill_name as string).toContain('[REDACTED]');
+  });
+});
+
+describe('NrIngestManager.ingestSkillRun()', () => {
+  it('routes one AiSkillRun event for the run with the manager attribution', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    manager.ingestSkillRun(
+      { name: 'lint', source: 'slash', runId: 'run-9' },
+      { timestamp: 1_700_000_000_500, sessionId: 'sess-9' },
+    );
+
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const skillEvents = sentEvents.filter((e) => e.eventType === 'AiSkillRun');
+    expect(skillEvents).toHaveLength(1);
+    expect(skillEvents[0]).toMatchObject({
+      eventType: 'AiSkillRun',
+      event_version: 1,
+      timestamp: 1_700_000_000_500,
+      skill_name: 'lint',
+      skill_source: 'slash',
+      skill_run_id: 'run-9',
+      session_id: 'sess-9',
+      developer: 'test-dev',
+      app_name: 'test-app',
+      platform: 'claude-code',
+    });
+  });
+
+  it('falls back to the manager session when the run has no session', async () => {
+    const manager = new NrIngestManager(makeIngestOptions({ sessionTraceId: 'trace-1' }));
+
+    manager.ingestSkillRun(
+      { name: 'lint', source: 'tool', runId: 'run-10' },
+      { timestamp: 1_700_000_000_600, sessionId: null },
+    );
+
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    expect(sentEvents.find((e) => e.eventType === 'AiSkillRun')).toMatchObject({
+      skill_run_id: 'run-10',
+      session_id: 'trace-1',
+    });
   });
 });
