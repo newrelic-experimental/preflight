@@ -322,7 +322,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT uniqueCount(skill_run_id) AS 'Runs' FROM AiToolCall WHERE skill_name IS NOT NULL AND developer = {{developer}} AND session_id = {{session_id}} FACET skill_name SINCE 7 DAYS AGO LIMIT 20"
+                "query": "SELECT uniqueCount(skill_run_id) AS 'Runs' FROM AiToolCall, AiSkillRun WHERE skill_name IS NOT NULL AND developer = {{developer}} AND session_id = {{session_id}} FACET skill_name SINCE 7 DAYS AGO LIMIT 20"
               }
             ]
           }

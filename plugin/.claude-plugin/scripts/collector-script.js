@@ -7,8 +7,9 @@ import { homedir } from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 
 // src/redaction-patterns.ts
+var AFTER_ESCAPE = String.raw`\\[nrt]|\\u[0-9a-fA-F]{4}|\x1b\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
+var CONTINUATION = String.raw`(?:\\\r?\n|\\\\\\n)`;
 var REDACTION_PATTERNS = [
-  /(?<![a-zA-Z])(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-zA-Z])[\s]*[=:]\s*\S+/gi,
   /(?:sk-|ghp_|gho_|ghs_|github_pat_|xoxb-|xoxp-|Bearer\s+)[A-Za-z0-9_-]{20,200}/g,
   /-----BEGIN[^-\n]{0,100}-----[A-Za-z0-9+/=\r\n. ]{0,65536}-----END[^-\n]{0,100}-----/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
@@ -24,8 +25,266 @@ var REDACTION_PATTERNS = [
   /https?:\/\/[^\s:\/]+:[^\s@\/]+@[^\s\/]+/gi,
   /\b(?:AC|SK)[a-f0-9]{32}\b/g,
   /(?:[?&])(?:sig|se|sp|srt|ss|sv|st)=[A-Za-z0-9%_-]+/gi,
-  /\b(?:vercel_|heroku_|dd_|pk_)[A-Za-z0-9_-]{20,}\b/gi
+  /\b(?:vercel_|heroku_|dd_|pk_)[A-Za-z0-9_-]{20,}\b/gi,
+  /aws_secret_access_key(?:[ \t]*[=:][ \t]*|[ \t]+)(?:\\"[A-Za-z0-9/+]{40}\\"|"[A-Za-z0-9/+]{40}"|'[A-Za-z0-9/+]{40}'|[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+]))/gi
 ];
+var BACKSLASH = 92;
+var DOUBLE_QUOTE = 34;
+var SINGLE_QUOTE = 39;
+var DOLLAR = 36;
+var HASH = 35;
+var LF = 10;
+var CR = 13;
+var EOF = -1;
+var CLOSE = -2;
+var PLAIN = -3;
+var MAX_QUOTED_PART = 4096;
+var charTable = (chars) => Uint8Array.from({ length: 128 }, (_, c) => chars.includes(String.fromCharCode(c)) ? 1 : 0);
+var OPERATORS = ";|&()<>`";
+var OPERATOR = charTable(OPERATORS);
+var SPECIAL = charTable(`	
+\v\f\r ${OPERATORS}"'\\$`);
+var isSpace = (c) => c === 32 || c >= 9 && c <= 13;
+var isOperator = (c) => c >= 0 && c < 128 && OPERATOR[c] === 1;
+var isBlankOrOperator = (c) => isSpace(c) || isOperator(c);
+function skipPlain(text, from) {
+  let i = from;
+  while (i < text.length) {
+    const c = text.charCodeAt(i);
+    if (c < 128 && SPECIAL[c] === 1) break;
+    i++;
+  }
+  return i;
+}
+function unitAt(text, i, context) {
+  if (i >= text.length) return EOF;
+  const c = text.charCodeAt(i);
+  if (context === "double") {
+    if (c === DOUBLE_QUOTE) return CLOSE;
+    if (c !== BACKSLASH || i + 1 >= text.length) return c;
+    const escaped = text.charCodeAt(i + 1);
+    if (escaped === DOUBLE_QUOTE || escaped === BACKSLASH) return escaped;
+    if (escaped === 110) return LF;
+    if (escaped === 114) return CR;
+    return escaped === 116 ? 9 : PLAIN;
+  }
+  if (context === "comment") return c === LF ? CLOSE : c;
+  return c === SINGLE_QUOTE && context !== "none" ? CLOSE : c;
+}
+function unitLength(text, i, context) {
+  return context === "double" && text.charCodeAt(i) === BACKSLASH && i + 1 < text.length ? 2 : 1;
+}
+function readValue(text, from, context, inside = "none") {
+  let i = from;
+  let part = inside;
+  let opened = from - 1;
+  let dollar = false;
+  for (; ; ) {
+    const plain = skipPlain(text, i);
+    if (plain > i) {
+      i = plain;
+      dollar = false;
+    }
+    const c = unitAt(text, i, context);
+    if (part !== "none") {
+      if (c === EOF || c === CLOSE) return bareWord(text, from, context);
+      if (i - opened - 1 > MAX_QUOTED_PART) return plainPrefix(text, from);
+    } else if (c === EOF || c === CLOSE || isBlankOrOperator(c)) {
+      return i;
+    }
+    const at = i;
+    i += unitLength(text, i, context);
+    if (c === BACKSLASH && part !== "single") {
+      i = afterEscaped(text, i, context);
+    } else if (part === "none" && (c === DOUBLE_QUOTE || c === SINGLE_QUOTE)) {
+      part = c === DOUBLE_QUOTE ? "double" : dollar ? "ansi" : "single";
+      opened = at;
+    } else if (part !== "none" && c === (part === "double" ? DOUBLE_QUOTE : SINGLE_QUOTE)) {
+      if (inside !== "none") return at;
+      part = "none";
+    }
+    dollar = c === DOLLAR;
+  }
+}
+function afterEscaped(text, from, context) {
+  const escaped = unitAt(text, from, context);
+  if (escaped === EOF || escaped === CLOSE) return from;
+  const i = from + unitLength(text, from, context);
+  return escaped === CR && unitAt(text, i, context) === LF ? i + unitLength(text, i, context) : i;
+}
+function bareWord(text, from, context) {
+  let i = from;
+  for (; ; ) {
+    i = skipPlain(text, i);
+    const c = unitAt(text, i, context);
+    if (c === EOF || c === CLOSE || isBlankOrOperator(c)) return i;
+    i += unitLength(text, i, context);
+    if (c === BACKSLASH) i = afterEscaped(text, i, context);
+  }
+}
+function valueEnd(text, from, quote) {
+  let end = readValue(text, from, quote);
+  for (let run = quotedRun(text, end, quote); run > end; run = quotedRun(text, end, quote)) {
+    end = readValue(text, run, quote);
+  }
+  return end;
+}
+function quotedRun(text, from, quote) {
+  const end = skipPlain(text, from + 1);
+  const run = quote !== "comment" && unitAt(text, from, quote) === CLOSE && text[end] === text[from];
+  return run ? end + 1 : from;
+}
+function plainPrefix(text, from) {
+  let i = skipPlain(text, from);
+  while (text.charCodeAt(i) === DOLLAR) i = skipPlain(text, i + 1);
+  return i;
+}
+var QuoteTracker = class {
+  constructor(text) {
+    this.text = text;
+  }
+  text;
+  index = 0;
+  quote = "none";
+  dollar = false;
+  advanceTo(to) {
+    const { text } = this;
+    let { index: i, quote, dollar } = this;
+    for (; i < to; i++) {
+      const c = text.charCodeAt(i);
+      if (quote === "comment") {
+        if (c === LF) quote = "none";
+      } else if (quote === "single") {
+        if (c === SINGLE_QUOTE) quote = "none";
+      } else if (c === BACKSLASH) {
+        i++;
+      } else if (quote === "none") {
+        if (c === DOUBLE_QUOTE) quote = "double";
+        else if (c === SINGLE_QUOTE) quote = dollar ? "ansi" : "single";
+        else if (c === HASH && (i === 0 || isBlankOrOperator(text.charCodeAt(i - 1))))
+          quote = "comment";
+      } else if (c === (quote === "double" ? DOUBLE_QUOTE : SINGLE_QUOTE)) {
+        quote = "none";
+      }
+      dollar = c === DOLLAR;
+    }
+    this.index = i;
+    this.quote = quote;
+    this.dollar = dollar;
+    return quote;
+  }
+  skipRedacted(start, end) {
+    this.advanceTo(start);
+    this.index = Math.max(this.index, end);
+    this.dollar = false;
+  }
+};
+function pushValue(spans, spanStart, from, end) {
+  if (end > from) spans.push(spanStart, end);
+  return end;
+}
+var HEADER = new RegExp(
+  String.raw`((?:-H|--header)(?:[\s=]|${CONTINUATION}){1,8}(\\"|"|')?)(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})`,
+  "gi"
+);
+var headerValue = (text, match, quote, spans) => {
+  const from = match.index + match[0].length;
+  const opener = match[2];
+  const double = opener === '"' || opener === '\\"' && quote === "double";
+  const end = readValue(text, from, quote, opener === "'" ? "single" : double ? "double" : "none");
+  return pushValue(spans, match.index + match[1].length, from, end);
+};
+var NAME = /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-z])\s*[=:]\s*/gi;
+var FLAG = new RegExp(
+  String.raw`-(?<=(?:^|[^\w-]|${AFTER_ESCAPE})-)-?(?:[a-z0-9]+[-_])*(?:token|password|passwd|secret|(?:api|access|secret|private)[-_]?key)(?:=[ \t]*|(?:[ \t]|${CONTINUATION})+(?![ \t-]|${CONTINUATION}))`,
+  "gi"
+);
+var wordValue = (text, match, quote, spans) => {
+  const from = match.index + match[0].length;
+  return pushValue(spans, match.index, from, valueEnd(text, from, quote));
+};
+var QUOTING = charTable(`"'\\$`);
+var nameValue = (text, match, quote, spans) => {
+  let [start, floor] = [match.index, match.index + match[0].length];
+  let end = valueEnd(text, floor, quote);
+  let i = end;
+  for (; i < text.length && !isBlankOrOperator(text.charCodeAt(i)); i++) {
+    if (QUOTING[text.charCodeAt(i)] !== 1) end = i + 1;
+    else {
+      pushValue(spans, start, floor, end);
+      start = end = floor = i + 1;
+    }
+  }
+  pushValue(spans, start, floor, end);
+  return i;
+};
+var MYSQL = /\b(?:mysql(?:dump|admin)?|mariadb)\b/g;
+var ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, "y");
+var PORT_MAPPING = /[\d.]+:\d/y;
+var REDIRECT = /&>>?|[<>][<>&|]*/y;
+var mysqlPasswords = (text, match, quote, spans) => {
+  let i = match.index + match[0].length;
+  for (; ; ) {
+    while (isSpace(unitAt(text, i, quote)) && text.charCodeAt(i) !== LF) {
+      i += unitLength(text, i, quote);
+    }
+    REDIRECT.lastIndex = i;
+    if ("<>&".includes(text[i]) && REDIRECT.test(text)) {
+      i = REDIRECT.lastIndex;
+      continue;
+    }
+    const end = valueEnd(text, i, quote);
+    if (end === i) return i;
+    const flag = passwordFlag(text, i, end);
+    if (flag >= 0) spans.push(flag, end);
+    i = end;
+  }
+};
+function passwordFlag(text, from, end) {
+  for (let flag = from; flag + 2 < end; flag++) {
+    if (text.charCodeAt(flag) !== 45 || text.charCodeAt(flag + 1) !== 112) continue;
+    ESCAPED_P.lastIndex = flag;
+    if (flag > from && !ESCAPED_P.test(text)) continue;
+    PORT_MAPPING.lastIndex = flag + 2;
+    return PORT_MAPPING.test(text) ? -1 : flag;
+  }
+  return -1;
+}
+var RULES = [
+  { start: HEADER, redact: headerValue },
+  { start: NAME, redact: nameValue },
+  ...REDACTION_PATTERNS,
+  { start: FLAG, redact: wordValue },
+  { start: MYSQL, redact: mysqlPasswords }
+];
+function redactSecrets(text, counts) {
+  let result = text;
+  for (const rule of RULES) result = applyRule(result, rule, counts);
+  return result;
+}
+function applyRule(text, rule, counts) {
+  if (rule instanceof RegExp && counts === void 0) return text.replace(rule, "[REDACTED]");
+  const pattern = rule instanceof RegExp ? rule : rule.start;
+  const quotes = rule instanceof RegExp ? void 0 : new QuoteTracker(text);
+  const spans = [];
+  pattern.lastIndex = 0;
+  for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
+    if (counts !== void 0 && !counts(text, match.index)) {
+      pattern.lastIndex = match.index + 1;
+      continue;
+    }
+    const first = spans.length;
+    let resume = pattern.lastIndex;
+    if (quotes === void 0 || rule instanceof RegExp) spans.push(match.index, resume);
+    else resume = rule.redact(text, match, quotes.advanceTo(match.index), spans);
+    for (let k = first; k < spans.length; k += 2) quotes?.skipRedacted(spans[k], spans[k + 1]);
+    pattern.lastIndex = resume;
+  }
+  if (spans.length === 0) return text;
+  const kept = [text.slice(0, spans[0])];
+  for (let k = 1; k < spans.length; k += 2) kept.push(text.slice(spans[k], spans[k + 1]));
+  return kept.join("[REDACTED]");
+}
 
 // src/record-content-gate.ts
 function resolveRecordContent(highSecurity, explicitValue) {
@@ -64,6 +323,40 @@ function hookEventFromArg(arg) {
     (event) => event.toLowerCase() === lower || HOOK_SUBCOMMANDS[event] === lower
   );
 }
+
+// src/platforms/platform-names.ts
+var PLATFORM_NAMES = [
+  "claude-code",
+  "cursor",
+  "windsurf",
+  "copilot",
+  "copilot-app",
+  "copilot-sdk",
+  "zed",
+  "continue",
+  "amazon-q",
+  "kiro",
+  "droid",
+  "gemini-cli",
+  "cline",
+  "codex",
+  "opencode",
+  "kilocode",
+  "pi",
+  "antigravity",
+  "generic-mcp"
+];
+var ENGINE_ENV_KEYS = ["MCP_CLIENT", "NEW_RELIC_AI_PLATFORM"];
+var aliasKey = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+var PLATFORM_BY_ALIAS = new Map(
+  PLATFORM_NAMES.map((n) => [aliasKey(n), n])
+);
+function canonicalPlatformName(name) {
+  return name ? PLATFORM_BY_ALIAS.get(aliasKey(name)) : void 0;
+}
+
+// src/platforms/types.ts
+var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
 
 // src/hooks/self-report.ts
 import { createHash } from "node:crypto";
@@ -192,18 +485,17 @@ function releaseReport(storageDir, line) {
 
 // src/hooks/session-breadcrumbs.ts
 import { resolve as resolve2 } from "node:path";
-
-// src/platforms/types.ts
-var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
-
-// src/hooks/session-breadcrumbs.ts
 var BREADCRUMBS_DIR = "breadcrumbs";
-var WRITER_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 function breadcrumbRoot(storagePath, writer) {
   return resolve2(storagePath, BREADCRUMBS_DIR, writer);
 }
-function breadcrumbWriter(engine) {
-  return engine !== void 0 && WRITER_RE.test(engine) ? engine : UNATTRIBUTED_BREADCRUMB_WRITER;
+function breadcrumbWriter(env) {
+  for (const key of ENGINE_ENV_KEYS) {
+    const name = canonicalPlatformName(env[key]);
+    if (name === "generic-mcp") return UNATTRIBUTED_BREADCRUMB_WRITER;
+    if (name !== void 0) return name;
+  }
+  return CLAUDE_CODE_ENV_SIGNALS.some((key) => env[key] !== void 0) ? CLAUDE_CODE_PLATFORM_NAME : UNATTRIBUTED_BREADCRUMB_WRITER;
 }
 
 // src/storage/hook-buffer.ts
@@ -355,11 +647,17 @@ function getRecordContent() {
     process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT === "true"
   );
 }
+var DEFAULT_MAX_CONTENT_LENGTH = 10240;
+var MIN_MAX_CONTENT_LENGTH = 256;
+var MAX_MAX_CONTENT_LENGTH = 1048576;
 function getMaxContentLength() {
   const val = process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
-  if (val === void 0) return 10240;
+  if (val === void 0) return DEFAULT_MAX_CONTENT_LENGTH;
   const parsed = parseInt(val, 10);
-  return Number.isNaN(parsed) ? 10240 : parsed;
+  if (Number.isNaN(parsed)) return DEFAULT_MAX_CONTENT_LENGTH;
+  if (parsed < MIN_MAX_CONTENT_LENGTH) return MIN_MAX_CONTENT_LENGTH;
+  if (parsed > MAX_MAX_CONTENT_LENGTH) return MAX_MAX_CONTENT_LENGTH;
+  return parsed;
 }
 var HOOK_EVENT_PLATFORM = {
   beforeshellexecution: "cursor",
@@ -378,9 +676,14 @@ var HOOK_EVENT_PLATFORM = {
   post_mcp_tool_use: "windsurf"
 };
 function detectStampPlatform() {
-  const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
-  if (explicit) return explicit;
-  return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0) ? CLAUDE_CODE_PLATFORM_NAME : void 0;
+  for (const key of ENGINE_ENV_KEYS) {
+    const name = canonicalPlatformName(process.env[key]);
+    if (name !== void 0) return name;
+  }
+  if (CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0)) {
+    return CLAUDE_CODE_PLATFORM_NAME;
+  }
+  return (process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM) || void 0;
 }
 var MAX_REDACT_BYTES = 1048576;
 function redact(value) {
@@ -389,11 +692,7 @@ function redact(value) {
     const buf = Buffer.from(value, "utf8").subarray(0, MAX_REDACT_BYTES);
     result = buf.toString("utf8").replace(/�$/, "");
   }
-  for (const pattern of REDACTION_PATTERNS) {
-    const re = new RegExp(pattern.source, pattern.flags);
-    result = result.replace(re, "[REDACTED]");
-  }
-  return result;
+  return redactSecrets(result);
 }
 function hashInput(input) {
   const str = JSON.stringify(input) ?? "";
@@ -442,35 +741,38 @@ function getLinuxAncestorPids(startPpid, maxDepth = 5) {
   return pids;
 }
 var _breadcrumbWriteFailed = false;
-function writePpidBreadcrumb(sessionId, root) {
+function touch(path) {
+  const now = /* @__PURE__ */ new Date();
+  try {
+    utimesSync(path, now, now);
+  } catch {
+  }
+}
+var _unknownEngineWarned = false;
+function writePpidBreadcrumb(sessionId, root, legacyRoot) {
   if (!SESSION_ID_RE.test(sessionId)) return;
   const ppid = process.ppid;
   if (typeof ppid !== "number" || ppid <= 0) return;
   try {
-    const breadcrumbDir = resolve3(root, "session-by-ppid");
-    mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
     const pids = getLinuxAncestorPids(ppid);
-    let wroteAny = false;
-    for (const pid of pids) {
-      const breadcrumbPath = resolve3(breadcrumbDir, `${pid}.txt`);
-      if (existsSync(breadcrumbPath)) {
-        try {
-          if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
-            const now = /* @__PURE__ */ new Date();
-            try {
-              utimesSync(breadcrumbPath, now, now);
-            } catch {
+    for (const dir of legacyRoot === void 0 ? [root] : [root, legacyRoot]) {
+      const breadcrumbDir = resolve3(dir, "session-by-ppid");
+      mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
+      for (const pid of pids) {
+        const breadcrumbPath = resolve3(breadcrumbDir, `${pid}.txt`);
+        if (existsSync(breadcrumbPath)) {
+          try {
+            if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
+              touch(breadcrumbPath);
+              continue;
             }
-            wroteAny = true;
-            continue;
+          } catch {
           }
-        } catch {
         }
+        writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
       }
-      writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
-      wroteAny = true;
     }
-    if (wroteAny) _breadcrumbWriteFailed = false;
+    _breadcrumbWriteFailed = false;
   } catch (err) {
     if (!_breadcrumbWriteFailed) {
       process.stderr.write(
@@ -482,24 +784,26 @@ function writePpidBreadcrumb(sessionId, root) {
   }
 }
 var _cwdBreadcrumbWriteFailed = false;
-function writeCwdBreadcrumb(sessionId, cwd, root) {
+function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
   if (!SESSION_ID_RE.test(sessionId)) return;
   if (typeof cwd !== "string" || cwd.length === 0) return;
+  const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
   try {
-    const breadcrumbDir = resolve3(root, "session-by-cwd");
-    mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
-    const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
-    const breadcrumbPath = resolve3(breadcrumbDir, `${sanitizedCwd}.txt`);
-    if (existsSync(breadcrumbPath)) {
-      try {
-        if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
-          _cwdBreadcrumbWriteFailed = false;
-          return;
+    for (const dir of legacyRoot === void 0 ? [root] : [root, legacyRoot]) {
+      const breadcrumbDir = resolve3(dir, "session-by-cwd");
+      mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
+      const breadcrumbPath = resolve3(breadcrumbDir, `${sanitizedCwd}.txt`);
+      if (existsSync(breadcrumbPath)) {
+        try {
+          if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
+            touch(breadcrumbPath);
+            continue;
+          }
+        } catch {
         }
-      } catch {
       }
+      writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
     }
-    writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
     _cwdBreadcrumbWriteFailed = false;
   } catch (err) {
     if (!_cwdBreadcrumbWriteFailed) {
@@ -759,16 +1063,32 @@ function processHook(raw, cliEvent) {
   }
   const sessionId = data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
   if (typeof data.session_id === "string" && data.session_id.length > 0) {
-    const root = breadcrumbRoot(getStorageDir(), breadcrumbWriter(detectStampPlatform()));
-    writePpidBreadcrumb(data.session_id, root);
-    writeCwdBreadcrumb(data.session_id, data.cwd, root);
+    const writer = breadcrumbWriter(process.env);
+    if (writer === UNATTRIBUTED_BREADCRUMB_WRITER && !_unknownEngineWarned) {
+      const unknownNames = ENGINE_ENV_KEYS.filter(
+        (key) => process.env[key] && canonicalPlatformName(process.env[key]) === void 0
+      ).map((key) => `${key}=${JSON.stringify(process.env[key])}`);
+      if (unknownNames.length > 0) {
+        process.stderr.write(
+          `[preflight-collector] Warning: ${unknownNames.join(", ")} names no engine Preflight knows; filing the session breadcrumb as unattributed
+`
+        );
+        _unknownEngineWarned = true;
+      }
+    }
+    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    const tagged = breadcrumbRoot(storageDir, writer);
+    writePpidBreadcrumb(data.session_id, tagged, storageDir);
+    writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);
   }
   const eventName = (data.hook_event_name ?? data.agent_action_name)?.toLowerCase();
   const toolName = data.tool_name ?? "unknown";
   const timestamp = Date.now();
   const recordContent = getRecordContent();
   const maxContentLen = getMaxContentLength();
-  const isGeminiCli = process.env.MCP_CLIENT === "gemini-cli" || process.env.NEW_RELIC_AI_PLATFORM === "gemini-cli";
+  const isGeminiCli = ENGINE_ENV_KEYS.some(
+    (key) => canonicalPlatformName(process.env[key]) === "gemini-cli"
+  );
   const isAntigravityShape = data.hook_event_name === void 0 && data.agent_action_name === void 0 && (data.toolCall !== void 0 || typeof data.stepIdx === "number");
   const agyCliEvent = hookEventFromArg(cliEvent);
   const isAntigravityPost = isAntigravityShape && (agyCliEvent === "PostToolUse" || agyCliEvent !== "PreToolUse" && (data.error !== void 0 || data.toolCall === void 0));
@@ -1186,6 +1506,7 @@ export {
   _stdinFs,
   getBufferPath,
   getLinuxAncestorPids,
+  getMaxContentLength,
   getRecordContent,
   hashInput,
   processHook,

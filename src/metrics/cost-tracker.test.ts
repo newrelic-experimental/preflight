@@ -5,7 +5,7 @@ import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import type { TokenRecordContext, CostTrackerSeed } from './cost-tracker.js';
 import { localDateKey, localStartOfDay } from '../lib/date.js';
 import { SessionTracker } from './session-tracker.js';
-import { MetricAggregator } from '../shared/index.js';
+import { MetricAggregator } from '../core/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -939,6 +939,19 @@ describe('CostTracker', () => {
       } finally {
         jest.useRealTimers();
       }
+    });
+
+    it('records first activity only for usage that costs something', () => {
+      const tracker = new CostTracker();
+      const firstSpend = Date.now() - 60 * 60 * 1000;
+      const dayKey = localDateKey(firstSpend);
+      const usage = makeUsage({ inputTokens: 1000, outputTokens: 500, totalTokens: 1500 });
+      tracker.recordTokenUsage(usage, 'claude-foo-9-9', { timestampMs: firstSpend - 30 * 60_000 });
+      tracker.recordTokenUsage(makeUsage(), 'claude-sonnet-4', {
+        timestampMs: firstSpend - 20 * 60_000,
+      });
+      tracker.recordTokenUsage(usage, 'claude-sonnet-4', { timestampMs: firstSpend });
+      expect(tracker.getFirstActivityMsForDay(dayKey)).toBe(firstSpend);
     });
 
     it('returns 0 for days with no recorded activity', () => {
