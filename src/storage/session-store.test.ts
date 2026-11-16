@@ -2365,6 +2365,15 @@ describe('buildSessionSummary', () => {
     expect(merged.timeline).toHaveLength(1);
   });
 
+  it('mergeSummaries treats an empty toolUseId as no id, so entries at different times both survive', () => {
+    const entry = { toolName: 'Read', toolUseId: '', durationMs: 5, success: true };
+    const merged = mergeSummaries(
+      makeSummary({ timeline: [{ ...entry, timestamp: 100 }] }),
+      makeSummary({ timeline: [{ ...entry, timestamp: 200 }] }),
+    );
+    expect(merged.timeline?.map((e) => e.timestamp)).toEqual([100, 200]);
+  });
+
   it('mergeSummaries replaces a legacy entry with the id-bearing entry for the same call', () => {
     const legacy = { timestamp: 100, toolName: 'Read', durationMs: 5, success: true };
     const merged = mergeSummaries(
