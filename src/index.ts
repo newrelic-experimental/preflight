@@ -2745,12 +2745,12 @@ async function main(): Promise<void> {
       },
     });
 
-    const saveObservedSessions = (
+    const observedRollups = (
       outcome: string,
       savesSession?: (sessionId: string) => boolean,
-    ): number => {
-      if (!sessionStore || !config) return 0;
-      const rollups = localSessionAggregator.toSummaries({
+    ): Array<Record<string, unknown>> => {
+      if (!config) return [];
+      return localSessionAggregator.toSummaries({
         developer: config.developer ?? 'unknown',
         platform: eventProcessor?.activePlatform,
         outcome,
@@ -2758,6 +2758,10 @@ async function main(): Promise<void> {
         repoResolver: repoNameResolver,
         ...(savesSession !== undefined && { savesSession }),
       });
+    };
+
+    const saveRollups = (rollups: ReturnType<typeof observedRollups>): number => {
+      if (!sessionStore) return 0;
       let saved = 0;
       for (const rollup of rollups) {
         const sessionId = String(rollup.sessionId);
@@ -2788,15 +2792,24 @@ async function main(): Promise<void> {
       return saved;
     };
 
-    const saveRolledUpBeforeSeeding = (sessionId: string): void => {
+    const saveObservedSessions = (
+      outcome: string,
+      savesSession?: (sessionId: string) => boolean,
+    ): number => saveRollups(observedRollups(outcome, savesSession));
+
+    // Taken as the engine adopts the session: every later turn it drains for
+    // its own session also reaches CostTracker, which seeds from what this saves.
+    const rolledUpWhilePending = (sessionId: string): ReturnType<typeof observedRollups> => {
       try {
-        saveObservedSessions('in progress', (id) => id === sessionId);
+        return observedRollups('in progress', (id) => id === sessionId);
       } catch (err) {
-        logger.warn('Failed to save what the session rolled up while pending', {
+        logger.warn('Failed to read what the session rolled up while pending', {
           error: String(err),
         });
+        return [];
       }
     };
+    let cwdGuessRolledUpWhilePending: ReturnType<typeof observedRollups> = [];
 
     persistSession = (opts?: { periodic?: boolean }) => {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
@@ -3168,7 +3181,8 @@ async function main(): Promise<void> {
       // against the corrected id's own transcript, replacing any name derived
       // for the previously-adopted (wrong) id.
       applyAuthoritativeSessionName(realId);
-      if (!opts?.viaCwdOnly) saveRolledUpBeforeSeeding(realId);
+      if (opts?.viaCwdOnly) cwdGuessRolledUpWhilePending = rolledUpWhilePending(realId);
+      else saveRollups(rolledUpWhilePending(realId));
       // viaCwdOnly means this id came from the collision-prone cwd fallback
       // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
       // resolvedViaCwdOnly gate on the synchronous resolution path's own
@@ -3346,7 +3360,7 @@ async function main(): Promise<void> {
             // the resolvedViaCwdOnly gate on rehydrateTrackersIfResumed's
             // first call site) precisely because it wasn't confirmed yet —
             // seed it now that it is.
-            saveRolledUpBeforeSeeding(staleId);
+            saveRollups(cwdGuessRolledUpWhilePending);
             rehydrateTrackersIfResumed(staleId);
             refreshPriorCostBaseline();
             if (localStoreForShutdown) writeHeartbeat(localStoreForShutdown, false);
