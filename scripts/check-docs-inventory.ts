@@ -12,7 +12,7 @@
  *   3. Every `nr_observe_*` MCP tool name literal under src/ must be named in
  *      docs/COMMANDS_TABLE.md.
  *   4. Every `NEW_RELIC_AI_*` env var named in any non-test file under src/
- *      (including src/shared and src/web) must be named in at least one of
+ *      (including src/core and src/web) must be named in at least one of
  *      README.md, docs/ADVANCED.md, SECURITY.md, PRIVACY.md, unless it is in
  *      INTERNAL_ENV_VARS.
  *
@@ -39,9 +39,9 @@ const ENV_DOC_PATHS = ['README.md', 'docs/ADVANCED.md', 'SECURITY.md', 'PRIVACY.
 const SKIP_DIR_NAMES = new Set(['web', 'core', 'node_modules']);
 
 // Env vars the code names but that are not a Preflight setting. Each needs a
-// reason. These are read only by `loadConfig()` in the vendored src/shared/
-// snapshot, which Preflight never calls (it loads src/config.ts instead), so
-// setting them changes nothing.
+// reason. These are read only by `loadConfig()` in src/core/config.ts, which
+// Preflight never calls (it loads src/config.ts instead), so setting them
+// changes nothing.
 const INTERNAL_ENV_VARS = new Set([
   'NEW_RELIC_AI_ATTRIBUTION_ENVIRONMENT',
   'NEW_RELIC_AI_ATTRIBUTION_FEATURE',
