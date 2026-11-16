@@ -35,13 +35,15 @@ Every `PlatformAdapter` (`src/platforms/types.ts`) declares a `visibilityLevel` 
 
 Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-registry.ts`) registers adapters in a fixed order — Claude Code, Cursor, Windsurf, Copilot, Copilot App, Copilot SDK, Zed, Continue, Amazon Q, Kiro, Droid, Gemini CLI, Cline, Codex, opencode, Kilo Code, Pi, Antigravity, then the generic MCP fallback (always last, `isSupported()` always `true`). `PlatformRegistry.detect()` returns the **first** adapter whose `isSupported()` returns `true`; there is no `NEW_RELIC_AI_PLATFORM`-driven override for most platforms (see per-platform detection below).
 
+Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check below compares the registered platform name ignoring case and punctuation, so `Kiro`, `KIRO`, and `claude_code` match `kiro` and `claude-code` (`canonicalPlatformName()` in `src/platforms/platform-names.ts`). The hook collector tags events and files breadcrumbs under the registered name, and the MCP server rewrites the variable to it. A name that matches no platform, such as an inherited `MCP_CLIENT=vscode`, is skipped, and detection falls through to `NEW_RELIC_AI_PLATFORM` and then the ambient signals.
+
 ---
 
 ## Claude Code (`claude-code`)
 
 **Mechanism:** Native `PreToolUse`/`PostToolUse`/`PostToolUseFailure` hooks, installed by Preflight itself, plus six separate top-level settings.json hooks keys (not `PostToolUse` payload variants): `StopFailure`, which feeds `ApiFailureTracker` with model-API-call failures; `SessionStart`, which fires on every session but is only actionable when Claude Code reports resume-cost fields (`source: 'resume'`/`'fork'` with a prior response) — those feed `SessionResumeTracker`, surfaced in `nr_observe_get_cost_forecast`'s `resumeContext`; `InstructionsLoaded`, which feeds `InstructionDriftTracker` the exact moment a CLAUDE.md/`.claude/rules/*.md` file enters context — including session-start eager loads, which have no visible `Read` tool call at all; `PostModelSwitch`, which feeds `ModelUsageTracker` a discrete switch event (deliberate `/model` changes, and persistent automatic changes tagged `source: 'auto'`) — `PreModelSwitch` is intentionally not installed, since Preflight has no reason to block or confirm a switch; and `UserPromptSubmit`/`Stop`, which feed precise turn/task-boundary timestamps into `TurnTracker.finalizeTurnAt()`/`TaskDetector.startTaskIfNone()`/`TaskDetector.markBoundary()` — corroborating signals for the existing idle-gap heuristics, not replacements (`Stop` doesn't fire on a user interrupt, so the heuristics stay as the fallback). No prompt/response content is captured from either hook, only timestamp and session ID.
 
-**Detection (`isSupported()`):** any of `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, or `CLAUDE_CODE_SESSION_ID` set (the vars current Claude Code actually sets in child process envs), or the legacy `CLAUDE_CODE`/`CLAUDE_CODE_VERSION`, or `MCP_CLIENT === 'claude-code'`. The list is the exported `CLAUDE_CODE_ENV_SIGNALS` const, shared with `collector-script.ts`'s hook-time platform stamping.
+**Detection (`isSupported()`):** any of `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, or `CLAUDE_CODE_SESSION_ID` set (the vars current Claude Code actually sets in child process envs), or the legacy `CLAUDE_CODE`/`CLAUDE_CODE_VERSION`, or `MCP_CLIENT === 'claude-code'` in any spelling. An unrecognized `MCP_CLIENT` doesn't hide those signals. The list is the exported `CLAUDE_CODE_ENV_SIGNALS` const, shared with `collector-script.ts`'s hook-time platform stamping.
 
 **Setup:**
 
@@ -312,7 +314,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
      ]
    }
    ```
-   The `MCP_CLIENT=kiro` prefix is required. Kiro runs the hook command as a separate process from the MCP server, so it never sees the `NEW_RELIC_AI_PLATFORM` value from `mcp.json`. [KIRO_POWER.md](./KIRO_POWER.md#enable-automatic-tool-call-capture) explains the reasoning in full.
+   An `MCP_CLIENT` prefix naming Kiro is required. Any case or punctuation works (`MCP_CLIENT=Kiro` too), and events are tagged `kiro`. Kiro runs the hook command as a separate process from the MCP server, so it never sees the `NEW_RELIC_AI_PLATFORM` value from `mcp.json`. [KIRO_POWER.md](./KIRO_POWER.md#enable-automatic-tool-call-capture) explains the reasoning in full.
 4. Restart Kiro (or reconnect MCP servers from the Kiro MCP panel).
 
 Without step 3, Kiro is observed through Preflight's own MCP tools only (`mcp-tools-only` visibility), and `nr_observe_health` still succeeds.

@@ -28,6 +28,9 @@
  *      Windows, where Claude Code interposes Git Bash between itself and the
  *      hook collector but launches the MCP server directly). Consulted last,
  *      only when #2 and #3 both miss.
+ *   Sources #2–#4 each read the engine's own writers first, then the
+ *   unattributed writer, then the legacy layout older collectors wrote
+ *   straight under `<storage>` (see sessionBreadcrumbs()).
  *   Sources #2–#4 are polled together at exponential backoff: 100ms, 200ms,
  *   500ms, 1s, 2s, then steady at 2s. No hard timeout; logs a single WARN at
  *   60s if still unresolved.
@@ -71,7 +74,7 @@ const DEFAULT_STORAGE_DIR = resolve(homedir(), '.newrelic-preflight');
 const POLL_SCHEDULE_MS = [100, 200, 500, 1000, 2000];
 const STEADY_POLL_MS = 2000;
 const WARN_AFTER_MS = 60_000;
-const TAGGED_CWD_BREADCRUMB_MAX_IDLE_MS = 12 * 60 * 60 * 1000;
+const TAGGED_CWD_SESSION_MAX_IDLE_MS = 12 * 60 * 60 * 1000;
 
 /**
  * How far above our own ppid to look for a breadcrumb. Deliberately shallower
@@ -334,6 +337,19 @@ function listFiles(dir: string): string[] {
   }
 }
 
+/**
+ * Each source reads three tiers in order: the engine's own writers (the
+ * closest ancestor wins across them), the unattributed writer, then the legacy
+ * layout under `storagePath`. A legacy breadcrumb names no engine, so it counts
+ * only when no writer ever filed its session and the session has been active
+ * since this process started. A tagged cwd breadcrumb is never removed, so it
+ * counts only while its session was active in the last 12 hours, which keeps
+ * a session that ended yesterday from shadowing a live one in a later tier.
+ * A session is active since a time when its breadcrumb, or a ppid breadcrumb
+ * in the same root naming it, was touched since then. Older collectors leave
+ * an unchanged cwd breadcrumb alone but touch the ppid breadcrumb on every
+ * event.
+ */
 export function sessionBreadcrumbs(
   storagePath: string,
   writers: readonly string[],
@@ -345,12 +361,12 @@ export function sessionBreadcrumbs(
   ]
     .filter((tier) => tier.length > 0)
     .map((tier) => tier.map((w) => breadcrumbRoot(storagePath, w)));
-  // Collectors from before the per-writer layout never touch an unchanged cwd breadcrumb, so a
-  // ppid breadcrumb naming the same session also proves it is live.
-  const writtenSinceStart = (crumb: string, sessionId: string) =>
-    mtimeMs(resolve(storagePath, crumb)) >= processStartMs ||
-    listFiles(resolve(storagePath, 'session-by-ppid')).some(
-      (path) => mtimeMs(path) >= processStartMs && readSessionId(path) === sessionId,
+  // Older collectors never touch an unchanged cwd breadcrumb but touch the ppid breadcrumb on every
+  // event, so a ppid breadcrumb in the same root naming the same session also proves it is live.
+  const activeSince = (dir: string, crumb: string, sessionId: string, sinceMs: number) =>
+    mtimeMs(resolve(dir, crumb)) >= sinceMs ||
+    listFiles(resolve(dir, 'session-by-ppid')).some(
+      (path) => mtimeMs(path) >= sinceMs && readSessionId(path) === sessionId,
     );
   const everTaggedIds = new Set<string>();
   const scanTaggedIds = () => {
@@ -364,7 +380,8 @@ export function sessionBreadcrumbs(
     }
   };
   const rootHitCounts = (crumb: string, sessionId: string) => {
-    if (everTaggedIds.has(sessionId) || !writtenSinceStart(crumb, sessionId)) return false;
+    if (everTaggedIds.has(sessionId) || !activeSince(storagePath, crumb, sessionId, processStartMs))
+      return false;
     scanTaggedIds();
     return !everTaggedIds.has(sessionId);
   };
@@ -388,10 +405,9 @@ export function sessionBreadcrumbs(
   const self = (sessionId: string) => sessionId;
   const cwdCrumb = (cwd: string | undefined) =>
     `session-by-cwd/${sanitizeCwdForFilename(cwd ?? '')}.txt`;
-  const isTaggedRoot = (dir: string) => dir !== storagePath;
-  const taggedCwdCrumbIdle = (dir: string, cwd: string | undefined) =>
-    isTaggedRoot(dir) &&
-    mtimeMs(resolve(dir, cwdCrumb(cwd))) < Date.now() - TAGGED_CWD_BREADCRUMB_MAX_IDLE_MS;
+  const cwdSessionLive = (dir: string, cwd: string | undefined, sessionId: string) =>
+    dir === storagePath ||
+    activeSince(dir, cwdCrumb(cwd), sessionId, Date.now() - TAGGED_CWD_SESSION_MAX_IDLE_MS);
   const kept = (id: string | null, accept: (id: string) => boolean) =>
     id !== null && accept(id) ? id : null;
   return {
@@ -413,7 +429,7 @@ export function sessionBreadcrumbs(
     cwd: (cwd) =>
       pick(
         (dir, accept) =>
-          taggedCwdCrumbIdle(dir, cwd) ? null : kept(resolveFromCwd(dir, cwd), accept),
+          kept(resolveFromCwd(dir, cwd), (id) => cwdSessionLive(dir, cwd, id) && accept(id)),
         () => cwdCrumb(cwd),
         self,
       ),
