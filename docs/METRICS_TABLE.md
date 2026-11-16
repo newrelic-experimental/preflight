@@ -11,35 +11,47 @@ Every metric and event that this project sends to New Relic, organized by delive
 
 ## Delivery Mechanism
 
-All telemetry flows through the `HarvestScheduler` and `LogIngestManager`:
+`NrIngestManager` (`src/transport/nr-ingest.ts`) sends telemetry through a `HarvestScheduler` for events and metrics and a `LogIngestManager` for logs. The values below are defaults:
 
 | Channel | Target API    | Flush Interval | Retry Buffer  |
 | ------- | ------------- | -------------- | ------------- |
 | Events  | NR Events API | 5 seconds      | 1,000 events  |
-| Metrics | NR Metric API | 60 seconds     | 500 metrics   |
+| Metrics | NR Metric API | 60 seconds     | 500 snapshots |
 | Logs    | NR Logs API   | 5 seconds      | 1,000 entries |
 
-Failed batches are re-queued with bounded buffers. Oldest entries are dropped on overflow.
+Failed batches are re-queued with bounded buffers. Oldest entries are dropped on overflow, and events and metrics lost to buffer overflow are counted by the [Delivery Self-Monitoring Metrics](#delivery-self-monitoring-metrics). Log overflow, a batch the API rejects as invalid (a 4xx other than 408 or 429, which is dropped, not retried), and a failed local-tier write are only written to Preflight's own log. The event and metric flush intervals are configurable with `harvestEventsMs` and `harvestMetricsMs` (or `NEW_RELIC_AI_MCP_HARVEST_EVENTS_MS` and `NEW_RELIC_AI_MCP_HARVEST_METRICS_MS`); the log interval is not. The log buffer is trimmed to 1,000 entries when a send fails, keeping the failed batch and dropping the oldest newer entries first.
+
+Logs go to the New Relic Logs API whatever the transport setting, and only on the primary tier.
+
+### What Is Sent at All
+
+- `mode: 'local'` sends nothing to New Relic. The ingest manager is never created.
+- With `companionMode` on (set explicitly, or detected when Claude Code's own OTel export points at New Relic), the `ai.cost.*` gauges are not sent, and cost-bearing events from `claude-code` carry `cost_authority: "external"` instead of being dropped.
+- With a `tiers` array, events fan out to several New Relic accounts and local JSONL directories by `eventType`, and each New Relic tier has its own scheduler, retry buffer and backoff. Local tiers append each event to disk at once, with no flush interval or retry buffer. The first New Relic tier is the primary tier. Only it carries the aggregated metrics, logs, OTLP and the send-health counters. Every New Relic tier's scheduler still reports its own [Delivery Self-Monitoring Metrics](#delivery-self-monitoring-metrics) to its own account.
 
 ### Transport Routing
 
-The `transport` config field controls where the `HarvestScheduler` sends telemetry:
+The `HarvestScheduler` library takes a `transport` option that controls where it sends telemetry:
 
-| Mode                      | Events                           | Metrics                          |
-| ------------------------- | -------------------------------- | -------------------------------- |
-| `nr-events-api` (default) | NR Events API                    | NR Metric API                    |
-| `otlp`                    | OTLP/HTTP (as log records)       | OTLP/HTTP (as gauge data points) |
-| `both`                    | Both simultaneously (concurrent) | Both simultaneously (concurrent) |
+| Mode                      | Events                           | Metrics                                                                                                                                                   |
+| ------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nr-events-api` (default) | NR Events API                    | NR Metric API                                                                                                                                             |
+| `otlp`                    | OTLP/HTTP (as log records)       | OTLP/HTTP (counts as sums, summaries as histograms, gauges as gauges; the aggregator produces only summaries, so aggregated metrics arrive as histograms) |
+| `both`                    | Both simultaneously (concurrent) | Both simultaneously (concurrent)                                                                                                                          |
+
+In the MCP server today, the config field `otlp.transport` (legacy flat `transport`, or `NEW_RELIC_AI_TRANSPORT`) is not passed to the `HarvestScheduler`. Events and metrics always go to the NR APIs. The setting's only effect is whether Preflight starts trace spans, and nothing exports them because the server registers no tracer provider. Secondary tiers always use `nr-events-api`.
 
 OTLP targets any OpenTelemetry-compatible backend. New Relic OTLP: US `https://otlp.nr-data.net`, EU `https://otlp.eu01.nr-data.net`.
 
-Source: `src/shared/harvest/harvest-scheduler.ts`, `src/transport/log-ingest.ts`
+Source: `src/transport/nr-ingest.ts`, `src/shared/harvest/harvest-scheduler.ts`, `src/transport/log-ingest.ts`
 
 ---
 
 ## Schema Versioning
 
-Every NR event type carries an `event_version` field (currently `1`). Within a version, changes are additive only: new attributes may appear, existing ones keep name and meaning. A rename, removal, or semantic change bumps the version. Consumers should tolerate unknown attributes and may branch on `event_version` in NRQL.
+Every NR event type except `AiRetryAlert` and `NrAiObserveSetupCheck` carries an `event_version` field (currently `1`). Within a version, changes are additive only: new attributes may appear, existing ones keep name and meaning. A rename, removal, or semantic change bumps the version. Consumers should tolerate unknown attributes and may branch on `event_version` in NRQL.
+
+`timestamp` is Unix epoch milliseconds on every event that has one, except `AiAuditEvent` and `SecurityAlert`, which use epoch seconds. Keep that in mind when joining them to `AiToolCall` by time.
 
 ---
 
@@ -53,47 +65,55 @@ These events are emitted by the MCP server (`preflight`) when Claude Code or ano
 
 **What it is:** One record for each action your AI assistant takes, such as reading a file, running a command or editing code, with how long it took and whether it succeeded. It is the raw activity log behind most other Preflight data. Use it to see which tools the assistant leans on, find slow or failing calls, and drill into what happened in a specific session.
 
-Emitted for every tool call captured by the hook collector.
+Emitted for every tool call Preflight records: calls captured by the hook collector, calls self-reported through `nr_observe_report_tool_call` (with a generated `tool_use_id` and no `turn_id`, `turn_number`, `cwd` or `transcriptPath`), calls forwarded by the proxy (which also produce an `AiMcpToolCall`), and the synthetic records for calls that never reported back (`error_type` `timeout`, `rejected` or `hook_blocked`) or were denied. A `timeout` or `rejected` row is not corrected if the call turns out to have finished late.
 
-| Field                 | Type    | Description                                                                                                                                                                                                                |
-| --------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `eventType`           | string  | Always `"AiToolCall"`                                                                                                                                                                                                      |
-| `event_version`       | number  | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                                                                                                                                |
-| `timestamp`           | number  | Unix epoch milliseconds                                                                                                                                                                                                    |
-| `tool`                | string  | Tool name (e.g., `Read`, `Edit`, `Bash`, `Grep`)                                                                                                                                                                           |
-| `tool_use_id`         | string  | Unique tool use identifier from the AI assistant                                                                                                                                                                           |
-| `success`             | boolean | Whether the tool call succeeded                                                                                                                                                                                            |
-| `developer`           | string  | Developer identifier                                                                                                                                                                                                       |
-| `app_name`            | string  | Application name (default: `preflight`)                                                                                                                                                                                    |
-| `session_id`          | string  | Session identifier (if available)                                                                                                                                                                                          |
-| `team_id`             | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not configured.                                                                                              |
-| `project_id`          | string  | Project identifier (derived from git remote or configured)                                                                                                                                                                 |
-| `repo_url`            | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                                                                                                                       |
-| `org_id`              | string  | Organization identifier (if configured)                                                                                                                                                                                    |
-| `platform`            | string  | Platform attribution (default: `claude-code`)                                                                                                                                                                              |
-| `duration_ms`         | number  | Tool call duration in milliseconds (if available)                                                                                                                                                                          |
-| `error_type`          | string  | Error classes (if failed): `timeout` (no completion in 60s; Bash 11 min, Agent and Task 30 min), `rejected` (user rejected the permission prompt), `denied` (auto mode denied by policy), `interrupted` (user interrupted) |
-| `error`               | string  | Error message (if failed)                                                                                                                                                                                                  |
-| `input_size_bytes`    | number  | Size of tool input (if available)                                                                                                                                                                                          |
-| `output_size_bytes`   | number  | Size of tool output (if available)                                                                                                                                                                                         |
-| `input_hash`          | string  | Hash of tool input for deduplication (if available)                                                                                                                                                                        |
-| `skill_name`          | string  | Skill whose run this call happened inside. A run opens on a named `Skill` call (which carries it too) or a `/<skill>` prompt and closes on the next prompt or the next skill. Redacted like other user-derived strings     |
-| `skill_source`        | string  | How the run was opened: `tool` (Skill tool) or `slash` (prompt slash command)                                                                                                                                              |
-| `skill_run_id`        | string  | One id per skill run; `uniqueCount(skill_run_id)` counts runs                                                                                                                                                              |
-| `skill_parent_run_id` | string  | Only on a run opened while another was open (a skill invoked by a skill, a subagent skill inside the main run, or a skill run right after another in the same turn): that run's `skill_run_id`. One hop only               |
-| `skillArgsLength`     | number  | Length of skill arguments (if available)                                                                                                                                                                                   |
-| `*`                   | varies  | Tool-specific fields from input/output parsers (e.g., `filePath`, `command`, `exitCode`, `isTestCommand`, `bashCategory`, `bashLeading`, `bashDestructive`, `bashNetwork`)                                                 |
+| Field                 | Type    | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `eventType`           | string  | Always `"AiToolCall"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `event_version`       | number  | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `timestamp`           | number  | Unix epoch milliseconds                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `tool`                | string  | Tool name (e.g., `Read`, `Edit`, `Bash`, `Grep`)                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `tool_use_id`         | string  | Unique tool use identifier from the AI assistant                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `success`             | boolean | Whether the tool call succeeded                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `developer`           | string  | Developer identifier                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `app_name`            | string  | Application name (default: `preflight`)                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `session_id`          | string  | Session identifier (if available)                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `team_id`             | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not configured.                                                                                                                                                                                                                                                                                                                                                           |
+| `project_id`          | string  | Project identifier (derived from git remote or configured)                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `repo_url`            | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `org_id`              | string  | Organization identifier (if configured)                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `platform`            | string  | Platform attribution (default: `claude-code`)                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `duration_ms`         | number  | Tool call duration in milliseconds (if available)                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `error_type`          | string  | Error classes (if failed): `timeout` (no completion in 60s; Bash 11 min, Agent and Task 30 min; a call still running when Preflight stops or its pending list overflows is also marked `timeout`), `rejected` (the call was waiting on a permission prompt when it was swept, evicted, or Preflight stopped), `hook_blocked` (a PreToolUse hook blocked the call, detected from the transcript), `denied` (Claude Code's PermissionDenied hook fired), `interrupted` (user interrupted) |
+| `error`               | string  | Error message, redacted (if reported)                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `input_size_bytes`    | number  | Size of tool input (if available)                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `output_size_bytes`   | number  | Size of tool output (if available)                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `input_hash`          | string  | Hash of tool input for deduplication (if available)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `skill_name`          | string  | Skill whose run this call happened inside. A run opens on a successful named `Skill` call (which carries it too; a failed `Skill` call carries it only when no run is open) or a `/<skill>` prompt and closes on the next prompt or the next skill. Redacted like other user-derived strings                                                                                                                                                                                            |
+| `skill_source`        | string  | How the run was opened: `tool` (Skill tool) or `slash` (prompt slash command)                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `skill_run_id`        | string  | One id per skill run; `uniqueCount(skill_run_id)` counts runs                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `skill_parent_run_id` | string  | Only on a run opened while another was open (a skill invoked by a skill, a subagent skill inside the main run, or a skill run right after another in the same turn): that run's `skill_run_id`. One hop only                                                                                                                                                                                                                                                                            |
+| `skillArgsLength`     | number  | Length of skill arguments (if available)                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `agent_id`            | string  | Claude Code subagent id. Same value and backfill rules as `AiAuditEvent.agent_id`. Absent for parent-session calls                                                                                                                                                                                                                                                                                                                                                                      |
+| `agent_type`          | string  | Agent type. Same value and backfill rules as `AiAuditEvent.agent_type`                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `turn_id`             | string  | Id of the assistant turn the call belongs to, from the turn tracker. It is not the same id as `AiTurnCost.turn_id`, so join the two events on `tool_use_id`                                                                                                                                                                                                                                                                                                                             |
+| `turn_number`         | number  | Position of that turn in the turn tracker's count. The count is per process, so under `--local` it runs across sessions                                                                                                                                                                                                                                                                                                                                                                 |
+| `cwd`                 | string  | Working directory of the session, redacted                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `permissionMode`      | string  | Claude Code permission mode in effect for the call (if the hook payload carried it)                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `transcriptPath`      | string  | Path to the session's transcript file on the developer's machine. Not redacted                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `permissionWaitMs`    | number  | Wall-clock time minus the tool's own reported duration: how long the call waited on a permission prompt or similar. Only present when Claude Code reported the tool's own duration, in which case `duration_ms` is that native duration                                                                                                                                                                                                                                                 |
+| `*`                   | varies  | Tool-specific fields from input/output parsers (e.g., `filePath`, `command`, `exitCode`, `isTestCommand`, `bashCategory`, `bashLeading`, `bashDestructive`, `bashNetwork`; many more are set by the parsers in `src/hooks/tool-parsers.ts`)                                                                                                                                                                                                                                             |
 
 Source: `src/transport/nr-ingest.ts` — `toolCallToNrEvent()`
 
 Bash tool calls additionally carry four classifier fields:
 
 - `bashCategory` — one of `git`, `package-manager`, `test-runner`, `build`, `container`, `network`, `fs-op`, `search`, `custom-script`, `shell-other`
-- `bashLeading` — the resolved leading argv0 (after sudo / env-var stripping)
+- `bashLeading` — the resolved leading argv0 (after sudo / env-var stripping, reduced to its basename unless it is an explicit script path, so `/usr/bin/git` becomes `git`)
 - `bashDestructive` — `true` for recursive rm, force-push, dd, mkfs, drop/truncate, chmod 777, pipe-to-shell, etc. (`--force-with-lease` and `--force-if-includes` are NOT flagged)
 - `bashNetwork` — `true` when the leading command is a network client (curl/wget/ssh/...)
 
-Source: `src/hooks/bash-classifier.ts` — `classifyBash()`
+Source: `src/hooks/bash-classifier.ts` — `classifyBash()`, assigned onto the record by `parseBash()` in `src/hooks/tool-parsers.ts`
 
 #### `AiMcpToolCall`
 
@@ -101,27 +121,27 @@ Source: `src/hooks/bash-classifier.ts` — `classifyBash()`
 
 Emitted for proxied tool calls (when the server forwards to upstream MCP servers).
 
-| Field                 | Type    | Description                                                                                                            |
-| --------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `eventType`           | string  | Always `"AiMcpToolCall"`                                                                                               |
-| `event_version`       | number  | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                            |
-| `timestamp`           | number  | Unix epoch milliseconds                                                                                                |
-| `server`              | string  | Upstream server name                                                                                                   |
-| `tool`                | string  | Tool name                                                                                                              |
-| `duration_ms`         | number  | Total duration including proxy overhead                                                                                |
-| `upstream_latency_ms` | number  | Upstream server response time                                                                                          |
-| `success`             | boolean | Whether the call succeeded                                                                                             |
-| `developer`           | string  | Developer identifier                                                                                                   |
-| `app_name`            | string  | Application name                                                                                                       |
-| `session_id`          | string  | Session identifier (if available)                                                                                      |
-| `team_id`             | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
-| `project_id`          | string  | Project identifier (derived from git remote or configured)                                                             |
-| `repo_url`            | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
-| `org_id`              | string  | Organization identifier (if configured)                                                                                |
-| `proxy_overhead_ms`   | number  | Time spent in proxy layer (if available)                                                                               |
-| `error_type`          | string  | Error classification (if failed)                                                                                       |
-| `request_size_bytes`  | number  | Request payload size (if available)                                                                                    |
-| `response_size_bytes` | number  | Response payload size (if available)                                                                                   |
+| Field                 | Type    | Description                                                                                                                                                                                                    |
+| --------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `eventType`           | string  | Always `"AiMcpToolCall"`                                                                                                                                                                                       |
+| `event_version`       | number  | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                                                                                                                    |
+| `timestamp`           | number  | Unix epoch milliseconds                                                                                                                                                                                        |
+| `server`              | string  | Upstream server name                                                                                                                                                                                           |
+| `tool`                | string  | Tool name                                                                                                                                                                                                      |
+| `duration_ms`         | number  | Total duration including proxy overhead                                                                                                                                                                        |
+| `upstream_latency_ms` | number  | Upstream server response time                                                                                                                                                                                  |
+| `success`             | boolean | `true` when the upstream HTTP status is 2xx. For an HTTP upstream, a JSON-RPC error returned with HTTP 200 still counts as success; a stdio upstream's errors are recorded as a 500, so they count as failures |
+| `developer`           | string  | Developer identifier                                                                                                                                                                                           |
+| `app_name`            | string  | Application name                                                                                                                                                                                               |
+| `session_id`          | string  | Session identifier (if available)                                                                                                                                                                              |
+| `team_id`             | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set.                                                                                         |
+| `project_id`          | string  | Project identifier (derived from git remote or configured)                                                                                                                                                     |
+| `repo_url`            | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                                                                                                           |
+| `org_id`              | string  | Organization identifier (if configured)                                                                                                                                                                        |
+| `proxy_overhead_ms`   | number  | Time spent in proxy layer: total duration minus upstream latency, never negative                                                                                                                               |
+| `error_type`          | string  | Declared by the event builder but not currently populated for proxied calls, so it is not present in practice                                                                                                  |
+| `request_size_bytes`  | number  | Request payload size                                                                                                                                                                                           |
+| `response_size_bytes` | number  | Response payload size (if available)                                                                                                                                                                           |
 
 Source: `src/transport/nr-ingest.ts` — `proxyToolCallToNrEvent()`
 
@@ -140,14 +160,14 @@ Emitted for non-tool proxy requests (discovery methods like `tools/list`, `resou
 | `method`              | string  | MCP method name (e.g., `tools/list`)                                                                                   |
 | `duration_ms`         | number  | Total duration                                                                                                         |
 | `upstream_latency_ms` | number  | Upstream response time                                                                                                 |
-| `success`             | boolean | Whether the request succeeded                                                                                          |
+| `success`             | boolean | `true` when the upstream HTTP status is 2xx                                                                            |
 | `developer`           | string  | Developer identifier                                                                                                   |
 | `app_name`            | string  | Application name                                                                                                       |
 | `team_id`             | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
 | `project_id`          | string  | Project identifier (derived from git remote or configured)                                                             |
 | `repo_url`            | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
 | `org_id`              | string  | Organization identifier (if configured)                                                                                |
-| `proxy_overhead_ms`   | number  | Proxy layer overhead (if available)                                                                                    |
+| `proxy_overhead_ms`   | number  | Proxy layer overhead: total duration minus upstream latency, never negative                                            |
 | `response_size_bytes` | number  | Response size (if available)                                                                                           |
 
 Source: `src/transport/nr-ingest.ts` — `proxyRequestToNrEvent()`
@@ -156,7 +176,7 @@ Source: `src/transport/nr-ingest.ts` — `proxyRequestToNrEvent()`
 
 **What it is:** A security-focused record of what your assistant did, one per tool call, with the file path or command involved. Each record is labelled with the kind of action and flagged when it matches a risk rule, such as sensitive file access, destructive commands, external network requests or file deletion. Use it as an audit trail for compliance reviews and to work out what happened after an incident.
 
-Emitted for every tool call as a security audit record.
+Emitted for every tool call as a security audit record, including proxied calls and hook installs.
 
 | Field                  | Type    | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ---------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -205,14 +225,14 @@ Emitted only when a security alert is triggered (subset of audit events).
 | `project_id`    | string | Project identifier (derived from git remote or configured)                                                             |
 | `repo_url`      | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
 | `org_id`        | string | Organization identifier (if configured)                                                                                |
-| `file_path`     | string | File path (if sensitive file alert)                                                                                    |
-| `command`       | string | Command (if destructive command alert)                                                                                 |
+| `file_path`     | string | File path of the triggering call (if it had one)                                                                       |
+| `command`       | string | Command of the triggering call (if it had one)                                                                         |
 
-Security alert triggers:
+Security alert triggers. A tool call raises at most one alert, at the highest severity it matches:
 
-- **`destructive_command`** (critical): `rm -rf` (any recursive flag combo), `git push --force` (but NOT `--force-with-lease` / `--force-if-includes`), `git clean -f` (any force form), `find -delete`, `DROP TABLE`, pipe-to-shell, etc. Detection is the OR of the bash classifier (`record.bashDestructive`) and the regex pattern list — defense in depth, neither layer alone is authoritative.
-- **`sensitive_file`** (high): `.env`, `.pem`, `.key`, `credentials`, `secret`, `.ssh`, `.npmrc`, `.pypirc`, `password`, `token` (path-boundary anchored)
-- **`external_network`** (medium): `curl`, `wget`, `nc`, `ssh` commands. Detection is the OR of the bash classifier (`record.bashNetwork`) and the regex pattern list.
+- **`destructive_command`** (critical): `rm -rf` (any recursive flag combo), `git push --force` (but NOT `--force-with-lease` / `--force-if-includes`), `git clean -f` (any force form), `find -delete`, `DROP TABLE`, `DROP DATABASE`, `DELETE FROM`, `git reset --hard`, `chmod 777`, `dd if=`, `mkfs`, `shred`, pipe-to-shell, etc. Detection is the OR of the bash classifier (`record.bashDestructive`) and the regex pattern list — defense in depth, neither layer alone is authoritative.
+- **`sensitive_file`** (high): `.env`, `.pem`, `.key`, `credentials`, `secret`, `.ssh/`, `.npmrc`, `.pypirc`, `id_rsa`, `id_ed25519`, `password`, `token` (see `DEFAULT_SENSITIVE_FILE_PATTERNS` in `src/security/audit-trail.ts` for the exact patterns). Only the call's file path is checked, not paths inside a Bash command, so a Bash command that reads `.env` does not raise this alert
+- **`external_network`** (medium): `curl`, `wget`, `nc`, `ssh` commands, plus anything the classifier marks as a network client (`http`, `httpie`, `xh`, `ncat`, `scp`, `sftp`, `rsync`, `ftp`, `telnet`, `mosh`). Detection is the OR of the bash classifier (`record.bashNetwork`) and the regex pattern list.
 - **`file_deletion`** (medium): `rm` or `unlink` in command position (start of line, after `;`, `&`, `|`, or `(`, optionally with `sudo`), OR-ed with the bash classifier's leading token (`record.bashLeading`), which also strips env-var prefixes. Anchoring keeps `git rm`, `npm rm`, `docker rm`, and quoted text like `echo "rm foo"` out of scope. Recursive forms match too but lose to `destructive_command` by severity.
 
 Source: `src/security/audit-trail.ts` — `securityAlertToNrEvent()`
@@ -221,42 +241,43 @@ Source: `src/security/audit-trail.ts` — `securityAlertToNrEvent()`
 
 **What it is:** A summary of one logical piece of work, from the moment your assistant starts on a request to the moment it finishes, such as fixing a bug or adding a feature. Each record rolls up the files touched, lines changed, tests and builds run, tokens used and estimated cost, and classifies the outcome. Use it to see what the assistant accomplished and what it cost per task, and to compare effort across bug fixes, features and refactors.
 
-Emitted when a task boundary is detected (a logical unit of work from task start to completion).
+Emitted for a closed task (a logical unit of work from task start to completion). A task with no tool calls is dropped without an event. Closed tasks are sent when the next tool call is processed, so the last task of a session may never be sent.
 
-| Field                  | Type    | Description                                                                                                                   |
-| ---------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `eventType`            | string  | Always `"AiCodingTask"`                                                                                                       |
-| `event_version`        | number  | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                                   |
-| `timestamp`            | number  | Unix epoch milliseconds (task end time)                                                                                       |
-| `task_id`              | string  | Unique task identifier                                                                                                        |
-| `developer`            | string  | Developer identifier                                                                                                          |
-| `app_name`             | string  | Application name                                                                                                              |
-| `platform`             | string  | Platform attribution (default: `claude-code`)                                                                                 |
-| `session_id`           | string  | Session identifier (if available)                                                                                             |
-| `team_id`              | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set.        |
-| `project_id`           | string  | Project identifier (derived from git remote or configured)                                                                    |
-| `repo_url`             | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                          |
-| `org_id`               | string  | Organization identifier (if configured)                                                                                       |
-| `start_time`           | number  | Task start time (Unix epoch milliseconds)                                                                                     |
-| `end_time`             | number  | Task end time (Unix epoch milliseconds)                                                                                       |
-| `duration_ms`          | number  | Task duration in milliseconds                                                                                                 |
-| `tool_call_count`      | number  | Total tool calls in the task                                                                                                  |
-| `files_read`           | number  | Number of unique files read                                                                                                   |
-| `files_modified`       | number  | Number of unique files modified                                                                                               |
-| `lines_added`          | number  | Lines added across all edits                                                                                                  |
-| `lines_removed`        | number  | Lines removed across all edits                                                                                                |
-| `bash_commands_run`    | number  | Number of Bash tool calls                                                                                                     |
-| `tests_run`            | number  | Number of test runs detected                                                                                                  |
-| `tests_passed`         | boolean | Whether the last test run passed                                                                                              |
-| `build_run`            | boolean | Whether a build was run                                                                                                       |
-| `build_passed`         | boolean | Whether the last build passed                                                                                                 |
-| `estimated_cost_usd`   | number  | Estimated token cost for the task (`0` when cost was never computed)                                                          |
-| `cost_estimated`       | boolean | `true` when `estimated_cost_usd` was actually computed; `false` when defaulted to `0`                                         |
-| `tokens_used`          | number  | Total tokens consumed in the task                                                                                             |
-| `asked_user_questions` | number  | Number of questions asked to the user                                                                                         |
-| `sub_agents_spawned`   | number  | Number of sub-agent spawns                                                                                                    |
-| `outcome_type`         | string  | Task classification: `bug_fix`, `feature`, `refactor`, `investigation`, `configuration`, `documentation`, or `failed_attempt` |
-| `model`                | string  | Model active when the task completed (e.g. `claude-sonnet-5`). Omitted when no token usage was ever reported.                 |
+| Field                  | Type    | Description                                                                                                                                                                                                                                                                     |
+| ---------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `eventType`            | string  | Always `"AiCodingTask"`                                                                                                                                                                                                                                                         |
+| `event_version`        | number  | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                                                                                                                                                                                     |
+| `timestamp`            | number  | Unix epoch milliseconds (task end time)                                                                                                                                                                                                                                         |
+| `task_id`              | string  | Unique task identifier                                                                                                                                                                                                                                                          |
+| `developer`            | string  | Developer identifier                                                                                                                                                                                                                                                            |
+| `app_name`             | string  | Application name                                                                                                                                                                                                                                                                |
+| `platform`             | string  | Platform attribution (default: `claude-code`)                                                                                                                                                                                                                                   |
+| `session_id`           | string  | Session identifier (if available)                                                                                                                                                                                                                                               |
+| `team_id`              | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set.                                                                                                                                                          |
+| `project_id`           | string  | Project identifier (derived from git remote or configured)                                                                                                                                                                                                                      |
+| `repo_url`             | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                                                                                                                                                                            |
+| `org_id`               | string  | Organization identifier (if configured)                                                                                                                                                                                                                                         |
+| `start_time`           | number  | Task start time (Unix epoch milliseconds)                                                                                                                                                                                                                                       |
+| `end_time`             | number  | Task end time (Unix epoch milliseconds)                                                                                                                                                                                                                                         |
+| `duration_ms`          | number  | Task duration in milliseconds, capped at 4 hours                                                                                                                                                                                                                                |
+| `tool_call_count`      | number  | Total tool calls in the task                                                                                                                                                                                                                                                    |
+| `files_read`           | number  | Number of unique files read                                                                                                                                                                                                                                                     |
+| `files_modified`       | number  | Number of unique files modified                                                                                                                                                                                                                                                 |
+| `lines_added`          | number  | Lines added across all edits                                                                                                                                                                                                                                                    |
+| `lines_removed`        | number  | Lines removed across all edits                                                                                                                                                                                                                                                  |
+| `bash_commands_run`    | number  | Number of Bash tool calls                                                                                                                                                                                                                                                       |
+| `tests_run`            | number  | Number of test runs detected                                                                                                                                                                                                                                                    |
+| `tests_passed`         | number  | Number of test runs that succeeded                                                                                                                                                                                                                                              |
+| `build_run`            | number  | Number of build commands detected                                                                                                                                                                                                                                               |
+| `build_passed`         | number  | Number of build commands that succeeded                                                                                                                                                                                                                                         |
+| `estimated_cost_usd`   | number  | Estimated token cost for the task (`0` when cost was never computed)                                                                                                                                                                                                            |
+| `cost_estimated`       | boolean | `true` when `estimated_cost_usd` was actually computed; `false` when defaulted to `0`                                                                                                                                                                                           |
+| `tokens_used`          | number  | Total tokens consumed in the task                                                                                                                                                                                                                                               |
+| `asked_user_questions` | number  | Number of questions asked to the user                                                                                                                                                                                                                                           |
+| `sub_agents_spawned`   | number  | Number of sub-agent spawns                                                                                                                                                                                                                                                      |
+| `outcome_type`         | string  | Task classification: `bug_fix`, `feature`, `refactor`, `investigation`, `configuration`, `documentation`, or `failed_attempt`                                                                                                                                                   |
+| `model`                | string  | Latest model on the cost tracker when the event was sent (e.g. `claude-sonnet-5`), not a per-task value. It can be the configured default model when only byte-size estimates have run. `unknown` when a token event named no model. Omitted when the tracker has no model yet. |
+| `cost_authority`       | string  | `external` when `companionMode` is on and `platform` is `claude-code`: the cost fields are an estimate and Claude Code's own OTel export is the cost source of truth. Omitted otherwise                                                                                         |
 
 Source: `src/transport/nr-ingest.ts` — `codingTaskToNrEvent()`
 
@@ -278,13 +299,13 @@ Emitted for each anti-pattern detected within a completed task.
 | `platform`      | string | Platform attribution                                                                                                   |
 | `session_id`    | string | Session identifier (if available)                                                                                      |
 | `team_id`       | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
-| `project_id`    | string | Project identifier (if configured)                                                                                     |
+| `project_id`    | string | Project identifier (derived from git remote or configured)                                                             |
 | `repo_url`      | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
 | `org_id`        | string | Organization identifier (if configured)                                                                                |
 | `suggestion`    | string | Human-readable remediation suggestion                                                                                  |
-| `file`          | string | File involved (if applicable)                                                                                          |
-| `command`       | string | Command involved (if applicable)                                                                                       |
-| `iterations`    | number | Number of thrash/repeat iterations (if applicable)                                                                     |
+| `file`          | string | File involved, redacted (if applicable)                                                                                |
+| `command`       | string | Command involved, redacted (if applicable)                                                                             |
+| `iterations`    | number | Number of edit-and-fail iterations (thrashing only)                                                                    |
 | `read_count`    | number | Number of redundant reads (re_reading only)                                                                            |
 | `repeat_count`  | number | Number of identical command repeats (stuck_loop only)                                                                  |
 | `edit_count`    | number | Number of unverified edits (blind_editing only)                                                                        |
@@ -312,7 +333,7 @@ Emitted when a configured budget threshold is crossed (50%, 80%, 100%).
 | `appName`       | string | Application name (note: camelCase, unlike other MCP events)                                                            |
 | `session_id`    | string | Session identifier (if available)                                                                                      |
 | `team_id`       | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
-| `project_id`    | string | Project identifier (if configured)                                                                                     |
+| `project_id`    | string | Project identifier (derived from git remote or configured)                                                             |
 | `repo_url`      | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
 | `org_id`        | string | Organization identifier (if configured)                                                                                |
 
@@ -322,7 +343,7 @@ Emitted when a configured budget threshold is crossed (50%, 80%, 100%).
 - `80%` — first time spend reaches 80% of budget
 - `100%` — first time spend reaches or exceeds 100% of budget
 
-Each threshold fires only once per period; subsequent additions to spend do not re-fire.
+Each threshold fires only once per period; subsequent additions to spend do not re-fire. A `daily` period's thresholds reset at UTC midnight, although the daily spend itself is summed by local calendar day, a `weekly` period is an ISO week, and a `session` period never rolls over by itself. One cost update that jumps past several thresholds fires all of them together. When a session resumes after a restart, the session thresholds it had already crossed do not fire again. A budget that is unset or `0` never fires.
 
 Source: `src/transport/nr-ingest.ts`, `src/metrics/budget-tracker.ts`
 
@@ -330,33 +351,33 @@ Source: `src/transport/nr-ingest.ts`, `src/metrics/budget-tracker.ts`
 
 **What it is:** A per-turn picture of how full the model's context window is, with an estimated split into system, tool, user and assistant content and the single largest tool contributor. Use it to find sessions nearing the limit and to spot the tool that adds the most to the context.
 
-Emitted for each LLM turn when context-window tracking is enabled, capturing token breakdown by category.
+Emitted for each token event that carries a session id, capturing an estimated token breakdown by category. Subagent turns do not produce it, and a replayed duplicate is counted once. Tokens reported through `nr_observe_report_tokens` do not produce it.
 
-| Field                   | Type   | Description                                                                                                            |
-| ----------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `eventType`             | string | Always `"AiContextSnapshot"`                                                                                           |
-| `event_version`         | number | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                            |
-| `timestamp`             | number | Unix epoch milliseconds                                                                                                |
-| `developer`             | string | Developer identifier                                                                                                   |
-| `appName`               | string | Application name (camelCase, same as `AiBudgetWarning`)                                                                |
-| `session_id`            | string | Session identifier (if available)                                                                                      |
-| `team_id`               | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
-| `project_id`            | string | Project identifier (if configured)                                                                                     |
-| `repo_url`              | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
-| `org_id`                | string | Organization identifier (if configured)                                                                                |
-| `turn_number`           | number | Sequential turn number within the session                                                                              |
-| `total_context_tokens`  | number | Total input tokens for this turn                                                                                       |
-| `output_tokens`         | number | Output tokens for this turn                                                                                            |
-| `cache_read_tokens`     | number | Prompt cache read tokens                                                                                               |
-| `cache_creation_tokens` | number | Prompt cache creation tokens                                                                                           |
-| `fill_percent`          | number | Context window fill percentage (0–100)                                                                                 |
-| `system_tokens`         | number | Tokens consumed by system prompt                                                                                       |
-| `tool_tokens`           | number | Tokens consumed by tool definitions and results                                                                        |
-| `user_tokens`           | number | Tokens consumed by user messages                                                                                       |
-| `assistant_tokens`      | number | Tokens consumed by assistant messages                                                                                  |
-| `top_tool`              | string | Tool name with largest context contribution (if any)                                                                   |
-| `top_tool_bytes`        | number | Byte size of top tool's contribution (if any)                                                                          |
-| `top_tool_tokens`       | number | Estimated token count of top tool's contribution (if any)                                                              |
+| Field                   | Type   | Description                                                                                                                                                                                         |
+| ----------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `eventType`             | string | Always `"AiContextSnapshot"`                                                                                                                                                                        |
+| `event_version`         | number | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                                                                                                         |
+| `timestamp`             | number | Unix epoch milliseconds                                                                                                                                                                             |
+| `developer`             | string | Developer identifier                                                                                                                                                                                |
+| `appName`               | string | Application name (camelCase, same as `AiBudgetWarning`)                                                                                                                                             |
+| `session_id`            | string | The ingesting process's own session id, which can differ from the token event's session when a process drains other sessions' events                                                                |
+| `team_id`               | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set.                                                                              |
+| `project_id`            | string | Project identifier (derived from git remote or configured)                                                                                                                                          |
+| `repo_url`              | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                                                                                                |
+| `org_id`                | string | Organization identifier (if configured)                                                                                                                                                             |
+| `turn_number`           | number | Sequential turn number within the session                                                                                                                                                           |
+| `total_context_tokens`  | number | Context size for this turn: input tokens plus cache-read and cache-creation tokens                                                                                                                  |
+| `output_tokens`         | number | Output tokens for this turn                                                                                                                                                                         |
+| `cache_read_tokens`     | number | Prompt cache read tokens                                                                                                                                                                            |
+| `cache_creation_tokens` | number | Prompt cache creation tokens                                                                                                                                                                        |
+| `fill_percent`          | number | `total_context_tokens` as a percentage of the largest context window seen for any model in the session (200K until a model says otherwise), rounded to 2 decimals. Not capped, so it can exceed 100 |
+| `system_tokens`         | number | Estimated system prompt size: the first turn's cache-creation tokens, `0` when the first turn hit a warm cache                                                                                      |
+| `tool_tokens`           | number | Estimated tokens from tool results, derived from tool output bytes. Tool definitions are not counted                                                                                                |
+| `user_tokens`           | number | Estimated user message tokens: whatever remains after the system, tool and assistant estimates                                                                                                      |
+| `assistant_tokens`      | number | Estimated assistant tokens: cumulative output tokens of earlier turns in the session, capped at what remains of the context                                                                         |
+| `top_tool`              | string | Tool with the largest cumulative output bytes in the session (if any)                                                                                                                               |
+| `top_tool_bytes`        | number | Cumulative output bytes of that tool across the session (if any)                                                                                                                                    |
+| `top_tool_tokens`       | number | Estimated token count of top tool's contribution (if any)                                                                                                                                           |
 
 Source: `src/transport/nr-ingest.ts` — `ingestContextSnapshot()`
 
@@ -364,7 +385,7 @@ Source: `src/transport/nr-ingest.ts` — `ingestContextSnapshot()`
 
 **What it is:** The token usage and cost of each turn taken by a subagent, a helper your assistant delegates work to. Use it to see what delegated work costs, which is easy to miss when you look only at the main session.
 
-Emitted for each subagent (`Task` tool) assistant turn observed by the subagent-watcher pipeline.
+Emitted for each subagent (`Agent` tool) assistant turn observed by the subagent-watcher pipeline.
 
 | Field                   | Type   | Description                                                                                                                                                                                                                                                                                                                     |
 | ----------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -383,22 +404,24 @@ Emitted for each subagent (`Task` tool) assistant turn observed by the subagent-
 | `reasoning_tokens`      | number | Extended-thinking/reasoning tokens for this turn                                                                                                                                                                                                                                                                                |
 | `developer`             | string | Developer identifier                                                                                                                                                                                                                                                                                                            |
 | `app_name`              | string | Application name                                                                                                                                                                                                                                                                                                                |
-| `workflow_run_id`       | string | Workflow run this turn belongs to (if any). `subagentTurnToNrEvent()` sends empty string when absent; `subagentTokenEventToNrEvent()` omits the field entirely when absent.                                                                                                                                                     |
-| `usd`                   | number | Computed USD cost for this turn (if cost computation has run for this turn)                                                                                                                                                                                                                                                     |
+| `workflow_run_id`       | string | Workflow run this turn belongs to (if any); sent as an empty string when absent.                                                                                                                                                                                                                                                |
+| `usd`                   | number | Computed USD cost for this turn. Omitted when the cost is zero or could not be priced                                                                                                                                                                                                                                           |
 | `stop_reason`           | string | Model stop reason (if known)                                                                                                                                                                                                                                                                                                    |
 | `team_id`               | string | User-defined team label from config. Omitted when `teamId` is not configured.                                                                                                                                                                                                                                                   |
 | `project_id`            | string | Project identifier (derived from git remote or configured)                                                                                                                                                                                                                                                                      |
 | `org_id`                | string | Organization identifier (if configured)                                                                                                                                                                                                                                                                                         |
+| `repo_url`              | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                                                                                                                                                                                                                            |
+| `cost_authority`        | string | `external` when `companionMode` is on, marking the cost fields as an estimate next to Claude Code's own OTel export. Omitted otherwise                                                                                                                                                                                          |
 
-Two builders produce this event type. `subagentTurnToNrEvent()` runs after `CostTracker.recordTokenUsage()` has computed the per-turn USD, and additionally includes `turn_uuid` (unique per-turn ID), `timestamp_ms` (duplicate of `timestamp`), and `schema_fingerprint` (source-JSONL schema fingerprint, if computed). `subagentTokenEventToNrEvent()` serializes the lighter storage-layer `SubagentTokenEvent` record before cost computation — it omits `usd`, `stop_reason`, `turn_uuid`, and `schema_fingerprint`. Both share the token-count and identity fields above, including `parent_session_id`; neither builder sends a separate resolved `session_id`.
+`subagentTurnToNrEvent()` builds the event after `CostTracker.recordTokenUsage()` has computed the per-turn USD. Besides the fields above it sends `turn_uuid` (unique per-turn ID), `timestamp_ms` (duplicate of `timestamp`) and `schema_fingerprint` (source-JSONL schema fingerprint, if computed). It does not send a separate resolved `session_id`; use `parent_session_id`. A second builder, `subagentTokenEventToNrEvent()`, serializes the lighter storage-layer record without `usd`, `stop_reason`, `turn_uuid` or `schema_fingerprint`, but nothing calls it today, so no event is produced that way.
 
-Source: `src/transport/nr-ingest.ts` — `subagentTurnToNrEvent()`, `subagentTokenEventToNrEvent()`
+Source: `src/transport/nr-ingest.ts` — `subagentTurnToNrEvent()`
 
 #### `AiWorkflowRun`
 
 **What it is:** A summary of one subagent run (an `Agent` tool call) or one script-driven workflow run: its status, duration and how many agents it started. Script-driven runs also carry total tokens and cost; runs started through the Agent tool do not, so use `AiSubagentTurn` for their cost. Use it to compare workflows and to find ones that are slow or failing.
 
-Emitted once per completed workflow run — either a Claude Code `Agent`-tool-spawned run (`run_source: "agent_tool"`) or a script-driven run tracked by the on-disk `wf_*.json` watcher (`run_source: "script"`).
+Emitted for each `Agent`-tool run (`run_source: "agent_tool"`) when the call ends. An `Agent` call that outlives its 30-minute timeout can produce an `errored` row and later a `completed` row with the same `workflow_run_id`. For a script-driven run tracked by the on-disk `wf_*.json` watcher (`run_source: "script"`) it is emitted every time that file changes, including while the run is still in progress. Either way one run can produce several rows, so use the latest row per `workflow_run_id`.
 
 | Field             | Type   | Description                                                                                                                                               |
 | ----------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -409,44 +432,46 @@ Emitted once per completed workflow run — either a Claude Code `Agent`-tool-sp
 | `workflow_run_id` | string | Unique run identifier (`toolu_*` for agent_tool runs, `wf_<hex>-<hex>` for script runs)                                                                   |
 | `developer`       | string | Developer identifier                                                                                                                                      |
 | `app_name`        | string | Application name                                                                                                                                          |
-| `status`          | string | Run status                                                                                                                                                |
+| `status`          | string | Run status. `agent_tool` runs report `completed` or `errored`; script runs report the status recorded in the `wf_*.json` file, or `unknown`               |
 | `started_at`      | number | Run start time (Unix epoch milliseconds)                                                                                                                  |
 | `duration_ms`     | number | Run duration in milliseconds. Always present on `agent_tool` runs; omitted entirely (not `0`) on a `script` run whose on-disk rollup has no duration yet. |
 | `team_id`         | string | User-defined team label (if configured)                                                                                                                   |
-| `project_id`      | string | Project identifier (if configured)                                                                                                                        |
+| `project_id`      | string | Project identifier (derived from git remote or configured)                                                                                                |
 | `org_id`          | string | Organization identifier (if configured)                                                                                                                   |
+| `repo_url`        | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                                                      |
+| `cost_authority`  | string | `external` when `companionMode` is on, marking the cost fields as an estimate next to Claude Code's own OTel export. Omitted otherwise                    |
 
 `run_source: "agent_tool"` adds:
 
-| Field               | Type    | Description                                                                                                                                                                                             |
-| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `subagent_type`     | string  | Subagent type requested (empty string if none)                                                                                                                                                          |
-| `agent_name`        | string  | Agent name (empty string if none)                                                                                                                                                                       |
-| `agent_model`       | string  | Model the agent ran on (empty string if unknown)                                                                                                                                                        |
-| `agent_description` | string  | **Redacted free text.** The user-supplied `Agent` tool prompt/description, passed through the same credential-pattern redaction as `AiToolCall.command`. User-authored — not a fixed/declarative value. |
-| `run_in_background` | boolean | Whether the agent ran in background mode                                                                                                                                                                |
-| `tool_call_count`   | number  | Tool calls made during the run                                                                                                                                                                          |
-| `child_agent_count` | number  | Nested agent spawns during the run                                                                                                                                                                      |
-| `exit_error`        | string  | Redacted exit/failure message (if the run ended in error)                                                                                                                                               |
-| `session_id`        | string  | Resolved Claude Code session ID (if available)                                                                                                                                                          |
+| Field               | Type    | Description                                                                                                                                                                                                                                           |
+| ------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `subagent_type`     | string  | Subagent type requested (empty string if none)                                                                                                                                                                                                        |
+| `agent_name`        | string  | Agent name (empty string if none)                                                                                                                                                                                                                     |
+| `agent_model`       | string  | Model the agent ran on (empty string if unknown)                                                                                                                                                                                                      |
+| `agent_description` | string  | **Redacted free text.** The user-supplied `Agent` tool prompt/description, passed through the same credential-pattern redaction as `AiToolCall.command`. Truncated to 256 characters before redaction. User-authored — not a fixed/declarative value. |
+| `run_in_background` | boolean | Whether the agent ran in background mode                                                                                                                                                                                                              |
+| `tool_call_count`   | number  | Tool calls made during the run                                                                                                                                                                                                                        |
+| `child_agent_count` | number  | Nested agent spawns during the run                                                                                                                                                                                                                    |
+| `exit_error`        | string  | Redacted exit/failure message (if the run ended in error)                                                                                                                                                                                             |
+| `session_id`        | string  | Resolved Claude Code session ID (if available)                                                                                                                                                                                                        |
 
 `run_source: "script"` adds:
 
-| Field                        | Type    | Description                                                                                                        |
-| ---------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------ |
-| `workflow_name`              | string  | Declarative workflow name from the script's `meta.name` (author-declared, not redacted)                            |
-| `parent_session_id`          | string  | Session ID that launched the script                                                                                |
-| `default_model`              | string  | Default model configured for the run                                                                               |
-| `agent_count`                | number  | Number of agents the run declared                                                                                  |
-| `total_tokens`               | number  | Total tokens across all subagents (reconciled from subagent JSONL; falls back to the on-disk rollup total)         |
-| `observed_phases`            | number  | Number of phases actually observed                                                                                 |
-| `declared_parallel_widths`   | string  | JSON-encoded array of declared parallel widths per phase, e.g. `[3,"dynamic",6]`                                   |
-| `incomplete`                 | boolean | Whether the run ended before completion                                                                            |
-| `backfilled`                 | boolean | Whether this record was backfilled from a stale on-disk file rather than observed live                             |
-| `task_id`                    | string  | Associated task ID (if any)                                                                                        |
-| `declared_phases`            | number  | Declared phase count (if known)                                                                                    |
-| `total_usd`                  | number  | Total computed cost in USD (if computed)                                                                           |
-| `token_reconciliation_delta` | number  | `(rollup total − Σ subagent tokens) / rollup total`, in `[-1, +∞)` (if any subagent token data has been collected) |
+| Field                        | Type    | Description                                                                                                                                                                                                                                                                                |
+| ---------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `workflow_name`              | string  | Declarative workflow name from the script's `meta.name` (author-declared, not redacted), falling back to the name in the `wf_*.json` file, then `unknown`                                                                                                                                  |
+| `parent_session_id`          | string  | Session ID that launched the script                                                                                                                                                                                                                                                        |
+| `default_model`              | string  | Default model configured for the run                                                                                                                                                                                                                                                       |
+| `agent_count`                | number  | Number of agents the run declared                                                                                                                                                                                                                                                          |
+| `total_tokens`               | number  | Total tokens for the run, from the on-disk rollup total. A subagent-token reconciliation path exists but is not wired in today                                                                                                                                                             |
+| `observed_phases`            | number  | Number of phases actually observed                                                                                                                                                                                                                                                         |
+| `declared_parallel_widths`   | string  | JSON-encoded array of declared parallel widths per phase, e.g. `[3,"dynamic",6]`                                                                                                                                                                                                           |
+| `incomplete`                 | boolean | Whether the run's status is anything other than `completed`, so a run still in progress is `true`                                                                                                                                                                                          |
+| `backfilled`                 | boolean | Always `false` today; the watcher never marks a record as backfilled                                                                                                                                                                                                                       |
+| `task_id`                    | string  | Associated task ID (if any)                                                                                                                                                                                                                                                                |
+| `declared_phases`            | number  | Declared phase count (if known)                                                                                                                                                                                                                                                            |
+| `total_usd`                  | number  | Total computed cost in USD (if computed)                                                                                                                                                                                                                                                   |
+| `token_reconciliation_delta` | number  | `(rollup total − Σ subagent tokens) / rollup total`, so below `1` and negative when the subagents used more than the rollup reports. It needs subagent token data and a rollup total above zero, and the subagent-token source is not wired in today, so the field is currently never sent |
 
 Source: `src/transport/nr-ingest.ts` — `workflowRunToNrEvent()`, `scriptWorkflowRunToNrEvent()`
 
@@ -456,29 +481,30 @@ Source: `src/transport/nr-ingest.ts` — `workflowRunToNrEvent()`, `scriptWorkfl
 
 Emitted by the workflow/subagent watcher pipeline to report its own health — files watched, parse errors, schema drift. Not a measurement of the AI coding session itself.
 
-| Field                       | Type   | Description                                            |
-| --------------------------- | ------ | ------------------------------------------------------ |
-| `eventType`                 | string | Always `"AiObservabilityHealth"`                       |
-| `event_version`             | number | Always `1`                                             |
-| `timestamp`                 | number | Unix epoch milliseconds                                |
-| `watcher`                   | string | Which watcher reported: `"workflow"` or `"subagent"`   |
-| `files_watched`             | number | Number of files currently being watched                |
-| `lines_read`                | number | Cumulative lines read                                  |
-| `bytes_read`                | number | Cumulative bytes read                                  |
-| `parse_errors`              | number | Cumulative parse errors                                |
-| `schema_drifts`             | number | Cumulative detected schema drifts                      |
-| `developer`                 | string | Developer identifier                                   |
-| `app_name`                  | string | Application name                                       |
-| `last_error_code`           | string | Error code of the most recent error (if any)           |
-| `last_error_class`          | string | Error class of the most recent error (if any)          |
-| `event`                     | string | Free-form event label (if set)                         |
-| `dimension`                 | string | Dimension label (if set)                               |
-| `fingerprint`               | string | Schema fingerprint associated with the report (if set) |
-| `workflow_run_id`           | string | Associated workflow run (if set)                       |
-| `cost_self_check_delta_pct` | number | Percent delta from a cost self-check (if computed)     |
-| `team_id`                   | string | User-defined team label (if configured)                |
-| `project_id`                | string | Project identifier (if configured)                     |
-| `org_id`                    | string | Organization identifier (if configured)                |
+| Field                       | Type   | Description                                                                                                                                    |
+| --------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `eventType`                 | string | Always `"AiObservabilityHealth"`                                                                                                               |
+| `event_version`             | number | Always `1`                                                                                                                                     |
+| `timestamp`                 | number | Unix epoch milliseconds                                                                                                                        |
+| `watcher`                   | string | Which watcher reported: `"workflow"` or `"subagent"`                                                                                           |
+| `files_watched`             | number | Number of files currently being watched                                                                                                        |
+| `lines_read`                | number | Cumulative lines read                                                                                                                          |
+| `bytes_read`                | number | Cumulative bytes read                                                                                                                          |
+| `parse_errors`              | number | Cumulative parse errors                                                                                                                        |
+| `schema_drifts`             | number | Cumulative detected schema drifts                                                                                                              |
+| `developer`                 | string | Developer identifier                                                                                                                           |
+| `app_name`                  | string | Application name                                                                                                                               |
+| `last_error_code`           | string | Error code of the most recent error (if any)                                                                                                   |
+| `last_error_class`          | string | Error class of the most recent error (if any)                                                                                                  |
+| `event`                     | string | Event label (if set): `discovered_workflow`, `discovery_skipped`, `parser_skip`, `oversized_line_dropped`, `schema_drift` or `cost_self_check` |
+| `dimension`                 | string | Dimension label (if set)                                                                                                                       |
+| `fingerprint`               | string | Schema fingerprint associated with the report (if set)                                                                                         |
+| `workflow_run_id`           | string | Associated workflow run (if set)                                                                                                               |
+| `cost_self_check_delta_pct` | number | `(ground-truth cost − tracked cost) / ground-truth cost × 100` from a cost self-check (if computed)                                            |
+| `team_id`                   | string | User-defined team label (if configured)                                                                                                        |
+| `project_id`                | string | Project identifier (derived from git remote or configured)                                                                                     |
+| `org_id`                    | string | Organization identifier (if configured)                                                                                                        |
+| `repo_url`                  | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                                           |
 
 Source: `src/transport/nr-ingest.ts` — `observabilityHealthToNrEvent()`
 
@@ -486,14 +512,14 @@ Source: `src/transport/nr-ingest.ts` — `observabilityHealthToNrEvent()`
 
 **What it is:** A warning that your assistant seems stuck, either repeating nearly identical calls to the same tool or failing repeatedly with it across its last few calls, with an estimate of the tokens wasted. Use it to catch thrashing loops early.
 
-Emitted when `RetryDetector` flags a thrashing pattern — the same tool call repeating with high similarity in a short window.
+Emitted when `RetryDetector` flags a thrashing pattern in a tool's recent calls: they are highly similar (default similarity 0.8 or more), or every one of them failed. The defaults are at least 3 occurrences within a window of 5 calls.
 
 | Field           | Type   | Description                                                                                                                                                                        |
 | --------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `eventType`     | string | Always `"AiRetryAlert"`                                                                                                                                                            |
 | `timestamp`     | number | Unix epoch milliseconds                                                                                                                                                            |
 | `tool_name`     | string | The tool being called repeatedly                                                                                                                                                   |
-| `occurrences`   | number | Number of similar calls observed in the window                                                                                                                                     |
+| `occurrences`   | number | Number of calls to the tool in the window that were counted toward the alert                                                                                                       |
 | `window_size`   | number | Size of the sliding detection window                                                                                                                                               |
 | `similarity`    | number | Similarity score (0–1) between the repeated calls                                                                                                                                  |
 | `tokens_wasted` | number | Estimated tokens wasted by the repeated calls                                                                                                                                      |
@@ -502,10 +528,11 @@ Emitted when `RetryDetector` flags a thrashing pattern — the same tool call re
 | `platform`      | string | Originating platform (defaults to `"claude-code"`)                                                                                                                                 |
 | `session_id`    | string | Resolved Claude Code session ID (if available). Sourced from the ingesting process's own `sessionTraceId`, not the alert's in-process `sessionId` — see the builder's doc comment. |
 | `team_id`       | string | User-defined team label (if configured)                                                                                                                                            |
-| `project_id`    | string | Project identifier (if configured)                                                                                                                                                 |
+| `project_id`    | string | Project identifier (derived from git remote or configured)                                                                                                                         |
 | `org_id`        | string | Organization identifier (if configured)                                                                                                                                            |
+| `repo_url`      | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                                                                               |
 
-Unlike every other event type in this document, `AiRetryAlert` does not carry `event_version` — `retryAlertToNrEvent()` predates the `event_version` stamping pass and was missed by it.
+Like `NrAiObserveSetupCheck`, `AiRetryAlert` does not carry `event_version`.
 
 Source: `src/transport/nr-ingest.ts` — `retryAlertToNrEvent()`
 
@@ -513,46 +540,71 @@ Source: `src/transport/nr-ingest.ts` — `retryAlertToNrEvent()`
 
 **What it is:** The token cost of each assistant turn, attributed down to the individual tool call (an even share of the turn) and, when a skill is running, to that skill. Where `AiToolCall` shows what the assistant did, this event shows what it cost. Use it to find which tools or skills drive spend, and join it to `AiToolCall` on `tool_use_id` for per-call detail.
 
-Emitted for each tool call in an attributed turn, carrying the turn's cost and tokens split evenly across the calls, and once for each token report no tool call claimed (a response row). `tool_use_id` cross-references the call's `AiToolCall` row. Every call inside a skill run carries `skill_name`, so `sum(cost_usd) FACET skill_name` is the full cost of the work each skill drove.
+Emitted for each tool call in an attributed turn (in `--stdio` mode, only for token reports that belong to this process's own session), carrying the turn's cost and tokens split evenly across the calls, and once for each token report no tool call claimed (a response row). `tool_use_id` cross-references the call's `AiToolCall` row. Every call inside a skill run carries `skill_name`, so `sum(cost_usd) FACET skill_name` is the full cost of the work each skill drove.
 
-| Field                   | Type   | Description                                                                                                                                            |
-| ----------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `eventType`             | string | Always `"AiTurnCost"`                                                                                                                                  |
-| `event_version`         | number | Always `1`                                                                                                                                             |
-| `timestamp`             | number | Unix epoch milliseconds. On a tool row, when the turn's last tool call ended; on a response row, when the response was written                         |
-| `turn_id`               | string | Unique identifier for the turn (fresh UUID minted at cost close); groups all rows from one turn                                                        |
-| `tool_use_id`           | string | Joins to `AiToolCall.tool_use_id`. Absent on response rows                                                                                             |
-| `tool`                  | string | Tool name (e.g., `"Read"`, `"Skill"`). Absent on response rows                                                                                         |
-| `skill_name`            | string | Skill whose run this call happened inside (see `AiToolCall` below)                                                                                     |
-| `skill_source`          | string | `tool` or `slash`, as on `AiToolCall`                                                                                                                  |
-| `skill_run_id`          | string | One id per skill run, as on `AiToolCall`                                                                                                               |
-| `skill_parent_run_id`   | string | As on `AiToolCall`                                                                                                                                     |
-| `cost_usd`              | number | This call's share of the turn's cost (turn total ÷ call count); the whole response's cost on a response row                                            |
-| `input_tokens`          | number | This call's share of the turn's input tokens (fractional)                                                                                              |
-| `output_tokens`         | number | This call's share of the turn's output tokens (fractional)                                                                                             |
-| `cache_read_tokens`     | number | This call's share of cache-read tokens (fractional)                                                                                                    |
-| `cache_creation_tokens` | number | This call's share of cache-creation tokens (fractional)                                                                                                |
-| `turn_cost_usd`         | number | The full turn's cost (identical on all rows from one turn)                                                                                             |
-| `turn_tool_call_count`  | number | The number of calls in this turn (identical on all rows from one turn); `0` on a response row                                                          |
-| `model`                 | string | Model used to generate the turn's response                                                                                                             |
-| `developer`             | string | Developer identifier                                                                                                                                   |
-| `app_name`              | string | Application name                                                                                                                                       |
-| `platform`              | string | Originating platform (defaults to `"claude-code"`). On a response row, the token report's source platform, else the session's last stamped tool call's |
-| `session_id`            | string | Resolved Claude Code session ID (if available). Precedence: `attribution.sessionId` > `sessionTraceId`; omitted when both are null                     |
-| `team_id`               | string | User-defined team label (if configured)                                                                                                                |
-| `project_id`            | string | Project identifier (if configured)                                                                                                                     |
-| `org_id`                | string | Organization identifier (if configured)                                                                                                                |
-| `cost_authority`        | string | `"external"` only when `companionMode` is true and `platform === 'claude-code'`; omitted otherwise                                                     |
+| Field                   | Type   | Description                                                                                                                                                                                                                            |
+| ----------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `eventType`             | string | Always `"AiTurnCost"`                                                                                                                                                                                                                  |
+| `event_version`         | number | Always `1`                                                                                                                                                                                                                             |
+| `timestamp`             | number | Unix epoch milliseconds. On a tool row, when the turn's last tool call ended; on a response row, when the response was written                                                                                                         |
+| `turn_id`               | string | Unique identifier for the turn (fresh UUID minted at cost close); groups all rows from one turn                                                                                                                                        |
+| `tool_use_id`           | string | Joins to `AiToolCall.tool_use_id`. Absent on response rows                                                                                                                                                                             |
+| `tool`                  | string | Tool name (e.g., `"Read"`, `"Skill"`). Absent on response rows                                                                                                                                                                         |
+| `skill_name`            | string | Skill whose run this call happened inside (see `AiToolCall` above)                                                                                                                                                                     |
+| `skill_source`          | string | `tool` or `slash`, as on `AiToolCall`                                                                                                                                                                                                  |
+| `skill_run_id`          | string | One id per skill run, as on `AiToolCall`                                                                                                                                                                                               |
+| `skill_parent_run_id`   | string | As on `AiToolCall`                                                                                                                                                                                                                     |
+| `cost_usd`              | number | This call's share of the turn's cost (turn total ÷ call count); the whole response's cost on a response row                                                                                                                            |
+| `input_tokens`          | number | This call's share of the turn's input tokens (fractional)                                                                                                                                                                              |
+| `output_tokens`         | number | This call's share of the turn's output tokens (fractional)                                                                                                                                                                             |
+| `cache_read_tokens`     | number | This call's share of cache-read tokens (fractional)                                                                                                                                                                                    |
+| `cache_creation_tokens` | number | This call's share of cache-creation tokens (fractional)                                                                                                                                                                                |
+| `turn_cost_usd`         | number | The full turn's cost (identical on all rows from one turn)                                                                                                                                                                             |
+| `turn_tool_call_count`  | number | The number of calls in this turn (identical on all rows from one turn); `0` on a response row                                                                                                                                          |
+| `model`                 | string | Model used to generate the turn's response                                                                                                                                                                                             |
+| `developer`             | string | Developer identifier                                                                                                                                                                                                                   |
+| `app_name`              | string | Application name                                                                                                                                                                                                                       |
+| `platform`              | string | Originating platform (defaults to `"claude-code"`). On a response row, the token report's source platform, else the session's last stamped tool call's                                                                                 |
+| `session_id`            | string | Resolved Claude Code session ID (if available). Precedence: `attribution.sessionId` > `sessionTraceId`; omitted when both are null                                                                                                     |
+| `team_id`               | string | User-defined team label (if configured)                                                                                                                                                                                                |
+| `project_id`            | string | Project identifier (derived from git remote or configured)                                                                                                                                                                             |
+| `org_id`                | string | Organization identifier (if configured)                                                                                                                                                                                                |
+| `cost_authority`        | string | `"external"` only when `companionMode` is true and the turn was stamped `claude-code` by the platform that reported it; omitted otherwise. A row can show `platform` `claude-code` from the default and still have no `cost_authority` |
 
-Rows come in two shapes. A tool row has `tool` and `tool_use_id` and measures the usage of the model response that followed the turn, split evenly across the turn's calls, the same approximation `nr_observe_get_cost_per_tool` reports. A response row has `turn_tool_call_count: 0` and no `tool`, `tool_use_id`, or `skillName`. It is a token report no tool call claimed, such as the first response after a prompt (the one that asks for the tools) or a text-only reply, and carries that response's whole cost. `sum(cost_usd)` now covers every main-agent response, so per-tool queries need `WHERE tool IS NOT NULL`. Rows come from watcher-sourced token events only, never from `nr_observe_report_tokens` calls. Every row of a turn shares the turn's end `timestamp`, so a timeseries of this event spikes at turn boundaries rather than tracing per-call timing. Replayed token events are deduplicated by `(session_id, message_id)` before attribution, so a turn closes once and produces its rows once.
+Rows come in two shapes. A tool row has `tool` and `tool_use_id` and measures the usage of the model response that followed the turn, split evenly across the turn's calls, the same approximation `nr_observe_get_cost_per_tool` reports. A response row has `turn_tool_call_count: 0` and no `tool`, `tool_use_id`, or `skill_name`. It is a token report no tool call claimed, such as the first response after a prompt (the one that asks for the tools), and carries that response's whole cost. `sum(cost_usd)` covers every main-agent response, so per-tool queries need `WHERE tool IS NOT NULL`. Rows come from watcher-sourced token events only, never from `nr_observe_report_tokens` calls. Every row of a turn shares the turn's end `timestamp`, so a timeseries of this event spikes at turn boundaries rather than tracing per-call timing. Replayed token events are deduplicated by `(session_id, message_id)` before attribution, so a turn closes once and produces its rows once.
 
 Source: `src/transport/nr-ingest.ts` — `turnCostToNrEvents()` and `ingestTurnCost()`
+
+#### `AiSkillRun`
+
+**What it is:** One record each time a skill run starts, whether the assistant loads a skill itself or you start one with a `/<skill>` prompt. It is the only record of a run that made no tool calls. Use it to count skill runs, adoption and users, including text-only runs that leave no `AiToolCall` rows.
+
+Emitted once, when a skill run opens, for every run. A run opens on a named `Skill` call or on a `/<skill>` prompt. A `slash` run is any prompt Claude Code receives that starts with `/`, so it also covers built-in commands that send a prompt to the model, such as `/init`. Built-ins Claude Code handles locally (`/clear`, `/compact`, `/context`, `/cost`) and unknown commands never reach Preflight. A run whose replies made no tool calls has no `AiToolCall` rows, so this event is what counts it. Its replies still produce `AiTurnCost` rows, but those carry no `skill_name` or `skill_run_id`, so their cost is not attributed to the skill and per-run cost is understated. Runs are counted across both event types with `FROM AiToolCall, AiSkillRun SELECT uniqueCount(skill_run_id)`. The event carries no tool, duration, or cost data. Those stay on `AiToolCall` and `AiTurnCost`, which carry the same `skill_run_id` for runs with tool calls.
+
+| Field                 | Type   | Description                                                                                                        |
+| --------------------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
+| `eventType`           | string | Always `"AiSkillRun"`                                                                                              |
+| `event_version`       | number | Always `1`                                                                                                         |
+| `timestamp`           | number | Unix epoch milliseconds when the run opened (the `Skill` call's record time, or the prompt's time for a slash run) |
+| `skill_name`          | string | Skill whose run this is (redacted, as on `AiToolCall`)                                                             |
+| `skill_source`        | string | `tool` or `slash`                                                                                                  |
+| `skill_run_id`        | string | One id per run; matches `skill_run_id` on the run's `AiToolCall` and `AiTurnCost` rows                             |
+| `skill_parent_run_id` | string | The run that was open when this one started; absent when none was                                                  |
+| `developer`           | string | Developer identifier                                                                                               |
+| `app_name`            | string | Application name                                                                                                   |
+| `platform`            | string | Originating platform of the `Skill` call; `"claude-code"` for a `/<skill>` prompt or a call with none              |
+| `session_id`          | string | Session the run belongs to; falls back to the engine's session when the run has none                               |
+| `team_id`             | string | User-defined team label (if configured)                                                                            |
+| `project_id`          | string | Project identifier (if configured)                                                                                 |
+| `org_id`              | string | Organization identifier (if configured)                                                                            |
+
+Source: `src/transport/nr-ingest.ts` — `skillRunToNrEvent()` and `ingestSkillRun()`
 
 ### Setup Validation
 
 #### `NrAiObserveSetupCheck`
 
-**What it is:** A test event the setup wizard sends to New Relic each time it validates your license key, to confirm that the key works and data can reach New Relic. It carries only a `setupCheck` flag and measures nothing, so you can ignore it in dashboards.
+**What it is:** A test event the setup wizard sends to New Relic each time it validates your license key, to confirm that the key works and data can reach New Relic. It carries only its event type and a `setupCheck` flag and measures nothing, so you can ignore it in dashboards.
 
 A one-shot license-key validation ping, sent with a direct `fetch()` call to the NR Events API — it bypasses the `HarvestScheduler` entirely, so the flush-interval and retry-buffer behavior in [Delivery Mechanism](#delivery-mechanism) does not apply to it. Carries no session, developer, or file data.
 
@@ -569,16 +621,15 @@ Source: `src/install/key-validator.ts` — `validateLicenseKey()`
 
 ### MCP Server — Per-Call Metrics
 
-Recorded for each tool call as it happens.
+Recorded for each tool call as it happens, and for each proxy discovery request.
 
-| Metric Name                        | Value      | Attributes                                                           | How Computed                                                                                                                                                                                                                                                                                                                                   | What it tells you                                                                                                                                                                 |
-| ---------------------------------- | ---------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ai.tool.call_count`               | `1`        | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}`     | Incremented once per tool call                                                                                                                                                                                                                                                                                                                 | How many tool calls the assistant made. Chart it as a rate to see activity over time.                                                                                             |
-| `ai.tool.duration_ms`              | duration   | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}`     | From `ToolCallRecord.durationMs`                                                                                                                                                                                                                                                                                                               | How long each tool call took, in milliseconds, when a duration was recorded. Use it to spot slow tools.                                                                           |
-| `ai.tool.success`                  | `0` or `1` | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}`     | `record.success ? 1 : 0`                                                                                                                                                                                                                                                                                                                       | Whether each call succeeded (`1`) or failed (`0`). Average it for a success rate by tool.                                                                                         |
-| `ai.bash.call_count`               | count      | `{category, session_id?, team_id?, project_id?, org_id?, repo_url?}` | Per-`bashCategory` call count for Bash tool calls (e.g. `git`, `test-runner`, `build`). **Local-only — not currently exported to New Relic**, despite this row's history: it is computed by `SessionTracker.emitMetrics()`, but the harvest loop never calls that method — see [Local-only Metrics](#local-only-metrics-defined-not-exported). | Local-only: how many shell commands ran, by kind (for example `git` or `test-runner`). Visible in the local dashboard and MCP tools, not in New Relic.                            |
-| `ai.mcp.proxy_request_count`       | `1`        | `{server, method}`                                                   | Incremented per proxy discovery request                                                                                                                                                                                                                                                                                                        | How many discovery requests (tool and resource listing, resource reads) the Preflight proxy handled for upstream MCP servers. Tool calls are not counted here.                    |
-| `ai.mcp.proxy_request_duration_ms` | duration   | `{server}`                                                           | From `ProxyRequestRecord.durationMs`                                                                                                                                                                                                                                                                                                           | How long each discovery request took, in milliseconds, including proxy overhead. Use it to find slow upstream MCP servers. For tool-call latency, see `ai.mcp.server_latency_ms`. |
+| Metric Name                        | Value      | Attributes                                                       | How Computed                            | What it tells you                                                                                                                                                                 |
+| ---------------------------------- | ---------- | ---------------------------------------------------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ai.tool.call_count`               | `1`        | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}` | Incremented once per tool call          | How many tool calls the assistant made. Chart it as a rate to see activity over time.                                                                                             |
+| `ai.tool.duration_ms`              | duration   | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}` | From `ToolCallRecord.durationMs`        | How long each tool call took, in milliseconds, when a duration was recorded. Use it to spot slow tools.                                                                           |
+| `ai.tool.success`                  | `0` or `1` | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}` | `record.success ? 1 : 0`                | Whether each call succeeded (`1`) or failed (`0`). Average it for a success rate by tool.                                                                                         |
+| `ai.mcp.proxy_request_count`       | `1`        | `{server, method}`                                               | Incremented per proxy discovery request | How many discovery requests (tool and resource listing, resource reads) the Preflight proxy handled for upstream MCP servers. Tool calls are not counted here.                    |
+| `ai.mcp.proxy_request_duration_ms` | duration   | `{server}`                                                       | From `ProxyRequestRecord.durationMs`    | How long each discovery request took, in milliseconds, including proxy overhead. Use it to find slow upstream MCP servers. For tool-call latency, see `ai.mcp.server_latency_ms`. |
 
 Source: `src/transport/nr-ingest.ts` — `ingestToolCall()`, `ingestProxyRequest()`
 
@@ -596,7 +647,7 @@ Source: `src/transport/nr-ingest.ts` — `emitSessionGauges()`
 
 ### MCP Server — Proxy Gauges
 
-Emitted every 60 seconds alongside session gauges (only when proxy mode is active).
+Emitted every 60 seconds alongside session gauges. A series appears only once the proxy has recorded traffic for it.
 
 | Metric Name                | Value       | Attributes                                                  | How Computed                                                    | What it tells you                                                                                      |
 | -------------------------- | ----------- | ----------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
@@ -606,7 +657,7 @@ Emitted every 60 seconds alongside session gauges (only when proxy mode is activ
 | `ai.mcp.proxy_overhead_ms` | average ms  | `{team_id?, project_id?, org_id?, repo_url?}`               | `sum(overheadValues) / count` across all servers (only if > 0)  | Average time the Preflight proxy adds to a call, in milliseconds. Use it to confirm proxying is cheap. |
 | `ai.mcp.tool_popularity`   | count       | `{tool, server, team_id?, project_id?, org_id?, repo_url?}` | Per-tool per-server call count (capped at 100 combinations)     | How many times each tool on each server has been called. Shows which tools matter most.                |
 
-Source: `src/transport/nr-ingest.ts` — `emitSessionGauges()`, `src/metrics/proxy-metrics.ts`
+Source: `src/transport/nr-ingest.ts` — `emitSessionGauges()`, reading `ProxyMetricsTracker.getMetrics()` from `src/metrics/proxy-metrics.ts`
 
 ### MCP Server — Cost Metrics
 
@@ -662,7 +713,7 @@ Source: `src/metrics/api-failure-tracker.ts` — `emitMetrics()`
 
 ### MCP Server — Git Metrics
 
-Emitted every 60 seconds alongside session gauges (only when a `GitEfficiencyTracker` is wired in). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}`. Each count blends hook-observed git/gh-CLI activity with commits hydrated from `git log` at session start — the two sources are deduped upstream (see `GitEfficiencyTracker.hydrateGitLog()`), so there is no separate hook-observed-vs-hydrated breakdown.
+Emitted every 60 seconds alongside session gauges (only when a `GitEfficiencyTracker` is wired in). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}`. Each count blends hook-observed git, gh-CLI and GitHub MCP PR tool activity (`create_pull_request`, `merge_pull_request`) with commits hydrated from `git log` at session start — the two sources are deduped upstream (see `GitEfficiencyTracker.hydrateGitLog()`), so there is no separate hook-observed-vs-hydrated breakdown.
 
 | Metric Name               | Value | How Computed                                                                                                                                                                                                                                                                                                                                                                                             | What it tells you                                                                                                           |
 | ------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -674,19 +725,39 @@ Emitted every 60 seconds alongside session gauges (only when a `GitEfficiencyTra
 
 Source: `src/metrics/git-efficiency-tracker.ts` — `emitMetrics()`
 
+### MCP Server — Feedback Metrics
+
+Emitted with the other metrics every 60 seconds, but only for feedback reported since the previous emit, so intervals with no new feedback have no data point.
+
+| Metric Name         | Value | Attributes                                                                     | How Computed                                                         | What it tells you                                                                                                 |
+| ------------------- | ----- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `ai.feedback.count` | `1`   | `{developer, quality, session_id?, team_id?, project_id?, org_id?, repo_url?}` | One record per `nr_observe_report_feedback` call since the last emit | How many feedback reports you or your team have filed, split by the quality rating. Use it to track satisfaction. |
+
+Source: `src/tools/workflow-tools.ts` — `FeedbackCollector.emitMetrics()`
+
+### Delivery Self-Monitoring Metrics
+
+Recorded by `HarvestScheduler` itself when data is lost, so loss is visible in New Relic. They ship on the metric cadence and are not scoped to a session or developer.
+
+| Metric Name             | Value         | Attributes                                                                        | How Computed                                                                                                                                                 | What it tells you                                                       |
+| ----------------------- | ------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `nr.ai.dropped_events`  | dropped count | `{source: event_buffer \| retry_buffer, transport?: nr-events-api \| otlp}`       | Oldest events dropped when the event buffer or a retry buffer overflowed, drained once per harvest                                                           | Events lost before they could be sent. Non-zero means data is missing.  |
+| `nr.ai.dropped_metrics` | dropped count | `{source: metric_aggregator \| retry_buffer, transport?: nr-metrics-api \| otlp}` | Invalid samples (non-finite values or invalid attribute types) rejected by the aggregator, or oldest metric snapshots dropped when a retry buffer overflowed | Metrics lost before they could be sent. Non-zero means data is missing. |
+
+Source: `src/shared/harvest/harvest-scheduler.ts`
+
 ### Metric Aggregation
 
 All metrics pass through the `MetricAggregator` before being sent. For each unique (name + attributes) combination, the aggregator emits a single `summary` metric with:
 
-| Field      | Type   | How Computed                 |
-| ---------- | ------ | ---------------------------- |
-| `count`    | number | Number of `record()` calls   |
-| `sum`      | number | Sum of all values            |
-| `min`      | number | Minimum value                |
-| `max`      | number | Maximum value                |
-| `interval` | number | Harvest window duration (ms) |
+| Field   | Type   | How Computed               |
+| ------- | ------ | -------------------------- |
+| `count` | number | Number of `record()` calls |
+| `sum`   | number | Sum of all values          |
+| `min`   | number | Minimum value              |
+| `max`   | number | Maximum value              |
 
-The metric `type` is `summary` (not gauge). All four aggregated values are packed into a single NR Metric API record per (name + attributes) per harvest interval.
+The metric `type` is `summary` (not gauge). All four aggregated values are packed into a single NR Metric API record per (name + attributes) per harvest interval. The record also carries the configured metric harvest interval (default 60 seconds) as the top-level `interval.ms` key that the Metric API requires. It is the configured interval, not a measured window.
 
 Source: `src/shared/harvest/metric-aggregator.ts`
 
@@ -697,6 +768,7 @@ Every tracker below defines an `emitMetrics(aggregator)` method (or, for `TrendA
 | Metric Name                                | Value       | Attributes                                         | Defined In                                                                               |
 | ------------------------------------------ | ----------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `ai.tool.success_rate`                     | rate (0–1)  | `{tool}`                                           | `src/metrics/session-tracker.ts` — `SessionTracker.emitMetrics()`                        |
+| `ai.bash.call_count`                       | count       | `{category}`                                       | `src/metrics/session-tracker.ts` — `SessionTracker.emitMetrics()`                        |
 | `ai.task.completed_count`                  | count       | `{}`                                               | `src/metrics/task-detector.ts` — `TaskDetector.emitMetrics()`                            |
 | `ai.task.active`                           | `0` or `1`  | `{}`                                               | `src/metrics/task-detector.ts` — `TaskDetector.emitMetrics()`                            |
 | `ai.task.duration_ms`                      | duration    | `{}`                                               | `src/metrics/task-detector.ts` — `TaskDetector.emitMetrics()`                            |

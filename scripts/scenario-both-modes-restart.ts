@@ -38,9 +38,6 @@ const TURN_B = { input: '0', output: '200000', usd: 3 } as const;
 const BOTH_TURNS_USD = TURN_A.usd + TURN_B.usd;
 const TOOL_CALLS = 3;
 
-const SPLIT_TURNS_BUG =
-  'session saves merge cost by max, so turns billed by different processes count only the larger share';
-
 interface Check {
   readonly name: string;
   readonly outcome: 'ok' | 'FAIL' | 'xfail' | 'XPASS';
@@ -259,6 +256,14 @@ async function stdioOnly(): Promise<void> {
     await stdio.start();
     await delay(SETTLE_MS);
     check('stdio restart does not bill again', await stdio.costUsd(), BOTH_TURNS_USD);
+
+    sendTurn(sid, TURN_A);
+    const resumed = stdio;
+    const afterTurn = await waitFor(
+      () => resumed.costUsd(),
+      (usd) => usd > BOTH_TURNS_USD,
+    );
+    check('stdio bills a turn after restart once', afterTurn, BOTH_TURNS_USD + TURN_A.usd);
   } finally {
     await stdio?.stop();
     pf('down');
@@ -288,14 +293,18 @@ async function splitTurns(): Promise<void> {
 
     sendTurn(sid, TURN_B);
     pf('restart');
-    const localCost = await waitFor(localSessionCostUsd, (cost) => cost === TURN_B.usd);
-    check('local bills turn B once the stdio server is gone', localCost, TURN_B.usd);
+    const localCost = await waitFor(localSessionCostUsd, (cost) => cost === BOTH_TURNS_USD);
+    check(
+      'local keeps turn A and bills turn B once the stdio server is gone',
+      localCost,
+      BOTH_TURNS_USD,
+    );
     stdio = new StdioServer(run, sid);
     await stdio.start();
     await delay(SETTLE_MS);
 
     const split = todayTotals();
-    check('Today counts both turns', split.totalCostUsd, BOTH_TURNS_USD, SPLIT_TURNS_BUG);
+    check('Today counts both turns', split.totalCostUsd, BOTH_TURNS_USD);
     check('Today counts each tool call once', split.toolCallCount, TOOL_CALLS);
     check('Today keeps one session', split.sessionCount, 1);
 
