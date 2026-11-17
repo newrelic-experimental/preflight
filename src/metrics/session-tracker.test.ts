@@ -724,8 +724,18 @@ describe('SessionTracker', () => {
         durationMs: null,
         success: false,
       });
-      tracker.recordToolCall({ ...call, id: 'first', errorType: 'timeout' });
-      tracker.recordToolCall({ ...call, id: 'second', errorType: 'timeout' });
+      tracker.recordToolCall({
+        ...call,
+        id: 'first',
+        toolUseId: 'toolu_first',
+        errorType: 'timeout',
+      });
+      tracker.recordToolCall({
+        ...call,
+        id: 'second',
+        toolUseId: 'toolu_second',
+        errorType: 'timeout',
+      });
       tracker.amendToolCall({ ...call, id: 'second', durationMs: 5000, exitCode: 2 });
 
       const metrics = tracker.getMetrics();
@@ -760,8 +770,8 @@ describe('SessionTracker', () => {
     it('amends the timeline entry of its own record when a newer entry follows', () => {
       const tracker = new SessionTracker('sess-own', 10);
       const call = { ...makeRecord({ durationMs: null, success: false }), errorType: 'timeout' };
-      tracker.recordToolCall({ ...call, id: 'first' });
-      tracker.recordToolCall({ ...call, id: 'second' });
+      tracker.recordToolCall({ ...call, id: 'first', toolUseId: 'toolu_first' });
+      tracker.recordToolCall({ ...call, id: 'second', toolUseId: 'toolu_second' });
       tracker.amendToolCall({ ...call, id: 'first', durationMs: 5000, success: true });
 
       expect(tracker.getMetrics().toolCallTimeline.map((e) => e.durationMs)).toEqual([5000, null]);
@@ -781,8 +791,8 @@ describe('SessionTracker', () => {
     it('amends only the newest timeouts, up to its cap', () => {
       const tracker = new SessionTracker('sess-own', 1);
       const call = { ...makeRecord({ durationMs: null, success: false }), errorType: 'timeout' };
-      tracker.recordToolCall({ ...call, id: 'first' });
-      tracker.recordToolCall({ ...call, id: 'second' });
+      tracker.recordToolCall({ ...call, id: 'first', toolUseId: 'toolu_first' });
+      tracker.recordToolCall({ ...call, id: 'second', toolUseId: 'toolu_second' });
       tracker.amendToolCall({ ...call, id: 'first', durationMs: 5000, success: true });
       tracker.amendToolCall({ ...call, id: 'second', durationMs: 6000, success: true });
 

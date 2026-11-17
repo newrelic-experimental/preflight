@@ -478,6 +478,17 @@ function mergeTimeline(
     : merged;
 }
 
+/** The tool name of each call a saved timeline holds with a toolUseId, keyed by that id. */
+export function savedToolNameByUseId(
+  summary: Pick<FullSessionSummary, 'timeline'> | null | undefined,
+): Map<string, string> {
+  const byId = new Map<string, string>();
+  for (const entry of summary?.timeline ?? []) {
+    if (entry.toolUseId) byId.set(entry.toolUseId, entry.toolName);
+  }
+  return byId;
+}
+
 /** Exact-only (non-byte-estimated) share of the cost and token totals. */
 export interface ExactTotals {
   readonly costUsd: number;

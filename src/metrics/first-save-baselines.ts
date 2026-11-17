@@ -1,4 +1,4 @@
-import type { FullSessionSummary } from '../storage/session-store.js';
+import { savedToolNameByUseId, type FullSessionSummary } from '../storage/session-store.js';
 import { buildCostTrackerSeed } from './cost-tracker-seed.js';
 import type { CostTrackerSeed } from './cost-tracker.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
@@ -22,6 +22,7 @@ export function toolCallSeedOf(summary: FullSessionSummary): ToolCallSeed {
     sessionTracker: {
       toolCallCount: summary.toolCallCount,
       bashCommandCount: summary.bashCommandCount,
+      toolNameByUseId: savedToolNameByUseId(summary),
     },
     qualityProxy: summary.qualityProxy,
     taskDetector: buildTaskDetectorSeed(summary),

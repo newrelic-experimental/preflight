@@ -147,6 +147,8 @@ export function computeDurationStats(durations: number[]): DurationStats {
 export interface SessionTrackerSeed {
   readonly toolCallCount: number;
   readonly bashCommandCount: number;
+  /** The tool name of each saved call that has a toolUseId, keyed by that id. */
+  readonly toolNameByUseId: ReadonlyMap<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +190,8 @@ export class SessionTracker implements Resettable {
     { record: ToolCallRecord; timelineSequence: number }
   >();
   private readonly maxAmendable: number;
+  /** The most recent calls counted, seeded ones included, so a call another process also drained counts once. */
+  private readonly toolNameByUseId = new Map<string, string>();
   /** What getMetrics() shows until this engine adopts a session, which some engines never do. */
   private drainedWhilePending: SessionTracker | null;
 
@@ -209,6 +213,10 @@ export class SessionTracker implements Resettable {
     this.drainedWhilePending?.recordToolCall(record);
     // A pending engine drains every session; adoptSessionId() replays its own.
     if (record.sessionId && this.sessionId.startsWith('pending-')) return;
+    if (record.toolUseId) {
+      if (this.toolNameByUseId.has(record.toolUseId)) return;
+      this.rememberCounted(record.toolUseId, record.toolName);
+    }
     this.toolCallCount++;
 
     // FALLBACK naming only: an authoritative name (job-state title or
@@ -485,9 +493,25 @@ export class SessionTracker implements Resettable {
    * doc comment for why this exists.
    */
   seedFromPersisted(seed: SessionTrackerSeed): void {
-    if (seed.toolCallCount === 0 && seed.bashCommandCount === 0) return;
-    this.toolCallCount += seed.toolCallCount;
-    this.bashCommandsRun += seed.bashCommandCount;
+    let calls = seed.toolCallCount;
+    let bashCalls = seed.bashCommandCount;
+    for (const [toolUseId, toolName] of seed.toolNameByUseId) {
+      if (!this.toolNameByUseId.has(toolUseId)) {
+        this.rememberCounted(toolUseId, toolName);
+        continue;
+      }
+      calls--;
+      if (toolName === 'Bash') bashCalls--;
+    }
+    // A max-merged file can hold more ids than its count, so the overlap can exceed it.
+    this.toolCallCount += Math.max(0, calls);
+    this.bashCommandsRun += Math.max(0, bashCalls);
+  }
+
+  private rememberCounted(toolUseId: string, toolName: string): void {
+    if (this.toolNameByUseId.size >= MAX_TIMELINE_ENTRIES)
+      this.toolNameByUseId.delete(this.toolNameByUseId.keys().next().value!);
+    this.toolNameByUseId.set(toolUseId, toolName);
   }
 
   reset(sessionId: string): void {
@@ -521,5 +545,6 @@ export class SessionTracker implements Resettable {
     this.timeline = [];
     this.timelineEntryCount = 0;
     this.amendable.clear();
+    this.toolNameByUseId.clear();
   }
 }

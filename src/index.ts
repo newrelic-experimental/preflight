@@ -130,6 +130,7 @@ import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.j
 import {
   buildSessionSummary,
   type FullSessionSummary,
+  savedToolNameByUseId,
   SessionStore,
   sessionSummaryToDriftRecord,
 } from './storage/session-store.js';
@@ -223,6 +224,12 @@ function loadConfigOrDie(
  * jest.fn()s without constructing a real NrIngestManager.
  */
 type ProxyTelemetrySink = Pick<NrIngestManager, 'ingestToolCall' | 'ingestProxyRequest'>;
+
+/** A session file's call count and the ids of the calls its timeline holds. */
+interface SavedCalls {
+  readonly count: number;
+  readonly toolUseIds: ReadonlySet<string>;
+}
 
 /**
  * Builds the ProxyManager onToolCall/onRequest callbacks for standalone proxy
@@ -1453,11 +1460,15 @@ async function main(): Promise<void> {
     const rehydratedTrackerSessionIds = new Set<string>();
     const firstSaveBaselines = new FirstSaveBaselines();
     // A session's calls in its file before this process first wrote it, none of them this process's.
-    const callsBeforeFirstWrite = new Map<string, number>();
+    const callsBeforeFirstWrite = new Map<string, SavedCalls>();
+    const savedCallsOf = (file: FullSessionSummary | null | undefined): SavedCalls => ({
+      count: file?.toolCallCount ?? 0,
+      toolUseIds: new Set(savedToolNameByUseId(file).keys()),
+    });
     const saveSessionRememberingBaseline = (summary: FullSessionSummary): boolean => {
       const saved = sessionStore!.saveSession(summary);
       if (saved && !callsBeforeFirstWrite.has(summary.sessionId)) {
-        callsBeforeFirstWrite.set(summary.sessionId, saved.previous?.toolCallCount ?? 0);
+        callsBeforeFirstWrite.set(summary.sessionId, savedCallsOf(saved.previous));
       }
       // Only a --stdio engine ever adopts a real session id and seeds it.
       if (saved && options.stdio && !rehydratedTrackerSessionIds.has(summary.sessionId)) {
@@ -2736,21 +2747,24 @@ async function main(): Promise<void> {
         try {
           const prior =
             callsBeforeFirstWrite.get(sessionId) ??
-            sessionStore.loadSession(sessionId)?.toolCallCount ??
-            0;
+            savedCallsOf(sessionStore.loadSession(sessionId));
           // A file with calls adds this rollup to them, since a max-merge would drop it. It leaves
-          // out a call another process may count, and marks no ids, so that process still can.
+          // out a call the file holds or another process may count, and marks no ids, so that
+          // process still can.
           const kept =
-            prior === 0
+            prior.count === 0
               ? rollup
               : localSessionAggregator.withoutCallsOtherProcessesMayCount(
                   rollup,
-                  localStoreForShutdown?.countedToolUseIds(sessionId) ?? new Set<string>(),
+                  new Set([
+                    ...prior.toolUseIds,
+                    ...(localStoreForShutdown?.countedToolUseIds(sessionId) ?? []),
+                  ]),
                 );
-          const summary = { ...kept, toolCallCount: prior + Number(kept.toolCallCount) };
+          const summary = { ...kept, toolCallCount: prior.count + Number(kept.toolCallCount) };
           if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary)) continue;
           saved += 1;
-          if (prior === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
+          if (prior.count === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
         } catch (err) {
           logger.warn('Failed to save observed session', { sessionId, error: String(err) });
         }
