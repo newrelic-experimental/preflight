@@ -120,6 +120,7 @@ import { sessionBreadcrumbWriters } from './platforms/types.js';
 import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
+import { createArtifactIndex } from './artifacts/artifact-index.js';
 import { createServer } from './server.js';
 import type { CostBreakdown } from './core/index.js';
 import { createLogger } from './core/index.js';
@@ -1904,6 +1905,7 @@ async function main(): Promise<void> {
         api: {
           sessionTracker,
           auditTrailManager: auditTrail,
+          artifactIndex: config.experimentalArtifacts ? createArtifactIndex(auditTrail) : undefined,
           sessionStore,
           costTracker,
           costForecast: () => {

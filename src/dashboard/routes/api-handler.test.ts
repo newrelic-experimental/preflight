@@ -9797,3 +9797,128 @@ describe('api-handler Today aggregate git identity reuse', () => {
     expect(gitCallCount(logFile)).toBe(afterFirst);
   });
 });
+
+describe('api-handler GET /api/artifacts', () => {
+  const group = {
+    key: '/work/repo/.git',
+    kind: 'repo' as const,
+    label: 'acme/repo',
+    lastWrittenAt: 1_000,
+    artifacts: [],
+  };
+
+  it('returns 503 when the artifact index is not wired', async () => {
+    const handler = createApiHandler({});
+    const { res, status, body } = fakeRes();
+    await handler({ method: 'GET', url: '/api/artifacts' } as IncomingMessage, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'artifactIndex' });
+  });
+
+  it('passes the index groups through', async () => {
+    const handler = createApiHandler({
+      artifactIndex: { list: () => [group], find: () => null },
+    });
+    const { res, status, body } = fakeRes();
+    await handler({ method: 'GET', url: '/api/artifacts' } as IncomingMessage, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({ groups: [group] });
+  });
+});
+
+describe('api-handler GET /api/artifacts/view', () => {
+  function viewReq(url: string): IncomingMessage {
+    return { method: 'GET', url } as IncomingMessage;
+  }
+
+  it('returns 503 when the artifact index is not wired', async () => {
+    const handler = createApiHandler({});
+    const { res, status, body } = fakeRes();
+    await handler(viewReq('/api/artifacts/view?path=/a.html'), res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'artifactIndex' });
+  });
+
+  it('returns 400 when the path parameter is missing', async () => {
+    const find = jest.fn((_p: string) => null);
+    const handler = createApiHandler({ artifactIndex: { list: () => [], find } });
+    const { res, status, body } = fakeRes();
+    await handler(viewReq('/api/artifacts/view'), res);
+    expect(status()).toBe(400);
+    expect(JSON.parse(body())).toEqual({ error: 'bad_request' });
+    expect(find).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for a path the index did not return, without reading it', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-view-'));
+    try {
+      const secretPath = path.join(dir, 'secret.html');
+      fs.writeFileSync(secretPath, 'SECRET-BODY');
+      const find = jest.fn((_p: string) => null);
+      const handler = createApiHandler({ artifactIndex: { list: () => [], find } });
+      const { res, status, body } = fakeRes();
+      await handler(viewReq(`/api/artifacts/view?path=${encodeURIComponent(secretPath)}`), res);
+      expect(find).toHaveBeenCalledWith(secretPath);
+      expect(status()).toBe(404);
+      expect(JSON.parse(body())).toEqual({ error: 'not_found' });
+      expect(body()).not.toContain('SECRET-BODY');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns 413 for an indexed file over the size cap without reading it', async () => {
+    const find = jest.fn((_p: string) => ({
+      path: '/big/report.html',
+      name: 'report.html',
+      relativePath: 'report.html',
+      worktreeLabel: null,
+      sessionIds: [],
+      firstWrittenAt: 1,
+      lastWrittenAt: 1,
+      writeCount: 1,
+      sizeBytes: 21 * 1024 * 1024,
+    }));
+    const handler = createApiHandler({ artifactIndex: { list: () => [], find } });
+    const { res, status, body } = fakeRes();
+    await handler(viewReq('/api/artifacts/view?path=/big/report.html'), res);
+    expect(status()).toBe(413);
+    expect(JSON.parse(body())).toEqual({ error: 'too_large' });
+  });
+
+  it('serves an indexed file with a sandboxed CSP and no same-origin grant', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-view-'));
+    try {
+      const file = path.join(dir, 'report.html');
+      fs.writeFileSync(file, '<h1>report</h1>');
+      const entry = {
+        path: file,
+        name: 'report.html',
+        relativePath: 'report.html',
+        worktreeLabel: null,
+        sessionIds: [],
+        firstWrittenAt: 1,
+        lastWrittenAt: 1,
+        writeCount: 1,
+        sizeBytes: 15,
+      };
+      const handler = createApiHandler({
+        artifactIndex: { list: () => [], find: (p: string) => (p === file ? entry : null) },
+      });
+      const { res, status, body, headers } = fakeRes();
+      await handler(viewReq(`/api/artifacts/view?path=${encodeURIComponent(file)}`), res);
+      expect(status()).toBe(200);
+      expect(body()).toBe('<h1>report</h1>');
+      expect(headers()['content-type']).toBe('text/html; charset=utf-8');
+      expect(headers()['content-length']).toBe('15');
+      const csp = headers()['content-security-policy'] ?? '';
+      expect(csp).toContain('sandbox');
+      expect(csp).toContain('allow-scripts');
+      expect(csp).not.toContain('allow-same-origin');
+      expect(headers()['x-content-type-options']).toBe('nosniff');
+      expect(headers()['referrer-policy']).toBe('no-referrer');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

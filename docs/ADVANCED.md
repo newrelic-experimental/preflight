@@ -125,6 +125,8 @@ An alias reuses the target model's rates, so there is no rate table to keep curr
 
 **`pricingRefresh`** (env: `NEW_RELIC_AI_PRICING_REFRESH`, default `true`): fetches LiteLLM's community price file in the background at server start, caches it at `<storagePath>/pricing-cache.json`, and refetches once the cache is a day old, at a later start or at the hourly recheck a long-running server makes. It prices models the bundled table, the pricing overlay, and `customPricingFile` do not resolve, by exact model ID only, and takes precedence over family estimates. Set it to `false` to make no request and read or write no cache file. `highSecurity=true` forces it off.
 
+**`experimentalArtifacts`** (env: `NEW_RELIC_AI_EXPERIMENTAL_ARTIFACTS`, default `false`): experimental. Adds an Artifacts page to the local dashboard that lists the `.html` and `.htm` files your coding agent wrote or edited, grouped by repo or by directory, with a link to open each one. The list comes from the audit trail, so it needs no extra capture. A report opens in a sandboxed frame with no access to Preflight's own API. `highSecurity=true` forces it off.
+
 **`costRateMultiplier`** (env: `NEW_RELIC_AI_COST_RATE_MULTIPLIER`): a flat discount factor, `0 < x ≤ 1`, applied to every dollar figure `CostTracker` computes — a cheaper alternative to `customPricingFile` when you have a single blended discount off list price rather than distinct per-model contracted rates. Mirrors the semantics of Claude Code's own `modelPricing.multiplier` managed setting.
 
 ```json
