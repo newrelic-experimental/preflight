@@ -20,6 +20,16 @@ describe('parseToolSpecificFields', () => {
       expect(fields.bashDestructive).toBe(true);
     });
 
+    it('prefers a carried network flag over the redacted text', () => {
+      const fields = parseToolSpecificFields(
+        'Bash',
+        { command: '[REDACTED] https://example.test', bashNetwork: true },
+        undefined,
+      );
+
+      expect(fields.bashNetwork).toBe(true);
+    });
+
     it('ignores a flag that is not a boolean', () => {
       const fields = parseToolSpecificFields(
         'Bash',

@@ -92,14 +92,20 @@ function parseBash(input: Record<string, unknown>): ToolFields {
     fields.isBuildCommand = BUILD_COMMAND_RE.test(input.command);
     fields.isLintCommand = LINT_COMMAND_RE.test(input.command);
 
+    // The collector classifies the raw command before redacting it and carries
+    // the flags; older collectors send none, so fall back to the stored text.
     // Coarse classification for downstream telemetry: turns the polymorphic
     // command string into a fixed category (git / test-runner / build / ...)
     // so dashboards and trackers can bucket Bash by shape, not just by name.
     const classification = classifyBash(input.command);
     fields.bashCategory = classification.category;
     fields.bashLeading = classification.leading;
-    fields.bashDestructive = classification.isDestructive;
-    fields.bashNetwork = classification.isNetwork;
+    fields.bashDestructive =
+      typeof input.bashDestructive === 'boolean'
+        ? input.bashDestructive
+        : classification.isDestructive;
+    fields.bashNetwork =
+      typeof input.bashNetwork === 'boolean' ? input.bashNetwork : classification.isNetwork;
   }
   if (typeof input.description === 'string') fields.commandDescription = input.description;
   if (typeof input.timeout === 'number') fields.commandTimeout = input.timeout;

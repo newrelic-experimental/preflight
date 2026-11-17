@@ -514,6 +514,8 @@ describe('collector-script', () => {
       const event = readBufferEvents()[0]!;
       expect(event.toolInput).toEqual({
         command: 'Get-Process',
+        bashDestructive: false,
+        bashNetwork: false,
         description: 'List processes',
         timeout: 30000,
         run_in_background: false,
