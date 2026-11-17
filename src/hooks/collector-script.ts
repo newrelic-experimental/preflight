@@ -245,8 +245,6 @@ export function getLinuxAncestorPids(startPpid: number, maxDepth = 5): number[] 
   return pids;
 }
 
-let _breadcrumbWriteFailed = false;
-
 function touch(path: string): void {
   const now = new Date();
   try {
@@ -254,7 +252,39 @@ function touch(path: string): void {
   } catch {}
 }
 
-let _unknownEngineWarned = false;
+/**
+ * Files `sessionId` at `dir/name`. An unchanged breadcrumb is only touched, not
+ * rewritten: resolveFromBreadcrumb() (session-resolver.ts) rejects a
+ * breadcrumb older than the reading process's own start time, so an
+ * actively-hooked session's breadcrumb must keep looking fresh across an MCP
+ * server restart (same ppid, same session_id, content unchanged) or that
+ * restart would permanently lose ppid-based resolution for the rest of the
+ * session. A breadcrumb from a session that's over stops getting touched, so
+ * it still goes stale and gets rejected as intended. The directory is created
+ * only when the write finds it missing.
+ */
+function writeOrTouch(dir: string, name: string, sessionId: string): void {
+  const path = resolve(dir, name);
+  let current: string | undefined;
+  try {
+    current = readFileSync(path, 'utf-8').trim();
+  } catch {}
+  if (current === sessionId) {
+    touch(path);
+    return;
+  }
+  try {
+    writeFileSync(path, sessionId, { mode: 0o600 });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(path, sessionId, { mode: 0o600 });
+  }
+}
+
+function breadcrumbRoots(root: string, legacyRoot?: string): string[] {
+  return legacyRoot === undefined ? [root] : [root, legacyRoot];
+}
 
 function writePpidBreadcrumb(sessionId: string, root: string, legacyRoot?: string): void {
   if (!SESSION_ID_RE.test(sessionId)) return;
@@ -270,47 +300,17 @@ function writePpidBreadcrumb(sessionId: string, root: string, legacyRoot?: strin
     // sessions sharing a common ancestor PID may overwrite each other there.
     const pids = getLinuxAncestorPids(ppid);
 
-    for (const dir of legacyRoot === undefined ? [root] : [root, legacyRoot]) {
-      const breadcrumbDir = resolve(dir, 'session-by-ppid');
-      mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
+    for (const dir of breadcrumbRoots(root, legacyRoot)) {
       for (const pid of pids) {
-        const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
-        // Short-circuit: no content rewrite needed if it already matches, but
-        // still touch mtime — resolveFromBreadcrumb() (session-resolver.ts)
-        // rejects a breadcrumb older than the reading process's own start
-        // time, so an actively-hooked session's breadcrumb must keep looking
-        // fresh across an MCP server restart (same ppid, same session_id,
-        // content genuinely unchanged) or that restart would permanently lose
-        // ppid-based resolution for the rest of the session. A breadcrumb from
-        // a session that's actually over stops getting touched here (nothing
-        // calls this with its old ppid+session_id again), so it still goes
-        // stale and gets rejected exactly as intended.
-        if (existsSync(breadcrumbPath)) {
-          try {
-            if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
-              touch(breadcrumbPath);
-              continue;
-            }
-          } catch {
-            // Fall through to rewrite if the read failed.
-          }
-        }
-        writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
+        writeOrTouch(resolve(dir, 'session-by-ppid'), `${pid}.txt`, sessionId);
       }
     }
-
-    _breadcrumbWriteFailed = false;
   } catch (err) {
-    if (!_breadcrumbWriteFailed) {
-      process.stderr.write(
-        `[preflight-collector] Warning: cannot write PPID breadcrumb: ${String(err)}\n`,
-      );
-      _breadcrumbWriteFailed = true;
-    }
+    process.stderr.write(
+      `[preflight-collector] Warning: cannot write PPID breadcrumb: ${String(err)}\n`,
+    );
   }
 }
-
-let _cwdBreadcrumbWriteFailed = false;
 
 function writeCwdBreadcrumb(
   sessionId: string,
@@ -331,30 +331,26 @@ function writeCwdBreadcrumb(
   const sanitizedCwd = cwd.replace(/[\\/:]/g, '-');
 
   try {
-    for (const dir of legacyRoot === undefined ? [root] : [root, legacyRoot]) {
-      const breadcrumbDir = resolve(dir, 'session-by-cwd');
-      mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
-      const breadcrumbPath = resolve(breadcrumbDir, `${sanitizedCwd}.txt`);
-      if (existsSync(breadcrumbPath)) {
-        try {
-          if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
-            touch(breadcrumbPath);
-            continue;
-          }
-        } catch {
-          // Fall through to rewrite if the read failed.
-        }
-      }
-      writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
+    for (const dir of breadcrumbRoots(root, legacyRoot)) {
+      writeOrTouch(resolve(dir, 'session-by-cwd'), `${sanitizedCwd}.txt`, sessionId);
     }
-    _cwdBreadcrumbWriteFailed = false;
   } catch (err) {
-    if (!_cwdBreadcrumbWriteFailed) {
-      process.stderr.write(
-        `[preflight-collector] Warning: cannot write cwd breadcrumb: ${String(err)}\n`,
-      );
-      _cwdBreadcrumbWriteFailed = true;
-    }
+    process.stderr.write(
+      `[preflight-collector] Warning: cannot write cwd breadcrumb: ${String(err)}\n`,
+    );
+  }
+}
+
+const UNKNOWN_ENGINE_MARKER = 'unknown-engine-warned';
+
+/** True the first time this install is told, so each hook process need not repeat it. */
+function claimUnknownEngineWarning(storageDir: string): boolean {
+  try {
+    mkdirSync(storageDir, { recursive: true, mode: 0o700 });
+    writeFileSync(resolve(storageDir, UNKNOWN_ENGINE_MARKER), '', { flag: 'wx', mode: 0o600 });
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'EEXIST';
   }
 }
 
@@ -820,18 +816,17 @@ function processHook(raw: string, cliEvent?: string): void {
   // conversation_id would be a guess, not a fix.
   if (typeof data.session_id === 'string' && data.session_id.length > 0) {
     const writer = breadcrumbWriter(process.env);
-    if (writer === UNATTRIBUTED_BREADCRUMB_WRITER && !_unknownEngineWarned) {
+    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    if (writer === UNATTRIBUTED_BREADCRUMB_WRITER) {
       const unknownNames = ENGINE_ENV_KEYS.filter(
         (key) => process.env[key] && canonicalPlatformName(process.env[key]) === undefined,
       ).map((key) => `${key}=${JSON.stringify(process.env[key])}`);
-      if (unknownNames.length > 0) {
+      if (unknownNames.length > 0 && claimUnknownEngineWarning(storageDir)) {
         process.stderr.write(
           `[preflight-collector] Warning: ${unknownNames.join(', ')} names no engine Preflight knows; filing the session breadcrumb as unattributed\n`,
         );
-        _unknownEngineWarned = true;
       }
     }
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
     const tagged = breadcrumbRoot(storageDir, writer);
     writePpidBreadcrumb(data.session_id, tagged, storageDir);
     writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);

@@ -2566,6 +2566,51 @@ describe('collector-script', () => {
       stderrWriteSpy.mockRestore();
     });
 
+    it('warns again for a fresh storage dir, not once per module load', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const warnings = () =>
+        stderrWriteSpy.mock.calls
+          .map((args) => String(args[0]))
+          .filter((line) => line.includes('no engine Preflight knows'));
+      process.env.MCP_CLIENT = 'not-an-engine';
+      const other = resolve(tmpdir(), `nr-hook-other-${Date.now()}-${Math.random()}`);
+      try {
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = other;
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        expect(warnings()).toHaveLength(2);
+      } finally {
+        stderrWriteSpy.mockRestore();
+        rmSync(other, { recursive: true, force: true });
+      }
+    });
+
+    it('stays quiet when the install already recorded the unknown-engine warning', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      mkdirSync(tmpDir, { recursive: true });
+      writeFileSync(resolve(tmpDir, 'unknown-engine-warned'), '');
+      process.env.MCP_CLIENT = 'not-an-engine';
+      processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+      const lines = stderrWriteSpy.mock.calls.map((args) => String(args[0]));
+      stderrWriteSpy.mockRestore();
+      expect(lines.filter((line) => line.includes('no engine Preflight knows'))).toHaveLength(0);
+      expect(readFileSync(crumbs('unattributed').cwd, 'utf-8')).toBe('sess-x');
+    });
+
+    it('warns on every failed breadcrumb write, independent of earlier tests', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      process.env.CLAUDECODE = '1';
+      mkdirSync(resolve(tmpDir, 'breadcrumbs'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'breadcrumbs', 'claude-code'), '');
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const lines = stderrWriteSpy.mock.calls.map((args) => String(args[0]));
+      stderrWriteSpy.mockRestore();
+      expect(lines.filter((line) => line.includes('cannot write PPID breadcrumb'))).toHaveLength(2);
+      expect(lines.filter((line) => line.includes('cannot write cwd breadcrumb'))).toHaveLength(2);
+    });
+
     it('reads the ancestor pids once per event for both breadcrumb layouts', () => {
       process.env.CLAUDECODE = '1';
       const origReadFile = _procFs.readFile;
