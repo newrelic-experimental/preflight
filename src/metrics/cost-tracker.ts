@@ -699,6 +699,10 @@ export class CostTracker implements Resettable {
       }
       for (const [day, usd] of Object.entries(seed.byteEstimates.costByDayUsd)) {
         this.byteEstimateCostByDay.set(day, (this.byteEstimateCostByDay.get(day) ?? 0) + usd);
+        // The seed's own day cost already holds that day's estimates.
+        if (day !== seed.dayKey) {
+          this.costByDayUsd.set(day, (this.costByDayUsd.get(day) ?? 0) + usd);
+        }
       }
       this.byteEstimateUnpriced.addRecords(
         seed.byteEstimates.unpricedByModel,

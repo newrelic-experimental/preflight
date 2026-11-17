@@ -1,6 +1,6 @@
 import { exactTotalsOf, hasAttributableActivity } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
-import type { CostTrackerSeed } from './cost-tracker.js';
+import type { CostMetrics, CostTrackerSeed } from './cost-tracker.js';
 import { localDateKey, todayPortionRatio } from '../lib/date.js';
 
 export interface TodayCostSource {
@@ -150,4 +150,38 @@ export function addHeldCost(held: HeldSessionCost, usd: number, timestampMs: num
   held.estimatedCostUsd += usd;
   held.costByDayUsd[dayKey] = (held.costByDayUsd[dayKey] ?? 0) + usd;
   held.endTime = Math.max(held.endTime, timestampMs);
+}
+
+/** A seeded session's saved cost that its CostTracker books on no day. */
+export interface UnbookedSeedCost {
+  readonly startTime: number;
+  readonly costByDayUsd: Readonly<Record<string, number>>;
+}
+
+// The seed books only its own day. Byte estimates are left out because the
+// tracker drops them when their exact reports replay onto their own days.
+export function unbookedSeedCostOf(
+  persisted: FullSessionSummary,
+  seed: CostTrackerSeed,
+): UnbookedSeedCost {
+  const { [seed.dayKey]: _booked, ...costByDayUsd } = exactTotalsOf(persisted).costByDayUsd;
+  return { startTime: persisted.startTime, costByDayUsd };
+}
+
+/** A --stdio engine's own seeded session: its CostTracker's cost on top of the unbooked days. */
+export function heldOwnSessionCost(
+  unbooked: UnbookedSeedCost,
+  metrics: Pick<CostMetrics, 'sessionTotalCostUsd' | 'costByDayUsd'>,
+  nowMs: number,
+): HeldSessionCost {
+  const costByDayUsd = { ...unbooked.costByDayUsd };
+  for (const [day, usd] of Object.entries(metrics.costByDayUsd)) {
+    costByDayUsd[day] = (costByDayUsd[day] ?? 0) + usd;
+  }
+  return {
+    startTime: unbooked.startTime,
+    endTime: nowMs,
+    estimatedCostUsd: metrics.sessionTotalCostUsd ?? 0,
+    costByDayUsd,
+  };
 }
