@@ -1400,6 +1400,36 @@ describe('Sessions view — ?sessionIds= deep-link filter', () => {
     window.location = original as unknown as string & Location;
   });
 
+  it('shows no missing-session note while the selected sessions are still loading', async () => {
+    const original = window.location;
+    // @ts-expect-error -- test-only reassignment of a read-only global
+    delete window.location;
+    window.location = {
+      ...original,
+      search: '?sessionIds=s1,s2',
+    } as unknown as string & Location;
+    const json = (body: unknown) =>
+      Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    globalThis.fetch = ((url: string) => {
+      if (url.startsWith('/api/sessions?ids=')) return new Promise<Response>(() => {});
+      if (url.startsWith('/api/workflows')) return json([]);
+      return json(THREE_SESSION_LIST);
+    }) as typeof globalThis.fetch;
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: 0 } } })}>
+        <Sessions />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByText('2 sessions selected')).toBeInTheDocument());
+    expect(screen.queryByText(/not found/)).toBeNull();
+    window.location = original as unknown as string & Location;
+  });
+
   it('shows no missing-session note when every selected id is in the loaded page', async () => {
     const original = window.location;
     // @ts-expect-error -- test-only reassignment of a read-only global

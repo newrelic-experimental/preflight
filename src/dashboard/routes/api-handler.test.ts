@@ -252,6 +252,15 @@ describe('api-handler GET /api/sessions', () => {
       expect(result.map((s) => s.sessionId)).toEqual(['sess-0']);
     });
 
+    it('returns every requested session even past the default limit of 50', async () => {
+      const ids = Array.from({ length: 80 }, (_v, i) => `sess-${i}`);
+      const req = { method: 'GET', url: `/api/sessions?ids=${ids.join(',')}` } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result).toHaveLength(80);
+    });
+
     it('returns an empty list for an unknown id', async () => {
       const req = { method: 'GET', url: '/api/sessions?ids=nope' } as IncomingMessage;
       const { res, body } = fakeRes();
