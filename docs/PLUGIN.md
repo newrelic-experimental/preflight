@@ -109,7 +109,7 @@ simply pointing it at this repo's own `dist/`:
 1. `dist/` is gitignored — nothing is pre-built/committed, and (per above)
    marketplace installs don't run `tsc` for you even if it were needed.
 2. [`src/hooks/collector-script.ts`](../src/hooks/collector-script.ts) has a
-   `<5ms execution budget` design constraint — it runs on every single tool
+   `~5ms in-process execution budget` design constraint — it runs on every single tool
    call, so routing it through `npx` per invocation (as the MCP server does)
    would add unacceptable latency to every tool use for the whole session.
 
