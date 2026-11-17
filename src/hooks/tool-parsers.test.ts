@@ -10,7 +10,7 @@ describe('parseToolSpecificFields', () => {
       expect(fields.bashNetwork).toBe(false);
     });
 
-    it('prefers flags computed before redaction over the redacted text', () => {
+    it('adds a flag computed before redaction to what the redacted text shows', () => {
       const fields = parseToolSpecificFields(
         'Bash',
         { command: 'mysql -u root --[REDACTED] -rf /sandbox/x', bashDestructive: true },
@@ -20,7 +20,7 @@ describe('parseToolSpecificFields', () => {
       expect(fields.bashDestructive).toBe(true);
     });
 
-    it('prefers a carried network flag over the redacted text', () => {
+    it('adds a carried network flag to what the redacted text shows', () => {
       const fields = parseToolSpecificFields(
         'Bash',
         { command: '[REDACTED] https://example.test', bashNetwork: true },
@@ -30,14 +30,24 @@ describe('parseToolSpecificFields', () => {
       expect(fields.bashNetwork).toBe(true);
     });
 
-    it('ignores a flag that is not a boolean', () => {
+    it('keeps a destructive stored text destructive when the carried flag is false', () => {
       const fields = parseToolSpecificFields(
         'Bash',
-        { command: 'rm -rf /sandbox/x', bashDestructive: 'false' },
+        { command: 'rm -rf /sandbox/x', bashDestructive: false },
         undefined,
       );
 
       expect(fields.bashDestructive).toBe(true);
+    });
+
+    it('ignores a flag that is not a boolean', () => {
+      const fields = parseToolSpecificFields(
+        'Bash',
+        { command: 'echo hi', bashDestructive: 'true' },
+        undefined,
+      );
+
+      expect(fields.bashDestructive).toBe(false);
     });
   });
 
