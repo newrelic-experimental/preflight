@@ -728,6 +728,44 @@ describe('session-end forecast after a restart', () => {
     expect(forecast).toBeCloseTo(50 + (50 / 180) * 300, 6);
   });
 
+  describe('end-of-day after a restart of a session that began before today', () => {
+    const TODAY_KEY = localDateKey(NOW);
+    const forecastAfterRestart = (firstActivityMs?: number) => {
+      const persisted = makeSummary({
+        startTime: NOW - 30 * HOUR,
+        estimatedCostUsd: 50,
+        costByDayUsd: { [TODAY_KEY]: 20 },
+        ...(firstActivityMs === undefined
+          ? {}
+          : { firstActivityByDayMs: { [TODAY_KEY]: firstActivityMs } }),
+      });
+      const restarted = new CostTracker();
+      restarted.seedFromPersisted(buildCostTrackerSeed(persisted));
+      return buildCostForecastFromInputs({
+        sessionSpentUsd: restarted.getMetrics().sessionTotalCostUsd ?? 0,
+        sessionStartMs: restarted.getSessionStartMs(NOW - 10 * MIN),
+        dailySpentUsd: restarted.getCostForDay(TODAY_KEY),
+        dailyFirstActivityMs: restarted.getFirstActivityMsForDay(TODAY_KEY),
+      });
+    };
+
+    it('holds, and says the start of the day is unknown, when today has spend but no saved first spend', () => {
+      const forecast = forecastAfterRestart();
+
+      expect(forecast.forecastEndOfDayUsd).toBeNull();
+      expect(forecast.forecastEndOfWeekUsd).toBeNull();
+      expect(forecast.heldReason).toBe('held: spend today, start of day unknown');
+    });
+
+    it("projects from today's burn when the saved first spend is 3 hours ago", () => {
+      const forecast = forecastAfterRestart(NOW - 3 * HOUR);
+
+      expect(forecast.heldReason).toBeNull();
+      // 20 spent over 3h, with 10h left until local midnight: 20 + (20 / 180min) * 600min.
+      expect(forecast.forecastEndOfDayUsd).toBeCloseTo(20 + (20 / 180) * 600, 6);
+    });
+  });
+
   it('projects no growth past the 8-hour horizon for a session resumed from days ago', () => {
     const persisted = makeSummary({ startTime: NOW - 72 * HOUR, estimatedCostUsd: 50 });
 
