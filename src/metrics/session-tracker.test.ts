@@ -975,6 +975,40 @@ describe('SessionTracker', () => {
       expect(metrics.bashCommandsRun).toBe(1);
     });
 
+    it('keeps its own count when the saved file holds more ids than its count', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.recordToolCall(makeRecord({ toolName: 'Read', toolUseId: 'toolu_a' }));
+      tracker.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'toolu_b' }));
+
+      tracker.seedFromPersisted({
+        toolCallCount: 1,
+        bashCommandCount: 0,
+        toolNameByUseId: new Map([
+          ['toolu_a', 'Read'],
+          ['toolu_b', 'Bash'],
+        ]),
+      });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(2);
+      expect(metrics.bashCommandsRun).toBe(1);
+    });
+
+    it('subtracts only Bash calls from the seeded Bash count', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.recordToolCall(makeRecord({ toolName: 'Read', toolUseId: 'toolu_read' }));
+
+      tracker.seedFromPersisted({
+        toolCallCount: 2,
+        bashCommandCount: 1,
+        toolNameByUseId: new Map([['toolu_read', 'Read']]),
+      });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(2);
+      expect(metrics.bashCommandsRun).toBe(1);
+    });
+
     it('does not count a seeded call again when it records that call', () => {
       const tracker = new SessionTracker('test-session');
       tracker.seedFromPersisted({
