@@ -506,9 +506,11 @@ export class SubagentWatcher {
    * session when undefined), at most MAX_ON_DEMAND_FILES stats in all, and reads
    * only from one that has grown past what was already consumed, up to
    * MAX_ON_DEMAND_BYTES in total. Settled: a final answer, or a tool result left
-   * unanswered for STALLED_REPLY_MS. Only the poll notices such a transcript
-   * growing again. When more transcripts remain than the stat budget, the newest
-   * half is always stated and the rest take turns. Not found before the next
+   * unanswered for STALLED_REPLY_MS. A final transcript modified within
+   * STALLED_REPLY_MS takes the stats the open ones leave over, so a subagent
+   * woken after its final answer is read at once. One idle longer, and a stalled
+   * one, is noticed growing again only by the poll. When more transcripts remain
+   * than the stat budget, the newest half is always stated and the rest take turns. Not found before the next
    * poll: a session's
    * first subagent, whose transcript creates that directory, and a workflow's
    * subagents, whose transcripts sit in per-run directories below it. Never
@@ -571,17 +573,21 @@ export class SubagentWatcher {
   ): readonly number[] {
     const now = Date.now();
     const open: number[] = [];
+    const settled: number[] = [];
     for (let i = from; i < this.trackedFiles.length; i++) {
       const tracked = this.trackedFiles[i];
       if (tracked === undefined) break;
       if (sessionId !== undefined && tracked.parentSessionId !== sessionId) continue;
       if (!this.consumedBytesByPath.has(tracked.path)) continue;
       const kind = this.tailKindByPath.get(tracked.path);
-      if (kind === 'final') continue;
+      if (kind === 'final') {
+        if (now - tracked.stat.mtimeMs <= STALLED_REPLY_MS) settled.push(i);
+        continue;
+      }
       if (kind === 'reply-owed' && now - tracked.stat.mtimeMs > STALLED_REPLY_MS) continue;
       open.push(i);
     }
-    if (open.length <= budget) return open;
+    if (open.length <= budget) return [...open, ...settled.slice(0, budget - open.length)];
     const newest = Math.ceil(budget / 2);
     const rest = open.slice(newest);
     const window = budget - newest;

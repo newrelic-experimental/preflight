@@ -1724,7 +1724,23 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
     expect(mockStatSync).toHaveBeenCalledTimes(MAX_ON_DEMAND_FILES);
   });
 
-  it('spends no stat on finished transcripts, so a running subagent behind them is still read', () => {
+  it('reads a finished subagent woken before the next poll', () => {
+    writeFileSync(agentJsonl, promptLine() + '\n' + endTurnLine('msg_done') + '\n');
+    const watcher = makeWatcher();
+    watcher.poll();
+    const wake = JSON.stringify({
+      type: 'user',
+      isSidechain: true,
+      isMeta: true,
+      sessionId: PARENT_SESSION,
+      message: { role: 'user', content: '<task-notification>done</task-notification>' },
+    });
+    appendFileSync(agentJsonl, wake + '\n' + toolUseLine('msg_resume', 'toolu_resume') + '\n');
+
+    expect(watcher.readLiveTails(PARENT_SESSION)).toBe(1);
+  });
+
+  it('stats open transcripts before finished ones, so a running subagent behind a crowd of them is still read', () => {
     for (let i = 0; i < MAX_ON_DEMAND_FILES + 3; i++) {
       const agentId = `a${i.toString(16).padStart(16, '0')}`;
       writeFileSync(
@@ -1741,7 +1757,9 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
     expect(watcher.readLiveTails(PARENT_SESSION)).toBe(1);
 
     expect(turnsRead.map((t) => t.agentId)).toEqual([AGENT_ID]);
-    expect(stattedPaths().filter((p) => p !== agentJsonl && p.includes('agent-a0'))).toEqual([]);
+    expect(stattedPaths().filter((p) => p.includes('agent-a0')).length).toBeLessThan(
+      MAX_ON_DEMAND_FILES,
+    );
   });
 
   it('stats a finished transcript again once the poll reads it resuming', () => {
@@ -1760,7 +1778,7 @@ describe('SubagentWatcher.readLiveTails (on-demand read at hook intake)', () => 
     expect(turnsRead.map((t) => t.toolUseIds)).toEqual([['toolu_more']]);
   });
 
-  it('spends no stat on finished transcripts after a restart', () => {
+  it('still reads a running subagent behind finished transcripts after a restart', () => {
     writeCrowd(MAX_ON_DEMAND_FILES + 3, () => endTurnLine('msg_done'));
     makeWatcher().poll();
     const restarted = makeWatcher();
