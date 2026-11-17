@@ -16,6 +16,13 @@ import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
  */
 export const BREADCRUMBS_DIR = 'breadcrumbs';
 
+/**
+ * A cwd breadcrumb idle this long is collected. The resolver accepts a cwd
+ * breadcrumb only while its session was active within 12 hours, so the window
+ * is well past that.
+ */
+export const STALE_CWD_BREADCRUMB_MS = 7 * 24 * 60 * 60 * 1000;
+
 export function breadcrumbRoot(storagePath: string, writer: string): string {
   return resolve(storagePath, BREADCRUMBS_DIR, writer);
 }
