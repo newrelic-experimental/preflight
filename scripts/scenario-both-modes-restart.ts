@@ -245,9 +245,9 @@ async function tokenOnly(): Promise<void> {
     const sid = pf('sid');
     sendTurn(sid, TURN_A);
     sendTurn(sid, TURN_B);
-    const before = await waitFor(modelRequestCount, (n) => n >= 2);
+    await waitFor(modelRequestCount, (n) => n >= 2);
     await delay(SETTLE_MS);
-    check('token-only session counts each request once', before, 2);
+    check('token-only session counts each request once', modelRequestCount(), 2);
 
     pf('stop');
     pf('restart');
