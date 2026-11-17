@@ -2831,6 +2831,7 @@ describe('api-handler GET /api/usage-insights', () => {
             {
               ...sinceLastMidnight,
               estimatedCostUsd: 2,
+              toolCallCount: 1,
               durationMs: 0,
               subagentCostUsd: 0,
               tokensInput: 0,
