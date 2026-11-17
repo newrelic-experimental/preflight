@@ -1872,12 +1872,13 @@ describe('stdio integration', () => {
 
     describe('a session one engine drained while another checkpoints it', () => {
       const id = 'other-real-session';
-      const outcome = (storage: string): unknown => savedField(storage, id, 'outcome');
+      const outcome = (storage: string) => savedField(storage, id, 'outcome');
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
       const outcomesEvery100Ms = async (storage: string, samples: number): Promise<unknown[]> => {
         const seen: unknown[] = [];
         for (let i = 0; i < samples; i++) {
           seen.push(outcome(storage));
-          await new Promise((r) => setTimeout(r, 100));
+          await sleep(100);
         }
         return seen;
       };
@@ -1889,20 +1890,11 @@ describe('stdio integration', () => {
         for (; next <= 20 && savedCalls(storage, id) === null; next++) {
           await drainCalls(storage, id, 1, next);
           for (let i = 0; i < 6 && savedCalls(storage, id) === null; i++) {
-            await new Promise((r) => setTimeout(r, 100));
+            await sleep(100);
           }
         }
         expect(savedCalls(storage, id)).not.toBeNull();
         return { first, checkpointing, next };
-      };
-      const ownerJobDir = (): string => {
-        const jobDir = mkdtempSync(join(tmpdir(), 'nr-owner-job-'));
-        storages.push(jobDir);
-        writeFileSync(
-          resolve(jobDir, 'state.json'),
-          JSON.stringify({ linkScanPath: `/fake/transcript/${id}.jsonl` }),
-        );
-        return jobDir;
       };
 
       it('stays completed across its checkpoints after a pending engine with no live owner completes it', async () => {
@@ -1933,7 +1925,13 @@ describe('stdio integration', () => {
         const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
         await drainCalls(storage, id, 1);
         await waitFor(() => savedCalls(storage, id) === 1);
-        const owner = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: ownerJobDir() });
+        const jobDir = mkdtempSync(join(tmpdir(), 'nr-owner-job-'));
+        storages.push(jobDir);
+        writeFileSync(
+          resolve(jobDir, 'state.json'),
+          JSON.stringify({ linkScanPath: `/fake/transcript/${id}.jsonl` }),
+        );
+        const owner = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: jobDir });
         await waitFor(() => existsSync(resolve(storage, `active-${id}.pid`)));
         await drainCalls(storage, id, 1, 1);
         await owner.close();

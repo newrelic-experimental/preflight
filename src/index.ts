@@ -2739,13 +2739,15 @@ async function main(): Promise<void> {
       savesSession?: (sessionId: string) => boolean,
     ): number => {
       if (!sessionStore || !config) return 0;
-      const store = sessionStore;
       const storagePath = config.storagePath;
       // An observer's completion stands until the session shows activity after it or an engine for
       // it is live. Rewriting a rollup it already held is neither, so a running save keeps it.
-      const outcomeOf = (sessionId: string, lastActivity: number): Partial<FullSessionSummary> => {
-        const completedAt =
-          when === 'exit' ? Date.now() : store.loadSession(sessionId)?.observerCompletedAt;
+      const outcomeOf = (
+        sessionId: string,
+        onFile: FullSessionSummary | null,
+        lastActivity: number,
+      ): Partial<FullSessionSummary> => {
+        const completedAt = when === 'exit' ? Date.now() : onFile?.observerCompletedAt;
         return completedAt !== undefined &&
           lastActivity <= completedAt &&
           !hasLiveOwningEngine(storagePath, sessionId)
@@ -2764,10 +2766,8 @@ async function main(): Promise<void> {
       for (const rollup of rollups) {
         const sessionId = String(rollup.sessionId);
         try {
-          const prior =
-            callsBeforeFirstWrite.get(sessionId) ??
-            sessionStore.loadSession(sessionId)?.toolCallCount ??
-            0;
+          const onFile = sessionStore.loadSession(sessionId);
+          const prior = callsBeforeFirstWrite.get(sessionId) ?? onFile?.toolCallCount ?? 0;
           // A file with calls adds this rollup to them, since a max-merge would drop it. It leaves
           // out a call another process may count, and marks no ids, so that process still can.
           const kept =
@@ -2779,7 +2779,7 @@ async function main(): Promise<void> {
                 );
           const summary = {
             ...kept,
-            ...outcomeOf(sessionId, Number(rollup.endTime)),
+            ...outcomeOf(sessionId, onFile, Number(rollup.endTime)),
             toolCallCount: prior + Number(kept.toolCallCount),
           };
           if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary)) continue;
