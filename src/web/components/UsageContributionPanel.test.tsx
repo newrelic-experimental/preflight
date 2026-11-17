@@ -588,4 +588,36 @@ describe('UsageContributionPanel — Skills/Subagents/Plugins column consistency
     expect(within(subagentRow).getByRole('cell', { name: '8.0k' })).not.toHaveAttribute('title');
     expect(within(subagentRow).getByRole('cell', { name: '$4.00' })).not.toHaveAttribute('title');
   });
+
+  it("adds each category's dollars to the share-row hover when the row has breakdownUsd", () => {
+    const row = {
+      key: 'code-review',
+      costUsd: 0.61,
+      tokens: 34000,
+      count: 6,
+      sharePct: 12,
+      breakdown: {
+        inputTokens: 1200,
+        outputTokens: 800,
+        cacheReadTokens: 30000,
+        cacheCreationTokens: 2000,
+      },
+      breakdownUsd: { inputUsd: 0.4, outputUsd: 0.12, cacheReadUsd: 0.09, cacheCreationUsd: 0 },
+    };
+    render(
+      <UsageContributionPanel
+        data={{ ...SAMPLE_USAGE_INSIGHTS, skills: [row] }}
+        isError={false}
+        title="What's contributing to your spend"
+        subtitle="Last 30 days"
+        toolRows={[]}
+      />,
+    );
+
+    const skillRow = screen.getByRole('cell', { name: 'code-review' }).closest('tr') as HTMLElement;
+    expect(within(skillRow).getByRole('cell', { name: '$0.61' })).toHaveAttribute(
+      'title',
+      'Input 1.2k ($0.40) · Output 800 ($0.12) · Cache read 30.0k ($0.090) · Cache write 2.0k ($0.00)',
+    );
+  });
 });

@@ -1484,6 +1484,19 @@ async function main(): Promise<void> {
       }
       return saved !== null;
     };
+    const liftObserverCompleted = (sessionId: string): void => {
+      if (!sessionStore) return;
+      try {
+        const saved = sessionStore.loadSession(sessionId);
+        if (saved?.observerCompletedAt === undefined) return;
+        saveSessionRememberingBaseline(
+          { ...saved, outcome: 'in progress', observerCompletedAt: undefined },
+          'rollup',
+        );
+      } catch (err) {
+        logger.warn('Failed to lift an observer-completed session', { error: String(err) });
+      }
+    };
     const rehydrateTrackersIfResumed = (sessionId: string): void => {
       if (isSyntheticSessionId(sessionId)) return;
       if (rehydratedTrackerSessionIds.has(sessionId)) return;
@@ -1516,7 +1529,10 @@ async function main(): Promise<void> {
         });
       }
     };
-    if (!isProvisional && !resolvedViaCwdOnly) rehydrateTrackersIfResumed(currentSessionId);
+    if (!isProvisional && !resolvedViaCwdOnly) {
+      rehydrateTrackersIfResumed(currentSessionId);
+      liftObserverCompleted(currentSessionId);
+    }
 
     // Each command is isolated so a slow/missing git or remote doesn't block
     // the others. Uses spawnSync (no shell) to avoid injection; stderr is
@@ -2494,6 +2510,9 @@ async function main(): Promise<void> {
             ...(tokenEvent.responseMs !== undefined && { responseMs: tokenEvent.responseMs }),
           });
           modelUsageTracker.recordUsage(tokenEvent.model, usage, breakdown.totalUsd);
+          // A token-only session never reaches touch(), but the live trackers
+          // now hold its usage, so its persisted copy must be skipped.
+          if (tokenEvent.sessionId) liveSessionRegistry?.hold(tokenEvent.sessionId);
           holdLocalCost(tokenEvent.sessionId, breakdown.totalUsd, tokenEvent.timestamp);
         }
         localSessionAggregator.recordTokenUsage(tokenEvent.sessionId, {
@@ -2625,6 +2644,7 @@ async function main(): Promise<void> {
         // belong in the model breakdown too — recording them only in the cost
         // tracker left Model Usage blind to every subagent-only session.
         modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
+        if (turn.parentSessionId) liveSessionRegistry?.hold(turn.parentSessionId);
         holdLocalCost(turn.parentSessionId, breakdown.totalUsd, turn.timestampMs);
         // The only line that makes an orphan session's subagent spend durable:
         // without it, an unscoped process's aggregator never learns about this
@@ -2758,30 +2778,45 @@ async function main(): Promise<void> {
     });
 
     const observedRollups = (
-      outcome: string,
       savesSession?: (sessionId: string) => boolean,
     ): Array<Record<string, unknown>> => {
       if (!config) return [];
       return localSessionAggregator.toSummaries({
         developer: config.developer ?? 'unknown',
         platform: eventProcessor?.activePlatform,
-        outcome,
+        outcome: 'in progress',
         toolSelectionScorer,
         repoResolver: repoNameResolver,
         ...(savesSession !== undefined && { savesSession }),
       });
     };
 
-    const saveRollups = (rollups: ReturnType<typeof observedRollups>): number => {
-      if (!sessionStore) return 0;
+    const saveRollups = (
+      rollups: ReturnType<typeof observedRollups>,
+      when: 'exit' | 'running',
+    ): number => {
+      if (!sessionStore || !config) return 0;
+      const storagePath = config.storagePath;
+      // An observer's completion stands until the session shows activity after it or an engine for
+      // it is live. Rewriting a rollup it already held is neither, so a running save keeps it.
+      const outcomeOf = (
+        sessionId: string,
+        onFile: FullSessionSummary | null,
+        lastActivity: number,
+      ): Partial<FullSessionSummary> => {
+        const completedAt = when === 'exit' ? Date.now() : onFile?.observerCompletedAt;
+        return completedAt !== undefined &&
+          lastActivity <= completedAt &&
+          !hasLiveOwningEngine(storagePath, sessionId)
+          ? { outcome: 'completed', observerCompletedAt: completedAt }
+          : { outcome: 'in progress' };
+      };
       let saved = 0;
       for (const rollup of rollups) {
         const sessionId = String(rollup.sessionId);
         try {
-          const prior =
-            callsBeforeFirstWrite.get(sessionId) ??
-            sessionStore.loadSession(sessionId)?.toolCallCount ??
-            0;
+          const onFile = sessionStore.loadSession(sessionId);
+          const prior = callsBeforeFirstWrite.get(sessionId) ?? onFile?.toolCallCount ?? 0;
           // A file with calls adds this rollup to them, since a max-merge would drop it. It leaves
           // out a call another process may count, and marks no ids, so that process still can.
           const kept =
@@ -2791,7 +2826,11 @@ async function main(): Promise<void> {
                   rollup,
                   localStoreForShutdown?.countedToolUseIds(sessionId) ?? new Set<string>(),
                 );
-          const summary = { ...kept, toolCallCount: prior + Number(kept.toolCallCount) };
+          const summary = {
+            ...kept,
+            ...outcomeOf(sessionId, onFile, Number(rollup.endTime)),
+            toolCallCount: prior + Number(kept.toolCallCount),
+          };
           if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary, 'rollup'))
             continue;
           localSessionAggregator.markSaved(sessionId);
@@ -2805,15 +2844,15 @@ async function main(): Promise<void> {
     };
 
     const saveObservedSessions = (
-      outcome: string,
+      when: 'exit' | 'running',
       savesSession?: (sessionId: string) => boolean,
-    ): number => saveRollups(observedRollups(outcome, savesSession));
+    ): number => saveRollups(observedRollups(savesSession), when);
 
     // Taken as the engine adopts the session: every later turn it drains for
     // its own session also reaches CostTracker, which seeds from what this saves.
     const rolledUpWhilePending = (sessionId: string): ReturnType<typeof observedRollups> => {
       try {
-        return observedRollups('in progress', (id) => id === sessionId);
+        return observedRollups((id) => id === sessionId);
       } catch (err) {
         logger.warn('Failed to read what the session rolled up while pending', {
           error: String(err),
@@ -2872,9 +2911,7 @@ async function main(): Promise<void> {
           // draining other sessions' buffers destructively — so if it returns
           // here without writing them, those events are simply lost. Persist
           // each real session it observed instead.
-          const persistedSessions = saveObservedSessions(
-            opts?.periodic ? 'in progress' : 'completed',
-          );
+          const persistedSessions = saveObservedSessions(opts?.periodic ? 'running' : 'exit');
           if (!opts?.periodic) {
             logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
@@ -2884,7 +2921,7 @@ async function main(): Promise<void> {
           return;
         }
         saveObservedSessions(
-          'in progress',
+          'running',
           (id) => id !== summary.sessionId && localSessionAggregator.isUnsaved(id),
         );
         if (saveSessionRememberingBaseline(summary, 'ownTrackers')) {
@@ -3194,7 +3231,7 @@ async function main(): Promise<void> {
       // for the previously-adopted (wrong) id.
       applyAuthoritativeSessionName(realId);
       if (opts?.viaCwdOnly) cwdGuessRolledUpWhilePending = rolledUpWhilePending(realId);
-      else saveRollups(rolledUpWhilePending(realId));
+      else saveRollups(rolledUpWhilePending(realId), 'running');
       // viaCwdOnly means this id came from the collision-prone cwd fallback
       // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
       // resolvedViaCwdOnly gate on the synchronous resolution path's own
@@ -3203,11 +3240,14 @@ async function main(): Promise<void> {
       // startPpidCorrectionWatch right after this returns, whose
       // confirmation branch (ppidId === staleId) calls
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
-      if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
+      if (!opts?.viaCwdOnly) {
+        rehydrateTrackersIfResumed(realId);
+        liftObserverCompleted(realId);
+      }
       refreshPriorCostBaseline();
 
       try {
-        saveObservedSessions('in progress', (id) =>
+        saveObservedSessions('running', (id) =>
           opts?.isCorrection ? id === staleId : id !== realId,
         );
       } catch (err) {
@@ -3373,7 +3413,7 @@ async function main(): Promise<void> {
             // the resolvedViaCwdOnly gate on rehydrateTrackersIfResumed's
             // first call site) precisely because it wasn't confirmed yet —
             // seed it now that it is.
-            saveRollups(cwdGuessRolledUpWhilePending);
+            saveRollups(cwdGuessRolledUpWhilePending, 'running');
             rehydrateTrackersIfResumed(staleId);
             refreshPriorCostBaseline();
             if (localStoreForShutdown) writeHeartbeat(localStoreForShutdown, false);

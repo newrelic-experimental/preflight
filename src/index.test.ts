@@ -1509,14 +1509,14 @@ describe('stdio integration', () => {
       );
       return client;
     };
-    const drainCalls = async (storage: string, sessionId: string, count: number) => {
+    const drainCalls = async (storage: string, sessionId: string, count: number, from = 0) => {
       const buffer = resolve(storage, `buffer-${sessionId}.jsonl`);
       const lines = Array.from({ length: count }, (_, n) => {
         const call = {
           tool: 'Read',
           timestamp: Date.now() + n,
           sessionId,
-          toolUseId: `toolu_${n}`,
+          toolUseId: `toolu_${from + n}`,
         };
         return [
           { mode: 'pre', ...call },
@@ -1556,6 +1556,21 @@ describe('stdio integration', () => {
       await adoptAndStop(storage, client, 'own-real-session');
 
       expect(savedCalls(storage, 'own-real-session')).toBe(2);
+    }, 30000);
+
+    it('puts a session an observer completed back in progress as soon as it adopts that session', async () => {
+      const storage = makeStorage();
+      const observer = await startEngine(storage);
+      await drainCalls(storage, 'own-real-session', 1);
+      await observer.close();
+      await waitFor(() => savedField(storage, 'own-real-session', 'outcome') === 'completed');
+
+      const client = await startEngine(storage);
+      const heartbeat = resolve(storage, 'active-own-real-session.pid');
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'own-real-session');
+      await waitFor(() => existsSync(heartbeat));
+      await waitFor(() => savedField(storage, 'own-real-session', 'outcome') === 'in progress');
+      await client.close();
     }, 30000);
 
     const guessFromCwd = (storage: string, cwd: string): void => {
@@ -1824,17 +1839,112 @@ describe('stdio integration', () => {
       expect(savedField(storage, 'other-real-session', 'outcome')).toBe('in progress');
     }, 30000);
 
-    it('saves a pending checkpoint in progress and its shutdown save completed', async () => {
+    it('saves the sessions it drained while pending in progress at a checkpoint', async () => {
       const storage = makeStorage();
       const client = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
       await drainCalls(storage, 'other-real-session', 1);
       await waitFor(() => savedCalls(storage, 'other-real-session') === 1);
       const atCheckpoint = savedField(storage, 'other-real-session', 'outcome');
       await client.close();
-      await waitFor(() => savedField(storage, 'other-real-session', 'outcome') === 'completed');
 
       expect(atCheckpoint).toBe('in progress');
     }, 30000);
+
+    it('saves a session it drained while pending in progress at shutdown while its engine is live', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      await drainCalls(storage, 'other-real-session', 1);
+      writeFileSync(resolve(storage, 'active-other-real-session.pid'), String(process.pid));
+      await client.close();
+      await waitFor(() => savedCalls(storage, 'other-real-session') === 1);
+
+      expect(savedField(storage, 'other-real-session', 'outcome')).toBe('in progress');
+    }, 30000);
+
+    it('saves a session it drained while pending completed at shutdown when no engine for it is live', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      await drainCalls(storage, 'other-real-session', 1);
+      await client.close();
+      await waitFor(() => savedCalls(storage, 'other-real-session') === 1);
+
+      expect(savedField(storage, 'other-real-session', 'outcome')).toBe('completed');
+    }, 30000);
+
+    describe('a session one engine drained while another checkpoints it', () => {
+      const id = 'other-real-session';
+      const outcome = (storage: string) => savedField(storage, id, 'outcome');
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const outcomesEvery100Ms = async (storage: string, samples: number): Promise<unknown[]> => {
+        const seen: unknown[] = [];
+        for (let i = 0; i < samples; i++) {
+          seen.push(outcome(storage));
+          await sleep(100);
+        }
+        return seen;
+      };
+      const startWithSessionDrained = async (storage: string) => {
+        const first = await startEngine(storage);
+        await drainCalls(storage, id, 1);
+        const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
+        let next = 1;
+        for (; next <= 20 && savedCalls(storage, id) === null; next++) {
+          // Both engines poll every 100 ms, so a fixed phase could hand every call to one of them.
+          await sleep((next * 37) % 100);
+          await drainCalls(storage, id, 1, next);
+          for (let i = 0; i < 6 && savedCalls(storage, id) === null; i++) {
+            await sleep(100);
+          }
+        }
+        expect(savedCalls(storage, id)).not.toBeNull();
+        return { first, checkpointing, next };
+      };
+
+      it('stays completed across its checkpoints after a pending engine with no live owner completes it', async () => {
+        const storage = makeStorage();
+        const { first, checkpointing } = await startWithSessionDrained(storage);
+        await first.close();
+        await waitFor(() => outcome(storage) === 'completed');
+
+        expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
+        await checkpointing.close();
+        expect(outcome(storage)).toBe('completed');
+      }, 60000);
+
+      it('goes back in progress after a pending engine completes it when the session makes a new call', async () => {
+        const storage = makeStorage();
+        const { first, checkpointing, next } = await startWithSessionDrained(storage);
+        await first.close();
+        await waitFor(() => outcome(storage) === 'completed');
+
+        await drainCalls(storage, id, 1, next);
+        await waitFor(() => outcome(storage) === 'in progress');
+        await checkpointing.close();
+        await waitFor(() => outcome(storage) === 'completed');
+      }, 60000);
+
+      it('stays completed across its checkpoints after its own engine completes it', async () => {
+        const storage = makeStorage();
+        const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
+        await drainCalls(storage, id, 1);
+        await waitFor(() => savedCalls(storage, id) === 1);
+        const jobDir = mkdtempSync(join(tmpdir(), 'nr-owner-job-'));
+        storages.push(jobDir);
+        writeFileSync(
+          resolve(jobDir, 'state.json'),
+          JSON.stringify({ linkScanPath: `/fake/transcript/${id}.jsonl` }),
+        );
+        const owner = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: jobDir });
+        await waitFor(() => existsSync(resolve(storage, `active-${id}.pid`)));
+        await drainCalls(storage, id, 1, 1);
+        await owner.close();
+        await waitFor(() => outcome(storage) === 'completed');
+
+        expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
+        await checkpointing.close();
+        expect(outcome(storage)).toBe('completed');
+      }, 60000);
+    });
 
     it('keeps a call with no session id across its first adoption', async () => {
       const storage = makeStorage();

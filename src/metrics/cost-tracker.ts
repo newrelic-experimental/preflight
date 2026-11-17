@@ -499,6 +499,7 @@ export class CostTracker implements Resettable {
         usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
       const existing = this.subagentByAgentType.get(ctx.agentType);
       const existingBreakdown = existing?.breakdown;
+      const existingUsd = existing?.breakdownUsd;
       this.subagentByAgentType.set(ctx.agentType, {
         costUsd: (existing?.costUsd ?? 0) + breakdown.totalUsd,
         tokens: (existing?.tokens ?? 0) + tokens,
@@ -510,6 +511,12 @@ export class CostTracker implements Resettable {
           cacheReadTokens: (existingBreakdown?.cacheReadTokens ?? 0) + usage.cacheReadTokens,
           cacheCreationTokens:
             (existingBreakdown?.cacheCreationTokens ?? 0) + usage.cacheCreationTokens,
+        },
+        breakdownUsd: {
+          inputUsd: (existingUsd?.inputUsd ?? 0) + breakdown.inputUsd,
+          outputUsd: (existingUsd?.outputUsd ?? 0) + breakdown.outputUsd,
+          cacheReadUsd: (existingUsd?.cacheReadUsd ?? 0) + breakdown.cacheReadUsd,
+          cacheCreationUsd: (existingUsd?.cacheCreationUsd ?? 0) + breakdown.cacheCreationUsd,
         },
       });
     }
