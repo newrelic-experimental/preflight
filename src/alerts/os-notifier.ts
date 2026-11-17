@@ -1,6 +1,6 @@
 import { execFile as nodeExecFile } from 'node:child_process';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 
 const logger = createLogger('os-notifier');
 

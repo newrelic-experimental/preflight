@@ -1,4 +1,4 @@
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { normalizeAgentType } from '../lib/agent-id.js';
 import { BoundedMap } from '../lib/bounded-map.js';
 import type { ToolCallRecord } from '../storage/types.js';
@@ -97,9 +97,10 @@ export class SubagentAttributionIndex {
 
   /**
    * Learns a subagent's type from the parent's `Agent` tool call; ignores every
-   * other record. `subagentType` is `tool_input.subagent_type` read straight
-   * off a `buffer.jsonl` line, so it passes the same `normalizeAgentType()`
-   * check as the sidecar type before it can be backfilled onto audit records.
+   * other record. `subagentType` is `tool_input.subagent_type`, already checked
+   * by `parseAgent()` when the record was built, but a `buffer.jsonl` line is
+   * hand-editable, so it passes `normalizeAgentType()` again, like the sidecar
+   * type, before it can be backfilled onto audit records.
    */
   recordAgentToolCall(record: ToolCallRecord): void {
     if (record.toolName !== 'Agent') return;

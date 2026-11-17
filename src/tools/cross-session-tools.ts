@@ -17,7 +17,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 
 import { SecretCommandSchema } from '../config.js';
 import { validateSsrfUrl } from '../security/index.js';
-import { stagingHost } from '../shared/transport/http-client.js';
+import { stagingHost } from '../core/transport/http-client.js';
 import type { SessionStore } from '../storage/session-store.js';
 import { formatSlackDigest } from '../digest/digest-formatter.js';
 import { sendSlackDigest } from '../digest/digest-sender.js';
