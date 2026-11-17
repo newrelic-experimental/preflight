@@ -796,6 +796,11 @@ export class CostTracker implements Resettable {
     return this.subagentCostByDayUsd.get(dayKey) ?? 0;
   }
 
+  /** Earlier of the process start and the saved session start, so a restart keeps the session's real age. */
+  getSessionStartMs(processStartMs: number): number {
+    return Math.min(processStartMs, this.seededSessionStartMs ?? processStartMs);
+  }
+
   /**
    * Epoch ms of the first token event recorded today (local time), or null
    * if no spend has been booked today. The forecast burn-rate denominator
@@ -803,10 +808,6 @@ export class CostTracker implements Resettable {
    * latter dilutes the rate with idle hours from previous days when a
    * session spans midnight.
    */
-  getSessionStartMs(processStartMs: number): number {
-    return Math.min(processStartMs, this.seededSessionStartMs ?? processStartMs);
-  }
-
   getFirstActivityMsForDay(dayKey: string): number | null {
     return this.firstActivityMsByDay.get(dayKey) ?? null;
   }
