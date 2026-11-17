@@ -1508,6 +1508,7 @@ describe('stdio integration', () => {
       );
       return client;
     };
+    let drainedCalls = 0;
     const drainCalls = async (storage: string, sessionId: string, count: number) => {
       const buffer = resolve(storage, `buffer-${sessionId}.jsonl`);
       const lines = Array.from({ length: count }, (_, n) => {
@@ -1515,7 +1516,7 @@ describe('stdio integration', () => {
           tool: 'Read',
           timestamp: Date.now() + n,
           sessionId,
-          toolUseId: `toolu_${n}`,
+          toolUseId: `toolu_drained_${++drainedCalls}`,
         };
         return [
           { mode: 'pre', ...call },
