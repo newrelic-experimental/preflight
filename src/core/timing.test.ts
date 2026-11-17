@@ -7,26 +7,6 @@ function busyWait(ms: number): void {
   }
 }
 
-function expectFirstTokenKeepsFirstCall(): void {
-  let now = 0;
-  const nowSpy = jest.spyOn(performance, 'now').mockImplementation(() => now);
-  try {
-    const timer = new RequestTimer();
-    timer.start();
-    now = 1;
-    timer.markFirstToken();
-    now = 6;
-    timer.markFirstToken();
-    timer.stop();
-
-    const metrics = timer.getMetrics();
-    expect(metrics.timeToFirstTokenMs).toBe(1);
-    expect(metrics.durationMs).toBe(6);
-  } finally {
-    nowSpy.mockRestore();
-  }
-}
-
 describe('RequestTimer', () => {
   // 1. Basic duration measurement
   it('measures durationMs > 0 after start/stop', () => {
@@ -141,7 +121,23 @@ describe('RequestTimer', () => {
 
   // 7. markFirstToken idempotent
   it('only records the first markFirstToken() call', () => {
-    expectFirstTokenKeepsFirstCall();
+    let now = 0;
+    const nowSpy = jest.spyOn(performance, 'now').mockImplementation(() => now);
+    try {
+      const timer = new RequestTimer();
+      timer.start();
+      now = 1;
+      timer.markFirstToken();
+      now = 6;
+      timer.markFirstToken();
+      timer.stop();
+
+      const metrics = timer.getMetrics();
+      expect(metrics.timeToFirstTokenMs).toBe(1);
+      expect(metrics.durationMs).toBe(6);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   // 8. generationDurationMs clamped to 0 when markThinkingEnd() called after stop()
@@ -217,10 +213,6 @@ describe('RequestTimer', () => {
       } finally {
         nowSpy.mockRestore();
       }
-    });
-
-    it('markFirstToken remains strictly first-write-wins', () => {
-      expectFirstTokenKeepsFirstCall();
     });
   });
 
