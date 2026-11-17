@@ -24,7 +24,7 @@ import {
 } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
 import { isSyntheticSessionId, type SessionNameSource } from '../hooks/session-resolver.js';

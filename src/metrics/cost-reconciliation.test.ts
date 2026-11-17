@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { SubagentTimelineStore } from '../dashboard/subagent-timeline-store.js';
 import { HookEventProcessor, type SubagentTurnEvent } from '../hooks/event-processor.js';
-import type { TokenUsage } from '../shared/index.js';
+import type { TokenUsage } from '../core/index.js';
 import { LocalStore } from '../storage/local-store.js';
 import type { HookEvent } from '../storage/types.js';
 import { CostTracker } from './cost-tracker.js';

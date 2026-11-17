@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // src/hooks/collector-script.ts
-import { readFileSync as readFileSync2, writeFileSync, mkdirSync, existsSync, utimesSync } from "node:fs";
-import { resolve as resolve2, dirname } from "node:path";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, mkdirSync as mkdirSync2, existsSync, utimesSync } from "node:fs";
+import { resolve as resolve2, dirname as dirname2 } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 
@@ -469,6 +469,110 @@ function mcpPrToolAction(toolName) {
   return Object.hasOwn(MCP_PR_TOOL_ACTION, bare) ? MCP_PR_TOOL_ACTION[bare] : void 0;
 }
 
+// src/hooks/minted-tool-use-ids.ts
+import { randomUUID } from "node:crypto";
+import {
+  closeSync as closeSync2,
+  mkdirSync,
+  openSync as openSync2,
+  readdirSync,
+  renameSync,
+  unlinkSync as unlinkSync2,
+  writeFileSync
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
+var MINTED_IDS_DIR_PREFIX = "minted-ids-";
+var MINTED_ID_PREFIX = "minted-";
+var CLAIM_SUFFIX = ".claimed";
+var OPEN_ENTRY_TTL_MS = 40 * 6e4;
+var MAX_LISTINGS = 5;
+function mintedIdsDir(bufferPath) {
+  return join(dirname(bufferPath), MINTED_IDS_DIR_PREFIX + basename(bufferPath, ".jsonl"));
+}
+function toolKey(tool) {
+  const name = tool.toLowerCase();
+  let a = 2166136261;
+  let b = 16777619;
+  for (let i = 0; i < name.length; i++) {
+    a = Math.imul(a ^ name.charCodeAt(i), 16777619);
+    b = Math.imul(b ^ name.charCodeAt(i), 16777619);
+  }
+  return (a >>> 0).toString(16).padStart(8, "0") + (b >>> 0).toString(16).padStart(8, "0");
+}
+function parseEntry(name) {
+  if (name.endsWith(CLAIM_SUFFIX)) return void 0;
+  const [mintedAt, key, id, lateUntil, extra] = name.split(".");
+  if (key === void 0 || id === void 0 || extra !== void 0) return void 0;
+  return {
+    name,
+    mintedAt: Number(mintedAt),
+    key,
+    id,
+    lateUntil: lateUntil === void 0 ? void 0 : Number(lateUntil)
+  };
+}
+function listEntries(dir) {
+  try {
+    return readdirSync(dir).sort().flatMap((name) => parseEntry(name) ?? []);
+  } catch {
+    return void 0;
+  }
+}
+function mintToolUseId(bufferPath, tool, at) {
+  const id = MINTED_ID_PREFIX + randomUUID();
+  try {
+    const dir = mintedIdsDir(bufferPath);
+    mkdirSync(dir, { recursive: true, mode: 448 });
+    writeFileSync(join(dir, `${at}.${toolKey(tool)}.${id}`), "", {
+      flag: "wx",
+      mode: 384
+    });
+    return id;
+  } catch {
+    return void 0;
+  }
+}
+function takeMintedToolUseId(bufferPath, tool, at) {
+  const dir = mintedIdsDir(bufferPath);
+  const key = toolKey(tool);
+  for (let listing = 0; listing < MAX_LISTINGS; listing++) {
+    const entries = listEntries(dir)?.filter((entry) => entry.key === key);
+    if (entries === void 0) return void 0;
+    const open = entries.filter((entry) => entry.lateUntil === void 0);
+    const counted = entries.filter((entry) => entry.lateUntil !== void 0);
+    let contended = false;
+    for (const entry of [...open, ...counted]) {
+      if (!claim(join(dir, entry.name), unlinkSync2)) {
+        contended = true;
+        continue;
+      }
+      const expired = entry.lateUntil === void 0 ? at - entry.mintedAt > OPEN_ENTRY_TTL_MS : at > entry.lateUntil;
+      if (!expired) return entry.id;
+    }
+    if (!contended) return void 0;
+  }
+  return void 0;
+}
+function claim(entry, act) {
+  const claimPath = entry + CLAIM_SUFFIX;
+  try {
+    closeSync2(openSync2(claimPath, "wx", 384));
+  } catch {
+    return false;
+  }
+  try {
+    act(entry);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try {
+      unlinkSync2(claimPath);
+    } catch {
+    }
+  }
+}
+
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
 var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -503,11 +607,17 @@ function getRecordContent() {
     process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT === "true"
   );
 }
+var DEFAULT_MAX_CONTENT_LENGTH = 10240;
+var MIN_MAX_CONTENT_LENGTH = 256;
+var MAX_MAX_CONTENT_LENGTH = 1048576;
 function getMaxContentLength() {
   const val = process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
-  if (val === void 0) return 10240;
+  if (val === void 0) return DEFAULT_MAX_CONTENT_LENGTH;
   const parsed = parseInt(val, 10);
-  return Number.isNaN(parsed) ? 10240 : parsed;
+  if (Number.isNaN(parsed)) return DEFAULT_MAX_CONTENT_LENGTH;
+  if (parsed < MIN_MAX_CONTENT_LENGTH) return MIN_MAX_CONTENT_LENGTH;
+  if (parsed > MAX_MAX_CONTENT_LENGTH) return MAX_MAX_CONTENT_LENGTH;
+  return parsed;
 }
 function detectStampPlatform() {
   for (const key of ENGINE_ENV_KEYS) {
@@ -591,7 +701,7 @@ function writePpidBreadcrumb(sessionId, root, legacyRoot) {
     const pids = getLinuxAncestorPids(ppid);
     for (const dir of legacyRoot === void 0 ? [root] : [root, legacyRoot]) {
       const breadcrumbDir = resolve2(dir, "session-by-ppid");
-      mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
+      mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
       for (const pid of pids) {
         const breadcrumbPath = resolve2(breadcrumbDir, `${pid}.txt`);
         if (existsSync(breadcrumbPath)) {
@@ -603,7 +713,7 @@ function writePpidBreadcrumb(sessionId, root, legacyRoot) {
           } catch {
           }
         }
-        writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
+        writeFileSync2(breadcrumbPath, sessionId, { mode: 384 });
       }
     }
     _breadcrumbWriteFailed = false;
@@ -625,7 +735,7 @@ function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
   try {
     for (const dir of legacyRoot === void 0 ? [root] : [root, legacyRoot]) {
       const breadcrumbDir = resolve2(dir, "session-by-cwd");
-      mkdirSync(breadcrumbDir, { recursive: true, mode: 448 });
+      mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
       const breadcrumbPath = resolve2(breadcrumbDir, `${sanitizedCwd}.txt`);
       if (existsSync(breadcrumbPath)) {
         try {
@@ -636,7 +746,7 @@ function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
         } catch {
         }
       }
-      writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
+      writeFileSync2(breadcrumbPath, sessionId, { mode: 384 });
     }
     _cwdBreadcrumbWriteFailed = false;
   } catch (err) {
@@ -888,6 +998,7 @@ function getWindsurfToolInfo(data) {
   return data.tool_info !== null && typeof data.tool_info === "object" ? data.tool_info : {};
 }
 var stderrSinkInstalled = false;
+var POST_ONLY_EVENTS = /* @__PURE__ */ new Set(["beforereadfile", "afterfileedit"]);
 function processHook(raw, cliEvent) {
   let data;
   try {
@@ -1248,9 +1359,13 @@ function processHook(raw, cliEvent) {
   if (data.agent_type) event.agentType = data.agent_type;
   try {
     const bufferPath = getBufferPath(sessionId);
-    const bufferDir = dirname(bufferPath);
+    const bufferDir = dirname2(bufferPath);
     if (!existsSync(bufferDir)) {
-      mkdirSync(bufferDir, { recursive: true, mode: 448 });
+      mkdirSync2(bufferDir, { recursive: true, mode: 448 });
+    }
+    if (event.toolUseId === void 0 && (event.mode === "pre" || event.mode === "post") && !POST_ONLY_EVENTS.has(eventName ?? "")) {
+      const id = event.mode === "pre" ? mintToolUseId(bufferPath, String(event.tool), timestamp) : takeMintedToolUseId(bufferPath, String(event.tool), timestamp);
+      if (id !== void 0) event.toolUseId = id;
     }
     const line = JSON.stringify(event) + "\n";
     appendToHookBuffer(bufferPath, line);
@@ -1318,6 +1433,7 @@ export {
   _stdinFs,
   getBufferPath,
   getLinuxAncestorPids,
+  getMaxContentLength,
   getRecordContent,
   hashInput,
   processHook,

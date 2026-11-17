@@ -17,6 +17,7 @@ import {
   _stdinFs,
   getBufferPath,
   getLinuxAncestorPids,
+  getMaxContentLength,
   getRecordContent,
   hashInput,
   processHook,
@@ -32,6 +33,9 @@ import { createDefaultRegistry } from '../platforms/platform-registry.js';
 import { PLATFORM_NAMES } from '../platforms/platform-names.js';
 import { sessionBreadcrumbWriters } from '../platforms/types.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
+import { HookEventProcessor } from './event-processor.js';
+import { LocalStore } from '../storage/local-store.js';
+import type { ToolCallRecord } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let stdoutSpy: ReturnType<typeof jest.spyOn>;
@@ -1431,7 +1435,7 @@ describe('collector-script', () => {
 
     it('truncates content exceeding max length', () => {
       process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
-      process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '50';
+      process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
 
       const longContent = 'x'.repeat(100_000);
       processHook(
@@ -1442,8 +1446,72 @@ describe('collector-script', () => {
 
       const event = readBufferEvents()[0]!;
       const content = event.outputContent as string;
-      expect(content.length).toBeLessThan(100);
+      expect(content.length).toBeLessThan(300);
       expect(content).toContain('...[truncated]');
+    });
+
+    describe('NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH bounds', () => {
+      const captured = (): string => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(1_000) } }));
+        return readBufferEvents()[0]!.outputContent as string;
+      };
+      const serialized = JSON.stringify({ data: 'x'.repeat(1_000) });
+
+      it.each(['0', '-5', '255', '256'])('clamps %s up to the 256 floor', (raw) => {
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = raw;
+        expect(captured()).toBe(serialized.slice(0, 256) + '...[truncated]');
+      });
+
+      it.each(['abc', ''])('falls back to 10,240 for %j', (raw) => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = raw;
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(20_000) } }));
+        const serializedLong = JSON.stringify({ data: 'x'.repeat(20_000) });
+        expect(readBufferEvents()[0]!.outputContent).toBe(
+          serializedLong.slice(0, 10_240) + '...[truncated]',
+        );
+      });
+
+      it('clamps a value above the upper bound to the ceiling instead of the default', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '2000000';
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(20_000) } }));
+        expect(readBufferEvents()[0]!.outputContent).toBe(
+          JSON.stringify({ data: 'x'.repeat(20_000) }),
+        );
+      });
+
+      it.each([
+        ['0', 256],
+        ['-5', 256],
+        ['255', 256],
+        ['256', 256],
+        ['1048576', 1_048_576],
+        ['1048577', 1_048_576],
+        ['2000000', 1_048_576],
+        ['abc', 10_240],
+        ['', 10_240],
+        [undefined, 10_240],
+      ])('getMaxContentLength with %j returns %i', (raw, expected) => {
+        if (raw === undefined) delete process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
+        else process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = raw;
+        expect(getMaxContentLength()).toBe(expected);
+      });
+
+      it('accepts the upper bound itself', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '1048576';
+        const serializedAtBound = JSON.stringify({ data: 'x'.repeat(1_048_576 - 11) });
+        expect(serializedAtBound).toHaveLength(1_048_576);
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(1_048_576 - 11) } }));
+        expect(readBufferEvents()[0]!.outputContent).toBe(serializedAtBound);
+      });
+
+      it('cuts at the configured length when the value is within bounds', () => {
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+        expect(captured()).toBe(serialized.slice(0, 256) + '...[truncated]');
+      });
     });
   });
 
@@ -2910,7 +2978,7 @@ describe('collector-script', () => {
       expect(event.error).toBe('exit status 1');
     });
 
-    it('omits toolUseId from both events when stepIdx is not a number', () => {
+    it('gives both events one minted toolUseId when stepIdx is not a number', () => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
       processHook(makeAntigravityPreToolUse({ stepIdx: undefined }), 'PreToolUse');
@@ -2918,7 +2986,8 @@ describe('collector-script', () => {
 
       const events = readBufferLines('agy-conv-001');
       expect(events.map((e) => e.mode)).toEqual(['pre', 'post']);
-      for (const event of events) expect(event).not.toHaveProperty('toolUseId');
+      expect(events[0]!.toolUseId).toEqual(expect.any(String));
+      expect(events[1]!.toolUseId).toBe(events[0]!.toolUseId);
     });
 
     it('replies with only {} on stdout for PostToolUse, never a decision field (#793)', () => {
@@ -2988,5 +3057,317 @@ describe('collector-script', () => {
       expect(events).toHaveLength(1);
       expect(events[0]!.tool).toBe('Read');
     });
+  });
+});
+
+describe('a tool call without tool_use_id', () => {
+  const SESSION = 'sess-noid';
+  const POLL_MS = 10;
+  let clock: ReturnType<typeof jest.spyOn>;
+
+  beforeEach(() => {
+    delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+    clock = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+  });
+
+  afterEach(() => {
+    clock.mockRestore();
+    jest.useRealTimers();
+  });
+
+  function hook(mode: 'pre' | 'post', tool: string, at: number): void {
+    clock.mockReturnValue(at);
+    const make = mode === 'pre' ? makePreToolUse : makePostToolUse;
+    processHook(make({ tool_use_id: undefined, session_id: SESSION, tool_name: tool }));
+  }
+
+  function bufferIds(): unknown[] {
+    return readFileSync(resolve(tmpDir, `buffer-${SESSION}.jsonl`), 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => (JSON.parse(line) as Record<string, unknown>).toolUseId);
+  }
+
+  function mintedEntries(): string[] {
+    return readdirSync(resolve(tmpDir, `minted-ids-buffer-${SESSION}`));
+  }
+
+  interface Outcome {
+    readonly at: number;
+    readonly success: boolean;
+    readonly durationMs: number | null;
+  }
+
+  function startEngine(
+    records: Outcome[],
+    amends: Outcome[],
+    { store, drainAllSessions = false }: { store: LocalStore; drainAllSessions?: boolean } = {
+      store: new LocalStore(tmpDir, SESSION),
+    },
+  ) {
+    jest.useFakeTimers({ doNotFake: ['Date'] });
+    const outcome = ({ timestamp, success, durationMs }: ToolCallRecord) => ({
+      at: timestamp,
+      success,
+      durationMs,
+    });
+    const engine = new HookEventProcessor({
+      store,
+      drainAllSessions,
+      pollIntervalMs: POLL_MS,
+      onRecord: (r) => records.push(outcome(r)),
+      onRecordAmend: (r) => amends.push(outcome(r)),
+    });
+    engine.start();
+    return {
+      pollAt(at: number) {
+        clock.mockReturnValue(at);
+        jest.advanceTimersByTime(POLL_MS);
+      },
+      stop() {
+        engine.stop();
+        engine.persistCountedIdsOfSavedSessions([SESSION]);
+      },
+    };
+  }
+
+  it('stamps the post with the id minted for its pre', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'Read', 2_000);
+
+    const [pre, post] = bufferIds();
+    expect(pre).toEqual(expect.any(String));
+    expect(post).toBe(pre);
+  });
+
+  it('gives parallel same-tool calls their ids oldest first, and only within a tool', () => {
+    hook('pre', 'Read', 1_000);
+    hook('pre', 'Bash', 2_000);
+    hook('pre', 'Read', 3_000);
+    hook('post', 'Read', 4_000);
+    hook('post', 'Read', 5_000);
+    hook('post', 'Bash', 6_000);
+
+    const [read1, bash, read2, ...posts] = bufferIds();
+    expect(new Set([read1, bash, read2]).size).toBe(3);
+    expect(posts).toEqual([read1, read2, bash]);
+  });
+
+  it('matches a post to its pre whatever the case of the tool name', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'read', 2_000);
+
+    const [pre, post] = bufferIds();
+    expect(pre).toEqual(expect.any(String));
+    expect(post).toBe(pre);
+  });
+
+  it('leaves a post without an id when no pre of its tool minted one', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'Bash', 2_000);
+
+    const ids = bufferIds();
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toEqual(expect.any(String));
+    expect(ids[1]).toBeUndefined();
+  });
+
+  it.each([
+    ['Read', 'beforeReadFile'],
+    ['Edit', 'afterFileEdit'],
+  ])('never gives the id of a pending %s to Cursor %s, which has no pre', (tool, postOnlyEvent) => {
+    const cursor = (hook_event_name: string, extra: Record<string, unknown>) =>
+      processHook(JSON.stringify({ hook_event_name, conversation_id: SESSION, ...extra }));
+    cursor('preToolUse', { tool_name: tool });
+    cursor(postOnlyEvent, { file_path: '/projects/test/a.ts' });
+    cursor('postToolUse', { tool_name: tool });
+
+    const [pre, postOnly, post] = bufferIds();
+    expect(pre).toEqual(expect.any(String));
+    expect(postOnly).toBeUndefined();
+    expect(post).toBe(pre);
+  });
+
+  it('does not stamp a post with the id of a pre older than any pairing window', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'Read', 1_000 + 41 * 60_000);
+    hook('post', 'Read', 1_000 + 42 * 60_000);
+
+    const ids = bufferIds();
+    expect(ids).toHaveLength(3);
+    expect(ids[0]).toEqual(expect.any(String));
+    expect(ids.slice(1)).toEqual([undefined, undefined]);
+  });
+
+  it('deletes an expired id and gives the post the next one of its tool', () => {
+    hook('pre', 'Read', 1_000);
+    hook('pre', 'Read', 1_000 + 39 * 60_000);
+    hook('post', 'Read', 1_000 + 41 * 60_000);
+
+    const [, second, post] = bufferIds();
+    expect(second).toEqual(expect.any(String));
+    expect(post).toBe(second);
+    expect(mintedEntries()).toEqual([]);
+  });
+
+  it.each([
+    ['its session buffer', () => ({ store: new LocalStore(tmpDir, SESSION) })],
+    ['a drain-all engine', () => ({ store: new LocalStore(tmpDir), drainAllSessions: true })],
+    [
+      'a buffer path override',
+      () => {
+        process.env.NEW_RELIC_AI_MCP_BUFFER_PATH = bufferPath;
+        return { store: new LocalStore(tmpDir, bufferPath) };
+      },
+    ],
+  ])(
+    'pairs each later call with its own pre after a pre that never got a post times out, in %s',
+    (_, makeEngineStore) => {
+      const records: Outcome[] = [];
+      const amends: Outcome[] = [];
+      const engine = startEngine(records, amends, makeEngineStore());
+      hook('pre', 'Read', 1_000);
+      engine.pollAt(62_000);
+      hook('pre', 'Read', 63_000);
+      hook('post', 'Read', 63_400);
+      engine.pollAt(63_500);
+      hook('pre', 'Read', 64_000);
+      hook('post', 'Read', 64_050);
+      engine.pollAt(64_100);
+      engine.stop();
+
+      expect(records).toEqual([
+        { at: 1_000, success: false, durationMs: null },
+        { at: 63_000, success: true, durationMs: 400 },
+        { at: 64_000, success: true, durationMs: 50 },
+      ]);
+      expect(amends).toEqual([]);
+    },
+  );
+
+  it('pairs each later call with its own pre after an engine flushes a pre that never got a post', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    hook('pre', 'Read', 1_000);
+    const first = startEngine(records, amends);
+    first.pollAt(1_100);
+    first.stop();
+
+    const restarted = startEngine(records, amends);
+    hook('pre', 'Read', 3_000);
+    hook('post', 'Read', 3_400);
+    restarted.pollAt(3_500);
+    hook('pre', 'Read', 4_000);
+    hook('post', 'Read', 4_050);
+    restarted.pollAt(4_100);
+    restarted.stop();
+
+    expect(records).toEqual([
+      { at: 1_000, success: false, durationMs: null },
+      { at: 3_000, success: true, durationMs: 400 },
+      { at: 4_000, success: true, durationMs: 50 },
+    ]);
+    expect(amends).toEqual([]);
+  });
+
+  it('pairs later calls with their own pres when the hooks send a numeric session id', () => {
+    const records: Outcome[] = [];
+    const engine = startEngine(records, [], {
+      store: new LocalStore(tmpDir),
+      drainAllSessions: true,
+    });
+    const numeric = (make: typeof makePreToolUse, at: number) => {
+      clock.mockReturnValue(at);
+      processHook(make({ tool_use_id: undefined, session_id: 12345, tool_name: 'Read' }));
+    };
+    numeric(makePreToolUse, 1_000);
+    engine.pollAt(62_000);
+    numeric(makePreToolUse, 63_000);
+    numeric(makePostToolUse, 63_400);
+    engine.pollAt(63_500);
+    engine.stop();
+
+    expect(records).toEqual([
+      { at: 1_000, success: false, durationMs: null },
+      { at: 63_000, success: true, durationMs: 400 },
+    ]);
+  });
+
+  it('amends a timed-out call when its own post arrives late', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    const engine = startEngine(records, amends);
+    hook('pre', 'Read', 1_000);
+    engine.pollAt(62_000);
+    hook('post', 'Read', 70_000);
+    engine.pollAt(70_100);
+    engine.stop();
+
+    expect(records).toEqual([{ at: 1_000, success: false, durationMs: null }]);
+    expect(amends).toEqual([{ at: 1_000, success: true, durationMs: 69_000 }]);
+  });
+
+  it('records a post as unpaired once its timed-out pre is past the late-post window', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    const engine = startEngine(records, amends);
+    hook('pre', 'Read', 1_000);
+    engine.pollAt(62_000);
+    hook('post', 'Read', 200_000);
+    engine.pollAt(200_100);
+    engine.stop();
+
+    expect(records).toEqual([
+      { at: 1_000, success: false, durationMs: null },
+      { at: 200_000, success: true, durationMs: null },
+    ]);
+    expect(amends).toEqual([]);
+  });
+
+  it('still hands a pre to its late post after two engines both counted it', () => {
+    hook('pre', 'Read', 1_000);
+    const redelivered = new LocalStore(tmpDir, SESSION).drainBuffer();
+    for (const _ of [1, 2]) {
+      const engine = new HookEventProcessor({
+        store: new LocalStore(tmpDir, SESSION),
+        onRecord: () => undefined,
+      });
+      engine.processEvents(redelivered);
+      engine.stop();
+    }
+    hook('post', 'Read', 2_000);
+
+    const minted = (redelivered[0] as { toolUseId?: string }).toolUseId;
+    expect(minted).toEqual(expect.any(String));
+    expect(bufferIds()).toEqual([minted]);
+  });
+
+  it('pairs a minted pre with an unstamped post of its tool in one engine', () => {
+    const records: Outcome[] = [];
+    const engine = startEngine(records, []);
+    hook('pre', 'Read', 1_000);
+    rmSync(resolve(tmpDir, `minted-ids-buffer-${SESSION}`), { recursive: true });
+    hook('post', 'Read', 1_250);
+    engine.pollAt(1_300);
+    engine.stop();
+
+    expect(records).toEqual([{ at: 1_000, success: true, durationMs: 250 }]);
+  });
+
+  it('counts a call once, as the first engine timeout, when another engine drains its post', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    hook('pre', 'Read', 1_000);
+    const first = startEngine(records, amends);
+    first.pollAt(1_100);
+    first.stop();
+
+    hook('post', 'Read', 2_000);
+    const restarted = startEngine(records, amends);
+    restarted.pollAt(2_100);
+    restarted.stop();
+
+    expect(records).toEqual([{ at: 1_000, success: false, durationMs: null }]);
+    expect(amends).toEqual([]);
   });
 });

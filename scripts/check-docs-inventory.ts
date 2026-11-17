@@ -30,13 +30,12 @@ const ENV_DOC_PATHS = ['README.md', 'docs/ADVANCED.md', 'SECURITY.md', 'PRIVACY.
   resolve(ROOT, p),
 );
 
-// 'web' is the built SPA, not server code. 'shared' is a vendored snapshot
-// (CLAUDE.md: never edit it) whose own event/test vocabulary is far broader
-// than what this app wires up — scanning it would flag things like the
-// vendored `AiMessage`/`AiRequest` events this app never sends. '*.test.ts'
+// 'web' is the built SPA, not server code. 'core' carries its own event/test
+// vocabulary, far broader than what this app wires up — scanning it would
+// flag things like the `AiMessage`/`AiRequest` events this app never sends. '*.test.ts'
 // files declare fixture event names ('Session1', 'dropped', ...) that are
 // mock data, not real emissions. All three would drown real drift in noise.
-const SKIP_DIR_NAMES = new Set(['web', 'shared', 'node_modules']);
+const SKIP_DIR_NAMES = new Set(['web', 'core', 'node_modules']);
 
 const EVENT_TYPE_RE = /eventType:\s*'([A-Za-z0-9_]+)'/g;
 const METRIC_TOKEN_RE = /\bai\.[a-z0-9_]+(?:\.[a-z0-9_]+)+\b/g;
