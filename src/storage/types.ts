@@ -392,6 +392,8 @@ export function amendRecord(previous: ToolCallRecord, amend: ToolCallRecord): To
 
 export interface ReplayTimelineEntry {
   readonly timestamp: number;
+  /** Identifies the call across saves. Absent in sessions persisted before it existed. */
+  readonly toolUseId?: string;
   readonly toolName: string;
   readonly durationMs: number | null;
   readonly success: boolean;
