@@ -852,8 +852,12 @@ export function mergeSummaries(
       (incoming.antiPatterns?.length ?? 0) >= (existing.antiPatterns?.length ?? 0)
         ? incoming.antiPatterns
         : existing.antiPatterns,
+    // A completed outcome survives stale or thinner writers, but yields to a
+    // write carrying strictly newer activity (a resumed session's checkpoint).
     outcome:
-      incoming.outcome === 'completed' || existing.outcome !== 'completed'
+      incoming.outcome === 'completed' ||
+      existing.outcome !== 'completed' ||
+      (incoming.endTime > existing.endTime && incoming.toolCallCount > existing.toolCallCount)
         ? incoming.outcome
         : existing.outcome,
     ...(timeline ? { timeline } : {}),

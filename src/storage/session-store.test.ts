@@ -4060,29 +4060,32 @@ describe('saveSession cross-process merge', () => {
     ['equal endTime', 2000, 9],
     ['older endTime', 1500, 9],
     ['newer endTime but fewer tool calls', 3000, 4],
-  ])('keeps a completed outcome against a non-completed write with %s', (_label, endTime, calls) => {
-    const store = new SessionStore({ storagePath: tmpDir });
-    const id = 'dddd1111-2222-4333-8444-555566667777';
-    store.saveSession(
-      makeSummary({
-        sessionId: id,
-        outcome: 'completed',
-        endTime: 2000,
-        toolCallCount: 5,
-        toolBreakdown: { Bash: 5 },
-      }),
-    );
-    store.saveSession(
-      makeSummary({
-        sessionId: id,
-        outcome: 'in progress',
-        endTime,
-        toolCallCount: calls,
-        toolBreakdown: { Bash: calls },
-      }),
-    );
-    expect(store.loadSession(id)?.outcome).toBe('completed');
-  });
+  ])(
+    'keeps a completed outcome against a non-completed write with %s',
+    (_label, endTime, calls) => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const id = 'dddd1111-2222-4333-8444-555566667777';
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          outcome: 'completed',
+          endTime: 2000,
+          toolCallCount: 5,
+          toolBreakdown: { Bash: 5 },
+        }),
+      );
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          outcome: 'in progress',
+          endTime,
+          toolCallCount: calls,
+          toolBreakdown: { Bash: calls },
+        }),
+      );
+      expect(store.loadSession(id)?.outcome).toBe('completed');
+    },
+  );
 
   it('unions per-model breakdowns contributed by different processes', () => {
     const store = new SessionStore({ storagePath: tmpDir });
