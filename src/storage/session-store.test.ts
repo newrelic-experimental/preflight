@@ -4526,6 +4526,97 @@ describe('attribution field', () => {
     });
   });
 
+  it('round-trips breakdownUsd and drops a malformed one while keeping the bucket', () => {
+    const attributionWith = (breakdownUsd: unknown): unknown => ({
+      buckets: {
+        skill: {
+          unslop: { costUsd: 0.03, tokens: 165, count: 2, durationMs: 4000, breakdownUsd },
+        },
+      },
+      highContextCostUsd: 0,
+      apiDurationMs: null,
+    });
+    const parse = (breakdownUsd: unknown) =>
+      deserializeFullSessionSummary(
+        JSON.parse(
+          JSON.stringify({ ...makeSummary(), attribution: attributionWith(breakdownUsd) }),
+        ) as Parameters<typeof deserializeFullSessionSummary>[0],
+      ).attribution?.buckets.skill?.unslop;
+
+    expect(
+      parse({ inputUsd: 0.01, outputUsd: 0.02, cacheReadUsd: 0.003, cacheCreationUsd: 0 })
+        ?.breakdownUsd,
+    ).toEqual({ inputUsd: 0.01, outputUsd: 0.02, cacheReadUsd: 0.003, cacheCreationUsd: 0 });
+
+    const malformed = parse({ inputUsd: 0.01, outputUsd: 'nope' });
+    expect(malformed?.costUsd).toBe(0.03);
+    expect(malformed?.breakdownUsd).toBeUndefined();
+  });
+
+  it("merge keeps the one side's breakdownUsd when the other side has none", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-breakdown-usd-${Date.now()}`;
+    const bucket = (extra: object) => ({
+      costUsd: 0.05,
+      tokens: 40,
+      count: 6,
+      durationMs: 300,
+      ...extra,
+    });
+    const save = (extra: object) =>
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          attribution: {
+            buckets: { skill: { unslop: bucket(extra) } },
+            highContextCostUsd: 0,
+            apiDurationMs: null,
+          },
+        }),
+      );
+
+    save({
+      breakdownUsd: { inputUsd: 0.01, outputUsd: 0.02, cacheReadUsd: 0, cacheCreationUsd: 0 },
+    });
+    save({});
+
+    expect(store.loadSession(id)?.attribution?.buckets.skill?.unslop.breakdownUsd).toEqual({
+      inputUsd: 0.01,
+      outputUsd: 0.02,
+      cacheReadUsd: 0,
+      cacheCreationUsd: 0,
+    });
+  });
+
+  it('merge drops breakdownUsd when the side with the larger costUsd has none', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-breakdown-usd-older-${Date.now()}`;
+    const save = (bucket: object) =>
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          attribution: {
+            buckets: { skill: { unslop: bucket as never } },
+            highContextCostUsd: 0,
+            apiDurationMs: null,
+          },
+        }),
+      );
+
+    save({ costUsd: 5, tokens: 500, count: 5, durationMs: 1 });
+    save({
+      costUsd: 2,
+      tokens: 200,
+      count: 2,
+      durationMs: 1,
+      breakdownUsd: { inputUsd: 1, outputUsd: 1, cacheReadUsd: 0, cacheCreationUsd: 0 },
+    });
+
+    const merged = store.loadSession(id)?.attribution?.buckets.skill?.unslop;
+    expect(merged?.costUsd).toBe(5);
+    expect(merged?.breakdownUsd).toBeUndefined();
+  });
+
   it('drops a malformed breakdown but keeps the bucket', () => {
     const raw = JSON.stringify({
       ...makeSummary(),
