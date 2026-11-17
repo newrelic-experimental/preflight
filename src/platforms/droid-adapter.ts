@@ -105,7 +105,7 @@ export class DroidAdapter implements PlatformAdapter {
       '   }',
       '   Keep the MCP_CLIENT=droid prefix: the hook runs apart from the MCP server, so an',
       '   unstamped command files its breadcrumbs under a pool shared with other engines.',
-      '   On Windows use: cmd /c "set MCP_CLIENT=droid&& preflight-collector"',
+      '   On Windows use: "command": "cmd /c \\"set MCP_CLIENT=droid&& preflight-collector\\""',
       '2. Ensure preflight-collector is on PATH (npm link, or npm install -g @newrelic/preflight)',
       '3. Register the Preflight MCP server:',
       '   droid mcp add preflight "npx preflight --stdio" \\',

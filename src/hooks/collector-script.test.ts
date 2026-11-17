@@ -2550,7 +2550,9 @@ describe('collector-script', () => {
     it.each(STAMPED_HOOK_ENGINES)(
       'files the hook command %s documents under its own engine, not unattributed',
       (engine) => {
-        process.env.MCP_CLIENT = documentedStamp(engine);
+        const stamp = documentedStamp(engine);
+        expect(stamp).toBe(engine);
+        process.env.MCP_CLIENT = stamp;
         processHook(makePreToolUse({ session_id: 'sess-doc', cwd: '/projects/test' }));
         expect(readFileSync(crumbs(engine).cwd, 'utf-8')).toBe('sess-doc');
         expect(existsSync(crumbs('unattributed').cwd)).toBe(false);
@@ -2559,7 +2561,9 @@ describe('collector-script', () => {
 
     it('keeps each documented engine out of the other engines breadcrumb pools', () => {
       for (const engine of STAMPED_HOOK_ENGINES) {
-        process.env.MCP_CLIENT = documentedStamp(engine);
+        const stamp = documentedStamp(engine);
+        expect(stamp).toBe(engine);
+        process.env.MCP_CLIENT = stamp;
         processHook(makePreToolUse({ session_id: `sess-${engine}`, cwd: '/projects/test' }));
       }
       const registered = createDefaultRegistry().getRegistered();
