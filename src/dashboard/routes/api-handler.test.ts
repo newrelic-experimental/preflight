@@ -229,6 +229,37 @@ describe('api-handler GET /api/sessions', () => {
     expect(ids).toEqual(['chat-only', 'tools']);
   });
 
+  describe('ids filter', () => {
+    const makeHandler = () => {
+      const fakeSessions = Array.from({ length: 120 }, (_v, i) => ({
+        sessionId: `sess-${i}`,
+        toolCallCount: i + 1,
+      }));
+      return createApiHandler({
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => fakeSessions,
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+    };
+
+    it('returns a session outside the newest page when requested by id', async () => {
+      const req = { method: 'GET', url: '/api/sessions?ids=sess-0' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result.map((s) => s.sessionId)).toEqual(['sess-0']);
+    });
+
+    it('returns an empty list for an unknown id', async () => {
+      const req = { method: 'GET', url: '/api/sessions?ids=nope' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler()(req, res);
+      expect(JSON.parse(body())).toEqual([]);
+    });
+  });
+
   it('uses default limit of 50 when not specified', async () => {
     const fakeSessions = Array.from({ length: 100 }, (_v, i) => ({
       filename: `2026-05-${String(i + 1).padStart(2, '0')}_sess-${i}.json`,

@@ -1342,6 +1342,46 @@ describe('Sessions view — ?sessionIds= deep-link filter', () => {
     window.location = original as unknown as string & Location;
   });
 
+  it('finds a deep-linked session that only the ids endpoint returns', async () => {
+    const original = window.location;
+    // @ts-expect-error -- test-only reassignment of a read-only global
+    delete window.location;
+    window.location = {
+      ...original,
+      search: '?sessionIds=lr1',
+    } as unknown as string & Location;
+    const json = (body: unknown) =>
+      Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    globalThis.fetch = ((url: string) => {
+      if (url.startsWith('/api/sessions?ids=')) {
+        return json([
+          {
+            sessionId: 'lr1',
+            startTime: '2026-05-01T09:00:00Z',
+            toolCallCount: 99,
+            estimatedCostUsd: 2,
+          },
+        ]);
+      }
+      if (url.startsWith('/api/sessions/')) return json({ sessionId: 'lr1', timeline: [] });
+      if (url.startsWith('/api/workflows')) return json([]);
+      return json(THREE_SESSION_LIST);
+    }) as typeof globalThis.fetch;
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: 0 } } })}>
+        <Sessions />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByText(/lr1/)).toBeInTheDocument());
+    expect(screen.queryByText(/not found/)).toBeNull();
+    window.location = original as unknown as string & Location;
+  });
+
   it('flags a selected session id that is not in the loaded page, instead of silently dropping it', async () => {
     const original = window.location;
     // @ts-expect-error -- test-only reassignment of a read-only global
