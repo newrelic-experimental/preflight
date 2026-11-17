@@ -234,6 +234,7 @@ export interface FullSessionSummary extends SessionSummary {
   readonly assistantMessages: number;
   readonly userCorrections: number;
   readonly outcome: string;
+  readonly observerCompletedAt?: number;
   readonly platform?: string;
   readonly instructionPromptHash?: string | null;
   readonly timeline?: ReplayTimelineEntry[];
@@ -451,19 +452,26 @@ const MAX_TIMELINE_ENTRIES = 10_000;
  * `--stdio` resume starts the new process with an empty in-memory timeline;
  * under longest-wins, every checkpoint the new process writes loses the merge
  * race to the old process's on-disk timeline until it outgrows it, silently
- * dropping entries from whichever side was shorter. Entries are deduped by
- * `(timestamp, toolName)` — no toolUseId is carried on `ReplayTimelineEntry`,
- * but two distinct real tool calls sharing a millisecond timestamp and tool
- * name is not a case that occurs in practice.
+ * dropping entries from whichever side was shorter.
+ *
+ * An entry is identified by its `toolUseId`, so parallel calls to one tool
+ * that share a millisecond all survive. Entries saved before the id existed
+ * have none and fall back to `(timestamp, toolName)`. A legacy entry whose
+ * `(timestamp, toolName)` an id-bearing entry also carries is the same call
+ * recorded before the upgrade, so it is dropped rather than doubled.
  */
 function mergeTimeline(
   existing: readonly ReplayTimelineEntry[] | undefined,
   incoming: readonly ReplayTimelineEntry[] | undefined,
 ): ReplayTimelineEntry[] | undefined {
   if (existing === undefined && incoming === undefined) return undefined;
+  const legacyKey = (e: ReplayTimelineEntry): string => `${e.timestamp}:${e.toolName}`;
+  const all = [...(existing ?? []), ...(incoming ?? [])];
+  const legacyKeysWithId = new Set(all.filter((e) => e.toolUseId).map(legacyKey));
   const byKey = new Map<string, ReplayTimelineEntry>();
-  for (const entry of [...(existing ?? []), ...(incoming ?? [])]) {
-    byKey.set(`${entry.timestamp}:${entry.toolName}`, entry);
+  for (const entry of all) {
+    if (entry.toolUseId) byKey.set(`id:${entry.toolUseId}`, entry);
+    else if (!legacyKeysWithId.has(legacyKey(entry))) byKey.set(legacyKey(entry), entry);
   }
   const merged = [...byKey.values()].sort((a, b) => a.timestamp - b.timestamp);
   return merged.length > MAX_TIMELINE_ENTRIES
@@ -772,6 +780,10 @@ export function mergeSummaries(
       : existing.toolSelectionMetrics;
 
   const timeline = mergeTimeline(existing.timeline, incoming.timeline);
+  const outcomeSource =
+    existing.outcome === 'completed' && existing.observerCompletedAt === undefined
+      ? existing
+      : incoming;
 
   const startTime = Math.min(
     existing.startTime || incoming.startTime,
@@ -852,10 +864,8 @@ export function mergeSummaries(
       (incoming.antiPatterns?.length ?? 0) >= (existing.antiPatterns?.length ?? 0)
         ? incoming.antiPatterns
         : existing.antiPatterns,
-    outcome:
-      incoming.outcome === 'completed' || existing.outcome !== 'completed'
-        ? incoming.outcome
-        : existing.outcome,
+    outcome: outcomeSource.outcome,
+    observerCompletedAt: outcomeSource.observerCompletedAt,
     ...(timeline ? { timeline } : {}),
     toolSelectionMetrics,
     modelBreakdown,
@@ -1409,6 +1419,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
   // Enriched timeline for session replay
   const timeline: ReplayTimelineEntry[] = allToolCalls.map((tc) => ({
     timestamp: tc.timestamp,
+    toolUseId: tc.toolUseId || undefined,
     toolName: tc.toolName,
     durationMs: tc.durationMs,
     success: tc.success,
@@ -1631,6 +1642,7 @@ interface SerializedFullSessionSummary {
   readonly assistantMessages?: unknown;
   readonly userCorrections?: unknown;
   readonly outcome?: unknown;
+  readonly observerCompletedAt?: unknown;
   readonly platform?: unknown;
   readonly instructionPromptHash?: unknown;
   readonly timeline?: Array<Record<string, unknown>>;
@@ -2044,6 +2056,9 @@ export function deserializeFullSessionSummary(
     assistantMessages: typeof obj.assistantMessages === 'number' ? obj.assistantMessages : 0,
     userCorrections: typeof obj.userCorrections === 'number' ? obj.userCorrections : 0,
     outcome: typeof obj.outcome === 'string' ? obj.outcome : 'unknown',
+    ...(typeof obj.observerCompletedAt === 'number' && {
+      observerCompletedAt: obj.observerCompletedAt,
+    }),
     platform: typeof obj.platform === 'string' ? obj.platform : undefined,
     instructionPromptHash:
       typeof obj.instructionPromptHash === 'string' ? obj.instructionPromptHash : null,
@@ -2059,6 +2074,7 @@ export function deserializeFullSessionSummary(
           .map((e) => ({
             timestamp: e.timestamp as number,
             toolName: e.toolName as string,
+            toolUseId: typeof e.toolUseId === 'string' ? e.toolUseId : undefined,
             durationMs: typeof e.durationMs === 'number' ? e.durationMs : null,
             success: typeof e.success === 'boolean' ? e.success : true,
             filePath: typeof e.filePath === 'string' ? e.filePath : undefined,
