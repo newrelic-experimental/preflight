@@ -12,7 +12,7 @@ import {
   getEventsApiUrl,
   getNerdgraphUrl,
 } from './key-validator.js';
-import { stagingHost } from '../shared/transport/http-client.js';
+import { stagingHost } from '../core/transport/http-client.js';
 
 afterEach(() => {
   jest.mocked(validateSsrfUrl).mockReset();
