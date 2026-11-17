@@ -94,6 +94,20 @@ const FRAGMENTS: readonly (() => string)[] = [
 ];
 const word = (): string => repeat(1, 3, () => pick(FRAGMENTS)());
 
+const HEREDOC_DELIMITERS: readonly (readonly [operator: string, delimiter: string])[] = [
+  ['EOF', 'EOF'],
+  ["'EOF'", 'EOF'],
+  ['-EOF', 'EOF'],
+  ['\\EOF', 'EOF'],
+  ["'EOF-1'", 'EOF-1'],
+  ['"E-F"', 'E-F'],
+  ['E.F', 'E.F'],
+  ['EOF_2', 'EOF_2'],
+  ['-\\EOF', 'EOF'],
+  ['-"E.F"', 'E.F'],
+  ["E-'F'", 'E-F'],
+];
+
 interface Statement {
   readonly text: string;
   readonly needsNewline: boolean;
@@ -103,10 +117,13 @@ const STATEMENTS: readonly (() => Statement)[] = [
   () => ({ text: `true ${repeat(0, 2, word, ' ')}`, needsNewline: false }),
   () => ({ text: `x=${word()}`, needsNewline: false }),
   () => ({ text: `cat <<<${word()}`, needsNewline: false }),
-  () => ({
-    text: `cat <<${pick(['EOF', "'EOF'", '-EOF'])}\n${repeat(0, 2, inner, '\n')}\nEOF`,
-    needsNewline: true,
-  }),
+  () => {
+    const [operator, delimiter] = pick(HEREDOC_DELIMITERS);
+    return {
+      text: `cat <<${operator}\n${repeat(0, 2, inner, '\n')}\n${delimiter}`,
+      needsNewline: true,
+    };
+  },
   () => ({ text: `# ${oneLine()}`, needsNewline: true }),
   () => ({ text: `(echo ${word()})${pick(['', '#', ' #'])}${word()}`, needsNewline: false }),
 ];

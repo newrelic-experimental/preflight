@@ -7,7 +7,7 @@
  */
 
 import { basename } from 'node:path';
-import type { MetricAggregator } from '../shared/index.js';
+import type { MetricAggregator } from '../core/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import {
   DEGENERATE_NAMES,

@@ -16,7 +16,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { normalizeAgentType } from '../lib/agent-id.js';
 import { createDefaultRegistry, GENERIC_MCP_PLATFORM_NAME } from '../platforms/index.js';
 import type { PlatformAdapter } from '../platforms/types.js';
@@ -42,6 +42,7 @@ import type {
   WorkflowRunEvent,
 } from '../storage/types.js';
 import { DedupRingRegistry } from './dedup-ring.js';
+import { isMintedToolUseId } from './minted-tool-use-ids.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 const logger = createLogger('event-processor');
@@ -370,7 +371,7 @@ function findOldestFallbackKey(
   let oldestTimestamp = Infinity;
   for (const [k, { event: pre, matchUntil }] of entries) {
     if (
-      k.startsWith(`${pre.tool}:`) &&
+      (pre.toolUseId === undefined || isMintedToolUseId(pre.toolUseId)) &&
       pre.tool.toLowerCase() === post.tool.toLowerCase() &&
       (pre.sessionId ?? post.sessionId) === (post.sessionId ?? pre.sessionId) &&
       (matchUntil === undefined || post.timestamp <= matchUntil) &&
@@ -725,7 +726,7 @@ export class HookEventProcessor {
     if (this.pending.size >= this.maxPendingEvents) {
       // Prefer evicting events that are already past the orphan timeout
       const now = Date.now();
-      // Named to avoid shared/redact.ts's SECRET_KEY_RE (which matches any key
+      // Named to avoid core/redact.ts's SECRET_KEY_RE (which matches any key
       // name containing "key") — that would silently blank this diagnostic value.
       let evictedPairingId: string | undefined;
       for (const [key, entry] of this.pending) {
@@ -972,11 +973,15 @@ export class HookEventProcessor {
       if (oldest !== undefined) this.countedUnpaired.delete(oldest);
     }
     if (toolUseId === key && sessionId) this.unpersistedCountedIds.set(key, sessionId);
+    const matchUntil = timestamp + this.pendingTtlMs(entry) + FALLBACK_LATE_POST_WINDOW_MS;
+    if (toolUseId !== undefined && isMintedToolUseId(toolUseId)) {
+      this.store.countMintedToolUseId(sessionId, toolUseId, matchUntil);
+    }
     this.countedUnpaired.set(key, {
       event: { mode: 'pre', tool, timestamp, sessionId, toolUseId },
       recordId,
       recordToolUseId,
-      matchUntil: timestamp + this.pendingTtlMs(entry) + FALLBACK_LATE_POST_WINDOW_MS,
+      matchUntil,
     });
   }
 
