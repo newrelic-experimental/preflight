@@ -340,14 +340,21 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    {
      "hooks": {
        "PreToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=droid preflight-collector" }]
+         }
        ],
        "PostToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=droid preflight-collector" }]
+         }
        ]
      }
    }
    ```
+   The `MCP_CLIENT=droid` prefix is required. Hook commands run as a separate process from the MCP server and never see the env set by `mcp add`, so an unstamped command files its breadcrumbs under `unattributed`, a pool every unstamped engine shares. On Windows the `VAR=value` prefix is not valid in `cmd.exe` or PowerShell, so use `cmd /c "set MCP_CLIENT=droid&& preflight-collector"` as the command, with the inner quotes escaped in JSON (no space before `&&`, or the space becomes part of the value).
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
 3. Register the Preflight MCP server:
    ```
@@ -382,14 +389,21 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    {
      "hooks": {
        "BeforeTool": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=gemini-cli preflight-collector" }]
+         }
        ],
        "AfterTool": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=gemini-cli preflight-collector" }]
+         }
        ]
      }
    }
    ```
+   The `MCP_CLIENT=gemini-cli` prefix is required. Hook commands run as a separate process from the MCP server and never see the env set by `mcp add`, so an unstamped command files its breadcrumbs under `unattributed`, a pool every unstamped engine shares. On Windows the `VAR=value` prefix is not valid in `cmd.exe` or PowerShell, so use `cmd /c "set MCP_CLIENT=gemini-cli&& preflight-collector"` as the command, with the inner quotes escaped in JSON (no space before `&&`, or the space becomes part of the value).
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
 3. Register the Preflight MCP server:
    ```
@@ -424,14 +438,21 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    {
      "hooks": {
        "PreToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=codex preflight-collector" }]
+         }
        ],
        "PostToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=codex preflight-collector" }]
+         }
        ]
      }
    }
    ```
+   The `MCP_CLIENT=codex` prefix is required. Hook commands run as a separate process from the MCP server and never see the env set by `mcp add`, so an unstamped command files its breadcrumbs under `unattributed`, a pool every unstamped engine shares. On Windows the `VAR=value` prefix is not valid in `cmd.exe` or PowerShell, so use `cmd /c "set MCP_CLIENT=codex&& preflight-collector"` as the command, with the inner quotes escaped in JSON (no space before `&&`, or the space becomes part of the value).
 2. Run `/hooks` in the Codex CLI to review and trust this hook definition — non-managed hooks are skipped until reviewed.
 3. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
 4. Register the Preflight MCP server:
@@ -481,7 +502,7 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    }
    ```
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
-3. Create `.opencode/plugins/preflight.js` (project) or `~/.config/opencode/plugins/preflight.js` (global) with the snippet in `OpencodeAdapter.getHookInstallInstructions()` (`src/platforms/opencode-adapter.ts`) — reproduced there in full.
+3. Create `.opencode/plugins/preflight.js` (project) or `~/.config/opencode/plugins/preflight.js` (global) with the snippet in `OpencodeAdapter.getHookInstallInstructions()` (`src/platforms/opencode-adapter.ts`) — reproduced there in full. The snippet sets `MCP_CLIENT` in the collector spawn's `env`, which is required: without it the collector files breadcrumbs under `unattributed`, a pool every unstamped engine shares. It works on Windows too, since it sets the variable in the spawn options and not in a shell command.
 4. Restart opencode.
 
 ---
@@ -522,7 +543,7 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    }
    ```
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
-3. Create `.kilo/plugin/preflight.ts` (project) or `~/.config/kilo/plugin/preflight.ts` (global) with the snippet in `KiloCodeAdapter.getHookInstallInstructions()` (`src/platforms/kilo-code-adapter.ts`) — reproduced there in full, using Kilo's current plugin module descriptor shape (`export default { id, server }`).
+3. Create `.kilo/plugin/preflight.ts` (project) or `~/.config/kilo/plugin/preflight.ts` (global) with the snippet in `KiloCodeAdapter.getHookInstallInstructions()` (`src/platforms/kilo-code-adapter.ts`) — reproduced there in full, using Kilo's current plugin module descriptor shape (`export default { id, server }`). The snippet sets `MCP_CLIENT` in the collector spawn's `env`, which is required: without it the collector files breadcrumbs under `unattributed`, a pool every unstamped engine shares. It works on Windows too.
 4. Restart Kilo Code.
 
 ---

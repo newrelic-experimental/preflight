@@ -2540,7 +2540,9 @@ describe('collector-script', () => {
         .getRegistered()
         .find((candidate) => candidate.platformName === engine)!;
       const instructions = adapter.getHookInstallInstructions();
-      const commandStamp = /"command": "MCP_CLIENT=([\w-]+) preflight-collector"/.exec(instructions);
+      const commandStamp = /"command": "MCP_CLIENT=([\w-]+) preflight-collector"/.exec(
+        instructions,
+      );
       const spawnStamp = /spawn\("preflight-collector".*MCP_CLIENT: "([\w-]+)"/.exec(instructions);
       return (commandStamp ?? spawnStamp)?.[1];
     };
