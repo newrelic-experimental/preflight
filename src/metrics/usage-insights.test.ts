@@ -133,7 +133,11 @@ describe('computeUsageInsights', () => {
 
   it('uses cutoffMs instead of nowMs - windowDays * DAY_MS when given, while windowDays still reports as given', () => {
     const afterCutoff = makeSummary({ startTime: NOW - 30 * 60_000, estimatedCostUsd: 3 });
-    const beforeCutoff = makeSummary({ startTime: NOW - 90 * 60_000, estimatedCostUsd: 100 });
+    const beforeCutoff = makeSummary({
+      startTime: NOW - 90 * 60_000,
+      endTime: NOW - 80 * 60_000,
+      estimatedCostUsd: 100,
+    });
 
     const report = computeUsageInsights([afterCutoff, beforeCutoff], {
       nowMs: NOW,
@@ -144,6 +148,45 @@ describe('computeUsageInsights', () => {
     expect(report.sessionCount).toBe(1);
     expect(report.totalCostUsd).toBe(3);
     expect(report.windowDays).toBe(1);
+  });
+
+  it('counts a session that started before cutoffMs but was active after it', () => {
+    const cutoffMs = NOW - 60 * 60_000;
+    const spanning = makeSummary({
+      startTime: cutoffMs - 30 * 60_000,
+      endTime: cutoffMs + 10 * 60_000,
+      estimatedCostUsd: 4,
+    });
+
+    const report = computeUsageInsights([spanning], { nowMs: NOW, windowDays: 1, cutoffMs });
+
+    expect(report.sessionCount).toBe(1);
+    expect(report.totalCostUsd).toBe(4);
+  });
+
+  it('falls back to startTime + durationMs when endTime is not a number', () => {
+    const cutoffMs = NOW - 60 * 60_000;
+    const spanning = makeSummary({
+      startTime: cutoffMs - 30 * 60_000,
+      endTime: undefined as unknown as number,
+      durationMs: 45 * 60_000,
+    });
+
+    const report = computeUsageInsights([spanning], { nowMs: NOW, windowDays: 1, cutoffMs });
+
+    expect(report.sessionCount).toBe(1);
+  });
+
+  it('excludes a session that ended before cutoffMs', () => {
+    const cutoffMs = NOW - 60 * 60_000;
+    const ended = makeSummary({
+      startTime: cutoffMs - 30 * 60_000,
+      endTime: cutoffMs - 10 * 60_000,
+    });
+
+    const report = computeUsageInsights([ended], { nowMs: NOW, windowDays: 1, cutoffMs });
+
+    expect(report.sessionCount).toBe(0);
   });
 
   it('treats a null estimatedCostUsd as 0', () => {
