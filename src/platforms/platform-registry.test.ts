@@ -276,6 +276,14 @@ describe('PlatformRegistry', () => {
       expect(createDefaultRegistry().detect()?.platformName).toBe(platformName);
     });
 
+    it('leaves the engine env as the user spelled it, so spawned children inherit it unchanged', () => {
+      process.env.MCP_CLIENT = 'Gemini_CLI';
+      process.env.NEW_RELIC_AI_PLATFORM = 'COPILOT_SDK';
+      createDefaultRegistry().detect();
+      expect(process.env.MCP_CLIENT).toBe('Gemini_CLI');
+      expect(process.env.NEW_RELIC_AI_PLATFORM).toBe('COPILOT_SDK');
+    });
+
     it('lets an adapter used without detect() recognise another spelling of its own name', () => {
       process.env.MCP_CLIENT = 'Kilo_Code';
       expect(new KiloCodeAdapter().isSupported()).toBe(true);

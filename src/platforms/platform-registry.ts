@@ -16,7 +16,7 @@ import { KiloCodeAdapter } from './kilo-code-adapter.js';
 import { KiroAdapter } from './kiro-adapter.js';
 import { OpencodeAdapter } from './opencode-adapter.js';
 import { PiAdapter } from './pi-adapter.js';
-import { canonicalPlatformName, ENGINE_ENV_KEYS, normalizeEngineEnv } from './platform-names.js';
+import { canonicalPlatformName, ENGINE_ENV_KEYS } from './platform-names.js';
 import type { PlatformAdapter, PlatformVisibilityLevel } from './types.js';
 import { WindsurfAdapter } from './windsurf-adapter.js';
 import { ZedAdapter } from './zed-adapter.js';
@@ -40,10 +40,11 @@ export class PlatformRegistry {
    * NEW_RELIC_AI_PLATFORM too) alongside its ambient checks, with equal
    * weight — so without this, an ambient signal inherited from a launching
    * process (e.g. CLAUDE_CODE_VERSION) can outrank an explicit config for a
-   * different platform purely because that adapter registers first.
+   * different platform purely because that adapter registers first. Each
+   * adapter compares the configured name through canonicalPlatformName, so
+   * detection never rewrites process.env, which spawned children inherit.
    */
   detect(): PlatformAdapter | null {
-    normalizeEngineEnv(process.env);
     const explicitPlatform = ENGINE_ENV_KEYS.map((key) =>
       canonicalPlatformName(process.env[key]),
     ).find((name) => name !== undefined);
