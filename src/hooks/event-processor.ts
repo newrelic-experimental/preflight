@@ -73,10 +73,6 @@ export interface HookEventProcessorOptions {
    * live session.
    */
   drainAllSessions?: boolean;
-  /**
-   * Sees every record first, whichever session made it, and returns the record
-   * that onRecord and onWorkflowAgent get, or null to keep it from them.
-   */
   admitRecord?: (record: ToolCallRecord) => ToolCallRecord | null;
   onRecord: (record: ToolCallRecord) => void;
   onRecordAmend?: (record: ToolCallRecord) => void;
@@ -1305,7 +1301,6 @@ export class HookEventProcessor {
     }
   }
 
-  /** Sends records admitRecord kept out earlier to onRecord and onWorkflowAgent. */
   replayRecords(records: readonly ToolCallRecord[]): void {
     for (const record of records) this.emitAdmitted(record);
   }

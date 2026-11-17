@@ -55,11 +55,7 @@ import { SessionResumeTracker } from './metrics/session-resume-tracker.js';
 import { BudgetTracker } from './metrics/budget-tracker.js';
 import { ClaudeMdTracker } from './metrics/claudemd-tracker.js';
 import { CollaborationProfiler } from './metrics/collaboration-profile.js';
-import {
-  isOwnSessionRecord,
-  isTokenEventForThisProcess,
-  shouldApplyCostEstimate,
-} from './metrics/cost-estimate-gate.js';
+import { isForThisProcess, shouldApplyCostEstimate } from './metrics/cost-estimate-gate.js';
 import { ContextCompositionTracker } from './metrics/context-composition-tracker.js';
 import { ContextTrackerRegistry } from './metrics/context-tracker.js';
 import { ContextWindowTracker } from './metrics/context-window-tracker.js';
@@ -2184,6 +2180,48 @@ async function main(): Promise<void> {
     // with idle expiry so a long-running --local daemon doesn't keep one entry
     // per subagent call forever.
     const subagentAttribution = new SubagentAttributionIndex();
+    const recordForEverySession = (incomingRecord: ToolCallRecord): ToolCallRecord => {
+      // Attributed before any consumer (notably auditTrail below) sees the
+      // record, so audit/security events carry agentId and agentType.
+      // The watcher's on-demand read is synchronous, which is what keeps it
+      // ahead of auditTrail.
+      const attributed = subagentAttribution.attributeAtIntake(
+        incomingRecord,
+        activeSubagentWatcher,
+      );
+      const activeSkill = skillActivationTracker.recordToolCall(attributed);
+      const rawRecord = activeSkill ? { ...attributed, activeSkill } : attributed;
+      if (cwdGuessActivity && rawRecord.sessionId === cwdGuessActivity.staleId) {
+        cwdGuessActivity.onActivity();
+      }
+      sessionTracker!.recordToolCall(rawRecord);
+      localSessionAggregator.recordToolCall(rawRecord);
+      if (rawRecord.sessionId) {
+        liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
+      }
+      // Fallback type source: the parent's Agent call, for subagents whose
+      // transcript has no meta sidecar (see onSubagentTurn). Its PostToolUse
+      // normally fires only after a foreground subagent returns.
+      subagentAttribution.recordAgentToolCall(rawRecord);
+      contextTracker.recordToolCall(rawRecord);
+      // SSE consumers filter by sessionId for the per-session live tail.
+      // Records without a sessionId are legacy buffer entries that surfaced
+      // during the migrateLegacyBuffer() window on first boot — skip the
+      // live emit rather than fabricate a session by falling back to the
+      // MCP's resolved sessionTraceId, which would re-introduce the
+      // fictional-session-ID bug the session-ID resolver removed.
+      if (rawRecord.sessionId) {
+        liveBus.emit('tool-call', {
+          id: rawRecord.id,
+          sessionId: rawRecord.sessionId,
+          tool: rawRecord.toolName,
+          durationMs: rawRecord.durationMs ?? 0,
+          costUsd: 0,
+          ts: rawRecord.timestamp,
+        });
+      }
+      return rawRecord;
+    };
     eventProcessor = new HookEventProcessor({
       store: localStore,
       platformAdapter: activePlatform,
@@ -2199,51 +2237,13 @@ async function main(): Promise<void> {
         const index = toolCallBuffer.findIndex((r) => r.id === record.id);
         if (index >= 0) toolCallBuffer[index] = amendRecord(toolCallBuffer[index]!, record);
       },
-      // Every drained session's records enter here. The trackers in onRecord
-      // report this process's own session, so a --stdio engine admits only its
-      // own records, and adoptRealSessionId() replays the ones it drained while
-      // its id was pending.
       admitRecord: (incomingRecord) => {
-        // Attributed before any consumer (notably auditTrail below) sees the
-        // record, so audit/security events carry agentId and agentType.
-        // The watcher's on-demand read is synchronous, which is what keeps it
-        // ahead of auditTrail.
-        const attributed = subagentAttribution.attributeAtIntake(
-          incomingRecord,
-          activeSubagentWatcher,
-        );
-        const activeSkill = skillActivationTracker.recordToolCall(attributed);
-        const rawRecord = activeSkill ? { ...attributed, activeSkill } : attributed;
-        if (cwdGuessActivity && rawRecord.sessionId === cwdGuessActivity.staleId) {
-          cwdGuessActivity.onActivity();
-        }
-        sessionTracker!.recordToolCall(rawRecord);
-        localSessionAggregator.recordToolCall(rawRecord);
-        if (rawRecord.sessionId) {
-          liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
-        }
-        // Fallback type source: the parent's Agent call, for subagents whose
-        // transcript has no meta sidecar (see onSubagentTurn). Its PostToolUse
-        // normally fires only after a foreground subagent returns.
-        subagentAttribution.recordAgentToolCall(rawRecord);
-        contextTracker.recordToolCall(rawRecord);
-        // SSE consumers filter by sessionId for the per-session live tail.
-        // Records without a sessionId are legacy buffer entries that surfaced
-        // during the migrateLegacyBuffer() window on first boot — skip the
-        // live emit rather than fabricate a session by falling back to the
-        // MCP's resolved sessionTraceId, which would re-introduce the
-        // fictional-session-ID bug the session-ID resolver removed.
-        if (rawRecord.sessionId) {
-          liveBus.emit('tool-call', {
-            id: rawRecord.id,
-            sessionId: rawRecord.sessionId,
-            tool: rawRecord.toolName,
-            durationMs: rawRecord.durationMs ?? 0,
-            costUsd: 0,
-            ts: rawRecord.timestamp,
-          });
-        }
-        return !options.stdio || isOwnSessionRecord(rawRecord.sessionId ?? null, sessionTraceId)
+        const rawRecord = recordForEverySession(incomingRecord);
+        return isForThisProcess({
+          stdio: options.stdio === true,
+          sessionId: rawRecord.sessionId ?? null,
+          ownSessionId: sessionTraceId,
+        })
           ? rawRecord
           : null;
       },
@@ -2487,9 +2487,9 @@ async function main(): Promise<void> {
         // another session's tokens (drained while the id is still provisional)
         // are priced for that session's rollup only. --local owns no single
         // session and keeps folding everything.
-        const isOwnEvent = isTokenEventForThisProcess({
+        const isOwnEvent = isForThisProcess({
           stdio: options.stdio === true,
-          eventSessionId: tokenEvent.sessionId ?? null,
+          sessionId: tokenEvent.sessionId ?? null,
           ownSessionId: sessionTraceId,
         });
         const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
@@ -3152,9 +3152,7 @@ async function main(): Promise<void> {
       // Hot-swap the event processor to the scoped store so it only drains
       // this session's events going forward. Its final drain routes tokens by
       // realId, and runs before the tracker adopts realId, so adoptSessionId()
-      // replays what it drains. The other trackers get realId's records drained
-      // so far while the id is still the old one, as when they were drained, so
-      // they get no byte-size estimate (shouldApplyCostEstimate).
+      // replays what it drains.
       eventProcessor!.replayRecords(localSessionAggregator.recordsOf(realId));
       sessionTraceId = realId;
       eventProcessor!.replaceStore(realLocalStore, false);

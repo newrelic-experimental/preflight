@@ -1,7 +1,7 @@
 import type { SkillStamp } from '../storage/types.js';
 
 import type { SkillRunOpenContext } from './skill-activation-tracker.js';
-import { isTokenEventForThisProcess } from './cost-estimate-gate.js';
+import { isForThisProcess } from './cost-estimate-gate.js';
 
 export interface SkillRunSink {
   ingestSkillRun(
@@ -26,9 +26,9 @@ export function createSkillRunEmitter(
 ): (stamp: SkillStamp, ctx: SkillRunOpenContext) => void {
   return (stamp, ctx) => {
     if (
-      !isTokenEventForThisProcess({
+      !isForThisProcess({
         stdio: options.stdio,
-        eventSessionId: ctx.sessionId,
+        sessionId: ctx.sessionId,
         ownSessionId: options.getOwnSessionId(),
       })
     ) {

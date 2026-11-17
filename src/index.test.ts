@@ -1653,25 +1653,26 @@ describe('stdio integration', () => {
       expect(savedField(storage, 'own-real-session', 'estimatedCostUsd')).toBeGreaterThan(0);
     }, 30000);
 
-    const writeCall = (storage: string, sessionId: string, toolUseId: string, call: object) => {
-      const event = { timestamp: Date.now(), sessionId, toolUseId, ...call };
-      const buffer = resolve(storage, `buffer-${sessionId}.jsonl`);
+    const writeCall = (
+      storage: string,
+      sessionId: string | null,
+      toolUseId: string,
+      call: object,
+    ) => {
+      const event = { timestamp: Date.now(), ...(sessionId && { sessionId }), toolUseId, ...call };
+      const buffer = resolve(storage, `buffer-${sessionId ?? 'unknown'}.jsonl`);
       appendToHookBuffer(buffer, JSON.stringify({ mode: 'pre', ...event }) + '\n');
       appendToHookBuffer(buffer, JSON.stringify({ mode: 'post', ...event }) + '\n');
     };
+    const toolResult = async (client: Client, name: string) => {
+      const result = await client.callTool({ name, arguments: {} });
+      return JSON.parse((result.content as Array<{ text: string }>)[0]!.text) as Record<
+        string,
+        unknown
+      >;
+    };
 
     describe('its trackers after it adopts, having drained another session', () => {
-      const toolResult = async (
-        client: Client,
-        name: string,
-        args: Record<string, unknown> = {},
-      ) => {
-        const result = await client.callTool({ name, arguments: args });
-        return JSON.parse((result.content as Array<{ text: string }>)[0]!.text) as Record<
-          string,
-          unknown
-        >;
-      };
       const failingTest = { tool: 'Bash', toolInput: { command: 'npm test' }, success: false };
       const ownRead = {
         tool: 'Read',
@@ -1688,15 +1689,8 @@ describe('stdio integration', () => {
         for (let n = 0; n < 3; n++)
           writeCall(storage, 'other-real-session', `toolu_o${n}`, failingTest);
         writeCall(storage, 'own-real-session', 'toolu_own', ownRead);
+        writeCall(storage, null, 'toolu_none', { tool: 'Grep', success: true });
         const noSession = resolve(storage, 'buffer-unknown.jsonl');
-        const grep = {
-          tool: 'Grep',
-          timestamp: Date.now(),
-          toolUseId: 'toolu_none',
-          success: true,
-        };
-        appendToHookBuffer(noSession, JSON.stringify({ mode: 'pre', ...grep }) + '\n');
-        appendToHookBuffer(noSession, JSON.stringify({ mode: 'post', ...grep }) + '\n');
         await waitFor(
           () =>
             !existsSync(resolve(storage, 'buffer-other-real-session.jsonl')) &&
@@ -1748,7 +1742,7 @@ describe('stdio integration', () => {
       });
     });
 
-    it('times each of its own calls once when the store swap drains some of them', async () => {
+    it('times each of its own calls once when it adopts its session mid-stream', async () => {
       const storage = makeStorage();
       const client = await startEngine(storage);
       const heartbeat = resolve(storage, 'active-own-real-session.pid');
@@ -1763,18 +1757,13 @@ describe('stdio integration', () => {
         clearInterval(writer);
       }
       await waitFor(() => !existsSync(resolve(storage, 'buffer-own-real-session.jsonl')));
-      const stats = await client.callTool({ name: 'nr_observe_get_session_stats', arguments: {} });
-      const latency = await client.callTool({
-        name: 'nr_observe_get_latency_percentiles',
-        arguments: {},
-      });
+      const stats = await toolResult(client, 'nr_observe_get_session_stats');
+      const latency = await toolResult(client, 'nr_observe_get_latency_percentiles');
       await client.close();
       await waitFor(() => !existsSync(heartbeat));
 
-      const text = (r: typeof stats) => (r.content as Array<{ text: string }>)[0]!.text;
-      const calls = (JSON.parse(text(stats)) as { tool_calls: number }).tool_calls;
-      expect(calls).toBe(n);
-      expect(JSON.parse(text(latency))).toMatchObject({ overall: { count: n } });
+      expect(stats.tool_calls).toBe(n);
+      expect(latency.overall).toMatchObject({ count: n });
     }, 30000);
 
     it('saves no session but the guessed one when the ppid breadcrumb corrects the guess', async () => {
