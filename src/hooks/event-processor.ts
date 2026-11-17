@@ -42,6 +42,7 @@ import type {
   WorkflowRunEvent,
 } from '../storage/types.js';
 import { DedupRingRegistry } from './dedup-ring.js';
+import { isMintedToolUseId } from './minted-tool-use-ids.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 const logger = createLogger('event-processor');
@@ -371,7 +372,7 @@ function findOldestFallbackKey(
   let oldestTimestamp = Infinity;
   for (const [k, { event: pre, matchUntil }] of entries) {
     if (
-      k.startsWith(`${pre.tool}:`) &&
+      (pre.toolUseId === undefined || isMintedToolUseId(pre.toolUseId)) &&
       pre.tool.toLowerCase() === post.tool.toLowerCase() &&
       (pre.sessionId ?? post.sessionId) === (post.sessionId ?? pre.sessionId) &&
       (matchUntil === undefined || post.timestamp <= matchUntil) &&
@@ -973,11 +974,15 @@ export class HookEventProcessor {
       if (oldest !== undefined) this.countedUnpaired.delete(oldest);
     }
     if (toolUseId === key && sessionId) this.unpersistedCountedIds.set(key, sessionId);
+    const matchUntil = timestamp + this.pendingTtlMs(entry) + FALLBACK_LATE_POST_WINDOW_MS;
+    if (toolUseId !== undefined && isMintedToolUseId(toolUseId)) {
+      this.store.countMintedToolUseId(sessionId, toolUseId, matchUntil);
+    }
     this.countedUnpaired.set(key, {
       event: { mode: 'pre', tool, timestamp, sessionId, toolUseId },
       recordId,
       recordToolUseId,
-      matchUntil: timestamp + this.pendingTtlMs(entry) + FALLBACK_LATE_POST_WINDOW_MS,
+      matchUntil,
     });
   }
 
