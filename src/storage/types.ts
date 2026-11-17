@@ -342,7 +342,8 @@ export interface ToolCallRecord {
    * `agent_id` (`PreHookEvent.agentId`/`PostHookEvent.agentId`), which
    * Claude Code documents as present on every hook event fired inside a
    * subagent call. Some installs have been observed never sending it,
-   * so when it is absent it is backfilled via `backfillAgentId()`
+   * so when it is absent, empty, over 128 characters or holds control
+   * characters (`normalizeAgentId()`), it is backfilled via `backfillAgentId()`
    * (agent-partition.ts), joining on `toolUseId` against tool_use blocks
    * `SubagentWatcher` finds while tailing that subagent's own transcript, which
    * `SubagentAttributionIndex.attributeAtIntake()` reads on demand when the

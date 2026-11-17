@@ -1719,6 +1719,35 @@ describe('buildSessionSummary', () => {
     expect(merged.sessionIntent).toBe('the original prompt');
   });
 
+  it("mergeSummaries keeps an owner's completed against later saves", () => {
+    const owner = makeSummary({ outcome: 'completed' });
+    for (const later of [
+      makeSummary({ outcome: 'in progress' }),
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
+    ]) {
+      expect(mergeSummaries(owner, later)).toMatchObject({
+        outcome: 'completed',
+        observerCompletedAt: undefined,
+      });
+    }
+  });
+
+  it("mergeSummaries keeps an observer's completed over an earlier in-progress save", () => {
+    const merged = mergeSummaries(
+      makeSummary({ outcome: 'in progress' }),
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
+    );
+    expect(merged).toMatchObject({ outcome: 'completed', observerCompletedAt: 1_000 });
+  });
+
+  it("mergeSummaries lets a later in-progress save replace an observer's completed", () => {
+    const merged = mergeSummaries(
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
+      makeSummary({ outcome: 'in progress' }),
+    );
+    expect(merged).toMatchObject({ outcome: 'in progress', observerCompletedAt: undefined });
+  });
+
   it('mergeSummaries keeps a real platform label against an incoming generic-mcp checkpoint', () => {
     const existing = makeSummary({ platform: 'claude-code' });
     const incoming = makeSummary({ platform: 'generic-mcp' });
