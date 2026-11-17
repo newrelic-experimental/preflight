@@ -648,10 +648,56 @@ describe('TurnCostAttributor', () => {
         cacheReadTokens: 0,
         cacheCreationTokens: 0,
         totalDurationMs: 500,
+        breakdownUsd: { inputUsd: 0, outputUsd: 0, cacheReadUsd: 0, cacheCreationUsd: 0 },
         tokens: 0,
       });
       expect(metrics.costByToolType).toEqual({});
       expect(metrics.attributionRate).toBe(0);
+    });
+
+    it('prices each turn with its own model so a skill spanning two models gets correct per-category dollars', () => {
+      const attributor = new TurnCostAttributor();
+      const skill = { name: 'design', source: 'tool' as const, runId: 'run-1' };
+      const call = (toolUseId: string, timestamp: number): void =>
+        attributor.recordToolCall(
+          makeRecord({
+            toolName: 'Skill',
+            activeSkill: skill,
+            skillName: skill.name,
+            timestamp,
+            toolUseId,
+          }),
+        );
+
+      call('t1', 1000);
+      attributor.recordTokenEvent(
+        makeTokenEvent({
+          timestamp: 1100,
+          model: 'claude-haiku-4-5',
+          inputTokens: 10_000,
+          outputTokens: 0,
+          cacheReadTokens: 100_000,
+        }),
+      );
+      call('t2', 2000);
+      attributor.recordTokenEvent(
+        makeTokenEvent({
+          timestamp: 2100,
+          model: 'claude-opus-4-5',
+          inputTokens: 10_000,
+          outputTokens: 0,
+          cacheReadTokens: 100_000,
+        }),
+      );
+
+      const entry = attributor.getMetrics().costBySkill.design;
+
+      // haiku 4.5: $1/MTok input, $0.10/MTok cache read. opus 4.5: $5 and $0.50.
+      expect(entry.breakdownUsd?.inputUsd).toBeCloseTo(0.06, 10);
+      expect(entry.breakdownUsd?.cacheReadUsd).toBeCloseTo(0.06, 10);
+      expect(entry.breakdownUsd?.outputUsd).toBe(0);
+      expect(entry.breakdownUsd?.cacheCreationUsd).toBe(0);
+      expect(entry.totalCost).toBeCloseTo(0.12, 10);
     });
 
     it('tokens equals inputTokens + outputTokens + cacheReadTokens for a live entry', () => {
