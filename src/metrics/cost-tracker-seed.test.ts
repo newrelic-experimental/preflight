@@ -737,10 +737,10 @@ describe('session-end forecast after a restart', () => {
   it('ages a session seeded after this process started from the earlier of the two starts', () => {
     const tracker = new CostTracker();
     tracker.seedFromPersisted(
-      buildCostTrackerSeed(makeSummary({ startTime: NOW - 5 * HOUR, estimatedCostUsd: 10 })),
+      buildCostTrackerSeed(makeSummary({ startTime: NOW - 2 * HOUR, estimatedCostUsd: 10 })),
     );
     tracker.seedFromPersisted(
-      buildCostTrackerSeed(makeSummary({ startTime: NOW - 2 * HOUR, estimatedCostUsd: 10 })),
+      buildCostTrackerSeed(makeSummary({ startTime: NOW - 5 * HOUR, estimatedCostUsd: 10 })),
     );
 
     expect(tracker.getSessionStartMs(NOW - 10 * MIN)).toBe(NOW - 5 * HOUR);
