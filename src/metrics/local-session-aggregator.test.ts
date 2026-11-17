@@ -79,6 +79,34 @@ describe('LocalSessionAggregator', () => {
     ]);
   });
 
+  it('keeps two distinct calls that share a millisecond and a tool through a save and reload', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'timeline-collide-'));
+    try {
+      const agg = new LocalSessionAggregator();
+      for (const toolUseId of ['toolu_a', 'toolu_b']) {
+        const call = {
+          id: toolUseId,
+          toolUseId,
+          sessionId: REAL_ID,
+          toolName: 'Read',
+          timestamp: 1000,
+          durationMs: 5,
+          success: true,
+        };
+        agg.recordToolCall(call);
+      }
+      const [summary] = summariesOf(agg) as unknown as FullSessionSummary[];
+      expect(summary?.timeline).toHaveLength(2);
+
+      const store = new SessionStore({ storagePath: dir });
+      store.saveSession(summary!);
+      store.saveSession(summary!);
+      expect(store.loadSession(REAL_ID)?.timeline).toHaveLength(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('amends the right timeline entry after older entries were evicted, and skips an evicted one', () => {
     const agg = new LocalSessionAggregator();
     const timedOut = (id: string, timestamp: number) => ({
