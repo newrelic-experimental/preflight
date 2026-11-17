@@ -1600,7 +1600,17 @@ export function createApiHandler(
     // otherwise appear as confusing "duplicate" rows next to real Claude
     // Code sessions.
     const withActivity = (allSessions as readonly SessionIdentityLike[]).filter(hasRecordedUsage);
-    const sliced = withActivity.slice(-limit);
+    const requestedIds = new Set(
+      (url.searchParams.get('ids') ?? '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0 && id.length <= 256)
+        .slice(0, 500),
+    );
+    const byIds = requestedIds.size > 0;
+    const sliced = byIds
+      ? withActivity.filter((s) => requestedIds.has((s as { sessionId?: string }).sessionId ?? ''))
+      : withActivity.slice(-limit);
 
     // Append the current live session so it appears in the list before
     // shutdown. Unlike `allSessions` above, `live.sessionId` comes straight
@@ -1621,7 +1631,13 @@ export function createApiHandler(
         toolCallCount: live.toolCallCount,
         estimatedCostUsd: liveCostUsd,
       });
-      if (!alreadyPersisted && liveHasUsage && !isSyntheticSessionId(live.sessionId)) {
+      const liveRequested = !byIds || requestedIds.has(live.sessionId);
+      if (
+        !alreadyPersisted &&
+        liveRequested &&
+        liveHasUsage &&
+        !isSyntheticSessionId(live.sessionId)
+      ) {
         sliced.push({
           sessionId: live.sessionId,
           sessionName: live.sessionName ?? null,

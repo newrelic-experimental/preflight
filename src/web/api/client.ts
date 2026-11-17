@@ -271,6 +271,11 @@ export const fetchSessionCurrent = (signal?: AbortSignal): Promise<SessionCurren
   getJson<SessionCurrentResponse>('/api/session/current', signal);
 export const fetchSessionsList = (limit = 50, signal?: AbortSignal): Promise<SessionListEntry[]> =>
   getJson<SessionListEntry[]>(`/api/sessions?limit=${limit}`, signal);
+export const fetchSessionsByIds = (
+  ids: readonly string[],
+  signal?: AbortSignal,
+): Promise<SessionListEntry[]> =>
+  getJson<SessionListEntry[]>(`/api/sessions?ids=${ids.map(encodeURIComponent).join(',')}`, signal);
 // Cross-session aggregate KPIs for the Today view.
 export const fetchTodayAggregate = (signal?: AbortSignal): Promise<TodayAggregateResponse> =>
   getJson<TodayAggregateResponse>('/api/sessions/today/aggregate', signal);
@@ -1569,6 +1574,7 @@ export const fetchApiFailures = (signal?: AbortSignal): Promise<ApiFailureMetric
 export const qk = {
   sessionCurrent: ['session', 'current'] as const,
   sessionsList: (limit: number) => ['sessions', 'list', limit] as const,
+  sessionsByIds: (ids: readonly string[]) => ['sessions', 'byIds', ...[...ids].sort()] as const,
   sessionDetail: (id: string) => ['session', id] as const,
   cost: ['cost'] as const,
   antiPatterns: ['anti-patterns'] as const,

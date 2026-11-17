@@ -97,6 +97,10 @@ describe('api/client', () => {
     expect(qk.sessionDetail('abc')).toEqual(['session', 'abc']);
   });
 
+  it('qk.sessionsByIds is order-insensitive', () => {
+    expect(qk.sessionsByIds(['b', 'a'])).toEqual(['sessions', 'byIds', 'a', 'b']);
+  });
+
   it('qk.sessionsList differs by limit so the React Query cache does not collide', () => {
     expect(qk.sessionsList(50)).toEqual(['sessions', 'list', 50]);
     expect(qk.sessionsList(200)).toEqual(['sessions', 'list', 200]);

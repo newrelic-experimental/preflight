@@ -1396,7 +1396,7 @@ describe('Sessions view — ?sessionIds= deep-link filter', () => {
     renderSessions(THREE_SESSION_LIST);
     await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
     expect(screen.getByText('2 sessions selected')).toBeInTheDocument();
-    expect(screen.getByText(/1 of 2 not shown/)).toBeInTheDocument();
+    expect(screen.getByText(/1 of 2 not found/)).toBeInTheDocument();
     window.location = original as unknown as string & Location;
   });
 
@@ -1410,7 +1410,7 @@ describe('Sessions view — ?sessionIds= deep-link filter', () => {
     } as unknown as string & Location;
     renderSessions(THREE_SESSION_LIST);
     await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
-    expect(screen.queryByText(/not shown/)).toBeNull();
+    expect(screen.queryByText(/not found/)).toBeNull();
     window.location = original as unknown as string & Location;
   });
 

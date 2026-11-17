@@ -11,6 +11,7 @@ import { SessionTrace } from '../components/SessionTrace';
 import { WorkflowRunDetail } from '../components/WorkflowRunDetail';
 import { Kpi } from '../components/Kpi';
 import {
+  fetchSessionsByIds,
   fetchSessionsList,
   fetchSessionCurrent,
   fetchSessionDetail,
@@ -292,8 +293,14 @@ export function Sessions(): JSX.Element {
   }, [sessionIdsParam]);
 
   const list = useQuery<SessionRow[]>({
-    queryKey: qk.sessionsList(SESSIONS_PAGE_SIZE),
-    queryFn: ({ signal }) => fetchSessionsList(SESSIONS_PAGE_SIZE, signal),
+    queryKey:
+      sessionIdsFilter === null
+        ? qk.sessionsList(SESSIONS_PAGE_SIZE)
+        : qk.sessionsByIds([...sessionIdsFilter]),
+    queryFn: ({ signal }) =>
+      sessionIdsFilter === null
+        ? fetchSessionsList(SESSIONS_PAGE_SIZE, signal)
+        : fetchSessionsByIds([...sessionIdsFilter], signal),
     refetchInterval: 10_000,
   });
 
@@ -412,11 +419,8 @@ export function Sessions(): JSX.Element {
     }
     return result;
   }, [rows, activeWindow, runFiltersActive, runsBySession, repoFilter, sessionIdsFilter]);
-  // A deep-link's sessionIds are matched against `rows` — the most-recent-
-  // SESSIONS_PAGE_SIZE page, not the full session history — so a session
-  // older than that page silently has nothing to match and just vanishes
-  // from the list with no indication why. Surfaced below instead of left
-  // silent.
+  // A deep-linked id with no persisted session record has nothing to match
+  // and would vanish from the list with no indication why. Surfaced below.
   const missingSelectedSessionCount = useMemo(() => {
     if (sessionIdsFilter === null) return 0;
     const loadedIds = new Set(rows.map((r) => r.sessionId));
@@ -617,8 +621,7 @@ export function Sessions(): JSX.Element {
             </span>
             {missingSelectedSessionCount > 0 && (
               <span className="text-[11px] text-accent-amber">
-                {missingSelectedSessionCount} of {sessionIdsFilter.size} not shown — older than the{' '}
-                {SESSIONS_PAGE_SIZE} most recent sessions
+                {missingSelectedSessionCount} of {sessionIdsFilter.size} not found
               </span>
             )}
           </>
@@ -700,7 +703,7 @@ export function Sessions(): JSX.Element {
               run filter active, visibleRows can be far smaller than
               SESSIONS_PAGE_SIZE, and "Showing 50" would misleadingly read as
               a description of the filtered list. */}
-            {rows.length >= SESSIONS_PAGE_SIZE && (
+            {sessionIdsFilter === null && rows.length >= SESSIONS_PAGE_SIZE && (
               <div className="p-2 text-[10px] text-ink-muted text-center border-t border-border-subtle">
                 Only the {SESSIONS_PAGE_SIZE} most recent sessions are loaded
                 {filtersActive ? '; filters narrow this further' : ''}.
