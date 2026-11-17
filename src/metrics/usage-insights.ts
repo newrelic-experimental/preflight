@@ -1,5 +1,7 @@
 import type { FullSessionSummary } from '../storage/session-store.js';
 import type { AttributionBucket, TokenBreakdown } from '../storage/types.js';
+import { localDateKey, todayPortionRatio } from '../lib/date.js';
+import { todayCostOfSummary } from './cost-tracker-seed.js';
 
 /**
  * "What's contributing to your spend": independent characteristics of the
@@ -65,12 +67,15 @@ export interface UsageInsightsReport {
   readonly attributionRatePct: number | null;
 }
 
-export interface UsageInsightsOptions {
-  readonly nowMs: number;
-  readonly windowDays: number;
-  /** Overrides the `nowMs - windowDays * DAY_MS` session-filter cutoff, e.g. for a calendar-day window. `windowDays` still reports as given. */
-  readonly cutoffMs?: number;
-}
+/**
+ * `started` (the default) keeps sessions that started inside the rolling
+ * `windowDays` window and counts them in full. `today` keeps every session
+ * with spend on the local calendar day of `nowMs` and counts only that day's
+ * share, the same figure Spend Today uses (see `todayCostOfSummary`).
+ */
+export type UsageInsightsOptions =
+  | { readonly selection?: 'started'; readonly nowMs: number; readonly windowDays: number }
+  | { readonly selection: 'today'; readonly nowMs: number };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -155,7 +160,11 @@ interface RowAccum {
   };
 }
 
-function addBreakdown(existing: RowAccum, bucket: AttributionBucket): void {
+function scaleTokens(tokens: number, weight: number): number {
+  return Math.round(tokens * weight);
+}
+
+function addBreakdown(existing: RowAccum, bucket: AttributionBucket, weight: number): void {
   if (!bucket.breakdown) return;
   const b = existing.breakdown ?? {
     inputTokens: 0,
@@ -163,29 +172,28 @@ function addBreakdown(existing: RowAccum, bucket: AttributionBucket): void {
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
   };
-  b.inputTokens += bucket.breakdown.inputTokens;
-  b.outputTokens += bucket.breakdown.outputTokens;
-  b.cacheReadTokens += bucket.breakdown.cacheReadTokens;
-  b.cacheCreationTokens += bucket.breakdown.cacheCreationTokens;
+  b.inputTokens += scaleTokens(bucket.breakdown.inputTokens, weight);
+  b.outputTokens += scaleTokens(bucket.breakdown.outputTokens, weight);
+  b.cacheReadTokens += scaleTokens(bucket.breakdown.cacheReadTokens, weight);
+  b.cacheCreationTokens += scaleTokens(bucket.breakdown.cacheCreationTokens, weight);
   existing.breakdown = b;
 }
 
-function addToAccum(map: Map<string, RowAccum>, key: string, bucket: AttributionBucket): void {
-  const existing = map.get(key);
-  if (existing) {
-    existing.costUsd += bucket.costUsd;
-    existing.tokens += bucket.tokens;
-    existing.count += bucket.count;
-    addBreakdown(existing, bucket);
-  } else {
-    const created: RowAccum = {
-      costUsd: bucket.costUsd,
-      tokens: bucket.tokens,
-      count: bucket.count,
-    };
-    addBreakdown(created, bucket);
-    map.set(key, created);
+function addToAccum(
+  map: Map<string, RowAccum>,
+  key: string,
+  bucket: AttributionBucket,
+  weight: number,
+): void {
+  let acc = map.get(key);
+  if (!acc) {
+    acc = { costUsd: 0, tokens: 0, count: 0 };
+    map.set(key, acc);
   }
+  acc.costUsd += bucket.costUsd * weight;
+  acc.tokens += scaleTokens(bucket.tokens, weight);
+  acc.count += bucket.count;
+  addBreakdown(acc, bucket, weight);
 }
 
 /** Builds one share table (skills/subagents/plugins) from an accumulated per-key map: sorted by cost descending, capped to {@link TABLE_CAP}. */
@@ -246,16 +254,45 @@ function makeInsight(
 // computeUsageInsights
 // ---------------------------------------------------------------------------
 
+interface WeightedSession {
+  readonly session: FullSessionSummary;
+  /** Share of the session's lifetime cost and tokens that falls in the window, in (0, 1]. */
+  readonly weight: number;
+}
+
+// The deserializer maps a missing endTime to 0; like
+// loadSessionsOverlappingToday, treat that (or an end before the start) as
+// unknown rather than as an end before the window.
 function lastActivityMs(s: FullSessionSummary): number {
-  return typeof s.endTime === 'number' ? s.endTime : s.startTime + (s.durationMs ?? 0);
+  return s.endTime > 0 && s.endTime >= s.startTime ? s.endTime : s.startTime + (s.durationMs ?? 0);
+}
+
+function todayWeight(s: FullSessionSummary, nowMs: number): number {
+  const withEnd = { ...s, endTime: lastActivityMs(s) };
+  const lifetimeUsd = s.estimatedCostUsd ?? 0;
+  if (lifetimeUsd <= 0) return todayPortionRatio(withEnd, nowMs);
+  const todayUsd = todayCostOfSummary(withEnd, localDateKey(nowMs), nowMs).costUsd;
+  return Math.min(1, Math.max(0, todayUsd / lifetimeUsd));
+}
+
+function selectSessions(
+  sessions: readonly FullSessionSummary[],
+  opts: UsageInsightsOptions,
+): WeightedSession[] {
+  if (opts.selection === 'today') {
+    return sessions
+      .map((session) => ({ session, weight: todayWeight(session, opts.nowMs) }))
+      .filter((w) => w.weight > 0);
+  }
+  const cutoffMs = opts.nowMs - opts.windowDays * DAY_MS;
+  return sessions.filter((s) => s.startTime >= cutoffMs).map((session) => ({ session, weight: 1 }));
 }
 
 export function computeUsageInsights(
   sessions: readonly FullSessionSummary[],
   opts: UsageInsightsOptions,
 ): UsageInsightsReport {
-  const cutoffMs = opts.cutoffMs ?? opts.nowMs - opts.windowDays * DAY_MS;
-  const windowSessions = sessions.filter((s) => lastActivityMs(s) >= cutoffMs);
+  const windowSessions = selectSessions(sessions, opts);
 
   let totalCostUsd = 0;
   let totalTokens = 0;
@@ -288,10 +325,12 @@ export function computeUsageInsights(
   // One per-session pass: every table and insight below is built from the
   // accumulators this loop fills, rather than re-scanning `windowSessions`
   // once per characteristic.
-  for (const s of windowSessions) {
-    const cost = s.estimatedCostUsd ?? 0;
+  for (const { session: s, weight } of windowSessions) {
+    const lifetimeCost = s.estimatedCostUsd ?? 0;
+    const cost = lifetimeCost * weight;
     totalCostUsd += cost;
-    const tokens = sessionTotalTokens(s);
+    const lifetimeTokens = sessionTotalTokens(s);
+    const tokens = scaleTokens(lifetimeTokens, weight);
     totalTokens += tokens;
 
     const buckets = s.attribution?.buckets;
@@ -299,34 +338,34 @@ export function computeUsageInsights(
       anyAttribution = true;
       let toolCostSum = 0;
       for (const bucket of Object.values(buckets?.tool ?? {})) toolCostSum += bucket.costUsd;
-      attributedCostUsd += toolCostSum;
+      attributedCostUsd += toolCostSum * weight;
     }
 
     for (const [key, bucket] of Object.entries(buckets?.skill ?? {})) {
-      addToAccum(skillsAccum, key, bucket);
+      addToAccum(skillsAccum, key, bucket, weight);
       const prefix = pluginPrefixOf(key);
       if (prefix) {
-        addToAccum(pluginsAccum, prefix, bucket);
+        addToAccum(pluginsAccum, prefix, bucket, weight);
         pluginSessionIds.add(s.sessionId);
       }
     }
     for (const [key, bucket] of Object.entries(buckets?.subagent ?? {})) {
-      addToAccum(subagentsAccum, key, bucket);
+      addToAccum(subagentsAccum, key, bucket, weight);
       const prefix = pluginPrefixOf(key);
       if (prefix) {
-        addToAccum(pluginsAccum, prefix, bucket);
+        addToAccum(pluginsAccum, prefix, bucket, weight);
         pluginSessionIds.add(s.sessionId);
       }
     }
 
     const highContext = s.attribution?.highContextCostUsd ?? 0;
     if (highContext > 0) {
-      highContextCostUsd += highContext;
+      highContextCostUsd += highContext * weight;
       highContextTokens += tokens;
       highContextSessions += 1;
     }
 
-    if (cost > 0 && s.subagentCostUsd >= SUBAGENT_HEAVY_SHARE * cost) {
+    if (lifetimeCost > 0 && s.subagentCostUsd >= SUBAGENT_HEAVY_SHARE * lifetimeCost) {
       subagentHeavyCostUsd += cost;
       subagentHeavyTokens += tokens;
       subagentHeavySessions += 1;
@@ -349,9 +388,9 @@ export function computeUsageInsights(
         sessionName: s.sessionName,
         runs,
         tokens,
-        tokensPerRun: Math.round(tokens / runs),
+        tokensPerRun: Math.round(lifetimeTokens / runs),
         costUsd: cost,
-        lastRunMs: lastScheduleWakeupMs(s) ?? s.endTime ?? s.startTime,
+        lastRunMs: lastScheduleWakeupMs(s) ?? lastActivityMs(s),
       });
     }
   }
@@ -403,7 +442,7 @@ export function computeUsageInsights(
     .sort((a, b) => b.sharePct - a.sharePct);
 
   return {
-    windowDays: opts.windowDays,
+    windowDays: opts.selection === 'today' ? 1 : opts.windowDays,
     sessionCount: windowSessions.length,
     totalCostUsd,
     totalTokens,
