@@ -1322,6 +1322,27 @@ describe('subagent token support', () => {
     expect(metrics.subagentCostUsd).toBe(0);
   });
 
+  it('subagentByAgentType carries per-category dollars priced per call, across models', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, cacheReadTokens: 100_000, totalTokens: 10_000 }),
+      'claude-haiku-4-5',
+      { agentId: 'agent-1', agentType: 'Explore' },
+    );
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, cacheReadTokens: 100_000, totalTokens: 10_000 }),
+      'claude-opus-4-5',
+      { agentId: 'agent-2', agentType: 'Explore' },
+    );
+
+    const usd = tracker.getMetrics().subagentByAgentType['Explore']!.breakdownUsd!;
+
+    expect(usd.inputUsd).toBeCloseTo(0.06, 10);
+    expect(usd.cacheReadUsd).toBeCloseTo(0.06, 10);
+    expect(usd.outputUsd).toBe(0);
+    expect(usd.cacheCreationUsd).toBe(0);
+  });
+
   it('ctx.agentId + ctx.agentType set → cost/tokens/count accumulate in subagentByAgentType[agentType]', () => {
     const tracker = new CostTracker();
     tracker.recordTokenUsage(
