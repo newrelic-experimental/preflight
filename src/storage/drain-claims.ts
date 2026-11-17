@@ -173,8 +173,8 @@ function takeClaim(path: string): { readonly text: string } | 'gone' | 'stuck' {
 }
 
 /**
- * Takes one drained buffer's claims in order across polls. A claim that cannot be taken stops
- * the drain, so the claims after it keep their order. Once one claim has stopped
+ * Takes one drained buffer's claims in order across polls. A claim that cannot be taken or
+ * adopted stops the drain, so the claims after it keep their order. Once one claim has stopped
  * `STOP_ON_FAILED_CLAIM_POLLS` polls in a row, the next poll gives up its order: it warns once
  * naming the claim and skips it while it stays stuck, so a claim that never comes free cannot
  * hold the buffer's events for good. A claim that first fails on that poll starts a hold of its
@@ -196,6 +196,10 @@ export class DrainHold {
     const taken = takeClaim(path);
     if (taken === 'gone') return 'skip';
     if (taken !== 'stuck') return taken;
+    return this.holdBehind(path, giveUpOrder);
+  }
+
+  holdBehind(path: string, giveUpOrder: boolean): 'skip' | 'stop' {
     const parsed = parseClaimName(basename(path));
     const lines = parsed ? `${parsed.buffer}.${parsed.firstClaimedAt}` : path;
     if (!this.gaveUp.has(lines)) {
