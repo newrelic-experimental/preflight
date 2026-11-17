@@ -2628,8 +2628,13 @@ export function createApiHandler(
       // day granularity), not the session's real startTime, so go back two
       // days to guarantee a session that started just before local midnight
       // isn't excluded before computeUsageInsights applies the exact cutoff.
+      // includeModifiedSince additionally keeps resumed sessions whose file
+      // carries an older start date but was written since midnight.
       const since = new Date(nowMs - 2 * 86_400_000);
-      const sessions = deps.sessionStore.loadAllSessions({ since });
+      const sessions = deps.sessionStore.loadAllSessions({
+        since,
+        includeModifiedSince: new Date(cutoffMs),
+      });
       jsonOk(res, computeUsageInsights(sessions, { nowMs, windowDays: 1, cutoffMs }));
       return;
     }

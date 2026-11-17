@@ -246,12 +246,16 @@ function makeInsight(
 // computeUsageInsights
 // ---------------------------------------------------------------------------
 
+function lastActivityMs(s: FullSessionSummary): number {
+  return typeof s.endTime === 'number' ? s.endTime : s.startTime + (s.durationMs ?? 0);
+}
+
 export function computeUsageInsights(
   sessions: readonly FullSessionSummary[],
   opts: UsageInsightsOptions,
 ): UsageInsightsReport {
   const cutoffMs = opts.cutoffMs ?? opts.nowMs - opts.windowDays * DAY_MS;
-  const windowSessions = sessions.filter((s) => s.startTime >= cutoffMs);
+  const windowSessions = sessions.filter((s) => lastActivityMs(s) >= cutoffMs);
 
   let totalCostUsd = 0;
   let totalTokens = 0;

@@ -107,7 +107,11 @@ describe('computeUsageInsights', () => {
       tokensCacheRead: 10,
       tokensCacheCreation: 5,
     });
-    const outOfWindow = makeSummary({ startTime: NOW - 10 * DAY_MS, estimatedCostUsd: 100 });
+    const outOfWindow = makeSummary({
+      startTime: NOW - 10 * DAY_MS,
+      endTime: NOW - 9 * DAY_MS,
+      estimatedCostUsd: 100,
+    });
 
     const report = computeUsageInsights([inWindow, outOfWindow], { nowMs: NOW, windowDays: 7 });
 
