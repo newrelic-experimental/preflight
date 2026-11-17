@@ -18,8 +18,9 @@ export interface CostEstimateParams {
  *
  * Ownership is decided by identity against the live session id. A provisional
  * engine's own calls drained before adopt carry the real id while the process
- * id is still `pending-`, so they get no estimate and are never replayed; the
- * undercount is bounded to calls before the first token report.
+ * id is still `pending-`, so they get no estimate, also when adoption replays
+ * them before the id changes; the undercount is bounded to calls before the
+ * first token report.
  * See #877.
  */
 export function shouldApplyCostEstimate(params: CostEstimateParams): boolean {

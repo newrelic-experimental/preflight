@@ -3153,7 +3153,8 @@ async function main(): Promise<void> {
       // this session's events going forward. Its final drain routes tokens by
       // realId, and runs before the tracker adopts realId, so adoptSessionId()
       // replays what it drains. The other trackers get realId's records drained
-      // so far before the id changes, since the final drain admits the rest.
+      // so far while the id is still the old one, as when they were drained, so
+      // they get no byte-size estimate (shouldApplyCostEstimate).
       eventProcessor!.replayRecords(localSessionAggregator.recordsOf(realId));
       sessionTraceId = realId;
       eventProcessor!.replaceStore(realLocalStore, false);
