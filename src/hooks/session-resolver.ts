@@ -627,7 +627,7 @@ export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorP
 /**
  * Keep watching the PPID breadcrumb only (never cwd, never CLAUDE_JOB_DIR) —
  * used as a corrective safety net after an initial resolution came from the
- * cwd fallback. Same exponential-backoff schedule as resolveSessionId
+ * cwd fallback or an ancestor's breadcrumb. Same exponential-backoff schedule as resolveSessionId
  * (reuses nextDelayMs). Resolves on the first valid ppid hit; never resolves
  * null. The caller decides whether the resolved id differs from what's
  * already adopted and is worth acting on — this function doesn't know or
@@ -671,12 +671,14 @@ export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorP
  * - A parent-level session that already has a live owning engine is not
  *   ours. Once skipped, an id stays skipped, so a neighbour whose engine
  *   later exits is not adopted then.
- * - Never on Linux. The collector writes a breadcrumb at each of its
- *   ancestors there (collector-script.ts's writePpidBreadcrumb()), so the
- *   host's parent is routinely a shared slot (an editor's main process, a
- *   shell) carrying a concurrent session's id, which may have no engine of
- *   its own or not have adopted its id yet. Elsewhere the collector writes
- *   only its own ppid. Nor on Windows, which has no `ps`.
+ * - On Linux the collector writes a breadcrumb at each of its ancestors
+ *   (collector-script.ts's writePpidBreadcrumb()), so the host's slot also
+ *   carries the id of a session of the same engine whose hooks run below the
+ *   host (a `claude -p` run from a tool call, say). Such a session with no
+ *   engine of its own is adopted if a tick reads it there before the slot
+ *   names the guess. Other engines' sessions are filed under their own
+ *   writers, which this engine does not read.
+ * - Never on Windows, which has no `ps`.
  */
 export async function watchPpidBreadcrumb(options: PpidBreadcrumbWatchOptions): Promise<string> {
   const ppid = options.ppid ?? process.ppid;
@@ -684,8 +686,7 @@ export async function watchPpidBreadcrumb(options: PpidBreadcrumbWatchOptions): 
   const breadcrumbs = sessionBreadcrumbs(storagePath, options.writers);
   const platform = options.ancestry?.platform ?? process.platform;
   const staleId = options.includeParentOfPpid ? options.staleId : undefined;
-  const watchesParentLevel =
-    options.includeParentOfPpid === true && platform !== 'linux' && platform !== 'win32';
+  const watchesParentLevel = options.includeParentOfPpid === true && platform !== 'win32';
 
   let attempt = 0;
   let tickCount = 0;

@@ -1088,6 +1088,18 @@ describe('stdio integration', () => {
         stats,
         sessionId,
         waitForSessionId,
+        reportTokens: () =>
+          client.callTool({
+            name: 'nr_observe_report_tokens',
+            arguments: { input_tokens: 100, output_tokens: 50, model: 'claude-sonnet-5' },
+          }),
+        waitForCheckpoint: async (id: string): Promise<boolean> => {
+          const store = new SessionStore({ storagePath });
+          for (let i = 0; i < 20 && !store.loadSession(id); i++) {
+            await new Promise((r) => setTimeout(r, 250));
+          }
+          return store.loadSession(id) !== null;
+        },
         stderr: () => stderr,
         connect: () => client.connect(transport),
         close: async () => {
@@ -1199,6 +1211,27 @@ describe('stdio integration', () => {
           expect(await engine.waitForSessionId('claude-session-id')).toBe('claude-session-id');
           engine.writeCrumb('kiro', 'ppid', 'kiro-session-id');
           expect(await engine.waitForSessionId('kiro-session-id')).toBe('kiro-session-id');
+        } finally {
+          await engine.close();
+        }
+      },
+      30000,
+    );
+
+    itOffWindows(
+      'checkpoints a session adopted from an ancestor breadcrumb without waiting for its ppid one',
+      async () => {
+        // Behind a launcher no hook runs under, the engine's own ppid breadcrumb never appears.
+        const engine = await startEngine({
+          MCP_CLIENT: 'kiro',
+          NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+        });
+        try {
+          await engine.connect();
+          engine.writeCrumb('kiro', 'ppid', 'kiro-session-id', process.ppid);
+          expect(await engine.waitForSessionId('kiro-session-id')).toBe('kiro-session-id');
+          await engine.reportTokens();
+          expect(await engine.waitForCheckpoint('kiro-session-id')).toBe(true);
         } finally {
           await engine.close();
         }

@@ -917,8 +917,8 @@ async function main(): Promise<void> {
   // the breadcrumb poll does not outlive the process.
   let sessionResolutionAbort: AbortController | undefined;
   // Aborts the background watchPpidBreadcrumb() correction watch (armed
-  // only when the initial resolution came from the collision-prone cwd
-  // fallback — see resolvedViaCwdOnly) when shutdown fires.
+  // only when the initial resolution came from the cwd or an ancestor's
+  // breadcrumb — see startPpidCorrectionWatch) when shutdown fires.
   let ppidCorrectionAbort: AbortController | undefined;
   // That watch's listener for tool calls drained under the cwd guess, set
   // while it runs (see subscribeToStaleIdActivity in session-resolver.ts).
@@ -3304,14 +3304,16 @@ async function main(): Promise<void> {
     };
 
     // Arms a background watch for the ppid breadcrumb after an initial
-    // resolution came from the collision-prone cwd fallback (see
-    // resolvedViaCwdOnly). If/when the ppid breadcrumb later reports a
-    // DIFFERENT, more precise session id, corrects the adoption via the
-    // same adoptRealSessionId() used for the pending -> real transition.
-    // A no-op-forever if the ppid breadcrumb never appears or always
-    // matches — never trusts cwd itself, so it can't be fooled twice.
-    const startPpidCorrectionWatch = (staleId: string): void => {
-      armPendingConfirmation();
+    // resolution came from a breadcrumb other sessions can share: the cwd
+    // fallback (see resolvedViaCwdOnly) or an ancestor's, which an older
+    // collector writes at every process above its hook. If/when the ppid
+    // breadcrumb later reports a DIFFERENT, more precise session id, corrects
+    // the adoption via the same adoptRealSessionId() used for the pending ->
+    // real transition. A no-op-forever if the ppid breadcrumb never appears
+    // or always matches. Only a cwd guess holds back checkpoints meanwhile:
+    // an ancestor adoption was already seeded and checkpointed as before.
+    const startPpidCorrectionWatch = (staleId: string, source: 'cwd' | 'ppid-ancestor'): void => {
+      if (source === 'cwd') armPendingConfirmation();
       ppidCorrectionAbort = new AbortController();
       // Guards against both watches below firing: in practice only one ever
       // can (see the win32 branch's own comment), but a shared flag makes
@@ -3332,14 +3334,15 @@ async function main(): Promise<void> {
         .then(async (ppidId) => {
           if (ppidCorrectionAbort?.signal.aborted || corrected) return;
           if (ppidId === staleId) {
-            // The cwd guess turned out to be correct, as confirmed by our own
+            // The guess turned out to be correct, as confirmed by our own
             // ppid's breadcrumb: the watch never resolves to staleId from an
             // ancestor, whose breadcrumb may be a co-located session's. No
             // correction needed, so no reason to keep suppressing checkpoints
-            // for the rest of the cap window. It was NOT seeded eagerly (see
-            // the resolvedViaCwdOnly gate on rehydrateTrackersIfResumed's
-            // first call site) precisely because it wasn't confirmed yet —
-            // seed it now that it is.
+            // for the rest of the cap window. A cwd guess was NOT seeded
+            // eagerly (see the resolvedViaCwdOnly gate on
+            // rehydrateTrackersIfResumed's first call site) precisely because
+            // it wasn't confirmed yet — seed it now that it is. An ancestor
+            // adoption already was, and rehydrateTrackersIfResumed seeds once.
             rehydrateTrackersIfResumed(staleId);
             refreshPriorCostBaseline();
             if (localStoreForShutdown) writeHeartbeat(localStoreForShutdown, false);
@@ -3347,7 +3350,8 @@ async function main(): Promise<void> {
             return;
           }
           corrected = true;
-          logger.info('Correcting cwd-sourced session id from PPID breadcrumb', {
+          logger.info('Correcting the adopted session id from PPID breadcrumb', {
+            source,
             staleId,
             correctedId: ppidId,
           });
@@ -3462,11 +3466,10 @@ async function main(): Promise<void> {
             });
 
             // The ppid breadcrumb is precise (no cross-session collision);
-            // the cwd fallback is not, since it's shared by every session
-            // that ever ran in this directory. Only a cwd-sourced
-            // resolution needs the background correction watch.
-            if (resolvedSource === 'cwd') {
-              startPpidCorrectionWatch(realId);
+            // the cwd and ancestor ones are not, so they arm the background
+            // correction watch.
+            if (resolvedSource === 'cwd' || resolvedSource === 'ppid-ancestor') {
+              startPpidCorrectionWatch(realId, resolvedSource);
             }
           } catch (err) {
             // Use the signal's own aborted flag rather than matching the error
@@ -3562,7 +3565,7 @@ async function main(): Promise<void> {
         // path — this eager path otherwise has no correction mechanism at
         // all once initialization completes.
         if (resolvedViaCwdOnly) {
-          startPpidCorrectionWatch(sessionTraceId);
+          startPpidCorrectionWatch(sessionTraceId, 'cwd');
         }
       }
     } else {
