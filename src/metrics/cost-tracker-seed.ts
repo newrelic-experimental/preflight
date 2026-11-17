@@ -159,7 +159,7 @@ export interface UnbookedSeedCost {
 }
 
 // The seed books only its own day. Byte estimates are left out because the
-// tracker drops them when their exact reports replay onto their own days.
+// tracker books them itself and drops them on its first exact report.
 export function unbookedSeedCostOf(
   persisted: FullSessionSummary,
   seed: CostTrackerSeed,
