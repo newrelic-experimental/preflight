@@ -6,6 +6,7 @@ import { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 import type { WorkflowRunMetrics } from '../metrics/workflow-run-tracker.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import {
+  skillRunToNrEvent,
   subagentTurnToNrEvent,
   toolCallToNrEvent,
   turnCostToNrEvents,
@@ -78,6 +79,15 @@ function emittedEvents(): Record<string, Record<string, unknown>> {
   attributor.recordToolCall(record);
   const [turnCost] = turnCostToNrEvents(attributor.recordTokenEvent(makeTokenEvent(2000)), ATTRS);
   return {
+    AiSkillRun: skillRunToNrEvent(activeSkill, {
+      timestamp: 1000,
+      developer: 'dev',
+      appName: 'app',
+      sessionId: 'sess-1',
+      teamId: 'team',
+      projectId: 'project',
+      orgId: 'org',
+    }),
     AiToolCall: toolCallToNrEvent(record, ATTRS),
     AiTurnCost: turnCost,
     AiSubagentTurn: subagentTurnToNrEvent(
@@ -185,7 +195,41 @@ describe('unit of agent work schema', () => {
     expect(unknown).toEqual([]);
   });
 
+  it('catalogs the AiSkillRun row that counts a run with no tool calls', () => {
+    const skillRun = catalog
+      .filter((row) => row.event === 'AiSkillRun')
+      .map((row) => row.attribute);
+    expect(skillRun).toEqual(
+      expect.arrayContaining(['skill_name', 'skill_source', 'skill_run_id']),
+    );
+  });
+
   describe('documented gaps', () => {
+    it('opens a slash run with no tool calls as an AiSkillRun row that carries no cost or duration', () => {
+      const opened: Record<string, unknown>[] = [];
+      const skills = new SkillActivationTracker({
+        onRunOpened: (stamp, context) =>
+          opened.push(
+            skillRunToNrEvent(stamp, {
+              timestamp: context.timestamp ?? 0,
+              developer: 'dev',
+              appName: 'app',
+              sessionId: context.sessionId,
+            }),
+          ),
+      });
+      const run = skills.recordPrompt('sess-1', 'my-skill', 1000);
+      expect(opened).toHaveLength(1);
+      expect(opened[0]).toMatchObject({
+        eventType: 'AiSkillRun',
+        skill_name: 'my-skill',
+        skill_source: 'slash',
+        skill_run_id: run?.runId,
+      });
+      for (const key of ['cost_usd', 'input_tokens', 'duration_ms', 'tool'])
+        expect(opened[0]).not.toHaveProperty(key);
+    });
+
     it('gives a failed Skill call inside an open run the outer run, not its own name', () => {
       const skills = new SkillActivationTracker();
       const outer = skills.recordToolCall(makeRecord('Skill', { skillName: 'outer' }));
