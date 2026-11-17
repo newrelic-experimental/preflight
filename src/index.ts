@@ -1473,11 +1473,11 @@ async function main(): Promise<void> {
       if (!sessionStore) return;
       try {
         const saved = sessionStore.loadSession(sessionId);
-        if (saved?.completedByObserver !== true) return;
+        if (saved?.observerCompletedAt === undefined) return;
         saveSessionRememberingBaseline({
           ...saved,
           outcome: 'in progress',
-          completedByObserver: undefined,
+          observerCompletedAt: undefined,
         });
       } catch (err) {
         logger.warn('Failed to lift an observer-completed session', { error: String(err) });
@@ -2739,11 +2739,19 @@ async function main(): Promise<void> {
       savesSession?: (sessionId: string) => boolean,
     ): number => {
       if (!sessionStore || !config) return 0;
+      const store = sessionStore;
       const storagePath = config.storagePath;
-      const outcomeOf = (sessionId: string): Partial<FullSessionSummary> =>
-        when === 'exit' && !hasLiveOwningEngine(storagePath, sessionId)
-          ? { outcome: 'completed', completedByObserver: true }
+      // An observer's completion stands until the session shows activity after it or an engine for
+      // it is live. Rewriting a rollup it already held is neither, so a running save keeps it.
+      const outcomeOf = (sessionId: string, lastActivity: number): Partial<FullSessionSummary> => {
+        const completedAt =
+          when === 'exit' ? Date.now() : store.loadSession(sessionId)?.observerCompletedAt;
+        return completedAt !== undefined &&
+          lastActivity <= completedAt &&
+          !hasLiveOwningEngine(storagePath, sessionId)
+          ? { outcome: 'completed', observerCompletedAt: completedAt }
           : { outcome: 'in progress' };
+      };
       const rollups = localSessionAggregator.toSummaries({
         developer: config.developer ?? 'unknown',
         platform: eventProcessor?.activePlatform,
@@ -2771,7 +2779,7 @@ async function main(): Promise<void> {
                 );
           const summary = {
             ...kept,
-            ...outcomeOf(sessionId),
+            ...outcomeOf(sessionId, Number(rollup.endTime)),
             toolCallCount: prior + Number(kept.toolCallCount),
           };
           if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary)) continue;

@@ -1723,11 +1723,11 @@ describe('buildSessionSummary', () => {
     const owner = makeSummary({ outcome: 'completed' });
     for (const later of [
       makeSummary({ outcome: 'in progress' }),
-      makeSummary({ outcome: 'completed', completedByObserver: true }),
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
     ]) {
       expect(mergeSummaries(owner, later)).toMatchObject({
         outcome: 'completed',
-        completedByObserver: undefined,
+        observerCompletedAt: undefined,
       });
     }
   });
@@ -1735,17 +1735,17 @@ describe('buildSessionSummary', () => {
   it("mergeSummaries keeps an observer's completed over an earlier in-progress save", () => {
     const merged = mergeSummaries(
       makeSummary({ outcome: 'in progress' }),
-      makeSummary({ outcome: 'completed', completedByObserver: true }),
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
     );
-    expect(merged).toMatchObject({ outcome: 'completed', completedByObserver: true });
+    expect(merged).toMatchObject({ outcome: 'completed', observerCompletedAt: 1_000 });
   });
 
   it("mergeSummaries lets a later in-progress save replace an observer's completed", () => {
     const merged = mergeSummaries(
-      makeSummary({ outcome: 'completed', completedByObserver: true }),
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
       makeSummary({ outcome: 'in progress' }),
     );
-    expect(merged).toMatchObject({ outcome: 'in progress', completedByObserver: undefined });
+    expect(merged).toMatchObject({ outcome: 'in progress', observerCompletedAt: undefined });
   });
 
   it('mergeSummaries keeps a real platform label against an incoming generic-mcp checkpoint', () => {
