@@ -5,6 +5,7 @@ import {
   type PlatformConfig,
   type PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Maps Factory Droid's built-in tool names to the normalized Claude Code
@@ -114,6 +115,9 @@ export class DroidAdapter implements PlatformAdapter {
   }
 
   isSupported(): boolean {
-    return process.env.MCP_CLIENT === 'droid' || process.env.NEW_RELIC_AI_PLATFORM === 'droid';
+    return (
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'droid' ||
+      canonicalPlatformName(process.env.NEW_RELIC_AI_PLATFORM) === 'droid'
+    );
   }
 }

@@ -5,6 +5,7 @@ import {
   type PlatformConfig,
   type PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Maps Kilo Code's built-in tool names (kilocode.ai/docs/automate/tools,
@@ -204,7 +205,8 @@ export class KiloCodeAdapter implements PlatformAdapter {
 
   isSupported(): boolean {
     return (
-      process.env.MCP_CLIENT === 'kilocode' || process.env.NEW_RELIC_AI_PLATFORM === 'kilocode'
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'kilocode' ||
+      canonicalPlatformName(process.env.NEW_RELIC_AI_PLATFORM) === 'kilocode'
     );
   }
 }

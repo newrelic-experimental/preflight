@@ -276,6 +276,15 @@ describe('PlatformRegistry', () => {
       expect(createDefaultRegistry().detect()?.platformName).toBe(platformName);
     });
 
+    it('lets an adapter used without detect() recognise another spelling of its own name', () => {
+      process.env.MCP_CLIENT = 'Kilo_Code';
+      expect(new KiloCodeAdapter().isSupported()).toBe(true);
+      process.env.MCP_CLIENT = 'cursor';
+      expect(new CursorAdapter().isSupported()).toBe(true);
+      process.env.MCP_CLIENT = 'CURSOR';
+      expect(new CursorAdapter().isSupported()).toBe(true);
+    });
+
     it('skips an MCP_CLIENT it does not know for the engine NEW_RELIC_AI_PLATFORM names', () => {
       process.env.CLAUDE_CODE_VERSION = '1.2.3';
       process.env.MCP_CLIENT = 'vscode';
