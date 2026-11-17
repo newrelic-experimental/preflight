@@ -2749,8 +2749,8 @@ async function main(): Promise<void> {
             callsBeforeFirstWrite.get(sessionId) ??
             savedCallsOf(sessionStore.loadSession(sessionId));
           // A file with calls adds this rollup to them, since a max-merge would drop it. It leaves
-          // out a call the file holds or another process may count, and marks no ids, so that
-          // process still can.
+          // out a call the file held before this process first wrote it, or that another process
+          // marked counted or may count, and marks no ids, so that process still can.
           const kept =
             prior.count === 0
               ? rollup

@@ -398,7 +398,7 @@ export class LocalSessionAggregator {
 
   /**
    * A rollup's summary for a session whose file has calls, without what another process may count:
-   * a timeout, whose post may land elsewhere, and a call another process marked counted.
+   * a timeout, whose post may land elsewhere, and a call whose id is in `countedIds`.
    */
   withoutCallsOtherProcessesMayCount(
     summary: Record<string, unknown>,

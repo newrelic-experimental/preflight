@@ -138,7 +138,8 @@ export function computeDurationStats(durations: number[]): DurationStats {
  * merges scalar counters via Math.max(), which under-reports when pre- and
  * post-restart activity are disjoint rather than overlapping).
  *
- * Only toolCallCount and bashCommandCount are seeded here — SessionTracker's
+ * Only toolCallCount and bashCommandCount are seeded here, less the saved calls
+ * (by toolUseId) the tracker already counted. SessionTracker's
  * other counters that end up on FullSessionSummary (linesAdded, linesRemoved,
  * testRunCount/testPassCount, buildRunCount/buildPassCount) are sourced from
  * TaskDetector's seededAggregate instead (see buildSessionSummary() in
@@ -488,9 +489,10 @@ export class SessionTracker implements Resettable {
   }
 
   /**
-   * Fold a resumed session's pre-restart toolCallCount/bashCommandCount into
-   * this (freshly-started) process's live counters. See SessionTrackerSeed's
-   * doc comment for why this exists.
+   * Fold a resumed session's saved toolCallCount/bashCommandCount into this
+   * process's live counters, leaving out saved calls it already counted, such
+   * as ones adoptSessionId() replayed. See SessionTrackerSeed's doc comment for
+   * why this exists.
    */
   seedFromPersisted(seed: SessionTrackerSeed): void {
     let calls = seed.toolCallCount;
