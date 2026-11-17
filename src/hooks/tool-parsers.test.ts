@@ -2,6 +2,35 @@ import { describe, it, expect } from '@jest/globals';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 describe('parseToolSpecificFields', () => {
+  describe('Bash classification flags carried by the collector', () => {
+    it('classifies the command text when an older collector sent no flags', () => {
+      const fields = parseToolSpecificFields('Bash', { command: 'rm -rf /sandbox/x' }, undefined);
+
+      expect(fields.bashDestructive).toBe(true);
+      expect(fields.bashNetwork).toBe(false);
+    });
+
+    it('prefers flags computed before redaction over the redacted text', () => {
+      const fields = parseToolSpecificFields(
+        'Bash',
+        { command: 'mysql -u root --[REDACTED] -rf /sandbox/x', bashDestructive: true },
+        undefined,
+      );
+
+      expect(fields.bashDestructive).toBe(true);
+    });
+
+    it('ignores a flag that is not a boolean', () => {
+      const fields = parseToolSpecificFields(
+        'Bash',
+        { command: 'rm -rf /sandbox/x', bashDestructive: 'false' },
+        undefined,
+      );
+
+      expect(fields.bashDestructive).toBe(true);
+    });
+  });
+
   describe('Read parser', () => {
     it('extracts filePath, lineOffset, and lineLimit', () => {
       const input = { file_path: '/src/index.ts', offset: 10, limit: 50 };
