@@ -1508,14 +1508,14 @@ describe('stdio integration', () => {
       );
       return client;
     };
-    const drainCalls = async (storage: string, sessionId: string, count: number) => {
+    const drainCalls = async (storage: string, sessionId: string, count: number, from = 0) => {
       const buffer = resolve(storage, `buffer-${sessionId}.jsonl`);
       const lines = Array.from({ length: count }, (_, n) => {
         const call = {
           tool: 'Read',
           timestamp: Date.now() + n,
           sessionId,
-          toolUseId: `toolu_${n}`,
+          toolUseId: `toolu_${from + n}`,
         };
         return [
           { mode: 'pre', ...call },
@@ -1869,6 +1869,81 @@ describe('stdio integration', () => {
 
       expect(savedField(storage, 'other-real-session', 'outcome')).toBe('completed');
     }, 30000);
+
+    describe('a session one engine drained while another checkpoints it', () => {
+      const id = 'other-real-session';
+      const outcome = (storage: string): unknown => savedField(storage, id, 'outcome');
+      const outcomesEvery100Ms = async (storage: string, samples: number): Promise<unknown[]> => {
+        const seen: unknown[] = [];
+        for (let i = 0; i < samples; i++) {
+          seen.push(outcome(storage));
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        return seen;
+      };
+      const startWithSessionDrained = async (storage: string) => {
+        const first = await startEngine(storage);
+        await drainCalls(storage, id, 1);
+        const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
+        let next = 1;
+        for (; next <= 20 && savedCalls(storage, id) === null; next++) {
+          await drainCalls(storage, id, 1, next);
+          for (let i = 0; i < 6 && savedCalls(storage, id) === null; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+          }
+        }
+        expect(savedCalls(storage, id)).not.toBeNull();
+        return { first, checkpointing, next };
+      };
+      const ownerJobDir = (): string => {
+        const jobDir = mkdtempSync(join(tmpdir(), 'nr-owner-job-'));
+        storages.push(jobDir);
+        writeFileSync(
+          resolve(jobDir, 'state.json'),
+          JSON.stringify({ linkScanPath: `/fake/transcript/${id}.jsonl` }),
+        );
+        return jobDir;
+      };
+
+      it('stays completed across its checkpoints after a pending engine with no live owner completes it', async () => {
+        const storage = makeStorage();
+        const { first, checkpointing } = await startWithSessionDrained(storage);
+        await first.close();
+        await waitFor(() => outcome(storage) === 'completed');
+
+        expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
+        await checkpointing.close();
+        expect(outcome(storage)).toBe('completed');
+      }, 60000);
+
+      it('goes back in progress after a pending engine completes it when the session makes a new call', async () => {
+        const storage = makeStorage();
+        const { first, checkpointing, next } = await startWithSessionDrained(storage);
+        await first.close();
+        await waitFor(() => outcome(storage) === 'completed');
+
+        await drainCalls(storage, id, 1, next);
+        await waitFor(() => outcome(storage) === 'in progress');
+        await checkpointing.close();
+        await waitFor(() => outcome(storage) === 'completed');
+      }, 60000);
+
+      it('stays completed across its checkpoints after its own engine completes it', async () => {
+        const storage = makeStorage();
+        const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
+        await drainCalls(storage, id, 1);
+        await waitFor(() => savedCalls(storage, id) === 1);
+        const owner = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: ownerJobDir() });
+        await waitFor(() => existsSync(resolve(storage, `active-${id}.pid`)));
+        await drainCalls(storage, id, 1, 1);
+        await owner.close();
+        await waitFor(() => outcome(storage) === 'completed');
+
+        expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
+        await checkpointing.close();
+        expect(outcome(storage)).toBe('completed');
+      }, 60000);
+    });
 
     it('keeps a call with no session id across its first adoption', async () => {
       const storage = makeStorage();
