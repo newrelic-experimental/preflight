@@ -510,11 +510,10 @@ export class SubagentWatcher {
    * STALLED_REPLY_MS takes the stats the open ones leave over, so a subagent
    * woken after its final answer is read at once. One idle longer, and a stalled
    * one, is noticed growing again only by the poll. When more transcripts remain
-   * than the stat budget, the newest half is always stated and the rest take turns. Not found before the next
-   * poll: a session's
-   * first subagent, whose transcript creates that directory, and a workflow's
-   * subagents, whose transcripts sit in per-run directories below it. Never
-   * throws.
+   * than the stat budget, the newest half is always stat-ed and the rest take
+   * turns. Not found before the next poll: a session's first subagent, whose
+   * transcript creates that directory, and a workflow's subagents, whose
+   * transcripts sit in per-run directories below it. Never throws.
    */
   readLiveTails(sessionId?: string): number {
     if (this.stopped) return 0;
@@ -562,7 +561,8 @@ export class SubagentWatcher {
 
   /**
    * Indexes into `trackedFiles`, from `from`, of the transcripts worth a stat:
-   * of `sessionId` (every session when undefined), read once, and not settled.
+   * of `sessionId` (every session when undefined), read once, and either not
+   * settled or final within STALLED_REPLY_MS.
    * Within `budget` all of them. Beyond it the newest half, then a window of the
    * rest that moves on with each call.
    */
