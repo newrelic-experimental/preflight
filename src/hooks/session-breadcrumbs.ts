@@ -19,7 +19,10 @@ export const BREADCRUMBS_DIR = 'breadcrumbs';
 /**
  * A cwd breadcrumb idle this long is collected. The resolver accepts a cwd
  * breadcrumb only while its session was active within 12 hours, so the window
- * is well past that.
+ * is well past that. A legacy-root breadcrumb the resolver accepts by process
+ * start time is also collected once idle this long, because the sweep cannot
+ * see other processes' start times. A process that old normally resolved on its first
+ * poll.
  */
 export const STALE_CWD_BREADCRUMB_MS = 7 * 24 * 60 * 60 * 1000;
 
