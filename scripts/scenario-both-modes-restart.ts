@@ -7,11 +7,12 @@
  *
  *   npm run test:scenario
  *
- * Three scenarios, each in a fresh isolated run (see .claude/skills/verify-preflight):
+ * Four scenarios, each in a fresh isolated run (see .claude/skills/verify-preflight):
  *   local-only   `--local` tails the transcript alone, then restarts.
  *   stdio-only   `--stdio` bills both turns alone, then restarts. It is the control that
  *                shows the split-turns failure comes from splitting turns across processes.
  *   split-turns  `--stdio` bills turn A, `--local` bills turn B, then both restart.
+ *   token-only   `--local` tails a session with token events and no tool calls, then restarts.
  *
  * A check tagged with a `knownBug` is expected to fail. It prints `xfail` and
  * does not fail the run. When it starts to pass the run fails with `XPASS`, so
@@ -230,6 +231,40 @@ async function localOnly(): Promise<void> {
   }
 }
 
+function modelRequestCount(): number {
+  const body = JSON.parse(pf('api', '/api/model-usage')) as {
+    byModel: Record<string, { requestCount: number }>;
+  };
+  return body.byModel[MODEL]?.requestCount ?? 0;
+}
+
+async function tokenOnly(): Promise<void> {
+  console.log('\n-- token-only');
+  pf('up');
+  try {
+    const sid = pf('sid');
+    sendTurn(sid, TURN_A);
+    sendTurn(sid, TURN_B);
+    const before = await waitFor(modelRequestCount, (n) => n >= 2);
+    await delay(SETTLE_MS);
+    check('token-only session counts each request once', before, 2);
+
+    pf('stop');
+    pf('restart');
+    await delay(SETTLE_MS);
+    sendTurn(sid, TURN_A);
+    const after = await waitFor(modelRequestCount, (n) => n >= 3);
+    check(
+      'token-only restart keeps earlier requests',
+      after,
+      3,
+      'seedLocalTrackersFromFile does not seed ModelUsageTracker',
+    );
+  } finally {
+    pf('down');
+  }
+}
+
 async function stdioOnly(): Promise<void> {
   console.log('\n-- stdio-only');
   pf('up');
@@ -333,6 +368,7 @@ try {
   await localOnly();
   await stdioOnly();
   await splitTurns();
+  await tokenOnly();
 } catch (error) {
   checks.push({ name: 'scenario ran to completion', outcome: 'FAIL', detail: String(error) });
   console.log(`FAIL  scenario ran to completion: ${String(error)}`);
