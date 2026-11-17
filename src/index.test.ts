@@ -1710,14 +1710,17 @@ describe('stdio integration', () => {
       for (let i = 0; i < 20 && read() !== want; i++) await new Promise((r) => setTimeout(r, 250));
       return read();
     };
-    const startOwner = async (storage: string, id: string) => {
+    const startOwner = async (storage: string, id: string, envOverrides = {}) => {
       const jobDir = mkdtempSync(join(tmpdir(), 'nr-adopt-job-'));
       storages.push(jobDir);
       writeFileSync(
         resolve(jobDir, 'state.json'),
         JSON.stringify({ linkScanPath: `/x/${id}.jsonl` }),
       );
-      const client = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: jobDir });
+      const client = await startEngine(storage, undefined, {
+        CLAUDE_JOB_DIR: jobDir,
+        ...envOverrides,
+      });
       await waitFor(() => existsSync(resolve(storage, `active-${id}.pid`)));
       return client;
     };
@@ -2193,6 +2196,42 @@ describe('stdio integration', () => {
       await stopOwner(storage, guessing, 'guessed-session');
 
       expect(retaken).toBe(true);
+    }, 30000);
+
+    const readHeartbeat = (storage: string, id: string): string | null => {
+      const heartbeat = resolve(storage, `active-${id}.pid`);
+      return existsSync(heartbeat) ? readFileSync(heartbeat, 'utf-8') : null;
+    };
+
+    it('takes back the heartbeat when a later engine of its session exits first', async () => {
+      const storage = makeStorage();
+      const survivor = await startOwner(storage, 'shared-session', CHECKPOINT_OFTEN);
+      const survivorPid = readHeartbeat(storage, 'shared-session');
+      const later = await startOwner(storage, 'shared-session');
+      await waitFor(() => readHeartbeat(storage, 'shared-session') !== survivorPid);
+      await later.close();
+      const retaken = await settle(() => readHeartbeat(storage, 'shared-session'), survivorPid);
+      await stopOwner(storage, survivor, 'shared-session');
+
+      expect(retaken).toBe(survivorPid);
+    }, 30000);
+
+    it('takes back the heartbeat when a confirmed guess of its session exits first', async () => {
+      const storage = makeStorage();
+      const survivor = await startOwner(storage, 'guessed-session', CHECKPOINT_OFTEN);
+      const survivorPid = readHeartbeat(storage, 'guessed-session');
+      const cwd = makeCwd();
+      guessFromCwd(storage, cwd);
+      const guessing = await startEngine(storage, cwd);
+      const ppidCrumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-ppid');
+      mkdirSync(ppidCrumbs, { recursive: true });
+      writeFileSync(resolve(ppidCrumbs, `${process.pid}.txt`), 'guessed-session');
+      await waitFor(() => readHeartbeat(storage, 'guessed-session') !== survivorPid);
+      await guessing.close();
+      const retaken = await settle(() => readHeartbeat(storage, 'guessed-session'), survivorPid);
+      await stopOwner(storage, survivor, 'guessed-session');
+
+      expect(retaken).toBe(survivorPid);
     }, 30000);
 
     it("leaves a live engine's heartbeat alone at each checkpoint of a cwd guess", async () => {
