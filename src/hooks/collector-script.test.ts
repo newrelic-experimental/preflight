@@ -463,8 +463,8 @@ describe('collector-script', () => {
       },
     );
 
-    it.each(entryPoints('curl --password= https://example.test/x'))(
-      'keeps a network %s command network when redaction rewrites its flags',
+    it.each(entryPoints('TOKEN=\ncurl https://example.test/x'))(
+      'keeps a network %s command network when redaction eats its leading command',
       (_name, raw) => {
         processHook(raw);
 
@@ -484,6 +484,19 @@ describe('collector-script', () => {
         expect(fields.bashNetwork).toBe(false);
       },
     );
+
+    it('carries no flags for a command too long to classify cheaply, so the stored text decides', () => {
+      processHook(
+        makePreToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: `echo ${'x'.repeat(20_000)} && rm -rf /sandbox/x` },
+        }),
+      );
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.bashDestructive).toBeUndefined();
+      expect(parseToolSpecificFields('Bash', toolInput, undefined).bashDestructive).toBe(true);
+    });
 
     it('never stores the raw command', () => {
       processHook(

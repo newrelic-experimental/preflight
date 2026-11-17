@@ -1050,8 +1050,10 @@ function detectStampPlatform() {
   return (process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM) || void 0;
 }
 var MAX_REDACT_BYTES = 1048576;
+var MAX_CLASSIFY_CHARS = 16384;
 function bashCommandInput(command) {
-  const { isDestructive, isNetwork } = classifyBash(command.slice(0, MAX_REDACT_BYTES));
+  if (command.length > MAX_CLASSIFY_CHARS) return { command: redact(command) };
+  const { isDestructive, isNetwork } = classifyBash(command);
   return { command: redact(command), bashDestructive: isDestructive, bashNetwork: isNetwork };
 }
 function redact(value) {

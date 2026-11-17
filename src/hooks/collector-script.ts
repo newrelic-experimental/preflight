@@ -129,8 +129,14 @@ function detectStampPlatform(): string | undefined {
 
 const MAX_REDACT_BYTES = 1_048_576; // 1 MB
 
+// The classifier backtracks quadratically on long single-line commands, so the
+// hook only classifies a command up to this length. A longer one carries no
+// flags and the processor classifies its stored text, as it did before.
+const MAX_CLASSIFY_CHARS = 16_384;
+
 function bashCommandInput(command: string): Record<string, unknown> {
-  const { isDestructive, isNetwork } = classifyBash(command.slice(0, MAX_REDACT_BYTES));
+  if (command.length > MAX_CLASSIFY_CHARS) return { command: redact(command) };
+  const { isDestructive, isNetwork } = classifyBash(command);
   return { command: redact(command), bashDestructive: isDestructive, bashNetwork: isNetwork };
 }
 
