@@ -786,6 +786,10 @@ export class CostTracker implements Resettable {
    * latter dilutes the rate with idle hours from previous days when a
    * session spans midnight.
    */
+  getSessionStartMs(processStartMs: number): number {
+    return processStartMs;
+  }
+
   getFirstActivityMsForDay(dayKey: string): number | null {
     return this.firstActivityMsByDay.get(dayKey) ?? null;
   }
