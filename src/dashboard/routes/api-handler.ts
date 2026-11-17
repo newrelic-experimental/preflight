@@ -1715,7 +1715,7 @@ export function createApiHandler(
       }
       return out;
     });
-    jsonOk(res, slimmed.length > limit ? slimmed.slice(-limit) : slimmed);
+    jsonOk(res, !byIds && slimmed.length > limit ? slimmed.slice(-limit) : slimmed);
   });
 
   // Currently-live session list with metadata. Sourced from LiveSessionRegistry

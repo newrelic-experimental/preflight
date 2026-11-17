@@ -422,14 +422,14 @@ export function Sessions(): JSX.Element {
   // A deep-linked id with no persisted session record has nothing to match
   // and would vanish from the list with no indication why. Surfaced below.
   const missingSelectedSessionCount = useMemo(() => {
-    if (sessionIdsFilter === null) return 0;
+    if (sessionIdsFilter === null || !list.isSuccess) return 0;
     const loadedIds = new Set(rows.map((r) => r.sessionId));
     let missing = 0;
     for (const id of sessionIdsFilter) {
       if (!loadedIds.has(id)) missing++;
     }
     return missing;
-  }, [sessionIdsFilter, rows]);
+  }, [sessionIdsFilter, rows, list.isSuccess]);
   // The KPI strip above is built from filteredRuns, which come from
   // WorkflowStore.listRuns() — a machine-wide, 30-day-window, 500-run scan
   // with no relationship to `rows` (the session list's own most-recent-50
