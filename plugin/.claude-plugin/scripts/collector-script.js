@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // src/hooks/collector-script.ts
-import { readFileSync as readFileSync2, writeFileSync, mkdirSync as mkdirSync2, existsSync, utimesSync } from "node:fs";
-import { resolve as resolve3, dirname as dirname2 } from "node:path";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, mkdirSync as mkdirSync3, existsSync, utimesSync } from "node:fs";
+import { resolve as resolve3, dirname as dirname3 } from "node:path";
 import { homedir } from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 
@@ -47,6 +47,13 @@ var SPECIAL = charTable(`
 var isSpace = (c) => c === 32 || c >= 9 && c <= 13;
 var isOperator = (c) => c >= 0 && c < 128 && OPERATOR[c] === 1;
 var isBlankOrOperator = (c) => isSpace(c) || isOperator(c);
+function cutAtWord(text, end) {
+  let start = end;
+  if (!isSpace(text.charCodeAt(end))) {
+    while (start > 0 && !isSpace(text.charCodeAt(start - 1))) start--;
+  }
+  return text.slice(0, start);
+}
 function skipPlain(text, from) {
   let i = from;
   while (i < text.length) {
@@ -611,6 +618,110 @@ function mcpPrToolAction(toolName) {
   return Object.hasOwn(MCP_PR_TOOL_ACTION, bare) ? MCP_PR_TOOL_ACTION[bare] : void 0;
 }
 
+// src/hooks/minted-tool-use-ids.ts
+import { randomUUID } from "node:crypto";
+import {
+  closeSync as closeSync3,
+  mkdirSync as mkdirSync2,
+  openSync as openSync3,
+  readdirSync,
+  renameSync,
+  unlinkSync as unlinkSync3,
+  writeFileSync
+} from "node:fs";
+import { basename, dirname as dirname2, join } from "node:path";
+var MINTED_IDS_DIR_PREFIX = "minted-ids-";
+var MINTED_ID_PREFIX = "minted-";
+var CLAIM_SUFFIX = ".claimed";
+var OPEN_ENTRY_TTL_MS = 40 * 6e4;
+var MAX_LISTINGS = 5;
+function mintedIdsDir(bufferPath) {
+  return join(dirname2(bufferPath), MINTED_IDS_DIR_PREFIX + basename(bufferPath, ".jsonl"));
+}
+function toolKey(tool) {
+  const name = tool.toLowerCase();
+  let a = 2166136261;
+  let b = 16777619;
+  for (let i = 0; i < name.length; i++) {
+    a = Math.imul(a ^ name.charCodeAt(i), 16777619);
+    b = Math.imul(b ^ name.charCodeAt(i), 16777619);
+  }
+  return (a >>> 0).toString(16).padStart(8, "0") + (b >>> 0).toString(16).padStart(8, "0");
+}
+function parseEntry(name) {
+  if (name.endsWith(CLAIM_SUFFIX)) return void 0;
+  const [mintedAt, key, id, lateUntil, extra] = name.split(".");
+  if (key === void 0 || id === void 0 || extra !== void 0) return void 0;
+  return {
+    name,
+    mintedAt: Number(mintedAt),
+    key,
+    id,
+    lateUntil: lateUntil === void 0 ? void 0 : Number(lateUntil)
+  };
+}
+function listEntries(dir) {
+  try {
+    return readdirSync(dir).sort().flatMap((name) => parseEntry(name) ?? []);
+  } catch {
+    return void 0;
+  }
+}
+function mintToolUseId(bufferPath, tool, at) {
+  const id = MINTED_ID_PREFIX + randomUUID();
+  try {
+    const dir = mintedIdsDir(bufferPath);
+    mkdirSync2(dir, { recursive: true, mode: 448 });
+    writeFileSync(join(dir, `${at}.${toolKey(tool)}.${id}`), "", {
+      flag: "wx",
+      mode: 384
+    });
+    return id;
+  } catch {
+    return void 0;
+  }
+}
+function takeMintedToolUseId(bufferPath, tool, at) {
+  const dir = mintedIdsDir(bufferPath);
+  const key = toolKey(tool);
+  for (let listing = 0; listing < MAX_LISTINGS; listing++) {
+    const entries = listEntries(dir)?.filter((entry) => entry.key === key);
+    if (entries === void 0) return void 0;
+    const open = entries.filter((entry) => entry.lateUntil === void 0);
+    const counted = entries.filter((entry) => entry.lateUntil !== void 0);
+    let contended = false;
+    for (const entry of [...open, ...counted]) {
+      if (!claim(join(dir, entry.name), unlinkSync3)) {
+        contended = true;
+        continue;
+      }
+      const expired = entry.lateUntil === void 0 ? at - entry.mintedAt > OPEN_ENTRY_TTL_MS : at > entry.lateUntil;
+      if (!expired) return entry.id;
+    }
+    if (!contended) return void 0;
+  }
+  return void 0;
+}
+function claim(entry, act) {
+  const claimPath2 = entry + CLAIM_SUFFIX;
+  try {
+    closeSync3(openSync3(claimPath2, "wx", 384));
+  } catch {
+    return false;
+  }
+  try {
+    act(entry);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try {
+      unlinkSync3(claimPath2);
+    } catch {
+    }
+  }
+}
+
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
 var DEFAULT_STORAGE_DIR = resolve3(homedir(), ".newrelic-preflight");
@@ -690,7 +801,8 @@ function redact(value) {
   let result = value;
   if (Buffer.byteLength(value, "utf8") > MAX_REDACT_BYTES) {
     const buf = Buffer.from(value, "utf8").subarray(0, MAX_REDACT_BYTES);
-    result = buf.toString("utf8").replace(/�$/, "");
+    const kept = buf.toString("utf8").replace(/�$/, "");
+    result = cutAtWord(value, kept.length);
   }
   return redactSecrets(result);
 }
@@ -757,7 +869,7 @@ function writePpidBreadcrumb(sessionId, root, legacyRoot) {
     const pids = getLinuxAncestorPids(ppid);
     for (const dir of legacyRoot === void 0 ? [root] : [root, legacyRoot]) {
       const breadcrumbDir = resolve3(dir, "session-by-ppid");
-      mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
+      mkdirSync3(breadcrumbDir, { recursive: true, mode: 448 });
       for (const pid of pids) {
         const breadcrumbPath = resolve3(breadcrumbDir, `${pid}.txt`);
         if (existsSync(breadcrumbPath)) {
@@ -769,7 +881,7 @@ function writePpidBreadcrumb(sessionId, root, legacyRoot) {
           } catch {
           }
         }
-        writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
+        writeFileSync2(breadcrumbPath, sessionId, { mode: 384 });
       }
     }
     _breadcrumbWriteFailed = false;
@@ -791,7 +903,7 @@ function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
   try {
     for (const dir of legacyRoot === void 0 ? [root] : [root, legacyRoot]) {
       const breadcrumbDir = resolve3(dir, "session-by-cwd");
-      mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
+      mkdirSync3(breadcrumbDir, { recursive: true, mode: 448 });
       const breadcrumbPath = resolve3(breadcrumbDir, `${sanitizedCwd}.txt`);
       if (existsSync(breadcrumbPath)) {
         try {
@@ -802,7 +914,7 @@ function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
         } catch {
         }
       }
-      writeFileSync(breadcrumbPath, sessionId, { mode: 384 });
+      writeFileSync2(breadcrumbPath, sessionId, { mode: 384 });
     }
     _cwdBreadcrumbWriteFailed = false;
   } catch (err) {
@@ -1054,6 +1166,7 @@ function getWindsurfToolInfo(data) {
   return data.tool_info !== null && typeof data.tool_info === "object" ? data.tool_info : {};
 }
 var stderrSinkInstalled = false;
+var POST_ONLY_EVENTS = /* @__PURE__ */ new Set(["beforereadfile", "afterfileedit"]);
 function processHook(raw, cliEvent) {
   let data;
   try {
@@ -1430,11 +1543,16 @@ function processHook(raw, cliEvent) {
   let reportAttempted = false;
   try {
     const bufferPath = getBufferPath(sessionId);
-    const bufferDir = dirname2(bufferPath);
+    const bufferDir = dirname3(bufferPath);
     if (!existsSync(bufferDir)) {
-      mkdirSync2(bufferDir, { recursive: true, mode: 448 });
+      mkdirSync3(bufferDir, { recursive: true, mode: 448 });
     }
-    appendToHookBuffer(bufferPath, JSON.stringify(event) + "\n");
+    if (event.toolUseId === void 0 && (event.mode === "pre" || event.mode === "post") && !POST_ONLY_EVENTS.has(eventName ?? "")) {
+      const id = event.mode === "pre" ? mintToolUseId(bufferPath, String(event.tool), timestamp) : takeMintedToolUseId(bufferPath, String(event.tool), timestamp);
+      if (id !== void 0) event.toolUseId = id;
+    }
+    const line = JSON.stringify(event) + "\n";
+    appendToHookBuffer(bufferPath, line);
     if (newReport) {
       reportAttempted = true;
       appendToHookBuffer(bufferPath, JSON.stringify(newReport) + "\n");
