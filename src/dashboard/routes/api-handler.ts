@@ -1679,7 +1679,7 @@ export function createApiHandler(
       // Today-scoped (not 3-min live-scoped): an idle-but-still-open window
       // must keep its stub row here — see computeCrossProcessTodaySessionIds().
       for (const id of computeCrossProcessTodaySessionIds(deps)) {
-        if (!knownIds.has(id)) {
+        if (!knownIds.has(id) && (!byIds || requestedIds.has(id))) {
           const stats = perSession.get(id);
           // getLastActivity is registry-maintained and survives buffer drains,
           // so use it as the stable upper bound for durationMs. Without this,

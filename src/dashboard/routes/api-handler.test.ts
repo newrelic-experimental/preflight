@@ -498,6 +498,32 @@ describe('api-handler GET /api/sessions', () => {
     expect(result.some((s) => s.sessionId === 'other-process-session')).toBe(true);
   });
 
+  it('omits unrequested live stub rows when filtering by ids', async () => {
+    const now = Date.now();
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadAllSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getLastActivity: () => null,
+        getSessionName: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'other-process-session', timestamp: now - 1_000 },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['localStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions?ids=someone-else' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body())).toEqual([]);
+  });
+
   it('keeps a session in the list once it goes idle past the 3-minute live window', async () => {
     // An open-but-idle Claude Code window (no tool calls for >3 min)
     // must not vanish from the Today tab's session list — getLiveSessions()
