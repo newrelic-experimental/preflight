@@ -883,6 +883,9 @@ function envWithoutTerminalPlatform(platformEnv: Record<string, string>): NodeJS
 }
 
 describe('stdio integration', () => {
+  // Windows has no `ps`, so no ancestor walk and no parent level in the correction watch.
+  const itOffWindows = process.platform === 'win32' ? it.skip : it;
+
   /**
    * Connects and waits for the engine's configured tool set. The engine answers
    * the handshake before its trackers exist, and until they do its tools return
@@ -1029,11 +1032,16 @@ describe('stdio integration', () => {
       const storagePath = mkdtempSync(join(tmpdir(), 'nr-engine-writer-storage-'));
       const projectCwd = mkdtempSync(join(tmpdir(), 'nr-engine-writer-project-'));
       const sanitizedCwd = sanitizeCwdForFilename(realpathSync(projectCwd));
-      const writeCrumb = (writer: string | null, kind: 'ppid' | 'cwd', sessionId: string) => {
+      const writeCrumb = (
+        writer: string | null,
+        kind: 'ppid' | 'cwd',
+        sessionId: string,
+        pid = process.pid,
+      ) => {
         const root = writer === null ? storagePath : breadcrumbRoot(storagePath, writer);
         const dir = resolve(root, `session-by-${kind}`);
         mkdirSync(dir, { recursive: true });
-        const key = kind === 'ppid' ? String(process.pid) : sanitizedCwd;
+        const key = kind === 'ppid' ? String(pid) : sanitizedCwd;
         writeFileSync(resolve(dir, `${key}.txt`), sessionId);
       };
       const transport = new StdioClientTransport({
@@ -1176,6 +1184,27 @@ describe('stdio integration', () => {
         await engine.close();
       }
     }, 30000);
+
+    itOffWindows(
+      "corrects a Kiro engine that adopted an older collector's session from a shared ancestor once its own hooks write",
+      async () => {
+        // A collector from before per-engine breadcrumbs writes only the root
+        // layout, at each ancestor of its hook, so a process both sessions run
+        // under (a tmux server, say) names that session. This test process's
+        // parent stands in for it: it is the engine's parent-of-ppid.
+        const engine = await startEngine({ MCP_CLIENT: 'kiro' });
+        try {
+          await engine.connect();
+          engine.writeCrumb(null, 'ppid', 'claude-session-id', process.ppid);
+          expect(await engine.waitForSessionId('claude-session-id')).toBe('claude-session-id');
+          engine.writeCrumb('kiro', 'ppid', 'kiro-session-id');
+          expect(await engine.waitForSessionId('kiro-session-id')).toBe('kiro-session-id');
+        } finally {
+          await engine.close();
+        }
+      },
+      30000,
+    );
   });
 
   it('self-corrects a synchronously-resolved cwd session id once the real PPID breadcrumb appears', async () => {
@@ -3114,10 +3143,7 @@ describe('stdio integration', () => {
     }, 60000);
   });
 
-  // The correction watch reads the parent level only off Linux and Windows,
-  // so these skip in CI, which relies on the session-resolver.test.ts cases
-  // that inject platform 'darwin'. On a Mac they run the real `ps` lookup.
-  const itOffLinux = process.platform === 'linux' || process.platform === 'win32' ? it.skip : it;
+  // The correction watch never reads the parent level on Windows, which has no `ps`.
 
   /** Titles itself like npm's `npx` process, then runs its args as a child. */
   const NPM_EXEC_WRAPPER = [
@@ -3255,7 +3281,7 @@ describe('stdio integration', () => {
     };
   }
 
-  itOffLinux(
+  itOffWindows(
     'does not read the parent-of-ppid breadcrumb of an engine its host launched directly (#479)',
     async () => {
       // This engine's ppid is this test process, not an `npm exec` wrapper,
@@ -3284,7 +3310,7 @@ describe('stdio integration', () => {
     30000,
   );
 
-  itOffLinux(
+  itOffWindows(
     'corrects a wrong cwd guess from the host breadcrumb behind an npm exec wrapper (#479)',
     async () => {
       // Behind the wrapper the level above ppid is the host that ran npx: this
@@ -3300,7 +3326,7 @@ describe('stdio integration', () => {
     30000,
   );
 
-  itOffLinux(
+  itOffWindows(
     'does not follow the host to a new session once its breadcrumb matched the cwd guess, behind an npm exec wrapper (#479)',
     async () => {
       // The default plugin launch: the cwd guess is right, so the host's slot
@@ -3332,7 +3358,7 @@ describe('stdio integration', () => {
     30000,
   );
 
-  itOffLinux(
+  itOffWindows(
     'does not follow the host to a new session after a tool call drained under the cwd guess, behind an npm exec wrapper (#479)',
     async () => {
       // The host's slot names the guess only until its tool call is drained,
@@ -3355,7 +3381,7 @@ describe('stdio integration', () => {
     30000,
   );
 
-  itOffLinux(
+  itOffWindows(
     'corrects a wrong cwd guess after draining tool calls of the guessed session, behind an npm exec wrapper (#479)',
     async () => {
       // A wrong guess drains the guessed session's tool calls under the
@@ -3373,7 +3399,7 @@ describe('stdio integration', () => {
   );
 
   it('reports each tool call drained under the cwd guess to the correction watch, and no other', async () => {
-    // The watch acts on that report only off Linux and Windows, so this checks
+    // The watch acts on that report only off Windows, so this checks
     // the drain-path wiring itself, on every platform: a loader hook wraps
     // the listener the engine subscribes, and marks each call on stderr.
     // The hook files are fixed text, with no paths or values spliced in: the
