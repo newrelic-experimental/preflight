@@ -73,6 +73,11 @@ export interface HookEventProcessorOptions {
    * live session.
    */
   drainAllSessions?: boolean;
+  /**
+   * Sees every record first, whichever session made it, and returns the record
+   * that onRecord and onWorkflowAgent get, or null to keep it from them.
+   */
+  admitRecord?: (record: ToolCallRecord) => ToolCallRecord | null;
   onRecord: (record: ToolCallRecord) => void;
   onRecordAmend?: (record: ToolCallRecord) => void;
   onTokenEvent?: (event: TokenEvent) => void;
@@ -389,6 +394,7 @@ export class HookEventProcessor {
   private readonly pollIntervalMs: number;
   private readonly orphanTimeoutMs: number;
   private drainAllSessions: boolean;
+  private readonly admitRecord: (record: ToolCallRecord) => ToolCallRecord | null;
   private readonly onRecord: (record: ToolCallRecord) => void;
   private readonly onRecordAmend: ((record: ToolCallRecord) => void) | null;
   private readonly onTokenEvent: ((event: TokenEvent) => void) | null;
@@ -467,6 +473,7 @@ export class HookEventProcessor {
     this.orphanTimeoutMs = options.orphanTimeoutMs ?? DEFAULT_ORPHAN_TIMEOUT_MS;
     this.drainAllSessions = options.drainAllSessions ?? false;
     this.maxPendingEvents = options.maxPendingEvents ?? DEFAULT_MAX_PENDING;
+    this.admitRecord = options.admitRecord ?? ((record) => record);
     this.onRecord = options.onRecord;
     this.onRecordAmend = options.onRecordAmend ?? null;
     this.onTokenEvent = options.onTokenEvent ?? null;
@@ -1298,7 +1305,26 @@ export class HookEventProcessor {
     }
   }
 
-  private emitRecord(record: ToolCallRecord): void {
+  /** Sends records admitRecord kept out earlier to onRecord and onWorkflowAgent. */
+  replayRecords(records: readonly ToolCallRecord[]): void {
+    for (const record of records) this.emitAdmitted(record);
+  }
+
+  private emitRecord(drained: ToolCallRecord): void {
+    let record: ToolCallRecord | null;
+    try {
+      record = this.admitRecord(drained);
+    } catch (err) {
+      logger.warn('admitRecord callback failed', {
+        recordId: drained.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    if (record) this.emitAdmitted(record);
+  }
+
+  private emitAdmitted(record: ToolCallRecord): void {
     try {
       this.onRecord(record);
     } catch (err) {

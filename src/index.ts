@@ -56,6 +56,7 @@ import { BudgetTracker } from './metrics/budget-tracker.js';
 import { ClaudeMdTracker } from './metrics/claudemd-tracker.js';
 import { CollaborationProfiler } from './metrics/collaboration-profile.js';
 import {
+  isOwnSessionRecord,
   isTokenEventForThisProcess,
   shouldApplyCostEstimate,
 } from './metrics/cost-estimate-gate.js';
@@ -2198,7 +2199,11 @@ async function main(): Promise<void> {
         const index = toolCallBuffer.findIndex((r) => r.id === record.id);
         if (index >= 0) toolCallBuffer[index] = amendRecord(toolCallBuffer[index]!, record);
       },
-      onRecord: (incomingRecord) => {
+      // Every drained session's records enter here. The trackers in onRecord
+      // report this process's own session, so a --stdio engine admits only its
+      // own records, and adoptRealSessionId() replays the ones it drained while
+      // its id was pending.
+      admitRecord: (incomingRecord) => {
         // Attributed before any consumer (notably auditTrail below) sees the
         // record, so audit/security events carry agentId and agentType.
         // The watcher's on-demand read is synchronous, which is what keeps it
@@ -2209,20 +2214,10 @@ async function main(): Promise<void> {
         );
         const activeSkill = skillActivationTracker.recordToolCall(attributed);
         const rawRecord = activeSkill ? { ...attributed, activeSkill } : attributed;
-        if (!config || !sessionTracker || !taskDetector) {
-          logger.warn('onRecord called before full initialization; skipping');
-          return;
-        }
         if (cwdGuessActivity && rawRecord.sessionId === cwdGuessActivity.staleId) {
           cwdGuessActivity.onActivity();
         }
-
-        // Capture active task ID before recordToolCall may close the current task
-        const taskIdBeforeRecord =
-          config.otlp.transport !== 'nr-events-api' ? taskDetector.getActiveTaskId() : null;
-
-        sessionTracker.recordToolCall(rawRecord);
-        taskDetector.recordToolCall(rawRecord);
+        sessionTracker!.recordToolCall(rawRecord);
         localSessionAggregator.recordToolCall(rawRecord);
         if (rawRecord.sessionId) {
           liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
@@ -2231,6 +2226,38 @@ async function main(): Promise<void> {
         // transcript has no meta sidecar (see onSubagentTurn). Its PostToolUse
         // normally fires only after a foreground subagent returns.
         subagentAttribution.recordAgentToolCall(rawRecord);
+        contextTracker.recordToolCall(rawRecord);
+        // SSE consumers filter by sessionId for the per-session live tail.
+        // Records without a sessionId are legacy buffer entries that surfaced
+        // during the migrateLegacyBuffer() window on first boot — skip the
+        // live emit rather than fabricate a session by falling back to the
+        // MCP's resolved sessionTraceId, which would re-introduce the
+        // fictional-session-ID bug the session-ID resolver removed.
+        if (rawRecord.sessionId) {
+          liveBus.emit('tool-call', {
+            id: rawRecord.id,
+            sessionId: rawRecord.sessionId,
+            tool: rawRecord.toolName,
+            durationMs: rawRecord.durationMs ?? 0,
+            costUsd: 0,
+            ts: rawRecord.timestamp,
+          });
+        }
+        return !options.stdio || isOwnSessionRecord(rawRecord.sessionId ?? null, sessionTraceId)
+          ? rawRecord
+          : null;
+      },
+      onRecord: (rawRecord) => {
+        if (!config || !taskDetector) {
+          logger.warn('onRecord called before full initialization; skipping');
+          return;
+        }
+
+        // Capture active task ID before recordToolCall may close the current task
+        const taskIdBeforeRecord =
+          config.otlp.transport !== 'nr-events-api' ? taskDetector.getActiveTaskId() : null;
+
+        taskDetector.recordToolCall(rawRecord);
 
         if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
           // Emit tool call span — parent is the active task span (or session span if no task)
@@ -2247,7 +2274,6 @@ async function main(): Promise<void> {
         }
 
         contextWindowTracker.recordToolCall(rawRecord);
-        contextTracker.recordToolCall(rawRecord);
         latencyTracker.recordToolCall(rawRecord);
         const thrashingAlert = retryDetector.recordToolCall(rawRecord);
         if (thrashingAlert) {
@@ -2344,22 +2370,6 @@ async function main(): Promise<void> {
         // so the monitor counts them as untracked.
         unforwardedSessionMonitor?.recordToolCall(record.sessionId);
 
-        // SSE consumers filter by sessionId for the per-session live tail.
-        // Records without a sessionId are legacy buffer entries that surfaced
-        // during the migrateLegacyBuffer() window on first boot — skip the
-        // live emit rather than fabricate a session by falling back to the
-        // MCP's resolved sessionTraceId, which would re-introduce the
-        // fictional-session-ID bug the session-ID resolver removed.
-        if (record.sessionId) {
-          liveBus.emit('tool-call', {
-            id: record.id,
-            sessionId: record.sessionId,
-            tool: record.toolName,
-            durationMs: record.durationMs ?? 0,
-            costUsd: 0,
-            ts: record.timestamp,
-          });
-        }
         // Push into the alert collector's rolling tool-call buffer so
         // tool.failure rules have data to evaluate against.
         capturedAlertSnapshotCollector?.recordToolCall({
@@ -3142,7 +3152,9 @@ async function main(): Promise<void> {
       // Hot-swap the event processor to the scoped store so it only drains
       // this session's events going forward. Its final drain routes tokens by
       // realId, and runs before the tracker adopts realId, so adoptSessionId()
-      // replays what it drains.
+      // replays what it drains. The other trackers get realId's records drained
+      // so far before the id changes, since the final drain admits the rest.
+      eventProcessor!.replayRecords(localSessionAggregator.recordsOf(realId));
       sessionTraceId = realId;
       eventProcessor!.replaceStore(realLocalStore, false);
 
