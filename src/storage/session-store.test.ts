@@ -4559,6 +4559,35 @@ describe('attribution field', () => {
     });
   });
 
+  it('merge drops breakdownUsd when the side with the larger costUsd has none', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-breakdown-usd-older-${Date.now()}`;
+    const save = (bucket: object) =>
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          attribution: {
+            buckets: { skill: { unslop: bucket as never } },
+            highContextCostUsd: 0,
+            apiDurationMs: null,
+          },
+        }),
+      );
+
+    save({ costUsd: 5, tokens: 500, count: 5, durationMs: 1 });
+    save({
+      costUsd: 2,
+      tokens: 200,
+      count: 2,
+      durationMs: 1,
+      breakdownUsd: { inputUsd: 1, outputUsd: 1, cacheReadUsd: 0, cacheCreationUsd: 0 },
+    });
+
+    const merged = store.loadSession(id)?.attribution?.buckets.skill?.unslop;
+    expect(merged?.costUsd).toBe(5);
+    expect(merged?.breakdownUsd).toBeUndefined();
+  });
+
   it('drops a malformed breakdown but keeps the bucket', () => {
     const raw = JSON.stringify({
       ...makeSummary(),

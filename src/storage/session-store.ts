@@ -438,7 +438,14 @@ function mergeAttribution(
       const ba = facetA[key];
       const bb = facetB[key];
       const breakdown = mergeTokenBreakdown(ba?.breakdown, bb?.breakdown);
-      const breakdownUsd = mergeUsdBreakdown(ba?.breakdownUsd, bb?.breakdownUsd);
+      // The larger `costUsd` wins the merge, so a dollar split is only valid when
+      // the side that supplied it also has one; otherwise it would understate the bucket.
+      const usdSideMissingLarger =
+        (!ba?.breakdownUsd && (ba?.costUsd ?? 0) > (bb?.costUsd ?? 0)) ||
+        (!bb?.breakdownUsd && (bb?.costUsd ?? 0) > (ba?.costUsd ?? 0));
+      const breakdownUsd = usdSideMissingLarger
+        ? undefined
+        : mergeUsdBreakdown(ba?.breakdownUsd, bb?.breakdownUsd);
       merged[key] = {
         costUsd: maxNum(ba?.costUsd, bb?.costUsd),
         tokens: maxNum(ba?.tokens, bb?.tokens),
