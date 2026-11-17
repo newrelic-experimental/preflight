@@ -1823,6 +1823,23 @@ describe('stdio integration', () => {
       expect(savedCalls(storage, 'other-real-session')).toBe(1);
     }, 30000);
 
+    it('adds no call the file held before its first checkpoint, at a later checkpoint', async () => {
+      const storage = makeStorage();
+      const owner = await startOwner(storage, 'other-real-session');
+      writeHook(storage, 'other-real-session', 'pre', 'toolu_split');
+      await waitFor(drained(storage, 'other-real-session'));
+      await stopOwner(storage, owner, 'other-real-session');
+      rmSync(resolve(storage, 'counted'), { recursive: true, force: true });
+      const client = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
+      await drainCalls(storage, 'other-real-session', 1);
+      await waitFor(() => savedCalls(storage, 'other-real-session') === 2);
+      writeHook(storage, 'other-real-session', 'post', 'toolu_split');
+      await waitFor(drained(storage, 'other-real-session'));
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedCalls(storage, 'other-real-session')).toBe(2);
+    }, 30000);
+
     it('counts a guess once when a correction saves what its own checkpoint already saved', async () => {
       const storage = makeStorage();
       const cwd = makeCwd();

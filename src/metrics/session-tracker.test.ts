@@ -975,6 +975,16 @@ describe('SessionTracker', () => {
       expect(metrics.bashCommandsRun).toBe(1);
     });
 
+    it('counts a replayed call again after replacing a wrong guess', () => {
+      const tracker = new SessionTracker('guessed-session');
+      const call = makeRecord({ sessionId: 'real-session', toolUseId: 'toolu_replayed' });
+      tracker.recordToolCall(call);
+
+      tracker.adoptSessionId('real-session', [call], true);
+
+      expect(tracker.getMetrics().toolCallCount).toBe(1);
+    });
+
     it('keeps its own count when the saved file holds more ids than its count', () => {
       const tracker = new SessionTracker('test-session');
       tracker.recordToolCall(makeRecord({ toolName: 'Read', toolUseId: 'toolu_a' }));
