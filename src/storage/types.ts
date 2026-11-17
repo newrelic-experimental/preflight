@@ -342,7 +342,8 @@ export interface ToolCallRecord {
    * `agent_id` (`PreHookEvent.agentId`/`PostHookEvent.agentId`), which
    * Claude Code documents as present on every hook event fired inside a
    * subagent call. Some installs have been observed never sending it,
-   * so when it is absent it is backfilled via `backfillAgentId()`
+   * so when it is absent, empty, over 128 characters or holds control
+   * characters (`normalizeAgentId()`), it is backfilled via `backfillAgentId()`
    * (agent-partition.ts), joining on `toolUseId` against tool_use blocks
    * `SubagentWatcher` finds while tailing that subagent's own transcript, which
    * `SubagentAttributionIndex.attributeAtIntake()` reads on demand when the
@@ -441,6 +442,14 @@ export interface TokenBreakdown {
   readonly cacheCreationTokens: number;
 }
 
+/** Dollar cost of each {@link TokenBreakdown} category, priced per model at attribution time. */
+export interface UsdBreakdown {
+  readonly inputUsd: number;
+  readonly outputUsd: number;
+  readonly cacheReadUsd: number;
+  readonly cacheCreationUsd: number;
+}
+
 export interface AttributionBucket {
   readonly costUsd: number;
   /** input + output + cache-read + cache-creation tokens; 0 when the facet has no token signal. */
@@ -451,6 +460,8 @@ export interface AttributionBucket {
   readonly durationMs: number;
   /** Per-category split of `tokens`; absent on legacy files and when the facet has no per-category signal. */
   readonly breakdown?: TokenBreakdown;
+  /** Per-category dollars of `costUsd`; absent on files written before it existed. */
+  readonly breakdownUsd?: UsdBreakdown;
 }
 
 export interface SessionAttribution {
