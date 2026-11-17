@@ -10,9 +10,9 @@ import {
 } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { createLogger, PricingTable } from '../shared/index.js';
-import type { ModelPricing } from '../shared/index.js';
-import { loadCustomPricing } from '../shared/pricing.js';
+import { createLogger, PricingTable } from '../core/index.js';
+import type { ModelPricing } from '../core/index.js';
+import { loadCustomPricing } from '../core/pricing.js';
 import { setRefreshedPricing } from './pricing-overlay.js';
 
 const logger = createLogger('pricing-refresh');
@@ -43,7 +43,7 @@ function perMTok(perToken: number): number {
 /**
  * Maps LiteLLM's price file to ModelPricing. Keeps the standard rates and the
  * above-200K input/output tier, which Anthropic bills for the whole request like
- * the vendored 'flat' tier mode. Batch, flex and priority rates do not apply to
+ * the 'flat' tier mode. Batch, flex and priority rates do not apply to
  * interactive coding sessions; the cache rates are the 5-minute and 1-hour write
  * rates and the read rate.
  * Never throws.
