@@ -17,12 +17,13 @@ afterEach(() => {
 // Test helpers
 // ---------------------------------------------------------------------------
 
+let nextToolUseId = 0;
 function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
   return {
     id: 'rec-001',
     sessionId: 'sess-001',
     toolName: 'Read',
-    toolUseId: 'toolu_001',
+    toolUseId: `toolu_${++nextToolUseId}`,
     timestamp: Date.now(),
     durationMs: 50,
     success: true,
@@ -909,7 +910,11 @@ describe('SessionTracker', () => {
       tracker.recordToolCall(makeRecord({ toolName: 'Read' }));
       tracker.recordToolCall(makeRecord({ toolName: 'Bash' }));
 
-      tracker.seedFromPersisted({ toolCallCount: 6, bashCommandCount: 3 });
+      tracker.seedFromPersisted({
+        toolCallCount: 6,
+        bashCommandCount: 3,
+        toolNameByUseId: new Map(),
+      });
 
       const metrics = tracker.getMetrics();
       expect(metrics.toolCallCount).toBe(8); // 2 live + 6 seeded
@@ -920,16 +925,59 @@ describe('SessionTracker', () => {
       const tracker = new SessionTracker('test-session');
       tracker.recordToolCall(makeRecord({ toolName: 'Read' }));
 
-      tracker.seedFromPersisted({ toolCallCount: 0, bashCommandCount: 0 });
+      tracker.seedFromPersisted({
+        toolCallCount: 0,
+        bashCommandCount: 0,
+        toolNameByUseId: new Map(),
+      });
 
       expect(tracker.getMetrics().toolCallCount).toBe(1);
     });
 
     it('seeds correctly even with no prior live activity', () => {
       const tracker = new SessionTracker('test-session');
-      tracker.seedFromPersisted({ toolCallCount: 5, bashCommandCount: 2 });
+      tracker.seedFromPersisted({
+        toolCallCount: 5,
+        bashCommandCount: 2,
+        toolNameByUseId: new Map(),
+      });
       const metrics = tracker.getMetrics();
       expect(metrics.toolCallCount).toBe(5);
+      expect(metrics.bashCommandsRun).toBe(2);
+    });
+
+    it('adds only the saved calls this tracker has not already counted', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'toolu_both' }));
+      tracker.recordToolCall(makeRecord({ toolName: 'Read', toolUseId: 'toolu_live' }));
+
+      tracker.seedFromPersisted({
+        toolCallCount: 3,
+        bashCommandCount: 1,
+        toolNameByUseId: new Map([
+          ['toolu_both', 'Bash'],
+          ['toolu_saved', 'Read'],
+        ]),
+      });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(4);
+      expect(metrics.bashCommandsRun).toBe(1);
+    });
+
+    it('does not count a seeded call again when it records that call', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.seedFromPersisted({
+        toolCallCount: 1,
+        bashCommandCount: 1,
+        toolNameByUseId: new Map([['toolu_split', 'Bash']]),
+      });
+
+      tracker.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'toolu_split' }));
+      tracker.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'toolu_next' }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(2);
       expect(metrics.bashCommandsRun).toBe(2);
     });
   });

@@ -1790,6 +1790,38 @@ describe('stdio integration', () => {
       expect(savedCalls(storage, 'other-real-session')).toBe(1);
     }, 30000);
 
+    it('counts a call once when another engine drained its post and saved before this one adopted', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      writeHook(storage, 'own-real-session', 'pre', 'toolu_split');
+      await waitFor(drained(storage, 'own-real-session'));
+      const owner = await startOwner(storage, 'own-real-session');
+      writeHook(storage, 'own-real-session', 'post', 'toolu_split');
+      await waitFor(drained(storage, 'own-real-session'));
+      await stopOwner(storage, owner, 'own-real-session');
+      const savedByOwner = savedCalls(storage, 'own-real-session');
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedByOwner).toBe(1);
+      expect(savedCalls(storage, 'own-real-session')).toBe(1);
+    }, 30000);
+
+    it("adds no call that the session's file already holds when its counted mark is missing", async () => {
+      const storage = makeStorage();
+      const owner = await startOwner(storage, 'other-real-session');
+      writeHook(storage, 'other-real-session', 'pre', 'toolu_split');
+      await waitFor(drained(storage, 'other-real-session'));
+      await stopOwner(storage, owner, 'other-real-session');
+      expect(savedCalls(storage, 'other-real-session')).toBe(1);
+      rmSync(resolve(storage, 'counted'), { recursive: true, force: true });
+      const client = await startEngine(storage);
+      writeHook(storage, 'other-real-session', 'post', 'toolu_split');
+      await waitFor(drained(storage, 'other-real-session'));
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedCalls(storage, 'other-real-session')).toBe(1);
+    }, 30000);
+
     it('counts a guess once when a correction saves what its own checkpoint already saved', async () => {
       const storage = makeStorage();
       const cwd = makeCwd();
