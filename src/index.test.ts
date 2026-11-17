@@ -1888,6 +1888,8 @@ describe('stdio integration', () => {
         const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
         let next = 1;
         for (; next <= 20 && savedCalls(storage, id) === null; next++) {
+          // Both engines poll every 100 ms, so a fixed phase could hand every call to one of them.
+          await sleep((next * 37) % 100);
           await drainCalls(storage, id, 1, next);
           for (let i = 0; i < 6 && savedCalls(storage, id) === null; i++) {
             await sleep(100);
