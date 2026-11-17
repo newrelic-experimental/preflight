@@ -67,13 +67,13 @@ describe('RetryDetector', () => {
     expect(alerts).toHaveLength(1);
   });
 
-  it('alerts when inputs are highly similar even if some succeed', () => {
+  it('alerts on near-identical calls that follow a failure, even if later ones succeed', () => {
     const detector = new RetryDetector({ similarityThreshold: 0.8 });
 
     detector.recordToolCall(
       makeRecord({
         toolName: 'Edit',
-        success: true,
+        success: false,
         filePath: '/a/b.ts',
         command: 'fix bug line 10',
       }),
@@ -211,6 +211,68 @@ describe('RetryDetector', () => {
     expect(detector.getMetrics().totalAlertsEmitted).toBe(2);
   });
 
+  it('does not flag successful reads of different line ranges that share a long command prefix', () => {
+    const detector = new RetryDetector();
+    const cd = 'cd /Users/dev/repo/.claude/worktrees/o-1054;';
+
+    detector.recordToolCall(
+      makeRecord({
+        command: `${cd} sed -n 1,200p src/metrics/session-tracker.ts`,
+        inputHash: 'h1',
+      }),
+    );
+    detector.recordToolCall(
+      makeRecord({
+        command: `${cd} sed -n 200,525p src/metrics/session-tracker.ts`,
+        inputHash: 'h2',
+      }),
+    );
+    detector.recordToolCall(
+      makeRecord({
+        command: `${cd} sed -n 160,300p src/storage/session-store.ts`,
+        inputHash: 'h3',
+      }),
+    );
+    detector.recordToolCall(
+      makeRecord({
+        command: `${cd} sed -n 440,720p src/storage/session-store.ts`,
+        inputHash: 'h4',
+      }),
+    );
+
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+    expect(detector.getMetrics().totalTokensWasted).toBe(0);
+  });
+
+  it('does not treat repeated successful calls as retries', () => {
+    const detector = new RetryDetector();
+
+    for (let i = 0; i < 5; i++) {
+      detector.recordToolCall(
+        makeRecord({ toolName: 'TaskList', success: true, inputHash: 'same-input' }),
+      );
+    }
+
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+  });
+
+  it('charges each repeated call at most once as the window slides', () => {
+    const detector = new RetryDetector();
+    const fail = (): ReturnType<typeof makeRecord> =>
+      makeRecord({ toolName: 'Bash', success: false, inputSizeBytes: 400, outputSizeBytes: 600 });
+
+    detector.recordToolCall(fail());
+    detector.recordToolCall(fail());
+    detector.recordToolCall(fail());
+    detector.recordToolCall(fail());
+    detector.recordToolCall(makeRecord({ toolName: 'Read' }));
+    detector.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/b.ts' }));
+
+    // 3 repeats after the first failure, 1000 bytes each, at 4 bytes per token.
+    expect(detector.getMetrics().totalTokensWasted).toBe(750);
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(2);
+  });
+
   it('does not flag genuinely different calls of a tool with no metadata extractor', () => {
     // A tool outside extractInputMeta()'s switch (e.g. PowerShell, WebFetch,
     // a third-party MCP tool) carries no tool-specific fields, so every call
@@ -322,7 +384,7 @@ describe('RetryDetector', () => {
     detector.recordToolCall(
       makeRecord({
         toolName: 'Bash',
-        success: true,
+        success: false,
         command: 'npm test -- src/retry-detector.test.ts',
         inputHash: 'bbbb2222cccc0001',
       }),
@@ -382,7 +444,7 @@ describe('RetryDetector', () => {
     const detector = new RetryDetector();
 
     detector.recordToolCall(
-      makeRecord({ toolName: 'WebFetch', success: true, inputHash: 'aaaa1111bbbb2222' }),
+      makeRecord({ toolName: 'WebFetch', success: false, inputHash: 'aaaa1111bbbb2222' }),
     );
     detector.recordToolCall(
       makeRecord({ toolName: 'WebFetch', success: true, inputHash: 'aaaa1111bbbb2222' }),
