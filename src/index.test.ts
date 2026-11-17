@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { jest, describe, it, expect, beforeAll, beforeEach, afterEach } from '@jest/globals';
 import type { ChildProcess } from 'node:child_process';
 import {
   appendFileSync,
@@ -1651,6 +1651,105 @@ describe('stdio integration', () => {
       await waitFor(() => !existsSync(heartbeat));
 
       expect(savedField(storage, 'own-real-session', 'estimatedCostUsd')).toBeGreaterThan(0);
+    }, 30000);
+
+    const writeCall = (storage: string, sessionId: string, toolUseId: string, call: object) => {
+      const event = { timestamp: Date.now(), sessionId, toolUseId, ...call };
+      const buffer = resolve(storage, `buffer-${sessionId}.jsonl`);
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'pre', ...event }) + '\n');
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'post', ...event }) + '\n');
+    };
+
+    describe('its trackers after it adopts, having drained another session', () => {
+      const toolResult = async (
+        client: Client,
+        name: string,
+        args: Record<string, unknown> = {},
+      ) => {
+        const result = await client.callTool({ name, arguments: args });
+        return JSON.parse((result.content as Array<{ text: string }>)[0]!.text) as Record<
+          string,
+          unknown
+        >;
+      };
+      const failingTest = { tool: 'Bash', toolInput: { command: 'npm test' }, success: false };
+      const ownRead = { tool: 'Read', toolInput: { file_path: '/own/a.ts' }, success: true };
+      let report: Record<string, Record<string, unknown>>;
+
+      beforeAll(async () => {
+        const storage = makeStorage();
+        const client = await startEngine(storage);
+        for (let n = 0; n < 3; n++)
+          writeCall(storage, 'other-real-session', `toolu_o${n}`, failingTest);
+        writeCall(storage, 'own-real-session', 'toolu_own', ownRead);
+        await waitFor(() => !readdirSync(storage).some((f) => f.startsWith('buffer-')));
+        const heartbeat = resolve(storage, 'active-own-real-session.pid');
+        writeFileSync(
+          resolve(storage, 'session-by-ppid', `${process.pid}.txt`),
+          'own-real-session',
+        );
+        await waitFor(() => existsSync(heartbeat));
+        await toolResult(client, 'nr_observe_mark_task_boundary');
+        report = {
+          latency: await toolResult(client, 'nr_observe_get_latency_percentiles'),
+          quality: await toolResult(client, 'nr_observe_get_quality_proxy'),
+          retry: await toolResult(client, 'nr_observe_get_retry_alerts'),
+          turns: await toolResult(client, 'nr_observe_get_turn_analysis'),
+          task: await toolResult(client, 'nr_observe_get_workflow_trace'),
+        };
+        await client.close();
+        await waitFor(() => !existsSync(heartbeat));
+      }, 30000);
+
+      it('times only its own call', () => {
+        expect(report.latency.overall).toMatchObject({ count: 1 });
+      });
+
+      it('takes no quality signal from the other session', () => {
+        expect(report.quality.totalSignals).toBe(0);
+      });
+
+      it("raises no retry alert for the other session's repeats", () => {
+        expect(report.retry.totalAlertsEmitted).toBe(0);
+      });
+
+      it('puts only its own call in a turn', () => {
+        const turns = report.turns.recentTurns as Array<{ toolCount: number }>;
+        expect(turns.map((t) => t.toolCount)).toEqual([1]);
+      });
+
+      it('closes a task holding only its own call', () => {
+        expect(report.task.tool_calls).toEqual([expect.objectContaining({ tool: 'Read' })]);
+      });
+    });
+
+    it('times each of its own calls once when the store swap drains some of them', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      const heartbeat = resolve(storage, 'active-own-real-session.pid');
+      let n = 0;
+      const writer = setInterval(() => {
+        writeCall(storage, 'own-real-session', `toolu_${n++}`, { tool: 'Read', success: true });
+      }, 2);
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'own-real-session');
+      try {
+        await waitFor(() => existsSync(heartbeat));
+      } finally {
+        clearInterval(writer);
+      }
+      await waitFor(() => !existsSync(resolve(storage, 'buffer-own-real-session.jsonl')));
+      const stats = await client.callTool({ name: 'nr_observe_get_session_stats', arguments: {} });
+      const latency = await client.callTool({
+        name: 'nr_observe_get_latency_percentiles',
+        arguments: {},
+      });
+      await client.close();
+      await waitFor(() => !existsSync(heartbeat));
+
+      const text = (r: typeof stats) => (r.content as Array<{ text: string }>)[0]!.text;
+      const calls = (JSON.parse(text(stats)) as { tool_calls: number }).tool_calls;
+      expect(calls).toBe(n);
+      expect(JSON.parse(text(latency))).toMatchObject({ overall: { count: n } });
     }, 30000);
 
     it('saves no session but the guessed one when the ppid breadcrumb corrects the guess', async () => {
