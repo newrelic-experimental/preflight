@@ -14,7 +14,6 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
-
 import { appendToHookBuffer } from './storage/hook-buffer.js';
 
 // ---------------------------------------------------------------------------
@@ -445,7 +444,6 @@ describe('AiCodingTask emission in cloud mode', () => {
   let preloadPath: string;
   let jobDir: string;
   let port: number;
-  let idleTriggers: number;
 
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), 'nr-task-emit-'));
@@ -453,14 +451,12 @@ describe('AiCodingTask emission in cloud mode', () => {
     mkdirSync(resolve(storage, 'session-by-ppid'), { recursive: true, mode: 0o700 });
     capturePath = resolve(root, 'captured.jsonl');
     preloadPath = resolve(root, 'preload.mjs');
-    // Captures ingest events, and fires TaskDetector's idle timers on SIGUSR2
-    // so a test closes an idle task when it chooses, not after 30s of waiting.
+    // Captures the events ingest would send to New Relic.
     writeFileSync(
       preloadPath,
       [
         "import { gunzipSync } from 'node:zlib';",
         "import { appendFileSync } from 'node:fs';",
-        "import { promisify } from 'node:util';",
         'const real = globalThis.fetch;',
         'globalThis.fetch = async (url, init) => {',
         "  if (!String(url).includes('insights-collector')) return real(url, init);",
@@ -469,35 +465,6 @@ describe('AiCodingTask emission in cloud mode', () => {
         '  }',
         '  return new Response(\'{"success":true}\', { status: 200 });',
         '};',
-        'const realSetTimeout = globalThis.setTimeout;',
-        'const realClearTimeout = globalThis.clearTimeout;',
-        'const idleTimers = new Map();',
-        'const patchedSetTimeout = (fn, ms, ...args) => {',
-        "  if (!String(new Error().stack).includes('task-detector')) return realSetTimeout(fn, ms, ...args);",
-        '  const timer = realSetTimeout(() => {',
-        '    idleTimers.delete(timer);',
-        '    fn(...args);',
-        '  }, ms);',
-        '  idleTimers.set(timer, () => fn(...args));',
-        '  return timer;',
-        '};',
-        'patchedSetTimeout[promisify.custom] = realSetTimeout[promisify.custom];',
-        'globalThis.setTimeout = patchedSetTimeout;',
-        'globalThis.clearTimeout = (timer) => {',
-        '  idleTimers.delete(timer);',
-        '  realClearTimeout(timer);',
-        '};',
-        'let triggers = 0;',
-        "process.on('SIGUSR2', () => {",
-        '  const due = [...idleTimers];',
-        '  idleTimers.clear();',
-        '  for (const [timer, run] of due) {',
-        '    realClearTimeout(timer);',
-        '    run();',
-        '  }',
-        '  triggers += 1;',
-        '  process.stderr.write(`idle-trigger ${triggers} fired ${due.length}\\n`);',
-        '});',
       ].join('\n'),
     );
     jobDir = resolve(root, 'job');
@@ -508,7 +475,6 @@ describe('AiCodingTask emission in cloud mode', () => {
       { mode: 0o600 },
     );
     port = await getFreePort();
-    idleTriggers = 0;
   });
 
   afterEach(() => {
@@ -530,12 +496,19 @@ describe('AiCodingTask emission in cloud mode', () => {
     });
   }
 
-  /** `Read` calls all read one file, so four of them form a repeated-read anti-pattern. */
-  function seedToolCalls(sessionId: string, count: number, tool: 'Bash' | 'Read' = 'Bash'): void {
+  /**
+   * `Read` calls all read one file, so four of them form a repeated-read anti-pattern.
+   * An `AskUserQuestion` call closes the task it joins.
+   */
+  function seedToolCalls(
+    sessionId: string,
+    count: number,
+    tool: 'Bash' | 'Read' | 'AskUserQuestion' = 'Bash',
+  ): void {
     const bufferPath = resolve(storage, `buffer-${sessionId}.jsonl`);
     const base = Date.now() - 1000;
     for (let i = 0; i < count; i++) {
-      const common = { tool, sessionId, toolUseId: `toolu_${sessionId}_${i}` };
+      const common = { tool, sessionId, toolUseId: `toolu_${sessionId}_${tool}_${i}` };
       appendToHookBuffer(
         bufferPath,
         JSON.stringify({
@@ -559,19 +532,21 @@ describe('AiCodingTask emission in cloud mode', () => {
     }
   }
 
-  /** Fires the idle timer, retrying until the engine has drained the seeded calls and armed it. */
-  async function fireIdleTimer(child: ChildHandle): Promise<void> {
+  /** A `Stop` hook frame, which closes the session's open task. */
+  function seedStop(sessionId: string): void {
+    appendToHookBuffer(
+      resolve(storage, `buffer-${sessionId}.jsonl`),
+      JSON.stringify({ mode: 'stop', sessionId, timestamp: Date.now() }) + '\n',
+    );
+  }
+
+  async function waitForDrain(sessionId: string): Promise<void> {
+    const bufferPath = resolve(storage, `buffer-${sessionId}.jsonl`);
     const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      idleTriggers += 1;
-      const needle = `idle-trigger ${idleTriggers} fired `;
-      child.proc.kill('SIGUSR2');
-      await waitForStderr(child, needle, 3000);
-      const fired = Number(child.stderr.split(needle)[1]?.split('\n')[0]);
-      if (fired > 0) return;
-      await delay(100);
+    while (existsSync(bufferPath)) {
+      if (Date.now() > deadline) throw new Error(`${bufferPath} was not drained`);
+      await delay(50);
     }
-    throw new Error(`No idle timer armed within ${TOOLS_CALL_TIMEOUT_MS}ms`);
   }
 
   function capturedEvents(eventType: string): Array<Record<string, unknown>> {
@@ -585,13 +560,13 @@ describe('AiCodingTask emission in cloud mode', () => {
 
   const capturedTasks = () => capturedEvents('AiCodingTask');
 
-  it('sends a task closed by the idle timer while the engine keeps running', async () => {
+  it('sends a task closed by a Stop hook while the engine keeps running', async () => {
     const child = startCloudEngine(200, jobDir);
     try {
       await waitForBoot(child, BOOT_TIMEOUT_MS);
       await initialize(child);
       seedToolCalls(SESSION, 1);
-      await fireIdleTimer(child);
+      seedStop(SESSION);
 
       const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
       while (capturedTasks().length === 0 && Date.now() < deadline) await delay(100);
@@ -629,9 +604,11 @@ describe('AiCodingTask emission in cloud mode', () => {
       await waitForStderr(child, 'Awaiting session_id resolution', BOOT_TIMEOUT_MS);
       await initialize(child);
       seedToolCalls(SESSION, 4, 'Read');
-      await fireIdleTimer(child);
+      seedToolCalls(SESSION, 1, 'AskUserQuestion');
+      await waitForDrain(SESSION);
       seedToolCalls(OTHER, 2);
-      await fireIdleTimer(child);
+      seedToolCalls(OTHER, 1, 'AskUserQuestion');
+      await waitForDrain(OTHER);
       expect(capturedTasks()).toHaveLength(0);
 
       writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), SESSION, {
@@ -645,7 +622,7 @@ describe('AiCodingTask emission in cloud mode', () => {
 
     const tasks = capturedTasks();
     expect(tasks).toHaveLength(1);
-    expect(tasks[0]).toMatchObject({ session_id: SESSION, tool_call_count: 4 });
+    expect(tasks[0]).toMatchObject({ session_id: SESSION, tool_call_count: 5 });
     const antiPatterns = capturedEvents('AiAntiPattern');
     expect(antiPatterns.length).toBeGreaterThan(0);
     expect(antiPatterns.every((event) => event.session_id === SESSION)).toBe(true);
