@@ -3083,6 +3083,7 @@ describe('stdio integration', () => {
         sessionId: string,
         keptUsd: number,
         eventDaysAgo: ReadonlyArray<number>,
+        onAdopted?: (budget: () => Promise<BudgetStatus>) => Promise<void>,
       ): Promise<BudgetStatus> {
         const engine = await startEngine(storagePath, projectCwd, {
           TZ: 'UTC',
@@ -3091,6 +3092,7 @@ describe('stdio integration', () => {
         });
         writeFileSync(ppidBreadcrumb(storagePath), sessionId);
         expect(await engine.logged(ADOPTED)).toBe(true);
+        await onAdopted?.(engine.budget);
         for (const [i, daysAgo] of eventDaysAgo.entries()) {
           appendTokenEvent(
             storagePath,
@@ -3184,15 +3186,65 @@ describe('stdio integration', () => {
             { [localDay(1)]: 1 },
           );
           // The first exact report drops the $1 estimate, so the session keeps $40.
+          let pendingWeeklyUsd: number | undefined;
           const status = await adoptAndSpend(
             storagePath,
             projectCwd,
             'resumed-ledger-id',
             40,
             [1, 0],
+            async (budget) => {
+              // A tool call updates the budget without an exact report.
+              const toolCall = {
+                tool: 'Read',
+                sessionId: 'resumed-ledger-id',
+                toolUseId: 'toolu_1',
+              };
+              const bufferPath = resolve(storagePath, 'buffer-resumed-ledger-id.jsonl');
+              for (const mode of ['pre', 'post']) {
+                appendToHookBuffer(
+                  bufferPath,
+                  JSON.stringify({ ...toolCall, mode, timestamp: Date.now() }) + '\n',
+                );
+              }
+              for (const deadline = Date.now() + 15_000; Date.now() < deadline;) {
+                pendingWeeklyUsd = (await budget()).weekly.spentUsd;
+                if (pendingWeeklyUsd > 0) break;
+                await sleep(100);
+              }
+            },
           );
+          expect(pendingWeeklyUsd).toBeCloseTo(3, 9);
           expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
           expect(status.weekly.spentUsd).toBeCloseTo(2 + 2 * EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts no saved cost in the week for a session from three weeks ago with no day map', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          mkdirSync(resolve(storagePath, 'sessions'), { recursive: true });
+          writeFileSync(
+            resolve(storagePath, 'sessions', `${localDay(21)}_resumed-dayless-id.json`),
+            JSON.stringify({
+              sessionId: 'resumed-dayless-id',
+              toolCallCount: 1,
+              startTime: Date.now() - 21 * DAY_MS,
+              endTime: Date.now() - DAY_MS,
+              estimatedCostUsd: 40,
+            }),
+          );
+          const status = await adoptAndSpend(
+            storagePath,
+            projectCwd,
+            'resumed-dayless-id',
+            40,
+            [0],
+          );
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(EVENT_USD, 9);
         } finally {
           await cleanup();
         }
