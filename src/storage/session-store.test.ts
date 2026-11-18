@@ -1719,6 +1719,35 @@ describe('buildSessionSummary', () => {
     expect(merged.sessionIntent).toBe('the original prompt');
   });
 
+  it("mergeSummaries keeps an owner's completed against later saves", () => {
+    const owner = makeSummary({ outcome: 'completed' });
+    for (const later of [
+      makeSummary({ outcome: 'in progress' }),
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
+    ]) {
+      expect(mergeSummaries(owner, later)).toMatchObject({
+        outcome: 'completed',
+        observerCompletedAt: undefined,
+      });
+    }
+  });
+
+  it("mergeSummaries keeps an observer's completed over an earlier in-progress save", () => {
+    const merged = mergeSummaries(
+      makeSummary({ outcome: 'in progress' }),
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
+    );
+    expect(merged).toMatchObject({ outcome: 'completed', observerCompletedAt: 1_000 });
+  });
+
+  it("mergeSummaries lets a later in-progress save replace an observer's completed", () => {
+    const merged = mergeSummaries(
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
+      makeSummary({ outcome: 'in progress' }),
+    );
+    expect(merged).toMatchObject({ outcome: 'in progress', observerCompletedAt: undefined });
+  });
+
   it('mergeSummaries keeps a real platform label against an incoming generic-mcp checkpoint', () => {
     const existing = makeSummary({ platform: 'claude-code' });
     const incoming = makeSummary({ platform: 'generic-mcp' });
@@ -2318,6 +2347,69 @@ describe('buildSessionSummary', () => {
     });
     const merged = mergeSummaries(existing, incoming);
     expect(merged.timeline?.map((e) => e.timestamp)).toEqual([100, 200, 300]);
+  });
+
+  it('mergeSummaries keeps distinct calls sharing a millisecond and tool when they carry a toolUseId', () => {
+    const call = (toolUseId: string) => ({
+      timestamp: 100,
+      toolName: 'Read',
+      toolUseId,
+      durationMs: 5,
+      success: true,
+    });
+    const existing = makeSummary({ timeline: [call('a'), call('b')] });
+    const incoming = makeSummary({ timeline: [call('b'), call('c')] });
+    const merged = mergeSummaries(existing, incoming);
+    expect(merged.timeline?.map((e) => e.toolUseId)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('keeps same-millisecond calls with distinct ids across a reload through a new SessionStore', () => {
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    const call = (toolUseId: string) => ({
+      timestamp: startTime + 100,
+      toolName: 'Read',
+      toolUseId,
+      durationMs: 5,
+      success: true,
+    });
+    new SessionStore({ storagePath: tmpDir }).saveSession(
+      makeSummary({ sessionId: 'reload-ids', startTime, timeline: [call('a'), call('b')] }),
+    );
+
+    const resumed = new SessionStore({ storagePath: tmpDir });
+    resumed.saveSession(makeSummary({ sessionId: 'reload-ids', startTime, timeline: [] }));
+
+    expect(resumed.loadSession('reload-ids')!.timeline?.map((e) => e.toolUseId)).toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
+  it('mergeSummaries still collapses id-less entries by timestamp and tool', () => {
+    const legacy = { timestamp: 100, toolName: 'Read', durationMs: 5, success: true };
+    const merged = mergeSummaries(
+      makeSummary({ timeline: [legacy] }),
+      makeSummary({ timeline: [{ ...legacy, durationMs: 9 }] }),
+    );
+    expect(merged.timeline).toHaveLength(1);
+  });
+
+  it('mergeSummaries treats an empty toolUseId as no id, so entries at different times both survive', () => {
+    const entry = { toolName: 'Read', toolUseId: '', durationMs: 5, success: true };
+    const merged = mergeSummaries(
+      makeSummary({ timeline: [{ ...entry, timestamp: 100 }] }),
+      makeSummary({ timeline: [{ ...entry, timestamp: 200 }] }),
+    );
+    expect(merged.timeline?.map((e) => e.timestamp)).toEqual([100, 200]);
+  });
+
+  it('mergeSummaries replaces a legacy entry with the id-bearing entry for the same call', () => {
+    const legacy = { timestamp: 100, toolName: 'Read', durationMs: 5, success: true };
+    const merged = mergeSummaries(
+      makeSummary({ timeline: [legacy] }),
+      makeSummary({ timeline: [{ ...legacy, toolUseId: 'a' }] }),
+    );
+    expect(merged.timeline?.map((e) => e.toolUseId)).toEqual(['a']);
   });
 
   it('mergeSummaries caps a unioned timeline at MAX_TIMELINE_ENTRIES, keeping the newest entries', () => {
@@ -3361,6 +3453,7 @@ describe('buildSessionSummary timeline', () => {
     expect(summary.timeline![2]!.toolName).toBe('Bash');
     expect(summary.timeline![2]!.command).toBe('npm test');
     expect(summary.timeline![2]!.isTestCommand).toBe(true);
+    expect(summary.timeline!.map((e) => e.toolUseId)).toEqual(['tu1', 'tu2', 'tu3']);
   });
 
   it('returns undefined timeline when no tool calls are present', () => {
@@ -4431,6 +4524,97 @@ describe('attribution field', () => {
     expect(roundTripped.attribution?.buckets.skill).toEqual({
       unslop: { costUsd: 0.03, tokens: 165, count: 2, durationMs: 4000 },
     });
+  });
+
+  it('round-trips breakdownUsd and drops a malformed one while keeping the bucket', () => {
+    const attributionWith = (breakdownUsd: unknown): unknown => ({
+      buckets: {
+        skill: {
+          unslop: { costUsd: 0.03, tokens: 165, count: 2, durationMs: 4000, breakdownUsd },
+        },
+      },
+      highContextCostUsd: 0,
+      apiDurationMs: null,
+    });
+    const parse = (breakdownUsd: unknown) =>
+      deserializeFullSessionSummary(
+        JSON.parse(
+          JSON.stringify({ ...makeSummary(), attribution: attributionWith(breakdownUsd) }),
+        ) as Parameters<typeof deserializeFullSessionSummary>[0],
+      ).attribution?.buckets.skill?.unslop;
+
+    expect(
+      parse({ inputUsd: 0.01, outputUsd: 0.02, cacheReadUsd: 0.003, cacheCreationUsd: 0 })
+        ?.breakdownUsd,
+    ).toEqual({ inputUsd: 0.01, outputUsd: 0.02, cacheReadUsd: 0.003, cacheCreationUsd: 0 });
+
+    const malformed = parse({ inputUsd: 0.01, outputUsd: 'nope' });
+    expect(malformed?.costUsd).toBe(0.03);
+    expect(malformed?.breakdownUsd).toBeUndefined();
+  });
+
+  it("merge keeps the one side's breakdownUsd when the other side has none", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-breakdown-usd-${Date.now()}`;
+    const bucket = (extra: object) => ({
+      costUsd: 0.05,
+      tokens: 40,
+      count: 6,
+      durationMs: 300,
+      ...extra,
+    });
+    const save = (extra: object) =>
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          attribution: {
+            buckets: { skill: { unslop: bucket(extra) } },
+            highContextCostUsd: 0,
+            apiDurationMs: null,
+          },
+        }),
+      );
+
+    save({
+      breakdownUsd: { inputUsd: 0.01, outputUsd: 0.02, cacheReadUsd: 0, cacheCreationUsd: 0 },
+    });
+    save({});
+
+    expect(store.loadSession(id)?.attribution?.buckets.skill?.unslop.breakdownUsd).toEqual({
+      inputUsd: 0.01,
+      outputUsd: 0.02,
+      cacheReadUsd: 0,
+      cacheCreationUsd: 0,
+    });
+  });
+
+  it('merge drops breakdownUsd when the side with the larger costUsd has none', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-breakdown-usd-older-${Date.now()}`;
+    const save = (bucket: object) =>
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          attribution: {
+            buckets: { skill: { unslop: bucket as never } },
+            highContextCostUsd: 0,
+            apiDurationMs: null,
+          },
+        }),
+      );
+
+    save({ costUsd: 5, tokens: 500, count: 5, durationMs: 1 });
+    save({
+      costUsd: 2,
+      tokens: 200,
+      count: 2,
+      durationMs: 1,
+      breakdownUsd: { inputUsd: 1, outputUsd: 1, cacheReadUsd: 0, cacheCreationUsd: 0 },
+    });
+
+    const merged = store.loadSession(id)?.attribution?.buckets.skill?.unslop;
+    expect(merged?.costUsd).toBe(5);
+    expect(merged?.breakdownUsd).toBeUndefined();
   });
 
   it('drops a malformed breakdown but keeps the bucket', () => {
