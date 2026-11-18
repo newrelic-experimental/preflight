@@ -9,10 +9,16 @@ import {
   readdirSync,
   rmSync,
 } from 'node:fs';
+import * as fs from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { installCopilotSdkExtension } from './copilot-install-helper.js';
 import { copilotSdkExtensionInstallPath } from '../hooks/copilot-sdk-extension-health.js';
+
+jest.mock('node:fs', () => {
+  const real = jest.requireActual<typeof import('node:fs')>('node:fs');
+  return { ...real, renameSync: jest.fn(real.renameSync) };
+});
 
 jest.mock('node:os', () => {
   const real = jest.requireActual<typeof import('node:os')>('node:os');
@@ -91,6 +97,32 @@ describe('installCopilotSdkExtension() upgrades an existing install', () => {
 
     expect(statSync(dest).mode & 0o777).toBe(0o640);
     expect(readdirSync(dirname(dest))).toEqual(['extension.mjs']);
+  });
+
+  it('keeps group-write bits the umask would strip from a fresh file', () => {
+    writeFileSync(dest, OLD_EXTENSION);
+    chmodSync(dest, 0o664);
+    const umask = process.umask(0o022);
+    try {
+      installCopilotSdkExtension();
+    } finally {
+      process.umask(umask);
+    }
+
+    expect(statSync(dest).mode & 0o777).toBe(0o664);
+  });
+
+  it('removes its temp file and keeps the old install when the rename fails', () => {
+    writeFileSync(dest, OLD_EXTENSION);
+    (fs.renameSync as jest.Mock).mockImplementationOnce(() => {
+      throw new Error('EPERM: rename refused');
+    });
+
+    const result = installCopilotSdkExtension();
+
+    expect(result).toEqual({ action: 'failed', reason: 'EPERM: rename refused' });
+    expect(readdirSync(dirname(dest))).toEqual(['extension.mjs']);
+    expect(readFileSync(dest, 'utf8')).toBe(OLD_EXTENSION);
   });
 
   it('reports a failure with its reason when the install path cannot be read', () => {

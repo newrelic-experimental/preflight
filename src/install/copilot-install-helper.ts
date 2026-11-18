@@ -26,7 +26,16 @@
 
 import { dirname, resolve, win32 } from 'node:path';
 import { homedir } from 'node:os';
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { z } from 'zod';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
 import { entryContainsNrObserve, shimExtension, siblingBinPath } from './install-helper.js';
@@ -557,6 +566,7 @@ export function installCopilotSdkExtension(): SdkExtensionInstallResult {
     return { action: 'failed', reason: errMsg(err) };
   }
 
+  const tmpPath = `${destPath}.${process.pid}.tmp`;
   try {
     const installed = existsSync(destPath) ? readFileSync(destPath) : null;
     if (installed?.equals(bundle)) return { action: 'unchanged' };
@@ -565,11 +575,12 @@ export function installCopilotSdkExtension(): SdkExtensionInstallResult {
     }
 
     mkdirSync(dirname(destPath), { recursive: true, mode: 0o700 });
-    const tmpPath = `${destPath}.${process.pid}.tmp`;
-    writeFileSync(tmpPath, bundle, { mode: installed ? statSync(destPath).mode & 0o777 : 0o644 });
+    writeFileSync(tmpPath, bundle, { mode: 0o644 });
+    if (installed) chmodSync(tmpPath, statSync(destPath).mode & 0o777);
     renameSync(tmpPath, destPath);
     return { action: installed ? 'updated' : 'copied' };
   } catch (err) {
+    rmSync(tmpPath, { force: true });
     return { action: 'failed', reason: errMsg(err) };
   }
 }
