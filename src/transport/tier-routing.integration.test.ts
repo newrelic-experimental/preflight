@@ -9,7 +9,7 @@ import type { ResolvedTier } from './tier-types.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
-import type { NrEventData, TransportOptions, TransportResult } from '../shared/index.js';
+import type { NrEventData, TransportOptions, TransportResult } from '../core/index.js';
 
 // ---------------------------------------------------------------------------
 // In-process, multi-scheduler integration proof

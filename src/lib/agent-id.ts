@@ -31,6 +31,23 @@ export const AGENT_ID_RE = new RegExp(`^${AGENT_ID_PATTERN}$`);
 export const MAX_AGENT_TYPE_LENGTH = 128;
 
 /**
+ * Longest agent id accepted from a hook envelope. Looser than
+ * {@link AGENT_ID_RE}, which describes only Claude Code's own ids: the uniform
+ * hook branch also serves platforms whose id format is undocumented here.
+ */
+export const MAX_AGENT_ID_LENGTH = 128;
+
+function isBoundedPlainString(value: unknown, maxLength: number): value is string {
+  if (typeof value !== 'string') return false;
+  if (value.length === 0 || value.length > maxLength) return false;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
+/**
  * Returns `value` when it is a usable subagent type (e.g. `Explore`): a
  * non-empty string of at most {@link MAX_AGENT_TYPE_LENGTH} characters with
  * no C0 control characters or DEL. Anything else yields `undefined`. The type
@@ -38,11 +55,14 @@ export const MAX_AGENT_TYPE_LENGTH = 128;
  * dropped rather than shipped.
  */
 export function normalizeAgentType(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  if (value.length === 0 || value.length > MAX_AGENT_TYPE_LENGTH) return undefined;
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    if (code < 0x20 || code === 0x7f) return undefined;
-  }
-  return value;
+  return isBoundedPlainString(value, MAX_AGENT_TYPE_LENGTH) ? value : undefined;
+}
+
+/**
+ * Returns `value` when it is a usable agent id from a hook envelope: a
+ * non-empty string of at most {@link MAX_AGENT_ID_LENGTH} characters with no C0
+ * control characters or DEL. Anything else yields `undefined`.
+ */
+export function normalizeAgentId(value: unknown): string | undefined {
+  return isBoundedPlainString(value, MAX_AGENT_ID_LENGTH) ? value : undefined;
 }

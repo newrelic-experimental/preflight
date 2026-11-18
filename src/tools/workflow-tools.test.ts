@@ -624,7 +624,7 @@ describe('FeedbackCollector.emitMetrics()', () => {
       record(name: string, value: number, attrs: Record<string, string | number> = {}) {
         recorded.push({ name, value, attrs });
       },
-    } as unknown as import('../shared/index.js').MetricAggregator;
+    } as unknown as import('../core/index.js').MetricAggregator;
 
     collector.emitMetrics(aggregator);
 
@@ -641,11 +641,11 @@ describe('FeedbackCollector.emitMetrics()', () => {
     const collector = new FeedbackCollector();
     collector.record({ quality: 'good' });
 
-    const agg1 = { record: jest.fn() } as unknown as import('../shared/index.js').MetricAggregator;
+    const agg1 = { record: jest.fn() } as unknown as import('../core/index.js').MetricAggregator;
     collector.emitMetrics(agg1);
     expect(agg1.record).toHaveBeenCalledTimes(1);
 
-    const agg2 = { record: jest.fn() } as unknown as import('../shared/index.js').MetricAggregator;
+    const agg2 = { record: jest.fn() } as unknown as import('../core/index.js').MetricAggregator;
     collector.emitMetrics(agg2);
     expect(agg2.record).not.toHaveBeenCalled();
   });
@@ -654,7 +654,7 @@ describe('FeedbackCollector.emitMetrics()', () => {
     const collector = new FeedbackCollector();
     collector.record({ quality: 'good' });
 
-    const agg1 = { record: jest.fn() } as unknown as import('../shared/index.js').MetricAggregator;
+    const agg1 = { record: jest.fn() } as unknown as import('../core/index.js').MetricAggregator;
     collector.emitMetrics(agg1);
 
     collector.record({ quality: 'bad' });
@@ -664,7 +664,7 @@ describe('FeedbackCollector.emitMetrics()', () => {
       record(_name: string, _value: number, attrs: Record<string, string | number> = {}) {
         recorded2.push({ attrs });
       },
-    } as unknown as import('../shared/index.js').MetricAggregator;
+    } as unknown as import('../core/index.js').MetricAggregator;
     collector.emitMetrics(agg2);
 
     expect(recorded2).toHaveLength(1);
