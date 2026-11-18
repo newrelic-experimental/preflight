@@ -3091,6 +3091,7 @@ describe('a tool call without tool_use_id', () => {
     return readFileSync(resolve(tmpDir, `buffer-${SESSION}.jsonl`), 'utf-8')
       .trim()
       .split('\n')
+      .filter(Boolean)
       .map((line) => (JSON.parse(line) as Record<string, unknown>).toolUseId);
   }
 
