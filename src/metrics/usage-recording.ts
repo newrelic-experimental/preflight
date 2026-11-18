@@ -19,6 +19,8 @@ export interface UsageSinks {
   readonly costTracker: CostTracker;
   readonly modelUsageTracker: Pick<ModelUsageTracker, 'recordUsage'>;
   readonly localSessionAggregator: Pick<LocalSessionAggregator, 'recordTokenUsage'>;
+  /** Told the session, cost and time of each usage CostTracker counted as new. */
+  readonly onRecorded?: (sessionId: string | undefined, usd: number, timestampMs: number) => void;
 }
 
 /**
@@ -48,8 +50,10 @@ export function recordTokenEventUsage(
     wholePrice = result.usage === usage ? breakdown : price(usage);
     // A call already in the ledger (a redelivered buffer line after a
     // restart) is not a new request for the model breakdown either.
-    if (result.recorded)
+    if (result.recorded) {
       sinks.modelUsageTracker.recordUsage(event.model, result.usage, breakdown.totalUsd);
+      sinks.onRecorded?.(event.sessionId, breakdown.totalUsd, event.timestamp);
+    }
   }
   // The rollup is another copy of the session's ledger: it decides for itself
   // which part of a Copilot app range is new, and prices that part.
@@ -88,7 +92,10 @@ export function recordSubagentTurnUsage(
   // Subagent turns are real model requests and cost real money, so they
   // belong in the model breakdown too — recording them only in the cost
   // tracker left Model Usage blind to every subagent-only session.
-  if (recorded) sinks.modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
+  if (recorded) {
+    sinks.modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
+    sinks.onRecorded?.(turn.parentSessionId, breakdown.totalUsd, turn.timestampMs);
+  }
   // The only line that makes an orphan session's subagent spend durable:
   // without it, an unscoped process's aggregator never learns about this
   // session's subagent cost and persistSession() has nothing to write.
