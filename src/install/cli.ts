@@ -934,7 +934,7 @@ function handleCopilotInstall(options: {
       print(
         ext.action === 'copied'
           ? '✓ Copilot SDK usage extension installed (token-exact cost)'
-          : '✓ Copilot SDK usage extension updated to the current version',
+          : `✓ Copilot SDK usage extension updated to the current version at ${copilotSdkExtensionInstallPath()}`,
       );
       print(
         '  Restart the Copilot CLI with --experimental (or run /experimental on) to activate it.',

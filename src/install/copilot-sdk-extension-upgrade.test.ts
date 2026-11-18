@@ -61,6 +61,15 @@ describe('installCopilotSdkExtension() upgrades an existing install', () => {
     expect(readFileSync(dest, 'utf8')).toBe(bundled);
   });
 
+  it('recognizes an earlier build of the shipped bundle as a Preflight extension', () => {
+    writeFileSync(dest, `${bundled}\n// earlier build\n`);
+
+    const result = installCopilotSdkExtension();
+
+    expect(result).toEqual({ action: 'updated' });
+    expect(readFileSync(dest, 'utf8')).toBe(bundled);
+  });
+
   it('leaves an identical install untouched and reports it unchanged', () => {
     writeFileSync(dest, bundled);
     const before = statSync(dest).mtimeMs;
