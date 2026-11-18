@@ -961,28 +961,36 @@ function groupBySharedActivity(files: readonly FullSessionSummary[]): FullSessio
 }
 
 /**
- * Oldest writer first: by end time, then by call count, since of two copies
- * saved at once the one with more calls is further along. Contents break the
- * last tie so a combine cannot depend on the order files were listed.
+ * Oldest writer first. Contents break a tie on end time so a combine cannot
+ * depend on the order files were listed.
  */
 function byWriteOrder(x: FullSessionSummary, y: FullSessionSummary): number {
-  if (x.endTime !== y.endTime) return x.endTime - y.endTime;
-  if (x.toolCallCount !== y.toolCallCount) return x.toolCallCount - y.toolCallCount;
-  return JSON.stringify(x).localeCompare(JSON.stringify(y));
+  return x.endTime - y.endTime || JSON.stringify(x).localeCompare(JSON.stringify(y));
+}
+
+/**
+ * Of two copies of one stretch, the one further along last. Calls and exact cost
+ * only grow, so they hold even when an older build saved a superseded copy again.
+ */
+function byProgress(x: FullSessionSummary, y: FullSessionSummary): number {
+  return (
+    x.toolCallCount - y.toolCallCount ||
+    exactTotalsOf(x).costUsd - exactTotalsOf(y).costUsd ||
+    byWriteOrder(x, y)
+  );
 }
 
 /**
  * Combine every file for one session id, of which there must be at least one.
- * Files that share activity are copies of one stretch, so they max-merge in
- * write order. The resulting groups hold separate activity, so they add. A
- * file without a timeline cannot show that it is separate, and on real
- * installs such a file repeats another file's spend, so it max-merges into the
- * total. The total folds in last: no current writer drops a timeline it saves
- * onto, so the files with one hold the latest state, and their ledger is kept.
+ * Copies of one stretch share activity and max-merge, the copy further along
+ * last. Groups hold separate activity and add. A file without a timeline has
+ * repeated another file's spend on real installs, so it max-merges under the
+ * sum. No current writer drops a timeline it saves onto, so the sum is the
+ * latest state and its ledger is kept.
  */
 export function combineSessionFiles(files: readonly FullSessionSummary[]): FullSessionSummary {
   const separate = groupBySharedActivity(files.filter((f) => f.timeline?.length))
-    .map((group) => group.sort(byWriteOrder).reduce((acc, next) => mergeSummaries(acc, next)))
+    .map((group) => group.sort(byProgress).reduce((acc, next) => mergeSummaries(acc, next)))
     .sort(byWriteOrder);
   const withoutTimeline = files.filter((f) => !f.timeline?.length).sort(byWriteOrder);
   const added = separate.length > 0 ? [separate.reduce((a, b) => addSummaries(a, b))] : [];
