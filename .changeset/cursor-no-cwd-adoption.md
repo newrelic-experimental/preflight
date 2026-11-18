@@ -1,5 +1,0 @@
----
-'@newrelic/preflight': patch
----
-
-**A Preflight server whose hooks write no session breadcrumb, such as Cursor, Windsurf, or Zed, or an assistant Preflight cannot identify, no longer takes over another assistant's session.** Before, such a server could adopt the session of a Claude Code session running in the same directory or under the same parent process, and record its own cost on that session. The hook collector now records which assistant wrote each session breadcrumb, and each server reads the breadcrumbs of the writers its platform lists. Servers that list no writer read no breadcrumb and no longer wait for one. Kiro, Codex, Droid, Gemini CLI, opencode, Kilo, and the Copilot adapters also list breadcrumbs from hook commands that name no assistant, so these servers can still adopt one another's sessions. Any server that lists a writer also reads the untagged breadcrumbs an older collector writes for every assistant, so next to an older collector it can still adopt another assistant's session. A plugin that is behind the server keeps resolving through its parent-process breadcrumb.

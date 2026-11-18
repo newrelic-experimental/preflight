@@ -17,6 +17,7 @@ import {
   _stdinFs,
   getBufferPath,
   getLinuxAncestorPids,
+  getMaxContentLength,
   getRecordContent,
   hashInput,
   processHook,
@@ -28,7 +29,13 @@ import {
   writePpidBreadcrumb,
 } from './collector-script.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
+import { createDefaultRegistry } from '../platforms/platform-registry.js';
+import { PLATFORM_NAMES } from '../platforms/platform-names.js';
+import { sessionBreadcrumbWriters } from '../platforms/types.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
+import { HookEventProcessor } from './event-processor.js';
+import { LocalStore } from '../storage/local-store.js';
+import type { ToolCallRecord } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let stdoutSpy: ReturnType<typeof jest.spyOn>;
@@ -310,10 +317,25 @@ describe('collector-script', () => {
       expect(readBufferEvents()[0]!.platform).toBe('cursor');
     });
 
+    it('stamps the registered spelling of an engine named in another case', () => {
+      process.env.MCP_CLIENT = 'Kiro';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('kiro');
+    });
+
     it('stamps event.platform "claude-code" when only CLAUDECODE is set', () => {
       // jest itself runs under Claude Code, so CLAUDECODE is already set in
       // this process env — set it explicitly for clarity and to survive a
       // future test environment that doesn't carry it ambiently.
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('claude-code');
+    });
+
+    it('stamps the engine the breadcrumb is filed under when MCP_CLIENT names no known engine', () => {
+      process.env.MCP_CLIENT = 'vscode';
       process.env.CLAUDECODE = '1';
       processHook(makePreToolUse());
 
@@ -380,6 +402,41 @@ describe('collector-script', () => {
       expect(toolInput.contentLength).toBe(17);
       expect(toolInput.lineCount).toBe(3);
       expect(toolInput.file_path).toBe('/a.ts');
+    });
+  });
+
+  describe('processHook() — secrets passed as Bash arguments', () => {
+    const token = `ghp_${'A'.repeat(36)}`;
+    const straddling = `echo ${'x'.repeat(10_240 - 16 - 'echo '.length - 1)} ${token}`;
+    it.each([
+      ['Bash', makePreToolUse({ tool_name: 'Bash', tool_input: { command: straddling } })],
+      [
+        'run_in_terminal',
+        makePreToolUse({ tool_name: 'run_in_terminal', tool_input: { command: straddling } }),
+      ],
+      ['beforeShellExecution', makeCursorBeforeShellExecution({ command: straddling })],
+      [
+        'pre_run_command',
+        JSON.stringify({
+          agent_action_name: 'pre_run_command',
+          tool_info: { command_line: straddling, cwd: '/x' },
+        }),
+      ],
+    ])('redacts a whole token that straddles the content limit in a %s command', (_name, raw) => {
+      processHook(raw);
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.command).not.toMatch(/ghp_|AAAA/);
+      expect(toolInput.command).toMatch(/\[REDACTED\]$/);
+    });
+
+    it('keeps a destructive command past the content limit classifiable', () => {
+      const command = `echo ${'x'.repeat(10_300)} && rm -rf /tmp/x`;
+      processHook(makePreToolUse({ tool_name: 'Bash', tool_input: { command } }));
+
+      const event = readBufferEvents()[0]!;
+      const fields = parseToolSpecificFields('Bash', event.toolInput, undefined);
+      expect(fields.bashDestructive).toBe(true);
     });
   });
 
@@ -1384,7 +1441,7 @@ describe('collector-script', () => {
 
     it('truncates content exceeding max length', () => {
       process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
-      process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '50';
+      process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
 
       const longContent = 'x'.repeat(100_000);
       processHook(
@@ -1395,8 +1452,72 @@ describe('collector-script', () => {
 
       const event = readBufferEvents()[0]!;
       const content = event.outputContent as string;
-      expect(content.length).toBeLessThan(100);
+      expect(content.length).toBeLessThan(300);
       expect(content).toContain('...[truncated]');
+    });
+
+    describe('NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH bounds', () => {
+      const captured = (): string => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(1_000) } }));
+        return readBufferEvents()[0]!.outputContent as string;
+      };
+      const serialized = JSON.stringify({ data: 'x'.repeat(1_000) });
+
+      it.each(['0', '-5', '255', '256'])('clamps %s up to the 256 floor', (raw) => {
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = raw;
+        expect(captured()).toBe(serialized.slice(0, 256) + '...[truncated]');
+      });
+
+      it.each(['abc', ''])('falls back to 10,240 for %j', (raw) => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = raw;
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(20_000) } }));
+        const serializedLong = JSON.stringify({ data: 'x'.repeat(20_000) });
+        expect(readBufferEvents()[0]!.outputContent).toBe(
+          serializedLong.slice(0, 10_240) + '...[truncated]',
+        );
+      });
+
+      it('clamps a value above the upper bound to the ceiling instead of the default', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '2000000';
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(20_000) } }));
+        expect(readBufferEvents()[0]!.outputContent).toBe(
+          JSON.stringify({ data: 'x'.repeat(20_000) }),
+        );
+      });
+
+      it.each([
+        ['0', 256],
+        ['-5', 256],
+        ['255', 256],
+        ['256', 256],
+        ['1048576', 1_048_576],
+        ['1048577', 1_048_576],
+        ['2000000', 1_048_576],
+        ['abc', 10_240],
+        ['', 10_240],
+        [undefined, 10_240],
+      ])('getMaxContentLength with %j returns %i', (raw, expected) => {
+        if (raw === undefined) delete process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
+        else process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = raw;
+        expect(getMaxContentLength()).toBe(expected);
+      });
+
+      it('accepts the upper bound itself', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '1048576';
+        const serializedAtBound = JSON.stringify({ data: 'x'.repeat(1_048_576 - 11) });
+        expect(serializedAtBound).toHaveLength(1_048_576);
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(1_048_576 - 11) } }));
+        expect(readBufferEvents()[0]!.outputContent).toBe(serializedAtBound);
+      });
+
+      it('cuts at the configured length when the value is within bounds', () => {
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+        expect(captured()).toBe(serialized.slice(0, 256) + '...[truncated]');
+      });
     });
   });
 
@@ -2382,14 +2503,30 @@ describe('collector-script', () => {
       cwd: resolve(tmpDir, 'breadcrumbs', writer, 'session-by-cwd', '-projects-test.txt'),
     });
 
-    it('files a Claude Code hook under claude-code, never the untagged layout', () => {
+    it('files a Claude Code hook under claude-code and in the untagged layout older servers read', () => {
       process.env.CLAUDECODE = '1';
       processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
       expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
       expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
-      expect(existsSync(resolve(tmpDir, 'session-by-ppid'))).toBe(false);
-      expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
+      const legacyPpid = resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`);
+      expect(readFileSync(legacyPpid, 'utf-8')).toBe('sess-claude');
+      const legacyCwd = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
+      expect(readFileSync(legacyCwd, 'utf-8')).toBe('sess-claude');
     });
+
+    it.each(createDefaultRegistry().getRegistered())(
+      'files a hook naming $platformName in any case or separator where its server reads',
+      (adapter) => {
+        process.env.MCP_CLIENT = adapter.platformName.toUpperCase().replace(/-/g, '_');
+        processHook(makePreToolUse({ session_id: 'sess-alias', cwd: '/projects/test' }));
+        const writer =
+          adapter.platformName === 'generic-mcp' ? 'unattributed' : adapter.platformName;
+        expect(readFileSync(crumbs(writer).cwd, 'utf-8')).toBe('sess-alias');
+        const reads = sessionBreadcrumbWriters(adapter);
+        // A copilot-sdk server reads its host's copilot breadcrumbs, so no server reads a copilot-sdk writer.
+        if (reads.length > 0 && writer !== 'copilot-sdk') expect(reads).toContain(writer);
+      },
+    );
 
     it('files a hook under the engine its command names, over an inherited Claude Code env', () => {
       process.env.CLAUDECODE = '1';
@@ -2404,11 +2541,80 @@ describe('collector-script', () => {
       expect(readFileSync(crumbs('unattributed').ppid, 'utf-8')).toBe('sess-codex');
     });
 
-    it('files an engine name unsafe as a path segment as unattributed', () => {
+    it('ignores an engine name it does not know and keeps detecting Claude Code', () => {
+      process.env.MCP_CLIENT = 'vscode';
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
+    });
+
+    it('files a hook naming only unknown engines as unattributed and warns once, naming each', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const warnings = () =>
+        stderrWriteSpy.mock.calls
+          .map((args) => String(args[0]))
+          .filter((line) => line.includes('no engine Preflight knows'));
       process.env.MCP_CLIENT = '../escape';
+      process.env.NEW_RELIC_AI_PLATFORM = 'vscode';
+      processHook(makePreToolUse({ session_id: undefined, cwd: '/projects/test' }));
+      expect(warnings()).toHaveLength(0);
       processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+      process.env.MCP_CLIENT = 'not-an-engine';
+      processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0]).toContain('MCP_CLIENT="../escape"');
+      expect(warnings()[0]).toContain('NEW_RELIC_AI_PLATFORM="vscode"');
       expect(readFileSync(crumbs('unattributed').cwd, 'utf-8')).toBe('sess-x');
+      expect(readFileSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'), 'utf-8')).toBe(
+        'sess-x',
+      );
       expect(existsSync(resolve(tmpDir, 'escape'))).toBe(false);
+      stderrWriteSpy.mockRestore();
+    });
+
+    it('reads the ancestor pids once per event for both breadcrumb layouts', () => {
+      process.env.CLAUDECODE = '1';
+      const origReadFile = _procFs.readFile;
+      const reads: string[] = [];
+      _procFs.readFile = (path: string): string => {
+        reads.push(path);
+        throw new Error('ENOENT');
+      };
+      try {
+        processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      } finally {
+        _procFs.readFile = origReadFile;
+      }
+      expect(reads).toEqual([`/proc/${process.ppid}/stat`]);
+      expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
+      expect(readFileSync(resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`), 'utf-8')).toBe(
+        'sess-claude',
+      );
+    });
+
+    it('writes no untagged copy when the tagged write fails', () => {
+      process.env.CLAUDECODE = '1';
+      mkdirSync(resolve(tmpDir, 'breadcrumbs'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'breadcrumbs', 'claude-code'), '');
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(existsSync(resolve(tmpDir, 'session-by-ppid'))).toBe(false);
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
+    });
+
+    it("refreshes an unchanged cwd breadcrumb's mtime on every event", () => {
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(crumbs('claude-code').cwd, old, old);
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(statSync(crumbs('claude-code').cwd).mtimeMs).toBeGreaterThan(old.getTime() + 30_000);
+    });
+
+    it('knows exactly the registered platforms', () => {
+      const registered = createDefaultRegistry()
+        .getRegistered()
+        .map((a) => a.platformName);
+      expect([...registered].sort()).toEqual([...PLATFORM_NAMES].sort());
     });
   });
 
@@ -2710,6 +2916,12 @@ describe('collector-script', () => {
       expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
     });
 
+    it('writes "{}" to stdout when MCP_CLIENT spells Gemini CLI another way', () => {
+      process.env.MCP_CLIENT = 'Gemini_CLI';
+      processHook(makeGeminiAfterTool());
+      expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
+    });
+
     it('writes "{}" to stdout when NEW_RELIC_AI_PLATFORM is "gemini-cli"', () => {
       process.env.NEW_RELIC_AI_PLATFORM = 'gemini-cli';
       processHook(makeGeminiBeforeTool());
@@ -2772,7 +2984,7 @@ describe('collector-script', () => {
       expect(event.error).toBe('exit status 1');
     });
 
-    it('omits toolUseId from both events when stepIdx is not a number', () => {
+    it('gives both events one minted toolUseId when stepIdx is not a number', () => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
       processHook(makeAntigravityPreToolUse({ stepIdx: undefined }), 'PreToolUse');
@@ -2780,7 +2992,8 @@ describe('collector-script', () => {
 
       const events = readBufferLines('agy-conv-001');
       expect(events.map((e) => e.mode)).toEqual(['pre', 'post']);
-      for (const event of events) expect(event).not.toHaveProperty('toolUseId');
+      expect(events[0]!.toolUseId).toEqual(expect.any(String));
+      expect(events[1]!.toolUseId).toBe(events[0]!.toolUseId);
     });
 
     it('replies with only {} on stdout for PostToolUse, never a decision field (#793)', () => {
@@ -2850,5 +3063,317 @@ describe('collector-script', () => {
       expect(events).toHaveLength(1);
       expect(events[0]!.tool).toBe('Read');
     });
+  });
+});
+
+describe('a tool call without tool_use_id', () => {
+  const SESSION = 'sess-noid';
+  const POLL_MS = 10;
+  let clock: ReturnType<typeof jest.spyOn>;
+
+  beforeEach(() => {
+    delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+    clock = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+  });
+
+  afterEach(() => {
+    clock.mockRestore();
+    jest.useRealTimers();
+  });
+
+  function hook(mode: 'pre' | 'post', tool: string, at: number): void {
+    clock.mockReturnValue(at);
+    const make = mode === 'pre' ? makePreToolUse : makePostToolUse;
+    processHook(make({ tool_use_id: undefined, session_id: SESSION, tool_name: tool }));
+  }
+
+  function bufferIds(): unknown[] {
+    return readFileSync(resolve(tmpDir, `buffer-${SESSION}.jsonl`), 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => (JSON.parse(line) as Record<string, unknown>).toolUseId);
+  }
+
+  function mintedEntries(): string[] {
+    return readdirSync(resolve(tmpDir, `minted-ids-buffer-${SESSION}`));
+  }
+
+  interface Outcome {
+    readonly at: number;
+    readonly success: boolean;
+    readonly durationMs: number | null;
+  }
+
+  function startEngine(
+    records: Outcome[],
+    amends: Outcome[],
+    { store, drainAllSessions = false }: { store: LocalStore; drainAllSessions?: boolean } = {
+      store: new LocalStore(tmpDir, SESSION),
+    },
+  ) {
+    jest.useFakeTimers({ doNotFake: ['Date'] });
+    const outcome = ({ timestamp, success, durationMs }: ToolCallRecord) => ({
+      at: timestamp,
+      success,
+      durationMs,
+    });
+    const engine = new HookEventProcessor({
+      store,
+      drainAllSessions,
+      pollIntervalMs: POLL_MS,
+      onRecord: (r) => records.push(outcome(r)),
+      onRecordAmend: (r) => amends.push(outcome(r)),
+    });
+    engine.start();
+    return {
+      pollAt(at: number) {
+        clock.mockReturnValue(at);
+        jest.advanceTimersByTime(POLL_MS);
+      },
+      stop() {
+        engine.stop();
+        engine.persistCountedIdsOfSavedSessions([SESSION]);
+      },
+    };
+  }
+
+  it('stamps the post with the id minted for its pre', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'Read', 2_000);
+
+    const [pre, post] = bufferIds();
+    expect(pre).toEqual(expect.any(String));
+    expect(post).toBe(pre);
+  });
+
+  it('gives parallel same-tool calls their ids oldest first, and only within a tool', () => {
+    hook('pre', 'Read', 1_000);
+    hook('pre', 'Bash', 2_000);
+    hook('pre', 'Read', 3_000);
+    hook('post', 'Read', 4_000);
+    hook('post', 'Read', 5_000);
+    hook('post', 'Bash', 6_000);
+
+    const [read1, bash, read2, ...posts] = bufferIds();
+    expect(new Set([read1, bash, read2]).size).toBe(3);
+    expect(posts).toEqual([read1, read2, bash]);
+  });
+
+  it('matches a post to its pre whatever the case of the tool name', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'read', 2_000);
+
+    const [pre, post] = bufferIds();
+    expect(pre).toEqual(expect.any(String));
+    expect(post).toBe(pre);
+  });
+
+  it('leaves a post without an id when no pre of its tool minted one', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'Bash', 2_000);
+
+    const ids = bufferIds();
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toEqual(expect.any(String));
+    expect(ids[1]).toBeUndefined();
+  });
+
+  it.each([
+    ['Read', 'beforeReadFile'],
+    ['Edit', 'afterFileEdit'],
+  ])('never gives the id of a pending %s to Cursor %s, which has no pre', (tool, postOnlyEvent) => {
+    const cursor = (hook_event_name: string, extra: Record<string, unknown>) =>
+      processHook(JSON.stringify({ hook_event_name, conversation_id: SESSION, ...extra }));
+    cursor('preToolUse', { tool_name: tool });
+    cursor(postOnlyEvent, { file_path: '/projects/test/a.ts' });
+    cursor('postToolUse', { tool_name: tool });
+
+    const [pre, postOnly, post] = bufferIds();
+    expect(pre).toEqual(expect.any(String));
+    expect(postOnly).toBeUndefined();
+    expect(post).toBe(pre);
+  });
+
+  it('does not stamp a post with the id of a pre older than any pairing window', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'Read', 1_000 + 41 * 60_000);
+    hook('post', 'Read', 1_000 + 42 * 60_000);
+
+    const ids = bufferIds();
+    expect(ids).toHaveLength(3);
+    expect(ids[0]).toEqual(expect.any(String));
+    expect(ids.slice(1)).toEqual([undefined, undefined]);
+  });
+
+  it('deletes an expired id and gives the post the next one of its tool', () => {
+    hook('pre', 'Read', 1_000);
+    hook('pre', 'Read', 1_000 + 39 * 60_000);
+    hook('post', 'Read', 1_000 + 41 * 60_000);
+
+    const [, second, post] = bufferIds();
+    expect(second).toEqual(expect.any(String));
+    expect(post).toBe(second);
+    expect(mintedEntries()).toEqual([]);
+  });
+
+  it.each([
+    ['its session buffer', () => ({ store: new LocalStore(tmpDir, SESSION) })],
+    ['a drain-all engine', () => ({ store: new LocalStore(tmpDir), drainAllSessions: true })],
+    [
+      'a buffer path override',
+      () => {
+        process.env.NEW_RELIC_AI_MCP_BUFFER_PATH = bufferPath;
+        return { store: new LocalStore(tmpDir, bufferPath) };
+      },
+    ],
+  ])(
+    'pairs each later call with its own pre after a pre that never got a post times out, in %s',
+    (_, makeEngineStore) => {
+      const records: Outcome[] = [];
+      const amends: Outcome[] = [];
+      const engine = startEngine(records, amends, makeEngineStore());
+      hook('pre', 'Read', 1_000);
+      engine.pollAt(62_000);
+      hook('pre', 'Read', 63_000);
+      hook('post', 'Read', 63_400);
+      engine.pollAt(63_500);
+      hook('pre', 'Read', 64_000);
+      hook('post', 'Read', 64_050);
+      engine.pollAt(64_100);
+      engine.stop();
+
+      expect(records).toEqual([
+        { at: 1_000, success: false, durationMs: null },
+        { at: 63_000, success: true, durationMs: 400 },
+        { at: 64_000, success: true, durationMs: 50 },
+      ]);
+      expect(amends).toEqual([]);
+    },
+  );
+
+  it('pairs each later call with its own pre after an engine flushes a pre that never got a post', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    hook('pre', 'Read', 1_000);
+    const first = startEngine(records, amends);
+    first.pollAt(1_100);
+    first.stop();
+
+    const restarted = startEngine(records, amends);
+    hook('pre', 'Read', 3_000);
+    hook('post', 'Read', 3_400);
+    restarted.pollAt(3_500);
+    hook('pre', 'Read', 4_000);
+    hook('post', 'Read', 4_050);
+    restarted.pollAt(4_100);
+    restarted.stop();
+
+    expect(records).toEqual([
+      { at: 1_000, success: false, durationMs: null },
+      { at: 3_000, success: true, durationMs: 400 },
+      { at: 4_000, success: true, durationMs: 50 },
+    ]);
+    expect(amends).toEqual([]);
+  });
+
+  it('pairs later calls with their own pres when the hooks send a numeric session id', () => {
+    const records: Outcome[] = [];
+    const engine = startEngine(records, [], {
+      store: new LocalStore(tmpDir),
+      drainAllSessions: true,
+    });
+    const numeric = (make: typeof makePreToolUse, at: number) => {
+      clock.mockReturnValue(at);
+      processHook(make({ tool_use_id: undefined, session_id: 12345, tool_name: 'Read' }));
+    };
+    numeric(makePreToolUse, 1_000);
+    engine.pollAt(62_000);
+    numeric(makePreToolUse, 63_000);
+    numeric(makePostToolUse, 63_400);
+    engine.pollAt(63_500);
+    engine.stop();
+
+    expect(records).toEqual([
+      { at: 1_000, success: false, durationMs: null },
+      { at: 63_000, success: true, durationMs: 400 },
+    ]);
+  });
+
+  it('amends a timed-out call when its own post arrives late', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    const engine = startEngine(records, amends);
+    hook('pre', 'Read', 1_000);
+    engine.pollAt(62_000);
+    hook('post', 'Read', 70_000);
+    engine.pollAt(70_100);
+    engine.stop();
+
+    expect(records).toEqual([{ at: 1_000, success: false, durationMs: null }]);
+    expect(amends).toEqual([{ at: 1_000, success: true, durationMs: 69_000 }]);
+  });
+
+  it('records a post as unpaired once its timed-out pre is past the late-post window', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    const engine = startEngine(records, amends);
+    hook('pre', 'Read', 1_000);
+    engine.pollAt(62_000);
+    hook('post', 'Read', 200_000);
+    engine.pollAt(200_100);
+    engine.stop();
+
+    expect(records).toEqual([
+      { at: 1_000, success: false, durationMs: null },
+      { at: 200_000, success: true, durationMs: null },
+    ]);
+    expect(amends).toEqual([]);
+  });
+
+  it('still hands a pre to its late post after two engines both counted it', () => {
+    hook('pre', 'Read', 1_000);
+    const redelivered = new LocalStore(tmpDir, SESSION).drainBuffer();
+    for (const _ of [1, 2]) {
+      const engine = new HookEventProcessor({
+        store: new LocalStore(tmpDir, SESSION),
+        onRecord: () => undefined,
+      });
+      engine.processEvents(redelivered);
+      engine.stop();
+    }
+    hook('post', 'Read', 2_000);
+
+    const minted = (redelivered[0] as { toolUseId?: string }).toolUseId;
+    expect(minted).toEqual(expect.any(String));
+    expect(bufferIds()).toEqual([minted]);
+  });
+
+  it('pairs a minted pre with an unstamped post of its tool in one engine', () => {
+    const records: Outcome[] = [];
+    const engine = startEngine(records, []);
+    hook('pre', 'Read', 1_000);
+    rmSync(resolve(tmpDir, `minted-ids-buffer-${SESSION}`), { recursive: true });
+    hook('post', 'Read', 1_250);
+    engine.pollAt(1_300);
+    engine.stop();
+
+    expect(records).toEqual([{ at: 1_000, success: true, durationMs: 250 }]);
+  });
+
+  it('counts a call once, as the first engine timeout, when another engine drains its post', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    hook('pre', 'Read', 1_000);
+    const first = startEngine(records, amends);
+    first.pollAt(1_100);
+    first.stop();
+
+    hook('post', 'Read', 2_000);
+    const restarted = startEngine(records, amends);
+    restarted.pollAt(2_100);
+    restarted.stop();
+
+    expect(records).toEqual([{ at: 1_000, success: false, durationMs: null }]);
+    expect(amends).toEqual([]);
   });
 });
