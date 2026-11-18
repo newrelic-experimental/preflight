@@ -12,7 +12,7 @@ import { resolve, sep } from 'node:path';
 
 import { normalizeDeveloperName } from '../config.js';
 import { getRegionByDeployFlags } from '../install/regions.js';
-import { stagingHost } from '../shared/transport/http-client.js';
+import { stagingHost } from '../core/transport/http-client.js';
 import { resolveDataDir } from './data-paths.js';
 
 export const CREATE_MUTATION = `

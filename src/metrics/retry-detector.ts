@@ -8,8 +8,8 @@
  * fields carry no signal of their own (see computeGroupSimilarity()).
  */
 
-import type { MetricAggregator } from '../shared/index.js';
-import { createLogger } from '../shared/index.js';
+import type { MetricAggregator } from '../core/index.js';
+import { createLogger } from '../core/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { Resettable } from './tracker-contracts.js';
 

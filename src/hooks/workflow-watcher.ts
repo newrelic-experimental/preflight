@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { claudeProjectsDir } from '../lib/claude-config-dir.js';
 import type {
   ObservabilityHealthMetrics,
