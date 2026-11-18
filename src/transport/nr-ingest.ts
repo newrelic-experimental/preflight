@@ -25,6 +25,7 @@ import { redactSensitive } from '../config.js';
 import { isSyntheticSessionId } from '../hooks/session-resolver.js';
 import { VERSION } from '../version.js';
 import type { SkillStamp, ToolCallRecord, SubagentTokenEvent } from '../storage/types.js';
+import type { ClosedSkillRun } from '../metrics/skill-run-ledger.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import type { OutcomeType } from '../metrics/cost-per-outcome.js';
@@ -1011,6 +1012,54 @@ export function skillRunToNrEvent(
   return event;
 }
 
+/**
+ * One `AiWorkUnit` row per closed skill run, with the run's cost, tokens and
+ * wall-clock duration. Cost and tokens add up the run's `AiTurnCost` rows.
+ */
+export function workUnitToNrEvent(
+  run: ClosedSkillRun,
+  attrs: {
+    developer: string;
+    appName: string;
+    sessionId?: string | null;
+    teamId?: string | null;
+    projectId?: string | null;
+    orgId?: string | null;
+    companionMode?: boolean;
+  },
+): NrEventData {
+  const platform = run.platform ?? 'claude-code';
+  const event: NrEventData = {
+    eventType: 'AiWorkUnit',
+    event_version: 1,
+    timestamp: run.endedAt,
+    unit_kind: 'skill_run',
+    ...skillRunAttributes(run.stamp),
+    started_at: run.startedAt,
+    duration_ms: run.endedAt - run.startedAt,
+    cost_usd: run.costUsd,
+    input_tokens: run.inputTokens,
+    output_tokens: run.outputTokens,
+    cache_read_tokens: run.cacheReadTokens,
+    cache_creation_tokens: run.cacheCreationTokens,
+    tool_call_count: run.toolCallCount,
+    priced_call_count: run.pricedCallCount,
+    developer: attrs.developer,
+    app_name: attrs.appName,
+    platform,
+  };
+
+  attachTeamAttribution(event, attrs);
+  if (attrs.sessionId != null) event.session_id = attrs.sessionId;
+  if (run.agentId !== undefined) {
+    event.agent_id = run.agentId;
+    if (attrs.sessionId != null) event.parent_session_id = attrs.sessionId;
+  }
+  if (attrs.companionMode && platform === 'claude-code') event.cost_authority = 'external';
+
+  return event;
+}
+
 // ---------------------------------------------------------------------------
 // Retry classification
 // ---------------------------------------------------------------------------
@@ -1673,6 +1722,19 @@ export class NrIngestManager {
       teamId: this.teamId,
       projectId: this.projectId,
       orgId: this.orgId,
+    });
+    this.routeEvent(event);
+  }
+
+  ingestWorkUnit(run: ClosedSkillRun): void {
+    const event = workUnitToNrEvent(run, {
+      developer: this.developer,
+      appName: this.appName,
+      sessionId: run.sessionId ?? this.sessionTraceId,
+      teamId: this.teamId,
+      projectId: this.projectId,
+      orgId: this.orgId,
+      companionMode: this.companionMode,
     });
     this.routeEvent(event);
   }

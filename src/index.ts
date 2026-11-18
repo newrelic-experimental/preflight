@@ -104,7 +104,8 @@ import { RecommendationEngine } from './metrics/recommendation-engine.js';
 import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
-import { createSkillRunEmitter } from './metrics/skill-run-emitter.js';
+import { createSkillRunEmitter, createWorkUnitEmitter } from './metrics/skill-run-emitter.js';
+import { SkillRunLedger } from './metrics/skill-run-ledger.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
 import { TaskDetector } from './metrics/task-detector.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
@@ -876,6 +877,7 @@ async function main(): Promise<void> {
   let sessionStore: SessionStore | undefined;
   let weeklySummaryGenerator: WeeklySummaryGenerator | undefined;
   let persistSession: ((opts?: { periodic?: boolean }) => void) | undefined;
+  let flushSkillRuns: (() => void) | undefined;
   let config: import('./config.js').McpServerConfig | undefined;
   let sessionTracker: SessionTracker | undefined;
   let taskDetector: TaskDetector | undefined;
@@ -965,6 +967,7 @@ async function main(): Promise<void> {
     logger.info('Shutting down...');
     try {
       eventProcessor?.stop();
+      flushSkillRuns?.();
       persistSession?.();
       if (
         config?.otlp?.transport !== 'nr-events-api' &&
@@ -1359,12 +1362,19 @@ async function main(): Promise<void> {
     // window is named later via adoptRealSessionId once its real id resolves.
     if (options.stdio) applyAuthoritativeSessionName(sessionTraceId);
     const turnCostAttributor = new TurnCostAttributor({ rateMultiplier });
+    const skillRunEmitterOptions = {
+      stdio: options.stdio === true,
+      getOwnSessionId: () => sessionTraceId,
+      getSink: () => capturedNrIngest,
+    };
+    const skillRunLedger = new SkillRunLedger(createWorkUnitEmitter(skillRunEmitterOptions));
+    flushSkillRuns = () => skillRunLedger.flush();
+    const emitSkillRunOpened = createSkillRunEmitter(skillRunEmitterOptions);
     const skillActivationTracker = new SkillActivationTracker({
-      onRunOpened: createSkillRunEmitter({
-        stdio: options.stdio === true,
-        getOwnSessionId: () => sessionTraceId,
-        getSink: () => capturedNrIngest,
-      }),
+      onRunOpened: (stamp, ctx) => {
+        emitSkillRunOpened(stamp, ctx);
+        skillRunLedger.recordRunOpened(stamp, ctx);
+      },
     });
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
@@ -2270,6 +2280,7 @@ async function main(): Promise<void> {
         const turnId = turnTracker.recordToolCall(rawRecord);
         const turnNumber = turnTracker.getCurrentTurnNumber();
         turnCostAttributor.recordToolCall(rawRecord, turnId);
+        skillRunLedger.recordToolCall(rawRecord);
         decisionTracker.recordToolCall(rawRecord);
         transcriptMessageTracker.observeTranscriptPath(
           rawRecord.transcriptPath as string | undefined,
@@ -2483,6 +2494,7 @@ async function main(): Promise<void> {
           ownSessionId: sessionTraceId,
         });
         const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
+        skillRunLedger.recordClosedTurn(closedTurn);
         if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
         seedLocalTrackersFromFile(tokenEvent.sessionId);
         const usage = tokenUsageFromTokenEvent(tokenEvent);
@@ -2724,6 +2736,7 @@ async function main(): Promise<void> {
         });
       },
       onUserPromptSubmit: (frame) => {
+        skillRunLedger.recordPrompt(frame.sessionId, frame.timestamp);
         const slashRun = skillActivationTracker.recordPrompt(
           frame.sessionId,
           frame.slashCommand ?? null,
@@ -2733,6 +2746,7 @@ async function main(): Promise<void> {
         taskDetector!.startTaskIfNone(frame.timestamp);
       },
       onStop: (frame) => {
+        skillRunLedger.recordStop(frame.sessionId, frame.timestamp);
         turnTracker.finalizeTurnAt(frame.timestamp);
         taskDetector!.markBoundary(frame.timestamp);
       },

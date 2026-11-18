@@ -579,7 +579,7 @@ Source: `src/transport/nr-ingest.ts` — `turnCostToNrEvents()` and `ingestTurnC
 
 **What it is:** One record each time a skill run starts, whether the assistant loads a skill itself or you start one with a `/<skill>` prompt. It is the only record of a run that made no tool calls. Use it to count skill runs, adoption and users, including text-only runs that leave no `AiToolCall` rows.
 
-Emitted once, when a skill run opens, for every run. A run opens on a named `Skill` call or on a `/<skill>` prompt. A `slash` run is any prompt Claude Code receives that starts with `/`, so it also covers built-in commands that send a prompt to the model, such as `/init`. Built-ins Claude Code handles locally (`/clear`, `/compact`, `/context`, `/cost`) and unknown commands never reach Preflight. A run whose replies made no tool calls has no `AiToolCall` rows, so this event is what counts it. Its replies still produce `AiTurnCost` rows, but those carry no `skill_name` or `skill_run_id`, so their cost is not attributed to the skill and per-run cost is understated. Runs are counted across both event types with `FROM AiToolCall, AiSkillRun SELECT uniqueCount(skill_run_id)`. The event carries no tool, duration, or cost data. Those stay on `AiToolCall` and `AiTurnCost`, which carry the same `skill_run_id` for runs with tool calls.
+Emitted once, when a skill run opens, for every run. A run opens on a named `Skill` call or on a `/<skill>` prompt. A `slash` run is any prompt Claude Code receives that starts with `/`, so it also covers built-in commands that send a prompt to the model, such as `/init`. Built-ins Claude Code handles locally (`/clear`, `/compact`, `/context`, `/cost`) and unknown commands never reach Preflight. A run whose replies made no tool calls has no `AiToolCall` rows, so this event is what counts it. Its replies still produce `AiTurnCost` rows, but those carry no `skill_name` or `skill_run_id`, so their cost is not attributed to the skill and per-run cost is understated. Runs are counted across both event types with `FROM AiToolCall, AiSkillRun SELECT uniqueCount(skill_run_id)`. The event carries no tool, duration, or cost data. The run's totals arrive on [`AiWorkUnit`](#aiworkunit) when it ends.
 
 | Field                 | Type   | Description                                                                                                        |
 | --------------------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
@@ -599,6 +599,48 @@ Emitted once, when a skill run opens, for every run. A run opens on a named `Ski
 | `org_id`              | string | Organization identifier (if configured)                                                                            |
 
 Source: `src/transport/nr-ingest.ts` — `skillRunToNrEvent()` and `ingestSkillRun()`
+
+#### `AiWorkUnit`
+
+**What it is:** One record for each skill run once it ends, with its cost, tokens and wall-clock duration. It is the one row to read for what a skill run cost and how long it took. Use it for cost per run and duration per run by skill, and to compare a skill before and after a rewrite.
+
+Emitted once per run, after the run closes and the token reports for its tool calls have arrived. A run closes at the next prompt in its session, or when the agent that opened it opens another skill. Preflight waits up to 10 minutes for missing token reports, then sends the row with what it has. When Preflight shuts down, it sends every run it still holds, including runs still open. `unit_kind` is `skill_run` for every row today. A subagent invocation has no `AiWorkUnit` row yet.
+
+Cost and tokens are the sums of the run's `AiTurnCost` tool rows, so they keep the same gaps. Response rows carry no skill, so a run's first response and a text-only reply are not counted, and a text-only run reads `0`. A subagent's own spend stays on `AiSubagentTurn`. A pinned subagent's calls after the row was sent are not on it.
+
+| Field                   | Type   | Description                                                                                                         |
+| ----------------------- | ------ | ------------------------------------------------------------------------------------------------------------------- |
+| `eventType`             | string | Always `"AiWorkUnit"`                                                                                               |
+| `event_version`         | number | Always `1`                                                                                                          |
+| `timestamp`             | number | Unix epoch milliseconds when the run ended                                                                          |
+| `unit_kind`             | string | Always `skill_run`                                                                                                  |
+| `skill_name`            | string | Skill whose run this is (redacted, as on `AiToolCall`)                                                              |
+| `skill_source`          | string | `tool` or `slash`                                                                                                   |
+| `skill_run_id`          | string | Matches `skill_run_id` on the run's `AiSkillRun`, `AiToolCall` and `AiTurnCost` rows                                |
+| `skill_parent_run_id`   | string | The run that was open when this one started; absent when none was                                                   |
+| `started_at`            | number | Unix epoch milliseconds when the run opened, the same as its `AiSkillRun` `timestamp`                               |
+| `duration_ms`           | number | From open to the run's last activity: its last tool call's end, its turn's `Stop`, or the next skill in its agent   |
+| `cost_usd`              | number | Sum of `cost_usd` on the run's `AiTurnCost` tool rows                                                               |
+| `input_tokens`          | number | Sum of the same rows' `input_tokens`; fractional, like each share                                                   |
+| `output_tokens`         | number | Sum of the same rows' `output_tokens`                                                                               |
+| `cache_read_tokens`     | number | Sum of the same rows' `cache_read_tokens`                                                                           |
+| `cache_creation_tokens` | number | Sum of the same rows' `cache_creation_tokens`                                                                       |
+| `tool_call_count`       | number | Tool calls made inside the run                                                                                      |
+| `priced_call_count`     | number | Of those, the calls whose turn got a token report; lower than `tool_call_count` means `cost_usd` is missing a share |
+| `session_id`            | string | Session the run belongs to; falls back to the engine's session when the run has none                                |
+| `agent_id`              | string | Subagent that opened the run; absent when the main agent did                                                        |
+| `parent_session_id`     | string | Session that spawned that subagent, as on `AiSubagentTurn`; absent for a main-agent run                             |
+| `developer`             | string | Developer identifier                                                                                                |
+| `app_name`              | string | Application name                                                                                                    |
+| `platform`              | string | Platform of the call that opened the run; `"claude-code"` for a `/<skill>` prompt or a call with none               |
+| `team_id`               | string | User-defined team label (if configured)                                                                             |
+| `project_id`            | string | Project identifier (if configured)                                                                                  |
+| `org_id`                | string | Organization identifier (if configured)                                                                             |
+| `cost_authority`        | string | `"external"` only when `companionMode` is true and `platform` is `claude-code`; omitted otherwise                   |
+
+Cost and duration per run by skill: `FROM AiWorkUnit SELECT average(cost_usd), percentile(duration_ms, 50, 90), count(*) FACET skill_name SINCE 30 days ago`.
+
+Source: `src/metrics/skill-run-ledger.ts` and `src/transport/nr-ingest.ts`, `workUnitToNrEvent()` and `ingestWorkUnit()`
 
 ### Setup Validation
 
