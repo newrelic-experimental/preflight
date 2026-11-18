@@ -89,8 +89,8 @@ export class SkillRunLedger {
       unpriced: 0,
     });
     if (this.runs.size > MAX_RUNS) {
-      const oldest = this.runs.values().next().value;
-      if (oldest) this.emit(oldest);
+      const runs = [...this.runs.values()];
+      this.emit(runs.find((run) => run.closedAt !== null) ?? runs[0]!);
     }
   }
 

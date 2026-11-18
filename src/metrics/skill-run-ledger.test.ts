@@ -136,7 +136,21 @@ describe('SkillRunLedger', () => {
     expect(closed).toHaveLength(1);
   });
 
-  it('hands over the oldest run when it holds too many', () => {
+  it('hands over a closed run before an open one when it holds too many', () => {
+    const { closed, ledger, call } = makeLedger();
+    ledger.recordRunOpened(makeStamp('run-open'), { sessionId: 's-open', timestamp: 0 });
+    const waiting = makeStamp('run-waiting');
+    ledger.recordRunOpened(waiting, { sessionId: SESSION, timestamp: 1 });
+    call(makeCall({ activeSkill: waiting, timestamp: 2 }));
+    ledger.recordPrompt(SESSION, 3);
+    for (let i = 0; i < 255; i++) {
+      ledger.recordRunOpened(makeStamp(`run-${i}`), { sessionId: `s-${i}`, timestamp: 4 });
+    }
+
+    expect(closed.map((run) => run.stamp.runId)).toEqual(['run-waiting']);
+  });
+
+  it('hands over the oldest open run when none is closed', () => {
     const { closed, ledger } = makeLedger();
     for (let i = 0; i <= 256; i++) {
       ledger.recordRunOpened(makeStamp(`run-${i}`), { sessionId: `s-${i}`, timestamp: i });
