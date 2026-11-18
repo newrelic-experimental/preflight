@@ -2,7 +2,7 @@ import { createServer, IncomingMessage, ServerResponse, Server as HttpServer } f
 import { AddressInfo } from 'node:net';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { VERSION } from '../version.js';
 import { isNewerVersion, fetchLatestNpmVersion } from '../install/npm-version-check.js';
 import { LiveEventBus } from './live-event-bus.js';
