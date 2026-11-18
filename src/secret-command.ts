@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 
-import { createLogger } from './shared/index.js';
+import { createLogger } from './core/index.js';
 import { stripDangerousEnv } from './lib/child-env.js';
 
 const logger = createLogger('secret-command');

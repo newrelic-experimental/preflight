@@ -2,6 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { DiscreteBlockChart } from './DiscreteBlockChart';
 
+// Each column renders as a <g>; its heatmap-cell rects are the drawn blocks.
+function blocksPerColumn(container: HTMLElement): number[] {
+  return Array.from(
+    container.querySelectorAll('g'),
+    (g) => g.querySelectorAll('rect.heatmap-cell').length,
+  );
+}
+
 describe('DiscreteBlockChart', () => {
   it('renders nothing when every item has a count of 0, even with a nonzero maxCount override', () => {
     const { container } = render(
@@ -157,6 +165,69 @@ describe('DiscreteBlockChart', () => {
       );
       const rects = container.querySelectorAll('rect.heatmap-cell');
       expect(rects.length).toBe(3);
+    });
+  });
+
+  describe('maxLevels', () => {
+    it('draws one block per count when the tallest column is at or under maxLevels', () => {
+      const { container } = render(
+        <DiscreteBlockChart
+          data={[
+            { count: 2, tooltip: 'a' },
+            { count: 8, tooltip: 'b' },
+          ]}
+          maxLevels={8}
+          ariaLabel="chart"
+        />,
+      );
+      expect(blocksPerColumn(container)).toEqual([2, 8]);
+    });
+
+    it('caps the tallest column at maxLevels and scales the rest, keeping nonzero columns above 0', () => {
+      const { container } = render(
+        <DiscreteBlockChart
+          data={[
+            { count: 0, tooltip: 'a' },
+            { count: 1, tooltip: 'b' },
+            { count: 50, tooltip: 'c' },
+            { count: 100, tooltip: 'd' },
+          ]}
+          maxLevels={4}
+          ariaLabel="chart"
+        />,
+      );
+      // 1/100*4 rounds up to 1; 50/100*4 = 2; 100 is the peak and renders 4.
+      expect(blocksPerColumn(container)).toEqual([0, 1, 2, 4]);
+    });
+
+    it('lets an explicit levels override maxLevels', () => {
+      const { container } = render(
+        <DiscreteBlockChart
+          data={[
+            { count: 1, tooltip: 'a' },
+            { count: 100, tooltip: 'b' },
+          ]}
+          levels={4}
+          maxLevels={8}
+          ariaLabel="chart"
+        />,
+      );
+      expect(blocksPerColumn(container)).toEqual([1, 4]);
+    });
+
+    it('shows the raw count on hover when the column is scaled down', () => {
+      const { container } = render(
+        <DiscreteBlockChart
+          data={[
+            { count: 3, tooltip: 'raw: 3' },
+            { count: 100, tooltip: 'raw: 100' },
+          ]}
+          maxLevels={4}
+          ariaLabel="chart"
+        />,
+      );
+      fireEvent.mouseEnter(container.querySelectorAll('g')[0]!);
+      expect(screen.getByText('raw: 3')).toBeInTheDocument();
     });
   });
 });

@@ -314,6 +314,24 @@ describe('formatTokenBreakdown()', () => {
   });
 });
 
+describe('formatTokenBreakdown() with dollars', () => {
+  it("appends each category's dollars to its token count", () => {
+    expect(
+      formatTokenBreakdown(
+        {
+          inputTokens: 1_200,
+          outputTokens: 800,
+          cacheReadTokens: 30_000,
+          cacheCreationTokens: 2_000,
+        },
+        { inputUsd: 0.4, outputUsd: 0.12, cacheReadUsd: 0.09, cacheCreationUsd: 0.0005 },
+      ),
+    ).toBe(
+      'Input 1.2k ($0.40) · Output 800 ($0.12) · Cache read 30.0k ($0.090) · Cache write 2.0k (<$0.001)',
+    );
+  });
+});
+
 describe('formatRelativeTime()', () => {
   it('returns "just now" for a timestamp within the last minute', () => {
     expect(formatRelativeTime(Date.now())).toBe('just now');
