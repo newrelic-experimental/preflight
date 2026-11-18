@@ -12,7 +12,7 @@ import { performance } from 'node:perf_hooks';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { z } from 'zod';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { stripDangerousEnv } from '../lib/child-env.js';
 import type { ForwardResult, ProxyUpstream, UpstreamConfig } from './types.js';
 
