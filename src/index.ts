@@ -2379,6 +2379,7 @@ async function main(): Promise<void> {
             record.inputSizeBytes ?? 0,
             record.outputSizeBytes ?? 0,
             estimateModel,
+            record.timestamp,
           );
         }
 

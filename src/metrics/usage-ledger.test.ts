@@ -286,6 +286,19 @@ describe('per-day call counts', () => {
     });
   });
 
+  it('keeps a call in its day when a copy redelivered late has no day', () => {
+    const onTime = makeEntry({ costUsd: 1 });
+    const late = makeEntry({ costUsd: 1, day: null });
+    for (const order of [
+      [onTime, late],
+      [late, onTime],
+    ]) {
+      const ledger = new UsageLedger();
+      for (const e of order) ledger.insert(e);
+      expect(ledger.fold().totals.costByDayUsd).toEqual({ [DAY]: 1 });
+    }
+  });
+
   it('counts a late arrival in the totals but in no day', () => {
     const fold = foldUsage([makeEntry({ model: 'u', day: null, pricing: unpriced })]);
     expect(fold.totals.unpricedByModel).toEqual({ u: { calls: 1, tokens: 110 } });

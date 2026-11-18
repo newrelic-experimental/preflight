@@ -475,7 +475,12 @@ export class CostTracker implements Resettable {
    * the next exact parent report from a replaying watcher retires it (see
    * usage-ledger.ts).
    */
-  recordEstimatedTokens(inputChars: number, outputChars: number, model: string): CostBreakdown {
+  recordEstimatedTokens(
+    inputChars: number,
+    outputChars: number,
+    model: string,
+    atMs: number = Date.now(),
+  ): CostBreakdown {
     const inputTokens = Math.round(inputChars / 4);
     const outputTokens = Math.round(outputChars / 4);
     const usage: TokenUsage = {
@@ -488,12 +493,17 @@ export class CostTracker implements Resettable {
     };
     const { breakdown, pricing } = this.price(usage, model);
     const nowMs = Date.now();
-    const day = localDateKey(nowMs);
+    // Stamped at the tool call, not at when this process drained it: the
+    // exact report that retires the estimate carries its transcript time, and
+    // a drain running behind the transcript would otherwise stamp the
+    // estimate after that report and keep it forever.
+    const ts = Math.min(atMs, nowMs);
+    const day = localDateKey(ts);
     this.ledger.insert({
       id: this.synthesizeId('est'),
       provisional: true,
       replaces: false,
-      ts: nowMs,
+      ts,
       day,
       model,
       inputTokens,
@@ -506,7 +516,7 @@ export class CostTracker implements Resettable {
       ...(pricing && { pricing }),
     });
     this.estimationCount++;
-    this.noteActivity(day, nowMs, nowMs, breakdown.totalUsd);
+    this.noteActivity(day, ts, nowMs, breakdown.totalUsd);
     this.currentModel = model;
     this.latestCostBreakdown = breakdown;
     return breakdown;

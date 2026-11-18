@@ -1856,6 +1856,20 @@ describe('byte-estimate ledger', () => {
     expect(Object.values(m.costByDayUsd).reduce((a, b) => a + b, 0)).toBeCloseTo(exact.totalUsd, 9);
   });
 
+  it('retires an estimate the drain records after the turn that replaces it', () => {
+    const tracker = new CostTracker();
+    const toolCallMs = Date.now() - 60_000;
+    // The tool call drained late: its estimate is recorded now, but the turn
+    // that read its result happened right after the call.
+    tracker.recordEstimatedTokens(4_000, 2_000, MODEL, toolCallMs);
+    const exact = tracker.recordTokenUsage(real, MODEL, {
+      ...REPLAY,
+      timestampMs: toolCallMs + 1_000,
+    });
+
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 9);
+  });
+
   it('keeps the estimate when no real report ever arrives', () => {
     const tracker = new CostTracker();
     const est = tracker.recordEstimatedTokens(4_000, 2_000, MODEL);

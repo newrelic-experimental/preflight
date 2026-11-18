@@ -206,9 +206,10 @@ function preferred(a: UsageEntry, b: UsageEntry): UsageEntry {
   if (a.provisional !== b.provisional) return a.provisional ? b : a;
   if (a.replaces !== b.replaces) return a.replaces ? a : b;
   if (a.costUsd !== b.costUsd) return a.costUsd > b.costUsd ? a : b;
-  // One writer recorded the call late and another did not: out of the day
-  // buckets wins, whichever copy arrived first.
-  if (a.day !== b.day) return a.day === null ? a : b.day === null ? b : a.day < b.day ? a : b;
+  // One copy was recorded on time and one late (a line redelivered more than
+  // 48 hours on): the day that already holds the call keeps it, as the
+  // late-arrival rule leaves an old day's spend alone.
+  if (a.day !== b.day) return a.day === null ? b : b.day === null ? a : a.day < b.day ? a : b;
   // One writer knew the call's workflow run or agent type and another did not.
   const richness = (e: UsageEntry): number =>
     Number(e.workflowRunId !== undefined) +
@@ -661,6 +662,11 @@ export class UsageLedger {
     if (!range) return { id, usage };
     const held = this.overlapping(range);
     if (held.length === 0) return { id, usage };
+    // Only the part past the last held range is new. A gap below it is not:
+    // within an epoch the watcher emits each range from the previous cursor,
+    // so this copy's ranges only have a hole where the watcher skipped a
+    // first-seen backlog on purpose, or where another process drained that
+    // line and holds the range in its own copy, which a union brings in.
     const last = held[held.length - 1]!;
     if (last.to >= range.to) return null;
     const tailId = `copilot-app:${range.scope}:${countersKey(last.toCounters)}-${countersKey(range.toCounters)}`;
