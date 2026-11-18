@@ -3,6 +3,7 @@ import {
   toolCallToNrEvent,
   turnCostToNrEvents,
   skillRunToNrEvent,
+  workUnitToNrEvent,
   codingTaskToNrEvent,
   antiPatternToNrEvent,
   retryAlertToNrEvent,
@@ -29,6 +30,7 @@ import type { AiCodingTask } from '../metrics/task-detector.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
 import type { ThrashingAlert } from '../metrics/retry-detector.js';
 import type { ClosedTurn, TurnCostAttribution } from '../metrics/turn-cost-attributor.js';
+import type { ClosedSkillRun } from '../metrics/skill-run-ledger.js';
 import type { ContextTurnSnapshot, ToolContextContribution } from '../metrics/context-tracker.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
@@ -4200,5 +4202,107 @@ describe('NrIngestManager.ingestSkillRun()', () => {
       skill_run_id: 'run-10',
       session_id: 'trace-1',
     });
+  });
+});
+
+describe('workUnitToNrEvent()', () => {
+  const run: ClosedSkillRun = {
+    stamp: { name: 'review', source: 'slash', runId: 'run-1' },
+    sessionId: 'sess-1',
+    startedAt: 1_700_000_000_000,
+    endedAt: 1_700_000_002_500,
+    toolCallCount: 3,
+    pricedCallCount: 2,
+    costUsd: 0.25,
+    inputTokens: 1_000,
+    outputTokens: 200,
+    cacheReadTokens: 30,
+    cacheCreationTokens: 4,
+  };
+
+  it('emits a main-agent run with cost, tokens and duration and no parent session', () => {
+    const event = workUnitToNrEvent(run, {
+      developer: 'dev1',
+      appName: 'my-app',
+      sessionId: 'sess-1',
+      teamId: 'team-a',
+    });
+
+    expect(event).toStrictEqual({
+      eventType: 'AiWorkUnit',
+      event_version: 1,
+      timestamp: 1_700_000_002_500,
+      unit_kind: 'skill_run',
+      skill_name: 'review',
+      skill_source: 'slash',
+      skill_run_id: 'run-1',
+      started_at: 1_700_000_000_000,
+      duration_ms: 2_500,
+      cost_usd: 0.25,
+      input_tokens: 1_000,
+      output_tokens: 200,
+      cache_read_tokens: 30,
+      cache_creation_tokens: 4,
+      tool_call_count: 3,
+      priced_call_count: 2,
+      developer: 'dev1',
+      app_name: 'my-app',
+      platform: 'claude-code',
+      session_id: 'sess-1',
+      team_id: 'team-a',
+    });
+  });
+
+  it('names the subagent and its parent session when a subagent opened the run', () => {
+    const event = workUnitToNrEvent(
+      { ...run, agentId: 'agent-1', platform: 'claude-code' },
+      { developer: 'dev1', appName: 'my-app', sessionId: 'sess-1', companionMode: true },
+    );
+
+    expect(event).toMatchObject({
+      agent_id: 'agent-1',
+      parent_session_id: 'sess-1',
+      session_id: 'sess-1',
+      cost_authority: 'external',
+    });
+  });
+});
+
+describe('NrIngestManager.ingestWorkUnit()', () => {
+  it('routes one AiWorkUnit event, falling back to the manager session', async () => {
+    const manager = new NrIngestManager(makeIngestOptions({ sessionTraceId: 'trace-1' }));
+
+    manager.ingestWorkUnit({
+      stamp: { name: 'lint', source: 'tool', runId: 'run-9' },
+      sessionId: null,
+      agentId: 'agent-9',
+      startedAt: 1_000,
+      endedAt: 1_400,
+      toolCallCount: 1,
+      pricedCallCount: 1,
+      costUsd: 0.5,
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    });
+
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    expect(sentEvents.filter((e) => e.eventType === 'AiWorkUnit')).toMatchObject([
+      {
+        skill_run_id: 'run-9',
+        duration_ms: 400,
+        cost_usd: 0.5,
+        session_id: 'trace-1',
+        parent_session_id: 'trace-1',
+        agent_id: 'agent-9',
+        developer: 'test-dev',
+      },
+    ]);
   });
 });

@@ -28,6 +28,7 @@ describe('KNOWN_EVENT_TYPES', () => {
         'AiToolCall',
         'AiTurnCost',
         'AiWorkflowRun',
+        'AiWorkUnit',
         'SecurityAlert',
       ].sort(),
     );
@@ -55,6 +56,7 @@ describe('EVENT_TYPE_SENSITIVITY', () => {
         'AiRetryAlert',
         'AiTurnCost',
         'AiSkillRun',
+        'AiWorkUnit',
         'AiContextSnapshot',
         'AiBudgetWarning',
         'AiObservabilityHealth',
