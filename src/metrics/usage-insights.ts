@@ -1,5 +1,5 @@
 import type { FullSessionSummary } from '../storage/session-store.js';
-import type { AttributionBucket, TokenBreakdown } from '../storage/types.js';
+import type { AttributionBucket, TokenBreakdown, UsdBreakdown } from '../storage/types.js';
 
 /**
  * "What's contributing to your spend": independent characteristics of the
@@ -22,6 +22,8 @@ export interface UsageShareRow {
   readonly sharePct: number;
   /** Summed across every contributing bucket that had one; absent when none did. */
   readonly breakdown?: TokenBreakdown;
+  /** Dollars per `breakdown` category; absent when any contributing bucket with spend predates it, since a partial sum would understate the row. */
+  readonly breakdownUsd?: UsdBreakdown;
 }
 
 export interface UsageInsight extends UsageShareRow {
@@ -153,6 +155,32 @@ interface RowAccum {
     cacheReadTokens: number;
     cacheCreationTokens: number;
   };
+  breakdownUsd?: {
+    inputUsd: number;
+    outputUsd: number;
+    cacheReadUsd: number;
+    cacheCreationUsd: number;
+  };
+  /** A bucket with spend had no dollar split, so `breakdownUsd` would understate the row. */
+  usdIncomplete?: true;
+}
+
+function addBreakdownUsd(existing: RowAccum, bucket: AttributionBucket): void {
+  if (!bucket.breakdownUsd) {
+    if (bucket.costUsd > 0) existing.usdIncomplete = true;
+    return;
+  }
+  const u = existing.breakdownUsd ?? {
+    inputUsd: 0,
+    outputUsd: 0,
+    cacheReadUsd: 0,
+    cacheCreationUsd: 0,
+  };
+  u.inputUsd += bucket.breakdownUsd.inputUsd;
+  u.outputUsd += bucket.breakdownUsd.outputUsd;
+  u.cacheReadUsd += bucket.breakdownUsd.cacheReadUsd;
+  u.cacheCreationUsd += bucket.breakdownUsd.cacheCreationUsd;
+  existing.breakdownUsd = u;
 }
 
 function addBreakdown(existing: RowAccum, bucket: AttributionBucket): void {
@@ -177,6 +205,7 @@ function addToAccum(map: Map<string, RowAccum>, key: string, bucket: Attribution
     existing.tokens += bucket.tokens;
     existing.count += bucket.count;
     addBreakdown(existing, bucket);
+    addBreakdownUsd(existing, bucket);
   } else {
     const created: RowAccum = {
       costUsd: bucket.costUsd,
@@ -184,6 +213,7 @@ function addToAccum(map: Map<string, RowAccum>, key: string, bucket: Attribution
       count: bucket.count,
     };
     addBreakdown(created, bucket);
+    addBreakdownUsd(created, bucket);
     map.set(key, created);
   }
 }
@@ -198,6 +228,7 @@ function shareTable(rows: Map<string, RowAccum>, totalCostUsd: number): UsageSha
       count: acc.count,
       sharePct: sharePct(acc.costUsd, totalCostUsd),
       ...(acc.breakdown ? { breakdown: acc.breakdown } : {}),
+      ...(acc.breakdownUsd && !acc.usdIncomplete ? { breakdownUsd: acc.breakdownUsd } : {}),
     }))
     .sort((a, b) => b.costUsd - a.costUsd)
     .slice(0, TABLE_CAP);

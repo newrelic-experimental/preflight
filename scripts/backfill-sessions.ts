@@ -34,7 +34,7 @@ import {
 import type { FullSessionSummary } from '../src/storage/session-store.js';
 import { normalizeDeveloperName } from '../src/config.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../src/metrics/quality-proxy-tracker.js';
-import { stagingHost } from '../src/shared/transport/http-client.js';
+import { stagingHost } from '../src/core/transport/http-client.js';
 
 // ---------------------------------------------------------------------------
 // Minimal NerdGraph NRQL client

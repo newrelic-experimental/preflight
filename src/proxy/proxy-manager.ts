@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import type {
   ForwardResult,
   ProxyRequestRecord,
