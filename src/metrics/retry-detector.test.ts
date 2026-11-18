@@ -259,6 +259,20 @@ describe('RetryDetector', () => {
     expect(detector.getMetrics().totalTokensWasted).toBe(0);
   });
 
+  it('does not charge distinct successful reads that follow one failed read', () => {
+    const detector = new RetryDetector();
+    const cd = 'cd /Users/dev/repo/.claude/worktrees/o-1054;';
+
+    detector.recordToolCall(
+      makeRecord({ command: `${cd} sed -n 1,40p src/missing.ts`, success: false }),
+    );
+    detector.recordToolCall(makeRecord({ command: `${cd} sed -n 1,200p src/a.ts` }));
+    detector.recordToolCall(makeRecord({ command: `${cd} sed -n 160,300p src/b.ts` }));
+
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+    expect(detector.getMetrics().totalTokensWasted).toBe(0);
+  });
+
   it('charges only the calls after the first failure', () => {
     const detector = new RetryDetector();
 
