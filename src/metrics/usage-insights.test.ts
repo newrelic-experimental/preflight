@@ -170,7 +170,14 @@ describe('computeUsageInsights', () => {
           highContextCostUsd: 20,
           buckets: {
             tool: { Read: bucket({ costUsd: 80, tokens: 1000 }) },
-            skill: { 'pstack:unslop': bucket({ costUsd: 30, tokens: 600, count: 3 }) },
+            skill: {
+              'pstack:unslop': bucket({
+                costUsd: 30,
+                tokens: 600,
+                count: 3,
+                breakdownUsd: { inputUsd: 10, outputUsd: 20, cacheReadUsd: 0, cacheCreationUsd: 0 },
+              }),
+            },
             subagent: { Explore: bucket({ costUsd: 50, tokens: 800, count: 2 }) },
           },
         }),
@@ -184,6 +191,8 @@ describe('computeUsageInsights', () => {
       expect(report.totalTokens).toBe(200);
       expect(report.skills[0]).toMatchObject({ key: 'pstack:unslop', tokens: 60 });
       expect(report.skills[0]!.costUsd).toBeCloseTo(3, 9);
+      expect(report.skills[0]!.breakdownUsd!.inputUsd).toBeCloseTo(1, 9);
+      expect(report.skills[0]!.breakdownUsd!.outputUsd).toBeCloseTo(2, 9);
       expect(report.subagents[0]).toMatchObject({ key: 'Explore', tokens: 80 });
       expect(report.subagents[0]!.costUsd).toBeCloseTo(5, 9);
       expect(report.plugins[0]).toMatchObject({ key: 'pstack', tokens: 60 });
