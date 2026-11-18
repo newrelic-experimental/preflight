@@ -3320,6 +3320,31 @@ describe('Today view — daily budget KPI', () => {
     await expectTile('$4.00', 'of $10.00 · 40% used', 'neutral');
   });
 
+  it('does not call float noise just above the cap over budget', async () => {
+    stubBudget({ budgetUsd: 0.3, spentUsd: 0.1 + 0.2, pctUsed: 100, exceeded: false });
+    renderToday();
+    await expectTile('$0.30', 'of $0.30 · 100% used', 'red');
+  });
+
+  it('shows a loading figure, not $0.00 and 0 percent, while spend is still loading', async () => {
+    useLiveStore.setState({ cost: null });
+    const period = { budgetUsd: null, spentUsd: 0, pctUsed: null, exceeded: false };
+    globalThis.fetch = vi.fn(async (input) => {
+      if (!String(input).startsWith('/api/budget')) return new Promise<Response>(() => {});
+      const daily = { budgetUsd: 10, spentUsd: 0, pctUsed: 0, exceeded: false };
+      return new Response(JSON.stringify({ session: period, daily, weekly: period, alerts: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    renderToday();
+
+    const tile = await budgetTile();
+    expect(within(tile).getByText('…')).toBeInTheDocument();
+    expect(tile.lastElementChild?.textContent).toBe('loading…');
+    expect(tile.textContent).not.toMatch(/\$0\.00|% used/);
+  });
+
   it('shows the danger tone at exactly the cap without saying over budget', async () => {
     stubBudget({ budgetUsd: 10, spentUsd: 10, pctUsed: 100, exceeded: false });
     renderToday();

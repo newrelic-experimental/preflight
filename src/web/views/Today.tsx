@@ -236,10 +236,17 @@ const BUDGET_CAUTION_PCT = 50;
 const BUDGET_WARN_PCT = 80;
 const BUDGET_DANGER_PCT = 100;
 
-function DailyBudgetKpi({ spentUsd, capUsd }: { spentUsd: number; capUsd: number }): JSX.Element {
+function DailyBudgetKpi({
+  spentUsd,
+  capUsd,
+}: {
+  spentUsd: number | null;
+  capUsd: number;
+}): JSX.Element {
+  if (spentUsd === null) return <Kpi label="daily budget" value="…" sub="loading…" />;
   // Round first so float error cannot drop a boundary: 4.52 / 5.65 * 100 is 79.999…
   const pct = Math.round((spentUsd / capUsd) * 1e6) / 1e4;
-  const overBudget = spentUsd > capUsd;
+  const overBudget = pct > BUDGET_DANGER_PCT;
   const tone: KpiTone =
     pct >= BUDGET_DANGER_PCT ? 'bad' : pct >= BUDGET_WARN_PCT ? 'warn' : 'neutral';
   const caution = pct >= BUDGET_CAUTION_PCT && pct < BUDGET_WARN_PCT;
@@ -562,7 +569,10 @@ export function Today(): JSX.Element {
                   {...(flagsLoading ? {} : { animate: true, numericValue: flagsCount })}
                 />
                 {dailyBudgetCap !== null && (
-                  <DailyBudgetKpi spentUsd={todayTotal} capUsd={dailyBudgetCap} />
+                  <DailyBudgetKpi
+                    spentUsd={spendLoading ? null : todayTotal}
+                    capUsd={dailyBudgetCap}
+                  />
                 )}
               </div>
             </Card>
