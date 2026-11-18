@@ -72,8 +72,7 @@ type CopyKind = 'markdown' | 'json' | 'link';
 const COPY_BUTTON_CLASS =
   'px-2 py-1 rounded-md text-[11px] text-ink-muted hover:text-ink-base hover:bg-surface-5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40';
 
-// Same drawer/backdrop/focus-trap pattern as WorkflowRunDetail — kept in
-// lockstep with that component so the two dialogs behave identically.
+// Same drawer/backdrop/focus-trap pattern as WorkflowRunDetail.
 export function SessionDetailDialog({
   decisionTree,
   turnCosts,

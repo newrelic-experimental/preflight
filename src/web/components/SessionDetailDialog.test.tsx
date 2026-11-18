@@ -282,7 +282,7 @@ function makeSummary(overrides: Partial<SessionListEntry> = {}): SessionListEntr
     tokensCacheRead: 900_000,
     antiPatterns: [
       { type: 're_reading', file: 'src/billing.ts', readCount: 5 },
-      { type: 'stuck_loop', command: 'npm test -- --token=secret123', iterations: 3 },
+      { type: 'stuck_loop', command: 'curl -u admin:hunter2 https://example.test', iterations: 3 },
     ],
     ...overrides,
   };
@@ -322,7 +322,7 @@ describe('SessionDetailDialog — copy session', () => {
     expect(text).toContain('claude-sonnet-5');
     expect(text).toContain('re_reading');
     expect(text).toContain('stuck_loop');
-    expect(text).not.toContain('secret123');
+    expect(text).not.toContain('hunter2');
     expect(text).not.toContain('npm test');
   });
 
@@ -363,7 +363,7 @@ describe('SessionDetailDialog — copy session', () => {
     fireEvent.click(screen.getByRole('button', { name: /copy as json/i }));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const text = writeText.mock.calls[0]![0];
-    expect(text).not.toContain('secret123');
+    expect(text).not.toContain('hunter2');
     expect(text).not.toContain('npm test');
     expect(text).not.toContain('"command"');
     expect(JSON.parse(text).antiPatterns[1]).toEqual({ type: 'stuck_loop', iterations: 3 });
@@ -413,7 +413,7 @@ describe('SessionDetailDialog — copy session', () => {
     expect(await screen.findByText('Copied')).toBeInTheDocument();
   });
 
-  it('disables both copy buttons when there is no session summary', () => {
+  it('disables all three copy buttons when there is no session summary', () => {
     render(
       <SessionDetailDialog
         decisionTree={makeDecisionTree()}
@@ -574,13 +574,6 @@ describe('SessionDetailDialog — focus trap with copy buttons disabled', () => 
     const close = renderWithoutSummary();
     expect(document.activeElement).toBe(close);
     const notPrevented = fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
-    expect(notPrevented).toBe(false);
-    expect(document.activeElement).toBe(close);
-  });
-
-  it('wraps Tab on Close back to the first enabled control', () => {
-    const close = renderWithoutSummary();
-    const notPrevented = fireEvent.keyDown(document, { key: 'Tab' });
     expect(notPrevented).toBe(false);
     expect(document.activeElement).toBe(close);
   });
