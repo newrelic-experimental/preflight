@@ -1,6 +1,6 @@
 # Agent Instructions: NR Preflight
 
-New Relic MCP server + metrics engine + HTTP proxy for observing AI coding assistants. Flat single-package repo; source in `src/`, vendored shared code in `src/shared/`.
+New Relic MCP server + metrics engine + HTTP proxy for observing AI coding assistants. Flat single-package repo; source in `src/`, foundation code (events, transport, harvest, pricing, logger) in `src/core/`.
 
 **The canonical conventions document is [CLAUDE.md](./CLAUDE.md).** It is written for all coding agents, not just Claude - read it before making changes. It covers architecture/data flow, TypeScript conventions, the metric tracker families, the platform adapter pattern, configuration, storage, security invariants, and commit/PR conventions.
 
@@ -17,7 +17,6 @@ npm run format:check       # Prettier
 
 ## Hard guardrails (repeated here because violations are costly)
 
-- **Never edit anything under `src/shared/`** - it is a vendored snapshot. Bugs there get an issue, not a patch.
 - **Never write to stdout** in server-path code - stdout is reserved for MCP stdio transport. Use the scoped `createLogger()` pattern (writes JSON to stderr).
 - **Lint is zero-tolerance**: no `eslint-disable` comments, no `as any` / `: any` (use `as unknown as T`, concrete types, or generics), unused required params prefixed `_`.
 - All internal imports use `.js` extensions (ESM + NodeNext).

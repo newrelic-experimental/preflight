@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { MetricAggregator } from '../shared/index.js';
+import { MetricAggregator } from '../core/index.js';
 import { ProxyMetricsTracker } from './proxy-metrics.js';
 import type { ProxyToolCallRecord } from '../proxy/types.js';
 import type { ProxyRequestRecord } from '../proxy/types.js';
