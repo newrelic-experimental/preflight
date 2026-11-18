@@ -1,12 +1,11 @@
 /**
  * Retry/Thrashing Detection — within a tool+session group in a sliding window
  * of recent calls, takes the first failed call and the calls after it, and
- * flags them as a retry when they all failed or their inputs are near-identical
- * (Levenshtein similarity over each call's serialized non-metadata fields, see
- * computeGroupSimilarity()). Calls before the first failure are never retries,
- * and a success after it counts only as the retry that finally worked. An
- * alert fires only when the call just recorded joins the offending group, and
- * each call is charged to at most one alert.
+ * flags them as a retry when they all failed or their inputs match the failed
+ * call's (computeGroupSimilarity() at or above similarityThreshold, which
+ * defaults to an exact match). Calls before the first failure are never
+ * retries. An alert fires only when the call just recorded joins the
+ * offending group, and each call is charged to at most one alert.
  */
 
 import type { MetricAggregator } from '../core/index.js';
@@ -60,7 +59,9 @@ export interface RetryDetectorOptions {
 
 const DEFAULT_MIN_OCCURRENCES = 3;
 const DEFAULT_WINDOW_SIZE = 5;
-const DEFAULT_SIMILARITY_THRESHOLD = 0.8;
+// Exact by default because distinct Bash commands that share a long `cd`
+// prefix score above 0.9, as high as a genuine near-identical retry.
+const DEFAULT_SIMILARITY_THRESHOLD = 1;
 // Same rough chars-per-token heuristic used elsewhere in this codebase for
 // estimating token counts without an actual tokenizer (see CostTracker's
 // recordEstimatedTokens). Only used here to estimate wasted tokens for

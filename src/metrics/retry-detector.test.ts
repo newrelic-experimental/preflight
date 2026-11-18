@@ -433,8 +433,8 @@ describe('RetryDetector', () => {
     // must not be capped by inputHash — inputHash differs on every call
     // here (it always does for non-identical real input), same as
     // production traffic. Verified numerically: 0.9091 group similarity
-    // under the gated formula, comfortably above the 0.8 default threshold.
-    const detector = new RetryDetector();
+    // under the gated formula, comfortably above a 0.8 threshold.
+    const detector = new RetryDetector({ similarityThreshold: 0.8 });
 
     detector.recordToolCall(
       makeRecord({

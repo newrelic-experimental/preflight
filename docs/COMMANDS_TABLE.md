@@ -1561,7 +1561,7 @@ Thrashing and retry detection alerts within a sliding window.
 
 **Data source:** `RetryDetector`
 
-**How it works:** Within a rolling window (default: 5 calls), takes a tool's first failed call and the calls after it. Fires an alert when there are 3+ of them and every one failed or their inputs are identical or highly similar (similarity ≥ 0.8, via Levenshtein distance or exact input-hash match). Successful calls before the first failure never count. `totalTokensWasted` estimates tokens consumed on redundant calls (`inputSize / 4`).
+**How it works:** Within a rolling window (default: 5 calls), takes a tool's first failed call and the calls after it. Fires an alert when there are 3+ of them and every one failed or every one repeats the failed call's input exactly. Successful calls before the first failure never count. `totalTokensWasted` estimates tokens consumed on redundant calls (`inputSize / 4`).
 
 **Requires:** `RetryDetector`
 
