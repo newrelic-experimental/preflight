@@ -1962,7 +1962,9 @@ describe('stdio integration', () => {
           CLAUDE_JOB_DIR: jobDir,
         });
         await waitFor(() => existsSync(heartbeat));
-        await drainCalls(storage, id, 1, 1);
+        writeHook(storage, id, 'pre', 'toolu_resumed');
+        writeHook(storage, id, 'post', 'toolu_resumed');
+        await waitFor(drained(storage, id));
         await waitFor(() => outcome(storage) === 'in progress');
         await resumed.close();
         await waitFor(() => outcome(storage) === 'completed');
