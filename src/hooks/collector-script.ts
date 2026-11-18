@@ -343,15 +343,17 @@ function writeCwdBreadcrumb(
 
 const UNKNOWN_ENGINE_MARKER = 'unknown-engine-warned';
 
-/** True the first time this install is told, so each hook process need not repeat it. */
-function claimUnknownEngineWarning(storageDir: string): boolean {
+/** True unless this install was already warned about exactly these names. */
+function claimUnknownEngineWarning(storageDir: string, names: string): boolean {
+  const marker = resolve(storageDir, UNKNOWN_ENGINE_MARKER);
+  try {
+    if (readFileSync(marker, 'utf-8') === names) return false;
+  } catch {}
   try {
     mkdirSync(storageDir, { recursive: true, mode: 0o700 });
-    writeFileSync(resolve(storageDir, UNKNOWN_ENGINE_MARKER), '', { flag: 'wx', mode: 0o600 });
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code !== 'EEXIST';
-  }
+    writeFileSync(marker, names, { mode: 0o600 });
+  } catch {}
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -820,10 +822,12 @@ function processHook(raw: string, cliEvent?: string): void {
     if (writer === UNATTRIBUTED_BREADCRUMB_WRITER) {
       const unknownNames = ENGINE_ENV_KEYS.filter(
         (key) => process.env[key] && canonicalPlatformName(process.env[key]) === undefined,
-      ).map((key) => `${key}=${JSON.stringify(process.env[key])}`);
-      if (unknownNames.length > 0 && claimUnknownEngineWarning(storageDir)) {
+      )
+        .map((key) => `${key}=${JSON.stringify(process.env[key])}`)
+        .join(', ');
+      if (unknownNames.length > 0 && claimUnknownEngineWarning(storageDir, unknownNames)) {
         process.stderr.write(
-          `[preflight-collector] Warning: ${unknownNames.join(', ')} names no engine Preflight knows; filing the session breadcrumb as unattributed\n`,
+          `[preflight-collector] Warning: ${unknownNames} names no engine Preflight knows; filing the session breadcrumb as unattributed\n`,
         );
       }
     }
