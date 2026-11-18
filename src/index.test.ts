@@ -36,7 +36,7 @@ import {
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { DashboardServer } from './dashboard/dashboard-server.js';
 import { sanitizeCwdForFilename } from './hooks/session-resolver.js';
-import { SessionStore } from './storage/session-store.js';
+import { SessionStore, type FullSessionSummary } from './storage/session-store.js';
 import { appendToHookBuffer } from './storage/hook-buffer.js';
 import type { LocalStore } from './storage/index.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
@@ -1061,6 +1061,7 @@ describe('stdio integration', () => {
         stderr += chunk.toString('utf8');
       });
       const client = new Client({ name: 'test-client', version: '1.0.0' });
+      const store = new SessionStore({ storagePath });
       const stats = async (): Promise<{
         session_id: string;
         session_name: string | null;
@@ -1084,6 +1085,7 @@ describe('stdio integration', () => {
         return seen;
       };
       return {
+        storagePath,
         writeCrumb,
         stats,
         sessionId,
@@ -1094,11 +1096,20 @@ describe('stdio integration', () => {
             arguments: { input_tokens: 100, output_tokens: 50, model: 'claude-sonnet-5' },
           }),
         waitForCheckpoint: async (id: string): Promise<boolean> => {
-          const store = new SessionStore({ storagePath });
           for (let i = 0; i < 20 && !store.loadSession(id); i++) {
             await new Promise((r) => setTimeout(r, 250));
           }
           return store.loadSession(id) !== null;
+        },
+        saveSession: (summary: FullSessionSummary) => store.saveSession(summary),
+        loadSession: (id: string) => store.loadSession(id),
+        budgetAlerts: async (): Promise<Array<{ period: string }>> => {
+          const result = await client.callTool({
+            name: 'nr_observe_get_budget_status',
+            arguments: {},
+          });
+          const content = result.content as Array<{ type: string; text: string }>;
+          return JSON.parse(content[0]?.text ?? '{}').alerts ?? [];
         },
         stderr: () => stderr,
         connect: () => client.connect(transport),
@@ -1200,17 +1211,146 @@ describe('stdio integration', () => {
     itOffWindows(
       "corrects a Kiro engine that adopted an older collector's session from a shared ancestor once its own hooks write",
       async () => {
-        // A collector from before per-engine breadcrumbs writes only the root
-        // layout, at each ancestor of its hook, so a process both sessions run
-        // under (a tmux server, say) names that session. This test process's
-        // parent stands in for it: it is the engine's parent-of-ppid.
         const engine = await startEngine({ MCP_CLIENT: 'kiro' });
+        const heartbeat = resolve(engine.storagePath, 'active-claude-session-id.pid');
+        writeFileSync(heartbeat, String(process.pid));
         try {
           await engine.connect();
           engine.writeCrumb(null, 'ppid', 'claude-session-id', process.ppid);
           expect(await engine.waitForSessionId('claude-session-id')).toBe('claude-session-id');
           engine.writeCrumb('kiro', 'ppid', 'kiro-session-id');
           expect(await engine.waitForSessionId('kiro-session-id')).toBe('kiro-session-id');
+          expect(existsSync(heartbeat) && readFileSync(heartbeat, 'utf8')).toBe(
+            String(process.pid),
+          );
+        } finally {
+          await engine.close();
+        }
+      },
+      30000,
+    );
+
+    itOffWindows(
+      "starts a corrected session from zero, not from the ancestor session's checkpoint",
+      async () => {
+        const now = Date.now();
+        const engine = await startEngine({
+          MCP_CLIENT: 'kiro',
+          NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+          NEW_RELIC_AI_SESSION_BUDGET_USD: '0.004',
+        });
+        try {
+          engine.saveSession({
+            sessionId: 'claude-session-id',
+            startTime: now - 3_600_000,
+            endTime: now - 1000,
+            durationMs: 3_599_000,
+            toolCallCount: 40,
+            filesRead: ['/f/read.ts'],
+            filesModified: ['/f/mod.ts'],
+            linesAdded: 500,
+            linesRemoved: 50,
+            testRunCount: 9,
+            testPassCount: 8,
+            estimatedCostUsd: 4.2,
+            qualityProxy: {
+              totalSignals: 6,
+              diffApplyCleanCount: 3,
+              diffFailCount: 1,
+              testPassCount: 1,
+              testFailCount: 1,
+              backtrackCount: 0,
+              selfCorrectionCount: 0,
+            },
+            taskCount: 7,
+            agentSpawns: 2,
+            efficiencyScore: 0.9,
+            efficiencyScoreComponents: {
+              speed: 0.9,
+              correctness: 0.9,
+              autonomy: 0.9,
+              firstAttemptQuality: 0.9,
+            },
+            efficiencyScoreSampleCount: 5,
+            outcome: 'in progress',
+          } as FullSessionSummary);
+          await engine.connect();
+          engine.writeCrumb(null, 'ppid', 'claude-session-id', process.ppid);
+          expect(await engine.waitForSessionId('claude-session-id')).toBe('claude-session-id');
+          engine.writeCrumb('kiro', 'ppid', 'kiro-session-id');
+          expect(await engine.waitForSessionId('kiro-session-id')).toBe('kiro-session-id');
+          appendToHookBuffer(
+            resolve(engine.storagePath, 'buffer-kiro-session-id.jsonl'),
+            JSON.stringify({
+              mode: 'token',
+              timestamp: Date.now(),
+              sessionId: 'kiro-session-id',
+              messageId: 'msg_1',
+              inputTokens: 1000,
+              outputTokens: 100,
+              model: 'claude-sonnet-5',
+            }) + '\n',
+          );
+          expect(await engine.waitForCheckpoint('kiro-session-id')).toBe(true);
+          await new Promise((r) => setTimeout(r, 600));
+          const saved = engine.loadSession('kiro-session-id');
+          expect({
+            taskCount: saved?.taskCount,
+            linesAdded: saved?.linesAdded,
+            testRunCount: saved?.testRunCount,
+            filesModified: saved?.filesModified,
+            agentSpawns: saved?.agentSpawns,
+            qualitySignals: saved?.qualityProxy?.totalSignals ?? 0,
+            efficiencyScore: saved?.efficiencyScore ?? null,
+          }).toEqual({
+            taskCount: 0,
+            linesAdded: 0,
+            testRunCount: 0,
+            filesModified: [],
+            agentSpawns: 0,
+            qualitySignals: 0,
+            efficiencyScore: null,
+          });
+          expect((await engine.budgetAlerts()).some((a) => a.period === 'session')).toBe(true);
+        } finally {
+          await engine.close();
+        }
+      },
+      30000,
+    );
+
+    itOffWindows(
+      'keeps an ancestor adoption its own ppid breadcrumb confirms, seeded once',
+      async () => {
+        const now = Date.now();
+        const engine = await startEngine({
+          MCP_CLIENT: 'kiro',
+          NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+        });
+        try {
+          engine.saveSession({
+            sessionId: 'kiro-session-id',
+            startTime: now - 3_600_000,
+            endTime: now - 1000,
+            durationMs: 3_599_000,
+            toolCallCount: 40,
+            estimatedCostUsd: 4.2,
+            taskCount: 7,
+            outcome: 'in progress',
+          } as FullSessionSummary);
+          await engine.connect();
+          engine.writeCrumb('kiro', 'ppid', 'kiro-session-id', process.ppid);
+          expect(await engine.waitForSessionId('kiro-session-id')).toBe('kiro-session-id');
+          engine.writeCrumb('kiro', 'ppid', 'kiro-session-id');
+          await new Promise((r) => setTimeout(r, 3000));
+          expect(engine.stderr()).not.toContain('Correcting the adopted session id');
+          await engine.reportTokens();
+          await new Promise((r) => setTimeout(r, 800));
+          const saved = engine.loadSession('kiro-session-id');
+          expect(saved?.toolCallCount).toBe(40);
+          expect(saved?.taskCount).toBe(7);
+          expect(saved?.estimatedCostUsd).toBeGreaterThan(4.2);
+          expect(saved?.estimatedCostUsd).toBeLessThan(4.21);
         } finally {
           await engine.close();
         }
@@ -1221,7 +1361,6 @@ describe('stdio integration', () => {
     itOffWindows(
       'checkpoints a session adopted from an ancestor breadcrumb without waiting for its ppid one',
       async () => {
-        // Behind a launcher no hook runs under, the engine's own ppid breadcrumb never appears.
         const engine = await startEngine({
           MCP_CLIENT: 'kiro',
           NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
@@ -3176,7 +3315,10 @@ describe('stdio integration', () => {
     }, 60000);
   });
 
-  // The correction watch never reads the parent level on Windows, which has no `ps`.
+  // The correction watch reads the parent level only off Linux and Windows,
+  // so these skip in CI, which relies on the session-resolver.test.ts cases
+  // that inject platform 'darwin'. On a Mac they run the real `ps` lookup.
+  const itOffLinux = process.platform === 'linux' || process.platform === 'win32' ? it.skip : it;
 
   /** Titles itself like npm's `npx` process, then runs its args as a child. */
   const NPM_EXEC_WRAPPER = [
@@ -3196,10 +3338,16 @@ describe('stdio integration', () => {
    */
   async function startCwdGuessedEngine(
     viaNpmExec: boolean,
-    options: { readonly nodeArgs?: readonly string[]; readonly env?: NodeJS.ProcessEnv } = {},
+    options: {
+      readonly nodeArgs?: readonly string[];
+      readonly env?: NodeJS.ProcessEnv;
+      readonly cwdGuess?: boolean;
+      readonly onStderr?: (stderrSoFar: string, ppidBreadcrumbDir: string) => void;
+    } = {},
   ): Promise<{
     readonly storagePath: string;
     readonly ppidBreadcrumbDir: string;
+    readonly ppid: number;
     readonly readSessionId: () => Promise<string>;
     readonly waitForSessionId: (sessionId: string) => Promise<boolean>;
     /**
@@ -3220,7 +3368,9 @@ describe('stdio integration', () => {
     const cwdBreadcrumbDir = resolve(breadcrumbRoot(storagePath, 'claude-code'), 'session-by-cwd');
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
     const sanitizedCwd = realpathSync(projectCwd).replace(/[\\/:]/g, '-');
-    writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'neighbour-session-id');
+    if (options.cwdGuess !== false) {
+      writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'neighbour-session-id');
+    }
     const ppidBreadcrumbDir = resolve(
       breadcrumbRoot(storagePath, 'claude-code'),
       'session-by-ppid',
@@ -3232,7 +3382,7 @@ describe('stdio integration', () => {
     const transport = new StdioClientTransport({
       command: 'node',
       args: viaNpmExec ? ['-e', NPM_EXEC_WRAPPER, '--', ...engineArgs] : engineArgs,
-      ...(options.nodeArgs ? { stderr: 'pipe' as const } : {}),
+      ...(options.nodeArgs || options.onStderr ? { stderr: 'pipe' as const } : {}),
       cwd: projectCwd,
       env: {
         ...env,
@@ -3246,6 +3396,7 @@ describe('stdio integration', () => {
     let stderr = '';
     transport.stderr?.on('data', (chunk: Buffer) => {
       stderr += chunk.toString('utf8');
+      options.onStderr?.(stderr, ppidBreadcrumbDir);
     });
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     const cleanup = (): void => {
@@ -3274,6 +3425,7 @@ describe('stdio integration', () => {
     return {
       storagePath,
       ppidBreadcrumbDir,
+      ppid: transport.pid!,
       readSessionId,
       waitForSessionId: async (sessionId) => {
         for (let i = 0; i < 20; i++) {
@@ -3314,7 +3466,7 @@ describe('stdio integration', () => {
     };
   }
 
-  itOffWindows(
+  itOffLinux(
     'does not read the parent-of-ppid breadcrumb of an engine its host launched directly (#479)',
     async () => {
       // This engine's ppid is this test process, not an `npm exec` wrapper,
@@ -3343,7 +3495,7 @@ describe('stdio integration', () => {
     30000,
   );
 
-  itOffWindows(
+  itOffLinux(
     'corrects a wrong cwd guess from the host breadcrumb behind an npm exec wrapper (#479)',
     async () => {
       // Behind the wrapper the level above ppid is the host that ran npx: this
@@ -3359,7 +3511,7 @@ describe('stdio integration', () => {
     30000,
   );
 
-  itOffWindows(
+  itOffLinux(
     'does not follow the host to a new session once its breadcrumb matched the cwd guess, behind an npm exec wrapper (#479)',
     async () => {
       // The default plugin launch: the cwd guess is right, so the host's slot
@@ -3391,7 +3543,7 @@ describe('stdio integration', () => {
     30000,
   );
 
-  itOffWindows(
+  itOffLinux(
     'does not follow the host to a new session after a tool call drained under the cwd guess, behind an npm exec wrapper (#479)',
     async () => {
       // The host's slot names the guess only until its tool call is drained,
@@ -3414,7 +3566,7 @@ describe('stdio integration', () => {
     30000,
   );
 
-  itOffWindows(
+  itOffLinux(
     'corrects a wrong cwd guess after draining tool calls of the guessed session, behind an npm exec wrapper (#479)',
     async () => {
       // A wrong guess drains the guessed session's tool calls under the
@@ -3431,8 +3583,65 @@ describe('stdio integration', () => {
     30000,
   );
 
+  itOffWindows(
+    'does not follow the host to a new session after adopting its breadcrumb behind an npm exec wrapper',
+    async () => {
+      let wrote = false;
+      let switched = false;
+      const engine = await startCwdGuessedEngine(true, {
+        cwdGuess: false,
+        onStderr: (text, dir) => {
+          const hostBreadcrumb = resolve(dir, `${process.pid}.txt`);
+          if (!wrote && text.includes('Awaiting session_id resolution')) {
+            wrote = true;
+            writeFileSync(hostBreadcrumb, 'host-session-id');
+          }
+          if (!switched && text.includes('Resolved session_id from ancestor ppid breadcrumb')) {
+            switched = true;
+            writeFileSync(hostBreadcrumb, 'cleared-session-id');
+          }
+        },
+      });
+      try {
+        expect(await engine.waitForSessionId('host-session-id')).toBe(true);
+        expect(switched).toBe(true);
+        await new Promise((r) => setTimeout(r, 3500));
+        expect(await engine.readSessionId()).toBe('host-session-id');
+
+        writeFileSync(resolve(engine.ppidBreadcrumbDir, `${engine.ppid}.txt`), 'own-session-id');
+        expect(await engine.waitForSessionId('own-session-id')).toBe(true);
+      } finally {
+        await engine.close();
+      }
+    },
+    30000,
+  );
+
+  itOffLinux(
+    'corrects an adoption from above the npx host from the host breadcrumb, behind an npm exec wrapper',
+    async () => {
+      let wrote = false;
+      const engine = await startCwdGuessedEngine(true, {
+        cwdGuess: false,
+        onStderr: (text, dir) => {
+          if (wrote || !text.includes('Awaiting session_id resolution')) return;
+          wrote = true;
+          writeFileSync(resolve(dir, `${process.ppid}.txt`), 'shared-session-id');
+        },
+      });
+      try {
+        expect(await engine.waitForSessionId('shared-session-id')).toBe(true);
+        writeFileSync(resolve(engine.ppidBreadcrumbDir, `${process.pid}.txt`), 'own-session-id');
+        expect(await engine.waitForSessionId('own-session-id')).toBe(true);
+      } finally {
+        await engine.close();
+      }
+    },
+    30000,
+  );
+
   it('reports each tool call drained under the cwd guess to the correction watch, and no other', async () => {
-    // The watch acts on that report only off Windows, so this checks
+    // The watch acts on that report only off Linux and Windows, so this checks
     // the drain-path wiring itself, on every platform: a loader hook wraps
     // the listener the engine subscribes, and marks each call on stderr.
     // The hook files are fixed text, with no paths or values spliced in: the

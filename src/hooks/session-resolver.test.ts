@@ -881,38 +881,24 @@ describe('session-resolver', () => {
         expect(result).toBe('aborted');
       });
 
-      it('resolves from the npx host breadcrumb one level up on Linux', async () => {
-        // The `npm exec` wrapper is no ancestor of the host's hooks on Linux
-        // either, so without the host's level a wrong cwd guess is never
-        // corrected.
-        const npmExecPid = 88033;
-        const hostPid = 88034;
-        setTimeout(() => writeBreadcrumb(hostPid, 'sess-copilot'), 150);
-        const ps = psRow(hostPid, npmExec);
-
-        const result = await watchUntil(2000, {
-          ppid: npmExecPid,
-          staleId: 'sess-claude',
-          execFileSync: ps.fn,
-          platform: 'linux',
-        });
-        expect(result).toBe('sess-copilot');
-      });
-
-      it('never consults the parent level on Windows', async () => {
-        // Windows has no `ps`.
+      it('never consults the parent level on Linux or Windows', async () => {
+        // Linux collectors write breadcrumbs at their ancestors too, so the
+        // parent slot is routinely shared; an ownerless neighbour there would
+        // otherwise pass every other check. Windows has no `ps`.
         const npmExecPid = 88023;
         const hostPid = 88024;
         writeBreadcrumb(hostPid, 'sess-hooks-only-neighbour');
-        const ps = psRow(hostPid, npmExec);
-        const result = await watchUntil(400, {
-          ppid: npmExecPid,
-          staleId: 'sess-own',
-          execFileSync: ps.fn,
-          platform: 'win32',
-        });
-        expect(result).toBe('aborted');
-        expect(ps.calls).toBe(0);
+        for (const platform of ['linux', 'win32'] as const) {
+          const ps = psRow(hostPid, npmExec);
+          const result = await watchUntil(400, {
+            ppid: npmExecPid,
+            staleId: 'sess-own',
+            execFileSync: ps.fn,
+            platform,
+          });
+          expect(result).toBe('aborted');
+          expect(ps.calls).toBe(0);
+        }
       });
 
       describe('with staleId activity reported', () => {
