@@ -307,8 +307,8 @@ export class RetryDetector implements Resettable {
   // (isTestCommand/isBuildCommand/isLintCommand/bashCategory/
   // bashDestructive/bashNetwork) are identical for any two "ordinary" shell
   // commands. Left in place, these dominate the serialized string and pull
-  // genuinely distinct calls' similarity up into a false-positive band just
-  // above the default 0.8 threshold.
+  // genuinely distinct calls' similarity up into a false-positive band, close
+  // to a genuine retry's score.
   //
   // inputHash is also excluded here, but NOT dropped from similarity scoring
   // entirely — computeGroupSimilarity() falls back to comparing it by
