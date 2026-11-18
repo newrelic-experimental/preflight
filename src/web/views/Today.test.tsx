@@ -3275,11 +3275,14 @@ describe('Today view — daily budget KPI', () => {
     [8, 80, '$8.00', 'amber'],
     [9.9, 99, '$9.90', 'amber'],
     [10, 100, '$10.00', 'red'],
-  ] as const)('spent %s of a $10 cap (%s percent) reads %s', async (spent, pct, value, tone) => {
-    stubBudget({ budgetUsd: 10, spentUsd: spent, pctUsed: pct, exceeded: false });
-    renderToday();
-    await expectTile(value, `of $10.00 · ${pct}% used`, tone);
-  });
+  ] as const)(
+    'spent %s of a 10 dollar cap (%s percent) reads %s',
+    async (spent, pct, value, tone) => {
+      stubBudget({ budgetUsd: 10, spentUsd: spent, pctUsed: pct, exceeded: false });
+      renderToday();
+      await expectTile(value, `of $10.00 · ${pct}% used`, tone);
+    },
+  );
 
   it('switches the budget value to the danger tone and says over budget once the cap is passed', async () => {
     stubBudget({ budgetUsd: 10, spentUsd: 12.5, pctUsed: 125, exceeded: true });
