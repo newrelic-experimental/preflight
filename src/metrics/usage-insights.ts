@@ -1,5 +1,5 @@
 import type { FullSessionSummary } from '../storage/session-store.js';
-import type { AttributionBucket, TokenBreakdown } from '../storage/types.js';
+import type { AttributionBucket, TokenBreakdown, UsdBreakdown } from '../storage/types.js';
 import { localDateKey, todayPortionRatio } from '../lib/date.js';
 import { todayCostOfSummary } from './cost-tracker-seed.js';
 
@@ -24,6 +24,8 @@ export interface UsageShareRow {
   readonly sharePct: number;
   /** Summed across every contributing bucket that had one; absent when none did. */
   readonly breakdown?: TokenBreakdown;
+  /** Dollars per `breakdown` category; absent when any contributing bucket with spend predates it, since a partial sum would understate the row. */
+  readonly breakdownUsd?: UsdBreakdown;
 }
 
 export interface UsageInsight extends UsageShareRow {
@@ -158,6 +160,32 @@ interface RowAccum {
     cacheReadTokens: number;
     cacheCreationTokens: number;
   };
+  breakdownUsd?: {
+    inputUsd: number;
+    outputUsd: number;
+    cacheReadUsd: number;
+    cacheCreationUsd: number;
+  };
+  /** A bucket with spend had no dollar split, so `breakdownUsd` would understate the row. */
+  usdIncomplete?: true;
+}
+
+function addBreakdownUsd(existing: RowAccum, bucket: AttributionBucket, weight: number): void {
+  if (!bucket.breakdownUsd) {
+    if (bucket.costUsd > 0) existing.usdIncomplete = true;
+    return;
+  }
+  const u = existing.breakdownUsd ?? {
+    inputUsd: 0,
+    outputUsd: 0,
+    cacheReadUsd: 0,
+    cacheCreationUsd: 0,
+  };
+  u.inputUsd += bucket.breakdownUsd.inputUsd * weight;
+  u.outputUsd += bucket.breakdownUsd.outputUsd * weight;
+  u.cacheReadUsd += bucket.breakdownUsd.cacheReadUsd * weight;
+  u.cacheCreationUsd += bucket.breakdownUsd.cacheCreationUsd * weight;
+  existing.breakdownUsd = u;
 }
 
 function scaleTokens(tokens: number, weight: number): number {
@@ -194,6 +222,7 @@ function addToAccum(
   acc.tokens += scaleTokens(bucket.tokens, weight);
   acc.count += bucket.count;
   addBreakdown(acc, bucket, weight);
+  addBreakdownUsd(acc, bucket, weight);
 }
 
 /** Builds one share table (skills/subagents/plugins) from an accumulated per-key map: sorted by cost descending, capped to {@link TABLE_CAP}. */
@@ -206,6 +235,7 @@ function shareTable(rows: Map<string, RowAccum>, totalCostUsd: number): UsageSha
       count: acc.count,
       sharePct: sharePct(acc.costUsd, totalCostUsd),
       ...(acc.breakdown ? { breakdown: acc.breakdown } : {}),
+      ...(acc.breakdownUsd && !acc.usdIncomplete ? { breakdownUsd: acc.breakdownUsd } : {}),
     }))
     .sort((a, b) => b.costUsd - a.costUsd)
     .slice(0, TABLE_CAP);
