@@ -23,6 +23,7 @@ export function DigestPreviewDialog({
     queryKey: qk.digestPreview,
     queryFn: async (): Promise<DigestPreview> =>
       JSON.parse((await fetchDigestPreview()).content[0]?.text ?? '{}') as DigestPreview,
+    refetchOnMount: 'always',
   });
 
   const sendMutation = useMutation({ mutationFn: postDigestSend });
@@ -40,7 +41,7 @@ export function DigestPreviewDialog({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const preview = previewQ.isFetching ? undefined : previewQ.data;
+  const preview = previewQ.isFetching || previewQ.isError ? undefined : previewQ.data;
 
   return (
     <>

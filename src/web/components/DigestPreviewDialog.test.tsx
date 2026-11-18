@@ -18,12 +18,22 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-function renderDialog(opts: { webhookConfigured: boolean; sendResult?: unknown }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+function renderDialog(opts: {
+  webhookConfigured: boolean;
+  sendResult?: unknown;
+  failPreviewFromCall?: number;
+}) {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { staleTime: 5_000, retry: 0, refetchOnWindowFocus: false } },
+  });
   const calls: Array<{ url: string; method: string }> = [];
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     calls.push({ url, method: init?.method ?? 'GET' });
     if (url === '/api/digest/preview') {
+      const n = calls.filter((c) => c.url === url).length;
+      if (opts.failPreviewFromCall !== undefined && n >= opts.failPreviewFromCall) {
+        return jsonResponse({ error: 'boom' }, 500);
+      }
       return jsonResponse({
         content: [{ type: 'text', text: JSON.stringify({ week: '2026-W45', text: PREVIEW_TEXT }) }],
       });
@@ -65,6 +75,21 @@ describe('DigestPreviewDialog', () => {
     expect(screen.queryByText(/Total Cost/)).toBeNull();
     await screen.findByText(/Total Cost/);
     expect(calls.filter((c) => c.url === '/api/digest/preview')).toHaveLength(2);
+  });
+
+  it('hides the old preview and disables Send when the reopen refetch fails', async () => {
+    const { qc, utils } = renderDialog({ webhookConfigured: true, failPreviewFromCall: 2 });
+    await screen.findByText(/Total Cost/);
+    utils.unmount();
+    render(
+      <QueryClientProvider client={qc}>
+        <DigestPreviewDialog webhookConfigured onClose={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    await screen.findByText(/Could not load the preview/);
+    expect(screen.queryByText(/Total Cost/)).toBeNull();
+    const sendButton = screen.getByRole('button', { name: 'Send now' }) as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(true);
   });
 
   it('opens as a dialog and renders the preview text for the current week', async () => {
