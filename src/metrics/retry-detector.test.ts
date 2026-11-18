@@ -272,6 +272,19 @@ describe('RetryDetector', () => {
     expect(detector.getMetrics().totalTokensWasted).toBe(250);
   });
 
+  it('alerts on distinct failing calls even when a success came before them', () => {
+    const detector = new RetryDetector();
+    const call = (inputHash: string, success: boolean): ToolCallRecord =>
+      makeRecord({ toolName: 'WebFetch', inputHash, success });
+
+    detector.recordToolCall(call('h0', true));
+    detector.recordToolCall(call('h1', false));
+    detector.recordToolCall(call('h2', false));
+    const alert = detector.recordToolCall(call('h3', false));
+
+    expect(alert?.occurrences).toBe(3);
+  });
+
   it('does not treat repeated successful calls as retries', () => {
     const detector = new RetryDetector();
 

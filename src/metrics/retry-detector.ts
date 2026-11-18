@@ -1,8 +1,9 @@
 /**
- * Retry/Thrashing Detection — flags a tool+session group in a sliding window
- * of recent calls as a retry only when at least one call failed and either all
- * of them failed or their inputs are near-identical (Levenshtein similarity
- * over each call's serialized non-metadata fields, see computeGroupSimilarity()).
+ * Retry/Thrashing Detection — within a tool+session group in a sliding window
+ * of recent calls, takes the first failed call and the calls after it, and
+ * flags them as a retry when they all failed or their inputs are near-identical
+ * (Levenshtein similarity over each call's serialized non-metadata fields, see
+ * computeGroupSimilarity()). Calls before the first failure are never retries.
  * Successful repeats are not retries; AntiPatternDetector covers those. An
  * alert fires only when the call just recorded joins the offending group, and
  * each call is charged to at most one alert.
@@ -188,14 +189,15 @@ export class RetryDetector implements Resettable {
     // sees every live session's calls, and identical ordinary commands in two
     // sessions are not one retry loop.
     const sessionKey = latest.sessionId ?? '';
-    const calls = this.recentCalls.filter(
+    const group = this.recentCalls.filter(
       (c) => c.toolName === latest.toolName && (c.sessionId ?? '') === sessionKey,
     );
+    const firstFailure = group.findIndex((c) => !c.success);
+    if (firstFailure === -1) return null;
+    const calls = group.slice(firstFailure);
     if (calls.length < this.minOccurrences) return null;
-    const failures = calls.filter((c) => !c.success).length;
-    if (failures === 0) return null;
 
-    const allFailed = failures === calls.length;
+    const allFailed = calls.every((c) => !c.success);
     const similarity = this.computeGroupSimilarity(calls);
     if (!allFailed && similarity < this.similarityThreshold) return null;
 
