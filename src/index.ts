@@ -1917,7 +1917,7 @@ async function main(): Promise<void> {
             const todayKey = localDateKey();
             return buildCostForecastFromInputs({
               sessionSpentUsd: costTracker.getMetrics().sessionTotalCostUsd ?? 0,
-              sessionStartMs,
+              sessionStartMs: costTracker.getSessionStartMs(sessionStartMs),
               dailySpentUsd: costTracker.getCostForDay(todayKey),
               dailyFirstActivityMs: costTracker.getFirstActivityMsForDay(todayKey),
             });
@@ -2396,7 +2396,7 @@ async function main(): Promise<void> {
           budgetTracker.updateCost(costMetrics.sessionTotalCostUsd, todayTotalUsd, weeklyTotalUsd);
           const sessionForecast = buildCostForecastFromInputs({
             sessionSpentUsd: costMetrics.sessionTotalCostUsd,
-            sessionStartMs,
+            sessionStartMs: costTracker.getSessionStartMs(sessionStartMs),
             dailySpentUsd: sessionTodayUsd,
             dailyFirstActivityMs,
           });
@@ -2521,7 +2521,7 @@ async function main(): Promise<void> {
           budgetTracker.updateCost(costMetrics.sessionTotalCostUsd, todayTotalUsd, weeklyTotalUsd);
           const sessionForecast = buildCostForecastFromInputs({
             sessionSpentUsd: costMetrics.sessionTotalCostUsd,
-            sessionStartMs,
+            sessionStartMs: costTracker.getSessionStartMs(sessionStartMs),
             dailySpentUsd: sessionTodayUsd,
             dailyFirstActivityMs,
           });
