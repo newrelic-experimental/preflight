@@ -3305,6 +3305,12 @@ describe('Today view — daily budget KPI', () => {
     await expectTile('$10.00', 'of $10.00 · 99% used', 'amber');
   });
 
+  it('labels a spend that is exactly 80 percent of the cap as 80 despite float error', async () => {
+    stubBudget({ budgetUsd: 5.65, spentUsd: 4.52, pctUsed: 80, exceeded: false });
+    renderToday();
+    await expectTile('$4.52', 'of $5.65 · 80% used', 'amber');
+  });
+
   it('ignores the API exceeded flag when the day total is under the cap', async () => {
     stubBudget({ budgetUsd: 10, spentUsd: 11, pctUsed: 110, exceeded: true }, 4);
     renderToday();

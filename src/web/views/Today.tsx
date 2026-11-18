@@ -237,7 +237,8 @@ const BUDGET_WARN_PCT = 80;
 const BUDGET_DANGER_PCT = 100;
 
 function DailyBudgetKpi({ spentUsd, capUsd }: { spentUsd: number; capUsd: number }): JSX.Element {
-  const pct = (spentUsd / capUsd) * 100;
+  // Round first so float error cannot drop a boundary: 4.52 / 5.65 * 100 is 79.999…
+  const pct = Math.round((spentUsd / capUsd) * 1e6) / 1e4;
   const overBudget = spentUsd > capUsd;
   const tone: KpiTone =
     pct >= BUDGET_DANGER_PCT ? 'bad' : pct >= BUDGET_WARN_PCT ? 'warn' : 'neutral';
