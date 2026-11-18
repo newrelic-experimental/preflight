@@ -85,6 +85,11 @@ describe('Today view', () => {
     ).toBeTruthy();
   });
 
+  it('mounts the process-scoped Tasks panel', async () => {
+    renderToday();
+    expect(await screen.findByText('Tasks (this process)')).toBeInTheDocument();
+  });
+
   // Anti-pattern/flag rendering moved to the "Needs attention" panel — see
   // the dedicated "Today view — Needs attention panel" describe block below.
 

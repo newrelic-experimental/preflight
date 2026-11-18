@@ -26,11 +26,20 @@ function renderPanel(): void {
 }
 
 describe('TaskCompletionPanel', () => {
+  const realFetch = globalThis.fetch;
   beforeEach(() => {
     vi.restoreAllMocks();
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    globalThis.fetch = realFetch;
+  });
+
+  it('titles the panel with its process scope', async () => {
+    stubTaskCompletion({ completedTasks: 0, avgTaskDurationMs: null, avgToolCallsPerTask: null });
+    renderPanel();
+
+    expect(await screen.findByText('Tasks (this process)')).toBeTruthy();
   });
 
   it('shows completed count, average duration, and average tool calls per task', async () => {
