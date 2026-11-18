@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-import type { TokenUsage } from '../shared/index.js';
+import type { TokenUsage } from '../core/index.js';
 import { calculateModelCost } from './pricing-overlay.js';
-import type { SkillStamp, ToolCallRecord, TokenEvent } from '../storage/types.js';
+import type { SkillStamp, ToolCallRecord, TokenEvent, UsdBreakdown } from '../storage/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -61,6 +61,8 @@ export interface SkillCostEntry {
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
   readonly totalDurationMs: number;
+  /** Dollars per token category, priced with each turn's own model before the split across its calls. Absent on entries rebuilt from persisted buckets. */
+  readonly breakdownUsd?: UsdBreakdown;
   /**
    * Authoritative token total: `inputTokens + outputTokens + cacheReadTokens
    * + cacheCreationTokens` for a live (this-process) entry. `GET
@@ -168,6 +170,10 @@ interface AttributionBucket extends BucketIdentity {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  inputUsd: number;
+  outputUsd: number;
+  cacheReadUsd: number;
+  cacheCreationUsd: number;
   totalDurationMs: number;
 }
 
@@ -179,6 +185,10 @@ const BUCKET_COUNTERS = [
   'outputTokens',
   'cacheReadTokens',
   'cacheCreationTokens',
+  'inputUsd',
+  'outputUsd',
+  'cacheReadUsd',
+  'cacheCreationUsd',
   'totalDurationMs',
 ] as const;
 
@@ -273,6 +283,10 @@ function createBucket(id: BucketIdentity): AttributionBucket {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
+    inputUsd: 0,
+    outputUsd: 0,
+    cacheReadUsd: 0,
+    cacheCreationUsd: 0,
     totalDurationMs: 0,
   };
 }
@@ -422,7 +436,7 @@ export class TurnCostAttributor {
     }
     state.pendingTurns.shift();
 
-    const costUsd = this.priceTokenEvent(event);
+    const { costUsd, usd } = this.priceTokenEvent(event);
     const toolCount = pendingTurn.toolCalls.length;
     const costPerTool = costUsd / toolCount;
 
@@ -459,6 +473,10 @@ export class TurnCostAttributor {
       bucket.outputTokens += event.outputTokens / toolCount;
       bucket.cacheReadTokens += event.cacheReadTokens / toolCount;
       bucket.cacheCreationTokens += event.cacheCreationTokens / toolCount;
+      bucket.inputUsd += usd.inputUsd / toolCount;
+      bucket.outputUsd += usd.outputUsd / toolCount;
+      bucket.cacheReadUsd += usd.cacheReadUsd / toolCount;
+      bucket.cacheCreationUsd += usd.cacheCreationUsd / toolCount;
     }
 
     // Minted here rather than reusing `attribution.turnId`: the caller's turn
@@ -485,7 +503,7 @@ export class TurnCostAttributor {
    * across.
    */
   private responseTurn(state: SessionState, event: TokenEvent): ClosedTurn {
-    const costUsd = this.priceTokenEvent(event);
+    const { costUsd } = this.priceTokenEvent(event);
     const id = randomUUID();
     return {
       id,
@@ -509,7 +527,7 @@ export class TurnCostAttributor {
     };
   }
 
-  private priceTokenEvent(event: TokenEvent): number {
+  private priceTokenEvent(event: TokenEvent): { costUsd: number; usd: UsdBreakdown } {
     const usage: TokenUsage = {
       inputTokens: event.inputTokens,
       outputTokens: event.outputTokens,
@@ -521,7 +539,17 @@ export class TurnCostAttributor {
       }),
       totalTokens: event.inputTokens + event.outputTokens,
     };
-    return calculateModelCost(event.model, usage).totalUsd * this.rateMultiplier;
+    const priced = calculateModelCost(event.model, usage);
+    const rate = this.rateMultiplier;
+    return {
+      costUsd: priced.totalUsd * rate,
+      usd: {
+        inputUsd: priced.inputUsd * rate,
+        outputUsd: priced.outputUsd * rate,
+        cacheReadUsd: priced.cacheReadUsd * rate,
+        cacheCreationUsd: priced.cacheCreationUsd * rate,
+      },
+    };
   }
 
   getCostForToolCall(
@@ -669,6 +697,12 @@ export class TurnCostAttributor {
         cacheReadTokens: Math.round(entry.cacheReadTokens),
         cacheCreationTokens: Math.round(entry.cacheCreationTokens),
         totalDurationMs: entry.totalDurationMs,
+        breakdownUsd: {
+          inputUsd: entry.inputUsd,
+          outputUsd: entry.outputUsd,
+          cacheReadUsd: entry.cacheReadUsd,
+          cacheCreationUsd: entry.cacheCreationUsd,
+        },
         tokens:
           Math.round(entry.inputTokens) +
           Math.round(entry.outputTokens) +

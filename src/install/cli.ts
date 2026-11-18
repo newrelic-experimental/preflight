@@ -12,7 +12,7 @@ import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { Command, Option } from 'commander';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import {
   mergeSettings,
   removeSettings,
