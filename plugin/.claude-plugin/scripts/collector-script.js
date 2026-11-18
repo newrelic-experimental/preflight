@@ -755,14 +755,18 @@ function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
   }
 }
 var UNKNOWN_ENGINE_MARKER = "unknown-engine-warned";
-function claimUnknownEngineWarning(storageDir) {
+function claimUnknownEngineWarning(storageDir, names) {
+  const marker = resolve2(storageDir, UNKNOWN_ENGINE_MARKER);
+  try {
+    if (readFileSync2(marker, "utf-8") === names) return false;
+  } catch {
+  }
   try {
     mkdirSync2(storageDir, { recursive: true, mode: 448 });
-    writeFileSync2(resolve2(storageDir, UNKNOWN_ENGINE_MARKER), "", { flag: "wx", mode: 384 });
-    return true;
-  } catch (err) {
-    return err.code !== "EEXIST";
+    writeFileSync2(marker, names, { mode: 384 });
+  } catch {
   }
+  return true;
 }
 var GITHUB_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
 function mcpPrInputMeta(input, action) {
@@ -1018,10 +1022,10 @@ function processHook(raw, cliEvent) {
     if (writer === UNATTRIBUTED_BREADCRUMB_WRITER) {
       const unknownNames = ENGINE_ENV_KEYS.filter(
         (key) => process.env[key] && canonicalPlatformName(process.env[key]) === void 0
-      ).map((key) => `${key}=${JSON.stringify(process.env[key])}`);
-      if (unknownNames.length > 0 && claimUnknownEngineWarning(storageDir)) {
+      ).map((key) => `${key}=${JSON.stringify(process.env[key])}`).join(", ");
+      if (unknownNames.length > 0 && claimUnknownEngineWarning(storageDir, unknownNames)) {
         process.stderr.write(
-          `[preflight-collector] Warning: ${unknownNames.join(", ")} names no engine Preflight knows; filing the session breadcrumb as unattributed
+          `[preflight-collector] Warning: ${unknownNames} names no engine Preflight knows; filing the session breadcrumb as unattributed
 `
         );
       }

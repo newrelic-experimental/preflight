@@ -2542,7 +2542,7 @@ describe('collector-script', () => {
       expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
     });
 
-    it('files a hook naming only unknown engines as unattributed and warns once, naming each', () => {
+    it('files a hook naming only unknown engines as unattributed and warns once, naming each unknown name', () => {
       const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
       const warnings = () =>
         stderrWriteSpy.mock.calls
@@ -2553,7 +2553,6 @@ describe('collector-script', () => {
       processHook(makePreToolUse({ session_id: undefined, cwd: '/projects/test' }));
       expect(warnings()).toHaveLength(0);
       processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
-      process.env.MCP_CLIENT = 'not-an-engine';
       processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
       expect(warnings()).toHaveLength(1);
       expect(warnings()[0]).toContain('MCP_CLIENT="../escape"');
