@@ -967,8 +967,12 @@ async function main(): Promise<void> {
     logger.info('Shutting down...');
     try {
       eventProcessor?.stop();
-      taskDetector?.dispose();
-      emitCompletedTasks?.();
+      try {
+        taskDetector?.dispose();
+        emitCompletedTasks?.();
+      } catch (err) {
+        logger.warn('Sending the last tasks at shutdown failed', { error: String(err) });
+      }
       persistSession?.();
       if (
         config?.otlp?.transport !== 'nr-events-api' &&
