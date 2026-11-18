@@ -491,14 +491,9 @@ describe('RetryDetector', () => {
 
   it('caps the alerts buffer at 200 while totalAlertsEmitted keeps counting past it', () => {
     const detector = new RetryDetector({ windowSize: 3, minOccurrences: 3 });
-    // Every call from the 3rd onward re-fires a distinct alert: the sliding
-    // 3-window's own call-id set changes on every push (ids are random per
-    // makeRecord call), so the dedupe key never repeats. 203 calls -> 201
-    // alerts fired, well past the 200 cap — this also exercises firedKeys'
-    // own FIFO eviction under heavy load without needing a direct accessor:
-    // a bug there (e.g. an off-by-one that lets an evicted key block a
-    // legitimate re-fire, or double-counts) would surface as a wrong
-    // totalAlertsEmitted below.
+    // Every failing call from the 3rd onward is a new occurrence in an
+    // all-failed group, so each fires an alert. 203 calls -> 201 alerts,
+    // well past the 200 cap.
     const CALLS = 203;
     for (let i = 0; i < CALLS; i++) {
       detector.recordToolCall(makeRecord({ toolName: 'Bash', success: false }));
