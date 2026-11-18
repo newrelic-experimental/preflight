@@ -447,12 +447,12 @@ describe('the byte-estimate ledger', () => {
   });
 
   it('takes the ledger of the copy further along, even if a stale copy was saved later', () => {
-    const stale = file(START, 1, 4, { endTime: START + 9 * DAY });
-    const folded = file(START, 2, 8, {
+    const stale = file(START, 0, 4, { endTime: START + 9 * DAY });
+    const folded = file(START, 0, 8, {
       toolCallCount: 2,
       timeline: [entry(START), entry(START + DAY)],
     });
-    expect(combineInEveryOrder([stale, folded]).estimatedCostUsd).toBeCloseTo(10);
+    expect(combineInEveryOrder([stale, folded]).estimatedCostUsd).toBeCloseTo(8);
     expect(combineInEveryOrder([stale, file(START, 3, 0)]).estimatedCostUsd).toBeCloseTo(3);
   });
 });
