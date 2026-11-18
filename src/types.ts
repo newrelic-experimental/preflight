@@ -1,4 +1,4 @@
-import type { LogLevel } from './shared/index.js';
+import type { LogLevel } from './core/index.js';
 import type { SessionTracker } from './metrics/session-tracker.js';
 import type { CostTracker } from './metrics/cost-tracker.js';
 import type { TaskDetector } from './metrics/task-detector.js';

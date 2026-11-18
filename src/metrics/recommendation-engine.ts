@@ -11,8 +11,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { MetricAggregator } from '../shared/index.js';
-import { createLogger } from '../shared/index.js';
+import type { MetricAggregator } from '../core/index.js';
+import { createLogger } from '../core/index.js';
 import type { TrendAnalyzer } from './trend-analyzer.js';
 import type { CollaborationProfiler } from './collaboration-profile.js';
 import type { ClaudeMdTracker } from './claudemd-tracker.js';
