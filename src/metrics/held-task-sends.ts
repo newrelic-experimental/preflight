@@ -6,7 +6,7 @@ export interface HeldTaskSend {
   readonly patterns: readonly AntiPattern[];
 }
 
-// Matches TaskDetector's retained completed tasks, so holding adds references, not task memory.
+// Matches TaskDetector's retained completed tasks. Held references outlive its eviction, so this caps the extra memory at 100 tasks.
 const MAX_HELD_TASK_SENDS = 100;
 
 /**
