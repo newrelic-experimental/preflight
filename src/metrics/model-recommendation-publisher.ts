@@ -76,7 +76,8 @@ function removeStaleTempFiles(storagePath: string): void {
  * tool (a SessionStart hook reads this file directly). Reuses the same
  * `confidence === 'high'` gate as RecommendationEngine. Below that gate the
  * file is removed rather than marked stale, so a reader never acts on a
- * verdict the data no longer supports. An unchanged verdict is not rewritten.
+ * verdict the data no longer supports. The file is rewritten only when the
+ * model or its ranked stats change.
  */
 export function publishModelRecommendation(analyzer: Analyzer, storagePath: string): void {
   const path = join(storagePath, MODEL_RECOMMENDATION_FILENAME);

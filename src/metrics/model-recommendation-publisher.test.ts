@@ -99,6 +99,27 @@ describe('publishModelRecommendation', () => {
     expect(readFileSync(file(), 'utf8')).toBe(first);
   });
 
+  it('rewrites the file when ranked stats change but the model stays the same', () => {
+    publishModelRecommendation(analyzerReturning('high', 'model-a', 1_000), storagePath);
+    const changed = analyzerReturning('high', 'model-a', 5_000);
+    const base = changed.rankModelsByOutcome();
+    const next = {
+      ...base,
+      ranked: [{ ...base.ranked[0]!, sessionCount: 26 }, ...base.ranked.slice(1)],
+    };
+    publishModelRecommendation({ rankModelsByOutcome: () => next }, storagePath);
+
+    const published = JSON.parse(readFileSync(file(), 'utf8'));
+    expect(published.generatedAt).toBe(5_000);
+    expect(published.basedOn.ranked[0].sessionCount).toBe(26);
+  });
+
+  it('removes the file when confidence is high but no model is recommended', () => {
+    publishModelRecommendation(analyzerReturning('high', 'model-a'), storagePath);
+    publishModelRecommendation(analyzerReturning('high', null), storagePath);
+    expect(existsSync(file())).toBe(false);
+  });
+
   it('replaces the file when the recommended model changes', () => {
     publishModelRecommendation(analyzerReturning('high', 'model-a', 1_000), storagePath);
     publishModelRecommendation(analyzerReturning('high', 'model-b', 2_000), storagePath);
