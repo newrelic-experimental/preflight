@@ -108,6 +108,57 @@ describe('computeHistoricalCosts', () => {
     });
   });
 
+  it("counts a held session's file only beyond the cost the tracker holds for it", () => {
+    save('held', local(15, 8), local(15, 9), 5);
+    save('other', local(15, 10), local(15, 11), 2);
+    const held = (usd: number) =>
+      new Map([
+        [
+          'held',
+          {
+            startTime: local(15, 8),
+            endTime: local(15, 9),
+            estimatedCostUsd: usd,
+            costByDayUsd: { [localDateKey(REF_TS)]: usd },
+          },
+        ],
+      ]);
+
+    expect(computeHistoricalCosts(store, null, REF_TS, undefined, held(5))).toEqual({
+      priorDailyCostUsd: 2,
+      priorWeeklyCostUsd: 2,
+    });
+    expect(computeHistoricalCosts(store, null, REF_TS, undefined, held(2))).toEqual({
+      priorDailyCostUsd: 5,
+      priorWeeklyCostUsd: 5,
+    });
+    expect(computeHistoricalCosts(store, null, REF_TS, undefined, held(7))).toEqual({
+      priorDailyCostUsd: 2,
+      priorWeeklyCostUsd: 2,
+    });
+  });
+
+  it('takes the out-of-window share of a held session off the week', () => {
+    const oldDay = localDateKey(local(1, 12));
+    const recentDay = localDateKey(local(13, 12));
+    const held = new Map([
+      [
+        'resumed',
+        {
+          startTime: local(1, 12),
+          endTime: local(13, 12),
+          estimatedCostUsd: 40,
+          costByDayUsd: { [oldDay]: 38, [recentDay]: 2 },
+        },
+      ],
+    ]);
+
+    expect(computeHistoricalCosts(store, null, REF_TS, undefined, held)).toEqual({
+      priorDailyCostUsd: 0,
+      priorWeeklyCostUsd: -38,
+    });
+  });
+
   it('leaves nothing out when there is no current session', () => {
     save('today', local(15, 10), local(15, 11), 2);
 

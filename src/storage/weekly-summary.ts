@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import type { SessionStore } from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
 import { getPlatformVisibilityMap } from '../platforms/platform-registry.js';

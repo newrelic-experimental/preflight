@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { claudeConfigDir } from './claude-config-dir.js';
 
 const logger = createLogger('claude-settings-env');

@@ -492,6 +492,39 @@ describe('computeUsageInsights', () => {
       });
     });
 
+    it('sums breakdownUsd per key, and drops it when a bucket with spend predates it', () => {
+      const usd = (n: number) => ({
+        inputUsd: n,
+        outputUsd: 2 * n,
+        cacheReadUsd: 3 * n,
+        cacheCreationUsd: 4 * n,
+      });
+      const withUsd = (n: number): FullSessionSummary =>
+        makeSummary({
+          startTime: NOW - DAY_MS,
+          attribution: attribution({
+            buckets: {
+              skill: { unslop: bucket({ costUsd: 1, tokens: 10, count: 1, breakdownUsd: usd(n) }) },
+            },
+          }),
+        });
+      const legacy = makeSummary({
+        startTime: NOW - DAY_MS,
+        attribution: attribution({
+          buckets: { skill: { unslop: bucket({ costUsd: 1, tokens: 10, count: 1 }) } },
+        }),
+      });
+
+      const complete = computeUsageInsights([withUsd(1), withUsd(2)], {
+        nowMs: NOW,
+        windowDays: 7,
+      });
+      const partial = computeUsageInsights([withUsd(1), legacy], { nowMs: NOW, windowDays: 7 });
+
+      expect(complete.skills[0]!.breakdownUsd).toEqual(usd(3));
+      expect(partial.skills[0]!.breakdownUsd).toBeUndefined();
+    });
+
     it('omits breakdown from a row when no contributing bucket had one', () => {
       const s = makeSummary({
         startTime: NOW - DAY_MS,
