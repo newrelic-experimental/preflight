@@ -916,8 +916,8 @@ function sharesTimelineEntry(x: FullSessionSummary, y: FullSessionSummary): bool
 
 /**
  * A file with more calls than its capped timeline shows has dropped some.
- * Trackers keep the first entries and `mergeTimeline` keeps the newest, so the
- * dropped ones lie before or after the kept ones. `other` may be among them if
+ * Trackers keep the newest entries, and files from older builds kept the first,
+ * so the dropped ones lie before or after the kept ones. `other` may be among them if
  * it fits in that gap, on one side of the kept entries, inside `capped`'s span.
  */
 function mayHoldDroppedEntries(capped: FullSessionSummary, other: FullSessionSummary): boolean {
