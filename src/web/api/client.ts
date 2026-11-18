@@ -623,6 +623,14 @@ export interface TokenBreakdown {
   readonly cacheCreationTokens: number;
 }
 
+// Mirrors src/storage/types.ts's UsdBreakdown.
+export interface UsdBreakdown {
+  readonly inputUsd: number;
+  readonly outputUsd: number;
+  readonly cacheReadUsd: number;
+  readonly cacheCreationUsd: number;
+}
+
 export interface UsageShareRow {
   readonly key: string;
   readonly costUsd: number;
@@ -630,6 +638,7 @@ export interface UsageShareRow {
   readonly count: number;
   readonly sharePct: number;
   readonly breakdown?: TokenBreakdown;
+  readonly breakdownUsd?: UsdBreakdown;
 }
 
 export interface UsageInsight extends UsageShareRow {

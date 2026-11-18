@@ -11,7 +11,7 @@ import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { Transform, type TransformCallback } from 'node:stream';
 import { performance } from 'node:perf_hooks';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import type { ForwardResult, ProxyUpstream, UpstreamConfig } from './types.js';
 import { shouldForwardHeader } from './types.js';
 import { validateSsrfUrl, createSsrfSafeLookup } from '../security/ssrf.js';
