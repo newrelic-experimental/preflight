@@ -368,6 +368,7 @@ var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
 // src/hooks/session-breadcrumbs.ts
 import { resolve } from "node:path";
 var BREADCRUMBS_DIR = "breadcrumbs";
+var STALE_CWD_BREADCRUMB_MS = 7 * 24 * 60 * 60 * 1e3;
 function breadcrumbRoot(storagePath, writer) {
   return resolve(storagePath, BREADCRUMBS_DIR, writer);
 }
