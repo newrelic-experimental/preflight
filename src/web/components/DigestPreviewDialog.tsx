@@ -40,7 +40,7 @@ export function DigestPreviewDialog({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const preview = previewQ.data;
+  const preview = previewQ.isFetching ? undefined : previewQ.data;
 
   return (
     <>
@@ -71,7 +71,7 @@ export function DigestPreviewDialog({
           </Button>
         </div>
 
-        {previewQ.isPending && <p className="text-xs text-ink-muted">Loading preview…</p>}
+        {previewQ.isFetching && <p className="text-xs text-ink-muted">Loading preview…</p>}
         {previewQ.isError && (
           <p className="text-xs text-accent-red">
             Could not load the preview: {String(previewQ.error)}

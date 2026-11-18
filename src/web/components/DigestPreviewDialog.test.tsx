@@ -19,6 +19,7 @@ afterEach(() => {
 });
 
 function renderDialog(opts: { webhookConfigured: boolean; sendResult?: unknown }) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
   const calls: Array<{ url: string; method: string }> = [];
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     calls.push({ url, method: init?.method ?? 'GET' });
@@ -43,16 +44,29 @@ function renderDialog(opts: { webhookConfigured: boolean; sendResult?: unknown }
   }) as typeof fetch;
 
   const onClose = vi.fn();
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-  render(
+  const utils = render(
     <QueryClientProvider client={qc}>
       <DigestPreviewDialog webhookConfigured={opts.webhookConfigured} onClose={onClose} />
     </QueryClientProvider>,
   );
-  return { calls, onClose };
+  return { calls, onClose, qc, utils };
 }
 
 describe('DigestPreviewDialog', () => {
+  it('refetches on reopen instead of showing the cached preview', async () => {
+    const { calls, qc, utils } = renderDialog({ webhookConfigured: true });
+    await screen.findByText(/Total Cost/);
+    utils.unmount();
+    render(
+      <QueryClientProvider client={qc}>
+        <DigestPreviewDialog webhookConfigured onClose={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByText(/Total Cost/)).toBeNull();
+    await screen.findByText(/Total Cost/);
+    expect(calls.filter((c) => c.url === '/api/digest/preview')).toHaveLength(2);
+  });
+
   it('opens as a dialog and renders the preview text for the current week', async () => {
     renderDialog({ webhookConfigured: true });
     expect(screen.getByRole('dialog', { name: 'Digest preview' })).toBeTruthy();

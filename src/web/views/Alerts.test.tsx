@@ -237,6 +237,7 @@ describe('Alerts view — digest preview', () => {
     }) as typeof fetch;
     fireEvent.click(await screen.findByRole('button', { name: 'Preview digest' }));
     expect(await screen.findByRole('dialog', { name: 'Digest preview' })).toBeTruthy();
+    await screen.findByText(/Could not load the preview|Week /);
     expect(posts).toEqual([]);
   });
 });

@@ -7,7 +7,7 @@
  *   nr_observe_get_recommendations, nr_observe_get_platform_comparison,
  *   nr_observe_get_team_summary, nr_observe_subscribe_digest,
  *   nr_observe_unsubscribe_digest, nr_observe_send_digest,
- *   nr_observe_get_personal_insights
+ *   nr_observe_get_digest_preview, nr_observe_get_personal_insights
  *
  * Tool defs and handlers are exported for integration into the main
  * registerTools() in session-stats.ts.
@@ -274,7 +274,7 @@ export const SEND_DIGEST_TOOL = {
 export const GET_DIGEST_PREVIEW_TOOL = {
   name: 'nr_observe_get_digest_preview',
   description:
-    'Return the current weekly AI coding summary as the Slack digest would deliver it: Block Kit blocks plus plain text. Nothing is sent, and no webhook is needed. Pair with nr_observe_send_digest to deliver the same content.',
+    'Return the current weekly AI coding summary as the Slack digest would deliver it: Block Kit blocks plus plain text. Nothing is sent, and no webhook is needed. nr_observe_send_digest builds a fresh digest when it runs, so its content can differ if sessions were saved since.',
   inputSchema: { type: 'object' as const, properties: {} },
   annotations: { readOnlyHint: true },
 };
