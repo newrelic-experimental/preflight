@@ -359,12 +359,14 @@ export class CostTracker implements Resettable {
    */
   private costByWorkflowRunId = new Map<string, Map<string, number>>();
   /**
-   * Per-workflow-run token total observed by this process. Never persisted:
-   * a run restored by `seedFromPersisted()` is recorded in
-   * `seededWorkflowRunIds` and reports no tokens, because a partial live sum
-   * would read as a false reconciliation gap.
+   * Per-workflow-run, per-subagent token total of the agent's latest turn
+   * (all five token kinds), observed by this process. The on-disk run rollup
+   * (`totalTokens`) is the sum of each agent's last turn, not of every turn,
+   * so this keeps the same basis. Never persisted: a run restored by
+   * `seedFromPersisted()` is recorded in `seededWorkflowRunIds` and reports no
+   * tokens, because a partial live sum would read as a false reconciliation gap.
    */
-  private tokensByWorkflowRunId = new Map<string, number>();
+  private lastTurnTokensByWorkflowRunId = new Map<string, Map<string, number>>();
   private seededWorkflowRunIds = new Set<string>();
   /** Per-day mutation counter so dashboards can invalidate cached day cards. */
   private lastMutationMsByDay = new Map<string, number>();
@@ -652,10 +654,10 @@ export class CostTracker implements Resettable {
       const runMap = this.costByWorkflowRunId.get(ctx.workflowRunId) ?? new Map<string, number>();
       runMap.set(dayKey, (runMap.get(dayKey) ?? 0) + breakdown.totalUsd);
       this.costByWorkflowRunId.set(ctx.workflowRunId, runMap);
-      this.tokensByWorkflowRunId.set(
-        ctx.workflowRunId,
-        (this.tokensByWorkflowRunId.get(ctx.workflowRunId) ?? 0) + tokens,
-      );
+      const agentTurns =
+        this.lastTurnTokensByWorkflowRunId.get(ctx.workflowRunId) ?? new Map<string, number>();
+      agentTurns.set(ctx.agentId ?? '', tokens);
+      this.lastTurnTokensByWorkflowRunId.set(ctx.workflowRunId, agentTurns);
     }
 
     return breakdown;
@@ -828,12 +830,15 @@ export class CostTracker implements Resettable {
   }
 
   /**
-   * Per-workflow-run token total summed across the run's subagent turns, or 0
-   * when this process has not observed the run live (unknown, not zero).
+   * Per-workflow-run token total: each subagent's latest turn, summed. That is
+   * the basis of the run rollup's `totalTokens`, so the two are comparable.
+   * 0 when this process has not observed the run live (unknown, not zero).
    */
   getTokensForWorkflowRun(runId: string): number {
     if (this.seededWorkflowRunIds.has(runId)) return 0;
-    return this.tokensByWorkflowRunId.get(runId) ?? 0;
+    let total = 0;
+    for (const v of this.lastTurnTokensByWorkflowRunId.get(runId)?.values() ?? []) total += v;
+    return total;
   }
 
   /**
@@ -1047,7 +1052,7 @@ export class CostTracker implements Resettable {
     this.firstActivityMsByDay = new Map();
     this.unanchoredDays = new Set();
     this.costByWorkflowRunId = new Map();
-    this.tokensByWorkflowRunId = new Map();
+    this.lastTurnTokensByWorkflowRunId = new Map();
     this.seededWorkflowRunIds = new Set();
     this.lastMutationMsByDay = new Map();
     this.subagentCostUsd = 0;

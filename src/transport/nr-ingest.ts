@@ -124,7 +124,7 @@ export interface NrIngestOptions {
   projectId?: string | null;
   orgId?: string | null;
   repoUrl?: string | null;
-  /** OTLP/HTTP endpoint URL. When set, telemetry is also exported via OTLP. */
+  /** OTLP/HTTP endpoint URL. Used when `transport` is `otlp` or `both`. */
   otlpEndpoint?: string | null;
   /** Additional HTTP headers for the OTLP exporter. */
   otlpHeaders?: Record<string, string>;
@@ -1129,7 +1129,11 @@ export class NrIngestManager {
     let otlpTransport: OtlpTransport | null = null;
     let otlpEventBridge: OtlpEventBridge | null = null;
 
-    if (options.otlpEndpoint) {
+    // `otlp.endpoint` can come from the standard OTEL_EXPORTER_OTLP_ENDPOINT,
+    // which is often set for another exporter, so only build the OTLP
+    // pipeline when this transport mode actually sends over it.
+    const wantsOtlp = options.transport === 'otlp' || options.transport === 'both';
+    if (options.otlpEndpoint && wantsOtlp) {
       otlpTransport = new OtlpTransport({
         endpoint: options.otlpEndpoint,
         headers: options.otlpHeaders,

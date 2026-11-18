@@ -1571,25 +1571,55 @@ describe('subagent token support', () => {
     expect(runDays![expectedDayKey]).toBeGreaterThan(0);
   });
 
-  it('getTokensForWorkflowRun() sums every token kind for the run and ignores other runs', () => {
+  it("getTokensForWorkflowRun() sums each subagent's latest turn, matching the run rollup basis", () => {
     const tracker = new CostTracker();
-    tracker.recordTokenUsage(
-      makeUsage({ inputTokens: 5_000, outputTokens: 1_000, totalTokens: 6_000 }),
-      'claude-sonnet-4',
-      { workflowRunId: 'wf_a' },
+    const turn = (agentId: string, runId: string, usage: ReturnType<typeof makeUsage>) =>
+      tracker.recordTokenUsage(usage, 'claude-sonnet-4', { workflowRunId: runId, agentId });
+    turn(
+      'a1',
+      'wf_a',
+      makeUsage({
+        inputTokens: 2,
+        outputTokens: 53,
+        cacheCreationTokens: 29_925,
+        totalTokens: 29_980,
+      }),
     );
-    tracker.recordTokenUsage(
-      makeUsage({ inputTokens: 200, outputTokens: 300, cacheReadTokens: 400, totalTokens: 900 }),
-      'claude-sonnet-4',
-      { workflowRunId: 'wf_a' },
+    turn(
+      'a1',
+      'wf_a',
+      makeUsage({
+        inputTokens: 2,
+        outputTokens: 37,
+        cacheReadTokens: 35_852,
+        cacheCreationTokens: 4_045,
+        totalTokens: 39_936,
+      }),
     );
-    tracker.recordTokenUsage(
-      makeUsage({ inputTokens: 70, outputTokens: 30, totalTokens: 100 }),
-      'claude-sonnet-4',
-      { workflowRunId: 'wf_b' },
+    turn(
+      'a2',
+      'wf_a',
+      makeUsage({
+        inputTokens: 2,
+        outputTokens: 102,
+        cacheCreationTokens: 35_850,
+        totalTokens: 35_954,
+      }),
     );
+    turn(
+      'a2',
+      'wf_a',
+      makeUsage({
+        inputTokens: 2,
+        outputTokens: 11,
+        cacheReadTokens: 35_850,
+        cacheCreationTokens: 4_074,
+        totalTokens: 39_937,
+      }),
+    );
+    turn('b1', 'wf_b', makeUsage({ inputTokens: 70, outputTokens: 30, totalTokens: 100 }));
 
-    expect(tracker.getTokensForWorkflowRun('wf_a')).toBe(6_900);
+    expect(tracker.getTokensForWorkflowRun('wf_a')).toBe(79_873);
     expect(tracker.getTokensForWorkflowRun('wf_b')).toBe(100);
     expect(tracker.getTokensForWorkflowRun('wf_unknown')).toBe(0);
   });
