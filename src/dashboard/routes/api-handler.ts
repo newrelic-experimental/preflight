@@ -27,6 +27,7 @@ import type { EstimatedModelUsage, UnpricedModelUsage } from '../../metrics/cost
 import { sumCallUsageInto } from '../../metrics/call-usage.js';
 import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { attributeSessionCosts } from '../../metrics/cost-per-outcome.js';
+import { calculateModelCost } from '../../metrics/pricing-overlay.js';
 import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
 import {
   GitActivityRecorder,
@@ -622,6 +623,10 @@ export interface ApiHandlerDeps {
     // see computeCrossProcessTodaySessionIds(). `?.` falls back to an empty
     // set for older fakes/mocks.
     getTodaySessionIds?: (options?: { includeSynthetic?: boolean }) => string[];
+    // Optional: sessions the live trackers hold data for, including token-only
+    // sessions and synthetic ids, never expired by midnight or staleness. Used
+    // by sessionIdsHeldByLiveTrackers() to skip persisted duplicates.
+    getHeldSessionIds?: () => string[];
   };
   readonly contextTracker?: { getMetrics: (sessionId?: string) => ContextTrackerMetrics };
   readonly contextCompositionTracker?: { getMetrics: () => ContextCompositionMetrics };
@@ -1320,12 +1325,17 @@ export function computeCrossProcessTodaySessionIds(deps: ApiHandlerDeps): string
 }
 
 // Sessions whose activity this process's in-memory trackers already hold: its
-// own id plus every session it drained today. --local drains every session, so
-// a persisted copy of any of them must not be merged on top of the live totals.
+// own id plus every session it drained. --local drains every session, so a
+// persisted copy of any of them must not be merged on top of the live totals.
+// Keyed to the registry's held set rather than today's touched sessions: a
+// token-only session (model usage, no tool call) is held too, and the trackers
+// are never reset at midnight, so the held set must not expire then either.
 function sessionIdsHeldByLiveTrackers(deps: ApiHandlerDeps): ReadonlySet<string> {
   const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
   const held = new Set<string>(
-    deps.liveSessionRegistry?.getTodaySessionIds?.({ includeSynthetic: true }) ?? [],
+    deps.liveSessionRegistry?.getHeldSessionIds?.() ??
+      deps.liveSessionRegistry?.getTodaySessionIds?.({ includeSynthetic: true }) ??
+      [],
   );
   if (ownSessionId !== undefined) held.add(ownSessionId);
   return held;
@@ -1508,6 +1518,40 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
     idsByStatus[status].push(sessionId);
   }
   return { counts, sessionIds: idsByStatus };
+}
+
+function firstActivityTodayMs(
+  s: {
+    readonly firstActivityByDayMs?: Record<string, number>;
+    readonly timeline?: ReadonlyArray<{ timestamp: number }>;
+  },
+  todayKey: string,
+  startMs: number,
+  now: number,
+): number | null {
+  const persisted = s.firstActivityByDayMs?.[todayKey];
+  if (persisted !== undefined) return Math.min(Math.max(persisted, startMs), now);
+  let first: number | null = null;
+  for (const entry of s.timeline ?? []) {
+    if (entry.timestamp >= startMs && (first === null || entry.timestamp < first)) {
+      first = entry.timestamp;
+    }
+  }
+  return first;
+}
+
+function bufferTokenCostUsd(ev: { readonly [key: string]: unknown }): number {
+  const count = (v: unknown): number => (typeof v === 'number' ? v : 0);
+  const inputTokens = count(ev.inputTokens);
+  const outputTokens = count(ev.outputTokens);
+  return calculateModelCost(typeof ev.model === 'string' ? ev.model : 'unknown', {
+    inputTokens,
+    outputTokens,
+    thinkingTokens: 0,
+    cacheReadTokens: count(ev.cacheReadTokens),
+    cacheCreationTokens: count(ev.cacheCreationTokens),
+    totalTokens: inputTokens + outputTokens,
+  }).totalUsd;
 }
 
 export function createApiHandler(
@@ -1804,7 +1848,6 @@ export function createApiHandler(
     for (const ev of peeked) {
       const ts = typeof ev.timestamp === 'number' ? ev.timestamp : 0;
       if (ts < startMs) continue;
-      if (dailyFirstActivityMs === null || ts < dailyFirstActivityMs) dailyFirstActivityMs = ts;
       const sid = ev.sessionId;
       if (typeof sid === 'string' && sid.length > 0) {
         sessionsSeen.add(sid);
@@ -1828,6 +1871,12 @@ export function createApiHandler(
           });
         }
       } else if (ev.mode === 'token') {
+        if (
+          (dailyFirstActivityMs === null || ts < dailyFirstActivityMs) &&
+          bufferTokenCostUsd(ev) > 0
+        ) {
+          dailyFirstActivityMs = ts;
+        }
         cacheReadTokensSum += typeof ev.cacheReadTokens === 'number' ? ev.cacheReadTokens : 0;
         cacheCreationTokensSum +=
           typeof ev.cacheCreationTokens === 'number' ? ev.cacheCreationTokens : 0;
@@ -1874,9 +1923,6 @@ export function createApiHandler(
         for (const entry of session.timeline) {
           if (entry.timestamp < startMs) continue;
           if (bufferCutoff !== undefined && entry.timestamp >= bufferCutoff) continue;
-          if (dailyFirstActivityMs === null || entry.timestamp < dailyFirstActivityMs) {
-            dailyFirstActivityMs = entry.timestamp;
-          }
           toolCallCount++;
           const idx = Math.floor((entry.timestamp - startMs) / 60_000);
           if (idx >= 0 && idx < sparkline.length) sparkline[idx]++;
@@ -1904,8 +1950,14 @@ export function createApiHandler(
     // already-loaded `todaySessions` rather than re-invoking
     // loadTodaySessions — keeps disk reads at one per request and preserves
     // the cache-hit assertions in api-handler.test.ts.
+    // loadSessionsWithActivityToday() also returns a session resumed from an
+    // older start date (its filename keeps that date). Every cost and token
+    // figure below is clamped to today, so widening the set adds only today's
+    // share.
     const overlappingTodaySessions =
-      deps.sessionStore?.loadSessionsOverlappingToday?.() ?? todaySessions;
+      deps.sessionStore?.loadSessionsWithActivityToday?.() ??
+      deps.sessionStore?.loadSessionsOverlappingToday?.() ??
+      todaySessions;
     // Local-day key for "today", shared by the persisted-session loop below and
     // the live top-up further down. Sessions persisted with per-day cost buckets
     // (costByDayUsd) let us sum a session's REAL today-spend instead of
@@ -1936,22 +1988,9 @@ export function createApiHandler(
         tokensCacheCreation?: number;
         cacheSavingsUsd?: number;
         antiPatterns?: ReadonlyArray<unknown>;
+        firstActivityByDayMs?: Record<string, number>;
         timeline?: ReadonlyArray<{ timestamp: number }>;
       };
-      // Cross-midnight sessions that started before today aren't covered by
-      // the todaySessions timeline walk above (loadTodaySessions() filters
-      // by file-date = start date, so a session that started yesterday never
-      // appears there). Derive its first-today activity from its OWN
-      // timeline, not `s.startTime` — using startTime here would reintroduce
-      // the exact dilution bug dailyFirstActivityMs exists to avoid.
-      if (s.startTime < startMs && Array.isArray(s.timeline)) {
-        for (const entry of s.timeline) {
-          if (entry.timestamp < startMs) continue;
-          if (dailyFirstActivityMs === null || entry.timestamp < dailyFirstActivityMs) {
-            dailyFirstActivityMs = entry.timestamp;
-          }
-        }
-      }
       // Cost attributed to TODAY: the persisted per-day bucket, else a guarded
       // pro-rate (see todayCostOfSummary). The same helper seeds CostTracker, so
       // a restart cannot change what a checkpoint contributes.
@@ -1962,6 +2001,14 @@ export function createApiHandler(
       // drop the checkpoint's today cost, and a seeded one is not counted twice.
       // This is per-key max, the same rule mergeSummaries uses.
       const todayCost = todayCostOfSummary(s, todayKey, now);
+      const sessionFirstActivityMs =
+        todayCost.costUsd > 0 ? firstActivityTodayMs(s, todayKey, startMs, now) : null;
+      if (
+        sessionFirstActivityMs !== null &&
+        (dailyFirstActivityMs === null || sessionFirstActivityMs < dailyFirstActivityMs)
+      ) {
+        dailyFirstActivityMs = sessionFirstActivityMs;
+      }
       if (s.sessionId === liveSid) {
         liveCheckpointTodayUsd = todayCost.costUsd;
         liveCheckpointSubagentUsd = todayCost.subagentCostUsd;
@@ -2012,7 +2059,9 @@ export function createApiHandler(
       // captured by the todaySessions loop (which filtered by start-date).
       if (typeof s.sessionId === 'string' && !sessionsSeen.has(s.sessionId)) {
         sessionsSeen.add(s.sessionId);
-        antiPatternCount += s.antiPatterns?.length ?? 0;
+        // antiPatterns is lifetime with no per-day split, so a session resumed
+        // from before yesterday would add its whole history to today.
+        if (s.startTime >= startMs - 86_400_000) antiPatternCount += s.antiPatterns?.length ?? 0;
       }
     }
 
@@ -2995,13 +3044,13 @@ export function createApiHandler(
           }
         }
 
-        // Prefer loadSessionsOverlappingToday() so a session that started
-        // yesterday and is still running isn't invisible here —
-        // loadTodaySessions() filters by filename date (= start date) and
-        // would otherwise silently drop it. The `entry.timestamp >= startMs`
-        // check just below already excludes that session's yesterday-side
-        // entries, so widening the input set can't double-count anything.
+        // Prefer loadSessionsWithActivityToday() so a session resumed from an
+        // older start date isn't dropped; loadTodaySessions() filters by
+        // filename date (= start date). The `entry.timestamp >= startMs` check
+        // below excludes that session's pre-today entries, so widening the
+        // input set can't add out-of-day buckets.
         const todaySessions =
+          deps.sessionStore?.loadSessionsWithActivityToday?.() ??
           deps.sessionStore?.loadSessionsOverlappingToday?.() ??
           deps.sessionStore?.loadTodaySessions() ??
           [];
@@ -3653,7 +3702,7 @@ export function createApiHandler(
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'not_found' }));
     } catch (err) {
-      const logger = (await import('../../shared/index.js')).createLogger('api-handler');
+      const logger = (await import('../../core/index.js')).createLogger('api-handler');
       logger.error('Unhandled error in API route handler', { error: String(err) });
       if (!res.headersSent) {
         res.writeHead(500, { 'content-type': 'application/json' });

@@ -14,6 +14,7 @@ import {
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalStore } from './local-store.js';
+import { mintToolUseId, takeMintedToolUseId } from '../hooks/minted-tool-use-ids.js';
 import type { HookEvent, PostHookEvent, AuditEntry } from './types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -1421,6 +1422,7 @@ describe('LocalStore', () => {
         subagentCursors: 0,
         transcriptCursors: 0,
         parentTranscriptCursors: 0,
+        mintedIdDirs: 0,
       });
       expect(existsSync(resolve(tmpDir, '.subagent-pos-not-a-valid-agent-id'))).toBe(true);
       expect(existsSync(resolve(tmpDir, '.transcript-pos-'))).toBe(true);
@@ -1434,6 +1436,45 @@ describe('LocalStore', () => {
         subagentCursors: 0,
         transcriptCursors: 0,
         parentTranscriptCursors: 0,
+        mintedIdDirs: 0,
+      });
+    });
+
+    describe('minted tool-use ids', () => {
+      const SESSION = 'sess-noid';
+      const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+
+      function mint(): string {
+        mkdirSync(tmpDir, { recursive: true });
+        const id = mintToolUseId(resolve(tmpDir, `buffer-${SESSION}.jsonl`), 'Read', 1_000);
+        const dir = resolve(
+          tmpDir,
+          readdirSync(tmpDir).find((n) => n.includes(SESSION))!,
+        );
+        utimesSync(dir, twoDaysAgo, twoDaysAgo);
+        return id!;
+      }
+
+      it('keeps a live session id, however old', () => {
+        mint();
+        new LocalStore(tmpDir).gcWatcherCursors(new Set([SESSION]), 24);
+        expect(
+          takeMintedToolUseId(resolve(tmpDir, `buffer-${SESSION}.jsonl`), 'Read', 2_000),
+        ).toEqual(expect.any(String));
+      });
+
+      it('removes a dead session id idle past the discovery window', () => {
+        mint();
+        expect(new LocalStore(tmpDir).gcWatcherCursors(new Set(), 24).mintedIdDirs).toBe(1);
+        expect(readdirSync(tmpDir)).toEqual([]);
+      });
+
+      it('keeps a dead session id written within the discovery window', () => {
+        const id = mint();
+        new LocalStore(tmpDir).gcWatcherCursors(new Set(), 72);
+        expect(takeMintedToolUseId(resolve(tmpDir, `buffer-${SESSION}.jsonl`), 'Read', 2_000)).toBe(
+          id,
+        );
       });
     });
   });
@@ -1624,6 +1665,77 @@ describe('LocalStore', () => {
       expect(deleted).toBe(1);
       expect(existsSync(livePath)).toBe(true);
       expect(existsSync(deadPath)).toBe(false);
+    });
+
+    it("deletes dead-PID breadcrumbs under every writer's directory", () => {
+      const writerDirs = ['claude-code', 'kiro'].map((writer) =>
+        resolve(tmpDir, 'breadcrumbs', writer, 'session-by-ppid'),
+      );
+      for (const dir of writerDirs) {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(resolve(dir, `${process.pid}.txt`), 'sess-live-id');
+        writeFileSync(resolve(dir, '9999999.txt'), 'sess-dead-id');
+      }
+
+      expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(2);
+      for (const dir of writerDirs) {
+        expect(existsSync(resolve(dir, `${process.pid}.txt`))).toBe(true);
+        expect(existsSync(resolve(dir, '9999999.txt'))).toBe(false);
+      }
+    });
+
+    it('skips a stray file among the writer directories without warning', () => {
+      const dir = resolve(tmpDir, 'breadcrumbs', 'kiro', 'session-by-ppid');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(resolve(dir, '9999999.txt'), 'sess-dead-id');
+      writeFileSync(resolve(tmpDir, 'breadcrumbs', '.DS_Store'), '');
+
+      expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(1);
+      const warnCalls = (stderrSpy.mock.calls as unknown[][]).filter((args) =>
+        String(args[0]).includes('gcStaleBreadcrumbs'),
+      );
+      expect(warnCalls).toHaveLength(0);
+    });
+
+    it('does not warn when no writer directory exists yet', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      new LocalStore(tmpDir).gcStaleBreadcrumbs();
+      const warnCalls = (stderrSpy.mock.calls as unknown[][]).filter((args) =>
+        String(args[0]).includes('breadcrumb writers'),
+      );
+      expect(warnCalls).toHaveLength(0);
+    });
+
+    it('warns once when the writer directories cannot be listed', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      writeFileSync(resolve(tmpDir, 'breadcrumbs'), '');
+      const store = new LocalStore(tmpDir);
+      store.gcStaleBreadcrumbs();
+      store.gcStaleBreadcrumbs();
+      const warnCalls = (stderrSpy.mock.calls as unknown[][]).filter((args) =>
+        String(args[0]).includes('breadcrumb writers'),
+      );
+      expect(warnCalls).toHaveLength(1);
+    });
+
+    it('warns again when listing fails after a successful listing', () => {
+      const breadcrumbsPath = resolve(tmpDir, 'breadcrumbs');
+      mkdirSync(breadcrumbsPath, { recursive: true });
+      const store = new LocalStore(tmpDir);
+      store.gcStaleBreadcrumbs();
+      rmSync(breadcrumbsPath, { recursive: true });
+      writeFileSync(breadcrumbsPath, '');
+      store.gcStaleBreadcrumbs();
+      rmSync(breadcrumbsPath);
+      mkdirSync(breadcrumbsPath);
+      store.gcStaleBreadcrumbs();
+      rmSync(breadcrumbsPath, { recursive: true });
+      writeFileSync(breadcrumbsPath, '');
+      store.gcStaleBreadcrumbs();
+      const warnCalls = (stderrSpy.mock.calls as unknown[][]).filter((args) =>
+        String(args[0]).includes('breadcrumb writers'),
+      );
+      expect(warnCalls).toHaveLength(2);
     });
 
     it('returns 0 when breadcrumb dir does not exist', () => {

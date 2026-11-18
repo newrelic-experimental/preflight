@@ -177,6 +177,11 @@ jobs:
       - name: Stress hook-buffer drain
         run: npx tsx scripts/stress-hook-drain.ts
 
+      # Four collector processes whose calls carry no tool_use_id; exits non-zero
+      # unless every post took exactly one minted pre id.
+      - name: Stress minted tool-use ids
+        run: npx tsx scripts/stress-hook-drain.ts noid
+
   # A PR describes its change in a changeset and leaves the version and CHANGELOG.md to the
   # release PR (CONTRIBUTING.md#changesets). Both checks need a base branch, so they're
   # skipped on workflow_dispatch runs. They're also skipped on the release PR, which is the one

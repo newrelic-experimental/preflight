@@ -1,6 +1,6 @@
 /**
  * New Relic Event Ingestion — converts ToolCallRecords into NR events and
- * metrics, then ships them via the shared HarvestScheduler.
+ * metrics, then ships them via the HarvestScheduler.
  */
 
 import type {
@@ -9,7 +9,7 @@ import type {
   NrLogEntry,
   TransportOptions,
   TransportResult,
-} from '../shared/index.js';
+} from '../core/index.js';
 import {
   HarvestScheduler,
   MetricAggregator,
@@ -18,7 +18,7 @@ import {
   OtlpTransport,
   OtlpEventBridge,
   createLogger,
-} from '../shared/index.js';
+} from '../core/index.js';
 
 const logger = createLogger('nr-ingest');
 import { redactSensitive } from '../config.js';
@@ -102,13 +102,13 @@ export interface NrIngestOptions {
    * same audit log instance in both `local` and `cloud`/`both` modes.
    */
   auditTrail?: AuditTrailManager;
-  /** Override for testing; defaults to the shared sendEvents transport. */
+  /** Override for testing; defaults to the core sendEvents transport. */
   sendEventsFn?: SendEventsFn;
-  /** Override for testing; defaults to the shared sendMetrics transport. */
+  /** Override for testing; defaults to the core sendMetrics transport. */
   sendMetricsFn?: SendMetricsFn;
   /** Harvest interval for NR Logs API delivery. Default: 5000ms. */
   logHarvestIntervalMs?: number;
-  /** Override for testing; defaults to the shared sendLogs transport. */
+  /** Override for testing; defaults to the core sendLogs transport. */
   sendLogsFn?: SendLogsFn;
   /** Cost tracker for emitting ai.cost.* metrics. */
   costTracker?: CostTracker;
@@ -976,6 +976,41 @@ export function turnCostToNrEvents(
   return shares.map(rowFor);
 }
 
+/**
+ * One `AiSkillRun` row, emitted when a skill run opens. A run that makes no
+ * tool calls (a text-only `/<skill>` prompt) has no `AiToolCall` row, so this
+ * is the only row that counts it. `skill_run_id` matches the `AiToolCall` and
+ * `AiTurnCost` rows of the same run.
+ */
+export function skillRunToNrEvent(
+  stamp: SkillStamp,
+  attrs: {
+    timestamp: number;
+    developer: string;
+    appName: string;
+    sessionId?: string | null;
+    platform?: string;
+    teamId?: string | null;
+    projectId?: string | null;
+    orgId?: string | null;
+  },
+): NrEventData {
+  const event: NrEventData = {
+    eventType: 'AiSkillRun',
+    event_version: 1,
+    timestamp: attrs.timestamp,
+    ...skillRunAttributes(stamp),
+    developer: attrs.developer,
+    app_name: attrs.appName,
+    platform: attrs.platform ?? 'claude-code',
+  };
+
+  attachTeamAttribution(event, attrs);
+  if (attrs.sessionId != null) event.session_id = attrs.sessionId;
+
+  return event;
+}
+
 // ---------------------------------------------------------------------------
 // Retry classification
 // ---------------------------------------------------------------------------
@@ -1623,6 +1658,23 @@ export class NrIngestManager {
     for (const event of events) {
       this.routeEvent(event);
     }
+  }
+
+  ingestSkillRun(
+    stamp: SkillStamp,
+    context: { timestamp: number; sessionId: string | null; platform?: string },
+  ): void {
+    const event = skillRunToNrEvent(stamp, {
+      timestamp: context.timestamp,
+      developer: this.developer,
+      appName: this.appName,
+      sessionId: context.sessionId ?? this.sessionTraceId,
+      platform: context.platform,
+      teamId: this.teamId,
+      projectId: this.projectId,
+      orgId: this.orgId,
+    });
+    this.routeEvent(event);
   }
 
   ingestContextSnapshot(

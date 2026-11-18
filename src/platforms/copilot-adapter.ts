@@ -115,8 +115,9 @@ export class CopilotAdapter implements PlatformAdapter {
     instructionFilePaths: [] as const,
     // Hook commands documented before 2026-09-04 lack the
     // NEW_RELIC_AI_PLATFORM=copilot stamp. The desktop app's setup stamps
-    // MCP_CLIENT=copilot-app into ~/.copilot/hooks/preflight.json, which VS
-    // Code reads too.
+    // MCP_CLIENT=copilot-app into ~/.copilot/hooks/preflight.json. VS Code
+    // reads user hook files from ~/.copilot/hooks/ (or $COPILOT_HOME/hooks/):
+    // https://code.visualstudio.com/docs/copilot/customization/hooks
     sessionBreadcrumbWriters: ['copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
   };
 
