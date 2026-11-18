@@ -110,9 +110,14 @@ export interface SessionResolverOptions {
    * settles, reporting which source produced the winning value. Purely
    * additive — omitting it changes no behavior. Lets callers detect a
    * cwd-sourced (lower-confidence) resolution without changing the
-   * `Promise<string>` contract existing callers rely on.
+   * `Promise<string>` contract existing callers rely on. An ancestor hit
+   * also reports its depth (see AncestorBreadcrumbHit).
    */
-  readonly onResolutionSource?: (info: { source: SessionIdSource; sessionId: string }) => void;
+  readonly onResolutionSource?: (info: {
+    source: SessionIdSource;
+    sessionId: string;
+    depth?: number;
+  }) => void;
 }
 
 /**
@@ -559,6 +564,7 @@ export async function resolveSessionId(
         options.onResolutionSource?.({
           source: 'ppid-ancestor',
           sessionId: fromAncestor.sessionId,
+          depth: fromAncestor.depth,
         });
         if (options.signal) options.signal.removeEventListener('abort', onAbort);
         resolvePromise(fromAncestor.sessionId);
@@ -613,7 +619,7 @@ export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorP
     | { readonly includeParentOfPpid?: false }
     | {
         readonly includeParentOfPpid: true;
-        /** The cwd-guessed id the caller already adopted. */
+        /** The id the caller adopted from the cwd or an ancestor breadcrumb. */
         readonly staleId: string;
         /**
          * Called once, synchronously, with a listener for the caller to invoke
@@ -627,11 +633,11 @@ export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorP
 /**
  * Keep watching the PPID breadcrumb only (never cwd, never CLAUDE_JOB_DIR) —
  * used as a corrective safety net after an initial resolution came from the
- * cwd fallback or an ancestor's breadcrumb. Same exponential-backoff schedule as resolveSessionId
- * (reuses nextDelayMs). Resolves on the first valid ppid hit; never resolves
- * null. The caller decides whether the resolved id differs from what's
- * already adopted and is worth acting on — this function doesn't know or
- * care. No 60s WARN log: a cwd-sourced session working fine while the ppid
+ * cwd fallback or an ancestor breadcrumb. Same exponential-backoff schedule
+ * as resolveSessionId (reuses nextDelayMs). Resolves on the first valid ppid
+ * hit; never resolves null. The caller decides whether the resolved id
+ * differs from what's already adopted and is worth acting on — this function
+ * doesn't know or care. No 60s WARN log: a cwd-sourced session working fine while the ppid
  * breadcrumb stays silent is expected, not alarming.
  *
  * With `includeParentOfPpid`, each tick also checks the breadcrumb of our
@@ -671,14 +677,12 @@ export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorP
  * - A parent-level session that already has a live owning engine is not
  *   ours. Once skipped, an id stays skipped, so a neighbour whose engine
  *   later exits is not adopted then.
- * - On Linux the collector writes a breadcrumb at each of its ancestors
- *   (collector-script.ts's writePpidBreadcrumb()), so the host's slot also
- *   carries the id of a session of the same engine whose hooks run below the
- *   host (a `claude -p` run from a tool call, say). Such a session with no
- *   engine of its own is adopted if a tick reads it there before the slot
- *   names the guess. Other engines' sessions are filed under their own
- *   writers, which this engine does not read.
- * - Never on Windows, which has no `ps`.
+ * - Never on Linux. The collector writes a breadcrumb at each of its
+ *   ancestors there (collector-script.ts's writePpidBreadcrumb()), so the
+ *   host's parent is routinely a shared slot (an editor's main process, a
+ *   shell) carrying a concurrent session's id, which may have no engine of
+ *   its own or not have adopted its id yet. Elsewhere the collector writes
+ *   only its own ppid. Nor on Windows, which has no `ps`.
  */
 export async function watchPpidBreadcrumb(options: PpidBreadcrumbWatchOptions): Promise<string> {
   const ppid = options.ppid ?? process.ppid;
@@ -686,7 +690,8 @@ export async function watchPpidBreadcrumb(options: PpidBreadcrumbWatchOptions): 
   const breadcrumbs = sessionBreadcrumbs(storagePath, options.writers);
   const platform = options.ancestry?.platform ?? process.platform;
   const staleId = options.includeParentOfPpid ? options.staleId : undefined;
-  const watchesParentLevel = options.includeParentOfPpid === true && platform !== 'win32';
+  const watchesParentLevel =
+    options.includeParentOfPpid === true && platform !== 'linux' && platform !== 'win32';
 
   let attempt = 0;
   let tickCount = 0;
@@ -722,7 +727,8 @@ export async function watchPpidBreadcrumb(options: PpidBreadcrumbWatchOptions): 
         tick: tickCount,
       });
       lookupFailed = true;
-      if (uncheckedActivity) stopReadingParentLevel('Activity under the cwd guess went unchecked');
+      if (uncheckedActivity)
+        stopReadingParentLevel('Activity under the adopted guess went unchecked');
       return [ppid];
     }
     uncheckedActivity = false;
@@ -742,13 +748,13 @@ export async function watchPpidBreadcrumb(options: PpidBreadcrumbWatchOptions): 
   const onStaleIdActivity = (): void => {
     if (settled || !watchesParentLevel || parentLevelDone) return;
     if (!parentLevelPids) {
-      if (lookupFailed) stopReadingParentLevel('Activity under the cwd guess went unchecked');
+      if (lookupFailed) stopReadingParentLevel('Activity under the adopted guess went unchecked');
       else uncheckedActivity = true;
       return;
     }
     if (breadcrumbs.ancestors(parentLevelPids)?.sessionId === staleId) {
       stopReadingParentLevel(
-        'The ppid parent breadcrumb named the cwd guess as its activity drained',
+        'The ppid parent breadcrumb named the adopted guess as its activity drained',
       );
     }
   };
@@ -792,10 +798,13 @@ export async function watchPpidBreadcrumb(options: PpidBreadcrumbWatchOptions): 
           const { sessionId, pid } = fromParent;
           if (sessionId === staleId) {
             parentLevelDone = true;
-            logger.debug('The ppid parent breadcrumb matches the cwd guess; no longer reading it', {
-              sessionId,
-              pid,
-            });
+            logger.debug(
+              'The ppid parent breadcrumb matches the adopted guess; no longer reading it',
+              {
+                sessionId,
+                pid,
+              },
+            );
           } else if (hasLiveOwningEngine(storagePath, sessionId)) {
             skippedParentIds.add(sessionId);
             logger.debug('Ignoring the ppid parent breadcrumb: its session has a live owner', {

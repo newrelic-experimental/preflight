@@ -37,6 +37,7 @@ import {
   resolveSessionId,
   resolveSessionName,
   sessionBreadcrumbs,
+  type SessionIdSource,
   watchCwdBreadcrumbForCorrection,
   watchPpidBreadcrumb,
 } from './hooks/session-resolver.js';
@@ -920,9 +921,9 @@ async function main(): Promise<void> {
   // only when the initial resolution came from the cwd or an ancestor's
   // breadcrumb — see startPpidCorrectionWatch) when shutdown fires.
   let ppidCorrectionAbort: AbortController | undefined;
-  // That watch's listener for tool calls drained under the cwd guess, set
+  // That watch's listener for tool calls drained under the adopted guess, set
   // while it runs (see subscribeToStaleIdActivity in session-resolver.ts).
-  let cwdGuessActivity: { readonly staleId: string; readonly onActivity: () => void } | null = null;
+  let staleIdActivity: { readonly staleId: string; readonly onActivity: () => void } | null = null;
 
   // True whenever the live sessionTraceId came from the collision-prone cwd
   // fallback and hasn't yet been ppid-confirmed. While true, the periodic
@@ -1205,13 +1206,14 @@ async function main(): Promise<void> {
     // dashboard owner's GC pass can tell which buffer files still have a live
     // owner. Removed in the shutdown handler below. Skipped during the
     // provisional window — the real heartbeat is written after resolution.
-    // A cwd guess leaves a live engine's heartbeat for the guessed session in
-    // place, since a correction must not leave that engine without one.
+    // An unconfirmed guess (cwd or ancestor) leaves a live engine's heartbeat
+    // for the guessed session in place, since a correction must not leave that
+    // engine without one.
     let heartbeatSkipped = false;
-    const writeHeartbeat = (store: LocalStore, viaCwdOnly: boolean): void => {
+    const writeHeartbeat = (store: LocalStore, unconfirmed: boolean): void => {
       const sessionId = store.getSessionId();
       heartbeatSkipped =
-        viaCwdOnly && !!sessionId && hasLiveOwningEngine(config!.storagePath, sessionId);
+        unconfirmed && !!sessionId && hasLiveOwningEngine(config!.storagePath, sessionId);
       if (heartbeatSkipped) return;
       store.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
         value: config!.companionMode,
@@ -2213,8 +2215,8 @@ async function main(): Promise<void> {
           logger.warn('onRecord called before full initialization; skipping');
           return;
         }
-        if (cwdGuessActivity && rawRecord.sessionId === cwdGuessActivity.staleId) {
-          cwdGuessActivity.onActivity();
+        if (staleIdActivity && rawRecord.sessionId === staleIdActivity.staleId) {
+          staleIdActivity.onActivity();
         }
 
         // Capture active task ID before recordToolCall may close the current task
@@ -2883,7 +2885,8 @@ async function main(): Promise<void> {
     // is safe to arm immediately. unref'd so it never keeps the process alive.
     const SESSION_PERSIST_INTERVAL_MS = getSessionPersistIntervalMs();
     sessionPersistInterval = setInterval(() => {
-      // A cwd guess whose session had a live engine takes the heartbeat once that engine exits.
+      // An unconfirmed guess whose session had a live engine takes the
+      // heartbeat once that engine exits.
       if (heartbeatSkipped && localStoreForShutdown) writeHeartbeat(localStoreForShutdown, true);
       // Skip while the live session id is an unconfirmed cwd-fallback guess —
       // see armPendingConfirmation's own comment. Persisting here would write
@@ -3115,27 +3118,32 @@ async function main(): Promise<void> {
     // startPpidCorrectionWatch below) — safe to call more than once.
     const adoptRealSessionId = async (
       realId: string,
-      opts?: { isCorrection?: boolean; viaCwdOnly?: boolean },
+      opts?: { isCorrection?: boolean; source?: SessionIdSource },
     ): Promise<void> => {
       const staleId = sessionTraceId;
+      const viaCwdOnly = opts?.source === 'cwd';
       if (opts?.isCorrection) {
         // A real correction means the previously-adopted id was wrong, and
-        // anything these four trackers accumulated since startWatchers()
-        // scoped them to that wrong id (chiefly ParentTranscriptWatcher
-        // backfill from an unrelated old transcript) belongs to nobody.
+        // anything these trackers accumulated or were seeded with under that
+        // wrong id (ParentTranscriptWatcher backfill from an unrelated old
+        // transcript, an ancestor adoption's checkpoint) belongs to nobody.
         // SessionTracker is cleared below through adoptSessionId(realId, ...,
         // isCorrection), which drops the wrong guess's counts and timeline.
         costTracker.reset(realId);
         modelUsageTracker.reset(realId);
         contextCompositionTracker.reset(realId);
         turnCostAttributor.reset(realId);
+        taskDetector!.reset(realId);
+        qualityProxyTracker.reset(realId);
+        efficiencyScorer.reset(realId);
+        budgetTracker.resetSession();
       }
       // Replace the current LocalStore with one scoped to the real id.
       const realLocalStore = new LocalStore(config!.storagePath, realId);
       realLocalStore.initialize();
       // A corrected guess's heartbeat would keep drain-all processes off its buffer.
       localStoreForShutdown?.removeHeartbeat();
-      writeHeartbeat(realLocalStore, opts?.viaCwdOnly ?? false);
+      writeHeartbeat(realLocalStore, viaCwdOnly || opts?.source === 'ppid-ancestor');
       localStoreForShutdown = realLocalStore;
       try {
         realLocalStore.migrateLegacyBuffer();
@@ -3168,7 +3176,7 @@ async function main(): Promise<void> {
       // startPpidCorrectionWatch right after this returns, whose
       // confirmation branch (ppidId === staleId) calls
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
-      if (!opts?.viaCwdOnly) {
+      if (!viaCwdOnly) {
         rehydrateTrackersIfResumed(realId);
         liftObserverCompleted(realId);
       }
@@ -3305,31 +3313,37 @@ async function main(): Promise<void> {
 
     // Arms a background watch for the ppid breadcrumb after an initial
     // resolution came from a breadcrumb other sessions can share: the cwd
-    // fallback (see resolvedViaCwdOnly) or an ancestor's, which an older
-    // collector writes at every process above its hook. If/when the ppid
+    // fallback (see resolvedViaCwdOnly) or an ancestor's. If/when the ppid
     // breadcrumb later reports a DIFFERENT, more precise session id, corrects
     // the adoption via the same adoptRealSessionId() used for the pending ->
-    // real transition. A no-op-forever if the ppid breadcrumb never appears
-    // or always matches. Only a cwd guess holds back checkpoints meanwhile:
-    // an ancestor adoption was already seeded and checkpointed as before.
-    const startPpidCorrectionWatch = (staleId: string, source: 'cwd' | 'ppid-ancestor'): void => {
+    // real transition. Only a cwd guess holds back checkpoints meanwhile: an
+    // ancestor adoption was already seeded and checkpointed.
+    const startPpidCorrectionWatch = (
+      staleId: string,
+      source: 'cwd' | 'ppid-ancestor',
+      readsParentLevel = true,
+    ): void => {
       if (source === 'cwd') armPendingConfirmation();
       ppidCorrectionAbort = new AbortController();
       // Guards against both watches below firing: in practice only one ever
       // can (see the win32 branch's own comment), but a shared flag makes
       // that a documented invariant rather than an accident of timing.
       let corrected = false;
-      let activityListener: typeof cwdGuessActivity = null;
+      let activityListener: typeof staleIdActivity = null;
       void watchPpidBreadcrumb({
         writers: breadcrumbWriters,
         storagePath: config!.storagePath,
         signal: ppidCorrectionAbort.signal,
-        includeParentOfPpid: true,
-        staleId,
-        subscribeToStaleIdActivity: (onActivity) => {
-          activityListener = { staleId, onActivity };
-          cwdGuessActivity = activityListener;
-        },
+        ...(readsParentLevel
+          ? {
+              includeParentOfPpid: true as const,
+              staleId,
+              subscribeToStaleIdActivity: (onActivity: () => void) => {
+                activityListener = { staleId, onActivity };
+                staleIdActivity = activityListener;
+              },
+            }
+          : { includeParentOfPpid: false as const }),
       })
         .then(async (ppidId) => {
           if (ppidCorrectionAbort?.signal.aborted || corrected) return;
@@ -3337,12 +3351,11 @@ async function main(): Promise<void> {
             // The guess turned out to be correct, as confirmed by our own
             // ppid's breadcrumb: the watch never resolves to staleId from an
             // ancestor, whose breadcrumb may be a co-located session's. No
-            // correction needed, so no reason to keep suppressing checkpoints
-            // for the rest of the cap window. A cwd guess was NOT seeded
-            // eagerly (see the resolvedViaCwdOnly gate on
-            // rehydrateTrackersIfResumed's first call site) precisely because
-            // it wasn't confirmed yet — seed it now that it is. An ancestor
-            // adoption already was, and rehydrateTrackersIfResumed seeds once.
+            // reason to keep suppressing checkpoints. A cwd guess was NOT
+            // seeded eagerly (see the resolvedViaCwdOnly gate on
+            // rehydrateTrackersIfResumed's first call site) because it wasn't
+            // confirmed yet, so seed it now. An ancestor adoption already was,
+            // and rehydrateTrackersIfResumed seeds each id once.
             rehydrateTrackersIfResumed(staleId);
             refreshPriorCostBaseline();
             if (localStoreForShutdown) writeHeartbeat(localStoreForShutdown, false);
@@ -3365,7 +3378,7 @@ async function main(): Promise<void> {
           clearPendingConfirmation();
         })
         .finally(() => {
-          if (cwdGuessActivity === activityListener) cwdGuessActivity = null;
+          if (staleIdActivity === activityListener) staleIdActivity = null;
         });
 
       // On native Windows the ppid breadcrumb above never matches (see #686
@@ -3434,7 +3447,7 @@ async function main(): Promise<void> {
           }),
         });
         sessionResolutionAbort = new AbortController();
-        let resolvedSource: import('./hooks/session-resolver.js').SessionIdSource | undefined;
+        let resolution: { source: SessionIdSource; depth?: number } | undefined;
         void (async () => {
           try {
             const realId = await resolveSessionId({
@@ -3442,7 +3455,7 @@ async function main(): Promise<void> {
               signal: sessionResolutionAbort!.signal,
               writers: breadcrumbWriters,
               onResolutionSource: (info) => {
-                resolvedSource = info.source;
+                resolution = info;
               },
             });
 
@@ -3459,17 +3472,18 @@ async function main(): Promise<void> {
             // eager cost/token seed for a cwd-resolved id (see viaCwdOnly's
             // doc comment there) — startPpidCorrectionWatch below seeds it
             // once confirmed, exactly like the synchronous resolution path.
-            await adoptRealSessionId(realId, { viaCwdOnly: resolvedSource === 'cwd' });
+            await adoptRealSessionId(realId, { source: resolution?.source });
 
             logger.info('Session ID resolved, full initialization complete', {
               sessionTraceId: realId,
             });
 
-            // The ppid breadcrumb is precise (no cross-session collision);
-            // the cwd and ancestor ones are not, so they arm the background
-            // correction watch.
-            if (resolvedSource === 'cwd' || resolvedSource === 'ppid-ancestor') {
-              startPpidCorrectionWatch(realId, resolvedSource);
+            // The ppid breadcrumb is precise; the cwd and ancestor ones are
+            // not, so they arm the correction watch. An ancestor hit one level
+            // above our ppid is the slot the watch's parent level reads, so a
+            // later change there is the host switching sessions.
+            if (resolution?.source === 'cwd' || resolution?.source === 'ppid-ancestor') {
+              startPpidCorrectionWatch(realId, resolution.source, resolution.depth !== 1);
             }
           } catch (err) {
             // Use the signal's own aborted flag rather than matching the error
