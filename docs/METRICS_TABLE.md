@@ -343,7 +343,7 @@ Emitted when a configured budget threshold is crossed (50%, 80%, 100%).
 - `80%` — first time spend reaches 80% of budget
 - `100%` — first time spend reaches or exceeds 100% of budget
 
-Each threshold fires only once per period; subsequent additions to spend do not re-fire. A `daily` period's thresholds reset at UTC midnight, although the daily spend itself is summed by local calendar day, a `weekly` period is an ISO week, and a `session` period never rolls over by itself. One cost update that jumps past several thresholds fires all of them together. When a session resumes after a restart, the session thresholds it had already crossed do not fire again. A budget that is unset or `0` never fires.
+Each threshold fires only once per period; subsequent additions to spend do not re-fire. A `daily` period's thresholds reset at UTC midnight, although the daily spend itself is summed by local calendar day, a `weekly` period is an ISO week, and a `session` period never rolls over by itself. One cost update that jumps past several thresholds fires all of them together. When a session resumes after a restart, the session thresholds it had already crossed do not fire again. A restarted process starts its daily and weekly spend at the totals already saved, so the daily and weekly thresholds that spend crossed do not fire again either. A budget that is unset or `0` never fires.
 
 Source: `src/transport/nr-ingest.ts`, `src/metrics/budget-tracker.ts`
 

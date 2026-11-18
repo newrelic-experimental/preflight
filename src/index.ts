@@ -1757,8 +1757,8 @@ async function main(): Promise<void> {
       const expired = now - priorCostCache.lastRefreshMs > PRIOR_COST_CACHE_TTL_MS;
       if (dayChanged || expired) refreshPriorCostBaseline();
     };
-    // Rereads the baseline first: it moves with the seeded set and with sessions
-    // other engines saved since it was cached, which a stale cache would double count.
+    // Rereads the baseline first. A cached one still counts a session this process
+    // has since seeded, counting it twice, and misses sessions other engines saved since.
     const seedBudgetPeriods = (): void => {
       refreshPriorCostBaseline();
       budgetTracker.seedPeriodSpend(

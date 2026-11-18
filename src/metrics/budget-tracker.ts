@@ -180,8 +180,8 @@ export class BudgetTracker {
   }
 
   /**
-   * Restores the daily and weekly spend recorded before this process started,
-   * so `getStatus()` reads it before the first cost event, and marks the
+   * Sets the daily and weekly spend to the totals already recorded, so
+   * `getStatus()` reads them before the next cost event, and marks the
    * thresholds that spend already crossed as fired without alerting on them.
    * Takes the same totals `updateCost` is given. Like the session seed, it
    * never un-marks a fired threshold and does not touch the session spend.
