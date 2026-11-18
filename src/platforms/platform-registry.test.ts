@@ -276,7 +276,7 @@ describe('PlatformRegistry', () => {
       expect(createDefaultRegistry().detect()?.platformName).toBe(platformName);
     });
 
-    it('leaves the engine env as the user spelled it, so spawned children inherit it unchanged', () => {
+    it('leaves the engine env as the user spelled it', () => {
       process.env.MCP_CLIENT = 'Gemini_CLI';
       process.env.NEW_RELIC_AI_PLATFORM = 'COPILOT_SDK';
       createDefaultRegistry().detect();
@@ -284,14 +284,49 @@ describe('PlatformRegistry', () => {
       expect(process.env.NEW_RELIC_AI_PLATFORM).toBe('COPILOT_SDK');
     });
 
-    it('lets an adapter used without detect() recognise another spelling of its own name', () => {
-      process.env.MCP_CLIENT = 'Kilo_Code';
-      expect(new KiloCodeAdapter().isSupported()).toBe(true);
-      process.env.MCP_CLIENT = 'cursor';
-      expect(new CursorAdapter().isSupported()).toBe(true);
-      process.env.MCP_CLIENT = 'CURSOR';
-      expect(new CursorAdapter().isSupported()).toBe(true);
-    });
+    const spellings = (name: string): string[] => [
+      name.toUpperCase().replace(/-/g, '_'),
+      name.replace(
+        /(^|-)(\w)/g,
+        (_m, sep: string, c: string) => `${sep ? '_' : ''}${c.toUpperCase()}`,
+      ),
+      name.toUpperCase().replace(/-/g, ''),
+    ];
+    const MCP_CLIENT_ONLY = new Set([
+      'claude-code',
+      'cursor',
+      'windsurf',
+      'zed',
+      'continue',
+      'amazon-q',
+      'antigravity',
+    ]);
+    const aliasCases = createDefaultRegistry()
+      .getRegistered()
+      .filter((adapter) => adapter.platformName !== 'pi' && adapter.platformName !== 'generic-mcp')
+      .flatMap((adapter) =>
+        spellings(adapter.platformName).map((spelling) => ({
+          adapter,
+          name: adapter.platformName,
+          spelling,
+        })),
+      );
+
+    it.each(aliasCases)(
+      'lets $name used without detect() recognise MCP_CLIENT=$spelling',
+      ({ adapter, spelling }) => {
+        process.env.MCP_CLIENT = spelling;
+        expect(adapter.isSupported()).toBe(true);
+      },
+    );
+
+    it.each(aliasCases)(
+      'lets $name used without detect() recognise NEW_RELIC_AI_PLATFORM=$spelling if it reads that key',
+      ({ adapter, name, spelling }) => {
+        process.env.NEW_RELIC_AI_PLATFORM = spelling;
+        expect(adapter.isSupported()).toBe(!MCP_CLIENT_ONLY.has(name));
+      },
+    );
 
     it('skips an MCP_CLIENT it does not know for the engine NEW_RELIC_AI_PLATFORM names', () => {
       process.env.CLAUDE_CODE_VERSION = '1.2.3';
