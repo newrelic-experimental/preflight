@@ -2501,6 +2501,15 @@ describe('collector-script', () => {
     it('files a Claude Code hook under claude-code and in the untagged layout older servers read', () => {
       process.env.CLAUDECODE = '1';
       processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const sessionCrumb = resolve(
+        tmpDir,
+        'breadcrumbs',
+        'claude-code',
+        'session-by-id',
+        'sess-claude.txt',
+      );
+      expect(readFileSync(sessionCrumb, 'utf-8')).toBe('sess-claude');
+      expect(existsSync(resolve(tmpDir, 'session-by-id'))).toBe(false);
       expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
       expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
       const legacyPpid = resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`);
@@ -2532,6 +2541,21 @@ describe('collector-script', () => {
       writeFileSync(crumbs('claude-code').cwd, 'sess-cc2');
       const kiro = sessionBreadcrumbs(tmpDir, ['kiro', 'unattributed'], kiroStartedAt);
       expect(kiro.cwd('/projects/test')).toBeNull();
+    });
+
+    it("refreshes a session's id crumb on every hook and never files a malformed id", () => {
+      process.env.CLAUDECODE = '1';
+      const idDir = resolve(tmpDir, 'breadcrumbs', 'claude-code', 'session-by-id');
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(resolve(idDir, 'sess-claude.txt'), old, old);
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(statSync(resolve(idDir, 'sess-claude.txt')).mtimeMs).toBeGreaterThan(
+        Date.now() - 5_000,
+      );
+      processHook(makePreToolUse({ session_id: '../escape', cwd: '/projects/test' }));
+      expect(readdirSync(idDir)).toEqual(['sess-claude.txt']);
+      expect(existsSync(resolve(idDir, '..', 'escape.txt'))).toBe(false);
     });
 
     it('files a hook under the engine its command names, over an inherited Claude Code env', () => {

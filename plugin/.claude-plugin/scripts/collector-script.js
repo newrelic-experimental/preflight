@@ -736,6 +736,17 @@ function writePpidBreadcrumb(sessionId, root, legacyRoot) {
     }
   }
 }
+function writeSessionIdBreadcrumb(sessionId, root) {
+  if (!SESSION_ID_RE.test(sessionId)) return;
+  try {
+    const dir = resolve2(root, "session-by-id");
+    mkdirSync2(dir, { recursive: true, mode: 448 });
+    const path = resolve2(dir, `${sessionId}.txt`);
+    if (existsSync(path)) touch(path);
+    else writeFileSync2(path, sessionId, { mode: 384 });
+  } catch {
+  }
+}
 var _cwdBreadcrumbWriteFailed = false;
 function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
   if (!SESSION_ID_RE.test(sessionId)) return;
@@ -1032,6 +1043,7 @@ function processHook(raw, cliEvent) {
     }
     const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
     const tagged = breadcrumbRoot(storageDir, writer);
+    writeSessionIdBreadcrumb(data.session_id, tagged);
     writePpidBreadcrumb(data.session_id, tagged, storageDir);
     writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);
   }

@@ -310,6 +310,17 @@ function writePpidBreadcrumb(sessionId: string, root: string, legacyRoot?: strin
   }
 }
 
+function writeSessionIdBreadcrumb(sessionId: string, root: string): void {
+  if (!SESSION_ID_RE.test(sessionId)) return;
+  try {
+    const dir = resolve(root, 'session-by-id');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const path = resolve(dir, `${sessionId}.txt`);
+    if (existsSync(path)) touch(path);
+    else writeFileSync(path, sessionId, { mode: 0o600 });
+  } catch {}
+}
+
 let _cwdBreadcrumbWriteFailed = false;
 
 function writeCwdBreadcrumb(
@@ -833,6 +844,7 @@ function processHook(raw: string, cliEvent?: string): void {
     }
     const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
     const tagged = breadcrumbRoot(storageDir, writer);
+    writeSessionIdBreadcrumb(data.session_id, tagged);
     writePpidBreadcrumb(data.session_id, tagged, storageDir);
     writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);
   }
