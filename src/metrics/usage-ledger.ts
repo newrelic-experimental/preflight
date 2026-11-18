@@ -29,11 +29,11 @@
  * entries. See `usageLedgerOf` in session-store.ts.
  */
 
-import type { TokenUsage } from '../shared/index.js';
+import type { TokenUsage } from '../core/index.js';
 
 import { localDateKey } from '../lib/date.js';
 import { HIGH_CONTEXT_TOKENS } from '../storage/types.js';
-import type { AttributionBucket } from '../storage/types.js';
+import type { AttributionBucket, UsdBreakdown } from '../storage/types.js';
 import { addCallUsage } from './call-usage.js';
 
 export interface UnpricedModelUsage {
@@ -103,6 +103,8 @@ export interface UsageEntry {
   readonly calls?: EntryCalls;
   /** In memory only: not persisted. */
   readonly responseMs?: number;
+  /** The call's dollars by token category, where the recorder priced them. */
+  readonly categoryUsd?: UsdBreakdown;
 }
 
 export interface EntryCalls {
@@ -208,8 +210,12 @@ function preferred(a: UsageEntry, b: UsageEntry): UsageEntry {
   // buckets wins, whichever copy arrived first.
   if (a.day !== b.day) return a.day === null ? a : b.day === null ? b : a.day < b.day ? a : b;
   // One writer knew the call's workflow run or agent type and another did not.
-  const ra = Number(a.workflowRunId !== undefined) + Number(a.agentType !== undefined);
-  const rb = Number(b.workflowRunId !== undefined) + Number(b.agentType !== undefined);
+  const richness = (e: UsageEntry): number =>
+    Number(e.workflowRunId !== undefined) +
+    Number(e.agentType !== undefined) +
+    Number(e.categoryUsd !== undefined);
+  const ra = richness(a);
+  const rb = richness(b);
   if (ra !== rb) return ra > rb ? a : b;
   const ja = JSON.stringify(a);
   const jb = JSON.stringify(b);
@@ -301,6 +307,15 @@ function rangeOf(id: string): CounterRange | null {
 /** Ranges ordered for a union: by start, the longest first, then by id. */
 function compareRanges(a: CounterRange, b: CounterRange): number {
   return a.from - b.from || b.to - a.to || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+function addUsd(a: UsdBreakdown | undefined, b: UsdBreakdown): UsdBreakdown {
+  return {
+    inputUsd: (a?.inputUsd ?? 0) + b.inputUsd,
+    outputUsd: (a?.outputUsd ?? 0) + b.outputUsd,
+    cacheReadUsd: (a?.cacheReadUsd ?? 0) + b.cacheReadUsd,
+    cacheCreationUsd: (a?.cacheCreationUsd ?? 0) + b.cacheCreationUsd,
+  };
 }
 
 function addTo(map: Map<string, number>, key: string, usd: number): void {
@@ -531,6 +546,11 @@ export function foldUsage(
           cacheReadTokens: (prior?.breakdown?.cacheReadTokens ?? 0) + e.cacheReadTokens,
           cacheCreationTokens: (prior?.breakdown?.cacheCreationTokens ?? 0) + e.cacheCreationTokens,
         },
+        // Only while every call in the bucket was priced by category.
+        ...((prior === undefined || prior.breakdownUsd !== undefined) &&
+          e.categoryUsd !== undefined && {
+            breakdownUsd: addUsd(prior?.breakdownUsd, e.categoryUsd),
+          }),
       });
     }
   }
@@ -600,6 +620,10 @@ function addToFold(fold: UsageFold, entry: UsageEntry): UsageFold {
             cacheCreationTokens:
               (prior.breakdown?.cacheCreationTokens ?? 0) + (b.breakdown?.cacheCreationTokens ?? 0),
           },
+          ...(prior.breakdownUsd !== undefined &&
+            b.breakdownUsd !== undefined && {
+              breakdownUsd: addUsd(prior.breakdownUsd, b.breakdownUsd),
+            }),
         }
       : b;
   }
@@ -797,7 +821,9 @@ export class UsageLedger {
  * and a loader that only needs the totals never parses them. Tuple fields, in
  * order: id, flags (1 provisional, 2 replaces), ts, day, model index, input,
  * output, thinking, cache read, cache creation, USD, cache savings USD,
- * agentId, agentType, workflowRunId, pricing (`u`, or `e:<table id>`).
+ * agentId, agentType, workflowRunId, pricing (`u`, or `e:<table id>`), the
+ * calls a pre-ledger byte estimate covered, and the dollars by token category
+ * (input, output, cache read, cache creation).
  * Trailing nulls are dropped.
  */
 export interface PersistedUsageLedger {
@@ -843,6 +869,14 @@ export function encodeUsageLedger(
       e.workflowRunId ?? null,
       pricing,
       e.calls ?? null,
+      e.categoryUsd
+        ? [
+            e.categoryUsd.inputUsd,
+            e.categoryUsd.outputUsd,
+            e.categoryUsd.cacheReadUsd,
+            e.categoryUsd.cacheCreationUsd,
+          ]
+        : null,
     ];
     while (tuple.length > 0 && tuple[tuple.length - 1] === null) tuple.pop();
     encoded.push(JSON.stringify(tuple));
@@ -885,6 +919,7 @@ function decodeEntry(raw: string, models: readonly string[]): UsageEntry | null 
     run,
     pr,
     ec,
+    cu,
   ] = t as unknown[];
   if (typeof id !== 'string' || id.length === 0 || id.length > MAX_ID) return null;
   if (typeof flags !== 'number' || !Number.isInteger(flags) || flags < 0 || flags > 3) return null;
@@ -902,6 +937,15 @@ function decodeEntry(raw: string, models: readonly string[]): UsageEntry | null 
     pricing = { estimatedFrom: pr.slice(2) };
   }
   const calls = parseEntryCalls(ec);
+  const categoryUsd =
+    Array.isArray(cu) && cu.length === 4 && cu.every(isCount)
+      ? {
+          inputUsd: cu[0] as number,
+          outputUsd: cu[1] as number,
+          cacheReadUsd: cu[2] as number,
+          cacheCreationUsd: cu[3] as number,
+        }
+      : undefined;
   return {
     id,
     provisional: (flags & 1) !== 0,
@@ -921,6 +965,7 @@ function decodeEntry(raw: string, models: readonly string[]): UsageEntry | null 
     ...(run ? { workflowRunId: run } : {}),
     ...(pricing && { pricing }),
     ...(calls && { calls }),
+    ...(categoryUsd && { categoryUsd }),
   };
 }
 

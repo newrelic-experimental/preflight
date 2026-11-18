@@ -5,7 +5,7 @@ import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import type { TokenRecordContext, CostTrackerSeed } from './cost-tracker.js';
 import { localDateKey, localStartOfDay } from '../lib/date.js';
 import { SessionTracker } from './session-tracker.js';
-import { MetricAggregator } from '../shared/index.js';
+import { MetricAggregator } from '../core/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -1325,6 +1325,27 @@ describe('subagent token support', () => {
     const metrics = tracker.getMetrics();
     expect(metrics.parentCostUsd).toBeGreaterThan(0);
     expect(metrics.subagentCostUsd).toBe(0);
+  });
+
+  it('subagentByAgentType carries per-category dollars priced per call, across models', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, cacheReadTokens: 100_000, totalTokens: 10_000 }),
+      'claude-haiku-4-5',
+      { agentId: 'agent-1', agentType: 'Explore' },
+    );
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, cacheReadTokens: 100_000, totalTokens: 10_000 }),
+      'claude-opus-4-5',
+      { agentId: 'agent-2', agentType: 'Explore' },
+    );
+
+    const usd = tracker.getMetrics().subagentByAgentType['Explore']!.breakdownUsd!;
+
+    expect(usd.inputUsd).toBeCloseTo(0.06, 10);
+    expect(usd.cacheReadUsd).toBeCloseTo(0.06, 10);
+    expect(usd.outputUsd).toBe(0);
+    expect(usd.cacheCreationUsd).toBe(0);
   });
 
   it('ctx.agentId + ctx.agentType set → cost/tokens/count accumulate in subagentByAgentType[agentType]', () => {

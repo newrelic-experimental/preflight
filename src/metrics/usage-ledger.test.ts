@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import type { TokenUsage } from '../shared/index.js';
+import type { TokenUsage } from '../core/index.js';
 
 import {
   UsageLedger,
@@ -149,6 +149,27 @@ describe('UsageLedger', () => {
     expect(ledger.claim(appRange(0, [0, 0, 0], [2_000, 300, 500]).id, usageOf(reread))).toBeNull();
     const fresh = appRange(0, [2_000, 300, 500], [2_100, 300, 500]);
     expect(ledger.claim(fresh.id, usageOf(fresh))?.id).toBe(fresh.id);
+  });
+
+  it('keeps a subagent call’s dollars by token category through a save and load', () => {
+    const categoryUsd = {
+      inputUsd: 0.25,
+      outputUsd: 0.5,
+      cacheReadUsd: 0.125,
+      cacheCreationUsd: 0.125,
+    };
+    const entry = makeEntry({
+      id: 'msg_sub',
+      agentId: 'a',
+      agentType: 'Explore',
+      replaces: false,
+      categoryUsd,
+    });
+    const [loaded] = decodeUsageLedger(encodeUsageLedger([entry])).entries;
+    expect(loaded?.categoryUsd).toEqual(categoryUsd);
+    const ledger = new UsageLedger();
+    ledger.insert(loaded!);
+    expect(ledger.fold().subagentByAgentType.Explore?.breakdownUsd).toEqual(categoryUsd);
   });
 
   it('unions overlapping Copilot app ranges the same whichever copy goes first', () => {

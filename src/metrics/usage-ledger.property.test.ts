@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { TokenUsage } from '../shared/index.js';
+import type { TokenUsage } from '../core/index.js';
 
 import { BilledTurnLedger } from '../hooks/billed-turn-ledger.js';
 import { HookEventProcessor } from '../hooks/event-processor.js';

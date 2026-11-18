@@ -19,7 +19,7 @@ import type { SessionResumeTracker } from '../metrics/session-resume-tracker.js'
 import { buildCostForecastFromInputs } from '../metrics/cost-forecast.js';
 import { localDateKey } from '../lib/date.js';
 import { resolvePricing } from '../metrics/pricing-overlay.js';
-import type { TokenUsage } from '../shared/index.js';
+import type { TokenUsage } from '../core/index.js';
 import {
   errorResult,
   requireTracker,

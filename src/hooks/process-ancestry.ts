@@ -45,7 +45,7 @@
 import { execFileSync as nodeExecFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 
 const logger = createLogger('process-ancestry');
 

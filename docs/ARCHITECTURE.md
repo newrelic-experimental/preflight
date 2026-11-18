@@ -24,7 +24,7 @@ Preflight runs as a sidecar to your AI coding session. It collects hook events f
  │   (hook path — not MCP)   │                       │
  │                           │                       │
  │   collector-script.ts     │                       │
- │   < 5 ms · stdin → disk   │                       │
+ │   ~5 ms · stdin → disk    │                       │
  │           │               │                       │
  │           ▼               │                       │
  │   buffer-SESSION.jsonl    │                       │
@@ -100,7 +100,7 @@ Proxy mode is a **separate, mutually exclusive** code path. It does not use hook
 
 | Component              | File                           | Purpose                                                                                                                                                                        |
 | ---------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `collector-script.ts`  | `src/hooks/`                   | Spawned by Claude Code hooks; reads hook JSON from stdin, appends to buffer file. Must complete in < 5 ms.                                                                     |
+| `collector-script.ts`  | `src/hooks/`                   | Spawned by Claude Code hooks; reads hook JSON from stdin, appends to buffer file. Budget about 5 ms in-process.                                                                |
 | `buffer-SESSION.jsonl` | `~/.newrelic-preflight/`       | Ring buffer of raw hook events. Written by collector, drained by `HookEventProcessor`.                                                                                         |
 | `HookEventProcessor`   | `src/hooks/event-processor.ts` | Polls buffer every 100 ms. Pairs `PreToolUse` and `PostToolUse` events into `ToolCallRecord` objects.                                                                          |
 | `PlatformRegistry`     | `src/platforms/`               | Detects the active AI coding platform and normalizes its tool names to Preflight's vocabulary. See [ADAPTERS.md](https://newrelic-experimental.github.io/preflight/adapters/). |
@@ -125,7 +125,7 @@ Proxy mode is a **separate, mutually exclusive** code path. It does not use hook
 
 ## Key Design Decisions
 
-**Hooks are not MCP.** The collection path (hooks → collector → buffer) runs entirely outside the MCP transport. Hook processes are spawned synchronously by Claude Code and must exit in under 5 ms — they cannot block on network or inter-process calls. The MCP server reads from the buffer asynchronously on its own poll interval.
+**Hooks are not MCP.** The collection path (hooks → collector → buffer) runs entirely outside the MCP transport. Hook processes are spawned synchronously by Claude Code and have a budget of about 5 ms in-process — they cannot block on network or inter-process calls. Measured on an Apple M4, a hook with a tool-use id takes a median 4.6 to 5.7 ms depending on load, nearly all of it loading the module, and a post without one adds about 0.5 ms for its minted-id lookup. The MCP server reads from the buffer asynchronously on its own poll interval.
 
 **Processing pipeline is mode-agnostic.** `HookEventProcessor`, the metric trackers, and `NrIngestManager` run identically regardless of whether Preflight is in `--stdio` or `--local` mode. Only the consumer layer (MCP tools vs. dashboard) differs between modes.
 

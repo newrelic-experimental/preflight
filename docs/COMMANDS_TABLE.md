@@ -225,7 +225,7 @@ Self-report token usage for cost tracking. Called by Claude Code to report its o
 **How it works:**
 
 1. Constructs a `TokenUsage` object from the reported counts
-2. Calls `CostTracker.recordUsage(usage, model, { usageId: request_id })` which looks up per-token prices from the pricing table (`src/shared/pricing-data.ts`)
+2. Calls `CostTracker.recordUsage(usage, model, { usageId: request_id })` which looks up per-token prices from the pricing table (`src/core/pricing-data.ts`)
 3. Cost breakdown: `inputCost = inputTokens * inputPricePerToken`, similarly for output, thinking, cache read, and cache creation tokens
 4. Adds the report to the session's usage ledger, keyed by `request_id`. A `request_id` already in the ledger (the transcript watcher reported the same response) adds nothing and returns `"recorded": false, "reason": "duplicate_request_id"`
 5. Without a `request_id`, a report is ignored once the session holds a watcher's usage (transcript, Copilot, Copilot SDK, or Copilot app), since it cannot be told apart from a response the watcher already counted: the tool returns `"recorded": false, "reason": "already_counted_from_transcript"`

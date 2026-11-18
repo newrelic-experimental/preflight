@@ -17,7 +17,7 @@
 // `sendEventsFn` with the buffered events.
 
 import { writeFileSync, appendFileSync } from 'node:fs';
-import { HarvestScheduler } from '../../../dist/harvest/harvest-scheduler.js';
+import { HarvestScheduler } from '../../../../dist/core/harvest/harvest-scheduler.js';
 
 const outputPath = process.argv[2];
 if (!outputPath) {

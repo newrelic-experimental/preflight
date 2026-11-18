@@ -7,8 +7,8 @@
  * extracts key fields, and appends a single JSONL line to the buffer file.
  *
  * Design constraints:
- *   - <5ms execution budget — must never slow Claude Code
- *   - No heavy imports (no shared package, no commander, no zod)
+ *   - ~5ms in-process execution budget — must never slow Claude Code
+ *   - No heavy imports (no core imports, no commander, no zod)
  *   - All errors caught silently — always exits 0
  *   - Config via env vars only (no file reads for config)
  */
@@ -17,7 +17,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, utimesSync } from '
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { redactSecrets } from '../redaction-patterns.js';
+import { cutAtWord, redactSecrets } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import {
   CLAUDE_CODE_ENV_SIGNALS,
@@ -29,6 +29,7 @@ import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
 import { breadcrumbRoot, breadcrumbWriter } from './session-breadcrumbs.js';
 import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
+import { mintToolUseId, takeMintedToolUseId } from './minted-tool-use-ids.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -58,7 +59,7 @@ function getBufferPath(sessionId?: string): string {
 }
 
 // Cache only the file-read result to avoid repeated disk I/O on the hot path
-// (<5ms budget per hook invocation) while keeping the env-var check dynamic
+// (~5ms budget per hook invocation) while keeping the env-var check dynamic
 // so runtime changes in tests (and future dynamic config) are respected.
 // This also eliminates the TOCTOU window between existsSync and readFileSync.
 const HIGH_SECURITY_FROM_FILE: boolean = (() => {
@@ -89,11 +90,20 @@ function getRecordContent(): boolean {
   );
 }
 
-function getMaxContentLength(): number {
+const DEFAULT_MAX_CONTENT_LENGTH = 10_240;
+const MIN_MAX_CONTENT_LENGTH = 256;
+const MAX_MAX_CONTENT_LENGTH = 1_048_576;
+
+// Clamps like envInt in src/config.ts. Not imported: config.ts pulls zod and the
+// config loader into the plugin bundle.
+export function getMaxContentLength(): number {
   const val = process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
-  if (val === undefined) return 10_240;
+  if (val === undefined) return DEFAULT_MAX_CONTENT_LENGTH;
   const parsed = parseInt(val, 10);
-  return Number.isNaN(parsed) ? 10_240 : parsed;
+  if (Number.isNaN(parsed)) return DEFAULT_MAX_CONTENT_LENGTH;
+  if (parsed < MIN_MAX_CONTENT_LENGTH) return MIN_MAX_CONTENT_LENGTH;
+  if (parsed > MAX_MAX_CONTENT_LENGTH) return MAX_MAX_CONTENT_LENGTH;
+  return parsed;
 }
 
 /**
@@ -124,7 +134,8 @@ function redact(value: string): string {
   let result = value;
   if (Buffer.byteLength(value, 'utf8') > MAX_REDACT_BYTES) {
     const buf = Buffer.from(value, 'utf8').subarray(0, MAX_REDACT_BYTES);
-    result = buf.toString('utf8').replace(/�$/, ''); // drop any partial surrogate at cut point
+    const kept = buf.toString('utf8').replace(/�$/, ''); // drop any partial surrogate at cut point
+    result = cutAtWord(value, kept.length);
   }
   return redactSecrets(result);
 }
@@ -184,7 +195,7 @@ function hasStringText(block: unknown): block is { text: string } {
 //
 // Hot-path: every PreToolUse / PostToolUse hook runs this. The
 // existsSync + content-equality short-circuit makes the steady state a single
-// stat() and one read per breadcrumb — well under the <5ms budget.
+// stat() and one read per breadcrumb — well under the ~5ms budget.
 // ---------------------------------------------------------------------------
 
 /**
@@ -768,6 +779,9 @@ function getWindsurfToolInfo(data: HookInput): Record<string, unknown> {
 }
 
 let stderrSinkInstalled = false;
+
+// Cursor fires no pre for these, so their post has no minted id to take.
+const POST_ONLY_EVENTS: ReadonlySet<string> = new Set(['beforereadfile', 'afterfileedit']);
 
 /**
  * @param cliEvent The hook command's first argument (`process.argv[2]`), if
@@ -1401,6 +1415,18 @@ function processHook(raw: string, cliEvent?: string): void {
     const bufferDir = dirname(bufferPath);
     if (!existsSync(bufferDir)) {
       mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
+    }
+
+    if (
+      event.toolUseId === undefined &&
+      (event.mode === 'pre' || event.mode === 'post') &&
+      !POST_ONLY_EVENTS.has(eventName ?? '')
+    ) {
+      const id =
+        event.mode === 'pre'
+          ? mintToolUseId(bufferPath, String(event.tool), timestamp)
+          : takeMintedToolUseId(bufferPath, String(event.tool), timestamp);
+      if (id !== undefined) event.toolUseId = id;
     }
 
     const line = JSON.stringify(event) + '\n';

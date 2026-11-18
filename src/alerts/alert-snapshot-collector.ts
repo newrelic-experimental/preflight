@@ -1,4 +1,4 @@
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import type { CostForecast } from '../metrics/cost-forecast.js';
 
 const logger = createLogger('alert-snapshot-collector');

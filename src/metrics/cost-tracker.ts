@@ -7,13 +7,13 @@
  *   2. Self-reporting via the `nr_observe_report_tokens` MCP tool
  *   3. Estimation from hook input/output byte sizes (fallback)
  *
- * Cost calculation delegates to `calculateModelCost()` (pricing-overlay.ts), which normalizes the model id and wraps the shared `calculateCost()`.
+ * Cost calculation delegates to `calculateModelCost()` (pricing-overlay.ts), which normalizes the model id and wraps `calculateCost()`.
  */
 
 import { randomUUID } from 'node:crypto';
 
-import type { TokenUsage, CostBreakdown, MetricAggregator } from '../shared/index.js';
-import { createLogger } from '../shared/index.js';
+import type { TokenUsage, CostBreakdown, MetricAggregator } from '../core/index.js';
+import { createLogger } from '../core/index.js';
 
 import { priceModelUsage } from './pricing-overlay.js';
 import { localDateKey } from '../lib/date.js';
@@ -113,8 +113,8 @@ const LATE_ARRIVAL_REJECTION_MS = LATE_ARRIVAL_MS;
  * counts and everything else untouched. Used to correct Preflight's own
  * list-price computation to an org's real contracted rate (see
  * `CostTrackerOptions.rateMultiplier`) — `calculateCost()` itself lives in
- * `src/shared/`, a vendored snapshot this repo must not edit, so the
- * correction is applied to its output here instead of inside it.
+ * `src/core/`, so the correction is applied to its output here instead of
+ * inside it.
  */
 function scaleCostBreakdown(breakdown: CostBreakdown, factor: number): CostBreakdown {
   return {
@@ -441,6 +441,15 @@ export class CostTracker implements Resettable {
       ...(ctx?.workflowRunId && day !== null && { workflowRunId: ctx.workflowRunId }),
       ...(pricing && { pricing }),
       ...(ctx?.responseMs !== undefined && { responseMs: ctx.responseMs }),
+      ...(ctx?.agentId !== undefined &&
+        ctx.agentType !== undefined && {
+          categoryUsd: {
+            inputUsd: breakdown.inputUsd,
+            outputUsd: breakdown.outputUsd,
+            cacheReadUsd: breakdown.cacheReadUsd,
+            cacheCreationUsd: breakdown.cacheCreationUsd,
+          },
+        }),
     });
     if (recorded) {
       this.reportCount++;

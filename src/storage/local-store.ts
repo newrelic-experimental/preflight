@@ -4,13 +4,14 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
   readdirSync,
   statSync,
 } from 'node:fs';
 import { basename, dirname, resolve, sep } from 'node:path';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import {
   DRAINS_DIR,
   DrainHold,
@@ -28,6 +29,7 @@ import {
 } from './drain-claims.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
 import { BREADCRUMBS_DIR, breadcrumbRoot } from '../hooks/session-breadcrumbs.js';
+import { countMintedToolUseId, MINTED_IDS_DIR_PREFIX } from '../hooks/minted-tool-use-ids.js';
 import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
@@ -55,6 +57,7 @@ const SUBAGENT_CURSOR_RE = new RegExp(
 );
 const TRANSCRIPT_CURSOR_RE = /^\.transcript-pos-(.+)$/;
 const PARENT_TRANSCRIPT_CURSOR_RE = /^\.parent-transcript-pos-(.+)$/;
+const MINTED_IDS_DIR_RE = new RegExp(`^${MINTED_IDS_DIR_PREFIX}buffer-(.+)$`);
 
 /**
  * A buffer file is treated as orphan when its mtime is older than this AND
@@ -165,6 +168,7 @@ export function hasLiveOwningEngine(storagePath: string, sessionId: string): boo
 export class LocalStore {
   private readonly storagePath: string;
   private readonly bufferPath: string;
+  private readonly bufferPathIsOverride: boolean;
   private readonly sessionId: string | null;
   private readonly countedDir: string;
   private readonly ownCountedIds = new Map<string, Set<string>>();
@@ -221,6 +225,8 @@ export class LocalStore {
     }
 
     this.bufferPath = resolvedBufferPath;
+    this.bufferPathIsOverride =
+      bufferPathOrSessionId !== undefined && bufferPathOrSessionId.includes(sep);
     this.sessionId = resolvedSessionId;
   }
 
@@ -336,6 +342,17 @@ export class LocalStore {
       logger.warn('Failed to save counted toolUseIds', { sessionId, error: String(err) });
       return false;
     }
+  }
+
+  /** See `countMintedToolUseId`. The collector keeps minted ids beside the buffer it writes. */
+  countMintedToolUseId(sessionId: string | undefined, id: string, lateUntil: number): void {
+    const bufferPath = this.bufferPathIsOverride
+      ? this.bufferPath
+      : resolve(
+          this.storagePath,
+          `buffer-${typeof sessionId === 'string' && SESSION_ID_RE.test(sessionId) ? sessionId : 'unknown'}.jsonl`,
+        );
+    countMintedToolUseId(bufferPath, id, lateUntil);
   }
 
   hasCountedToolUseId(sessionId: string, toolUseId: string): boolean {
@@ -919,10 +936,19 @@ export class LocalStore {
   gcWatcherCursors(
     activeSessionIds: ReadonlySet<string>,
     discoveryHours: number,
-  ): { subagentCursors: number; transcriptCursors: number; parentTranscriptCursors: number } {
-    if (!existsSync(this.storagePath)) {
-      return { subagentCursors: 0, transcriptCursors: 0, parentTranscriptCursors: 0 };
-    }
+  ): {
+    subagentCursors: number;
+    transcriptCursors: number;
+    parentTranscriptCursors: number;
+    mintedIdDirs: number;
+  } {
+    const none = {
+      subagentCursors: 0,
+      transcriptCursors: 0,
+      parentTranscriptCursors: 0,
+      mintedIdDirs: 0,
+    };
+    if (!existsSync(this.storagePath)) return none;
     let entries: string[];
     try {
       entries = readdirSync(this.storagePath);
@@ -930,7 +956,7 @@ export class LocalStore {
       logger.warn('Failed to enumerate storage path for gcWatcherCursors', {
         error: String(err),
       });
-      return { subagentCursors: 0, transcriptCursors: 0, parentTranscriptCursors: 0 };
+      return none;
     }
 
     const cutoffMs = Date.now() - discoveryHours * 60 * 60 * 1000;
@@ -939,8 +965,25 @@ export class LocalStore {
     let subagentCursors = 0;
     let transcriptCursors = 0;
     let parentTranscriptCursors = 0;
+    let mintedIdDirs = 0;
 
     for (const name of entries) {
+      // A post can arrive long after its session's engine exits, so a minted id
+      // stays until the session is dead and idle past the discovery window.
+      const mintedMatch = MINTED_IDS_DIR_RE.exec(name);
+      if (mintedMatch) {
+        if (activeSessionIds.has(mintedMatch[1])) continue;
+        const path = resolve(this.storagePath, name);
+        try {
+          if (statSync(path).mtimeMs >= cutoffMs) continue;
+          rmSync(path, { recursive: true, force: true });
+          mintedIdDirs++;
+        } catch (err) {
+          logger.debug('Failed to delete stale minted ids', { error: String(err) });
+        }
+        continue;
+      }
+
       const subagentMatch = SUBAGENT_CURSOR_RE.exec(name);
       if (subagentMatch) {
         const parentSessionId = subagentMatch[1];
@@ -993,15 +1036,21 @@ export class LocalStore {
       }
     }
 
-    if (subagentCursors > 0 || transcriptCursors > 0 || parentTranscriptCursors > 0) {
+    if (
+      subagentCursors > 0 ||
+      transcriptCursors > 0 ||
+      parentTranscriptCursors > 0 ||
+      mintedIdDirs > 0
+    ) {
       logger.info('Cleaned up watcher cursor files', {
         subagentCursors,
         transcriptCursors,
         parentTranscriptCursors,
+        mintedIdDirs,
       });
     }
 
-    return { subagentCursors, transcriptCursors, parentTranscriptCursors };
+    return { subagentCursors, transcriptCursors, parentTranscriptCursors, mintedIdDirs };
   }
 
   /**
@@ -1332,34 +1381,42 @@ export class LocalStore {
       readonly path: string;
       readonly firstClaimedAt: number;
       readonly origin: string;
+      readonly stuck: boolean;
     }[] = [];
     let mayAdopt: boolean | undefined;
     for (const claim of drain.claims) {
-      if (claim.owner === process.pid) owned.push({ ...claim, origin: claim.path });
+      if (claim.owner === process.pid) owned.push({ ...claim, origin: claim.path, stuck: false });
       else if (isAdoptable(claim, isPidAlive) && (mayAdopt ??= !ownerLive())) {
-        const path = this.claimDrain(claim.path, drainsDir, claim.buffer, claim.firstClaimedAt);
-        if (path) owned.push({ path, firstClaimedAt: claim.firstClaimedAt, origin: claim.path });
+        const claimed = this.claimDrain(claim.path, drainsDir, claim.buffer, claim.firstClaimedAt);
+        if (claimed === 'gone') continue;
+        const stuck = claimed === 'stuck';
+        owned.push({
+          path: stuck ? claim.path : claimed.path,
+          firstClaimedAt: claim.firstClaimedAt,
+          origin: claim.path,
+          stuck,
+        });
       }
     }
-    const paths = owned
-      .sort((a, b) => a.firstClaimedAt - b.firstClaimedAt || (a.origin < b.origin ? -1 : 1))
-      .map(({ path }) => path);
+    owned.sort((a, b) => a.firstClaimedAt - b.firstClaimedAt || (a.origin < b.origin ? -1 : 1));
 
     const hold = this.holds.get(bufferPath) ?? new DrainHold();
     const events: HookEvent[] = [];
-    const take = (path: string): boolean => {
-      const taken = hold.take(path, this.giveUpOrder);
+    const take = ({ path, stuck }: { readonly path: string; readonly stuck: boolean }): boolean => {
+      const taken = stuck
+        ? hold.holdBehind(path, this.giveUpOrder)
+        : hold.take(path, this.giveUpOrder);
       if (taken === 'stop') return false;
       if (taken !== 'skip') for (const event of parseHookEvents(taken.text)) events.push(event);
       return true;
     };
-    const finished = paths.every(take);
+    const finished = owned.every(take);
     // The buffer is claimed only once every older claim is taken or given up, and ownerLive is
     // asked again on purpose: an engine can adopt the session while the claims above are taken.
     const olderEventsPending = drain.claims.some((claim) => holdsBuffer(claim, isPidAlive));
     if (finished && drain.present && !olderEventsPending && !ownerLive()) {
-      const path = this.claimDrain(bufferPath, drainsDir, basename(bufferPath));
-      if (path) take(path);
+      const claimed = this.claimDrain(bufferPath, drainsDir, basename(bufferPath));
+      if (typeof claimed === 'object') take({ path: claimed.path, stuck: false });
     }
     hold.endPoll();
     if (hold.idle) this.holds.delete(bufferPath);
@@ -1372,7 +1429,7 @@ export class LocalStore {
     drainsDir: string,
     buffer: string,
     firstClaimedAt?: number,
-  ): string | null {
+  ): { readonly path: string } | 'gone' | 'stuck' {
     const to = resolve(drainsDir, formatClaimName(buffer, process.pid, Date.now(), firstClaimedAt));
     try {
       try {
@@ -1383,14 +1440,14 @@ export class LocalStore {
         renameSync(from, to);
       }
       clearFailure(from);
-      return to;
+      return { path: to };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         clearFailure(from);
-      } else {
-        noteFailure(from, 'Failed to claim a buffer for draining — retrying each poll', err);
+        return 'gone';
       }
-      return null;
+      noteFailure(from, 'Failed to claim a buffer for draining — retrying each poll', err);
+      return 'stuck';
     }
   }
 

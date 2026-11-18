@@ -6,7 +6,7 @@
  * test exercises the wiring rather than a copy of it.
  */
 
-import type { CostBreakdown, TokenUsage } from '../shared/index.js';
+import type { CostBreakdown, TokenUsage } from '../core/index.js';
 
 import type { SubagentTurnEvent } from '../hooks/event-processor.js';
 import type { TokenEvent } from '../storage/types.js';
