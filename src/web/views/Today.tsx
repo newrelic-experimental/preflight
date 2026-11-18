@@ -427,27 +427,26 @@ export function Today(): JSX.Element {
   const flagsLoading = aggregatePending && sessionsPending && flagsCount === 0;
   const attentionLoading = antiPatternsPending || sessionsPending;
 
-  const noActivityToday =
+  const todayLoaded =
     !spendLoading &&
     !aggregatePending &&
     !sessionsPending &&
     !antiPatternsPending &&
     !concurrencyPending &&
     !todayHeatmapPending &&
-    !liveSessionsPending &&
-    (aggregate?.sessionCount ?? 0) === 0 &&
-    todayTotal === 0 &&
-    flagsCount === 0;
+    !liveSessionsPending;
+  const noActivityToday =
+    todayLoaded && (aggregate?.sessionCount ?? 0) === 0 && todayTotal === 0 && flagsCount === 0;
 
   return (
     <section>
       <GeoBanner />
       <header className="flex items-baseline justify-between mb-4">
         <h1 className="text-xl font-semibold gradient-text">Today</h1>
-        <span className="flex items-baseline gap-3">
-          {!noActivityToday && <EstimateNote />}
+        <div className="flex items-baseline gap-3">
+          {todayLoaded && !noActivityToday && <EstimateNote />}
           <span className="text-xs text-ink-muted">{headerTimestamp}</span>
-        </span>
+        </div>
       </header>
       <UnpricedSpendNotice
         unpricedByModel={aggregate?.unpricedByModel}
