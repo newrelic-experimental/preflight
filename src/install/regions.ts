@@ -7,7 +7,7 @@
  * compiler-enforced sync.
  */
 
-import { stagingHost } from '../shared/transport/http-client.js';
+import { stagingHost } from '../core/transport/http-client.js';
 
 export type RegionKey = 'us' | 'eu' | 'staging' | 'gov' | 'jp';
 

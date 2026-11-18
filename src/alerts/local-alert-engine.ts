@@ -1,4 +1,4 @@
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 
 import type { AlertEvent } from '../dashboard/live-event-bus.js';
 import type { SnapshotWindowSpec } from './alert-snapshot-collector.js';

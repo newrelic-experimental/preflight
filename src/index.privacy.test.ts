@@ -166,6 +166,7 @@ describe('privacy proof — built binary in mode=local', () => {
     const proc = spawn(process.execPath, [distIndex, '--stdio'], {
       env: {
         ...process.env,
+        MCP_CLIENT: 'claude-code',
         NR_AI_MODE: 'local',
         NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStorage,
         NEW_RELIC_LICENSE_KEY: '',
