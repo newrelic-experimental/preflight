@@ -3,8 +3,8 @@
  * of recent calls, takes the first failed call and the calls after it, and
  * flags them as a retry when they all failed or their inputs are near-identical
  * (Levenshtein similarity over each call's serialized non-metadata fields, see
- * computeGroupSimilarity()). Calls before the first failure are never retries.
- * Successful repeats are not retries; AntiPatternDetector covers those. An
+ * computeGroupSimilarity()). Calls before the first failure are never retries,
+ * and a success after it counts only as the retry that finally worked. An
  * alert fires only when the call just recorded joins the offending group, and
  * each call is charged to at most one alert.
  */
