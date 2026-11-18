@@ -121,18 +121,23 @@ describe('RequestTimer', () => {
 
   // 7. markFirstToken idempotent
   it('only records the first markFirstToken() call', () => {
-    const timer = new RequestTimer();
-    timer.start();
-    busyWait(1);
-    timer.markFirstToken();
-    busyWait(5);
-    timer.markFirstToken(); // should be ignored
-    timer.stop();
+    let now = 0;
+    const nowSpy = jest.spyOn(performance, 'now').mockImplementation(() => now);
+    try {
+      const timer = new RequestTimer();
+      timer.start();
+      now = 1;
+      timer.markFirstToken();
+      now = 6;
+      timer.markFirstToken();
+      timer.stop();
 
-    const metrics = timer.getMetrics();
-    // TTFT should be much closer to 1ms than to 6ms — less than half
-    // of total duration since the first mark happened early
-    expect(metrics.timeToFirstTokenMs!).toBeLessThan(metrics.durationMs / 2);
+      const metrics = timer.getMetrics();
+      expect(metrics.timeToFirstTokenMs).toBe(1);
+      expect(metrics.durationMs).toBe(6);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   // 8. generationDurationMs clamped to 0 when markThinkingEnd() called after stop()
@@ -208,20 +213,6 @@ describe('RequestTimer', () => {
       } finally {
         nowSpy.mockRestore();
       }
-    });
-
-    it('markFirstToken remains strictly first-write-wins', () => {
-      const timer = new RequestTimer();
-      timer.start();
-      busyWait(1);
-      timer.markFirstToken();
-      busyWait(5);
-      timer.markFirstToken(); // should be ignored
-      timer.stop();
-
-      const metrics = timer.getMetrics();
-      // TTFT close to first call (~1ms), not second (~6ms).
-      expect(metrics.timeToFirstTokenMs!).toBeLessThan(metrics.durationMs / 2);
     });
   });
 
