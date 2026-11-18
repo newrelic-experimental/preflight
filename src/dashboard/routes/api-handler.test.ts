@@ -6858,6 +6858,7 @@ describe('api-handler GET /api/settings', () => {
       weeklyBudgetUsd: 200,
       retainSessionsDays: 30,
       digestWebhookUrl: 'https://hooks.slack.com/services/T/B/STARTUP',
+      digestSchedule: '0 9 * * 1',
       personalAlertThresholds: {
         dailyCostUsd: 2,
         sessionCostUsd: 0.5,
@@ -7036,6 +7037,7 @@ describe('api-handler GET /api/settings', () => {
       weeklyBudgetUsd: 9999,
       retainSessionsDays: 7,
       digestWebhookUrl: 'https://hooks.slack.com/services/T/B/DISK',
+      digestSchedule: '0 8 * * 2',
       alerts: {
         personal: {
           dailyCostUsd: 1,
