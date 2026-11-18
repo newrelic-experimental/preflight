@@ -504,7 +504,11 @@ export class LocalStore {
       if (!existsSync(this.storagePath)) {
         mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
       }
-      writeFileSync(heartbeatPath, String(pid), { mode: 0o600 });
+      // Rename into place: a sibling engine reading a half-written heartbeat
+      // sees no live owner, then archives this session's buffer as an orphan.
+      const tmpPath = `${heartbeatPath}.${process.pid}.tmp`;
+      writeFileSync(tmpPath, String(pid), { mode: 0o600 });
+      renameSync(tmpPath, heartbeatPath);
       // Sidecar metadata for listActiveStdioInstances() — kept separate from
       // the heartbeat's own bare-PID content so hasLiveOwner(),
       // getActiveSessionIdsFromHeartbeats(), and gcOrphanBuffers() (which all
