@@ -34,6 +34,7 @@ import { PLATFORM_NAMES } from '../platforms/platform-names.js';
 import { sessionBreadcrumbWriters } from '../platforms/types.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 import { HookEventProcessor } from './event-processor.js';
+import { sessionBreadcrumbs } from './session-resolver.js';
 import { LocalStore } from '../storage/local-store.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
@@ -2521,6 +2522,17 @@ describe('collector-script', () => {
         if (reads.length > 0 && writer !== 'copilot-sdk') expect(reads).toContain(writer);
       },
     );
+
+    it('keeps another engine off a session whose ppid breadcrumbs are gone and whose tagged cwd breadcrumb a newer session replaced', () => {
+      const kiroStartedAt = Date.now() - 60_000;
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-cc1', cwd: '/projects/test' }));
+      rmSync(resolve(tmpDir, 'session-by-ppid'), { recursive: true });
+      rmSync(dirname(crumbs('claude-code').ppid), { recursive: true });
+      writeFileSync(crumbs('claude-code').cwd, 'sess-cc2');
+      const kiro = sessionBreadcrumbs(tmpDir, ['kiro', 'unattributed'], kiroStartedAt);
+      expect(kiro.cwd('/projects/test')).toBeNull();
+    });
 
     it('files a hook under the engine its command names, over an inherited Claude Code env', () => {
       process.env.CLAUDECODE = '1';
