@@ -31,6 +31,7 @@ import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
 import { BREADCRUMBS_DIR, breadcrumbRoot } from '../hooks/session-breadcrumbs.js';
 import { countMintedToolUseId, MINTED_IDS_DIR_PREFIX } from '../hooks/minted-tool-use-ids.js';
 import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
+import { renameIntoPlace } from './rename-into-place.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -507,8 +508,12 @@ export class LocalStore {
       // Rename into place: a sibling engine reading a half-written heartbeat
       // sees no live owner, then archives this session's buffer as an orphan.
       const tmpPath = `${heartbeatPath}.${process.pid}.tmp`;
-      writeFileSync(tmpPath, String(pid), { mode: 0o600 });
-      renameSync(tmpPath, heartbeatPath);
+      try {
+        writeFileSync(tmpPath, String(pid), { mode: 0o600 });
+        renameIntoPlace(tmpPath, heartbeatPath, String(pid));
+      } finally {
+        rmSync(tmpPath, { force: true });
+      }
       // Sidecar metadata for listActiveStdioInstances() — kept separate from
       // the heartbeat's own bare-PID content so hasLiveOwner(),
       // getActiveSessionIdsFromHeartbeats(), and gcOrphanBuffers() (which all
