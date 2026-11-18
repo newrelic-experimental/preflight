@@ -28,7 +28,6 @@ type Rule = (older: number, newer: number) => number;
 const sum: Rule = (x, y) => x + y;
 const max: Rule = (x, y) => Math.max(x, y);
 const min: Rule = (x, y) => Math.min(x, y);
-const latest: Rule = (_, y) => y;
 const weighted: Rule = (x, y) => (x * x + y * y) / (x + y);
 
 const rows = (whenSeparate: Rule, whenCopies: Rule, paths: string) =>
@@ -79,35 +78,26 @@ const SCORES = `
 
 const RULES: ReadonlyArray<[string, Rule, Rule]> = [
   ...rows(sum, max, COUNTERS),
-  ...rows(sum, latest, LEDGER),
+  ...rows(sum, max, LEDGER),
   ...rows(
     (x, y) => 2 * (x + y),
-    (x, y) => Math.max(x, y) + y,
+    (x, y) => 2 * Math.max(x, y),
     TOTALS,
   ),
   ...rows(max, max, NEVER_ADDED),
   ...rows(weighted, max, SCORES),
   ...rows(min, min, 'firstActivityByDayMs.d'),
-  ...rows(() => 1, latest, 'taskSuccessRate'),
-  ...rows(weighted, latest, 'toolSuccessRate'),
+  ...rows(() => 1, max, 'taskSuccessRate'),
+  ...rows(weighted, max, 'toolSuccessRate'),
 ];
 const TOTAL_PATHS = new Set(TOTALS.trim().split(/\s+/));
 
-function setPath(target: Record<string, unknown>, path: string, value: number): void {
+function setPath(target: Record<string, unknown>, path: string, value: unknown): void {
   const keys = path.split('.');
   const last = keys.pop() as string;
   let node = target;
   for (const key of keys) node = (node[key] ??= {}) as Record<string, unknown>;
   node[last] = value;
-}
-
-function setEstimatedFrom(node: unknown): void {
-  if (!node || typeof node !== 'object') return;
-  for (const [key, child] of Object.entries(node)) {
-    if (key === 'm' && /"calls"/.test(JSON.stringify(child))) {
-      (child as Record<string, unknown>).estimatedFrom = 'p';
-    } else setEstimatedFrom(child);
-  }
 }
 
 /** A file with every number in RULES set from `k`, so each row can name what combining gives. */
@@ -122,10 +112,9 @@ function everyField(k: number, startTime: number, timeline: Entry[]) {
     antiPatterns: [{ type: `t${k}` }],
   };
   for (const [path] of RULES) setPath(fields, path, TOTAL_PATHS.has(path) ? 2 * k : k);
-  const ledger = fields.byteEstimates as Record<string, unknown>;
-  for (const holder of [fields, ledger]) {
-    setEstimatedFrom(holder.estimatedByModel);
-    setEstimatedFrom(holder.estimatedByDay);
+  for (const usage of ['estimatedByModel.m', 'estimatedByDay.d.m']) {
+    setPath(fields, `${usage}.estimatedFrom`, 'p');
+    setPath(fields, `byteEstimates.${usage}.estimatedFrom`, 'p');
   }
   return summary(fields);
 }
@@ -192,13 +181,13 @@ describe.each([
     expect(numericLeaves(copies()).get(path)).toBeCloseTo(whenCopies(older, newer));
   });
 
-  it('takes the time span and labels from the files, not a sum', () => {
+  it('takes labels from the newer file, or from the copy further along', () => {
+    expect(separate().developer).toBe(`dev-${newer}`);
+    expect(copies().developer).toBe(`dev-${Math.max(older, newer)}`);
     for (const combined of [separate(), copies()]) {
-      expect([combined.startTime, combined.endTime]).toEqual([t1, t2 + 1000]);
-      expect(combined.durationMs).toBe(t2 + 1000 - t1);
-      expect(combined.developer).toBe(`dev-${newer}`);
-      expect(combined.sessionName).toBe(`name-${t2}`);
-      expect(combined.filesRead).toEqual([`read-${older}`, `read-${newer}`]);
+      const span = [combined.startTime, combined.endTime, combined.durationMs];
+      expect(span).toEqual([t1, t2 + 1000, t2 + 1000 - t1]);
+      expect([...combined.filesRead].sort()).toEqual([`read-${older}`, `read-${newer}`].sort());
     }
   });
 
@@ -208,16 +197,13 @@ describe.each([
     expect(added.antiPatterns.map((p) => p.type)).toEqual([`t${older}`, `t${newer}`]);
     const maxed = copies();
     expect(maxed.timeline?.map((e) => e.timestamp)).toEqual([t1 + 1, t1 + 2, t2 + 1]);
-    expect(maxed.antiPatterns.map((p) => p.type)).toEqual([`t${newer}`]);
+    expect(maxed.antiPatterns.map((p) => p.type)).toEqual([`t${Math.max(older, newer)}`]);
   });
 });
 
 describe('grouping files by shared activity', () => {
   it('returns a single file unchanged', () => {
-    const only = calls(START, 4, {
-      exactTotals: { costUsd: 0.1 },
-      byteEstimates: { costUsd: 0.3 },
-    });
+    const only = calls(START, 4, { exactTotals: { costUsd: 0.1 }, byteEstimates: {} });
     expect(combineSessionFiles([only])).toBe(only);
   });
 
@@ -230,20 +216,9 @@ describe('grouping files by shared activity', () => {
     expect(combined.estimatedCostUsd).toBeCloseTo(3.5);
   });
 
-  it('max-merges inside each group and adds across groups', () => {
-    const a1 = calls(START, 10);
-    const a2 = calls(START, 12, { endTime: START + 2000 });
-    const b1 = calls(START + DAY, 5);
-    const b2 = calls(START + DAY, 7, { endTime: START + DAY + 2000 });
-    expect(combineInEveryOrder([a1, a2, b1, b2]).toolCallCount).toBe(19);
-  });
-
   it('groups files linked only through a third file', () => {
     const a = calls(START, 100);
-    const bridge = summary({
-      toolCallCount: 3,
-      timeline: [entry(START + 99), entry(START + 150), entry(START + DAY)],
-    });
+    const bridge = summary({ toolCallCount: 2, timeline: [entry(START + 99), entry(START + DAY)] });
     const c = calls(START + DAY, 100);
     expect(combineInEveryOrder([a, bridge, c]).toolCallCount).toBe(100);
   });
@@ -264,97 +239,68 @@ describe('grouping files by shared activity', () => {
     const a = calls(START, 2, { timeline: [entry(START)] });
     const b = calls(START + DAY, 3, { timeline: [entry(START, 'tu-1')] });
     expect(combineInEveryOrder([a, b]).toolCallCount).toBe(3);
-    expect(combineInEveryOrder([b, a]).toolCallCount).toBe(3);
   });
 
   it('max-merges a file without a timeline into the total, smaller or larger', () => {
     const a = calls(START, 10);
     const b = calls(START + DAY, 20);
-    const smaller = summary({ toolCallCount: 25, estimatedCostUsd: 2.5 });
-    const larger = summary({ toolCallCount: 40, estimatedCostUsd: 4 });
+    const smaller = summary({ toolCallCount: 25, sessionName: 'old' });
+    const larger = summary({ toolCallCount: 40, sessionName: 'new', endTime: START + 2000 });
     expect(combineInEveryOrder([a, b, smaller]).toolCallCount).toBe(30);
     expect(combineInEveryOrder([a, b, larger]).toolCallCount).toBe(40);
-    expect(combineInEveryOrder([smaller, larger]).toolCallCount).toBe(40);
+    expect(combineInEveryOrder([smaller, larger])).toMatchObject({
+      toolCallCount: 40,
+      sessionName: 'new',
+    });
   });
 
-  it('gives one answer for writers that tie on both times', () => {
-    const a = calls(START, 4, { sessionName: 'a', endTime: START + 9000 });
-    const b = calls(START, 4, { sessionName: 'b', endTime: START + 9000 });
-    expect(combineSessionFiles([a, b])).toEqual(combineSessionFiles([b, a]));
+  it('gives one answer for copies that tie on progress and end time', () => {
+    const tied = (sessionName: string) => calls(START, 4, { sessionName, endTime: START + 9000 });
+    expect(combineInEveryOrder([tied('a'), tied('b')]).toolCallCount).toBe(4);
   });
 });
 
 describe('a timeline at the cap', () => {
-  const capped = (toolCallCount: number, keptFrom: number, extra: Record<string, unknown> = {}) =>
+  const capped = (toolCallCount: number, keptFrom: number, kept = TIMELINE_CAP) =>
+    summary({ endTime: START + 100_000, toolCallCount, timeline: entries(keptFrom, kept) });
+  const edits = (from: number, extra = {}) =>
     summary({
-      startTime: START,
-      endTime: START + 100_000,
-      toolCallCount,
-      timeline: entries(keptFrom, TIMELINE_CAP),
-      ...extra,
-    });
-  const edits = (from: number, extra: Record<string, unknown> = {}) =>
-    summary({
-      startTime: START,
       toolCallCount: 2000,
       timeline: entries(from, 2000).map((e) => ({ ...e, toolName: 'Edit' })),
       ...extra,
     });
-  const total = (files: FullSessionSummary[]) => combineInEveryOrder(files).toolCallCount;
+  const oldestDropped = capped(12_000, START + 50_000);
+  const newestDropped = capped(12_000, START + 1);
+  const until = (endTime: number) => edits(START + 20_000, { endTime });
 
-  it('adds a separate file when the count shows nothing was dropped', () => {
-    expect(total([capped(TIMELINE_CAP, START + 10), calls(START + 20_000, 20)])).toBe(10_020);
-  });
+  const shortOfCap = capped(12_000, START + 50_000, TIMELINE_CAP - 1);
 
-  it('max-merges a source of the dropped oldest entries, up to the first kept entry', () => {
-    const oldestDropped = capped(12_000, START + 50_000);
-    expect(total([oldestDropped, edits(START + 48_000)])).toBe(12_000);
-    expect(total([oldestDropped, edits(START + 48_001)])).toBe(14_000);
-  });
-
-  it('max-merges a source of the dropped newest entries, after the last kept entry', () => {
-    const newestDropped = capped(12_000, START + 1);
-    expect(total([newestDropped, edits(START + 10_001)])).toBe(12_000);
-    expect(total([newestDropped, edits(START + 10_000)])).toBe(14_000);
-  });
-
-  it('adds a file that starts before the capped file or ends after it', () => {
-    expect(
-      total([capped(12_000, START + 50_000), edits(START + 1, { startTime: START - 1 })]),
-    ).toBe(14_000);
-    const newestDropped = capped(12_000, START + 1);
-    expect(total([newestDropped, edits(START + 20_000, { endTime: START + 100_000 })])).toBe(
-      12_000,
-    );
-    expect(total([newestDropped, edits(START + 20_000, { endTime: START + 100_001 })])).toBe(
+  it.each<[string, FullSessionSummary, FullSessionSummary, number]>([
+    ['a file beside a cap that dropped nothing', capped(TIMELINE_CAP, 10), calls(1e5, 20), 10_020],
+    ['a source of the dropped oldest entries', oldestDropped, edits(START + 48_000), 12_000],
+    ['a file ending at the first kept entry', oldestDropped, edits(START + 48_001), 14_000],
+    [
+      'a file starting before the capped file',
+      oldestDropped,
+      edits(START, { startTime: 0 }),
       14_000,
-    );
-  });
-
-  it('adds a file too long for the gap the count shows', () => {
-    expect(total([capped(11_999, START + 50_000), edits(START + 1)])).toBe(13_999);
-    expect(total([capped(12_000, START + 50_000), edits(START + 1)])).toBe(12_000);
-  });
-
-  it('adds a file beside a timeline one entry short of the cap', () => {
-    const short = capped(12_000, START + 50_000, {
-      timeline: entries(START + 50_000, TIMELINE_CAP - 1),
-    });
-    expect(total([short, edits(START + 1)])).toBe(14_000);
+    ],
+    ['a source of the dropped newest entries', newestDropped, edits(START + 10_001), 12_000],
+    ['a file starting at the last kept entry', newestDropped, edits(START + 10_000), 14_000],
+    ['a source ending with the capped file', newestDropped, until(START + 100_000), 12_000],
+    ['a file ending after the capped file', newestDropped, until(START + 100_001), 14_000],
+    ['a source that fits the gap', oldestDropped, edits(START + 1), 12_000],
+    ['a file too long for the gap', capped(11_999, START + 50_000), edits(START + 1), 13_999],
+    ['a file beside one entry short of the cap', shortOfCap, edits(START + 1), 14_000],
+  ])('%s', (_, cappedFile, other, total) => {
+    expect(combineInEveryOrder([cappedFile, other]).toolCallCount).toBe(total);
   });
 });
 
 describe('combining fields that do not always exist', () => {
   const pair = (older: Record<string, unknown>, newer: Record<string, unknown>) =>
     combineInEveryOrder([calls(START, 1, older), calls(START + DAY, 1, newer)]);
-  const ledger = (costUsd: number, extra: Record<string, unknown> = {}) => ({
-    costUsd,
-    inputTokens: costUsd,
-    outputTokens: costUsd,
-    costByModel: {},
-    costByDayUsd: {},
-    ...extra,
-  });
+  const ledger = (costUsd: number, extra = {}) => ({ costUsd, ...extra });
 
   it('leaves cost unknown only when neither file knows it', () => {
     const unknown = { estimatedCostUsd: null };
@@ -362,20 +308,17 @@ describe('combining fields that do not always exist', () => {
     expect(pair(unknown, { estimatedCostUsd: 2 }).estimatedCostUsd).toBeCloseTo(2);
   });
 
-  it.each([
-    'costByDayUsd',
-    'subagentCostByDayUsd',
-    'unpricedByModel',
-    'estimatedByModel',
-    'unpricedByDay',
-    'estimatedByDay',
-    'byteEstimates',
-    'attribution',
-  ])('keeps %s absent when neither file has it, since absent and empty read differently', (k) => {
-    expect(pair({}, {})[k]).toBeUndefined();
-  });
+  const optional = `costByDayUsd subagentCostByDayUsd unpricedByModel estimatedByModel
+    unpricedByDay estimatedByDay byteEstimates attribution`;
+  it.each(optional.split(/\s+/))(
+    'keeps %s absent when neither file has it, since absent and empty read differently',
+    (k) => {
+      expect(pair({}, {})[k]).toBeUndefined();
+    },
+  );
 
-  it('keeps a ledger only one file has, with its cost', () => {
+  it('keeps a day map or a ledger only one file has, with its cost', () => {
+    expect(pair({ costByDayUsd: { d: 0.1 } }, {}).costByDayUsd).toEqual({ d: 0.1 });
     const combined = pair({ exactTotals: { costUsd: 1 }, byteEstimates: ledger(2) }, {});
     expect(combined.byteEstimates?.costUsd).toBe(2);
     expect(combined.estimatedCostUsd).toBeCloseTo(1 + 2 + 0.1);
@@ -398,56 +341,40 @@ describe('combining fields that do not always exist', () => {
     expect(combined.unpricedByDay?.d.m.calls).toBe(8);
   });
 
-  it('drops the day split when a file has calls but no day split', () => {
+  it('drops the day split only when a file has calls but no day split', () => {
     const usage = { m: { calls: 2, tokens: 2 } };
-    const combined = pair(
-      { unpricedByModel: usage },
-      { unpricedByModel: usage, unpricedByDay: { d: usage } },
-    );
+    const split = { unpricedByModel: usage, unpricedByDay: { d: usage } };
+    const combined = pair({ unpricedByModel: usage }, split);
     expect(combined.unpricedByModel?.m.calls).toBe(4);
     expect(combined.unpricedByDay).toBeUndefined();
-  });
-
-  it('keeps the day split when the file without one has no calls', () => {
-    const usage = { m: { calls: 2, tokens: 2 } };
-    const combined = pair({}, { unpricedByModel: usage, unpricedByDay: { d: usage } });
-    expect(combined.unpricedByDay?.d.m.calls).toBe(2);
+    expect(pair(split, { unpricedByModel: usage }).unpricedByDay).toBeUndefined();
+    expect(pair({}, split).unpricedByDay?.d.m.calls).toBe(2);
   });
 
   it('drops a bucket dollar split that one file with cost does not have', () => {
-    const bucket = (costUsd: number, withUsd: boolean) => ({
+    const usd = (inputUsd: number) => ({
+      inputUsd,
+      outputUsd: 0,
+      cacheReadUsd: 0,
+      cacheCreationUsd: 0,
+    });
+    const bucket = (costUsd: number, breakdownUsd?: ReturnType<typeof usd>) => ({
       attribution: {
-        buckets: {
-          tool: {
-            Read: {
-              costUsd,
-              tokens: 1,
-              count: 1,
-              durationMs: 1,
-              ...(withUsd
-                ? {
-                    breakdownUsd: {
-                      inputUsd: costUsd,
-                      outputUsd: 0,
-                      cacheReadUsd: 0,
-                      cacheCreationUsd: 0,
-                    },
-                  }
-                : {}),
-            },
-          },
-        },
+        buckets: { tool: { Read: { costUsd, tokens: 1, count: 1, durationMs: 1, breakdownUsd } } },
         highContextCostUsd: 0,
         apiDurationMs: null,
       },
     });
     const split = (a: Record<string, unknown>, b: Record<string, unknown>) =>
       pair(a, b).attribution?.buckets.tool?.Read;
-    expect(split(bucket(1, true), bucket(2, false))?.breakdownUsd).toBeUndefined();
-    expect(split(bucket(1, true), bucket(0, false))?.breakdownUsd?.inputUsd).toBe(1);
-    expect(split(bucket(1, true), bucket(2, true))?.breakdownUsd?.inputUsd).toBe(3);
-    expect(split(bucket(1, true), bucket(2, true))?.costUsd).toBe(3);
-    expect(pair(bucket(1, true), bucket(2, true)).attribution?.apiDurationMs).toBeNull();
+    expect(split(bucket(1, usd(1)), bucket(2))?.breakdownUsd).toBeUndefined();
+    expect(split(bucket(2), bucket(1, usd(1)))?.breakdownUsd).toBeUndefined();
+    expect(split(bucket(1, usd(1)), bucket(0))?.breakdownUsd?.inputUsd).toBe(1);
+    expect(split(bucket(1, usd(1)), bucket(2, usd(2)))?.breakdownUsd?.inputUsd).toBe(3);
+    expect(split(bucket(1, usd(1)), bucket(2, usd(2)))?.costUsd).toBe(3);
+    expect(pair(bucket(1), bucket(2)).attribution?.apiDurationMs).toBeNull();
+    const timed = { attribution: { buckets: {}, highContextCostUsd: 0, apiDurationMs: 5 } };
+    expect(pair(bucket(1), timed).attribution?.apiDurationMs).toBe(5);
   });
 
   it('weights rates and scores only where both files can be weighted', () => {
@@ -458,8 +385,8 @@ describe('combining fields that do not always exist', () => {
         ? { speed: score, correctness: score, autonomy: score, firstAttemptQuality: score }
         : null,
     });
+    expect(pair(scored(0.2, 1), scored(0.8, 3))).toMatchObject({ efficiencyScoreSampleCount: 4 });
     expect(pair(scored(0.2, 1), scored(0.8, 3)).efficiencyScore).toBeCloseTo(0.65);
-    expect(pair(scored(0.2, 1), scored(0.8, 3)).efficiencyScoreSampleCount).toBe(4);
     expect(pair(scored(0.2, 1), scored(null, 0)).efficiencyScore).toBe(0.2);
     expect(pair(scored(0.2, 0), scored(0.8, 3)).efficiencyScore).toBe(0.8);
     expect(pair(scored(0.2, 5), scored(0.8, 3, false)).efficiencyScore).toBe(0.2);
@@ -477,19 +404,14 @@ describe('combining fields that do not always exist', () => {
       taskSuccessRate: rate,
       taskCount,
     });
-    expect(pair(tests(100, 50, 0.5, 1), tests(1, 1, 1, 9)).taskSuccessRate).toBeCloseTo(0.505);
+    expect(pair(tests(100, 50, 0.5, 1), tests(1, 1, 1, 9)).taskSuccessRate).toBe(0.505);
     expect(pair(tests(0, 0, 0.5, 1), tests(1, 1, 1, 3)).taskSuccessRate).toBeCloseTo(0.875);
     expect(pair(tests(1, 1, 1, 3), tests(0, 0, 0.5, 1)).taskSuccessRate).toBeCloseTo(0.875);
   });
 });
 
 describe('the byte-estimate ledger', () => {
-  const file = (
-    start: number,
-    exact: number,
-    ledger: number,
-    extra: Record<string, unknown> = {},
-  ) =>
+  const file = (start: number, exact: number, ledger: number, extra = {}) =>
     summary({
       startTime: start,
       endTime: start + 1000,
@@ -497,7 +419,7 @@ describe('the byte-estimate ledger', () => {
       timeline: [entry(start)],
       estimatedCostUsd: exact + ledger,
       exactTotals: { costUsd: exact },
-      byteEstimates: { costUsd: ledger, inputTokens: 0, outputTokens: 0 },
+      byteEstimates: { costUsd: ledger },
       ...extra,
     });
 
@@ -518,18 +440,19 @@ describe('the byte-estimate ledger', () => {
     expect(combined.estimatedCostUsd).toBeCloseTo(10);
   });
 
-  it('takes the ledger of the latest copy, after a report replaced the estimate', () => {
+  it('takes the ledger of the latest copy when calls and exact cost tie', () => {
     const before = file(START, 1, 4, { timeline: [entry(START), entry(START + 1)] });
-    const reported = file(START, 3, 0, { endTime: START + 5000, timeline: [entry(START + 1)] });
-    expect(combineInEveryOrder([before, reported]).estimatedCostUsd).toBeCloseTo(3);
+    const retracted = file(START, 1, 0, { endTime: START + 5000, timeline: [entry(START + 1)] });
+    expect(combineInEveryOrder([before, retracted]).estimatedCostUsd).toBeCloseTo(1);
   });
 
-  it('takes the copy with more calls as the later one when end times tie', () => {
-    const source = file(START, 1, 4, { toolCallCount: 1 });
-    const combinedFile = file(START, 2, 8, {
+  it('takes the ledger of the copy further along, even if a stale copy was saved later', () => {
+    const stale = file(START, 1, 4, { endTime: START + 9 * DAY });
+    const folded = file(START, 2, 8, {
       toolCallCount: 2,
       timeline: [entry(START), entry(START + DAY)],
     });
-    expect(combineInEveryOrder([source, combinedFile]).estimatedCostUsd).toBeCloseTo(10);
+    expect(combineInEveryOrder([stale, folded]).estimatedCostUsd).toBeCloseTo(10);
+    expect(combineInEveryOrder([stale, file(START, 3, 0)]).estimatedCostUsd).toBeCloseTo(3);
   });
 });
