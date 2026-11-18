@@ -2586,19 +2586,48 @@ describe('collector-script', () => {
       }
     });
 
-    it('stays quiet when the install already recorded the unknown-engine warning', () => {
+    it('stays quiet when the install already recorded a warning for the same name', () => {
       const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
-      mkdirSync(tmpDir, { recursive: true });
-      writeFileSync(resolve(tmpDir, 'unknown-engine-warned'), '');
+      const warnings = () =>
+        stderrWriteSpy.mock.calls
+          .map((args) => String(args[0]))
+          .filter((line) => line.includes('no engine Preflight knows'));
+      writeFileSync(resolve(tmpDir, 'unknown-engine-warned'), 'MCP_CLIENT="not-an-engine"');
       process.env.MCP_CLIENT = 'not-an-engine';
-      processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
-      const lines = stderrWriteSpy.mock.calls.map((args) => String(args[0]));
-      stderrWriteSpy.mockRestore();
-      expect(lines.filter((line) => line.includes('no engine Preflight knows'))).toHaveLength(0);
-      expect(readFileSync(crumbs('unattributed').cwd, 'utf-8')).toBe('sess-x');
+      try {
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        expect(warnings()).toHaveLength(0);
+        expect(readFileSync(crumbs('unattributed').cwd, 'utf-8')).toBe('sess-x');
+        process.env.MCP_CLIENT = 'also-not-an-engine';
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        expect(warnings()).toHaveLength(1);
+      } finally {
+        stderrWriteSpy.mockRestore();
+      }
     });
 
-    it('warns on every failed breadcrumb write, independent of earlier tests', () => {
+    it('warns again when the unrecognized engine name changes, then stays quiet', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const warnings = () =>
+        stderrWriteSpy.mock.calls
+          .map((args) => String(args[0]))
+          .filter((line) => line.includes('no engine Preflight knows'));
+      try {
+        process.env.MCP_CLIENT = 'typo-one';
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        process.env.MCP_CLIENT = 'claude-cod';
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        expect(warnings()).toEqual([
+          expect.stringContaining('MCP_CLIENT="typo-one"'),
+          expect.stringContaining('MCP_CLIENT="claude-cod"'),
+        ]);
+      } finally {
+        stderrWriteSpy.mockRestore();
+      }
+    });
+
+    it('warns on every failed breadcrumb write', () => {
       const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
       process.env.CLAUDECODE = '1';
       mkdirSync(resolve(tmpDir, 'breadcrumbs'), { recursive: true });
