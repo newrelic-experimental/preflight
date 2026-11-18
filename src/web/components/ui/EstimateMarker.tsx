@@ -3,7 +3,7 @@ import type { JSX } from 'react';
 import { InfoTooltip } from './InfoTooltip';
 
 const ESTIMATE_REASONS: readonly string[] = [
-  'Priced from list prices unless a rate multiplier, data residency premium, or custom pricing file is configured. A model missing from the price table is priced from a sibling in its family. Flat subscriptions are not reflected.',
+  'Priced from list prices unless a rate multiplier, data residency premium, or custom pricing file is configured. A model missing from the price table can be priced from a sibling model in its family. Flat subscriptions are not reflected.',
   'Counts this machine and the platforms Preflight hooks into, not your whole org.',
   'Copilot in VS Code and the Copilot app do not report cache writes separately, so they are priced as ordinary input.',
   "Before a session's first token report, cost is estimated from the size of tool inputs and outputs.",
