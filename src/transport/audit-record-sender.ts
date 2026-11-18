@@ -10,6 +10,9 @@ type NrIngestConfigOptions = Pick<
   NrIngestOptions,
   | 'licenseKey'
   | 'transportOptions'
+  | 'transport'
+  | 'otlpEndpoint'
+  | 'otlpHeaders'
   | 'developer'
   | 'appName'
   | 'teamId'
@@ -37,6 +40,9 @@ export function nrIngestOptionsFromConfig(config: McpServerConfig): NrIngestConf
       accountId: config.accountId,
       collectorHost: config.collectorHost,
     },
+    transport: config.otlp.transport,
+    otlpEndpoint: config.otlp.endpoint,
+    otlpHeaders: config.otlp.headers,
     developer: config.developer,
     appName: config.appName,
     teamId: config.teamId,

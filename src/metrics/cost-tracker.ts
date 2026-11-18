@@ -358,6 +358,14 @@ export class CostTracker implements Resettable {
    * checkpoint for this same session (see that method's doc comment).
    */
   private costByWorkflowRunId = new Map<string, Map<string, number>>();
+  /**
+   * Per-workflow-run token total observed by this process. Never persisted:
+   * a run restored by `seedFromPersisted()` is recorded in
+   * `seededWorkflowRunIds` and reports no tokens, because a partial live sum
+   * would read as a false reconciliation gap.
+   */
+  private tokensByWorkflowRunId = new Map<string, number>();
+  private seededWorkflowRunIds = new Set<string>();
   /** Per-day mutation counter so dashboards can invalidate cached day cards. */
   private lastMutationMsByDay = new Map<string, number>();
   /**
@@ -644,6 +652,10 @@ export class CostTracker implements Resettable {
       const runMap = this.costByWorkflowRunId.get(ctx.workflowRunId) ?? new Map<string, number>();
       runMap.set(dayKey, (runMap.get(dayKey) ?? 0) + breakdown.totalUsd);
       this.costByWorkflowRunId.set(ctx.workflowRunId, runMap);
+      this.tokensByWorkflowRunId.set(
+        ctx.workflowRunId,
+        (this.tokensByWorkflowRunId.get(ctx.workflowRunId) ?? 0) + tokens,
+      );
     }
 
     return breakdown;
@@ -755,6 +767,7 @@ export class CostTracker implements Resettable {
         runMap.set(dayKey, (runMap.get(dayKey) ?? 0) + usd);
       }
       this.costByWorkflowRunId.set(runId, runMap);
+      this.seededWorkflowRunIds.add(runId);
     }
   }
 
@@ -812,6 +825,15 @@ export class CostTracker implements Resettable {
     let total = 0;
     for (const v of m.values()) total += v;
     return total;
+  }
+
+  /**
+   * Per-workflow-run token total summed across the run's subagent turns, or 0
+   * when this process has not observed the run live (unknown, not zero).
+   */
+  getTokensForWorkflowRun(runId: string): number {
+    if (this.seededWorkflowRunIds.has(runId)) return 0;
+    return this.tokensByWorkflowRunId.get(runId) ?? 0;
   }
 
   /**
@@ -1025,6 +1047,8 @@ export class CostTracker implements Resettable {
     this.firstActivityMsByDay = new Map();
     this.unanchoredDays = new Set();
     this.costByWorkflowRunId = new Map();
+    this.tokensByWorkflowRunId = new Map();
+    this.seededWorkflowRunIds = new Set();
     this.lastMutationMsByDay = new Map();
     this.subagentCostUsd = 0;
     this.parentCostUsd = 0;

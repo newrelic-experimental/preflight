@@ -1571,6 +1571,47 @@ describe('subagent token support', () => {
     expect(runDays![expectedDayKey]).toBeGreaterThan(0);
   });
 
+  it('getTokensForWorkflowRun() sums every token kind for the run and ignores other runs', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 5_000, outputTokens: 1_000, totalTokens: 6_000 }),
+      'claude-sonnet-4',
+      { workflowRunId: 'wf_a' },
+    );
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 200, outputTokens: 300, cacheReadTokens: 400, totalTokens: 900 }),
+      'claude-sonnet-4',
+      { workflowRunId: 'wf_a' },
+    );
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 70, outputTokens: 30, totalTokens: 100 }),
+      'claude-sonnet-4',
+      { workflowRunId: 'wf_b' },
+    );
+
+    expect(tracker.getTokensForWorkflowRun('wf_a')).toBe(6_900);
+    expect(tracker.getTokensForWorkflowRun('wf_b')).toBe(100);
+    expect(tracker.getTokensForWorkflowRun('wf_unknown')).toBe(0);
+  });
+
+  it('getTokensForWorkflowRun() reports 0 for a run restored from a checkpoint, even after live turns', () => {
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted(
+      makeSeed({
+        totalCostUsd: 1,
+        dayCostUsd: 1,
+        costByWorkflowRunId: { wf_resumed: { '2026-08-14': 1 } },
+      }),
+    );
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 }),
+      'claude-sonnet-4',
+      { workflowRunId: 'wf_resumed' },
+    );
+
+    expect(tracker.getTokensForWorkflowRun('wf_resumed')).toBe(0);
+  });
+
   it('getSubagentMetrics() returns correct subagent/parent split and share percentage', () => {
     const tracker = new CostTracker();
 
