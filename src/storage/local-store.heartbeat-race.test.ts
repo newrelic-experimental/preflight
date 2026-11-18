@@ -15,7 +15,6 @@ const realFs = jest.requireActual<typeof import('node:fs')>('node:fs');
 const writeFileSync = jest.mocked(nodeFs.writeFileSync);
 const sessionId = 'heartbeat-race-session';
 let storagePath: string;
-let stderrSpy: ReturnType<typeof jest.spyOn>;
 
 /**
  * Runs `between` once, at the point where a real writeFileSync has opened
@@ -30,13 +29,10 @@ function interleaveWithNextWrite(between: () => void): void {
 }
 
 beforeEach(() => {
-  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
   storagePath = realFs.mkdtempSync(resolve(tmpdir(), 'nr-heartbeat-race-'));
-  writeFileSync.mockImplementation(realFs.writeFileSync);
 });
 
 afterEach(() => {
-  stderrSpy.mockRestore();
   realFs.rmSync(storagePath, { recursive: true, force: true });
 });
 
