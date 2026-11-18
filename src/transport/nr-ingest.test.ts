@@ -4253,6 +4253,14 @@ describe('workUnitToNrEvent()', () => {
     });
   });
 
+  it.each(['slash', 'tool'] as const)('leaves an unstamped %s run untagged', (source) => {
+    const event = workUnitToNrEvent(
+      { ...run, stamp: { ...run.stamp, source } },
+      { developer: 'dev1', appName: 'my-app', companionMode: true },
+    );
+    expect(event).not.toHaveProperty('cost_authority');
+  });
+
   it('names the subagent and its parent session when a subagent opened the run', () => {
     const event = workUnitToNrEvent(
       { ...run, agentId: 'agent-1', platform: 'claude-code' },
