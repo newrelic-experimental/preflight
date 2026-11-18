@@ -50,7 +50,7 @@ const detector = new RetryDetector({
       .filter((r) => r.toolName === alert.toolName)
       .slice(-alert.occurrences)
       .map((r) => {
-        const input = r.command ?? r.filePath ?? r.inputHash ?? '';
+        const input = [r.command, r.filePath, r.inputHash].find((v) => typeof v === 'string') ?? '';
         return `${r.success ? 'ok  ' : 'FAIL'} ${r.agentId ? `[${r.agentId.slice(0, 6)}] ` : ''}${input.slice(0, 110)}`;
       });
     alerts.push({ alert, context });
