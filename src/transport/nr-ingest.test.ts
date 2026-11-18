@@ -4221,12 +4221,10 @@ describe('workUnitToNrEvent()', () => {
   };
 
   it('emits a main-agent run with cost, tokens and duration and no parent session', () => {
-    const event = workUnitToNrEvent(run, {
-      developer: 'dev1',
-      appName: 'my-app',
-      sessionId: 'sess-1',
-      teamId: 'team-a',
-    });
+    const event = workUnitToNrEvent(
+      { ...run, platform: 'claude-code' },
+      { developer: 'dev1', appName: 'my-app', sessionId: 'sess-1', teamId: 'team-a' },
+    );
 
     expect(event).toStrictEqual({
       eventType: 'AiWorkUnit',

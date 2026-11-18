@@ -1055,7 +1055,7 @@ export function workUnitToNrEvent(
     event.agent_id = run.agentId;
     if (attrs.sessionId != null) event.parent_session_id = attrs.sessionId;
   }
-  if (attrs.companionMode && platform === 'claude-code') event.cost_authority = 'external';
+  if (attrs.companionMode && run.platform === 'claude-code') event.cost_authority = 'external';
 
   return event;
 }
