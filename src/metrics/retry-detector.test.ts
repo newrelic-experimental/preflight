@@ -244,6 +244,34 @@ describe('RetryDetector', () => {
     expect(detector.getMetrics().totalTokensWasted).toBe(0);
   });
 
+  it('does not charge successful calls made before the first failure', () => {
+    const detector = new RetryDetector();
+    const cd = 'cd /Users/dev/repo/.claude/worktrees/o-1054;';
+
+    detector.recordToolCall(makeRecord({ command: `${cd} sed -n 1,200p src/a.ts` }));
+    detector.recordToolCall(makeRecord({ command: `${cd} sed -n 200,525p src/a.ts` }));
+    detector.recordToolCall(makeRecord({ command: `${cd} sed -n 160,300p src/b.ts` }));
+    detector.recordToolCall(
+      makeRecord({ command: `${cd} sed -n 1,40p src/missing.ts`, success: false }),
+    );
+
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+    expect(detector.getMetrics().totalTokensWasted).toBe(0);
+  });
+
+  it('charges only the calls after the first failure', () => {
+    const detector = new RetryDetector();
+
+    detector.recordToolCall(makeRecord({ command: 'npm test' }));
+    detector.recordToolCall(makeRecord({ command: 'npm test', success: false }));
+    detector.recordToolCall(makeRecord({ command: 'npm test', success: false }));
+    const alert = detector.recordToolCall(makeRecord({ command: 'npm test', success: false }));
+
+    expect(alert?.occurrences).toBe(3);
+    // 2 retries after the first failure, 500 bytes each, at 4 bytes per token.
+    expect(detector.getMetrics().totalTokensWasted).toBe(250);
+  });
+
   it('does not treat repeated successful calls as retries', () => {
     const detector = new RetryDetector();
 
