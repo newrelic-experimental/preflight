@@ -427,6 +427,13 @@ describe('SkillActivationTracker.openRun', () => {
 
     expect(t.openRun('s1')).toEqual(run);
   });
+
+  it('ignores a run a subagent opened', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', agentId: 'agent-1' }));
+
+    expect(t.openRun('s1')).toBeNull();
+  });
 });
 
 describe('SkillActivationTracker onRunOpened', () => {
