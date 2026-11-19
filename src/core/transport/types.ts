@@ -83,8 +83,6 @@ export interface NrSummaryMetric extends NrMetricBase {
 export type NrMetric = NrGaugeMetric | NrCountMetric | NrSummaryMetric;
 
 export interface TransportOptions {
-  /** NR account ID — required for Events API URL path. */
-  readonly accountId: string;
   /**
    * Override collector host — either a region keyword ('us'|'eu'|'gov'|'jp'|
    * 'staging') or a literal hostname for custom endpoints.

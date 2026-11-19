@@ -107,7 +107,8 @@ import { SessionTracker } from './metrics/session-tracker.js';
 import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
 import { createSkillRunEmitter } from './metrics/skill-run-emitter.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
-import { TaskDetector } from './metrics/task-detector.js';
+import { TaskDetector, type AiCodingTask } from './metrics/task-detector.js';
+import { HeldTaskSends } from './metrics/held-task-sends.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
@@ -138,6 +139,7 @@ import { amendRecord, type ToolCallRecord } from './storage/types.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import type { ConfigSummary } from './tools/session-stats.js';
 import { registerPendingTools, registerTools } from './tools/session-stats.js';
+import { primaryTierName, summarizeTiers } from './transport/tier-types.js';
 import { FeedbackCollector } from './tools/workflow-tools.js';
 import { initMcpTracer } from './tracing/mcp-tracer.js';
 import { SessionSpan } from './tracing/session-span.js';
@@ -880,6 +882,7 @@ async function main(): Promise<void> {
   let config: import('./config.js').McpServerConfig | undefined;
   let sessionTracker: SessionTracker | undefined;
   let taskDetector: TaskDetector | undefined;
+  let emitCompletedTasks: (() => void) | undefined;
   let sessionSpan: SessionSpan | undefined;
   let taskSpanTracker: TaskSpanTracker | undefined;
   let dashboardServer: DashboardServer | undefined;
@@ -966,6 +969,12 @@ async function main(): Promise<void> {
     logger.info('Shutting down...');
     try {
       eventProcessor?.stop();
+      try {
+        taskDetector?.dispose();
+        emitCompletedTasks?.();
+      } catch (err) {
+        logger.warn('Sending the last tasks at shutdown failed', { error: String(err) });
+      }
       persistSession?.();
       if (
         config?.otlp?.transport !== 'nr-events-api' &&
@@ -1244,7 +1253,7 @@ async function main(): Promise<void> {
     const rateMultiplier =
       (config.costRateMultiplier ?? 1) * (config.dataResidencyPremium ? 1.1 : 1);
     const costTracker = new CostTracker(sessionTracker, { rateMultiplier });
-    taskDetector = new TaskDetector({ costTracker });
+    taskDetector = new TaskDetector({ costTracker, onClose: () => emitCompletedTasks?.() });
     const antiPatternDetector = new AntiPatternDetector();
     const efficiencyScorer = new EfficiencyScorer({ costTracker });
     const feedbackCollector = new FeedbackCollector();
@@ -1433,7 +1442,13 @@ async function main(): Promise<void> {
       // --stdio engine's final write, or this daemon's own last checkpoint)
       // before adding the tail — see applyPersistedBaseline's doc comment.
       persistedCostBaseline: (id) => sessionStoreForAggregator.loadSession(id),
+      persistedTaskCount: (id) => sessionStoreForAggregator.loadSession(id)?.taskCount ?? 0,
     });
+    const markOwnTaskBoundary = (timestamp: number): void =>
+      localSessionAggregator.markTaskBoundary(
+        sessionTracker?.getMetrics().sessionId ?? null,
+        timestamp,
+      );
     const repoNameResolver = new RepoNameResolver();
 
     const budgetTracker = new BudgetTracker({
@@ -1753,6 +1768,7 @@ async function main(): Promise<void> {
       }
       const seed = settledCostTrackerSeed(persisted);
       costTracker.seedFromPersisted(seed);
+      modelUsageTracker.seedFromPersisted(persisted.modelBreakdown);
       localHeldCosts.set(sessionId, heldSessionCostOf(persisted, Date.now(), seed));
       refreshPriorCostBaseline();
     };
@@ -2193,6 +2209,71 @@ async function main(): Promise<void> {
     // with idle expiry so a long-running --local daemon doesn't keep one entry
     // per subagent call forever.
     const subagentAttribution = new SubagentAttributionIndex();
+    const capturedTaskDetector = taskDetector;
+    const capturedConfig = config;
+    const heldTaskSends = new HeldTaskSends();
+    const antiPatternContext = (task: AiCodingTask) => {
+      const firstRecord = task.toolCalls[0];
+      // sessionTraceId is the resolved Claude Code session_id and is
+      // shared across the whole MCP, so we use it directly rather than
+      // peeking at the first record's sessionId (which may be null).
+      return {
+        sessionId: sessionTraceId,
+        platform: typeof firstRecord?.platform === 'string' ? firstRecord.platform : undefined,
+        taskId: task.taskId,
+      };
+    };
+    const sendHeldTasksOwnedBy = (sessionId: string, ingest: NrIngestManager): void => {
+      const { owned, dropped } = heldTaskSends.takeOwnedBy(sessionId);
+      if (dropped > 0) {
+        logger.debug('Dropped held tasks not wholly from the adopted session', { dropped });
+      }
+      for (const { task, patterns } of owned) {
+        ingest.ingestCodingTask(task);
+        const context = antiPatternContext(task);
+        for (const pattern of patterns) ingest.ingestAntiPattern(pattern, context);
+      }
+    };
+    emitCompletedTasks = () => {
+      const cloudIngestNotWiredYet = !capturedNrIngest && capturedConfig.mode !== 'local';
+      for (const task of capturedTaskDetector.drainNewlyCompletedTasks()) {
+        capturedNrIngest?.ingestCodingTask(task);
+        taskCompletionTracker.recordTask(task);
+        // Close the task span — this handles both signal-driven and idle-timer-driven closures
+        if (capturedConfig.otlp.transport !== 'nr-events-api' && taskSpanTracker) {
+          taskSpanTracker.closeTask(task.taskId, task.toolCallCount);
+        }
+        const context = antiPatternContext(task);
+        const enrichedToolCalls = task.toolCalls.map((r) => subagentAttribution.backfill(r));
+        const { patterns } = antiPatternDetector.analyze(enrichedToolCalls);
+        efficiencyScorer.computeScore(task, patterns);
+        for (const pattern of patterns) {
+          capturedNrIngest?.ingestAntiPattern(pattern, context);
+          liveBus.emit('anti-pattern', {
+            // Tag with the originating session so the Today view can render
+            // a "Session: <name>" pill on each alert row.
+            sessionId: sessionTraceId,
+            type: pattern.type,
+            target: pattern.file ?? pattern.command ?? 'unknown',
+            count:
+              pattern.iterations ??
+              pattern.readCount ??
+              pattern.repeatCount ??
+              pattern.editCount ??
+              pattern.agentCount ??
+              1,
+          });
+          // Mirror each detected pattern into the alert collector's
+          // rolling buffer so antipattern.count rules have data.
+          capturedAlertSnapshotCollector?.recordAntiPattern({
+            type: pattern.type,
+            ts: Date.now(),
+          });
+        }
+        if (cloudIngestNotWiredYet) heldTaskSends.hold({ task, patterns });
+      }
+    };
+
     eventProcessor = new HookEventProcessor({
       store: localStore,
       platformAdapter: activePlatform,
@@ -2431,51 +2512,7 @@ async function main(): Promise<void> {
           });
         }
 
-        // Emit any tasks that completed as a result of this record,
-        // and detect anti-patterns across each completed task's tool calls
-        for (const task of taskDetector.drainNewlyCompletedTasks()) {
-          capturedNrIngest?.ingestCodingTask(task);
-          taskCompletionTracker.recordTask(task);
-          // Close the task span — this handles both signal-driven and idle-timer-driven closures
-          if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker) {
-            taskSpanTracker.closeTask(task.taskId, task.toolCallCount);
-          }
-          const firstRecord = task.toolCalls[0];
-          // sessionTraceId is the resolved Claude Code session_id and is
-          // shared across the whole MCP, so we use it directly rather than
-          // peeking at the first record's sessionId (which may be null).
-          const context = {
-            sessionId: sessionTraceId,
-            platform: typeof firstRecord?.platform === 'string' ? firstRecord.platform : undefined,
-            taskId: task.taskId,
-          };
-          const enrichedToolCalls = task.toolCalls.map((r) => subagentAttribution.backfill(r));
-          const { patterns } = antiPatternDetector.analyze(enrichedToolCalls);
-          efficiencyScorer.computeScore(task, patterns);
-          for (const pattern of patterns) {
-            capturedNrIngest?.ingestAntiPattern(pattern, context);
-            liveBus.emit('anti-pattern', {
-              // Tag with the originating session so the Today view can render
-              // a "Session: <name>" pill on each alert row.
-              sessionId: sessionTraceId,
-              type: pattern.type,
-              target: pattern.file ?? pattern.command ?? 'unknown',
-              count:
-                pattern.iterations ??
-                pattern.readCount ??
-                pattern.repeatCount ??
-                pattern.editCount ??
-                pattern.agentCount ??
-                1,
-            });
-            // Mirror each detected pattern into the alert collector's
-            // rolling buffer so antipattern.count rules have data.
-            capturedAlertSnapshotCollector?.recordAntiPattern({
-              type: pattern.type,
-              ts: Date.now(),
-            });
-          }
-        }
+        emitCompletedTasks?.();
         homelabForwarder?.enqueue(record);
       },
       onTokenEvent: (tokenEvent) => {
@@ -2490,7 +2527,10 @@ async function main(): Promise<void> {
           eventSessionId: tokenEvent.sessionId ?? null,
           ownSessionId: sessionTraceId,
         });
-        const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
+        const closedTurn = turnCostAttributor.recordTokenEvent(
+          tokenEvent,
+          skillActivationTracker.openRun(tokenEvent.sessionId),
+        );
         if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
         seedLocalTrackersFromFile(tokenEvent.sessionId);
         const usage = tokenUsageFromTokenEvent(tokenEvent);
@@ -2739,10 +2779,12 @@ async function main(): Promise<void> {
         );
         if (slashRun) turnCostAttributor.recordSkillRun(frame.sessionId, slashRun);
         taskDetector!.startTaskIfNone(frame.timestamp);
+        localSessionAggregator.startTask(frame.sessionId, frame.timestamp);
       },
       onStop: (frame) => {
         turnTracker.finalizeTurnAt(frame.timestamp);
         taskDetector!.markBoundary(frame.timestamp);
+        localSessionAggregator.markTaskBoundary(frame.sessionId, frame.timestamp);
       },
     });
 
@@ -2817,7 +2859,7 @@ async function main(): Promise<void> {
         // the no-downgrade invariant, so this can only upgrade or refresh —
         // never demote a user name to auto/cwd. A no-op for synthetic ids.
         applyAuthoritativeSessionName(sessionTraceId);
-        const summary = buildSessionSummary({
+        const builtSummary = buildSessionSummary({
           sessionTracker,
           costTracker,
           turnCostAttributor,
@@ -2837,6 +2879,12 @@ async function main(): Promise<void> {
           platform: eventProcessor?.activePlatform,
           instructionPromptHash: instructionDriftTracker.promptHash,
         });
+        // The rollup counts only this session's own tasks; the detector above sees every drained session's.
+        const summary = {
+          ...builtSummary,
+          taskCount:
+            localSessionAggregator.taskCountOf(builtSummary.sessionId) ?? builtSummary.taskCount,
+        };
         const driftRecord = sessionSummaryToDriftRecord(summary);
         if (driftRecord) {
           instructionDriftTracker.recordSessionOutcome(driftRecord);
@@ -3228,6 +3276,7 @@ async function main(): Promise<void> {
         });
         capturedNrIngest = nrIngest;
         nrIngest.start();
+        sendHeldTasksOwnedBy(realId, nrIngest);
       }
 
       // Re-point the subagent/workflow watchers to the real session id. See
@@ -3254,6 +3303,8 @@ async function main(): Promise<void> {
         companionMode: config!.companionMode,
         allowHeadlessInstall: config!.allowHeadlessInstall,
         companionModeSource: config!.companionModeSource,
+        tiers: summarizeTiers(config!.tiers),
+        primaryTier: primaryTierName(config!.tiers),
       };
       registerTools(mcpServer!.server, {
         headlessInstaller: buildHeadlessInstaller(),
@@ -3264,6 +3315,7 @@ async function main(): Promise<void> {
         antiPatternDetector,
         efficiencyScorer,
         feedbackCollector,
+        onTaskBoundary: markOwnTaskBoundary,
         sessionStore,
         weeklySummaryGenerator,
         trendAnalyzer,
@@ -3429,6 +3481,8 @@ async function main(): Promise<void> {
             companionMode: config.companionMode,
             allowHeadlessInstall: config.allowHeadlessInstall,
             companionModeSource: config.companionModeSource,
+            tiers: summarizeTiers(config.tiers),
+            primaryTier: primaryTierName(config.tiers),
           },
           // A Claude Code session with no hooks never resolves, so this is
           // where the opt-in install has to work. Other stdio clients have no
@@ -3505,6 +3559,8 @@ async function main(): Promise<void> {
           companionMode: config.companionMode,
           allowHeadlessInstall: config.allowHeadlessInstall,
           companionModeSource: config.companionModeSource,
+          tiers: summarizeTiers(config.tiers),
+          primaryTier: primaryTierName(config.tiers),
         };
         registerTools(mcpServer!.server, {
           headlessInstaller: buildHeadlessInstaller(),
@@ -3515,6 +3571,7 @@ async function main(): Promise<void> {
           antiPatternDetector,
           efficiencyScorer,
           feedbackCollector,
+          onTaskBoundary: markOwnTaskBoundary,
           sessionStore,
           weeklySummaryGenerator,
           trendAnalyzer,
@@ -3611,7 +3668,7 @@ async function main(): Promise<void> {
     // Mirror the --stdio/--local gate above: mode: 'local' means no cloud
     // egress by design, so no NrIngestManager is constructed and the proxy
     // callbacks stay local-log-only. For 'cloud'/'both', loadConfigOrDie()
-    // has already guaranteed licenseKey/accountId are set (config.ts's
+    // has already guaranteed licenseKey is set (config.ts's
     // load-time validation), so this mirrors that guard rather than
     // re-deriving it.
     if (config.mode !== 'local') {
