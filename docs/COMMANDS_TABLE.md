@@ -1986,9 +1986,8 @@ Register a Slack webhook URL to receive weekly AI coding cost and efficiency sum
 **Config fields:**
 
 - `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` — Slack incoming webhook endpoint
-- `NEW_RELIC_AI_DIGEST_SCHEDULE` — cron expression for digest delivery (default: `"0 9 * * 1"`)
 
-**Note:** Digest delivery is manual-only today. `digestSchedule`/`NEW_RELIC_AI_DIGEST_SCHEDULE` is stored for future use but nothing currently reads it to trigger a send — call `nr_observe_send_digest` on-demand (e.g. from an external cron job or CI schedule) to actually deliver a digest.
+**Note:** Digest delivery is manual. Preflight does not send a digest on a timer. To deliver one on a schedule, run an external cron job or CI schedule that calls `nr_observe_send_digest`.
 
 **Requires:** `configFilePath`
 
@@ -2050,5 +2049,31 @@ Generate the current weekly AI coding summary and POST it to the configured Slac
 4. POSTs the payload to the webhook URL
 
 **Requires:** `configFilePath` + `WeeklySummaryGenerator`
+
+Source: `src/tools/cross-session-tools.ts`
+
+---
+
+### `nr_observe_get_digest_preview`
+
+Return the current week's digest as `nr_observe_send_digest` would deliver it, as Block Kit blocks plus plain text. Nothing is sent, and no webhook is needed.
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "week": "2026-W20",
+  "blocks": [
+    { "type": "header", "text": { "type": "plain_text", "text": "🤖 Weekly AI Coding Summary" } }
+  ],
+  "text": "🤖 Weekly AI Coding Summary\nTotal Cost: $12.5000\n..."
+}
+```
+
+**Data source:** `WeeklySummaryGenerator`. The same builder that the send tool uses, so the content matches for the same moment.
+
+**Requires:** `WeeklySummaryGenerator`
 
 Source: `src/tools/cross-session-tools.ts`
