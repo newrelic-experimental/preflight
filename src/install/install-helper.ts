@@ -107,7 +107,7 @@ export interface McpServerConfig {
 
 export interface NrObserveConfig {
   licenseKey: string;
-  accountId: string;
+  accountId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,8 +241,8 @@ export function generateMcpServerEntry(
   };
 }
 
-export function generateNrConfig(licenseKey: string, accountId: string): NrObserveConfig {
-  return { licenseKey, accountId };
+export function generateNrConfig(licenseKey: string, accountId?: string): NrObserveConfig {
+  return accountId ? { licenseKey, accountId } : { licenseKey };
 }
 
 // ---------------------------------------------------------------------------
