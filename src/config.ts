@@ -11,6 +11,7 @@ import type { PersonalAlertThresholds } from './alerts/types.js';
 import { DEFAULT_PERSONAL_THRESHOLDS } from './alerts/types.js';
 import {
   REDACTION_PATTERNS as DEFAULT_REDACTION_PATTERNS,
+  cutAtWord,
   redactSecrets,
 } from './redaction-patterns.js';
 import { resolveRecordContent } from './record-content-gate.js';
@@ -206,7 +207,6 @@ export interface McpServerConfig {
    */
   readonly dataResidencyPremium: boolean;
   readonly digestWebhookUrl: string | null;
-  readonly digestSchedule: string; // cron expression, default: "0 9 * * 1" (Monday 9am)
   /** Default: 90. `null` disables retention (only reachable via an explicit `null` in config.json). */
   readonly retainSessionsDays: number | null;
   readonly personalAlertThresholds: PersonalAlertThresholds;
@@ -341,7 +341,6 @@ export const ConfigFileSchema = z
     costRateMultiplier: z.number().nullable().optional(),
     dataResidencyPremium: z.boolean().optional(),
     digestWebhookUrl: z.string().nullable().optional(),
-    digestSchedule: z.string().optional(),
     retainSessionsDays: z.number().nullable().optional(),
     // Legacy flat OTLP fields — deprecated in favor of the nested `otlp`
     // object below, but still accepted for backward compatibility (using
@@ -1305,10 +1304,6 @@ export function loadMcpConfig(
 
     digestWebhookUrl: digestWebhookUrlSecret.value ?? null,
 
-    digestSchedule:
-      process.env.NEW_RELIC_AI_DIGEST_SCHEDULE ??
-      (typeof file.digestSchedule === 'string' ? file.digestSchedule : '0 9 * * 1'),
-
     retainSessionsDays: (() => {
       const raw = process.env.NEW_RELIC_AI_RETAIN_SESSIONS_DAYS;
       if (raw !== undefined && raw !== '') {
@@ -1887,7 +1882,7 @@ const MAX_REDACT_LEN = 1_048_576; // 1 MB
 
 export function redactSensitive(value: string, patterns?: readonly RegExp[]): string {
   if (typeof value !== 'string') return String(value ?? '');
-  let result = value.length > MAX_REDACT_LEN ? value.slice(0, MAX_REDACT_LEN) : value;
+  let result = value.length > MAX_REDACT_LEN ? cutAtWord(value, MAX_REDACT_LEN) : value;
   if (patterns === undefined) return redactSecrets(result);
   for (const pattern of patterns) {
     pattern.lastIndex = 0;
