@@ -35,6 +35,7 @@ import { PLATFORM_NAMES } from '../platforms/platform-names.js';
 import { sessionBreadcrumbWriters } from '../platforms/types.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 import { DRAIN_SEAL } from '../storage/hook-buffer.js';
+import { sessionBreadcrumbs } from './session-resolver.js';
 import { HookEventProcessor } from './event-processor.js';
 import { LocalStore } from '../storage/local-store.js';
 import type { ToolCallRecord } from '../storage/types.js';
@@ -2812,6 +2813,47 @@ describe('collector-script', () => {
     it('files a hook that names no engine as unattributed', () => {
       processHook(makePreToolUse({ session_id: 'sess-codex', cwd: '/projects/test' }));
       expect(readFileSync(crumbs('unattributed').ppid, 'utf-8')).toBe('sess-codex');
+    });
+
+    const STAMPED_HOOK_ENGINES = ['codex', 'droid', 'gemini-cli', 'opencode', 'kilocode'];
+
+    const documentedStamp = (engine: string): string | undefined => {
+      const adapter = createDefaultRegistry()
+        .getRegistered()
+        .find((candidate) => candidate.platformName === engine)!;
+      const instructions = adapter.getHookInstallInstructions();
+      const commandStamp = /"command": "MCP_CLIENT=([\w-]+) preflight-collector"/.exec(
+        instructions,
+      );
+      const spawnStamp = /spawn\("preflight-collector".*MCP_CLIENT: "([\w-]+)"/.exec(instructions);
+      return (commandStamp ?? spawnStamp)?.[1];
+    };
+
+    it.each(STAMPED_HOOK_ENGINES)(
+      'files the hook command %s documents under its own engine, not unattributed',
+      (engine) => {
+        const stamp = documentedStamp(engine);
+        expect(stamp).toBe(engine);
+        process.env.MCP_CLIENT = stamp;
+        processHook(makePreToolUse({ session_id: 'sess-doc', cwd: '/projects/test' }));
+        expect(readFileSync(crumbs(engine).cwd, 'utf-8')).toBe('sess-doc');
+        expect(existsSync(crumbs('unattributed').cwd)).toBe(false);
+      },
+    );
+
+    it('keeps each documented engine out of the other engines breadcrumb pools', () => {
+      for (const engine of STAMPED_HOOK_ENGINES) {
+        const stamp = documentedStamp(engine);
+        expect(stamp).toBe(engine);
+        process.env.MCP_CLIENT = stamp;
+        processHook(makePreToolUse({ session_id: `sess-${engine}`, cwd: '/projects/test' }));
+      }
+      const registered = createDefaultRegistry().getRegistered();
+      for (const engine of STAMPED_HOOK_ENGINES) {
+        const adapter = registered.find((candidate) => candidate.platformName === engine)!;
+        const pool = sessionBreadcrumbs(tmpDir, sessionBreadcrumbWriters(adapter));
+        expect(pool.cwd('/projects/test')).toBe(`sess-${engine}`);
+      }
     });
 
     it('ignores an engine name it does not know and keeps detecting Claude Code', () => {
