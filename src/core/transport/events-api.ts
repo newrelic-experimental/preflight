@@ -22,7 +22,7 @@ export async function sendEvents(
   }
 
   const region = resolveRegion(licenseKey, options.collectorHost ?? null);
-  const url = getEventsApiUrl(options.accountId, region, options.collectorHost ?? null);
+  const url = getEventsApiUrl(region, options.collectorHost ?? null);
 
   return sendWithRetry({
     url,

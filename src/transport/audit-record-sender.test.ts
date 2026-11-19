@@ -74,7 +74,7 @@ describe('nrIngestOptionsFromConfig()', () => {
 
     expect(nrIngestOptionsFromConfig(config)).toEqual({
       licenseKey: 'test-license-key',
-      transportOptions: { accountId: '12345', collectorHost: null },
+      transportOptions: { collectorHost: null },
       transport: 'nr-events-api',
       otlpEndpoint: null,
       otlpHeaders: {},
@@ -110,9 +110,7 @@ describe('nrIngestOptionsFromConfig()', () => {
 
   it('throws when cloud credentials are missing', () => {
     const config = { ...makeConfig('cloud'), licenseKey: undefined } as McpServerConfig;
-    expect(() => nrIngestOptionsFromConfig(config)).toThrow(
-      'licenseKey and accountId must be defined',
-    );
+    expect(() => nrIngestOptionsFromConfig(config)).toThrow('licenseKey must be defined');
   });
 });
 
@@ -146,7 +144,7 @@ describe('sendAuditRecord()', () => {
   it('sends through the live manager when it is running, without a one-shot flush', async () => {
     const live = new NrIngestManager({
       licenseKey: 'test-license-key',
-      transportOptions: { accountId: '12345' },
+      transportOptions: {},
       developer: 'dev',
       appName: 'preflight-test',
       sessionTracker: new SessionTracker('sess-live'),

@@ -163,7 +163,7 @@ export interface NrIngestOptions {
   /**
    * Multi-tier telemetry routing. Threaded from `config.tiers`.
    * Absent or empty → one implicit `default` tier is synthesized from
-   * `licenseKey` + `transportOptions.accountId`, reproducing the existing
+   * `licenseKey`, reproducing the existing
    * single-scheduler behavior exactly.
    *
    * The FIRST nr-type tier in array order is the **primary tier**: it carries
@@ -1235,7 +1235,6 @@ export class NrIngestManager {
               destination: {
                 type: 'nr',
                 licenseKey: options.licenseKey,
-                accountId: options.transportOptions.accountId,
               },
               eventTypes: [WILDCARD_EVENT_TYPE],
             },
@@ -1276,13 +1275,9 @@ export class NrIngestManager {
       }
 
       const isPrimary: boolean = primaryScheduler === null;
-      const tierTransportOptions: TransportOptions = {
-        ...transportOptions,
-        accountId: tier.destination.accountId,
-      };
       const scheduler: HarvestScheduler = new HarvestScheduler({
         licenseKey: tier.destination.licenseKey,
-        transportOptions: tierTransportOptions,
+        transportOptions,
         eventHarvestIntervalMs: options.eventHarvestIntervalMs,
         metricHarvestIntervalMs: options.metricHarvestIntervalMs,
         sendEventsFn: makeClassifyingEventsFn(tier.name, isPrimary),
@@ -1300,7 +1295,7 @@ export class NrIngestManager {
         primaryScheduler = scheduler;
         primaryTierName = tier.name;
         primaryLicenseKey = tier.destination.licenseKey;
-        primaryTransportOptions = tierTransportOptions;
+        primaryTransportOptions = transportOptions;
       }
     }
 

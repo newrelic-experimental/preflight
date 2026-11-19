@@ -205,7 +205,8 @@ export function buildConfig(
   const config: Partial<z.infer<typeof ConfigFileSchema>> = {
     ...existing,
     mode,
-    ...(includeNrCreds ? { accountId: inputs.accountId, licenseKey: inputs.licenseKey } : {}),
+    ...(includeNrCreds ? { licenseKey: inputs.licenseKey } : {}),
+    ...(includeNrCreds && inputs.accountId ? { accountId: inputs.accountId } : {}),
     developer: inputs.developer,
     ...(inputs.teamId ? { teamId: inputs.teamId } : {}),
     ...(inputs.projectId ? { projectId: inputs.projectId } : {}),
@@ -311,10 +312,10 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
           : '';
       const accountIdPrompt = accountIdHint
         ? `Account ID — your NR account number, found in the NR One URL [${accountIdHint}]: `
-        : 'Account ID — your NR account number, found in the NR One URL (required): ';
+        : 'Account ID — optional, only needed to deploy dashboards and alerts; press Enter to skip: ';
       accountId = (await rl.question(accountIdPrompt)).trim();
       if (!accountId) accountId = defaultAccountId;
-      if (!/^\d{1,12}$/.test(accountId)) {
+      if (accountId && !/^\d{1,12}$/.test(accountId)) {
         const src =
           accountId === envAccountId && !existingAccountId
             ? ' (value from $NEW_RELIC_ACCOUNT_ID)'
@@ -426,7 +427,7 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
 
       // Step 2d: Validate credentials
       print('\nValidating credentials...');
-      const licenseResult = await validateLicenseKey({ licenseKey, accountId, collectorHost });
+      const licenseResult = await validateLicenseKey({ licenseKey, collectorHost });
       if (licenseResult.valid) {
         print('  ✓ License key: OK');
       } else if (licenseResult.reason === 'unauthorized') {
@@ -859,16 +860,16 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
         : 'NEW_RELIC_API_KEY=<NRAK-...>';
       print('\nTo deploy dashboards, run:');
       print(
-        `  ${apiKeyVar} NEW_RELIC_ACCOUNT_ID=${accountId} preflight deploy-dashboards --all${regionFlag}`,
+        `  ${apiKeyVar} NEW_RELIC_ACCOUNT_ID=${accountId || '<account-id>'} preflight deploy-dashboards --all${regionFlag}`,
       );
       print(`\nFor a personal dashboard pre-filtered to you:`);
       print(
-        `  ${apiKeyVar} NEW_RELIC_ACCOUNT_ID=${accountId} preflight deploy-dashboards ai-coding-assistant-personal.json --developer ${developer}${regionFlag}`,
+        `  ${apiKeyVar} NEW_RELIC_ACCOUNT_ID=${accountId || '<account-id>'} preflight deploy-dashboards ai-coding-assistant-personal.json --developer ${developer}${regionFlag}`,
       );
 
       print(`\nFor personal alerts scoped to you:`);
       print(
-        `  ${apiKeyVar} NEW_RELIC_ACCOUNT_ID=${accountId} preflight deploy-alerts --developer ${developer}${regionFlag}`,
+        `  ${apiKeyVar} NEW_RELIC_ACCOUNT_ID=${accountId || '<account-id>'} preflight deploy-alerts --developer ${developer}${regionFlag}`,
       );
     } else if (mode === 'local') {
       print(`\nLocal mode selected — dashboard and metrics will be available locally.`);

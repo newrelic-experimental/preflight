@@ -218,7 +218,7 @@ const mockSendLogs = jest
 function makeIngestOptions(overrides?: Partial<NrIngestOptions>): NrIngestOptions {
   return {
     licenseKey: 'test-license-key',
-    transportOptions: { accountId: '12345' },
+    transportOptions: {},
     developer: 'test-dev',
     appName: 'test-app',
     sessionTracker: new SessionTracker('test-session'),
@@ -3859,7 +3859,7 @@ describe('NrIngestManager — tier construction', () => {
     expect((mockSendMetrics.mock.calls[0] as unknown[])[1]).toBe('lk-personal');
   });
 
-  it("sends the primary tier's events with that tier's licenseKey and accountId", async () => {
+  it("sends the primary tier's events with that tier's licenseKey", async () => {
     const manager = new NrIngestManager(
       makeIngestOptions({
         tiers: [
@@ -3878,7 +3878,6 @@ describe('NrIngestManager — tier construction', () => {
     expect(mockSendEvents).toHaveBeenCalledTimes(1);
     const call = mockSendEvents.mock.calls[0] as unknown[];
     expect(call[1]).toBe('lk-personal');
-    expect((call[2] as { accountId: string }).accountId).toBe('99999');
   });
 
   it('starts and stops every tier scheduler', async () => {

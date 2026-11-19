@@ -59,7 +59,7 @@ telemetry to New Relic, set three environment variables:
 | ----------------------- | ------------------------------------------------------- |
 | `NR_AI_MODE`            | `cloud` (or `both` to keep the local dashboard as well) |
 | `NEW_RELIC_LICENSE_KEY` | Your New Relic ingest license key                       |
-| `NEW_RELIC_ACCOUNT_ID`  | Your numeric New Relic account ID (1 to 12 digits)      |
+| `NEW_RELIC_ACCOUNT_ID`  | Optional. Your numeric account ID (1 to 12 digits)      |
 
 `NR_AI_MODE` is required. A license key with no explicit mode fails at
 startup, because telemetry export is opt-in, and the plugin's tools do not

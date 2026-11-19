@@ -91,7 +91,7 @@ export const WILDCARD_EVENT_TYPE = '*';
  * `TierLocalWriter`, JSONL append).
  */
 export type TierDestination =
-  | { readonly type: 'nr'; readonly licenseKey: string; readonly accountId: string }
+  | { readonly type: 'nr'; readonly licenseKey: string; readonly accountId?: string }
   | { readonly type: 'local'; readonly path: string };
 
 /** A tier after `validateTiers()` has checked and normalized it. */
@@ -129,7 +129,7 @@ export function summarizeTiers(tiers: readonly ResolvedTier[]): readonly TierSum
     name: t.name,
     type: t.destination.type,
     ...(t.destination.type === 'nr'
-      ? { accountId: t.destination.accountId }
+      ? t.destination.accountId !== undefined && { accountId: t.destination.accountId }
       : { path: t.destination.path }),
     primary: t.name === primaryName,
     eventTypes: t.eventTypes,
@@ -180,7 +180,7 @@ function validateDestination(
   if (!isRecord(raw)) {
     throw new Error(
       `Tier "${tierName}" is missing a destination object. ` +
-        `Expected { "type": "nr", "licenseKey": "...", "accountId": "..." } or { "type": "local", "path": "..." }.`,
+        `Expected { "type": "nr", "licenseKey": "..." } or { "type": "local", "path": "..." }.`,
     );
   }
 
@@ -206,6 +206,8 @@ function validateDestination(
     } else {
       licenseKey = raw.licenseKey;
     }
+    // Optional: the license key selects the account, so the ID is for display only.
+    if (raw.accountId === undefined) return { type: 'nr', licenseKey };
     if (typeof raw.accountId !== 'string' || !/^\d{1,12}$/.test(raw.accountId)) {
       throw new Error(
         `Tier "${tierName}" destination.accountId must be 1–12 decimal digits (as a JSON string).`,

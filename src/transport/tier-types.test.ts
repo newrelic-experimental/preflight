@@ -195,6 +195,17 @@ describe('validateTiers()', () => {
     ).toThrow(/requires a non-empty licenseKey/);
   });
 
+  it('accepts an nr tier without an accountId', () => {
+    const [tier] = validateTiers([makeNrTier({ destination: { type: 'nr', licenseKey: 'lk' } })]);
+    expect(tier.destination).toEqual({ type: 'nr', licenseKey: 'lk' });
+    expect(summarizeTiers([tier])[0]).toEqual({
+      name: tier.name,
+      type: 'nr',
+      primary: true,
+      eventTypes: tier.eventTypes,
+    });
+  });
+
   it('throws when an nr tier accountId is not 1-12 digits', () => {
     expect(() =>
       validateTiers([

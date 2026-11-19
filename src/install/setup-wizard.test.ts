@@ -325,6 +325,24 @@ describe('resolveEnvironmentChoice', () => {
 });
 
 describe('buildConfig', () => {
+  it('omits accountId when none was entered', () => {
+    const config = buildConfig(
+      {},
+      {
+        accountId: '',
+        licenseKey: 'lk',
+        developer: 'dev',
+        teamId: null,
+        projectId: null,
+        repoUrlEnabled: false,
+        sessionBudgetUsd: null,
+        mode: 'cloud',
+      },
+    );
+    expect(config.licenseKey).toBe('lk');
+    expect(config).not.toHaveProperty('accountId');
+  });
+
   it('merges new fields with existing config', () => {
     const result = buildConfig(
       { appName: 'my-app', existingField: 'keep-me' },
