@@ -6873,6 +6873,13 @@ describe('api-handler GET /api/settings', () => {
       highSecurity: false,
       licenseKey: 'NRAK-ABCDEFGHIJKLMNOP1234',
       secretSources: { licenseKey: 'file', nrApiKey: 'unset', digestWebhookUrl: 'file' },
+      tiers: [
+        {
+          name: 'personal',
+          destination: { type: 'nr', licenseKey: 'NRAK-ABCDEFGHIJKLMNOP1234', accountId: '12345' },
+          eventTypes: ['*'],
+        },
+      ],
     } as unknown as Parameters<typeof createApiHandler>[0]['config'];
   }
 
@@ -6886,6 +6893,15 @@ describe('api-handler GET /api/settings', () => {
     await handler(req, res);
     return JSON.parse(body()) as Record<string, unknown>;
   }
+
+  it('reports the resolved tiers without their license keys', async () => {
+    const result = await getSettings(fakeStartupConfig(), makeConfigFile({}));
+
+    expect(result.primaryTier).toBe('personal');
+    expect(result.tiers).toEqual([
+      { name: 'personal', type: 'nr', accountId: '12345', primary: true, eventTypes: ['*'] },
+    ]);
+  });
 
   it('reports the file as the webhook source when nothing overrides it', async () => {
     const configFilePath = makeConfigFile({
