@@ -736,6 +736,12 @@ export class LocalSessionAggregator {
     outcome: string;
     repoResolver: RepoNameResolver;
     toolSelectionScorer: ToolSelectionScorer;
+    /**
+     * Re-runs the agent attribution join on each record before tool-selection
+     * scoring. By save time `SubagentWatcher` has tailed far more transcript
+     * than at hook intake, so more records resolve to their subagent.
+     */
+    backfillRecord?: (record: ToolCallRecord) => ToolCallRecord;
     savesSession?: (sessionId: string) => boolean;
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
@@ -781,7 +787,13 @@ export class LocalSessionAggregator {
         qualityProxy: rollup.quality.getRawCounts(),
         toolSelectionMetrics:
           rollup.records.length > 0
-            ? toToolSelectionSummary(context.toolSelectionScorer.scoreSession(rollup.records))
+            ? toToolSelectionSummary(
+                context.toolSelectionScorer.scoreSession(
+                  context.backfillRecord
+                    ? rollup.records.map(context.backfillRecord)
+                    : rollup.records,
+                ),
+              )
             : null,
         linesAdded: 0,
         linesRemoved: 0,

@@ -2812,6 +2812,7 @@ async function main(): Promise<void> {
         platform: eventProcessor?.activePlatform,
         outcome: 'in progress',
         toolSelectionScorer,
+        backfillRecord: (record) => subagentAttribution.backfill(record),
         repoResolver: repoNameResolver,
         ...(savesSession !== undefined && { savesSession }),
       });
