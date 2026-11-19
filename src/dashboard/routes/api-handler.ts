@@ -116,6 +116,7 @@ import { computeLatencyPercentiles } from './latency-percentiles.js';
 import type { AntiPatternSegment } from './replay-analyzer.js';
 import { analyzeReplayTimeline } from './replay-analyzer.js';
 import { pairToolCallsFromBufferEvents } from './tool-selection-aggregate.js';
+import { primaryTierName, summarizeTiers } from '../../transport/tier-types.js';
 interface RawAuditRecord {
   readonly id: string;
   readonly timestamp: number;
@@ -3251,6 +3252,8 @@ export function createApiHandler(
       storagePath: c.storagePath,
       highSecurity: c.highSecurity,
       licenseKey: c.licenseKey ? '••••' + c.licenseKey.slice(-4) : null,
+      tiers: summarizeTiers(c.tiers),
+      primaryTier: primaryTierName(c.tiers),
     });
   });
 
