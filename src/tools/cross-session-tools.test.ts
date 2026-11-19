@@ -983,6 +983,17 @@ describe('Cross-session tool handlers', () => {
     }
   });
 
+  it('names the tool when accountId is empty', async () => {
+    const result = await handleGetTeamSummary({
+      teamId: 'my-team',
+      accountId: '',
+      nrApiKey: 'test-key',
+    });
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.error).toBe('nr_observe_get_team_summary needs accountId');
+  });
+
   it('rejects non-numeric accountId', async () => {
     const result = await handleGetTeamSummary({
       teamId: 'my-team',

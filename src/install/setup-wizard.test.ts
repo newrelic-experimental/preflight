@@ -2096,6 +2096,21 @@ describe('setupWizard Copilot hooks install step', () => {
     ]);
   });
 
+  it('passes --license-key without --account-id when the account ID was skipped', async () => {
+    mockedKeyValidator.validateLicenseKey.mockResolvedValue({ valid: true });
+    mockedKeyValidator.validateApiKey.mockResolvedValue({ valid: true });
+    answers('cloud', '', 'NRLIC-test', '', '', 'tester', '', '', '', '', 'n', 'y');
+
+    await runSetupWizard();
+
+    expect(mockedCli.runInstallCli).toHaveBeenCalledWith([
+      'install',
+      '--copilot',
+      '--license-key',
+      'NRLIC-test',
+    ]);
+  });
+
   it('does not pass credentials in local mode (none were collected)', async () => {
     answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'y');
 

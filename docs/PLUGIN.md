@@ -53,7 +53,7 @@ start, same as the npm install.
 
 Local mode (no New Relic account needed, dashboard at `localhost:7777`) is
 the default when the plugin's MCP server sees no license key. To send
-telemetry to New Relic, set three environment variables:
+telemetry to New Relic, set these environment variables (the account ID is optional):
 
 | Variable                | Value                                                   |
 | ----------------------- | ------------------------------------------------------- |

@@ -312,7 +312,7 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
           : '';
       const accountIdPrompt = accountIdHint
         ? `Account ID — your NR account number, found in the NR One URL [${accountIdHint}]: `
-        : 'Account ID — optional, only needed to deploy dashboards and alerts; press Enter to skip: ';
+        : 'Account ID — optional, only needed for dashboards, alerts and team summaries; press Enter to skip: ';
       accountId = (await rl.question(accountIdPrompt)).trim();
       if (!accountId) accountId = defaultAccountId;
       if (accountId && !/^\d{1,12}$/.test(accountId)) {
@@ -727,8 +727,9 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
     if (installCopilotHooks !== 'n' && installCopilotHooks !== 'no') {
       print('\nRunning Copilot installer...');
       const copilotInstallArgs = ['install', '--copilot'];
-      if (mode !== 'local' && licenseKey && accountId) {
-        copilotInstallArgs.push('--license-key', licenseKey, '--account-id', accountId);
+      if (mode !== 'local' && licenseKey) {
+        copilotInstallArgs.push('--license-key', licenseKey);
+        if (accountId) copilotInstallArgs.push('--account-id', accountId);
       }
       try {
         await runInstallCli(copilotInstallArgs);
