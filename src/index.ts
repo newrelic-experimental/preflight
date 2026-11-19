@@ -68,10 +68,11 @@ import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
 import { CostTracker } from './metrics/cost-tracker.js';
 import {
   addHeldCost,
+  heldOwnSessionCost,
   heldSessionCostOf,
   settledCostTrackerSeed,
 } from './metrics/cost-tracker-seed.js';
-import type { HeldSessionCost } from './metrics/cost-tracker-seed.js';
+import type { HeldSessionCost, UnbookedSeedCost } from './metrics/cost-tracker-seed.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
 import { FirstSaveBaselines } from './metrics/first-save-baselines.js';
@@ -1451,6 +1452,7 @@ async function main(): Promise<void> {
     // below can call this again for a *different* id after a pending->real
     // transition or a PPID correction.
     const rehydratedTrackerSessionIds = new Set<string>();
+    const ownUnbookedCosts = new Map<string, UnbookedSeedCost>();
     const firstSaveBaselines = new FirstSaveBaselines();
     // A session's calls in its file before this process first wrote it, none of them this process's.
     const callsBeforeFirstWrite = new Map<string, number>();
@@ -1493,6 +1495,7 @@ async function main(): Promise<void> {
         );
         if (cost) {
           costTracker.seedFromPersisted(cost.costTracker);
+          ownUnbookedCosts.set(sessionId, cost.unbooked);
           budgetTracker.seedFiredThresholdsFromSessionTotal(cost.estimatedCostUsd ?? 0);
           modelUsageTracker.seedFromPersisted(cost.modelBreakdown);
         }
@@ -1711,12 +1714,14 @@ async function main(): Promise<void> {
     // into CostTracker, which for a --stdio engine happens when it adopts or
     // confirms the id, not at startup. An unconfirmed cwd guess is not seeded
     // yet, so its file stays in, as it stood before this process's own cost
-    // reached it.
+    // reached it. A seeded session is held too, so the week takes off the
+    // seeded cost that falls before the window.
     const refreshPriorCostBaseline = (): void => {
       const now = Date.now();
       const ownIsSeeded =
         isSyntheticSessionId(sessionTraceId) || rehydratedTrackerSessionIds.has(sessionTraceId);
       const ownFile = firstSaveBaselines.costFileBeforeOwnSave(sessionTraceId);
+      const ownUnbooked = ownUnbookedCosts.get(sessionTraceId);
       const baseline = computeHistoricalCosts(
         sessionStoreForCostBaseline,
         ownIsSeeded ? sessionTraceId : null,
@@ -1724,7 +1729,11 @@ async function main(): Promise<void> {
         !ownIsSeeded && ownFile !== undefined
           ? { sessionId: sessionTraceId, summary: ownFile }
           : undefined,
-        localHeldCosts,
+        ownUnbooked
+          ? new Map([
+              [sessionTraceId, heldOwnSessionCost(ownUnbooked, costTracker.getMetrics(), now)],
+            ])
+          : localHeldCosts,
       );
       priorCostCache.priorDailyCostUsd = baseline.priorDailyCostUsd;
       priorCostCache.priorWeeklyCostUsd = baseline.priorWeeklyCostUsd;
@@ -2399,8 +2408,6 @@ async function main(): Promise<void> {
           const sessionTodayUsd = costTracker.getCostForDay(todayKey);
           const dailyFirstActivityMs = costTracker.getFirstActivityMsForDay(todayKey);
           const todayTotalUsd = priorCostCache.priorDailyCostUsd + sessionTodayUsd;
-          // Weekly total still uses session-total because the whole session
-          // falls within the rolling 7-day window for the prior baseline.
           const weeklyTotalUsd =
             priorCostCache.priorWeeklyCostUsd + costMetrics.sessionTotalCostUsd;
           budgetTracker.updateCost(costMetrics.sessionTotalCostUsd, todayTotalUsd, weeklyTotalUsd);
@@ -2538,7 +2545,7 @@ async function main(): Promise<void> {
               estimatedTokens: t.estimatedTokens,
             })),
           });
-          capturedNrIngest?.ingestContextSnapshot(ctxSnapshot, ctxTopTools);
+          if (isOwnEvent) capturedNrIngest?.ingestContextSnapshot(ctxSnapshot, ctxTopTools, sid);
         }
 
         const costMetrics = costTracker.getMetrics();
