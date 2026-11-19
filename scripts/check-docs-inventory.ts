@@ -2,7 +2,7 @@
 /**
  * Docs-vs-code drift checker for the cloud-egress inventory.
  *
- * Four checks:
+ * Five checks:
  *   1. Every event type this app actually emits (`eventType: '<Name>'`
  *      literals under src/) must be named in both docs/METRICS_TABLE.md and
  *      PRIVACY.md.
@@ -11,7 +11,11 @@
  *      somewhere in src/ (no phantom metrics).
  *   3. Every `nr_observe_*` MCP tool name literal under src/ must be named in
  *      docs/COMMANDS_TABLE.md.
- *   4. Every `NEW_RELIC_AI_*` env var named in any non-test file under src/
+ *   4. Every metric name passed as a string literal to `record(...)` or
+ *      `recordMetric(...)` anywhere under src/ (including src/core) must be
+ *      named in docs/METRICS_TABLE.md. Metrics that are defined but never
+ *      exported satisfy this by being listed under "Local-only Metrics".
+ *   5. Every `NEW_RELIC_AI_*` env var named in any non-test file under src/
  *      (including src/core and src/web) must be named in at least one of
  *      README.md, docs/ADVANCED.md, SECURITY.md, PRIVACY.md, unless it is in
  *      INTERNAL_ENV_VARS.
@@ -59,6 +63,7 @@ const INTERNAL_ENV_VARS = new Set([
 
 const EVENT_TYPE_RE = /eventType:\s*'([A-Za-z0-9_]+)'/g;
 const METRIC_TOKEN_RE = /\bai\.[a-z0-9_]+(?:\.[a-z0-9_]+)+\b/g;
+const RECORDED_METRIC_RE = /\.record(?:Metric)?\(\s*['"`]((?:nr\.)?ai(?:\.[a-z0-9_]+)+)['"`]/g;
 const TOOL_NAME_RE = /\bnr_observe_[a-z0-9_]+\b/g;
 const ENV_VAR_RE = /\bNEW_RELIC_AI_[A-Z0-9_]+\b/g;
 
@@ -83,8 +88,13 @@ function main(): void {
   const files = collectSourceFiles(SRC_DIR);
 
   const emittedEvents = new Set<string>();
+  const recordedMetrics = new Set<string>();
   const srcMetricTokens = new Set<string>();
   const srcToolNames = new Set<string>();
+  for (const file of collectSourceFiles(SRC_DIR, new Set(['web', 'node_modules']))) {
+    const text = readFileSync(file, 'utf8');
+    for (const m of text.matchAll(RECORDED_METRIC_RE)) recordedMetrics.add(m[1]);
+  }
   for (const file of files) {
     const text = readFileSync(file, 'utf8');
     for (const m of text.matchAll(EVENT_TYPE_RE)) emittedEvents.add(m[1]);
@@ -110,6 +120,8 @@ function main(): void {
   const docMetricTokens = new Set(metricsDoc.match(METRIC_TOKEN_RE) ?? []);
   const phantomMetrics = [...docMetricTokens].filter((t) => !srcMetricTokens.has(t)).sort();
 
+  const undocumentedMetrics = [...recordedMetrics].filter((t) => !metricsDoc.includes(t)).sort();
+
   const docToolNames = new Set(commandsDoc.match(TOOL_NAME_RE) ?? []);
   const toolsMissingFromCommandsDoc = [...srcToolNames].filter((t) => !docToolNames.has(t)).sort();
 
@@ -133,6 +145,11 @@ function main(): void {
     console.error('Metric names in docs/METRICS_TABLE.md with no matching literal in src/:');
     for (const t of phantomMetrics) console.error(`  - ${t}`);
   }
+  if (undocumentedMetrics.length > 0) {
+    ok = false;
+    console.error('Metrics recorded in src/ but absent from docs/METRICS_TABLE.md:');
+    for (const t of undocumentedMetrics) console.error(`  - ${t}`);
+  }
   if (toolsMissingFromCommandsDoc.length > 0) {
     ok = false;
     console.error('MCP tools registered in src/ but undocumented in docs/COMMANDS_TABLE.md:');
@@ -155,6 +172,7 @@ function main(): void {
   console.log(
     `✓ OK: ${emittedEvents.size} emitted event types documented in both docs, ` +
       `${docMetricTokens.size} documented metric names all trace to src/, ` +
+      `${recordedMetrics.size} recorded metrics all documented, ` +
       `${srcToolNames.size} MCP tools documented in COMMANDS_TABLE.md, ` +
       `${srcEnvVars.size} src env vars documented.`,
   );
