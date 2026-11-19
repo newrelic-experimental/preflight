@@ -39,6 +39,7 @@ import { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 import { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 import type { TokenUsage } from '../core/index.js';
 import type { ResolvedTier } from './tier-types.js';
+import { VERSION } from '../version.js';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -614,6 +615,38 @@ describe('toolCallToNrEvent()', () => {
 // ---------------------------------------------------------------------------
 
 describe('NrIngestManager', () => {
+  describe('otlp pipeline construction', () => {
+    const otlpOf = (m: NrIngestManager) =>
+      m as unknown as { otlpTransport: unknown; otlpEventBridge: unknown };
+
+    it('builds no OTLP pipeline from an endpoint alone when transport is nr-events-api', async () => {
+      const manager = new NrIngestManager(
+        makeIngestOptions({ otlpEndpoint: 'http://127.0.0.1:4318', transport: 'nr-events-api' }),
+      );
+      expect(otlpOf(manager).otlpTransport).toBeNull();
+      expect(otlpOf(manager).otlpEventBridge).toBeNull();
+      await manager.stop();
+    });
+
+    it('builds the OTLP pipeline when transport is both', async () => {
+      const manager = new NrIngestManager(
+        makeIngestOptions({ otlpEndpoint: 'http://127.0.0.1:4318', transport: 'both' }),
+      );
+      expect(otlpOf(manager).otlpTransport).not.toBeNull();
+      expect(otlpOf(manager).otlpEventBridge).not.toBeNull();
+      await manager.stop();
+    });
+
+    it('falls back to no OTLP pipeline when the endpoint is rejected', async () => {
+      const manager = new NrIngestManager(
+        makeIngestOptions({ otlpEndpoint: 'http://otel-collector:4318', transport: 'both' }),
+      );
+      expect(otlpOf(manager).otlpTransport).toBeNull();
+      expect(otlpOf(manager).otlpEventBridge).toBeNull();
+      await manager.stop();
+    });
+  });
+
   describe('ingestToolCall()', () => {
     it('buffers event and records metrics (verified via flush)', async () => {
       const manager = new NrIngestManager(makeIngestOptions());
@@ -4036,6 +4069,60 @@ describe('NrIngestManager — routeEvent fan-out', () => {
     manager.start();
     await manager.stop();
     expect(eventsSentWithKey('lk-team')).toEqual([]);
+  });
+});
+
+describe('NrIngestManager instrumentation attributes', () => {
+  function sentEventsOfType(eventType: string): Array<Record<string, unknown>> {
+    const out: Array<Record<string, unknown>> = [];
+    for (const call of mockSendEvents.mock.calls as unknown[][]) {
+      for (const event of call[0] as Array<Record<string, unknown>>) {
+        if (event.eventType === eventType) out.push(event);
+      }
+    }
+    return out;
+  }
+
+  it('stamps the three instrumentation attributes on NR and local tier copies alike', async () => {
+    const localDir = mkdtempSync(resolve(tmpdir(), 'nr-ingest-instr-'));
+    try {
+      const manager = new NrIngestManager(
+        makeIngestOptions({
+          tiers: [
+            makeTier({ name: 'personal', eventTypes: ['*'] }),
+            makeTier({
+              name: 'org',
+              destination: { type: 'local', path: localDir },
+              eventTypes: ['AiCodingTask'],
+            }),
+          ],
+        }),
+      );
+
+      manager.ingestCodingTask(makeTask({ taskId: 'task-instr-1' }));
+      manager.start();
+      await manager.stop();
+
+      const [nrEvent] = sentEventsOfType('AiCodingTask');
+      expect(nrEvent).toMatchObject({
+        'instrumentation.provider': 'preflight',
+        'instrumentation.name': 'preflight',
+        'instrumentation.version': VERSION,
+      });
+
+      const filePath = resolve(localDir, 'events-2023-11-14.jsonl');
+      const [line] = readFileSync(filePath, 'utf-8').trim().split('\n');
+      const localEvent = JSON.parse(line) as Record<string, unknown>;
+      expect(localEvent).toMatchObject({
+        'instrumentation.provider': 'preflight',
+        'instrumentation.name': 'preflight',
+        'instrumentation.version': VERSION,
+      });
+      // Both tiers received the same stamped copy, so the payloads match.
+      expect(localEvent).toEqual(nrEvent);
+    } finally {
+      rmSync(localDir, { recursive: true, force: true });
+    }
   });
 });
 
