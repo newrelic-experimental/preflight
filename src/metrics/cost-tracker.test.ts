@@ -1719,6 +1719,44 @@ describe('seedFromPersisted()', () => {
     expect(tracker.getCostForDay(localDateKey())).toBeCloseTo(56.02, 4);
   });
 
+  it('books seeded estimates on their own days once, and an exact report takes them off', () => {
+    const tracker = new CostTracker();
+    const today = localDateKey();
+    const yesterday = localDateKey(Date.now() - 24 * 60 * 60 * 1000);
+    tracker.seedFromPersisted(
+      makeSeed({
+        totalCostUsd: 5,
+        parentCostUsd: 5,
+        dayCostUsd: 3,
+        byteEstimates: {
+          costUsd: 2,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByModel: {},
+          costByDayUsd: { [today]: 1, [yesterday]: 1 },
+        },
+      }),
+    );
+    expect(tracker.getCostForDay(today)).toBeCloseTo(3, 9);
+    expect(tracker.getCostForDay(yesterday)).toBeCloseTo(1, 9);
+
+    tracker.recordTokenUsage(
+      {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        thinkingTokens: 0,
+        totalTokens: 0,
+      },
+      'claude-sonnet-5',
+      { replacesEstimates: true },
+    );
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(3, 9);
+    expect(tracker.getCostForDay(today)).toBeCloseTo(2, 9);
+    expect(tracker.getCostForDay(yesterday)).toBe(0);
+  });
+
   it('seeds unpricedByModel additively on top of live counts', () => {
     const tracker = new CostTracker();
     tracker.recordTokenUsage(makeUsage({ inputTokens: 10, totalTokens: 10 }), 'claude-foo-9-9');
