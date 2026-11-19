@@ -409,6 +409,26 @@ function makeTrackerWithOpenLog(): {
   return { tracker, opened };
 }
 
+describe('SkillActivationTracker.openRun', () => {
+  it('returns the slash run until the next prompt closes it', () => {
+    const t = new SkillActivationTracker();
+    const run = t.recordPrompt('s1', 'review');
+
+    expect(t.openRun('s1')).toEqual(run);
+    expect(t.openRun('s2')).toBeNull();
+
+    t.recordPrompt('s1', null);
+    expect(t.openRun('s1')).toBeNull();
+  });
+
+  it('returns a tool-opened run to later replies in the session', () => {
+    const t = new SkillActivationTracker();
+    const run = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint' }));
+
+    expect(t.openRun('s1')).toEqual(run);
+  });
+});
+
 describe('SkillActivationTracker onRunOpened', () => {
   it('fires once for a Skill tool run with the stamp it returned and the record context', () => {
     const { tracker, opened } = makeTrackerWithOpenLog();

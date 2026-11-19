@@ -922,8 +922,9 @@ export function retryAlertToNrEvent(
  * turn's cost and tokens split evenly. `tool_use_id` cross-references the
  * call's `AiToolCall` row.
  *
- * A response turn (no calls) yields a single row with no `tool`,
- * `tool_use_id` or `skillName`, carrying the whole report's cost and tokens.
+ * A response turn (no calls) yields a single row with no `tool` or
+ * `tool_use_id`, carrying the whole report's cost and tokens. It carries the
+ * skill of the run open when the report arrived, if any.
  * Its `turn_tool_call_count` is 0.
  */
 export function turnCostToNrEvents(
@@ -964,8 +965,9 @@ export function turnCostToNrEvents(
     if (call !== null) {
       event.tool_use_id = call.toolUseId;
       event.tool = call.toolName;
-      if (call.skill !== null) Object.assign(event, skillRunAttributes(call.skill));
     }
+    const skill = call !== null ? call.skill : turn.skill;
+    if (skill !== null) Object.assign(event, skillRunAttributes(skill));
 
     if (attrs.teamId) event.team_id = attrs.teamId;
     if (attrs.projectId) event.project_id = attrs.projectId;
