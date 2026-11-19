@@ -139,7 +139,7 @@ export class OpencodeAdapter implements PlatformAdapter {
       '   }',
       '',
       '   function report(payload) {',
-      '     const child = spawn("preflight-collector", [], { stdio: ["pipe", "ignore", "ignore"] })',
+      '     const child = spawn("preflight-collector", [], { env: { ...process.env, MCP_CLIENT: "opencode" }, stdio: ["pipe", "ignore", "ignore"] })',
       '     child.stdin.write(JSON.stringify(payload))',
       '     child.stdin.end()',
       '   }',
