@@ -34,6 +34,7 @@ import type { CollaborationProfiler } from '../metrics/collaboration-profile.js'
 import type { ClaudeMdTracker } from '../metrics/claudemd-tracker.js';
 import type { CostPerOutcomeAnalyzer } from '../metrics/cost-per-outcome.js';
 import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
+import type { TierSummary } from '../transport/tier-types.js';
 import { registerCostTools } from './cost-tools.js';
 import { registerWorkflowTools } from './workflow-tools.js';
 import type { FeedbackCollector } from './workflow-tools.js';
@@ -340,16 +341,25 @@ export interface ConfigSummary {
   /** Whether nr_observe_install_hooks may write ~/.claude/settings.json. Default false. */
   readonly allowHeadlessInstall: boolean;
   readonly companionModeSource: string;
+  /** Resolved telemetry tiers. `accountId` above is the flat field, not where tiered events go. */
+  readonly tiers: readonly TierSummary[];
+  readonly primaryTier: string | null;
 }
 
-export function handleGetConfig(configSummary: ConfigSummary): {
+export function handleGetConfig(
+  configSummary: ConfigSummary,
+  localTierStats: Readonly<Record<string, { writes: number; failures: number }>> = {},
+): {
   content: [{ type: 'text'; text: string }];
 } {
+  const tiers = configSummary.tiers.map((tier) =>
+    tier.name in localTierStats ? { ...tier, ...localTierStats[tier.name] } : tier,
+  );
   return {
     content: [
       {
         type: 'text' as const,
-        text: JSON.stringify(configSummary, null, 2),
+        text: JSON.stringify({ ...configSummary, tiers }, null, 2),
       },
     ],
   };
@@ -467,6 +477,7 @@ export interface ToolRegistrationOptions {
   genericMcpAdapter?: GenericMcpAdapter;
   nrIngestManager?: {
     ingestToolCall(record: import('../storage/types.js').ToolCallRecord): void;
+    getLocalTierStats?(): Readonly<Record<string, { writes: number; failures: number }>>;
     getEventSendHealth?(): {
       consecutiveFailures: number;
       lastFailureAt: number | null;
@@ -518,7 +529,7 @@ function registerCoreTools(deps: ToolRegistrationOptions): RegisteredToolSet {
       handle: () => {
         const missing = requireAvailable(!!deps.configSummary, 'Config summary not available');
         if (missing) return missing;
-        return handleGetConfig(deps.configSummary!);
+        return handleGetConfig(deps.configSummary!, deps.nrIngestManager?.getLocalTierStats?.());
       },
     },
     {

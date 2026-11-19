@@ -1326,6 +1326,15 @@ export interface SettingsResponse {
   readonly storagePath: string;
   readonly highSecurity: boolean;
   readonly licenseKey: string | null;
+  readonly tiers: readonly {
+    readonly name: string;
+    readonly type: 'nr' | 'local';
+    readonly accountId?: string;
+    readonly path?: string;
+    readonly primary: boolean;
+    readonly eventTypes: readonly string[];
+  }[];
+  readonly primaryTier: string | null;
   readonly sessionBudgetUsd: number | null;
   readonly dailyBudgetUsd: number | null;
   readonly weeklyBudgetUsd: number | null;
