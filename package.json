@@ -79,6 +79,7 @@
     "regenerate:otlp-descriptor": "tsx scripts/regenerate-otlp-descriptor.ts",
     "check:bundle-size": "tsx scripts/check-bundle-size.ts",
     "check:docs-inventory": "tsx scripts/check-docs-inventory.ts",
+    "check:skill-symlinks": "tsx scripts/check-skill-symlinks.ts",
     "check:test-ownership": "tsx scripts/check-test-ownership.ts",
     "check:tz-tests": "tsx scripts/check-tz-tests.ts",
     "replay:git-counts": "tsx scripts/replay-git-counts.ts",
