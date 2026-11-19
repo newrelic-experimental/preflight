@@ -2545,7 +2545,7 @@ async function main(): Promise<void> {
               estimatedTokens: t.estimatedTokens,
             })),
           });
-          capturedNrIngest?.ingestContextSnapshot(ctxSnapshot, ctxTopTools);
+          if (isOwnEvent) capturedNrIngest?.ingestContextSnapshot(ctxSnapshot, ctxTopTools, sid);
         }
 
         const costMetrics = costTracker.getMetrics();
