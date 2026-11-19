@@ -309,6 +309,8 @@ The following throw at config load with a specific message, following the same f
 
 ### Not covered
 
+**Confirming the routing.** At startup Preflight logs `Telemetry tiers resolved` with each tier's name, destination, event types, and the primary tier. The same list is returned by `nr_observe_get_config` and `GET /api/settings` as `tiers` and `primaryTier`, with no license keys. In `nr_observe_get_config`, a local tier also reports `writes` and `failures` since startup. Read `tiers` rather than the flat `accountId` when tiers are configured.
+
 Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a separate mechanism and is unaffected by tiers.
 
 ---

@@ -56,7 +56,7 @@ import type {
 import type { LocalStore } from '../storage/index.js';
 import { LogIngestManager } from './log-ingest.js';
 import { TierRouter } from './tier-router.js';
-import { DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './tier-types.js';
+import { DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE, summarizeTiers } from './tier-types.js';
 import type { ResolvedTier } from './tier-types.js';
 import { TierLocalWriter } from '../storage/tier-local-writer.js';
 
@@ -1320,6 +1320,11 @@ export class NrIngestManager {
     this.primaryScheduler = primaryScheduler;
     this.primaryTierName = primaryTierName;
 
+    logger.info('Telemetry tiers resolved', {
+      tiers: summarizeTiers(tiers),
+      primaryTier: primaryTierName,
+    });
+
     this.logIngest = new LogIngestManager({
       licenseKey: primaryLicenseKey,
       transportOptions: primaryTransportOptions,
@@ -1353,6 +1358,13 @@ export class NrIngestManager {
    */
   getTierNames(): readonly string[] {
     return [...this.schedulers.keys(), ...this.localWriters.keys()];
+  }
+
+  /** Write and failure counts per local tier, keyed by tier name. */
+  getLocalTierStats(): Readonly<Record<string, { writes: number; failures: number }>> {
+    const stats: Record<string, { writes: number; failures: number }> = {};
+    for (const [name, writer] of this.localWriters) stats[name] = writer.getStats();
+    return stats;
   }
 
   /** The tier carrying metrics, logs, OTLP, and send-health. */

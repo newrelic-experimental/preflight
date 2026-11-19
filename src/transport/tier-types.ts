@@ -102,6 +102,40 @@ export interface ResolvedTier {
   readonly eventTypes: readonly string[];
 }
 
+/**
+ * A tier as an operator sees it: where it delivers and which events it takes.
+ * Carries no credentials, so it is safe to log and to return from tools.
+ */
+export interface TierSummary {
+  readonly name: string;
+  readonly type: 'nr' | 'local';
+  /** The NR account an `nr` tier delivers to. */
+  readonly accountId?: string;
+  /** The directory a `local` tier writes to. */
+  readonly path?: string;
+  /** Whether this tier carries metrics, logs, OTLP and send-health. */
+  readonly primary: boolean;
+  readonly eventTypes: readonly string[];
+}
+
+/** The primary tier is the first `nr` tier in array order, as in `NrIngestManager`. */
+export function primaryTierName(tiers: readonly ResolvedTier[]): string | null {
+  return tiers.find((t) => t.destination.type === 'nr')?.name ?? null;
+}
+
+export function summarizeTiers(tiers: readonly ResolvedTier[]): readonly TierSummary[] {
+  const primaryName = primaryTierName(tiers);
+  return tiers.map((t) => ({
+    name: t.name,
+    type: t.destination.type,
+    ...(t.destination.type === 'nr'
+      ? { accountId: t.destination.accountId }
+      : { path: t.destination.path }),
+    primary: t.name === primaryName,
+    eventTypes: t.eventTypes,
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // validateTiers
 // ---------------------------------------------------------------------------

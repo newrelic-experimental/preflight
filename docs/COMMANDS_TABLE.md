@@ -92,13 +92,32 @@ Show the current server configuration with sensitive fields masked.
   "region": "US",
   "storagePath": "/Users/alice/.newrelic-preflight",
   "dashboardUrl": "https://one.newrelic.com/dashboards/...",
-  "configFilePath": "/Users/alice/.newrelic-preflight/config.json"
+  "configFilePath": "/Users/alice/.newrelic-preflight/config.json",
+  "tiers": [
+    {
+      "name": "personal",
+      "type": "nr",
+      "accountId": "12345",
+      "primary": true,
+      "eventTypes": ["*"]
+    },
+    {
+      "name": "org",
+      "type": "local",
+      "path": "/data/org",
+      "primary": false,
+      "eventTypes": ["AiCodingTask"],
+      "writes": 42,
+      "failures": 0
+    }
+  ],
+  "primaryTier": "personal"
 }
 ```
 
-**Data source:** Server config at startup
+**Data source:** Server config at startup, plus live write counts for local tiers
 
-**How it works:** Returns a sanitized snapshot of the active configuration. `licenseKeyMasked` shows the first 8 characters and last 4 characters only. `nrApiKeyMasked` shows the prefix only. Use this to diagnose misconfiguration (wrong region, unset developer name, unexpected mode) without exposing credentials.
+**How it works:** Returns a sanitized snapshot of the active configuration. `licenseKeyMasked` shows the first 8 characters and last 4 characters only. `nrApiKeyMasked` shows the prefix only. `tiers` lists where events actually go, so read it instead of `accountId` when `tiers` is configured. A local tier reports `writes` and `failures`, and a nonzero `failures` means its path cannot be written. Tier license keys are never returned. Use this to diagnose misconfiguration (wrong region, unset developer name, unexpected mode, a tier with the wrong account or path) without exposing credentials.
 
 **Requires:** Always available
 

@@ -3691,6 +3691,51 @@ describe('NrIngestManager — tier construction', () => {
     expect(manager.getPrimaryTierName()).toBe('default');
   });
 
+  it('logs the resolved tiers at construction without credentials', () => {
+    new NrIngestManager(
+      makeIngestOptions({
+        tiers: [
+          makeTier({
+            name: 'personal',
+            destination: { type: 'nr', licenseKey: 'lk-secret', accountId: '111' },
+          }),
+        ],
+      }),
+    );
+
+    const logged = (stderrSpy.mock.calls as unknown[][]).map((c) => String(c[0])).join('\n');
+    expect(logged).toContain('Telemetry tiers resolved');
+    expect(logged).toContain('"primaryTier":"personal"');
+    expect(logged).toContain('"accountId":"111"');
+    expect(logged).not.toContain('lk-secret');
+  });
+
+  it('reports write and failure counts for local tiers only', () => {
+    const localDir = mkdtempSync(resolve(tmpdir(), 'nr-ingest-tier-'));
+    try {
+      const manager = new NrIngestManager(
+        makeIngestOptions({
+          tiers: [
+            makeTier({ name: 'personal' }),
+            makeTier({
+              name: 'org',
+              destination: { type: 'local', path: localDir },
+              eventTypes: ['*'],
+            }),
+          ],
+        }),
+      );
+      manager.ingestToolCall(makeRecord());
+
+      const stats = manager.getLocalTierStats();
+      expect(Object.keys(stats)).toEqual(['org']);
+      expect(stats.org.writes).toBeGreaterThan(0);
+      expect(stats.org.failures).toBe(0);
+    } finally {
+      rmSync(localDir, { recursive: true, force: true });
+    }
+  });
+
   it('treats an empty tiers array the same as no tiers option', () => {
     const manager = new NrIngestManager(makeIngestOptions({ tiers: [] }));
 
