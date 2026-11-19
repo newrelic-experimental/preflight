@@ -187,6 +187,8 @@ const STANDARD_KEYS = new Set([
   'agentType',
   'skillName',
   'activeSkill',
+  // The transcript path embeds the home directory and so the OS username.
+  'transcriptPath',
 ]);
 
 /**
@@ -887,6 +889,7 @@ export function retryAlertToNrEvent(
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiRetryAlert',
+    event_version: 1,
     timestamp: alert.timestamp,
     tool_name: alert.toolName,
     occurrences: alert.occurrences,
@@ -1684,6 +1687,7 @@ export class NrIngestManager {
   ingestContextSnapshot(
     snapshot: ContextTurnSnapshot,
     topTools: readonly ToolContextContribution[],
+    sessionId?: string,
   ): void {
     const nrEvent: NrEventData = {
       eventType: 'AiContextSnapshot',
@@ -1711,7 +1715,8 @@ export class NrIngestManager {
     if (this.projectId) nrEvent.project_id = this.projectId;
     if (this.orgId) nrEvent.org_id = this.orgId;
     if (this.repoUrl) nrEvent.repo_url = this.repoUrl;
-    if (this.sessionTraceId != null) nrEvent.session_id = this.sessionTraceId;
+    const snapshotSessionId = sessionId ?? this.sessionTraceId;
+    if (snapshotSessionId != null) nrEvent.session_id = snapshotSessionId;
     this.routeEvent(nrEvent);
   }
 

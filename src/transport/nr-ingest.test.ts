@@ -576,6 +576,16 @@ describe('toolCallToNrEvent()', () => {
       expect(event.error as string).toContain('[REDACTED]');
     });
 
+    it('does not send transcriptPath, which embeds the home directory', () => {
+      const record = makeRecord({
+        transcriptPath: '/Users/alice/.claude/projects/x/session.jsonl',
+      } as Partial<ToolCallRecord>);
+      const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event).not.toHaveProperty('transcriptPath');
+      expect(JSON.stringify(event)).not.toContain('alice');
+    });
+
     it('includes event_version: 1 on AiToolCall', () => {
       const record = makeRecord();
       const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
@@ -905,6 +915,21 @@ describe('NrIngestManager', () => {
       >;
       const snapshotEvent = sentEvents.find((e) => e.eventType === 'AiContextSnapshot')!;
       expect(snapshotEvent.session_id).toBe('trace-abc');
+    });
+
+    it('stamps the token event session id over the ingesting process id', async () => {
+      const manager = new NrIngestManager(makeIngestOptions());
+
+      manager.ingestContextSnapshot(makeContextSnapshot(), [], 'other-session');
+
+      manager.start();
+      await manager.stop();
+
+      const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const snapshotEvent = sentEvents.find((e) => e.eventType === 'AiContextSnapshot')!;
+      expect(snapshotEvent.session_id).toBe('other-session');
     });
 
     it('includes event_version: 1 on AiContextSnapshot', async () => {
@@ -2048,6 +2073,12 @@ describe('retryAlertToNrEvent()', () => {
     expect(event.app_name).toBe('my-app');
     expect(event.platform).toBe('claude-code');
     expect(event.timestamp).toBe(1_700_000_000_000);
+  });
+
+  it('includes event_version: 1', () => {
+    const event = retryAlertToNrEvent(makeThrashingAlert(), { developer: 'd', appName: 'a' });
+
+    expect(event.event_version).toBe(1);
   });
 
   it('session_id comes from attrs.sessionId, not alert.sessionId', () => {
