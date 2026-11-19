@@ -615,6 +615,38 @@ describe('toolCallToNrEvent()', () => {
 // ---------------------------------------------------------------------------
 
 describe('NrIngestManager', () => {
+  describe('otlp pipeline construction', () => {
+    const otlpOf = (m: NrIngestManager) =>
+      m as unknown as { otlpTransport: unknown; otlpEventBridge: unknown };
+
+    it('builds no OTLP pipeline from an endpoint alone when transport is nr-events-api', async () => {
+      const manager = new NrIngestManager(
+        makeIngestOptions({ otlpEndpoint: 'http://127.0.0.1:4318', transport: 'nr-events-api' }),
+      );
+      expect(otlpOf(manager).otlpTransport).toBeNull();
+      expect(otlpOf(manager).otlpEventBridge).toBeNull();
+      await manager.stop();
+    });
+
+    it('builds the OTLP pipeline when transport is both', async () => {
+      const manager = new NrIngestManager(
+        makeIngestOptions({ otlpEndpoint: 'http://127.0.0.1:4318', transport: 'both' }),
+      );
+      expect(otlpOf(manager).otlpTransport).not.toBeNull();
+      expect(otlpOf(manager).otlpEventBridge).not.toBeNull();
+      await manager.stop();
+    });
+
+    it('falls back to no OTLP pipeline when the endpoint is rejected', async () => {
+      const manager = new NrIngestManager(
+        makeIngestOptions({ otlpEndpoint: 'http://otel-collector:4318', transport: 'both' }),
+      );
+      expect(otlpOf(manager).otlpTransport).toBeNull();
+      expect(otlpOf(manager).otlpEventBridge).toBeNull();
+      await manager.stop();
+    });
+  });
+
   describe('ingestToolCall()', () => {
     it('buffers event and records metrics (verified via flush)', async () => {
       const manager = new NrIngestManager(makeIngestOptions());

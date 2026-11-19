@@ -134,7 +134,7 @@ export interface NrIngestOptions {
   projectId?: string | null;
   orgId?: string | null;
   repoUrl?: string | null;
-  /** OTLP/HTTP endpoint URL. When set, telemetry is also exported via OTLP. */
+  /** OTLP/HTTP endpoint URL. Used when `transport` is `otlp` or `both`. */
   otlpEndpoint?: string | null;
   /** Additional HTTP headers for the OTLP exporter. */
   otlpHeaders?: Record<string, string>;
@@ -1142,22 +1142,31 @@ export class NrIngestManager {
     let otlpTransport: OtlpTransport | null = null;
     let otlpEventBridge: OtlpEventBridge | null = null;
 
-    if (options.otlpEndpoint) {
-      otlpTransport = new OtlpTransport({
-        endpoint: options.otlpEndpoint,
-        headers: options.otlpHeaders,
-        appName: options.appName,
-        clientName: 'newrelic-preflight',
-        clientVersion: VERSION,
-      });
-      otlpEventBridge = new OtlpEventBridge({
-        endpoint: options.otlpEndpoint,
-        headers: options.otlpHeaders,
-        appName: options.appName,
-        clientName: 'newrelic-preflight',
-        clientVersion: VERSION,
-      });
-      // OtlpTransport no longer has an explicit start() — providers initialise in the constructor.
+    // `otlp.endpoint` can come from the standard OTEL_EXPORTER_OTLP_ENDPOINT,
+    // which is often set for another exporter, so only build the OTLP
+    // pipeline when this transport mode actually sends over it.
+    let transport = options.transport;
+    if (options.otlpEndpoint && (transport === 'otlp' || transport === 'both')) {
+      try {
+        const otlpOptions = {
+          endpoint: options.otlpEndpoint,
+          headers: options.otlpHeaders,
+          appName: options.appName,
+          clientName: 'newrelic-preflight',
+          clientVersion: VERSION,
+        };
+        otlpTransport = new OtlpTransport(otlpOptions);
+        otlpEventBridge = new OtlpEventBridge(otlpOptions);
+      } catch (err) {
+        // A rejected endpoint must not stop the server: send over the NR
+        // Events API alone, as `transport` did before it was wired.
+        logger.warn('otlp.endpoint rejected; falling back to transport nr-events-api', {
+          error: redactSensitive(err instanceof Error ? err.message : String(err)),
+        });
+        otlpTransport = null;
+        otlpEventBridge = null;
+        transport = 'nr-events-api';
+      }
     }
     this.otlpTransport = otlpTransport;
     this.otlpEventBridge = otlpEventBridge;
@@ -1282,7 +1291,7 @@ export class NrIngestManager {
         // primary tier, so secondary tiers are NR-events-only.
         otlpEventBridge: isPrimary ? (otlpEventBridge ?? undefined) : undefined,
         otlpTransport: isPrimary ? (otlpTransport ?? undefined) : undefined,
-        transport: isPrimary ? options.transport : 'nr-events-api',
+        transport: isPrimary ? transport : 'nr-events-api',
         allowProcessExit: true,
       });
       this.schedulers.set(tier.name, scheduler);
