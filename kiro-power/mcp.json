@@ -4,7 +4,7 @@
     "preflight": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@newrelic/preflight@1.73.0", "--stdio"],
+      "args": ["-y", "@newrelic/preflight@1.74.0", "--stdio"],
       "env": {
         "NR_AI_MODE": "${NR_AI_MODE}",
         "NEW_RELIC_AI_PLATFORM": "${NEW_RELIC_AI_PLATFORM}"
