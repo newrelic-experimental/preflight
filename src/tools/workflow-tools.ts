@@ -391,8 +391,13 @@ export function handleReportFeedback(
   };
 }
 
-export function handleMarkTaskBoundary(taskDetector: TaskDetector) {
-  const closed = taskDetector.markBoundary(Date.now());
+export function handleMarkTaskBoundary(
+  taskDetector: TaskDetector,
+  onTaskBoundary?: (timestamp: number) => void,
+) {
+  const now = Date.now();
+  const closed = taskDetector.markBoundary(now);
+  onTaskBoundary?.(now);
 
   return {
     content: [
@@ -492,7 +497,7 @@ export function registerWorkflowTools(deps: WorkflowToolsDeps): RegisteredToolSe
       handle: () => {
         const check = requireTracker(deps.taskDetector, 'TaskDetector');
         if (!check.ok) return check.result;
-        return handleMarkTaskBoundary(check.value);
+        return handleMarkTaskBoundary(check.value, deps.onTaskBoundary);
       },
     },
   ]);

@@ -431,6 +431,7 @@ export interface ToolRegistrationOptions {
   antiPatternDetector?: AntiPatternDetector;
   efficiencyScorer?: EfficiencyScorer;
   feedbackCollector?: FeedbackCollector;
+  onTaskBoundary?: (timestamp: number) => void;
   sessionStore?: SessionStore;
   weeklySummaryGenerator?: WeeklySummaryGenerator;
   trendAnalyzer?: TrendAnalyzer;

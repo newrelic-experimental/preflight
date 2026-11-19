@@ -1435,6 +1435,11 @@ async function main(): Promise<void> {
       persistedCostBaseline: (id) => sessionStoreForAggregator.loadSession(id),
       persistedTaskCount: (id) => sessionStoreForAggregator.loadSession(id)?.taskCount ?? 0,
     });
+    const markOwnTaskBoundary = (timestamp: number): void =>
+      localSessionAggregator.markTaskBoundary(
+        sessionTracker?.getMetrics().sessionId ?? null,
+        timestamp,
+      );
     const repoNameResolver = new RepoNameResolver();
 
     const budgetTracker = new BudgetTracker({
@@ -3272,6 +3277,7 @@ async function main(): Promise<void> {
         antiPatternDetector,
         efficiencyScorer,
         feedbackCollector,
+        onTaskBoundary: markOwnTaskBoundary,
         sessionStore,
         weeklySummaryGenerator,
         trendAnalyzer,
@@ -3523,6 +3529,7 @@ async function main(): Promise<void> {
           antiPatternDetector,
           efficiencyScorer,
           feedbackCollector,
+          onTaskBoundary: markOwnTaskBoundary,
           sessionStore,
           weeklySummaryGenerator,
           trendAnalyzer,
