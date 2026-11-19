@@ -109,7 +109,7 @@ export interface ResolvedTier {
 export interface TierSummary {
   readonly name: string;
   readonly type: 'nr' | 'local';
-  /** The NR account an `nr` tier delivers to. */
+  /** The account ID configured for this `nr` tier. Display only: the license key selects the account. */
   readonly accountId?: string;
   /** The directory a `local` tier writes to. */
   readonly path?: string;

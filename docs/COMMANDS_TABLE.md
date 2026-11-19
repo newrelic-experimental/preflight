@@ -117,7 +117,7 @@ Show the current server configuration with sensitive fields masked.
 
 **Data source:** Server config at startup, plus live write counts for local tiers
 
-**How it works:** Returns a sanitized snapshot of the active configuration. `licenseKeyMasked` shows the first 8 characters and last 4 characters only. `nrApiKeyMasked` shows the prefix only. `tiers` lists where events actually go, so read it instead of `accountId` when `tiers` is configured. A local tier reports `writes` and `failures`, and a nonzero `failures` means its path cannot be written. Tier license keys are never returned. Use this to diagnose misconfiguration (wrong region, unset developer name, unexpected mode, a tier with the wrong account or path) without exposing credentials.
+**How it works:** Returns a sanitized snapshot of the active configuration. `licenseKeyMasked` shows the first 8 characters and last 4 characters only. `nrApiKeyMasked` shows the prefix only. `tiers` lists each tier's destination and event types, so read it instead of `accountId` when `tiers` is configured. A tier's `accountId` is the configured value for display; the license key selects the account events go to. A local tier reports `writes` and `failures`, and a nonzero `failures` means its path cannot be written. Tier license keys are never returned. Use this to diagnose misconfiguration (wrong region, unset developer name, unexpected mode, a tier with the wrong license key or path) without exposing credentials.
 
 **Requires:** Always available
 

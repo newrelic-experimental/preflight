@@ -3617,7 +3617,7 @@ async function main(): Promise<void> {
     // Mirror the --stdio/--local gate above: mode: 'local' means no cloud
     // egress by design, so no NrIngestManager is constructed and the proxy
     // callbacks stay local-log-only. For 'cloud'/'both', loadConfigOrDie()
-    // has already guaranteed licenseKey/accountId are set (config.ts's
+    // has already guaranteed licenseKey is set (config.ts's
     // load-time validation), so this mirrors that guard rather than
     // re-deriving it.
     if (config.mode !== 'local') {
