@@ -207,6 +207,7 @@ Self-report token usage for cost tracking. Called by Claude Code to report its o
 | `thinking_tokens`       | number | No       | Extended thinking token count                       |
 | `cache_read_tokens`     | number | No       | Prompt cache read token count                       |
 | `cache_creation_tokens` | number | No       | Prompt cache creation token count                   |
+| `request_id`            | string | No       | The API response's id (e.g. `msg_01...`)            |
 
 **Returns:**
 
@@ -224,10 +225,14 @@ Self-report token usage for cost tracking. Called by Claude Code to report its o
 **How it works:**
 
 1. Constructs a `TokenUsage` object from the reported counts
-2. Calls `CostTracker.recordTokenUsage(usage, model)` which looks up per-token prices from the pricing table (`src/core/pricing-data.ts`)
+2. Calls `CostTracker.recordUsage(usage, model, { usageId: request_id })` which looks up per-token prices from the pricing table (`src/core/pricing-data.ts`)
 3. Cost breakdown: `inputCost = inputTokens * inputPricePerToken`, similarly for output, thinking, cache read, and cache creation tokens
-4. Accumulates into session total and per-model totals
-5. Returns both the cost for this specific report and the running session total
+4. Adds the report to the session's usage ledger, keyed by `request_id`. A `request_id` already in the ledger (the transcript watcher reported the same response) adds nothing and returns `"recorded": false, "reason": "duplicate_request_id"`
+5. Without a `request_id`, a report is ignored once the session holds a watcher's usage (transcript, Copilot, Copilot SDK, or Copilot app), since it cannot be told apart from a response the watcher already counted: the tool returns `"recorded": false, "reason": "already_counted_from_transcript"`
+
+   Known limitation: a session resumed from a file saved before the usage ledger existed holds no watcher usage until the watcher reports its first turn after the restart. An id-less report sent in that window is counted, and if the watcher later reports the same response, that response counts twice. Pass `request_id` to avoid this.
+
+6. Returns both the cost for this specific report and the running session total
 
 **Requires:** `CostTracker`
 

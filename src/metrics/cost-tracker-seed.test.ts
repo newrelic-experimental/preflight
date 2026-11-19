@@ -548,9 +548,14 @@ describe('first spend today across a real restart', () => {
   const summaryOf = (costTracker: CostTracker): FullSessionSummary =>
     buildSessionSummary({ sessionTracker, costTracker, developer: 'dev' });
 
-  // A session file written before firstActivityByDayMs existed.
+  // A session file written before firstActivityByDayMs existed, so also
+  // before the usage ledger, whose per-call timestamps would give the anchor.
   const legacyOf = (costTracker: CostTracker): FullSessionSummary => {
-    const { firstActivityByDayMs: _dropped, ...legacy } = summaryOf(costTracker);
+    const {
+      firstActivityByDayMs: _dropped,
+      usageLedger: _ledger,
+      ...legacy
+    } = summaryOf(costTracker);
     return legacy;
   };
 

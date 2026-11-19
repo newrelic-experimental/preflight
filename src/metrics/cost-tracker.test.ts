@@ -687,8 +687,13 @@ describe('CostTracker', () => {
           },
         }),
       );
+      // The live call's stand-in comes from the current pricing table, so it wins.
       expect(tracker.getMetrics().estimatedByModel).toEqual({
-        'claude-opus-5-9': { calls: 4, tokens: 410, estimatedFrom: 'claude-opus-5' },
+        'claude-opus-5-9': {
+          calls: 4,
+          tokens: 410,
+          estimatedFrom: estimatedFromOf('claude-opus-5-9'),
+        },
       });
       tracker.reset('s');
       expect(tracker.getMetrics().estimatedByModel).toEqual({});
@@ -1958,6 +1963,20 @@ describe('byte-estimate ledger', () => {
     expect(m.totalOutputTokens).toBe(500);
     expect(m.costByModel[MODEL]).toBeCloseTo(exact.totalUsd, 9);
     expect(Object.values(m.costByDayUsd).reduce((a, b) => a + b, 0)).toBeCloseTo(exact.totalUsd, 9);
+  });
+
+  it('retires an estimate the drain records after the turn that replaces it', () => {
+    const tracker = new CostTracker();
+    const toolCallMs = Date.now() - 60_000;
+    // The tool call drained late: its estimate is recorded now, but the turn
+    // that read its result happened right after the call.
+    tracker.recordEstimatedTokens(4_000, 2_000, MODEL, toolCallMs);
+    const exact = tracker.recordTokenUsage(real, MODEL, {
+      ...REPLAY,
+      timestampMs: toolCallMs + 1_000,
+    });
+
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 9);
   });
 
   it('keeps the estimate when no real report ever arrives', () => {
