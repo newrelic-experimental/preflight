@@ -104,7 +104,7 @@ function formatSharePct(row: { readonly costUsd?: number; readonly sharePct: num
 }
 
 function breakdownTitle(row: UsageShareRow): string | undefined {
-  return row.breakdown ? formatTokenBreakdown(row.breakdown) : undefined;
+  return row.breakdown ? formatTokenBreakdown(row.breakdown, row.breakdownUsd) : undefined;
 }
 
 export function UsageContributionPanel({

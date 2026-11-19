@@ -98,6 +98,7 @@ import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import {
   digestWebhookUrlShadowedBy,
+  handleGetDigestPreview,
   handleSendDigest,
   isDigestWebhookCommandConfigured,
 } from '../../tools/cross-session-tools.js';
@@ -623,6 +624,10 @@ export interface ApiHandlerDeps {
     // see computeCrossProcessTodaySessionIds(). `?.` falls back to an empty
     // set for older fakes/mocks.
     getTodaySessionIds?: (options?: { includeSynthetic?: boolean }) => string[];
+    // Optional: sessions the live trackers hold data for, including token-only
+    // sessions and synthetic ids, never expired by midnight or staleness. Used
+    // by sessionIdsHeldByLiveTrackers() to skip persisted duplicates.
+    getHeldSessionIds?: () => string[];
   };
   readonly contextTracker?: { getMetrics: (sessionId?: string) => ContextTrackerMetrics };
   readonly contextCompositionTracker?: { getMetrics: () => ContextCompositionMetrics };
@@ -1321,12 +1326,17 @@ export function computeCrossProcessTodaySessionIds(deps: ApiHandlerDeps): string
 }
 
 // Sessions whose activity this process's in-memory trackers already hold: its
-// own id plus every session it drained today. --local drains every session, so
-// a persisted copy of any of them must not be merged on top of the live totals.
+// own id plus every session it drained. --local drains every session, so a
+// persisted copy of any of them must not be merged on top of the live totals.
+// Keyed to the registry's held set rather than today's touched sessions: a
+// token-only session (model usage, no tool call) is held too, and the trackers
+// are never reset at midnight, so the held set must not expire then either.
 function sessionIdsHeldByLiveTrackers(deps: ApiHandlerDeps): ReadonlySet<string> {
   const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
   const held = new Set<string>(
-    deps.liveSessionRegistry?.getTodaySessionIds?.({ includeSynthetic: true }) ?? [],
+    deps.liveSessionRegistry?.getHeldSessionIds?.() ??
+      deps.liveSessionRegistry?.getTodaySessionIds?.({ includeSynthetic: true }) ??
+      [],
   );
   if (ownSessionId !== undefined) held.add(ownSessionId);
   return held;
@@ -1941,8 +1951,14 @@ export function createApiHandler(
     // already-loaded `todaySessions` rather than re-invoking
     // loadTodaySessions — keeps disk reads at one per request and preserves
     // the cache-hit assertions in api-handler.test.ts.
+    // loadSessionsWithActivityToday() also returns a session resumed from an
+    // older start date (its filename keeps that date). Every cost and token
+    // figure below is clamped to today, so widening the set adds only today's
+    // share.
     const overlappingTodaySessions =
-      deps.sessionStore?.loadSessionsOverlappingToday?.() ?? todaySessions;
+      deps.sessionStore?.loadSessionsWithActivityToday?.() ??
+      deps.sessionStore?.loadSessionsOverlappingToday?.() ??
+      todaySessions;
     // Local-day key for "today", shared by the persisted-session loop below and
     // the live top-up further down. Sessions persisted with per-day cost buckets
     // (costByDayUsd) let us sum a session's REAL today-spend instead of
@@ -2044,7 +2060,9 @@ export function createApiHandler(
       // captured by the todaySessions loop (which filtered by start-date).
       if (typeof s.sessionId === 'string' && !sessionsSeen.has(s.sessionId)) {
         sessionsSeen.add(s.sessionId);
-        antiPatternCount += s.antiPatterns?.length ?? 0;
+        // antiPatterns is lifetime with no per-day split, so a session resumed
+        // from before yesterday would add its whole history to today.
+        if (s.startTime >= startMs - 86_400_000) antiPatternCount += s.antiPatterns?.length ?? 0;
       }
     }
 
@@ -3027,13 +3045,13 @@ export function createApiHandler(
           }
         }
 
-        // Prefer loadSessionsOverlappingToday() so a session that started
-        // yesterday and is still running isn't invisible here —
-        // loadTodaySessions() filters by filename date (= start date) and
-        // would otherwise silently drop it. The `entry.timestamp >= startMs`
-        // check just below already excludes that session's yesterday-side
-        // entries, so widening the input set can't double-count anything.
+        // Prefer loadSessionsWithActivityToday() so a session resumed from an
+        // older start date isn't dropped; loadTodaySessions() filters by
+        // filename date (= start date). The `entry.timestamp >= startMs` check
+        // below excludes that session's pre-today entries, so widening the
+        // input set can't add out-of-day buckets.
         const todaySessions =
+          deps.sessionStore?.loadSessionsWithActivityToday?.() ??
           deps.sessionStore?.loadSessionsOverlappingToday?.() ??
           deps.sessionStore?.loadTodaySessions() ??
           [];
@@ -3202,8 +3220,6 @@ export function createApiHandler(
       // Where sends actually read the URL from. The value above is only the
       // file's; env or a command outranks it, and its value is never returned.
       digestWebhookUrlSource: overrideSource ?? (fileWebhookUrl ? 'file' : 'unset'),
-      digestSchedule:
-        typeof disk.digestSchedule === 'string' ? disk.digestSchedule : c.digestSchedule,
       alerts: {
         personal: {
           dailyCostUsd:
@@ -3342,14 +3358,6 @@ export function createApiHandler(
         }
       }
     }
-    if ('digestSchedule' in body) {
-      if (typeof body.digestSchedule !== 'string') {
-        errors.push('digestSchedule must be a string');
-      } else {
-        existing.digestSchedule = body.digestSchedule;
-        digestUrlOnly = false;
-      }
-    }
     if ('alerts' in body) {
       const alertsBody = body.alerts as Record<string, unknown> | undefined;
       const personal = alertsBody?.['personal'] as Record<string, unknown> | undefined;
@@ -3415,6 +3423,11 @@ export function createApiHandler(
 
     writeFileSync(deps.configFilePath, JSON.stringify(existing, null, 2), { mode: 0o600 });
     jsonOk(res, { ok: true, restartRequired: !digestUrlOnly });
+  });
+
+  routes.set('GET /api/digest/preview', (_req, res) => {
+    if (!deps.weeklySummaryGenerator) return unavailable(res, 'digest');
+    jsonOk(res, handleGetDigestPreview(deps.weeklySummaryGenerator));
   });
 
   routes.set('POST /api/digest/send', async (_req, res) => {
