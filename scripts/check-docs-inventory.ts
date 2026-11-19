@@ -12,7 +12,7 @@
  *   3. Every `nr_observe_*` MCP tool name literal under src/ must be named in
  *      docs/COMMANDS_TABLE.md.
  *   4. Every metric name passed as a string literal to `record(...)` or
- *      `recordMetric(...)` anywhere under src/ (including src/core) must be
+ *      `recordMetric(...)` under src/ (including src/core, not src/web) must be
  *      named in docs/METRICS_TABLE.md. Metrics that are defined but never
  *      exported satisfy this by being listed under "Local-only Metrics".
  *   5. Every `NEW_RELIC_AI_*` env var named in any non-test file under src/
@@ -25,6 +25,8 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+
+import { findDocMetricNames, findRecordedMetrics } from './docs-inventory-patterns.js';
 
 const ROOT = process.cwd();
 const SRC_DIR = resolve(ROOT, 'src');
@@ -63,10 +65,6 @@ const INTERNAL_ENV_VARS = new Set([
 
 const EVENT_TYPE_RE = /eventType:\s*'([A-Za-z0-9_]+)'/g;
 const METRIC_TOKEN_RE = /\bai\.[a-z0-9_]+(?:\.[a-z0-9_]+)+\b/g;
-const RECORDED_METRIC_RE =
-  /(?<![\w$])record(?:Metric)?\(\s*['"`]((?:nr\.)?ai(?:\.[a-z0-9_]+)+)['"`]/g;
-// Whole metric names, so a recorded `ai.foo.bar` is not satisfied by a documented `ai.foo.bar_total`.
-const DOC_METRIC_NAME_RE = /\b(?:nr\.)?ai(?:\.[a-z0-9_]+)+\b/g;
 const TOOL_NAME_RE = /\bnr_observe_[a-z0-9_]+\b/g;
 const ENV_VAR_RE = /\bNEW_RELIC_AI_[A-Z0-9_]+\b/g;
 
@@ -96,7 +94,7 @@ function main(): void {
   const srcToolNames = new Set<string>();
   for (const file of collectSourceFiles(SRC_DIR, new Set(['web', 'node_modules']))) {
     const text = readFileSync(file, 'utf8');
-    for (const m of text.matchAll(RECORDED_METRIC_RE)) recordedMetrics.add(m[1]);
+    for (const name of findRecordedMetrics(text)) recordedMetrics.add(name);
   }
   for (const file of files) {
     const text = readFileSync(file, 'utf8');
@@ -123,7 +121,7 @@ function main(): void {
   const docMetricTokens = new Set(metricsDoc.match(METRIC_TOKEN_RE) ?? []);
   const phantomMetrics = [...docMetricTokens].filter((t) => !srcMetricTokens.has(t)).sort();
 
-  const docMetricNames = new Set(metricsDoc.match(DOC_METRIC_NAME_RE) ?? []);
+  const docMetricNames = findDocMetricNames(metricsDoc);
   const undocumentedMetrics = [...recordedMetrics].filter((t) => !docMetricNames.has(t)).sort();
 
   const docToolNames = new Set(commandsDoc.match(TOOL_NAME_RE) ?? []);
