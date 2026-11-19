@@ -5,6 +5,7 @@ import { SessionTracker } from '../metrics/session-tracker.js';
 import type { AuditRecord } from '../security/audit-trail.js';
 import { nrIngestOptionsFromConfig, sendAuditRecord } from './audit-record-sender.js';
 import { NrIngestManager } from './nr-ingest.js';
+import { VERSION } from '../version.js';
 
 const ok = { success: true, statusCode: 200, retryCount: 0 };
 const sendEventsFn = jest.fn<() => Promise<typeof ok>>().mockResolvedValue(ok);
@@ -113,6 +114,9 @@ describe('sendAuditRecord()', () => {
         detail: 'HookInstall: /home/dev/.claude/settings.json',
         developer: 'dev',
         'audit.security_alert': false,
+        'instrumentation.provider': 'preflight',
+        'instrumentation.name': 'preflight',
+        'instrumentation.version': VERSION,
       },
     ]);
     expect(sendLogsFn).toHaveBeenCalledTimes(1);
