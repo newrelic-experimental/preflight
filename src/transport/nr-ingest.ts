@@ -60,6 +60,16 @@ import { DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './tier-types.js';
 import type { ResolvedTier } from './tier-types.js';
 import { TierLocalWriter } from '../storage/tier-local-writer.js';
 
+/**
+ * Stamped onto every event leaving `routeEvent()` so downstream consumers can
+ * tell Preflight-emitted events apart from other instrumentation.
+ */
+const INSTRUMENTATION_ATTRIBUTES: NrEventData = {
+  'instrumentation.provider': 'preflight',
+  'instrumentation.name': 'preflight',
+  'instrumentation.version': VERSION,
+};
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -1355,25 +1365,29 @@ export class NrIngestManager {
    * declaration order. The single choke point through which all ~15
    * `ingestX()` methods emit events.
    *
-   * The same event object is shared by reference across tiers — field-level
+   * The caller's event is never mutated. Stamping happens on a copy built once
+   * per call, and that copy is shared by reference across tiers. Field-level
    * redaction/projection per tier is an explicit non-goal (routing is
    * event-type-level only). Neither `HarvestScheduler.addEvent()` nor
    * `TierLocalWriter.addEvent()` mutates it.
+   *
+   * The stamp is spread last so no caller-supplied field can override it.
    *
    * An event whose type matches no tier is dropped silently: a narrow tier
    * list is a deliberate operator choice, and logging per dropped event would
    * flood stderr at tool-call volume.
    */
   private routeEvent(event: NrEventData): void {
+    const stamped: NrEventData = { ...event, ...INSTRUMENTATION_ATTRIBUTES };
     const rawEventType = event.eventType;
     const eventType = typeof rawEventType === 'string' ? rawEventType : '';
     for (const tierName of this.router.resolveEventType(eventType)) {
       const scheduler = this.schedulers.get(tierName);
       if (scheduler !== undefined) {
-        scheduler.addEvent(event);
+        scheduler.addEvent(stamped);
         continue;
       }
-      this.localWriters.get(tierName)?.addEvent(event);
+      this.localWriters.get(tierName)?.addEvent(stamped);
     }
   }
 

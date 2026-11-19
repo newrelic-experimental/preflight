@@ -57,6 +57,16 @@ Every NR event type except `NrAiObserveSetupCheck` carries an `event_version` fi
 
 ## Events API
 
+Every event sent through the Events API except `NrAiObserveSetupCheck` carries three instrumentation attributes, so you can filter Preflight events apart from other instrumentation:
+
+| Field                      | Type   | Description                                                                   |
+| -------------------------- | ------ | ----------------------------------------------------------------------------- |
+| `instrumentation.provider` | string | Always `"preflight"`                                                          |
+| `instrumentation.name`     | string | Always `"preflight"`                                                          |
+| `instrumentation.version`  | string | The Preflight package version that emitted the event (for example `"1.74.0"`) |
+
+These are added when the event is routed, so they appear on every tier, including local JSONL tiers. They are not listed again in the per-event tables below.
+
 ### MCP Server Events
 
 These events are emitted by the MCP server (`preflight`) when Claude Code or another IDE uses a tool.
