@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { buildCostTrackerSeed } from './cost-tracker-seed.js';
+import { buildCostTrackerSeed, settledCostTrackerSeed } from './cost-tracker-seed.js';
 import { localDateKey, localStartOfDay } from '../lib/date.js';
 import {
   SessionStore,
@@ -681,5 +681,125 @@ describe('first spend today across a real restart', () => {
       for (const seed of seeds) after.seedFromPersisted(seed);
       expect(after.getFirstActivityMsForDay(TODAY_KEY)).toBeNull();
     }
+  });
+});
+
+describe('session-end forecast after a restart', () => {
+  const MIN = 60_000;
+  const HOUR = 60 * MIN;
+  // Local 14:00 so no assertion depends on how near the real clock is to midnight.
+  const NOW = new Date(2024, 0, 3, 14).getTime();
+
+  beforeEach(() => {
+    jest.useFakeTimers({ now: NOW });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const sessionEndAfterRestart = (persisted: FullSessionSummary, processStartMs: number) => {
+    const restarted = new CostTracker();
+    restarted.seedFromPersisted(buildCostTrackerSeed(persisted));
+    return buildCostForecastFromInputs({
+      sessionSpentUsd: restarted.getMetrics().sessionTotalCostUsd ?? 0,
+      sessionStartMs: restarted.getSessionStartMs(processStartMs),
+    }).forecastSessionEndUsd;
+  };
+
+  it('spreads a resumed $50 session over its real age, not the 10 minutes since the restart', () => {
+    const persisted = makeSummary({ startTime: NOW - 3 * HOUR, estimatedCostUsd: 50 });
+
+    const forecast = sessionEndAfterRestart(persisted, NOW - 10 * MIN);
+
+    // 50 spent over 3h, with 5h left of the 8h horizon: 50 + (50 / 180min) * 300min.
+    expect(forecast).toBeCloseTo(50 + (50 / 180) * 300, 6);
+  });
+
+  it('is the same for a --local process, which seeds from the settled summary', () => {
+    const persisted = makeSummary({ startTime: NOW - 3 * HOUR, estimatedCostUsd: 50 });
+    const local = new CostTracker();
+    local.seedFromPersisted(settledCostTrackerSeed(persisted));
+
+    const forecast = buildCostForecastFromInputs({
+      sessionSpentUsd: local.getMetrics().sessionTotalCostUsd ?? 0,
+      sessionStartMs: local.getSessionStartMs(NOW - 10 * MIN),
+    }).forecastSessionEndUsd;
+
+    expect(forecast).toBeCloseTo(50 + (50 / 180) * 300, 6);
+  });
+
+  describe('end-of-day after a restart of a session that began before today', () => {
+    const TODAY_KEY = localDateKey(NOW);
+    const forecastAfterRestart = (firstActivityMs?: number) => {
+      const persisted = makeSummary({
+        startTime: NOW - 30 * HOUR,
+        estimatedCostUsd: 50,
+        costByDayUsd: { [TODAY_KEY]: 20 },
+        ...(firstActivityMs === undefined
+          ? {}
+          : { firstActivityByDayMs: { [TODAY_KEY]: firstActivityMs } }),
+      });
+      const restarted = new CostTracker();
+      restarted.seedFromPersisted(buildCostTrackerSeed(persisted));
+      return buildCostForecastFromInputs({
+        sessionSpentUsd: restarted.getMetrics().sessionTotalCostUsd ?? 0,
+        sessionStartMs: restarted.getSessionStartMs(NOW - 10 * MIN),
+        dailySpentUsd: restarted.getCostForDay(TODAY_KEY),
+        dailyFirstActivityMs: restarted.getFirstActivityMsForDay(TODAY_KEY),
+      });
+    };
+
+    it('holds, and says the start of the day is unknown, when today has spend but no saved first spend', () => {
+      const forecast = forecastAfterRestart();
+
+      expect(forecast.forecastEndOfDayUsd).toBeNull();
+      expect(forecast.forecastEndOfWeekUsd).toBeNull();
+      expect(forecast.heldReason).toBe('held: spend today, start of day unknown');
+    });
+
+    it("projects from today's burn when the saved first spend is 3 hours ago", () => {
+      const forecast = forecastAfterRestart(NOW - 3 * HOUR);
+
+      expect(forecast.heldReason).toBeNull();
+      // 20 spent over 3h, with 10h left until local midnight: 20 + (20 / 180min) * 600min.
+      expect(forecast.forecastEndOfDayUsd).toBeCloseTo(20 + (20 / 180) * 600, 6);
+    });
+  });
+
+  it('projects no growth past the 8-hour horizon for a session resumed from days ago', () => {
+    const persisted = makeSummary({ startTime: NOW - 72 * HOUR, estimatedCostUsd: 50 });
+
+    expect(sessionEndAfterRestart(persisted, NOW - 10 * MIN)).toBe(50);
+  });
+
+  it('ages a session seeded after this process started from the earlier of the two starts', () => {
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted(
+      buildCostTrackerSeed(makeSummary({ startTime: NOW - 2 * HOUR, estimatedCostUsd: 10 })),
+    );
+    tracker.seedFromPersisted(
+      buildCostTrackerSeed(makeSummary({ startTime: NOW - 5 * HOUR, estimatedCostUsd: 10 })),
+    );
+
+    expect(tracker.getSessionStartMs(NOW - 10 * MIN)).toBe(NOW - 5 * HOUR);
+    expect(tracker.getSessionStartMs(NOW - 6 * HOUR)).toBe(NOW - 6 * HOUR);
+  });
+
+  it('ignores a persisted start of zero from a legacy file', () => {
+    const persisted = makeSummary({ startTime: 0, estimatedCostUsd: 50 });
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted(buildCostTrackerSeed(persisted));
+
+    expect(tracker.getSessionStartMs(NOW - 10 * MIN)).toBe(NOW - 10 * MIN);
+  });
+
+  it('forgets the seeded start when the tracker is reset', () => {
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted(
+      buildCostTrackerSeed(makeSummary({ startTime: NOW - 3 * HOUR, estimatedCostUsd: 50 })),
+    );
+    tracker.reset('other-session');
+
+    expect(tracker.getSessionStartMs(NOW - 10 * MIN)).toBe(NOW - 10 * MIN);
   });
 });
