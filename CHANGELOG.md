@@ -10,6 +10,20 @@ entry here; see [Changesets](CONTRIBUTING.md#changesets) in CONTRIBUTING.md. Rel
 (Added, Fixed, and so on). Later releases group them by semver bump: Major, Minor, or Patch
 Changes.
 
+## 1.75.0 - 2026-11-19
+
+### Minor Changes
+
+- **Today shows the daily budget next to the other spend KPIs.** When a daily budget is set, the Today KPI strip adds a daily budget tile. It shows the same total as the spend today tile, the cap, and the percent used, rounded down. The percent used turns amber at 50 percent of the cap, the amount turns amber at 80 percent and red at 100 percent, and the tile says "over budget" once the cap is passed. With no daily budget set, the strip is unchanged.
+- **Tool-call events no longer carry your transcript path, and several event attributes are now correct.** `AiToolCall` stops sending `transcriptPath`, which held your home directory and so your OS username. `AiRetryAlert` now carries `event_version`. `AiContextSnapshot` is sent only by the process that owns the session, and its `session_id` is the session the snapshot was measured in, not whichever session the sending process happened to hold. A proxied tool call that fails with a non-2xx HTTP status now sets `error_type` to `http_4xx`, `http_5xx` or `http_error` on both its `AiMcpToolCall` and its `AiToolCall`. A JSON-RPC error returned with HTTP 200 still counts as a success.
+- Every event Preflight sends to New Relic or writes to a local tier now carries `instrumentation.provider`, `instrumentation.name` (both `"preflight"`), and `instrumentation.version`, so you can filter Preflight events apart from other instrumentation.
+
+### Patch Changes
+
+- **A digest sent to an invalid Slack webhook is reported as a failure.** A webhook URL that redirects (seen with a revoked Slack webhook) is now reported as a failed send. Before, the send followed the redirect and reported success although nothing was delivered. A redirect is no longer followed. The Alerts page and `nr_observe_send_digest` now report that the webhook URL looks invalid or revoked, without echoing the URL.
+- A `--stdio` engine that resumes a session started before the 7-day window now counts only that session's in-window days in the weekly budget. Before, it added the session's whole saved cost, so a session from three weeks ago with $40 saved and $2 of it this week read $44 weekly after a $4 turn and fired the 50, 80 and 100% weekly alerts. It now reads $6. The daily figure and the session cost are unchanged. A saved byte estimate on an earlier day counts once in the week, and leaves it when an exact report replaces the estimates.
+- Setting `otlp.transport` to `otlp` or `both` now actually sends events and metrics over OTLP, as `docs/ADVANCED.md` describes. Before, the setting never reached the harvest scheduler and everything went to the New Relic APIs. For runs observed live, `AiWorkflowRun` now carries `token_reconciliation_delta`, the gap between the run's rollup tokens and the sum of each subagent's latest turn. An `otlp.endpoint` that is rejected, such as plain http to a non-loopback host, logs a warning and falls back to the New Relic APIs instead of stopping the server. Local tier files now file `AiAuditEvent` and `SecurityAlert` events under their real day instead of a 1970 file.
+
 ## 1.74.0 - 2026-11-18
 
 ### Minor Changes
