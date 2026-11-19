@@ -167,6 +167,18 @@ describe('model pricing through the boundary', () => {
     expect(resolvePricing('gw-claude-sonnet')).toBeNull();
   });
 
+  it('restores built-in rates when the custom file is dropped', () => {
+    const opus = resolveModelPricing('claude-opus-4-8');
+    applyCustomPricing(
+      writePricing({
+        'claude-opus-4-8': { inputPerMTok: 99, outputPerMTok: 99, contextWindow: 1000 },
+      }),
+    );
+    expect(resolveModelPricing('claude-opus-4-8')).toMatchObject({ inputPerMTok: 99 });
+    applyCustomPricing(null);
+    expect(resolveModelPricing('claude-opus-4-8')).toEqual(opus);
+  });
+
   it('keeps the built-in table for an alias-only file', () => {
     const opus = resolveModelPricing('claude-opus-4-8');
     applyCustomPricing(writePricing({ aliases: { 'gw-claude-sonnet': 'claude-sonnet-4-6' } }));
