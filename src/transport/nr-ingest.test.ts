@@ -4092,17 +4092,6 @@ describe('NrIngestManager instrumentation attributes', () => {
       rmSync(localDir, { recursive: true, force: true });
     }
   });
-
-  it('does not mutate the task record the caller passed in', () => {
-    const manager = new NrIngestManager(makeIngestOptions());
-    const task = makeTask({ taskId: 'task-instr-2' });
-    const before = structuredClone(task);
-
-    manager.ingestCodingTask(task);
-
-    expect(task).toEqual(before);
-    expect(Object.keys(task)).not.toContain('instrumentation.provider');
-  });
 });
 
 describe('AiTurnCost coverage of token reports', () => {

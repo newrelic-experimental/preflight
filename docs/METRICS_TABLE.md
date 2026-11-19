@@ -57,7 +57,7 @@ Every NR event type except `NrAiObserveSetupCheck` carries an `event_version` fi
 
 ## Events API
 
-Every event sent through the Events API carries three instrumentation attributes, so you can filter Preflight events apart from other instrumentation:
+Every event sent through the Events API except `NrAiObserveSetupCheck` carries three instrumentation attributes, so you can filter Preflight events apart from other instrumentation:
 
 | Field                      | Type   | Description                                                                   |
 | -------------------------- | ------ | ----------------------------------------------------------------------------- |
