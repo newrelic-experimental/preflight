@@ -240,9 +240,19 @@ describe('buildCostForecast', () => {
         { sessionSpentUsd: 10, sessionStartMs: justAfterMidnight - 6 * 60 * 60_000 },
         justAfterMidnight,
       );
+      const spentNoStart = buildCostForecastFromInputs(
+        {
+          sessionSpentUsd: 50,
+          sessionStartMs: nowMs - 30 * 60 * 60_000,
+          dailySpentUsd: 20,
+          dailyFirstActivityMs: null,
+        },
+        nowMs,
+      );
       const shown = buildCostForecast(SPEND_USD, nowMs - 45 * 60_000, nowMs);
       expect(shortWindow.heldReason).toBe("held: under 10 minutes of today's data");
       expect(noAnchor.heldReason).toBe('held: no spend yet today');
+      expect(spentNoStart.heldReason).toBe('held: spend today, start of day unknown');
       expect(shown.heldReason).toBeNull();
     });
 

@@ -57,9 +57,19 @@ import type {
 import type { LocalStore } from '../storage/index.js';
 import { LogIngestManager } from './log-ingest.js';
 import { TierRouter } from './tier-router.js';
-import { DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './tier-types.js';
+import { DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE, summarizeTiers } from './tier-types.js';
 import type { ResolvedTier } from './tier-types.js';
 import { TierLocalWriter } from '../storage/tier-local-writer.js';
+
+/**
+ * Stamped onto every event leaving `routeEvent()` so downstream consumers can
+ * tell Preflight-emitted events apart from other instrumentation.
+ */
+const INSTRUMENTATION_ATTRIBUTES: NrEventData = {
+  'instrumentation.provider': 'preflight',
+  'instrumentation.name': 'preflight',
+  'instrumentation.version': VERSION,
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -126,7 +136,7 @@ export interface NrIngestOptions {
   projectId?: string | null;
   orgId?: string | null;
   repoUrl?: string | null;
-  /** OTLP/HTTP endpoint URL. When set, telemetry is also exported via OTLP. */
+  /** OTLP/HTTP endpoint URL. Used when `transport` is `otlp` or `both`. */
   otlpEndpoint?: string | null;
   /** Additional HTTP headers for the OTLP exporter. */
   otlpHeaders?: Record<string, string>;
@@ -155,7 +165,7 @@ export interface NrIngestOptions {
   /**
    * Multi-tier telemetry routing. Threaded from `config.tiers`.
    * Absent or empty → one implicit `default` tier is synthesized from
-   * `licenseKey` + `transportOptions.accountId`, reproducing the existing
+   * `licenseKey`, reproducing the existing
    * single-scheduler behavior exactly.
    *
    * The FIRST nr-type tier in array order is the **primary tier**: it carries
@@ -189,6 +199,8 @@ const STANDARD_KEYS = new Set([
   'agentType',
   'skillName',
   'activeSkill',
+  // The transcript path embeds the home directory and so the OS username.
+  'transcriptPath',
 ]);
 
 /**
@@ -889,6 +901,7 @@ export function retryAlertToNrEvent(
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiRetryAlert',
+    event_version: 1,
     timestamp: alert.timestamp,
     tool_name: alert.toolName,
     occurrences: alert.occurrences,
@@ -911,8 +924,9 @@ export function retryAlertToNrEvent(
  * turn's cost and tokens split evenly. `tool_use_id` cross-references the
  * call's `AiToolCall` row.
  *
- * A response turn (no calls) yields a single row with no `tool`,
- * `tool_use_id` or `skillName`, carrying the whole report's cost and tokens.
+ * A response turn (no calls) yields a single row with no `tool` or
+ * `tool_use_id`, carrying the whole report's cost and tokens. It carries the
+ * skill of the run open when the report arrived, if any.
  * Its `turn_tool_call_count` is 0.
  */
 export function turnCostToNrEvents(
@@ -953,8 +967,9 @@ export function turnCostToNrEvents(
     if (call !== null) {
       event.tool_use_id = call.toolUseId;
       event.tool = call.toolName;
-      if (call.skill !== null) Object.assign(event, skillRunAttributes(call.skill));
     }
+    const skill = call !== null ? call.skill : turn.skill;
+    if (skill !== null) Object.assign(event, skillRunAttributes(skill));
 
     if (attrs.teamId) event.team_id = attrs.teamId;
     if (attrs.projectId) event.project_id = attrs.projectId;
@@ -1133,22 +1148,31 @@ export class NrIngestManager {
     let otlpTransport: OtlpTransport | null = null;
     let otlpEventBridge: OtlpEventBridge | null = null;
 
-    if (options.otlpEndpoint) {
-      otlpTransport = new OtlpTransport({
-        endpoint: options.otlpEndpoint,
-        headers: options.otlpHeaders,
-        appName: options.appName,
-        clientName: 'newrelic-preflight',
-        clientVersion: VERSION,
-      });
-      otlpEventBridge = new OtlpEventBridge({
-        endpoint: options.otlpEndpoint,
-        headers: options.otlpHeaders,
-        appName: options.appName,
-        clientName: 'newrelic-preflight',
-        clientVersion: VERSION,
-      });
-      // OtlpTransport no longer has an explicit start() — providers initialise in the constructor.
+    // `otlp.endpoint` can come from the standard OTEL_EXPORTER_OTLP_ENDPOINT,
+    // which is often set for another exporter, so only build the OTLP
+    // pipeline when this transport mode actually sends over it.
+    let transport = options.transport;
+    if (options.otlpEndpoint && (transport === 'otlp' || transport === 'both')) {
+      try {
+        const otlpOptions = {
+          endpoint: options.otlpEndpoint,
+          headers: options.otlpHeaders,
+          appName: options.appName,
+          clientName: 'newrelic-preflight',
+          clientVersion: VERSION,
+        };
+        otlpTransport = new OtlpTransport(otlpOptions);
+        otlpEventBridge = new OtlpEventBridge(otlpOptions);
+      } catch (err) {
+        // A rejected endpoint must not stop the server: send over the NR
+        // Events API alone, as `transport` did before it was wired.
+        logger.warn('otlp.endpoint rejected; falling back to transport nr-events-api', {
+          error: redactSensitive(err instanceof Error ? err.message : String(err)),
+        });
+        otlpTransport = null;
+        otlpEventBridge = null;
+        transport = 'nr-events-api';
+      }
     }
     this.otlpTransport = otlpTransport;
     this.otlpEventBridge = otlpEventBridge;
@@ -1217,7 +1241,6 @@ export class NrIngestManager {
               destination: {
                 type: 'nr',
                 licenseKey: options.licenseKey,
-                accountId: options.transportOptions.accountId,
               },
               eventTypes: [WILDCARD_EVENT_TYPE],
             },
@@ -1258,13 +1281,9 @@ export class NrIngestManager {
       }
 
       const isPrimary: boolean = primaryScheduler === null;
-      const tierTransportOptions: TransportOptions = {
-        ...transportOptions,
-        accountId: tier.destination.accountId,
-      };
       const scheduler: HarvestScheduler = new HarvestScheduler({
         licenseKey: tier.destination.licenseKey,
-        transportOptions: tierTransportOptions,
+        transportOptions,
         eventHarvestIntervalMs: options.eventHarvestIntervalMs,
         metricHarvestIntervalMs: options.metricHarvestIntervalMs,
         sendEventsFn: makeClassifyingEventsFn(tier.name, isPrimary),
@@ -1273,7 +1292,7 @@ export class NrIngestManager {
         // primary tier, so secondary tiers are NR-events-only.
         otlpEventBridge: isPrimary ? (otlpEventBridge ?? undefined) : undefined,
         otlpTransport: isPrimary ? (otlpTransport ?? undefined) : undefined,
-        transport: isPrimary ? options.transport : 'nr-events-api',
+        transport: isPrimary ? transport : 'nr-events-api',
         allowProcessExit: true,
       });
       this.schedulers.set(tier.name, scheduler);
@@ -1282,7 +1301,7 @@ export class NrIngestManager {
         primaryScheduler = scheduler;
         primaryTierName = tier.name;
         primaryLicenseKey = tier.destination.licenseKey;
-        primaryTransportOptions = tierTransportOptions;
+        primaryTransportOptions = transportOptions;
       }
     }
 
@@ -1301,6 +1320,11 @@ export class NrIngestManager {
     }
     this.primaryScheduler = primaryScheduler;
     this.primaryTierName = primaryTierName;
+
+    logger.info('Telemetry tiers resolved', {
+      tiers: summarizeTiers(tiers),
+      primaryTier: primaryTierName,
+    });
 
     this.logIngest = new LogIngestManager({
       licenseKey: primaryLicenseKey,
@@ -1337,6 +1361,13 @@ export class NrIngestManager {
     return [...this.schedulers.keys(), ...this.localWriters.keys()];
   }
 
+  /** Write and failure counts per local tier, keyed by tier name. */
+  getLocalTierStats(): Readonly<Record<string, { writes: number; failures: number }>> {
+    const stats: Record<string, { writes: number; failures: number }> = {};
+    for (const [name, writer] of this.localWriters) stats[name] = writer.getStats();
+    return stats;
+  }
+
   /** The tier carrying metrics, logs, OTLP, and send-health. */
   getPrimaryTierName(): string {
     return this.primaryTierName;
@@ -1347,25 +1378,29 @@ export class NrIngestManager {
    * declaration order. The single choke point through which all ~15
    * `ingestX()` methods emit events.
    *
-   * The same event object is shared by reference across tiers — field-level
+   * The caller's event is never mutated. Stamping happens on a copy built once
+   * per call, and that copy is shared by reference across tiers. Field-level
    * redaction/projection per tier is an explicit non-goal (routing is
    * event-type-level only). Neither `HarvestScheduler.addEvent()` nor
    * `TierLocalWriter.addEvent()` mutates it.
+   *
+   * The stamp is spread last so no caller-supplied field can override it.
    *
    * An event whose type matches no tier is dropped silently: a narrow tier
    * list is a deliberate operator choice, and logging per dropped event would
    * flood stderr at tool-call volume.
    */
   private routeEvent(event: NrEventData): void {
+    const stamped: NrEventData = { ...event, ...INSTRUMENTATION_ATTRIBUTES };
     const rawEventType = event.eventType;
     const eventType = typeof rawEventType === 'string' ? rawEventType : '';
     for (const tierName of this.router.resolveEventType(eventType)) {
       const scheduler = this.schedulers.get(tierName);
       if (scheduler !== undefined) {
-        scheduler.addEvent(event);
+        scheduler.addEvent(stamped);
         continue;
       }
-      this.localWriters.get(tierName)?.addEvent(event);
+      this.localWriters.get(tierName)?.addEvent(stamped);
     }
   }
 
@@ -1684,6 +1719,7 @@ export class NrIngestManager {
   ingestContextSnapshot(
     snapshot: ContextTurnSnapshot,
     topTools: readonly ToolContextContribution[],
+    sessionId?: string,
   ): void {
     const nrEvent: NrEventData = {
       eventType: 'AiContextSnapshot',
@@ -1711,7 +1747,8 @@ export class NrIngestManager {
     if (this.projectId) nrEvent.project_id = this.projectId;
     if (this.orgId) nrEvent.org_id = this.orgId;
     if (this.repoUrl) nrEvent.repo_url = this.repoUrl;
-    if (this.sessionTraceId != null) nrEvent.session_id = this.sessionTraceId;
+    const snapshotSessionId = sessionId ?? this.sessionTraceId;
+    if (snapshotSessionId != null) nrEvent.session_id = snapshotSessionId;
     this.routeEvent(nrEvent);
   }
 

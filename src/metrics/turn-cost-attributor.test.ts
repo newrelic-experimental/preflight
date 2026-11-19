@@ -1,6 +1,6 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { TurnCostAttributor } from './turn-cost-attributor.js';
-import type { ToolCallRecord, TokenEvent } from '../storage/types.js';
+import type { SkillStamp, ToolCallRecord, TokenEvent } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -131,6 +131,28 @@ describe('TurnCostAttributor', () => {
       expect(metrics.turns).toHaveLength(0);
       expect(metrics.totalAttributedCost).toBe(0);
       expect(metrics.evictedToolBursts).toBe(0);
+    });
+
+    it('stamps a response turn with the skill run open when its report arrives', () => {
+      const attributor = new TurnCostAttributor();
+      const run: SkillStamp = { name: 'review', source: 'slash', runId: 'run-1' };
+
+      const inRun = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1000 }), run);
+      const afterRun = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 2000 }), null);
+
+      expect(inRun.skill).toEqual(run);
+      expect(afterRun.skill).toBeNull();
+    });
+
+    it('leaves the skill of a tool turn to its calls', () => {
+      const attributor = new TurnCostAttributor();
+      const run: SkillStamp = { name: 'review', source: 'slash', runId: 'run-1' };
+
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      const result = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1050 }), run);
+
+      expect(result.calls).toHaveLength(1);
+      expect(result.skill).toBeNull();
     });
 
     it('returns a response turn for a token event that predates the pending turn it would close', () => {
