@@ -244,7 +244,10 @@ function readBufferEvents(): Record<string, unknown>[] {
   if (!existsSync(bufferPath)) return [];
   const raw = readFileSync(bufferPath, 'utf-8').trim();
   if (!raw) return [];
-  return raw.split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+  return raw
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
 /**
@@ -260,7 +263,10 @@ function readBufferLines(sessionId?: string): Record<string, unknown>[] {
   if (!existsSync(path)) return [];
   const raw = readFileSync(path, 'utf-8').trim();
   if (!raw) return [];
-  return raw.split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+  return raw
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
 describe('collector-script', () => {
@@ -2624,8 +2630,8 @@ describe('collector-script', () => {
 
       const aPath = resolve(tmpDir, 'buffer-sess-A.jsonl');
       const bPath = resolve(tmpDir, 'buffer-sess-B.jsonl');
-      expect(readFileSync(aPath, 'utf-8').trim().split('\n')).toHaveLength(2);
-      expect(readFileSync(bPath, 'utf-8').trim().split('\n')).toHaveLength(1);
+      expect(readFileSync(aPath, 'utf-8').split('\n').filter(Boolean)).toHaveLength(2);
+      expect(readFileSync(bPath, 'utf-8').split('\n').filter(Boolean)).toHaveLength(1);
     });
   });
 
@@ -3406,6 +3412,7 @@ describe('a tool call without tool_use_id', () => {
     return readFileSync(resolve(tmpDir, `buffer-${SESSION}.jsonl`), 'utf-8')
       .trim()
       .split('\n')
+      .filter(Boolean)
       .map((line) => (JSON.parse(line) as Record<string, unknown>).toolUseId);
   }
 
