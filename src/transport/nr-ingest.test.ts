@@ -164,6 +164,7 @@ function makeClosedTurn(overrides?: Partial<ClosedTurn>): ClosedTurn {
     id: 'closed-turn-uuid-001',
     attribution,
     calls: [{ toolUseId: 'toolu_001', toolName: 'Read', skill: null }],
+    skill: null,
     platform: 'claude-code',
     ...overrides,
   };
@@ -4235,6 +4236,22 @@ describe('AiTurnCost coverage of token reports', () => {
     expect(metrics.totalAttributedCost).toBeCloseTo(perReport, 10);
     expect(metrics.turns).toHaveLength(1);
     expect(metrics.costByToolType.Read.totalCost).toBeCloseTo(perReport, 10);
+  });
+
+  it('stamps a text-only skill run response row with its skill, and a later one with none', () => {
+    const attributor = new TurnCostAttributor();
+    const run = { name: 'review', source: 'slash' as const, runId: 'run-1' };
+
+    const [inRun] = turnCostToNrEvents(attributor.recordTokenEvent(tokens(1_000), run), attrs);
+    const [afterRun] = turnCostToNrEvents(attributor.recordTokenEvent(tokens(2_000), null), attrs);
+
+    expect(inRun).toMatchObject({
+      skill_name: 'review',
+      skill_source: 'slash',
+      skill_run_id: 'run-1',
+    });
+    expect(afterRun).not.toHaveProperty('skill_name');
+    expect(afterRun).not.toHaveProperty('skill_run_id');
   });
 
   it('tags a Claude Code response row cost_authority=external in companion mode before any tool call', () => {

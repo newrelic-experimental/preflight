@@ -1762,6 +1762,7 @@ async function main(): Promise<void> {
       }
       const seed = settledCostTrackerSeed(persisted);
       costTracker.seedFromPersisted(seed);
+      modelUsageTracker.seedFromPersisted(persisted.modelBreakdown);
       localHeldCosts.set(sessionId, heldSessionCostOf(persisted, Date.now(), seed));
       refreshPriorCostBaseline();
     };
@@ -2519,7 +2520,10 @@ async function main(): Promise<void> {
           eventSessionId: tokenEvent.sessionId ?? null,
           ownSessionId: sessionTraceId,
         });
-        const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
+        const closedTurn = turnCostAttributor.recordTokenEvent(
+          tokenEvent,
+          skillActivationTracker.openRun(tokenEvent.sessionId),
+        );
         if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
         seedLocalTrackersFromFile(tokenEvent.sessionId);
         const usage = tokenUsageFromTokenEvent(tokenEvent);
