@@ -28,6 +28,7 @@ import {
   foldUsage,
   isZeroTotals,
   subtractTotals,
+  tokenCount,
 } from './usage-ledger.js';
 import type {
   ByteEstimateLedger,
@@ -338,6 +339,16 @@ export class CostTracker implements Resettable {
   private seededSessionStartMs: number | null = null;
   /** Days seeded with spend but no persisted first spend: the real first spend is unknown, so no anchor is saved. */
   private unanchoredDays = new Set<string>();
+  /**
+   * Per-workflow-run, per-subagent token total of the agent's latest turn
+   * (all five token kinds), observed by this process. The on-disk run rollup
+   * (`totalTokens`) is the sum of each agent's last turn, not of every turn,
+   * so this keeps the same basis. Never persisted: a run restored by
+   * `seedFromPersisted()` is recorded in `seededWorkflowRunIds` and reports no
+   * tokens, because a partial live sum would read as a false reconciliation gap.
+   */
+  private lastTurnTokensByWorkflowRunId = new Map<string, Map<string, number>>();
+  private seededWorkflowRunIds = new Set<string>();
   /** Per-day mutation counter so dashboards can invalidate cached day cards. */
   private lastMutationMsByDay = new Map<string, number>();
   private totalLinesChanged = 0;
@@ -458,6 +469,12 @@ export class CostTracker implements Resettable {
     if (recorded) {
       this.reportCount++;
       this.noteActivity(day, ts, wallNowMs, breakdown.totalUsd);
+      if (ctx?.workflowRunId) {
+        const agentTurns =
+          this.lastTurnTokensByWorkflowRunId.get(ctx.workflowRunId) ?? new Map<string, number>();
+        agentTurns.set(ctx.agentId ?? '', tokenCount(usage));
+        this.lastTurnTokensByWorkflowRunId.set(ctx.workflowRunId, agentTurns);
+      }
       this.currentModel = model;
       this.latestCostBreakdown = breakdown;
     }
@@ -578,7 +595,12 @@ export class CostTracker implements Resettable {
       if (this.ledger.size === before && isZeroTotals(base)) return;
       // Entries carry their own timestamps; only a pre-ledger base's spend
       // on the seeded day needs the saved first spend.
-      for (const e of entries) this.noteActivity(e.day, e.ts, nowMs, e.costUsd);
+      for (const e of entries) {
+        this.noteActivity(e.day, e.ts, nowMs, e.costUsd);
+        if (e.workflowRunId) this.seededWorkflowRunIds.add(e.workflowRunId);
+      }
+      for (const runId of Object.keys(base.costByWorkflowRunId))
+        this.seededWorkflowRunIds.add(runId);
       this.seedDayAnchor(seed, (base.costByDayUsd[seed.dayKey] ?? 0) > 0, nowMs);
     } else {
       const hasAnyTotal =
@@ -590,6 +612,8 @@ export class CostTracker implements Resettable {
         seed.totalCacheCreationTokens !== 0;
       if (!hasAnyTotal) return;
       this.seedFlatTotals(seed, nowMs);
+      for (const runId of Object.keys(seed.costByWorkflowRunId))
+        this.seededWorkflowRunIds.add(runId);
     }
 
     if (seed.sessionStartMs !== undefined && seed.sessionStartMs > 0) {
@@ -702,6 +726,18 @@ export class CostTracker implements Resettable {
     if (!m) return 0;
     let total = 0;
     for (const v of Object.values(m)) total += v;
+    return total;
+  }
+
+  /**
+   * Per-workflow-run token total: each subagent's latest turn, summed. That is
+   * the basis of the run rollup's `totalTokens`, so the two are comparable.
+   * 0 when this process has not observed the run live (unknown, not zero).
+   */
+  getTokensForWorkflowRun(runId: string): number {
+    if (this.seededWorkflowRunIds.has(runId)) return 0;
+    let total = 0;
+    for (const v of this.lastTurnTokensByWorkflowRunId.get(runId)?.values() ?? []) total += v;
     return total;
   }
 
@@ -889,6 +925,8 @@ export class CostTracker implements Resettable {
     this.firstActivityMsByDay = new Map();
     this.seededSessionStartMs = null;
     this.unanchoredDays = new Set();
+    this.lastTurnTokensByWorkflowRunId = new Map();
+    this.seededWorkflowRunIds = new Set();
     this.lastMutationMsByDay = new Map();
     this.totalLinesChanged = 0;
   }

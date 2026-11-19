@@ -37,6 +37,7 @@ import {
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { DashboardServer } from './dashboard/dashboard-server.js';
 import { sanitizeCwdForFilename } from './hooks/session-resolver.js';
+import { calculateCost } from './core/pricing.js';
 import { SessionStore } from './storage/session-store.js';
 import { appendToHookBuffer } from './storage/hook-buffer.js';
 import type { LocalStore } from './storage/index.js';
@@ -2677,7 +2678,15 @@ describe('stdio integration', () => {
       count: (pattern: RegExp) => number;
       settle: () => Promise<void>;
       reportInputTokens: (inputTokens: number) => Promise<unknown>;
+      budget: () => Promise<BudgetStatus>;
       close: () => Promise<void>;
+    }
+
+    interface BudgetStatus {
+      readonly session: { readonly spentUsd: number };
+      readonly daily: { readonly spentUsd: number };
+      readonly weekly: { readonly spentUsd: number };
+      readonly alerts: ReadonlyArray<{ readonly period: string }>;
     }
 
     async function startEngine(
@@ -2730,6 +2739,13 @@ describe('stdio integration', () => {
               request_id: `req_${randomUUID()}`,
             },
           }),
+        budget: async () => {
+          const result = (await client.callTool({
+            name: 'nr_observe_get_budget_status',
+            arguments: {},
+          })) as { content: Array<{ text: string }> };
+          return JSON.parse(result.content[0]!.text) as BudgetStatus;
+        },
         close: () => client.close(),
       };
       startedEngines.push(engine);
@@ -2937,13 +2953,14 @@ describe('stdio integration', () => {
       sessionId: string,
       messageId: string,
       inputTokens: number,
+      timestamp = Date.now(),
     ): void {
       appendToHookBuffer(
         resolve(storagePath, `buffer-${sessionId}.jsonl`),
         JSON.stringify({
           mode: 'token',
           tool: 'copilot-sdk-usage',
-          timestamp: Date.now(),
+          timestamp,
           sessionId,
           messageId,
           model: 'claude-sonnet-5',
@@ -3124,6 +3141,237 @@ describe('stdio integration', () => {
         await cleanup();
       }
     }, 60000);
+
+    describe('the budget of a session resumed from its saved file', () => {
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      // The engine runs in UTC, so its local day is the UTC date.
+      const localDay = (daysAgo: number): string =>
+        new Date(Date.now() - daysAgo * DAY_MS).toISOString().slice(0, 10);
+
+      function writeSessionFile(
+        storagePath: string,
+        sessionId: string,
+        startDaysAgo: number,
+        costByDayUsd: Record<string, number>,
+        byteEstimates?: Record<string, number>,
+      ): void {
+        const sum = (days: Record<string, number>): number =>
+          Object.values(days).reduce((total, usd) => total + usd, 0);
+        const estimatedUsd = byteEstimates ? sum(byteEstimates) : 0;
+        const exactByDayUsd = { ...costByDayUsd };
+        for (const [day, usd] of Object.entries(byteEstimates ?? {})) exactByDayUsd[day]! -= usd;
+        mkdirSync(resolve(storagePath, 'sessions'), { recursive: true });
+        writeFileSync(
+          resolve(storagePath, 'sessions', `${localDay(startDaysAgo)}_${sessionId}.json`),
+          JSON.stringify({
+            sessionId,
+            toolCallCount: 1,
+            startTime: Date.now() - startDaysAgo * DAY_MS,
+            endTime: Date.now() - DAY_MS,
+            estimatedCostUsd: sum(costByDayUsd),
+            costByDayUsd,
+            exactTotals: {
+              costUsd: sum(costByDayUsd) - estimatedUsd,
+              inputTokens: 0,
+              outputTokens: 0,
+              costByDayUsd: exactByDayUsd,
+            },
+            ...(byteEstimates && {
+              byteEstimates: {
+                costUsd: estimatedUsd,
+                inputTokens: 0,
+                outputTokens: 0,
+                costByModel: {},
+                costByDayUsd: byteEstimates,
+              },
+            }),
+          }),
+        );
+      }
+
+      // Each event is 100k input tokens on claude-sonnet-5.
+      const EVENT_USD = calculateCost('claude-sonnet-5', {
+        inputTokens: 100_000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        thinkingTokens: 0,
+        totalTokens: 100_000,
+      }).totalUsd;
+
+      async function adoptAndSpend(
+        storagePath: string,
+        projectCwd: string,
+        sessionId: string,
+        keptUsd: number,
+        eventDaysAgo: ReadonlyArray<number>,
+        onAdopted?: (budget: () => Promise<BudgetStatus>) => Promise<void>,
+      ): Promise<BudgetStatus> {
+        const engine = await startEngine(storagePath, projectCwd, {
+          TZ: 'UTC',
+          NEW_RELIC_AI_DAILY_BUDGET_USD: '100',
+          NEW_RELIC_AI_WEEKLY_BUDGET_USD: '40',
+        });
+        writeFileSync(ppidBreadcrumb(storagePath), sessionId);
+        expect(await engine.logged(ADOPTED)).toBe(true);
+        await onAdopted?.(engine.budget);
+        for (const [i, daysAgo] of eventDaysAgo.entries()) {
+          appendTokenEvent(
+            storagePath,
+            sessionId,
+            `msg_${i}`,
+            100_000,
+            Date.now() - daysAgo * DAY_MS,
+          );
+        }
+        const sessionUsd = keptUsd + eventDaysAgo.length * EVENT_USD;
+        let status = await engine.budget();
+        for (const deadline = Date.now() + 15_000; Date.now() < deadline;) {
+          if (Math.abs(status.session.spentUsd - sessionUsd) < 1e-9) break;
+          await sleep(100);
+          status = await engine.budget();
+        }
+        await engine.close();
+        expect(status.session.spentUsd).toBeCloseTo(sessionUsd, 9);
+        return status;
+      }
+
+      it('counts only the in-window days of a session resumed from three weeks ago', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          writeSessionFile(storagePath, 'resumed-weekly-id', 21, {
+            [localDay(21)]: 38,
+            [localDay(2)]: 2,
+          });
+          const status = await adoptAndSpend(storagePath, projectCwd, 'resumed-weekly-id', 40, [0]);
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(2 + EVENT_USD, 9);
+          expect(status.alerts.filter((a) => a.period === 'weekly')).toEqual([]);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it("keeps today's saved share in the daily figure of a session resumed from three weeks ago", async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          writeSessionFile(storagePath, 'resumed-daily-id', 21, {
+            [localDay(21)]: 37,
+            [localDay(2)]: 2,
+            [localDay(0)]: 1,
+          });
+          const status = await adoptAndSpend(storagePath, projectCwd, 'resumed-daily-id', 40, [0]);
+          expect(status.daily.spentUsd).toBeCloseTo(1 + EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(3 + EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts the whole saved cost of a session resumed from yesterday', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          writeSessionFile(storagePath, 'resumed-yesterday-id', 1, { [localDay(1)]: 10 });
+          const status = await adoptAndSpend(
+            storagePath,
+            projectCwd,
+            'resumed-yesterday-id',
+            10,
+            [0],
+          );
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(10 + EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts a session with no saved file once in daily and weekly spend', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          const status = await adoptAndSpend(storagePath, projectCwd, 'fresh-budget-id', 0, [0]);
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts a saved estimate once in the week when its exact report replays onto its day', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          writeSessionFile(
+            storagePath,
+            'resumed-ledger-id',
+            21,
+            { [localDay(21)]: 38, [localDay(1)]: 3 },
+            { [localDay(1)]: 1 },
+          );
+          // The first exact report drops the $1 estimate, so the session keeps $40.
+          let pendingWeeklyUsd: number | undefined;
+          const status = await adoptAndSpend(
+            storagePath,
+            projectCwd,
+            'resumed-ledger-id',
+            40,
+            [1, 0],
+            async (budget) => {
+              // A tool call updates the budget without an exact report.
+              const toolCall = {
+                tool: 'Read',
+                sessionId: 'resumed-ledger-id',
+                toolUseId: 'toolu_1',
+              };
+              const bufferPath = resolve(storagePath, 'buffer-resumed-ledger-id.jsonl');
+              for (const mode of ['pre', 'post']) {
+                appendToHookBuffer(
+                  bufferPath,
+                  JSON.stringify({ ...toolCall, mode, timestamp: Date.now() }) + '\n',
+                );
+              }
+              for (const deadline = Date.now() + 15_000; Date.now() < deadline;) {
+                pendingWeeklyUsd = (await budget()).weekly.spentUsd;
+                if (pendingWeeklyUsd > 0) break;
+                await sleep(100);
+              }
+            },
+          );
+          expect(pendingWeeklyUsd).toBeCloseTo(3, 9);
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(2 + 2 * EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts no saved cost in the week for a session from three weeks ago with no day map', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          mkdirSync(resolve(storagePath, 'sessions'), { recursive: true });
+          writeFileSync(
+            resolve(storagePath, 'sessions', `${localDay(21)}_resumed-dayless-id.json`),
+            JSON.stringify({
+              sessionId: 'resumed-dayless-id',
+              toolCallCount: 1,
+              startTime: Date.now() - 21 * DAY_MS,
+              endTime: Date.now() - DAY_MS,
+              estimatedCostUsd: 40,
+            }),
+          );
+          const status = await adoptAndSpend(
+            storagePath,
+            projectCwd,
+            'resumed-dayless-id',
+            40,
+            [0],
+          );
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+    });
   });
 
   // The correction watch reads the parent level only off Linux and Windows,
