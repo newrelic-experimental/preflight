@@ -32,7 +32,6 @@ const testMetrics: NrMetric[] = [
 ];
 
 const baseOptions: TransportOptions = {
-  accountId: '12345',
   maxRetries: 3,
   baseDelayMs: 1,
   maxDelayMs: 10,

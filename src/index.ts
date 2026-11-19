@@ -139,6 +139,7 @@ import { amendRecord, type ToolCallRecord } from './storage/types.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import type { ConfigSummary } from './tools/session-stats.js';
 import { registerPendingTools, registerTools } from './tools/session-stats.js';
+import { primaryTierName, summarizeTiers } from './transport/tier-types.js';
 import { FeedbackCollector } from './tools/workflow-tools.js';
 import { initMcpTracer } from './tracing/mcp-tracer.js';
 import { SessionSpan } from './tracing/session-span.js';
@@ -1761,6 +1762,7 @@ async function main(): Promise<void> {
       }
       const seed = settledCostTrackerSeed(persisted);
       costTracker.seedFromPersisted(seed);
+      modelUsageTracker.seedFromPersisted(persisted.modelBreakdown);
       localHeldCosts.set(sessionId, heldSessionCostOf(persisted, Date.now(), seed));
       refreshPriorCostBaseline();
     };
@@ -2518,7 +2520,10 @@ async function main(): Promise<void> {
           eventSessionId: tokenEvent.sessionId ?? null,
           ownSessionId: sessionTraceId,
         });
-        const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
+        const closedTurn = turnCostAttributor.recordTokenEvent(
+          tokenEvent,
+          skillActivationTracker.openRun(tokenEvent.sessionId),
+        );
         if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
         seedLocalTrackersFromFile(tokenEvent.sessionId);
         const usage = tokenUsageFromTokenEvent(tokenEvent);
@@ -3300,6 +3305,8 @@ async function main(): Promise<void> {
         companionMode: config!.companionMode,
         allowHeadlessInstall: config!.allowHeadlessInstall,
         companionModeSource: config!.companionModeSource,
+        tiers: summarizeTiers(config!.tiers),
+        primaryTier: primaryTierName(config!.tiers),
       };
       registerTools(mcpServer!.server, {
         headlessInstaller: buildHeadlessInstaller(),
@@ -3475,6 +3482,8 @@ async function main(): Promise<void> {
             companionMode: config.companionMode,
             allowHeadlessInstall: config.allowHeadlessInstall,
             companionModeSource: config.companionModeSource,
+            tiers: summarizeTiers(config.tiers),
+            primaryTier: primaryTierName(config.tiers),
           },
           // A Claude Code session with no hooks never resolves, so this is
           // where the opt-in install has to work. Other stdio clients have no
@@ -3551,6 +3560,8 @@ async function main(): Promise<void> {
           companionMode: config.companionMode,
           allowHeadlessInstall: config.allowHeadlessInstall,
           companionModeSource: config.companionModeSource,
+          tiers: summarizeTiers(config.tiers),
+          primaryTier: primaryTierName(config.tiers),
         };
         registerTools(mcpServer!.server, {
           headlessInstaller: buildHeadlessInstaller(),
@@ -3657,7 +3668,7 @@ async function main(): Promise<void> {
     // Mirror the --stdio/--local gate above: mode: 'local' means no cloud
     // egress by design, so no NrIngestManager is constructed and the proxy
     // callbacks stay local-log-only. For 'cloud'/'both', loadConfigOrDie()
-    // has already guaranteed licenseKey/accountId are set (config.ts's
+    // has already guaranteed licenseKey is set (config.ts's
     // load-time validation), so this mirrors that guard rather than
     // re-deriving it.
     if (config.mode !== 'local') {

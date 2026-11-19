@@ -325,6 +325,24 @@ describe('resolveEnvironmentChoice', () => {
 });
 
 describe('buildConfig', () => {
+  it('omits accountId when none was entered', () => {
+    const config = buildConfig(
+      {},
+      {
+        accountId: '',
+        licenseKey: 'lk',
+        developer: 'dev',
+        teamId: null,
+        projectId: null,
+        repoUrlEnabled: false,
+        sessionBudgetUsd: null,
+        mode: 'cloud',
+      },
+    );
+    expect(config.licenseKey).toBe('lk');
+    expect(config).not.toHaveProperty('accountId');
+  });
+
   it('merges new fields with existing config', () => {
     const result = buildConfig(
       { appName: 'my-app', existingField: 'keep-me' },
@@ -2075,6 +2093,21 @@ describe('setupWizard Copilot hooks install step', () => {
       'NRLIC-test',
       '--account-id',
       '12345',
+    ]);
+  });
+
+  it('passes --license-key without --account-id when the account ID was skipped', async () => {
+    mockedKeyValidator.validateLicenseKey.mockResolvedValue({ valid: true });
+    mockedKeyValidator.validateApiKey.mockResolvedValue({ valid: true });
+    answers('cloud', '', 'NRLIC-test', '', '', 'tester', '', '', '', '', 'n', 'y');
+
+    await runSetupWizard();
+
+    expect(mockedCli.runInstallCli).toHaveBeenCalledWith([
+      'install',
+      '--copilot',
+      '--license-key',
+      'NRLIC-test',
     ]);
   });
 
