@@ -24,44 +24,44 @@ afterEach(() => {
 
 describe('getEventsApiUrl', () => {
   it('returns US endpoint by default', () => {
-    expect(getEventsApiUrl('12345', null)).toBe(
-      'https://insights-collector.newrelic.com/v1/accounts/12345/events',
+    expect(getEventsApiUrl(null)).toBe(
+      'https://insights-collector.newrelic.com/v1/accounts/events',
     );
   });
 
   it('returns US endpoint for us collectorHost', () => {
-    expect(getEventsApiUrl('12345', 'us')).toBe(
-      'https://insights-collector.newrelic.com/v1/accounts/12345/events',
+    expect(getEventsApiUrl('us')).toBe(
+      'https://insights-collector.newrelic.com/v1/accounts/events',
     );
   });
 
   it('returns EU endpoint', () => {
-    expect(getEventsApiUrl('12345', 'eu')).toBe(
-      'https://insights-collector.eu01.nr-data.net/v1/accounts/12345/events',
+    expect(getEventsApiUrl('eu')).toBe(
+      'https://insights-collector.eu01.nr-data.net/v1/accounts/events',
     );
   });
 
   it('returns staging endpoint', () => {
-    expect(getEventsApiUrl('12345', 'staging')).toBe(
-      `https://${stagingHost('insights-collector')}/v1/accounts/12345/events`,
+    expect(getEventsApiUrl('staging')).toBe(
+      `https://${stagingHost('insights-collector')}/v1/accounts/events`,
     );
   });
 
   it('returns gov endpoint', () => {
-    expect(getEventsApiUrl('12345', 'gov')).toBe(
-      'https://gov-insights-collector.newrelic.com/v1/accounts/12345/events',
+    expect(getEventsApiUrl('gov')).toBe(
+      'https://gov-insights-collector.newrelic.com/v1/accounts/events',
     );
   });
 
   it('returns JP endpoint', () => {
-    expect(getEventsApiUrl('12345', 'jp')).toBe(
-      'https://insights-collector.jp.nr-data.net/v1/accounts/12345/events',
+    expect(getEventsApiUrl('jp')).toBe(
+      'https://insights-collector.jp.nr-data.net/v1/accounts/events',
     );
   });
 
   it('falls back to US for unknown collectorHost', () => {
-    expect(getEventsApiUrl('12345', 'unknown-region')).toBe(
-      'https://insights-collector.newrelic.com/v1/accounts/12345/events',
+    expect(getEventsApiUrl('unknown-region')).toBe(
+      'https://insights-collector.newrelic.com/v1/accounts/events',
     );
   });
 });
@@ -107,7 +107,6 @@ describe('validateLicenseKey', () => {
     fetchSpy.mockResolvedValue(new Response('{}', { status: 200 }));
     const result = await validateLicenseKey({
       licenseKey: 'TEST-KEY',
-      accountId: '12345',
       collectorHost: null,
     });
     expect(result.valid).toBe(true);
@@ -117,7 +116,6 @@ describe('validateLicenseKey', () => {
     fetchSpy.mockResolvedValue(new Response('Forbidden', { status: 403 }));
     const result = await validateLicenseKey({
       licenseKey: 'BAD-KEY',
-      accountId: '12345',
       collectorHost: null,
     });
     expect(result.valid).toBe(false);
@@ -129,7 +127,6 @@ describe('validateLicenseKey', () => {
     fetchSpy.mockResolvedValue(new Response('Unauthorized', { status: 401 }));
     const result = await validateLicenseKey({
       licenseKey: 'BAD-KEY',
-      accountId: '12345',
       collectorHost: null,
     });
     expect(result.valid).toBe(false);
@@ -140,7 +137,6 @@ describe('validateLicenseKey', () => {
     fetchSpy.mockResolvedValue(new Response('Error', { status: 500 }));
     const result = await validateLicenseKey({
       licenseKey: 'TEST-KEY',
-      accountId: '12345',
       collectorHost: null,
     });
     expect(result.valid).toBe(false);
@@ -156,7 +152,6 @@ describe('validateLicenseKey', () => {
     fetchSpy.mockRejectedValue(abortError);
     const result = await validateLicenseKey({
       licenseKey: 'TEST-KEY',
-      accountId: '12345',
       collectorHost: null,
       timeoutMs: 100,
     });
@@ -168,7 +163,6 @@ describe('validateLicenseKey', () => {
     fetchSpy.mockRejectedValue(new Error('ECONNREFUSED'));
     const result = await validateLicenseKey({
       licenseKey: 'TEST-KEY',
-      accountId: '12345',
       collectorHost: null,
     });
     expect(result.valid).toBe(false);
@@ -178,7 +172,7 @@ describe('validateLicenseKey', () => {
 
   it('uses EU ingest URL when collectorHost is eu', async () => {
     fetchSpy.mockResolvedValue(new Response('{}', { status: 200 }));
-    await validateLicenseKey({ licenseKey: 'EU01-KEY', accountId: '12345', collectorHost: 'eu' });
+    await validateLicenseKey({ licenseKey: 'EU01-KEY', collectorHost: 'eu' });
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining('eu01.nr-data.net'),
       expect.any(Object),
@@ -187,7 +181,7 @@ describe('validateLicenseKey', () => {
 
   it('uses JP ingest URL when collectorHost is jp', async () => {
     fetchSpy.mockResolvedValue(new Response('{}', { status: 200 }));
-    await validateLicenseKey({ licenseKey: 'JP-KEY', accountId: '12345', collectorHost: 'jp' });
+    await validateLicenseKey({ licenseKey: 'JP-KEY', collectorHost: 'jp' });
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining('jp.nr-data.net'),
       expect.any(Object),
@@ -196,7 +190,7 @@ describe('validateLicenseKey', () => {
 
   it('sends X-Insert-Key header', async () => {
     fetchSpy.mockResolvedValue(new Response('{}', { status: 200 }));
-    await validateLicenseKey({ licenseKey: 'MY-KEY', accountId: '12345', collectorHost: null });
+    await validateLicenseKey({ licenseKey: 'MY-KEY', collectorHost: null });
     const [, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect((options.headers as Record<string, string>)['X-Insert-Key']).toBe('MY-KEY');
   });
@@ -207,7 +201,6 @@ describe('validateLicenseKey', () => {
     });
     const result = await validateLicenseKey({
       licenseKey: 'TEST-KEY',
-      accountId: '12345',
       collectorHost: null,
     });
     expect(fetchSpy).not.toHaveBeenCalled();

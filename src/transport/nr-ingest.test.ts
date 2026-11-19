@@ -39,6 +39,7 @@ import { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 import { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 import type { TokenUsage } from '../core/index.js';
 import type { ResolvedTier } from './tier-types.js';
+import { VERSION } from '../version.js';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -163,6 +164,7 @@ function makeClosedTurn(overrides?: Partial<ClosedTurn>): ClosedTurn {
     id: 'closed-turn-uuid-001',
     attribution,
     calls: [{ toolUseId: 'toolu_001', toolName: 'Read', skill: null }],
+    skill: null,
     platform: 'claude-code',
     ...overrides,
   };
@@ -217,7 +219,7 @@ const mockSendLogs = jest
 function makeIngestOptions(overrides?: Partial<NrIngestOptions>): NrIngestOptions {
   return {
     licenseKey: 'test-license-key',
-    transportOptions: { accountId: '12345' },
+    transportOptions: {},
     developer: 'test-dev',
     appName: 'test-app',
     sessionTracker: new SessionTracker('test-session'),
@@ -576,6 +578,16 @@ describe('toolCallToNrEvent()', () => {
       expect(event.error as string).toContain('[REDACTED]');
     });
 
+    it('does not send transcriptPath, which embeds the home directory', () => {
+      const record = makeRecord({
+        transcriptPath: '/Users/alice/.claude/projects/x/session.jsonl',
+      } as Partial<ToolCallRecord>);
+      const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event).not.toHaveProperty('transcriptPath');
+      expect(JSON.stringify(event)).not.toContain('alice');
+    });
+
     it('includes event_version: 1 on AiToolCall', () => {
       const record = makeRecord();
       const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
@@ -604,6 +616,38 @@ describe('toolCallToNrEvent()', () => {
 // ---------------------------------------------------------------------------
 
 describe('NrIngestManager', () => {
+  describe('otlp pipeline construction', () => {
+    const otlpOf = (m: NrIngestManager) =>
+      m as unknown as { otlpTransport: unknown; otlpEventBridge: unknown };
+
+    it('builds no OTLP pipeline from an endpoint alone when transport is nr-events-api', async () => {
+      const manager = new NrIngestManager(
+        makeIngestOptions({ otlpEndpoint: 'http://127.0.0.1:4318', transport: 'nr-events-api' }),
+      );
+      expect(otlpOf(manager).otlpTransport).toBeNull();
+      expect(otlpOf(manager).otlpEventBridge).toBeNull();
+      await manager.stop();
+    });
+
+    it('builds the OTLP pipeline when transport is both', async () => {
+      const manager = new NrIngestManager(
+        makeIngestOptions({ otlpEndpoint: 'http://127.0.0.1:4318', transport: 'both' }),
+      );
+      expect(otlpOf(manager).otlpTransport).not.toBeNull();
+      expect(otlpOf(manager).otlpEventBridge).not.toBeNull();
+      await manager.stop();
+    });
+
+    it('falls back to no OTLP pipeline when the endpoint is rejected', async () => {
+      const manager = new NrIngestManager(
+        makeIngestOptions({ otlpEndpoint: 'http://otel-collector:4318', transport: 'both' }),
+      );
+      expect(otlpOf(manager).otlpTransport).toBeNull();
+      expect(otlpOf(manager).otlpEventBridge).toBeNull();
+      await manager.stop();
+    });
+  });
+
   describe('ingestToolCall()', () => {
     it('buffers event and records metrics (verified via flush)', async () => {
       const manager = new NrIngestManager(makeIngestOptions());
@@ -882,6 +926,21 @@ describe('NrIngestManager', () => {
       >;
       const snapshotEvent = sentEvents.find((e) => e.eventType === 'AiContextSnapshot')!;
       expect(snapshotEvent.session_id).toBe('trace-abc');
+    });
+
+    it('stamps the token event session id over the ingesting process id', async () => {
+      const manager = new NrIngestManager(makeIngestOptions());
+
+      manager.ingestContextSnapshot(makeContextSnapshot(), [], 'other-session');
+
+      manager.start();
+      await manager.stop();
+
+      const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const snapshotEvent = sentEvents.find((e) => e.eventType === 'AiContextSnapshot')!;
+      expect(snapshotEvent.session_id).toBe('other-session');
     });
 
     it('includes event_version: 1 on AiContextSnapshot', async () => {
@@ -2025,6 +2084,12 @@ describe('retryAlertToNrEvent()', () => {
     expect(event.app_name).toBe('my-app');
     expect(event.platform).toBe('claude-code');
     expect(event.timestamp).toBe(1_700_000_000_000);
+  });
+
+  it('includes event_version: 1', () => {
+    const event = retryAlertToNrEvent(makeThrashingAlert(), { developer: 'd', appName: 'a' });
+
+    expect(event.event_version).toBe(1);
   });
 
   it('session_id comes from attrs.sessionId, not alert.sessionId', () => {
@@ -3627,6 +3692,51 @@ describe('NrIngestManager — tier construction', () => {
     expect(manager.getPrimaryTierName()).toBe('default');
   });
 
+  it('logs the resolved tiers at construction without credentials', () => {
+    new NrIngestManager(
+      makeIngestOptions({
+        tiers: [
+          makeTier({
+            name: 'personal',
+            destination: { type: 'nr', licenseKey: 'lk-secret', accountId: '111' },
+          }),
+        ],
+      }),
+    );
+
+    const logged = (stderrSpy.mock.calls as unknown[][]).map((c) => String(c[0])).join('\n');
+    expect(logged).toContain('Telemetry tiers resolved');
+    expect(logged).toContain('"primaryTier":"personal"');
+    expect(logged).toContain('"accountId":"111"');
+    expect(logged).not.toContain('lk-secret');
+  });
+
+  it('reports write and failure counts for local tiers only', () => {
+    const localDir = mkdtempSync(resolve(tmpdir(), 'nr-ingest-tier-'));
+    try {
+      const manager = new NrIngestManager(
+        makeIngestOptions({
+          tiers: [
+            makeTier({ name: 'personal' }),
+            makeTier({
+              name: 'org',
+              destination: { type: 'local', path: localDir },
+              eventTypes: ['*'],
+            }),
+          ],
+        }),
+      );
+      manager.ingestToolCall(makeRecord());
+
+      const stats = manager.getLocalTierStats();
+      expect(Object.keys(stats)).toEqual(['org']);
+      expect(stats.org.writes).toBeGreaterThan(0);
+      expect(stats.org.failures).toBe(0);
+    } finally {
+      rmSync(localDir, { recursive: true, force: true });
+    }
+  });
+
   it('treats an empty tiers array the same as no tiers option', () => {
     const manager = new NrIngestManager(makeIngestOptions({ tiers: [] }));
 
@@ -3750,7 +3860,7 @@ describe('NrIngestManager — tier construction', () => {
     expect((mockSendMetrics.mock.calls[0] as unknown[])[1]).toBe('lk-personal');
   });
 
-  it("sends the primary tier's events with that tier's licenseKey and accountId", async () => {
+  it("sends the primary tier's events with that tier's licenseKey", async () => {
     const manager = new NrIngestManager(
       makeIngestOptions({
         tiers: [
@@ -3769,7 +3879,6 @@ describe('NrIngestManager — tier construction', () => {
     expect(mockSendEvents).toHaveBeenCalledTimes(1);
     const call = mockSendEvents.mock.calls[0] as unknown[];
     expect(call[1]).toBe('lk-personal');
-    expect((call[2] as { accountId: string }).accountId).toBe('99999');
   });
 
   it('starts and stops every tier scheduler', async () => {
@@ -4008,6 +4117,60 @@ describe('NrIngestManager — routeEvent fan-out', () => {
   });
 });
 
+describe('NrIngestManager instrumentation attributes', () => {
+  function sentEventsOfType(eventType: string): Array<Record<string, unknown>> {
+    const out: Array<Record<string, unknown>> = [];
+    for (const call of mockSendEvents.mock.calls as unknown[][]) {
+      for (const event of call[0] as Array<Record<string, unknown>>) {
+        if (event.eventType === eventType) out.push(event);
+      }
+    }
+    return out;
+  }
+
+  it('stamps the three instrumentation attributes on NR and local tier copies alike', async () => {
+    const localDir = mkdtempSync(resolve(tmpdir(), 'nr-ingest-instr-'));
+    try {
+      const manager = new NrIngestManager(
+        makeIngestOptions({
+          tiers: [
+            makeTier({ name: 'personal', eventTypes: ['*'] }),
+            makeTier({
+              name: 'org',
+              destination: { type: 'local', path: localDir },
+              eventTypes: ['AiCodingTask'],
+            }),
+          ],
+        }),
+      );
+
+      manager.ingestCodingTask(makeTask({ taskId: 'task-instr-1' }));
+      manager.start();
+      await manager.stop();
+
+      const [nrEvent] = sentEventsOfType('AiCodingTask');
+      expect(nrEvent).toMatchObject({
+        'instrumentation.provider': 'preflight',
+        'instrumentation.name': 'preflight',
+        'instrumentation.version': VERSION,
+      });
+
+      const filePath = resolve(localDir, 'events-2023-11-14.jsonl');
+      const [line] = readFileSync(filePath, 'utf-8').trim().split('\n');
+      const localEvent = JSON.parse(line) as Record<string, unknown>;
+      expect(localEvent).toMatchObject({
+        'instrumentation.provider': 'preflight',
+        'instrumentation.name': 'preflight',
+        'instrumentation.version': VERSION,
+      });
+      // Both tiers received the same stamped copy, so the payloads match.
+      expect(localEvent).toEqual(nrEvent);
+    } finally {
+      rmSync(localDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('AiTurnCost coverage of token reports', () => {
   const attrs = { developer: 'dev', appName: 'app' };
   const tokens = (timestamp: number) => ({
@@ -4073,6 +4236,22 @@ describe('AiTurnCost coverage of token reports', () => {
     expect(metrics.totalAttributedCost).toBeCloseTo(perReport, 10);
     expect(metrics.turns).toHaveLength(1);
     expect(metrics.costByToolType.Read.totalCost).toBeCloseTo(perReport, 10);
+  });
+
+  it('stamps a text-only skill run response row with its skill, and a later one with none', () => {
+    const attributor = new TurnCostAttributor();
+    const run = { name: 'review', source: 'slash' as const, runId: 'run-1' };
+
+    const [inRun] = turnCostToNrEvents(attributor.recordTokenEvent(tokens(1_000), run), attrs);
+    const [afterRun] = turnCostToNrEvents(attributor.recordTokenEvent(tokens(2_000), null), attrs);
+
+    expect(inRun).toMatchObject({
+      skill_name: 'review',
+      skill_source: 'slash',
+      skill_run_id: 'run-1',
+    });
+    expect(afterRun).not.toHaveProperty('skill_name');
+    expect(afterRun).not.toHaveProperty('skill_run_id');
   });
 
   it('tags a Claude Code response row cost_authority=external in companion mode before any tool call', () => {
