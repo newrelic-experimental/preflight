@@ -63,7 +63,10 @@ const INTERNAL_ENV_VARS = new Set([
 
 const EVENT_TYPE_RE = /eventType:\s*'([A-Za-z0-9_]+)'/g;
 const METRIC_TOKEN_RE = /\bai\.[a-z0-9_]+(?:\.[a-z0-9_]+)+\b/g;
-const RECORDED_METRIC_RE = /\.record(?:Metric)?\(\s*['"`]((?:nr\.)?ai(?:\.[a-z0-9_]+)+)['"`]/g;
+const RECORDED_METRIC_RE =
+  /(?<![\w$])record(?:Metric)?\(\s*['"`]((?:nr\.)?ai(?:\.[a-z0-9_]+)+)['"`]/g;
+// Whole metric names, so a recorded `ai.foo.bar` is not satisfied by a documented `ai.foo.bar_total`.
+const DOC_METRIC_NAME_RE = /\b(?:nr\.)?ai(?:\.[a-z0-9_]+)+\b/g;
 const TOOL_NAME_RE = /\bnr_observe_[a-z0-9_]+\b/g;
 const ENV_VAR_RE = /\bNEW_RELIC_AI_[A-Z0-9_]+\b/g;
 
@@ -120,7 +123,8 @@ function main(): void {
   const docMetricTokens = new Set(metricsDoc.match(METRIC_TOKEN_RE) ?? []);
   const phantomMetrics = [...docMetricTokens].filter((t) => !srcMetricTokens.has(t)).sort();
 
-  const undocumentedMetrics = [...recordedMetrics].filter((t) => !metricsDoc.includes(t)).sort();
+  const docMetricNames = new Set(metricsDoc.match(DOC_METRIC_NAME_RE) ?? []);
+  const undocumentedMetrics = [...recordedMetrics].filter((t) => !docMetricNames.has(t)).sort();
 
   const docToolNames = new Set(commandsDoc.match(TOOL_NAME_RE) ?? []);
   const toolsMissingFromCommandsDoc = [...srcToolNames].filter((t) => !docToolNames.has(t)).sort();
