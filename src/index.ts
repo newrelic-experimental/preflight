@@ -3072,6 +3072,7 @@ async function main(): Promise<void> {
           storagePath: config!.storagePath,
           parentSessionId: watcherSessionId,
           getCostForRun: (runId) => costTracker.getCostForWorkflowRun(runId),
+          getSubagentTokenSumForRun: (runId) => costTracker.getTokensForWorkflowRun(runId),
         });
         activeWorkflowWatcher.setOnRun((run) => {
           capturedNrIngest?.ingestScriptWorkflowRun(run);

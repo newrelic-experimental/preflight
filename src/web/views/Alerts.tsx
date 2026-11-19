@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { JSX } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'wouter';
 
 import {
+  digestSendStatus,
   fetchBudget,
   fetchSettings,
   patchSettings,
@@ -13,6 +14,7 @@ import {
   type BudgetPeriod,
 } from '../api/client';
 import type { SettingsPatch } from '../api/client';
+import { DigestPreviewDialog } from '../components/DigestPreviewDialog';
 import { EmptyState } from '../components/EmptyState';
 import { Button, Card, Eyebrow, Pill, SectionHeader } from '../components/ui';
 import { formatUsd } from '../lib/format';
@@ -97,6 +99,8 @@ export function Alerts(): JSX.Element {
   // undefined = untouched, null = user explicitly cleared, string = user typed a value
   const [webhookUrl, setWebhookUrl] = useState<string | null | undefined>(undefined);
   const [digestStatus, setDigestStatus] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const closePreview = useCallback(() => setPreviewOpen(false), []);
 
   const saveMutation = useMutation({
     mutationFn: (patch: SettingsPatch) => patchSettings(patch),
@@ -106,13 +110,7 @@ export function Alerts(): JSX.Element {
   const sendMutation = useMutation({
     mutationFn: () => postDigestSend(),
     onSuccess: (result) => {
-      const text = result.content[0]?.text ?? '';
-      try {
-        const parsed = JSON.parse(text) as { ok?: boolean; error?: string };
-        setDigestStatus(parsed.ok ? 'Digest sent.' : (parsed.error ?? 'Failed to send.'));
-      } catch {
-        setDigestStatus('Done.');
-      }
+      setDigestStatus(digestSendStatus(result));
       setTimeout(() => setDigestStatus(null), 4000);
     },
     onError: (err) => {
@@ -333,6 +331,10 @@ export function Alerts(): JSX.Element {
                 </Button>
               )}
 
+              <Button variant="secondary" size="md" onClick={() => setPreviewOpen(true)}>
+                Preview digest
+              </Button>
+
               <Button
                 variant="secondary"
                 size="md"
@@ -345,6 +347,9 @@ export function Alerts(): JSX.Element {
 
               {digestStatus && <span className="text-xs text-ink-subtle">{digestStatus}</span>}
             </div>
+            {previewOpen && (
+              <DigestPreviewDialog webhookConfigured={webhookConfigured} onClose={closePreview} />
+            )}
           </>
         )}
       </Card>
