@@ -271,6 +271,8 @@ export interface CostTrackerSeed {
   readonly dayCostUsd: number;
   readonly daySubagentCostUsd: number;
   readonly dayFirstActivityMs?: number;
+  /** When the persisted session began, so a restart keeps measuring the session's age from its real start. */
+  readonly sessionStartMs?: number;
   /**
    * Per-workflow-run cost, split by local-day, from the persisted checkpoint
    * — see `seedFromPersisted()`'s doc comment for why this is seeded (unlike
@@ -348,6 +350,8 @@ export class CostTracker implements Resettable {
   // including tokens spent before midnight.
   private costByDayUsd = new Map<string, number>();
   private firstActivityMsByDay = new Map<string, number>();
+  /** Earliest start among the persisted sessions seeded into this tracker, so spend carried over from before a restart is not spread over only the new process's age. */
+  private seededSessionStartMs: number | null = null;
   /** Days seeded with spend but no persisted first spend: the real first spend is unknown, so no anchor is saved. */
   private unanchoredDays = new Set<string>();
   /**
@@ -695,6 +699,12 @@ export class CostTracker implements Resettable {
       seed.totalCacheCreationTokens !== 0;
     if (!hasAnyTotal) return;
 
+    if (seed.sessionStartMs !== undefined && seed.sessionStartMs > 0) {
+      this.seededSessionStartMs = Math.min(
+        this.seededSessionStartMs ?? seed.sessionStartMs,
+        seed.sessionStartMs,
+      );
+    }
     this.totalCostUsd += seed.totalCostUsd;
     this.subagentCostUsd += seed.subagentCostUsd;
     this.parentCostUsd += seed.parentCostUsd;
@@ -799,6 +809,11 @@ export class CostTracker implements Resettable {
    */
   getSubagentCostForDay(dayKey: string): number {
     return this.subagentCostByDayUsd.get(dayKey) ?? 0;
+  }
+
+  /** Earlier of the process start and the saved session start, so a restart keeps the session's real age. */
+  getSessionStartMs(processStartMs: number): number {
+    return Math.min(processStartMs, this.seededSessionStartMs ?? processStartMs);
   }
 
   /**
@@ -1050,6 +1065,7 @@ export class CostTracker implements Resettable {
     this.highContextCostUsd = 0;
     this.apiDurationMs = null;
     this.firstActivityMsByDay = new Map();
+    this.seededSessionStartMs = null;
     this.unanchoredDays = new Set();
     this.costByWorkflowRunId = new Map();
     this.lastTurnTokensByWorkflowRunId = new Map();
