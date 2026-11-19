@@ -211,7 +211,7 @@ describe('WorkflowWatcher', () => {
     expect(runs[0].total_usd).toBeCloseTo(1.23, 2);
   });
 
-  it('computes token_reconciliation_delta from getSubagentTokenSumForRun', () => {
+  it('keeps the rollup total_tokens and reports the gap as token_reconciliation_delta', () => {
     writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson({ totalTokens: 1000 }));
     const watcher = new WorkflowWatcher({
       storagePath,
@@ -223,7 +223,22 @@ describe('WorkflowWatcher', () => {
     watcher.setOnRun((r) => runs.push(r));
     watcher.poll();
     expect(runs[0].token_reconciliation_delta).toBeCloseTo(0.2, 5);
+    expect(runs[0].total_tokens).toBe(1000);
+  });
+
+  it('falls back to the subagent sum for total_tokens when the rollup is 0', () => {
+    writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson({ totalTokens: 0 }));
+    const watcher = new WorkflowWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+      getSubagentTokenSumForRun: () => 800,
+    });
+    const runs: ScriptWorkflowRunMetrics[] = [];
+    watcher.setOnRun((r) => runs.push(r));
+    watcher.poll();
     expect(runs[0].total_tokens).toBe(800);
+    expect(runs[0].token_reconciliation_delta).toBeNull();
   });
 
   it("reconciles a real CostTracker against the rollup, which counts each agent's last turn", () => {

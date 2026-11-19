@@ -635,6 +635,15 @@ describe('NrIngestManager', () => {
       expect(otlpOf(manager).otlpEventBridge).not.toBeNull();
       await manager.stop();
     });
+
+    it('falls back to no OTLP pipeline when the endpoint is rejected', async () => {
+      const manager = new NrIngestManager(
+        makeIngestOptions({ otlpEndpoint: 'http://otel-collector:4318', transport: 'both' }),
+      );
+      expect(otlpOf(manager).otlpTransport).toBeNull();
+      expect(otlpOf(manager).otlpEventBridge).toBeNull();
+      await manager.stop();
+    });
   });
 
   describe('ingestToolCall()', () => {
