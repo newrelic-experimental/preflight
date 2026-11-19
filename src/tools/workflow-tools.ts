@@ -426,6 +426,8 @@ export interface WorkflowToolsDeps {
   antiPatternDetector?: AntiPatternDetector;
   efficiencyScorer?: EfficiencyScorer;
   feedbackCollector?: FeedbackCollector;
+  /** Closes the engine session's own task in its per-session rollup when the agent marks a boundary. */
+  onTaskBoundary?: (timestamp: number) => void;
 }
 
 export function registerWorkflowTools(deps: WorkflowToolsDeps): RegisteredToolSet {
