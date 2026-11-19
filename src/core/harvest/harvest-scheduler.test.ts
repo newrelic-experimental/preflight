@@ -30,7 +30,7 @@ function makeScheduler(overrides: Partial<HarvestSchedulerOptions> = {}): {
 
   const scheduler = new HarvestScheduler({
     licenseKey: 'testkey123',
-    transportOptions: { accountId: '12345' },
+    transportOptions: {},
     eventHarvestIntervalMs: 5_000,
     metricHarvestIntervalMs: 60_000,
     sendEventsFn,
