@@ -1276,7 +1276,6 @@ export interface SettingsPatch {
   weeklyBudgetUsd?: number | null;
   retainSessionsDays?: number | null;
   digestWebhookUrl?: string | null;
-  digestSchedule?: string;
   alerts?: {
     personal?: {
       dailyCostUsd?: number;
@@ -1333,7 +1332,6 @@ export interface SettingsResponse {
   readonly retainSessionsDays: number | null;
   readonly digestWebhookUrl: string | null;
   readonly digestWebhookUrlSource: 'env' | 'command' | 'file' | 'unset';
-  readonly digestSchedule: string;
   readonly alerts: {
     readonly personal: {
       readonly dailyCostUsd: number;
@@ -1384,6 +1382,18 @@ export const postDigestSend = (): Promise<DigestSendResponse> =>
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return (await r.json()) as DigestSendResponse;
   });
+
+export function digestSendStatus(result: DigestSendResponse): string {
+  try {
+    const parsed = JSON.parse(result.content[0]?.text ?? '') as { ok?: boolean; error?: string };
+    return parsed.ok ? 'Digest sent.' : (parsed.error ?? 'Failed to send.');
+  } catch {
+    return 'Done.';
+  }
+}
+
+export const fetchDigestPreview = (): Promise<DigestSendResponse> =>
+  getJson<DigestSendResponse>('/api/digest/preview');
 
 export interface ObservabilityHealthResponse {
   readonly watcherActive?: boolean;
@@ -1585,6 +1595,7 @@ export const qk = {
   computeWaste: ['compute-waste'] as const,
   audit: ['audit'] as const,
   weekly: ['weekly'] as const,
+  digestPreview: ['digest-preview'] as const,
   budget: ['budget'] as const,
   costPerOutcome: (days: number) => ['cost-per-outcome', days] as const,
   usageInsights: (window: number | 'today') => ['usage-insights', window] as const,

@@ -12,7 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadMcpConfig } from '../../config.js';
-import { getIsoWeekId } from '../../storage/weekly-summary.js';
+import { WeeklySummaryGenerator, getIsoWeekId } from '../../storage/weekly-summary.js';
 import {
   ToolSelectionScorer,
   toToolSelectionSummary,
@@ -6697,17 +6697,14 @@ describe('api-handler PATCH /api/settings', () => {
     expect(JSON.parse(body())).toEqual({ ok: true, restartRequired: true });
   });
 
-  it('rejects a non-string digestSchedule', async () => {
+  it('ignores a digestSchedule PATCH like any other unknown key', async () => {
     const configFilePath = makeConfigFilePath({});
     const handler = createApiHandler({ configFilePath });
-    const req = makePatchRequest({ digestSchedule: 42 });
+    const req = makePatchRequest({ digestSchedule: '0 8 * * 2' });
     const { res, status, body } = fakeRes();
     await handler(req, res);
-    expect(status()).toBe(400);
-    expect(JSON.parse(body())).toEqual({
-      error: 'validation_failed',
-      errors: ['digestSchedule must be a string'],
-    });
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({ ok: true, restartRequired: false });
   });
 
   it('validates alerts.personal.* fields, merging into any existing personal thresholds', async () => {
@@ -7021,7 +7018,7 @@ describe('api-handler GET /api/settings', () => {
     expect(result.retainSessionsDays).toBe(30);
     expect(result.digestWebhookUrl).toBeNull();
     expect(result.digestWebhookUrlSource).toBe('unset');
-    expect(result.digestSchedule).toBe('0 9 * * 1');
+    expect(result).not.toHaveProperty('digestSchedule');
     expect(result.alerts.personal).toEqual({
       dailyCostUsd: 2,
       sessionCostUsd: 0.5,
@@ -7064,7 +7061,7 @@ describe('api-handler GET /api/settings', () => {
     expect(result.weeklyBudgetUsd).toBe(9999);
     expect(result.retainSessionsDays).toBe(7);
     expect(result.digestWebhookUrl).toBe('https://hooks.slack.com/services/T/B/DISK');
-    expect(result.digestSchedule).toBe('0 8 * * 2');
+    expect(result).not.toHaveProperty('digestSchedule');
     expect(result.alerts.personal).toEqual({
       dailyCostUsd: 1,
       sessionCostUsd: 0.1,
@@ -7115,6 +7112,116 @@ describe('api-handler GET /api/settings', () => {
     await handler(req, res);
     expect(status()).toBe(200);
     expect(JSON.parse(body()).licenseKey).toBeNull();
+  });
+});
+
+describe('api-handler GET /api/digest/preview', () => {
+  const tmpDirs: string[] = [];
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    for (const dir of tmpDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    global.fetch = originalFetch;
+  });
+
+  const fixtureSummary = {
+    week: '2026-W29',
+    totalCostUsd: 12.5,
+    avgEfficiencyScore: 0.8,
+    sessionCount: 4,
+    antiPatternCounts: { loop: 2 },
+  };
+
+  function fakeGenerator(summary: unknown) {
+    return {
+      generate: () => summary,
+      loadRecentWeeks: () => [],
+    } as unknown as Parameters<typeof createApiHandler>[0]['weeklySummaryGenerator'];
+  }
+
+  function makeConfigFile(content: Record<string, unknown>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-digest-preview-test-'));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, 'config.json');
+    fs.writeFileSync(filePath, JSON.stringify(content, null, 2));
+    return filePath;
+  }
+
+  it('returns 503 when weeklySummaryGenerator is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/digest/preview' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'digest' });
+  });
+
+  it('returns the digest content with no webhook configured and makes no outbound request', async () => {
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const handler = createApiHandler({ weeklySummaryGenerator: fakeGenerator(fixtureSummary) });
+    const req = { method: 'GET', url: '/api/digest/preview' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const inner = JSON.parse(JSON.parse(body()).content[0].text);
+    expect(inner.week).toMatch(/^\d{4}-W\d{2}$/);
+    expect(inner.text).toContain('Total Cost: $12.5000');
+    expect(inner.blocks[0].type).toBe('header');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('shows the same Block Kit payload that the send route posts for the same summary', async () => {
+    const configFilePath = makeConfigFile({
+      digestWebhookUrl: 'https://hooks.slack.com/services/T/B/X',
+    });
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const handler = createApiHandler({
+      configFilePath,
+      weeklySummaryGenerator: fakeGenerator(fixtureSummary),
+    });
+
+    const previewRes = fakeRes();
+    await handler({ method: 'GET', url: '/api/digest/preview' } as IncomingMessage, previewRes.res);
+    const previewInner = JSON.parse(JSON.parse(previewRes.body()).content[0].text);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const sendRes = fakeRes();
+    await handler({ method: 'POST', url: '/api/digest/send' } as IncomingMessage, sendRes.res);
+    expect(sendRes.status()).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(previewInner.blocks).toEqual(sent.blocks);
+  });
+
+  it('writes no weekly summary file on preview and writes one on send', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-digest-persist-test-'));
+    tmpDirs.push(dir);
+    const generator = new WeeklySummaryGenerator({
+      storagePath: dir,
+      sessionStore: new SessionStore({ storagePath: dir }),
+    });
+    const summariesDir = path.join(dir, 'weekly_summaries');
+    const configFilePath = makeConfigFile({
+      digestWebhookUrl: 'https://hooks.slack.com/services/T/B/X',
+    });
+    global.fetch = jest.fn(async () => ({ ok: true, status: 200 })) as unknown as typeof fetch;
+    const handler = createApiHandler({ configFilePath, weeklySummaryGenerator: generator });
+
+    await handler({ method: 'GET', url: '/api/digest/preview' } as IncomingMessage, fakeRes().res);
+    expect(fs.existsSync(summariesDir)).toBe(false);
+
+    await handler({ method: 'POST', url: '/api/digest/send' } as IncomingMessage, fakeRes().res);
+    expect(fs.readdirSync(summariesDir)).toEqual([`${getIsoWeekId(new Date())}.json`]);
   });
 });
 

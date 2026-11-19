@@ -5,6 +5,7 @@ import { SessionTracker } from '../metrics/session-tracker.js';
 import type { AuditRecord } from '../security/audit-trail.js';
 import { nrIngestOptionsFromConfig, sendAuditRecord } from './audit-record-sender.js';
 import { NrIngestManager } from './nr-ingest.js';
+import { VERSION } from '../version.js';
 
 const ok = { success: true, statusCode: 200, retryCount: 0 };
 const sendEventsFn = jest.fn<() => Promise<typeof ok>>().mockResolvedValue(ok);
@@ -26,6 +27,7 @@ function makeConfig(mode: McpServerConfig['mode']): McpServerConfig {
     repoUrl: null,
     companionMode: false,
     tiers: [],
+    otlp: { transport: 'nr-events-api', endpoint: null, headers: {} },
     harvestIntervalMs: { events: 100_000, metrics: 100_000 },
   } as unknown as McpServerConfig;
 }
@@ -73,6 +75,9 @@ describe('nrIngestOptionsFromConfig()', () => {
     expect(nrIngestOptionsFromConfig(config)).toEqual({
       licenseKey: 'test-license-key',
       transportOptions: { accountId: '12345', collectorHost: null },
+      transport: 'nr-events-api',
+      otlpEndpoint: null,
+      otlpHeaders: {},
       developer: 'dev',
       appName: 'preflight-test',
       teamId: null,
@@ -83,6 +88,23 @@ describe('nrIngestOptionsFromConfig()', () => {
       tiers,
       eventHarvestIntervalMs: 100_000,
       metricHarvestIntervalMs: 100_000,
+    });
+  });
+
+  it('carries the otlp transport, endpoint and headers from config', () => {
+    const config = {
+      ...makeConfig('cloud'),
+      otlp: {
+        transport: 'both',
+        endpoint: 'https://otlp.example.com',
+        headers: { 'api-key': 'k' },
+      },
+    } as unknown as McpServerConfig;
+
+    expect(nrIngestOptionsFromConfig(config)).toMatchObject({
+      transport: 'both',
+      otlpEndpoint: 'https://otlp.example.com',
+      otlpHeaders: { 'api-key': 'k' },
     });
   });
 
@@ -113,6 +135,9 @@ describe('sendAuditRecord()', () => {
         detail: 'HookInstall: /home/dev/.claude/settings.json',
         developer: 'dev',
         'audit.security_alert': false,
+        'instrumentation.provider': 'preflight',
+        'instrumentation.name': 'preflight',
+        'instrumentation.version': VERSION,
       },
     ]);
     expect(sendLogsFn).toHaveBeenCalledTimes(1);

@@ -264,7 +264,9 @@ tools (`.claude/skills/verify-preflight/SKILL.md`). Any other skill in `.claude/
 symlinks to skills kept elsewhere, stays ignored. To track a new project skill, add a
 `!.claude/skills/<name>/` line to `.gitignore`. Keep personal skills untracked through
 `.git/info/exclude`. Tracked skill Markdown is covered by `npm run format:check`, and tracked shell
-scripts by `npm run lint:shell` (shellcheck).
+scripts by `npm run lint:shell` (shellcheck). `npm run check:skill-symlinks` fails the commit, and CI,
+when a symlink is staged under `.claude/skills/`, which `git add -f` or a link inside an allow-listed
+skill would otherwise let through.
 
 Screenshot assertions compare against per-platform baselines in `e2e/*-snapshots/`. Two are
 committed for each screenshot: `-darwin`, recorded on a Mac, and `-linux`, recorded in the
@@ -321,6 +323,7 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 - [ ] `npm run lint` passes
 - [ ] `npm run format:check` passes (the `pre-commit` hook runs this too)
 - [ ] `npm run lint:shell` passes (if you touched a script under `.claude/skills/`; the `pre-commit` hook runs this too)
+- [ ] `npm run check:skill-symlinks` passes (if you touched `.claude/skills/`; the `pre-commit` hook runs this too)
 - [ ] `npm run check:test-ownership` passes (if you added, moved or renamed a test file, or touched `jest.config.ts`, `vitest.config.ts` or a `test:*` script)
 - [ ] `npm run check:tz-tests` passes (if you added or changed a test that uses local-time APIs such as `getHours`, `new Date(y, m, d)` or `toLocale*`; see [Time-zone-dependent tests](./docs/TEST_PATTERNS.md#time-zone-dependent-tests))
 - [ ] `package-lock.json` is unchanged by `npm install --package-lock-only` unless you changed dependencies
