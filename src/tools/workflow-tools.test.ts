@@ -6,6 +6,7 @@ import { CostTracker } from '../metrics/cost-tracker.js';
 import { TaskDetector } from '../metrics/task-detector.js';
 import { AntiPatternDetector } from '../metrics/anti-patterns.js';
 import { EfficiencyScorer } from '../metrics/efficiency-score.js';
+import { LocalSessionAggregator } from '../metrics/local-session-aggregator.js';
 import {
   FeedbackCollector,
   handleGetWorkflowTrace,
@@ -867,5 +868,25 @@ describe('registerWorkflowTools — mark_task_boundary', () => {
   it('is not listed when taskDetector is absent', () => {
     const { tools } = registerWorkflowTools({});
     expect(tools.some((t) => t.name === 'nr_observe_mark_task_boundary')).toBe(false);
+  });
+
+  it("closes the engine session's own task too, so its saved count matches the process detector", async () => {
+    const taskDetector = new TaskDetector();
+    const aggregator = new LocalSessionAggregator();
+    const sessionId = '0d9e4c2a-7b61-4f3e-9a85-2c6f1b8e5d47';
+    const { handlers } = registerWorkflowTools({
+      taskDetector,
+      onTaskBoundary: (timestamp) => aggregator.markTaskBoundary(sessionId, timestamp),
+    });
+
+    for (const id of ['rec-a', 'rec-b']) {
+      const record = makeRecord({ id, sessionId, toolName: 'Read' });
+      taskDetector.recordToolCall(record);
+      aggregator.recordToolCall(record);
+      await handlers.nr_observe_mark_task_boundary!(undefined);
+    }
+
+    expect(taskDetector.getMetrics().totalTasksCompleted).toBe(2);
+    expect(aggregator.taskCountOf(sessionId)).toBe(2);
   });
 });

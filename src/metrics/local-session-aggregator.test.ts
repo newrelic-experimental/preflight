@@ -1404,3 +1404,70 @@ describe('saved timeline past the cap', () => {
     expect(stamps.at(-1)).toBe(10_025);
   });
 });
+
+describe('saved taskCount', () => {
+  const OTHER_ID = '5b0f3c1e-92d4-4f7a-8a63-0d2c7e9b1a55';
+  const taskCountsById = (agg: LocalSessionAggregator): Record<string, unknown> =>
+    Object.fromEntries(summariesOf(agg).map((s) => [String(s.sessionId), s.taskCount]));
+  const closedTask = (agg: LocalSessionAggregator, sessionId: string, at: number): void => {
+    agg.recordToolCall({ sessionId, toolName: 'Read', timestamp: at });
+    agg.recordToolCall({ sessionId, toolName: 'AskUserQuestion', timestamp: at + 1 });
+  };
+
+  it('counts the tasks a session closed', () => {
+    const agg = new LocalSessionAggregator();
+    closedTask(agg, REAL_ID, 1000);
+    closedTask(agg, REAL_ID, 2000);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 2 });
+  });
+
+  it('keeps two concurrent sessions from sharing a count', () => {
+    const agg = new LocalSessionAggregator();
+    closedTask(agg, REAL_ID, 1000);
+    closedTask(agg, OTHER_ID, 1100);
+    closedTask(agg, REAL_ID, 2000);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 2, [OTHER_ID]: 1 });
+  });
+
+  it('closes a session task on its own Stop and leaves another session open', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1000 });
+    agg.recordToolCall({ sessionId: OTHER_ID, toolName: 'Read', timestamp: 1000 });
+    agg.markTaskBoundary(REAL_ID, 1500);
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 2000 });
+    agg.recordToolCall({ sessionId: OTHER_ID, toolName: 'Read', timestamp: 2000 });
+    agg.markTaskBoundary(REAL_ID, 2500);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 2, [OTHER_ID]: 0 });
+  });
+
+  it('does not count a prompt that made no tool call', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1000 });
+    agg.markTaskBoundary(REAL_ID, 1500);
+    agg.startTask(REAL_ID, 2000);
+    agg.markTaskBoundary(REAL_ID, 2500);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 1 });
+  });
+
+  it('counts a task only once it closes', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1000 });
+    agg.startTask(REAL_ID, 1500);
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 0 });
+
+    agg.markTaskBoundary(REAL_ID, 1700);
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 1 });
+  });
+
+  it('adds to the tasks an earlier process saved, once', () => {
+    const agg = new LocalSessionAggregator({ persistedTaskCount: () => 3 });
+    closedTask(agg, REAL_ID, 1000);
+    closedTask(agg, REAL_ID, 2000);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 5 });
+  });
+});
