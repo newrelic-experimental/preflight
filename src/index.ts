@@ -1442,7 +1442,13 @@ async function main(): Promise<void> {
       // --stdio engine's final write, or this daemon's own last checkpoint)
       // before adding the tail — see applyPersistedBaseline's doc comment.
       persistedCostBaseline: (id) => sessionStoreForAggregator.loadSession(id),
+      persistedTaskCount: (id) => sessionStoreForAggregator.loadSession(id)?.taskCount ?? 0,
     });
+    const markOwnTaskBoundary = (timestamp: number): void =>
+      localSessionAggregator.markTaskBoundary(
+        sessionTracker?.getMetrics().sessionId ?? null,
+        timestamp,
+      );
     const repoNameResolver = new RepoNameResolver();
 
     const budgetTracker = new BudgetTracker({
@@ -2772,10 +2778,12 @@ async function main(): Promise<void> {
         );
         if (slashRun) turnCostAttributor.recordSkillRun(frame.sessionId, slashRun);
         taskDetector!.startTaskIfNone(frame.timestamp);
+        localSessionAggregator.startTask(frame.sessionId, frame.timestamp);
       },
       onStop: (frame) => {
         turnTracker.finalizeTurnAt(frame.timestamp);
         taskDetector!.markBoundary(frame.timestamp);
+        localSessionAggregator.markTaskBoundary(frame.sessionId, frame.timestamp);
       },
     });
 
@@ -2850,7 +2858,7 @@ async function main(): Promise<void> {
         // the no-downgrade invariant, so this can only upgrade or refresh —
         // never demote a user name to auto/cwd. A no-op for synthetic ids.
         applyAuthoritativeSessionName(sessionTraceId);
-        const summary = buildSessionSummary({
+        const builtSummary = buildSessionSummary({
           sessionTracker,
           costTracker,
           turnCostAttributor,
@@ -2870,6 +2878,12 @@ async function main(): Promise<void> {
           platform: eventProcessor?.activePlatform,
           instructionPromptHash: instructionDriftTracker.promptHash,
         });
+        // The rollup counts only this session's own tasks; the detector above sees every drained session's.
+        const summary = {
+          ...builtSummary,
+          taskCount:
+            localSessionAggregator.taskCountOf(builtSummary.sessionId) ?? builtSummary.taskCount,
+        };
         const driftRecord = sessionSummaryToDriftRecord(summary);
         if (driftRecord) {
           instructionDriftTracker.recordSessionOutcome(driftRecord);
@@ -3300,6 +3314,7 @@ async function main(): Promise<void> {
         antiPatternDetector,
         efficiencyScorer,
         feedbackCollector,
+        onTaskBoundary: markOwnTaskBoundary,
         sessionStore,
         weeklySummaryGenerator,
         trendAnalyzer,
@@ -3555,6 +3570,7 @@ async function main(): Promise<void> {
           antiPatternDetector,
           efficiencyScorer,
           feedbackCollector,
+          onTaskBoundary: markOwnTaskBoundary,
           sessionStore,
           weeklySummaryGenerator,
           trendAnalyzer,
