@@ -98,7 +98,7 @@ raw tool-call count still looks correct.
 **3b. Mode.** Ask which mode they want:
 
 - `local` (default): dashboard at `http://127.0.0.1:7777`, nothing leaves the
-  machine. No account needed.
+  machine unless the user opts in to usage reports. No account needed.
 - `cloud`: send data to New Relic.
 
 Have them set their choice:

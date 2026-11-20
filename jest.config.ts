@@ -8,7 +8,7 @@ const config: Config = {
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
   transform: {
-    '^.+\\.[tj]s$': [
+    '^.+\\.m?[tj]s$': [
       'ts-jest',
       {
         useESM: true,
@@ -20,11 +20,14 @@ const config: Config = {
     ],
   },
   extensionsToTreatAsEsm: ['.ts'],
-  // commander v15 is pure ESM (no CJS entry); jest's default transformIgnorePatterns
-  // skips node_modules, which leaves its `import` statements as syntax errors when
-  // CJS test bundles try to require it. Allow commander through the transformer
-  // (the transform regex above also matches .js so ts-jest will rewrite it).
-  transformIgnorePatterns: ['/node_modules/(?!commander/)'],
+  // commander v15 and @clack (with its string-width helpers) are pure ESM (no CJS
+  // entry); jest's default transformIgnorePatterns skips node_modules, which leaves
+  // their `import` statements as syntax errors when CJS test bundles try to require
+  // them. Allow them through the transformer (the transform regex above also
+  // matches .js and .mjs so ts-jest will rewrite them).
+  transformIgnorePatterns: [
+    '/node_modules/(?!(commander|@clack|fast-wrap-ansi|fast-string-width|fast-string-truncated-width)/)',
+  ],
   testTimeout: 15_000,
   // Redirects HOME to a temp dir so default-path code (~/.newrelic-preflight) never touches
   // the developer's real home; the setup file fails any test file that sees the real one.

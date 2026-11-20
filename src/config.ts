@@ -171,6 +171,11 @@ export interface McpServerConfig {
    * See docs/ADVANCED.md § allowHeadlessInstall.
    */
   readonly allowHeadlessInstall: boolean;
+  /**
+   * `usageReports` from config.json. Unset leaves the choice to the person's
+   * recorded answer; see src/usage-reports/resolve.ts for the full order.
+   */
+  readonly usageReports?: boolean;
   /** Source of the resolved companionMode value (env, config file, detected, or default). */
   readonly companionModeSource: CompanionModeSource;
   readonly redactionPatterns: readonly RegExp[];
@@ -322,6 +327,7 @@ export const ConfigFileSchema = z
     pricingRefresh: z.boolean().optional(),
     companionMode: z.boolean().optional(),
     allowHeadlessInstall: z.boolean().optional(),
+    usageReports: z.boolean().optional(),
     storagePath: z.string().optional(),
     hookBufferPath: z.string().optional(),
     harvestEventsMs: z.number().optional(),
@@ -1198,6 +1204,8 @@ export function loadMcpConfig(
           'NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL',
           typeof file.allowHeadlessInstall === 'boolean' ? file.allowHeadlessInstall : false,
         ),
+
+    ...(typeof file.usageReports === 'boolean' && { usageReports: file.usageReports }),
 
     redactionPatterns: DEFAULT_REDACTION_PATTERNS,
 

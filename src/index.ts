@@ -155,6 +155,9 @@ import {
 import type { CliOptions } from './types.js';
 import { HomelabAccumulator, HomelabForwarder } from './homelab/index.js';
 import { VERSION } from './version.js';
+import { UsageReportsService } from './usage-reports/service.js';
+import { setActiveUsageReports } from './usage-reports/active.js';
+import { detectAdapterName } from './usage-reports/install-info.js';
 
 export { loadMcpConfig, redactSensitive } from './config.js';
 export type { McpServerConfig } from './config.js';
@@ -566,6 +569,7 @@ const SUBCOMMAND_NAMES = [
   'schedule',
   'doctor',
   'local',
+  'usage-reports',
 ] as const;
 type SubcommandName = (typeof SUBCOMMAND_NAMES)[number];
 
@@ -573,7 +577,8 @@ type SubcommandName = (typeof SUBCOMMAND_NAMES)[number];
 // Derived from SUBCOMMAND_NAMES to ensure a single source of truth: deploy-*
 // and server commands are excluded and handled by the commander path in dispatchSubcommand.
 const INSTALL_CLI_SUBCOMMANDS = SUBCOMMAND_NAMES.filter(
-  (s) => s !== 'deploy-dashboards' && s !== 'deploy-alerts' && s !== 'server',
+  (s) =>
+    s !== 'deploy-dashboards' && s !== 'deploy-alerts' && s !== 'server' && s !== 'usage-reports',
 ) as readonly string[];
 
 function isSubcommand(value: string | undefined): value is SubcommandName {
@@ -587,6 +592,11 @@ function isSubcommand(value: string | undefined): value is SubcommandName {
 export async function dispatchSubcommand(argv: string[]): Promise<number | null> {
   const sub = argv[2];
   if (!isSubcommand(sub)) return null;
+
+  if (sub === 'usage-reports') {
+    const { runUsageReportsCli } = await import('./usage-reports/cli.js');
+    return runUsageReportsCli(argv.slice(3));
+  }
 
   // CLI subcommands (install/setup/etc.) delegate entirely to the install CLI.
   if (INSTALL_CLI_SUBCOMMANDS.includes(sub)) {
@@ -957,6 +967,7 @@ async function main(): Promise<void> {
   };
 
   let homelabForwarder: HomelabForwarder | null = null;
+  let usageReports: UsageReportsService | undefined;
 
   let shuttingDown = false;
   const shutdown = async () => {
@@ -976,6 +987,7 @@ async function main(): Promise<void> {
         logger.warn('Sending the last tasks at shutdown failed', { error: String(err) });
       }
       persistSession?.();
+      usageReports?.stop();
       if (
         config?.otlp?.transport !== 'nr-events-api' &&
         sessionTracker &&
@@ -1191,6 +1203,15 @@ async function main(): Promise<void> {
       // sessionTraceId without fabricating a UUID.
       sessionTraceId = `local-${Date.now()}`;
     }
+
+    usageReports = new UsageReportsService({
+      config,
+      adapterName: () => eventProcessor?.activePlatform ?? detectAdapterName(),
+      hooksInstalled: () => areHooksInstalledAtAnyScope(),
+    });
+    setActiveUsageReports(usageReports);
+    usageReports.start();
+    if (mcpServer) usageReports.askWhenClientIsReady(mcpServer.server);
 
     // Per-session buffer scoping: in --stdio mode the LocalStore is bound to
     // this MCP's resolved session_id so drainBuffer() reads only this session's
@@ -3387,6 +3408,7 @@ async function main(): Promise<void> {
         primaryTier: primaryTierName(config!.tiers),
       };
       registerTools(mcpServer!.server, {
+        usageReports,
         headlessInstaller: buildHeadlessInstaller(),
         sessionTracker: sessionTracker!,
         costTracker,
@@ -3546,6 +3568,7 @@ async function main(): Promise<void> {
         const pendingConfigFilePath =
           options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
         registerPendingTools(mcpServer!.server, {
+          usageReports,
           sessionStartMs: Date.now(),
           developer: config.developer,
           configSummary: {
@@ -3644,6 +3667,7 @@ async function main(): Promise<void> {
           primaryTier: primaryTierName(config.tiers),
         };
         registerTools(mcpServer!.server, {
+          usageReports,
           headlessInstaller: buildHeadlessInstaller(),
           sessionTracker,
           costTracker,

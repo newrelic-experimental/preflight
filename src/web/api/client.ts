@@ -1277,6 +1277,8 @@ export const fetchContextEfficiency = (signal?: AbortSignal): Promise<ContextEff
   getJson<ContextEfficiencyResponse>('/api/context-efficiency', signal);
 
 export interface SettingsPatch {
+  /** Recorded in usage-reports/consent.json, not config.json. */
+  usageReports?: 'yes' | 'no' | 'dismissed';
   developer?: string;
   teamId?: string | null;
   sessionBudgetUsd?: number | null;
@@ -1346,6 +1348,7 @@ export interface SettingsResponse {
     readonly eventTypes: readonly string[];
   }[];
   readonly primaryTier: string | null;
+  readonly usageReports?: UsageReportsView | null;
   readonly sessionBudgetUsd: number | null;
   readonly dailyBudgetUsd: number | null;
   readonly weeklyBudgetUsd: number | null;
@@ -1366,6 +1369,35 @@ export interface SettingsResponse {
 
 export const fetchSettings = (signal?: AbortSignal): Promise<SettingsResponse> =>
   getJson<SettingsResponse>('/api/settings', signal);
+
+// Mirrors usageReportsView in src/dashboard/routes/api-handler.ts.
+export interface UsageReportsView {
+  readonly state: 'on' | 'off' | 'unset';
+  readonly description: string;
+  readonly canAsk: boolean;
+  /** What a report holds, one line each, from src/usage-reports/constants.ts. */
+  readonly summary: readonly string[];
+  readonly neverSent: string;
+  /** PRIVACY.md's usage-reports section for the running version. */
+  readonly privacyUrl: string;
+  readonly showCommand: string;
+}
+
+// Mirrors UsageReportsPreview in src/usage-reports/preview.ts.
+export type UsageReportEvent = Readonly<Record<string, unknown>>;
+export interface UsageReportsPreview {
+  readonly start: readonly UsageReportEvent[];
+  readonly queued: readonly {
+    readonly date: string;
+    readonly today: boolean;
+    readonly events: readonly UsageReportEvent[];
+  }[];
+  readonly sent: readonly { readonly sentAt: string; readonly event: UsageReportEvent }[];
+  readonly sentTotal: number;
+}
+
+export const fetchUsageReportsPreview = (signal?: AbortSignal): Promise<UsageReportsPreview> =>
+  getJson<UsageReportsPreview>('/api/usage-reports/preview', signal);
 
 // Mirrors the real exported DiagnosticCheck in src/install/diagnostics.ts
 // (not importable — tsconfig.web.json excludes server source).
@@ -1648,4 +1680,5 @@ export const qk = {
   workflows: ['workflows'] as const,
   workflowDetail: (runId: string) => ['workflow', runId] as const,
   diagnostics: ['diagnostics'] as const,
+  usageReportsPreview: ['usage-reports', 'preview'] as const,
 };

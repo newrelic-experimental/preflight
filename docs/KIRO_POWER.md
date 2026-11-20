@@ -166,7 +166,7 @@ everything is working while most of the session goes unobserved.
 This Power's `mcp.json` reads its settings from `${VAR}` environment
 references and holds no values itself. `NR_AI_MODE` unset means `local`, so the
 Power works with no New Relic account (dashboard at `http://127.0.0.1:7777`,
-nothing leaves the machine). To send telemetry to New Relic instead:
+nothing leaves the machine unless you opt in to usage reports). To send telemetry to New Relic instead:
 
 1. Add the credentials as references to the `env` block of the installed
    Power's `mcp.json` (no secret goes in the file):

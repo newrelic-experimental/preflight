@@ -2,6 +2,8 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, relative, isAbsolute, resolve, sep } from 'node:path';
 import { IncomingMessage, ServerResponse } from 'node:http';
 
+import { getActiveUsageReports } from '../../usage-reports/active.js';
+
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
@@ -36,6 +38,7 @@ async function serveIndexFallback(root: string, res: ServerResponse): Promise<vo
       'cache-control': 'no-cache',
     });
     res.end(data);
+    getActiveUsageReports()?.recordPageLoad();
   } catch {
     res.writeHead(404);
     res.end();
@@ -132,6 +135,7 @@ export function createStaticHandler(
         'cache-control': cacheControl,
       });
       res.end(data);
+      if (isIndexHtml) getActiveUsageReports()?.recordPageLoad();
     } catch {
       if (hasFileExtension) {
         res.writeHead(404);

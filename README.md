@@ -93,11 +93,13 @@ The wizard defaults to **local mode** — press Enter through the prompts and yo
 
 When prompted, pick a mode:
 
-| Mode                  | What it does                                                         | New Relic account? |
-| --------------------- | -------------------------------------------------------------------- | ------------------ |
-| **local** _(default)_ | Everything stays on your machine; live dashboard at `localhost:7777` | Not needed         |
-| **cloud**             | Ships telemetry to New Relic                                         | Required           |
-| **both**              | Local dashboard **and** New Relic                                    | Required           |
+| Mode                  | What it does                                                                                                                                 | New Relic account? |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| **local** _(default)_ | Everything stays on your machine unless you opt in to [usage reports](./PRIVACY.md#usage-reports-opt-in); live dashboard at `localhost:7777` | Not needed         |
+| **cloud**             | Ships telemetry to New Relic                                                                                                                 | Required           |
+| **both**              | Local dashboard **and** New Relic                                                                                                            | Required           |
+
+The wizard's last question is whether to share usage reports with the Preflight team at New Relic: a daily count of how you use Preflight, identified only by a random install ID. Nothing is sent unless you say yes. `preflight usage-reports show`, or Settings in the dashboard, shows exactly what would be sent and what has been. [PRIVACY.md](./PRIVACY.md#usage-reports-opt-in) lists every field.
 
 ### 3. Start coding
 
@@ -205,6 +207,8 @@ preflight local --clean        # Kill orphaned --local processes and --stdio pro
 preflight uninstall            # Remove hooks and MCP config (prompts with a summary first)
 preflight uninstall --yes      # Skip the confirmation prompt (for scripts and CI)
 preflight uninstall --daemon   # Remove only the background dashboard daemon
+preflight usage-reports status # Whether usage reports are on, and why
+preflight usage-reports show   # Print exactly what usage reports send, and what they've sent
 ```
 
 Add `--project` to `install`/`uninstall` to scope changes to the current directory only.

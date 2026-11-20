@@ -125,6 +125,14 @@ import type { AntiPatternSegment } from './replay-analyzer.js';
 import { analyzeReplayTimeline } from './replay-analyzer.js';
 import { pairToolCallsFromBufferEvents } from './tool-selection-aggregate.js';
 import { primaryTierName, summarizeTiers } from '../../transport/tier-types.js';
+import { getActiveUsageReports } from '../../usage-reports/active.js';
+import { VERSION } from '../../version.js';
+import {
+  NEVER_SENT,
+  privacyUrl,
+  REPORT_SUMMARY,
+  SHOW_COMMAND,
+} from '../../usage-reports/constants.js';
 interface RawAuditRecord {
   readonly id: string;
   readonly timestamp: number;
@@ -3191,6 +3199,35 @@ export function createApiHandler(
 
   // ── Settings endpoints ──────────────────────────────────────────────────
 
+  const usageReportsView = (): {
+    state: 'on' | 'off' | 'unset';
+    description: string;
+    canAsk: boolean;
+    summary: readonly string[];
+    neverSent: string;
+    privacyUrl: string;
+    showCommand: string;
+  } | null => {
+    const sink = getActiveUsageReports();
+    if (!sink) return null;
+    const st = sink.status();
+    return {
+      state: st.enabled ? 'on' : st.reason === 'unasked' ? 'unset' : 'off',
+      description: sink.describe(),
+      canAsk: sink.canAsk(),
+      summary: REPORT_SUMMARY,
+      neverSent: NEVER_SENT,
+      privacyUrl: privacyUrl(VERSION),
+      showCommand: SHOW_COMMAND,
+    };
+  };
+
+  routes.set('GET /api/usage-reports/preview', (_req, res) => {
+    const sink = getActiveUsageReports();
+    if (!sink) return unavailable(res, 'usageReports');
+    jsonOk(res, sink.preview());
+  });
+
   routes.set('GET /api/settings', (_req, res) => {
     if (!deps.config) return unavailable(res, 'config');
     const c = deps.config;
@@ -3269,6 +3306,7 @@ export function createApiHandler(
       licenseKey: c.licenseKey ? '••••' + c.licenseKey.slice(-4) : null,
       tiers: summarizeTiers(c.tiers),
       primaryTier: primaryTierName(c.tiers),
+      usageReports: usageReportsView(),
     });
   });
 
@@ -3281,6 +3319,32 @@ export function createApiHandler(
       res.writeHead(400, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid_json' }));
       return;
+    }
+
+    // The usage-reports answer lives in usage-reports/consent.json, not config.json.
+    if ('usageReports' in body) {
+      const answer = body.usageReports;
+      const sink = getActiveUsageReports();
+      if (answer !== 'yes' && answer !== 'no' && answer !== 'dismissed') {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'usageReports must be "yes", "no" or "dismissed"' }));
+        return;
+      }
+      // Only the dashboard page itself may say yes. Browsers set
+      // Sec-Fetch-Site and page scripts can't change it. A command-line
+      // client can send the header, so this stops other sites, not local tools.
+      if (answer === 'yes' && req.headers['sec-fetch-site'] !== 'same-origin') {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'usageReports can only be turned on from the dashboard' }));
+        return;
+      }
+      if (!sink) return unavailable(res, 'usageReports');
+      sink.answer(answer, 'dashboard_banner');
+      delete body.usageReports;
+      if (Object.keys(body).length === 0) {
+        jsonOk(res, { ok: true, restartRequired: false, usageReports: usageReportsView() });
+        return;
+      }
     }
 
     let existing: Record<string, unknown> = {};
