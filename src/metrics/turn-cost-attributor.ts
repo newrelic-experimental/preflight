@@ -93,6 +93,12 @@ export interface ClosedTurn {
    */
   readonly calls: readonly TurnToolCall[];
   /**
+   * The skill run a response turn's report arrived inside, so a text-only
+   * skill run's cost reaches its AiTurnCost row. Null for a tool turn, whose
+   * calls carry their own skill, and for a report outside any run.
+   */
+  readonly skill: SkillStamp | null;
+  /**
    * For a tool turn, `ToolCallRecord.platform` of its first call. For a
    * response turn, the token report's platform, else the session's most
    * recent stamped tool call's. Undefined when neither is known.
@@ -405,7 +411,12 @@ export class TurnCostAttributor {
     addSkillRun(this.getOrCreateSession(sessionId).skillRuns, stamp.name, stamp.runId);
   }
 
-  recordTokenEvent(event: TokenEvent): ClosedTurn {
+  /**
+   * `openRun` is the skill run open in the event's session when the report
+   * arrives. Only a response turn uses it, since the attributor never learns
+   * when a run ends.
+   */
+  recordTokenEvent(event: TokenEvent, openRun: SkillStamp | null = null): ClosedTurn {
     const state = this.getOrCreateSession(event.sessionId);
 
     // Self-heal: a pending turn sitting unclosed for longer than any
@@ -422,7 +433,7 @@ export class TurnCostAttributor {
 
     const pendingTurn = state.pendingTurns[0];
     if (!pendingTurn) {
-      return this.responseTurn(state, event);
+      return this.responseTurn(state, event, openRun);
     }
 
     // The event must postdate the turn it's closing. One that doesn't can't
@@ -432,7 +443,7 @@ export class TurnCostAttributor {
     // in `evictedToolBursts`.
     const timeSinceLastTool = event.timestamp - pendingTurn.endTime;
     if (timeSinceLastTool < 0) {
-      return this.responseTurn(state, event);
+      return this.responseTurn(state, event, openRun);
     }
     state.pendingTurns.shift();
 
@@ -490,6 +501,7 @@ export class TurnCostAttributor {
         toolName: tc.toolName,
         skill: tc.skill,
       })),
+      skill: null,
       platform: pendingTurn.platform,
     };
 
@@ -502,7 +514,11 @@ export class TurnCostAttributor {
    * `costPerToolCall` equal to the whole cost since it has no calls to split
    * across.
    */
-  private responseTurn(state: SessionState, event: TokenEvent): ClosedTurn {
+  private responseTurn(
+    state: SessionState,
+    event: TokenEvent,
+    openRun: SkillStamp | null,
+  ): ClosedTurn {
     const { costUsd } = this.priceTokenEvent(event);
     const id = randomUUID();
     return {
@@ -523,6 +539,7 @@ export class TurnCostAttributor {
         sessionId: event.sessionId ?? null,
       },
       calls: [],
+      skill: openRun,
       platform: event.platform ?? state.lastPlatform,
     };
   }

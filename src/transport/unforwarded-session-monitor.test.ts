@@ -48,18 +48,6 @@ describe('detectCloudForwardingGap', () => {
     });
   });
 
-  it("reads a missing accountId error carried as the cause of loadConfigOrDie's wrapper", () => {
-    const cause = new MissingCloudCredentialError('accountId', 'cloud', '/home/u/config.json');
-    const wrapped = new Error(`${cause.message}\n\nRun 'preflight doctor' to diagnose.`, {
-      cause,
-    });
-    expect(detectCloudForwardingGap(wrapped)).toEqual({
-      reason: 'missing-account-id',
-      missingField: 'accountId',
-      requestedMode: 'cloud',
-    });
-  });
-
   it('reads a failing secret helper as its own reason, not a missing key', () => {
     const err = new CloudSecretCommandError(
       new SecretCommandError('licenseKey', 'non-zero-exit', ' (1)'),

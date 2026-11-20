@@ -99,6 +99,11 @@ export class SkillActivationTracker implements Resettable {
     return open;
   }
 
+  /** The run the main agent has open in a session, without touching the session's eviction order. */
+  openRun(sessionId: string | null | undefined): SkillStamp | null {
+    return this.sessions.get(sessionId ?? NULL_SESSION_KEY)?.get(MAIN_AGENT_KEY) ?? null;
+  }
+
   /** Closes the main agent's run and returns the slash run it opens, if any. */
   recordPrompt(
     sessionId: string | null | undefined,

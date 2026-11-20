@@ -685,6 +685,53 @@ describe('SessionStore', () => {
     expect(saved.toolCallCount).toBe(12);
   });
 
+  it('merges a self-reported summary with no tool calls into a recorded session', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'reported', startTime, toolCallCount: 12 }));
+
+    store.saveSession(
+      makeSummary({
+        sessionId: 'reported',
+        startTime,
+        toolCallCount: 0,
+        toolBreakdown: {},
+        tokensInput: 99_000,
+        selfReportCount: 1,
+      }),
+    );
+
+    expect(store.loadSession('reported')).toMatchObject({ toolCallCount: 12, tokensInput: 99_000 });
+  });
+
+  it('writes the first file of a session that holds only a self-report', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const idle = {
+      toolCallCount: 0,
+      toolBreakdown: {},
+      estimatedCostUsd: 0,
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensThinking: 0,
+    };
+
+    const saved = store.saveSession(
+      makeSummary({ ...idle, sessionId: 'reported-only', selfReportCount: 1 }),
+    );
+
+    expect(saved).not.toBeNull();
+  });
+
+  it('keeps the larger selfReportCount', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'counted', startTime, selfReportCount: 2 }));
+
+    store.saveSession(makeSummary({ sessionId: 'counted', startTime, selfReportCount: 1 }));
+
+    expect(store.loadSession('counted')?.selfReportCount).toBe(2);
+  });
+
   it('does not create a file for a session that recorded no usage', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     store.saveSession(

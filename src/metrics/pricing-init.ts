@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 
 import type { McpServerConfig } from '../config.js';
-import { applyPricingOverlay } from './pricing-overlay.js';
+import { applyCustomPricing } from './pricing-overlay.js';
 import { schedulePricingRecheck, startPricingRefresh } from './pricing-refresh.js';
 
 export interface InitModelPricingOptions {
@@ -19,7 +19,7 @@ export function initModelPricing(
   config: Pick<McpServerConfig, 'customPricingFile' | 'pricingRefresh' | 'storagePath'>,
   options: InitModelPricingOptions = {},
 ): void {
-  applyPricingOverlay(config.customPricingFile);
+  applyCustomPricing(config.customPricingFile);
   if (options.refresh === false) return;
   const refreshOptions = {
     enabled: config.pricingRefresh,
