@@ -287,6 +287,36 @@ test.describe('store with one session', () => {
     });
   }
 
+  for (const width of [640, 720, 800]) {
+    test(`the workflow spend estimate tooltip stays on screen at ${width}px wide`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 800 });
+      await page.route('**/api/workflows', (route) =>
+        route.fulfill({
+          json: [
+            {
+              runId: 'run-tooltip',
+              parentSessionId: FIXTURE_SESSION_ID,
+              taskId: null,
+              workflowName: 'review',
+              status: 'completed',
+              defaultModel: FIXTURE_MODEL,
+              startedAt: Date.now(),
+              totalUsd: 1.25,
+            },
+          ],
+        }),
+      );
+      await page.goto('/sessions');
+      await page.getByRole('button', { name: 'Why this is an estimate' }).hover();
+      const box = await page.getByRole('tooltip').boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+    });
+  }
+
   test('History counts it and breaks it out by model', async ({ page, log }) => {
     await page.goto('/history');
     await expect(page.getByText('1 sessions', { exact: true })).toBeVisible();
