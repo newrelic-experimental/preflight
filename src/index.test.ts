@@ -2587,6 +2587,37 @@ describe('stdio integration', () => {
       });
     }, 40000);
 
+    it('a pending engine counts a subagent turn it drained before adopting its conversation once', async () => {
+      await withPendingEngine('600000', async (env, adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        appendToHookBuffer(
+          resolve(storage, 'buffer-conv-sub.jsonl'),
+          JSON.stringify({
+            mode: 'subagent_token',
+            tool: 'subagent',
+            timestamp: Date.now(),
+            sessionId: 'conv-sub',
+            agentId: 'a1234567890abcdef',
+            messageId: 'msg_sub_1',
+            model: 'claude-sonnet-4-6',
+            inputTokens: 100000,
+            outputTokens: 20000,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            reasoningTokens: 0,
+          }) + '\n',
+        );
+        expect(await drained(storage, 'conv-sub')).toBe('');
+        await adopt('conv-sub');
+        await close();
+
+        const saved = savedSession(storage, 'conv-sub');
+        expect(saved).toMatchObject({ tokensInput: 100000 });
+        expect(saved?.estimatedCostUsd).toBeCloseTo(0.6);
+        expect(saved?.subagentCostUsd).toBeCloseTo(0.6);
+      });
+    }, 40000);
+
     it('a pending engine adds the report it drained before its cwd guess is confirmed to the ones after', async () => {
       await withPendingEngine('600000', async (env, _adopt, close) => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
