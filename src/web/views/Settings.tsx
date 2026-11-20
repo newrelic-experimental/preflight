@@ -15,6 +15,7 @@ import type { SettingsPatch } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
 import { ReportedSpendField } from '../components/ReportedSpendField';
 import { findReportedSpend, type ReportedSpend } from '../../lib/reported-spend.js';
+import { UsageReportsPanel } from '../components/UsageReportsPanel';
 import { Button, Card, Eyebrow, SectionHeader } from '../components/ui';
 
 interface SettingsData {
@@ -366,6 +367,8 @@ export function Settings(): JSX.Element {
           }
         />
       </Card>
+
+      <UsageReportsPanel />
 
       {/* Observability */}
       <section className="mt-8">

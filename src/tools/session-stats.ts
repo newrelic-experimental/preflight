@@ -19,6 +19,8 @@ import { createLogger } from '../core/index.js';
 import { redactSensitive } from '../config.js';
 import type { SecretSources } from '../secret-command.js';
 import { VERSION } from '../version.js';
+import type { UsageReportsService } from '../usage-reports/service.js';
+import { SHOW_COMMAND } from '../usage-reports/constants.js';
 
 const logger = createLogger('session-stats');
 import type { SessionTracker } from '../metrics/session-tracker.js';
@@ -344,6 +346,12 @@ export interface ConfigSummary {
   /** Resolved telemetry tiers. `accountId` above is the flat field, not where tiered events go. */
   readonly tiers: readonly TierSummary[];
   readonly primaryTier: string | null;
+  /** Read-only: whether usage reports are on, why, and where the person can see what's sent. */
+  readonly usageReports?: string;
+}
+
+function usageReportsSummary(status: string): string {
+  return `${status}. To see what's sent, run \`${SHOW_COMMAND}\` or open Settings in the dashboard.`;
 }
 
 export function handleGetConfig(
@@ -434,6 +442,7 @@ export function handleGetGitWorkspaceReport(
 // ---------------------------------------------------------------------------
 
 export interface ToolRegistrationOptions {
+  usageReports?: UsageReportsService;
   sessionTracker?: SessionTracker;
   costTracker?: CostTracker;
   budgetTracker?: BudgetTracker;
@@ -530,7 +539,13 @@ function registerCoreTools(deps: ToolRegistrationOptions): RegisteredToolSet {
       handle: () => {
         const missing = requireAvailable(!!deps.configSummary, 'Config summary not available');
         if (missing) return missing;
-        return handleGetConfig(deps.configSummary!, deps.nrIngestManager?.getLocalTierStats?.());
+        return handleGetConfig(
+          {
+            ...deps.configSummary!,
+            usageReports: deps.usageReports && usageReportsSummary(deps.usageReports.describe()),
+          },
+          deps.nrIngestManager?.getLocalTierStats?.(),
+        );
       },
     },
     {
@@ -630,6 +645,7 @@ export function registerPendingTools(
     configSummary?: ConfigSummary;
     hooksInstalledFn?: () => boolean;
     headlessInstaller?: () => import('../install/headless-install.js').HeadlessInstallResult;
+    usageReports?: UsageReportsService;
   },
 ): void {
   const tools: Array<typeof HEALTH_TOOL | typeof INSTALL_HOOKS_TOOL> = [
@@ -637,10 +653,15 @@ export function registerPendingTools(
     INSTALL_HOOKS_TOOL,
   ];
   if (options.configSummary) tools.push(CONFIG_TOOL);
+  const usageReports = options.usageReports;
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name } = request.params;
+    if (usageReports) {
+      if (tools.some((t) => t.name === name)) usageReports.recordToolCall(name);
+      usageReports.maybeAskAtToolCall(server);
+    }
     if (name === 'nr_observe_health') {
       return handleHealth({
         sessionStartMs: options.sessionStartMs,
@@ -650,7 +671,10 @@ export function registerPendingTools(
       });
     }
     if (name === 'nr_observe_get_config' && options.configSummary) {
-      return handleGetConfig(options.configSummary);
+      return handleGetConfig({
+        ...options.configSummary,
+        usageReports: options.usageReports && usageReportsSummary(options.usageReports.describe()),
+      });
     }
     if (name === 'nr_observe_install_hooks') {
       return handleInstallHooks(options.headlessInstaller);
@@ -681,6 +705,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
     registerGenericMcpTools(options),
   );
 
+  const usageReports = options.usageReports;
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -689,6 +714,10 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
     const handler = handlers[name];
     if (!handler) {
       throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+    }
+    if (usageReports) {
+      usageReports.recordToolCall(name);
+      usageReports.maybeAskAtToolCall(server);
     }
 
     try {

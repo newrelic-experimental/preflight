@@ -3,6 +3,7 @@ import type { JSX } from 'react';
 import { Route, Switch, useLocation } from 'wouter';
 import { Sidebar } from './components/Sidebar';
 import { AlertBannerStack } from './components/AlertBannerStack';
+import { UsageReportsBanner } from './components/UsageReportsBanner';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ShortcutOverlay } from './components/ShortcutOverlay';
 import { useLiveEvents } from './hooks/useLiveEvents';
@@ -32,6 +33,7 @@ export function App(): JSX.Element {
   return (
     <>
       <div className="flex flex-col h-full mesh-bg">
+        <UsageReportsBanner />
         <AlertBannerStack />
         <div className="flex flex-1 min-h-0">
           <Sidebar

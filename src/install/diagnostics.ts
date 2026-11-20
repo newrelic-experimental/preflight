@@ -31,6 +31,9 @@ import { isWsl, resolveWindowsHome } from './platform.js';
 import { LocalStore, SessionStore } from '../storage/index.js';
 import { createDefaultRegistry } from '../platforms/index.js';
 import { resolvePricing } from '../metrics/pricing-overlay.js';
+import { describeReason, resolveUsageReports } from '../usage-reports/resolve.js';
+import { readConsent, usageReportsDir } from '../usage-reports/state.js';
+import { SHOW_COMMAND } from '../usage-reports/constants.js';
 
 const logger = createLogger('diagnostics');
 
@@ -802,6 +805,28 @@ async function checkPreflightVersion(): Promise<DiagnosticCheck> {
   return { check: 'Preflight version', status: 'ok', detail: `v${VERSION} is the latest version.` };
 }
 
+/** Shows "not set" and the commands to choose, until the install has an answer. */
+function checkUsageReports(loaded: LoadedConfig, storagePath: string): DiagnosticCheck {
+  const config = loaded.ok ? loaded.config : null;
+  const r = resolveUsageReports({
+    highSecurity: config?.highSecurity ?? false,
+    configValue: config?.usageReports,
+    consent: readConsent(usageReportsDir(storagePath)),
+  });
+  if (r.reason === 'unasked') {
+    return {
+      check: 'Usage reports',
+      status: 'warn',
+      detail: describeReason(r),
+      fix: `Run \`preflight usage-reports enable\` or \`preflight usage-reports disable\` to choose; \`${SHOW_COMMAND}\` prints what is sent.`,
+    };
+  }
+  const detail = r.enabled
+    ? `${describeReason(r)}; \`${SHOW_COMMAND}\` prints what is sent`
+    : describeReason(r);
+  return { check: 'Usage reports', status: 'ok', detail };
+}
+
 export async function runDiagnostics(opts?: {
   configPath?: string;
   storagePath?: string;
@@ -838,6 +863,7 @@ export async function runDiagnostics(opts?: {
     checkHookNodePath(settingsPaths, opts?.platform),
     checkStorageWritable(context.storagePath),
     checkLocalInstances(context.storagePath),
+    checkUsageReports(loaded, context.storagePath),
     await checkPreflightVersion(),
     await checkNrReachable(context.nrSkipReason),
   ];

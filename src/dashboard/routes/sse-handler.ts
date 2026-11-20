@@ -1,6 +1,7 @@
 import { IncomingMessage, ServerResponse } from 'node:http';
 
 import { LiveEventBus, LiveEventMap, LiveEventName, SeqEntry } from '../live-event-bus.js';
+import { getActiveUsageReports } from '../../usage-reports/active.js';
 
 const HEARTBEAT_MS = 30_000;
 // Only validate the same character class the rest of the codebase uses for
@@ -42,6 +43,8 @@ export function createSseHandler(
       'x-accel-buffering': 'no',
     });
     res.write(': stream-open\n\n');
+    // Reconnects carry Last-Event-ID; count only fresh connections.
+    if (!req.headers['last-event-id']) getActiveUsageReports()?.recordLiveConnection();
 
     // Optional `?sessionId=` query parameter scopes the stream to events
     // emitted from a single Claude Code session. Events without a `sessionId`

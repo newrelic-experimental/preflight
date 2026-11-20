@@ -1,14 +1,8 @@
 import * as fsMod from 'node:fs';
-import * as rlMod from 'node:readline/promises';
 import { join } from 'node:path';
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 
-import {
-  buildConfig,
-  runSetupWizard,
-  copyStarterAlertRules,
-  resolveEnvironmentChoice,
-} from './setup-wizard.js';
+import { buildConfig, runSetupWizard, copyStarterAlertRules } from './setup-wizard.js';
 import * as scheduleMod from './schedule.js';
 import * as updateSupportMod from './update-support.js';
 import * as keyValidator from './key-validator.js';
@@ -16,12 +10,30 @@ import * as cliMod from './cli.js';
 import * as platformMod from './platform.js';
 import * as dashboardHealthMod from './dashboard-health.js';
 import * as keychainMod from './keychain.js';
+import * as promptsMod from './wizard-prompts.js';
+import * as openUrlMod from './open-url.js';
+import type { WizardPrompts } from './wizard-prompts.js';
 
 // ---------------------------------------------------------------------------
 // Module-level mocks (hoisted above imports by jest at runtime).
-// The buildConfig tests below are unaffected (pure function; no fs/readline).
+// The buildConfig tests below are unaffected (pure function; no fs/prompts).
 // ---------------------------------------------------------------------------
-jest.mock('node:readline/promises', () => ({ createInterface: jest.fn() }));
+jest.mock('./wizard-prompts.js', () => ({
+  createWizardPrompts: jest.fn(),
+  printOnRail: (msg = '') => process.stdout.write(msg + '\n'),
+  WizardCancelled: class WizardCancelled extends Error {},
+}));
+jest.mock('@clack/prompts', () => ({
+  intro: (msg = '') => process.stdout.write(msg + '\n'),
+  outro: (msg = '') => process.stdout.write(msg + '\n'),
+  cancel: (msg = '') => process.stdout.write(msg + '\n'),
+  note: (msg = '') => process.stdout.write(msg + '\n'),
+}));
+jest.mock('./open-url.js', () => ({ openUrl: jest.fn(() => true) }));
+// The usage-reports question has its own tests; keep it out of the scripted answers here.
+jest.mock('../usage-reports/wizard.js', () => ({
+  askUsageReportsInWizard: jest.fn(async () => undefined),
+}));
 jest.mock('node:fs', () => ({
   readFileSync: jest.fn(),
   writeFileSync: jest.fn(),
@@ -98,7 +110,35 @@ const mockedFs = fsMod as unknown as {
   chmodSync: jest.Mock;
   realpathSync: jest.Mock;
 };
-const mockedRl = rlMod as unknown as { createInterface: jest.Mock };
+const mockedPrompts = promptsMod as unknown as { createWizardPrompts: jest.Mock };
+
+/**
+ * Answers the wizard's questions from a scripted list of typed strings, read
+ * the way a person typing them would mean them: '' takes the question's
+ * default, "y"/"n" answer a confirm, and a select takes an option's value or
+ * its 1-based position.
+ */
+function scriptedPrompts(rl: { question: jest.Mock }): WizardPrompts {
+  const next = async (message: string) => String((await rl.question(message)) ?? '').trim();
+  const text: WizardPrompts['text'] = async (q) =>
+    (await next(q.message)) || (q.defaultValue ?? '');
+  return {
+    text,
+    password: text,
+    async confirm(q) {
+      const raw = (await next(q.message)).toLowerCase();
+      if (raw === 'y' || raw === 'yes') return true;
+      if (raw === 'n' || raw === 'no') return false;
+      return q.initialValue;
+    },
+    async select(q) {
+      const raw = (await next(q.message)).toLowerCase();
+      const byValue = q.options.find((o) => o.value === raw);
+      const byPosition = /^\d+$/.test(raw) ? q.options[Number(raw) - 1] : undefined;
+      return (byValue ?? byPosition)?.value ?? q.initialValue;
+    },
+  };
+}
 const mockedSchedule = scheduleMod as unknown as {
   installSchedule: jest.Mock;
   resolveBinaryPath: jest.Mock;
@@ -256,7 +296,7 @@ describe('defaultStarterRulesSource fallback (via runSetupWizard)', () => {
     jest.clearAllMocks();
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     mockRl = { question: jest.fn(), close: jest.fn() };
-    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedPrompts.createWizardPrompts.mockReturnValue(scriptedPrompts(mockRl));
     mockedFs.mkdirSync.mockReturnValue(undefined);
     mockedFs.writeFileSync.mockReturnValue(undefined);
     mockedFs.readFileSync.mockReturnValue('{}');
@@ -294,42 +334,6 @@ describe('defaultStarterRulesSource fallback (via runSetupWizard)', () => {
       checkedPaths.some((p) => p.endsWith(join('opt', 'examples', 'local-alert-rules.json'))),
     ).toBe(true);
     void output;
-  });
-});
-
-describe('resolveEnvironmentChoice', () => {
-  it('returns the default when the answer is blank', () => {
-    expect(resolveEnvironmentChoice('', 'us')).toBe('us');
-  });
-
-  it('returns the default when the answer repeats the default', () => {
-    expect(resolveEnvironmentChoice('eu', 'eu')).toBe('eu');
-  });
-
-  it('maps numbered menu positions to region keys', () => {
-    expect(resolveEnvironmentChoice('1', 'us')).toBe('us');
-    expect(resolveEnvironmentChoice('2', 'us')).toBe('eu');
-    expect(resolveEnvironmentChoice('3', 'us')).toBe('gov');
-    expect(resolveEnvironmentChoice('4', 'us')).toBe('jp');
-  });
-
-  it('maps region keys and their aliases', () => {
-    expect(resolveEnvironmentChoice('us', 'eu')).toBe('us');
-    expect(resolveEnvironmentChoice('eu', 'us')).toBe('eu');
-    expect(resolveEnvironmentChoice('gov', 'us')).toBe('gov');
-    expect(resolveEnvironmentChoice('fedramp', 'us')).toBe('gov');
-    expect(resolveEnvironmentChoice('jp', 'us')).toBe('jp');
-    expect(resolveEnvironmentChoice('japan', 'us')).toBe('jp');
-  });
-
-  it('falls back to the default for unrecognized input, including the literal word "staging"', () => {
-    expect(resolveEnvironmentChoice('nope', 'us')).toBe('us');
-    expect(resolveEnvironmentChoice('5', 'us')).toBe('us');
-    expect(resolveEnvironmentChoice('staging', 'us')).toBe('us');
-  });
-
-  it('preserves an existing staging default on a blank answer (not a new interactive selection)', () => {
-    expect(resolveEnvironmentChoice('', 'staging')).toBe('staging');
   });
 });
 
@@ -530,7 +534,7 @@ describe('setup-wizard idempotency and env-detection', () => {
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockRl = { question: jest.fn(), close: jest.fn() };
-    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedPrompts.createWizardPrompts.mockReturnValue(scriptedPrompts(mockRl));
     mockedFs.mkdirSync.mockReturnValue(undefined);
     mockedFs.writeFileSync.mockReturnValue(undefined);
     mockedKeyValidator.validateLicenseKey.mockResolvedValue({ valid: true });
@@ -603,6 +607,19 @@ describe('setup-wizard idempotency and env-detection', () => {
     await expect(runSetupWizard()).rejects.toThrow('readline closed');
 
     expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+  });
+
+  it('Ctrl-C at a question reports the cancel and exits 130 without writing config', async () => {
+    mockedFs.readFileSync.mockReturnValue('{}');
+    mockRl.question.mockImplementation(() => Promise.reject(new promptsMod.WizardCancelled()));
+
+    await runSetupWizard();
+
+    expect(process.exitCode).toBe(130);
+    expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Setup cancelled');
+    process.exitCode = undefined;
   });
 
   // loadExisting() must validate via ConfigFileSchema and strip unknown top-level
@@ -692,7 +709,7 @@ describe('setupWizard repoUrlEnabled prompt', () => {
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockRl = { question: jest.fn(), close: jest.fn() };
-    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedPrompts.createWizardPrompts.mockReturnValue(scriptedPrompts(mockRl));
     mockedFs.mkdirSync.mockReturnValue(undefined);
     mockedFs.writeFileSync.mockReturnValue(undefined);
     mockedKeyValidator.validateLicenseKey.mockResolvedValue({ valid: true });
@@ -772,7 +789,7 @@ describe('setupWizard mode branch', () => {
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockRl = { question: jest.fn(), close: jest.fn() };
-    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedPrompts.createWizardPrompts.mockReturnValue(scriptedPrompts(mockRl));
     mockedFs.mkdirSync.mockReturnValue(undefined);
     mockedFs.writeFileSync.mockReturnValue(undefined);
     mockedFs.readFileSync.mockReturnValue('{}');
@@ -900,7 +917,7 @@ describe('setupWizard input validation', () => {
         throw new Error(`process.exit(${String(code)})`);
       });
     mockRl = { question: jest.fn(), close: jest.fn() };
-    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedPrompts.createWizardPrompts.mockReturnValue(scriptedPrompts(mockRl));
     mockedFs.mkdirSync.mockReturnValue(undefined);
     mockedFs.writeFileSync.mockReturnValue(undefined);
     mockedFs.readFileSync.mockReturnValue('{}');
@@ -1114,7 +1131,7 @@ describe('setupWizard auto-update step', () => {
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockRl = { question: jest.fn(), close: jest.fn() };
-    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedPrompts.createWizardPrompts.mockReturnValue(scriptedPrompts(mockRl));
     mockedFs.mkdirSync.mockReturnValue(undefined);
     mockedFs.writeFileSync.mockReturnValue(undefined);
     mockedFs.readFileSync.mockReturnValue('{}');
@@ -1282,7 +1299,7 @@ describe('setupWizard daemon install step', () => {
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockRl = { question: jest.fn(), close: jest.fn() };
-    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedPrompts.createWizardPrompts.mockReturnValue(scriptedPrompts(mockRl));
     mockedFs.mkdirSync.mockReturnValue(undefined);
     mockedFs.writeFileSync.mockReturnValue(undefined);
     mockedFs.readFileSync.mockReturnValue('{}');
@@ -1322,6 +1339,29 @@ describe('setupWizard daemon install step', () => {
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).toContain('Background dashboard daemon installed');
     expect(output).not.toContain('could not be verified');
+  });
+
+  it('offers to open the running dashboard at the end', async () => {
+    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
+    mockedDashboardHealth.waitForHealthyDashboard.mockResolvedValue(true);
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'n', 'y', 'n', '');
+
+    await runSetupWizard();
+
+    const asked = mockRl.question.mock.calls.map((c) => String(c[0]));
+    expect(asked.at(-1)).toContain('Open the dashboard now?');
+    expect(openUrlMod.openUrl).toHaveBeenCalledWith('http://127.0.0.1:7777');
+  });
+
+  it('points to the dashboard as a next step when no daemon is running', async () => {
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'n', 'n', 'n');
+
+    await runSetupWizard();
+
+    const asked = mockRl.question.mock.calls.map((c) => String(c[0]));
+    expect(asked.some((m) => m.includes('Open the dashboard'))).toBe(false);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Then open the dashboard: http://127.0.0.1:7777');
   });
 
   it('downgrades to a warning when the daemon health-check fails', async () => {
@@ -1381,7 +1421,7 @@ describe('setupWizard auto-update step on an install where update cannot run', (
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockRl = { question: jest.fn(), close: jest.fn() };
-    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedPrompts.createWizardPrompts.mockReturnValue(scriptedPrompts(mockRl));
     mockedFs.mkdirSync.mockReturnValue(undefined);
     mockedFs.writeFileSync.mockReturnValue(undefined);
     mockedFs.readFileSync.mockReturnValue('{}');
@@ -1477,7 +1517,7 @@ describe('setupWizard environment and nrApiKey steps', () => {
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockRl = { question: jest.fn(), close: jest.fn() };
-    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedPrompts.createWizardPrompts.mockReturnValue(scriptedPrompts(mockRl));
     mockedFs.mkdirSync.mockReturnValue(undefined);
     mockedFs.writeFileSync.mockReturnValue(undefined);
     mockedFs.readFileSync.mockReturnValue('{}');
@@ -1897,7 +1937,7 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(written.developer).toBe('the_dev');
   });
 
-  it('shows license key hint in bracket format when already set', async () => {
+  it('shows the license key hint when already set', async () => {
     mockedFs.readFileSync.mockReturnValue(
       JSON.stringify({ accountId: '12345', licenseKey: 'NRLIC-existing' }),
     );
@@ -1907,8 +1947,7 @@ describe('setupWizard environment and nrApiKey steps', () => {
 
     const promptMessages = mockRl.question.mock.calls.map((c) => String(c[0]));
     const licensePrompt = promptMessages.find((m) => m.toLowerCase().includes('license key'));
-    expect(licensePrompt).toContain('(already set)');
-    expect(licensePrompt).toMatch(/\[.*\]/); // brackets
+    expect(licensePrompt).toContain('already set');
   });
 });
 
@@ -1926,7 +1965,7 @@ describe('setupWizard WSL CC-mode selection', () => {
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockRl = { question: jest.fn(), close: jest.fn() };
-    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedPrompts.createWizardPrompts.mockReturnValue(scriptedPrompts(mockRl));
     mockedFs.mkdirSync.mockReturnValue(undefined);
     mockedFs.writeFileSync.mockReturnValue(undefined);
     mockedFs.readFileSync.mockReturnValue('{}');
@@ -1999,16 +2038,6 @@ describe('setupWizard WSL CC-mode selection', () => {
     expect(output).toContain('preflight install --windows-cc');
   });
 
-  it("defaults to --linux-cc and prints '3 attempts' message after 3 consecutive invalid inputs", async () => {
-    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', '', 'y', 'x', 'x', 'x');
-
-    await runSetupWizard();
-
-    expect(mockedCli.runInstallCli).toHaveBeenCalledWith(['install', '--linux-cc']);
-    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
-    expect(output).toContain('No valid choice entered after 3 attempts');
-  });
-
   it('does not print "Hooks installed." when runInstallCli rejects', async () => {
     mockedPlatform.isWsl.mockReturnValue(false);
     mockedCli.runInstallCli.mockRejectedValueOnce(new Error('hook install failed'));
@@ -2053,7 +2082,7 @@ describe('setupWizard Copilot hooks install step', () => {
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockRl = { question: jest.fn(), close: jest.fn() };
-    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedPrompts.createWizardPrompts.mockReturnValue(scriptedPrompts(mockRl));
     mockedFs.mkdirSync.mockReturnValue(undefined);
     mockedFs.writeFileSync.mockReturnValue(undefined);
     mockedFs.readFileSync.mockReturnValue('{}');
@@ -2187,7 +2216,7 @@ describe('setupWizard macOS Keychain offer', () => {
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockRl = { question: jest.fn(), close: jest.fn() };
-    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedPrompts.createWizardPrompts.mockReturnValue(scriptedPrompts(mockRl));
     mockedFs.mkdirSync.mockReturnValue(undefined);
     mockedFs.writeFileSync.mockReturnValue(undefined);
     mockedFs.readFileSync.mockReturnValue('{}');

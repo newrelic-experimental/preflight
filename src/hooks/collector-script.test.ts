@@ -56,6 +56,9 @@ beforeEach(() => {
   process.env.NEW_RELIC_AI_MCP_BUFFER_PATH = bufferPath;
   delete process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT;
   delete process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
+  // processHook runs in-process, where os.homedir() is the real one: keep the
+  // SessionStart usage-reports reply from writing the developer's consent state.
+  process.env.NEW_RELIC_AI_USAGE_REPORTS = 'false';
 });
 
 afterEach(() => {

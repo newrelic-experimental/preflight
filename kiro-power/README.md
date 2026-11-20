@@ -14,7 +14,7 @@ results as `nr_observe_*` MCP tools the agent can query.
 plus a workspace hook file. The MCP tools alone only see Preflight's own calls.
 
 **Local-first.** A dashboard at `http://127.0.0.1:7777`, no account required,
-nothing leaves your machine. Connect a New Relic account only when you want
+nothing leaves your machine unless you opt in to usage reports. Connect a New Relic account only when you want
 team rollups, alerting and cross-session history.
 
 ## Install
@@ -69,8 +69,9 @@ This power uses the Agent Plugins format: a `plugin.json` manifest, an
 
 ## Privacy
 
-Local mode is the default and sends nothing off the machine — sessions are
-written to `~/.newrelic-preflight/` and served on `127.0.0.1`. Cloud mode
+Local mode is the default and sends nothing off the machine unless you opt in
+to usage reports — sessions are written to `~/.newrelic-preflight/` and served
+on `127.0.0.1`. Cloud mode
 transmits telemetry to New Relic only after you supply a license key and
 explicitly switch modes. In cloud mode Preflight sends file paths, redacted
 shell commands, your developer ID and the repo URL, as well as aggregate costs

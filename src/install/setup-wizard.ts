@@ -1,4 +1,3 @@
-import { createInterface } from 'node:readline/promises';
 import {
   mkdirSync,
   readFileSync,
@@ -8,6 +7,7 @@ import {
   realpathSync,
 } from 'node:fs';
 import { resolve, dirname } from 'node:path';
+import { cancel, intro, note, outro } from '@clack/prompts';
 import { z } from 'zod';
 
 import {
@@ -22,6 +22,14 @@ import { migrateStoragePath } from './migrate.js';
 import { runInstallCli, verifyBinaryOnPath } from './cli.js';
 import { detectUpdateSupport, findRepoRoot, upgradeCommandFor } from './update-support.js';
 import { writeJsonFile } from './json-utils.js';
+import { openUrl } from './open-url.js';
+import { askUsageReportsInWizard } from '../usage-reports/wizard.js';
+import {
+  createWizardPrompts,
+  printOnRail,
+  WizardCancelled,
+  type WizardPrompts,
+} from './wizard-prompts.js';
 import { installSchedule, installDashboardDaemon, resolveBinaryPath } from './schedule.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { validateLicenseKey, validateApiKey } from './key-validator.js';
@@ -114,22 +122,13 @@ export function copyStarterAlertRules(
   }
 }
 
-function print(msg = ''): void {
-  process.stdout.write(msg + '\n');
-}
+const print = printOnRail;
 
-async function offerKeychain(
-  rl: { question(prompt: string): Promise<string> },
-  label: string,
-): Promise<boolean> {
-  const answer = (
-    await rl.question(
-      `Store the ${label} in the macOS Keychain instead of config.json? Preflight reads it back at startup [y/N]: `,
-    )
-  )
-    .trim()
-    .toLowerCase();
-  return answer === 'y' || answer === 'yes';
+function offerKeychain(ask: WizardPrompts, label: string): Promise<boolean> {
+  return ask.confirm({
+    message: `Store the ${label} in the macOS Keychain instead of config.json? Preflight reads it back at startup`,
+    initialValue: false,
+  });
 }
 
 // Falls back to a plaintext value (the caller keeps it) when the Keychain write fails.
@@ -247,25 +246,16 @@ export function buildConfig(
   return config;
 }
 
-function parseModeAnswer(raw: string, fallback: WizardMode): WizardMode {
-  const trimmed = raw.trim().toLowerCase();
-  if (trimmed === '' || trimmed === fallback) return fallback;
-  if (trimmed === 'cloud' || trimmed === '1') return 'cloud';
-  if (trimmed === 'local' || trimmed === '2') return 'local';
-  if (trimmed === 'both' || trimmed === '3') return 'both';
-  return fallback;
+const ACCOUNT_ID_PATTERN = /^\d{1,12}$/;
+
+function isPositiveNumber(v: string): boolean {
+  const n = parseFloat(v);
+  return Number.isFinite(n) && n > 0;
 }
 
-// Maps the environment prompt's raw answer (numbered menu position, region
-// key, or one of its aliases) to a region key. staging is deliberately
-// unreachable here — see the caller's comment.
-export function resolveEnvironmentChoice(envRaw: string, defaultEnv: string): string {
-  if (envRaw === '' || envRaw === defaultEnv) return defaultEnv;
-  if (envRaw === '1' || envRaw === 'us') return 'us';
-  if (envRaw === '2' || envRaw === 'eu') return 'eu';
-  if (envRaw === '3' || envRaw === 'fedramp' || envRaw === 'gov') return 'gov';
-  if (envRaw === '4' || envRaw === 'jp' || envRaw === 'japan') return 'jp';
-  return defaultEnv;
+function isPort(v: string): boolean {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 && n < 65536;
 }
 
 // One-line rationale per preset, shown in the retention prompt. Kept beside the
@@ -287,20 +277,14 @@ export async function runSetupWizard(
   opts: { staging?: boolean; retention?: RetentionPolicy } = {},
 ): Promise<void> {
   migrateStoragePath(true);
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  // Safety net: process.exit() bypasses finally blocks but still runs 'exit' handlers.
-  // If runInstallCli's resolvePlatform calls process.exit(1) (e.g. saved wsl-windows-cc
-  // with WSL interop now disabled), rl.close() would otherwise be skipped, leaving stdin
-  // with dangling readline event listeners. rl.close() is idempotent so the finally
-  // block calling it again is harmless. The listener is explicitly removed in the finally
-  // block (normal completion path) to prevent accumulation across repeated invocations.
-  const rlCleanupOnExit = () => rl.close();
-  process.once('exit', rlCleanupOnExit);
+  // Each question opens and closes its own reader on stdin, so nothing is
+  // left attached if runInstallCli exits the process partway through.
+  const ask = createWizardPrompts();
 
   try {
-    print('\n=== Preflight Setup ===\n');
+    intro('Preflight setup');
     print('This wizard will configure observability for your AI coding assistant.');
-    print('Press Ctrl+C at any time to cancel.\n');
+    print('Press Ctrl+C at any time to cancel.');
 
     const existing = loadExisting();
 
@@ -310,12 +294,19 @@ export async function runSetupWizard(
       (existing.mode === 'cloud' || existing.mode === 'local' || existing.mode === 'both')
         ? (existing.mode as WizardMode)
         : 'local';
-    print('Modes:');
-    print('  1) cloud — ship telemetry to New Relic');
-    print('  2) local — keep all data on this machine, run a local dashboard (default)');
-    print('  3) both  — ship to NR AND run the local dashboard');
-    const modeRaw = await rl.question(`Which mode? [${existingMode}]: `);
-    const mode = parseModeAnswer(modeRaw, existingMode);
+    const mode = await ask.select<WizardMode>({
+      message: 'Which mode?',
+      options: [
+        { value: 'cloud', label: 'cloud', hint: 'ship telemetry to New Relic' },
+        {
+          value: 'local',
+          label: 'local',
+          hint: 'keep all data on this machine, run a local dashboard',
+        },
+        { value: 'both', label: 'both', hint: 'ship to NR and run the local dashboard' },
+      ],
+      initialValue: existingMode,
+    });
 
     // Step 1+2: NR credentials (skip in local mode)
     let accountId = '';
@@ -336,18 +327,23 @@ export async function runSetupWizard(
         : envAccountId
           ? '$NEW_RELIC_ACCOUNT_ID'
           : '';
-      const accountIdPrompt = accountIdHint
-        ? `Account ID — your NR account number, found in the NR One URL [${accountIdHint}]: `
-        : 'Account ID — optional, only needed for dashboards, alerts and team summaries; press Enter to skip: ';
-      accountId = (await rl.question(accountIdPrompt)).trim();
-      if (!accountId) accountId = defaultAccountId;
-      if (accountId && !/^\d{1,12}$/.test(accountId)) {
+      // Optional: only dashboards, alerts and team summaries need it.
+      accountId = await ask.text({
+        message: accountIdHint
+          ? 'Account ID — your NR account number, found in the NR One URL'
+          : 'Account ID — optional, only needed for dashboards, alerts and team summaries',
+        placeholder: accountIdHint || 'press Enter to skip',
+        defaultValue: defaultAccountId,
+        validate: (v) =>
+          v === '' || ACCOUNT_ID_PATTERN.test(v) ? undefined : 'Must be 1–12 digits.',
+      });
+      // A default from $NEW_RELIC_ACCOUNT_ID skips the validation above.
+      if (accountId && !ACCOUNT_ID_PATTERN.test(accountId)) {
         const src =
           accountId === envAccountId && !existingAccountId
             ? ' (value from $NEW_RELIC_ACCOUNT_ID)'
             : '';
         console.error(`Invalid account ID: "${accountId}". Must be 1–12 digits.${src}`);
-        rl.close();
         process.exit(1);
       }
 
@@ -362,26 +358,27 @@ export async function runSetupWizard(
           : envLicenseKey
             ? '$NEW_RELIC_LICENSE_KEY'
             : 'required';
-      const keyPrompt = `License Key — authenticates telemetry ingest to your NR account [${keyHint}]: `;
-      licenseKey = (await rl.question(keyPrompt)).trim();
+      licenseKey = await ask.password({
+        message: `License key — authenticates telemetry ingest to your NR account (${keyHint === 'required' ? 'required' : `${keyHint}; press Enter to keep it`})`,
+        validate: (v) =>
+          v === '' && !defaultKey && !existingKeyCommand ? 'A license key is required.' : undefined,
+      });
       if (!licenseKey && existingKeyCommand) {
         try {
           licenseKey = resolveSecretCommand('licenseKey', existingKeyCommand);
           licenseKeyCommand = existingKeyCommand;
         } catch (err) {
           console.error(err instanceof Error ? err.message : String(err));
-          rl.close();
           process.exit(1);
         }
       }
       if (!licenseKey) licenseKey = defaultKey;
       if (!licenseKey) {
         console.error('License key is required. Set NEW_RELIC_LICENSE_KEY or enter a value above.');
-        rl.close();
         process.exit(1);
       }
       if (!licenseKeyCommand && isKeychainSupported()) {
-        keychainLicenseKey = await offerKeychain(rl, 'license key');
+        keychainLicenseKey = await offerKeychain(ask, 'license key');
       }
 
       // Step 2b: Environment / region. --staging pre-selects the region and
@@ -396,15 +393,12 @@ export async function runSetupWizard(
         resolvedEnv = 'staging';
         print('Environment: Staging (--staging flag)');
       } else {
-        print('Environment:');
-        const menuLabelWidth = Math.max(...REGIONS.map((r) => r.menuLabel.length));
-        REGIONS.forEach((region, i) => {
-          print(`  ${i + 1}) ${region.menuLabel.padEnd(menuLabelWidth)} — ${region.displayHost}`);
+        resolvedEnv = await ask.select({
+          message: 'Which environment?',
+          options: REGIONS.map((r) => ({ value: r.key, label: r.menuLabel, hint: r.displayHost })),
+          // A staging collectorHost from an earlier --staging run isn't in the menu.
+          initialValue: REGIONS.some((r) => r.key === defaultEnv) ? defaultEnv : 'us',
         });
-        const envRaw = (await rl.question(`Which environment? [${defaultEnv}]: `))
-          .trim()
-          .toLowerCase();
-        resolvedEnv = resolveEnvironmentChoice(envRaw, defaultEnv);
       }
       collectorHost = resolvedEnv === 'us' ? null : resolvedEnv;
 
@@ -428,11 +422,9 @@ export async function runSetupWizard(
           : envApiKey
             ? '$NEW_RELIC_API_KEY'
             : 'optional';
-      const apiKeyRaw = (
-        await rl.question(
-          `API Key (NRAK-...) — for team queries and deploying dashboards/alerts [${apiKeyHint}]: `,
-        )
-      ).trim();
+      const apiKeyRaw = await ask.password({
+        message: `API key (NRAK-...) — for team queries and deploying dashboards and alerts (${apiKeyHint === 'optional' ? 'optional' : `${apiKeyHint}; press Enter to keep it`})`,
+      });
       if (apiKeyRaw) {
         nrApiKey = apiKeyRaw;
       } else if (existingApiKeyCommand) {
@@ -448,7 +440,7 @@ export async function runSetupWizard(
         nrApiKey = defaultApiKey;
       }
       if (nrApiKey && !nrApiKeyCommand && isKeychainSupported()) {
-        keychainNrApiKey = await offerKeychain(rl, 'API key');
+        keychainNrApiKey = await offerKeychain(ask, 'API key');
       }
 
       // Step 2d: Validate credentials
@@ -501,69 +493,55 @@ export async function runSetupWizard(
       typeof existing.developer === 'string'
         ? existing.developer
         : normalizeDeveloperName(emailLocalPart || process.env.USER || process.env.USERNAME || '');
-    const rawInput =
-      (
-        await rl.question(
-          `Developer name — stamped on every event so you can filter your own data [${defaultDeveloper}]: `,
-        )
-      ).trim() || defaultDeveloper;
+    const rawInput = await ask.text({
+      message: 'Developer name — stamped on every event so you can filter your own data',
+      placeholder: defaultDeveloper,
+      defaultValue: defaultDeveloper,
+    });
     const developer = normalizeDeveloperName(rawInput);
     if (developer !== rawInput) {
       print(`  → Normalized to: ${developer}`);
     }
 
     // Step 4: Optional fields
-    print('\n-- Optional fields (press Enter to skip any) --');
+    print('Optional fields (press Enter to skip any)');
     const existingTeamId = typeof existing.teamId === 'string' ? existing.teamId : null;
-    const teamIdAnswer = (
-      await rl.question(
-        `Team label — a slug you define, e.g. "platform-eng"${mode === 'local' ? '' : ' (not your NR account ID)'} used for recording metrics [${existingTeamId ?? 'optional'}]: `,
-      )
-    ).trim();
+    const teamIdAnswer = await ask.text({
+      message: `Team label — a slug you define, e.g. "platform-eng"${mode === 'local' ? '' : ' (not your NR account ID)'} used for recording metrics`,
+      placeholder: existingTeamId ?? 'optional',
+    });
     const teamId = teamIdAnswer || existingTeamId;
 
     const existingProjectId = typeof existing.projectId === 'string' ? existing.projectId : null;
-    const projectIdAnswer = (
-      await rl.question(
-        `Project ID — labels all events by project for per-project filtering [${existingProjectId ?? 'optional, auto-detected from git'}]: `,
-      )
-    ).trim();
+    const projectIdAnswer = await ask.text({
+      message: 'Project ID — labels all events by project for per-project filtering',
+      placeholder: existingProjectId ?? 'optional, auto-detected from git',
+    });
     const projectId = projectIdAnswer || existingProjectId;
 
     const existingRepoUrlEnabled =
       typeof existing.repoUrlEnabled === 'boolean' ? existing.repoUrlEnabled : true;
-    const repoUrlDefaultLabel = existingRepoUrlEnabled ? 'Y/n' : 'y/N';
-    const repoUrlAnswer = (
-      await rl.question(
-        `Send full repo URL (repo_url) — more sensitive than Project ID, may reveal an internal git host [${repoUrlDefaultLabel}]: `,
-      )
-    )
-      .trim()
-      .toLowerCase();
-    // Adaptive default: when the shown default is Y (existing/initial true),
-    // only an explicit decline flips it off — matching every other [Y/n]
-    // prompt in this wizard (e.g. installHooks below). When the shown
-    // default is N, only an explicit accept flips it on.
-    const repoUrlEnabled = existingRepoUrlEnabled
-      ? repoUrlAnswer !== 'n' && repoUrlAnswer !== 'no'
-      : repoUrlAnswer === 'y' || repoUrlAnswer === 'yes';
+    const repoUrlEnabled = await ask.confirm({
+      message:
+        'Send the full repo URL (repo_url)? It is more sensitive than Project ID, and may reveal an internal git host',
+      initialValue: existingRepoUrlEnabled,
+    });
 
     // Step 5: Budget caps
     const existingBudget =
       typeof existing.sessionBudgetUsd === 'number' ? String(existing.sessionBudgetUsd) : null;
-    const sessionBudgetStr =
-      (
-        await rl.question(
-          `Session budget USD — triggers a warning event when AI spend exceeds this per session [${existingBudget ?? 'no limit'}]: `,
-        )
-      ).trim() ||
-      (existingBudget ?? '');
+    const sessionBudgetStr = await ask.text({
+      message:
+        'Session budget USD — triggers a warning event when AI spend exceeds this per session',
+      placeholder: existingBudget ?? 'no limit',
+      defaultValue: existingBudget ?? '',
+      validate: (v) => (v === '' || isPositiveNumber(v) ? undefined : 'Must be a positive number.'),
+    });
     let sessionBudgetUsd: number | null = null;
     if (sessionBudgetStr) {
       const parsed = parseFloat(sessionBudgetStr);
       if (!Number.isFinite(parsed) || parsed <= 0) {
         console.error(`Invalid session budget "${sessionBudgetStr}": must be a positive number.`);
-        rl.close();
         process.exit(1);
       }
       sessionBudgetUsd = parsed;
@@ -622,16 +600,15 @@ export async function runSetupWizard(
           ? (existing.dashboard as { port?: number })
           : null;
       const defaultPort = existingDashboard?.port ?? 7777;
-      const portStr = (
-        await rl.question(
-          `Dashboard port — open http://127.0.0.1:${defaultPort} in your browser to view metrics [${defaultPort}]: `,
-        )
-      ).trim();
+      const portStr = await ask.text({
+        message: 'Dashboard port — where you open the local dashboard in your browser',
+        placeholder: String(defaultPort),
+        validate: (v) => (v === '' || isPort(v) ? undefined : 'Must be 1–65535.'),
+      });
       if (portStr) {
         const parsed = parseInt(portStr, 10);
         if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 65536) {
           console.error(`Invalid port "${portStr}": must be 1–65535.`);
-          rl.close();
           process.exit(1);
         }
         dashboardPort = parsed;
@@ -668,20 +645,17 @@ export async function runSetupWizard(
     });
 
     writeJsonFile(CONFIG_PATH, config, DEFAULT_STORAGE_PATH);
-    print(`\nConfig written to ${CONFIG_PATH}`);
+    print(`Config written to ${CONFIG_PATH}`);
 
     // Step 5c: Starter alert rules (local + both modes only).
     // Default-yes prompt; copy is idempotent — re-running the wizard never
     // overwrites a user-edited rules file.
     if (mode === 'local' || mode === 'both') {
-      const copyAnswer = (
-        await rl.question(
-          'Copy starter alert rules to ~/.newrelic-preflight/alerts/rules.json? [Y/n]: ',
-        )
-      )
-        .trim()
-        .toLowerCase();
-      if (copyAnswer !== 'n' && copyAnswer !== 'no') {
+      const copyRules = await ask.confirm({
+        message: 'Copy starter alert rules to ~/.newrelic-preflight/alerts/rules.json?',
+        initialValue: true,
+      });
+      if (copyRules) {
         const result = copyStarterAlertRules({
           sourcePath: defaultStarterRulesSource(),
           destPath: ALERT_RULES_DEST,
@@ -704,34 +678,33 @@ export async function runSetupWizard(
     // Config is already written above; pass no credentials to install so it only
     // wires hooks and MCP without overwriting the config we just wrote.
     const wslEnv = isWsl();
-    const installHooks = (await rl.question('\nInstall Claude Code hooks now? [Y/n]: '))
-      .trim()
-      .toLowerCase();
-    if (installHooks !== 'n' && installHooks !== 'no') {
+    const installHooks = await ask.confirm({
+      message: 'Install Claude Code hooks now?',
+      initialValue: true,
+    });
+    if (installHooks) {
       // In WSL there are two distinct Claude Code setups that need different hook formats:
       //   Windows CC (desktop app on Windows): hooks must use wsl.exe -e, go in Windows paths
       //   Linux CC in WSL (npm install inside WSL): hooks are direct Linux commands, WSL paths
       const installArgs = ['install'];
       let skipInstall = false;
       if (wslEnv) {
-        print('\n  ℹ WSL detected. How is Claude Code installed on this machine?');
-        print('    [1] Claude Code for Windows (the desktop app running on Windows)');
-        print('    [2] Claude Code installed inside WSL via npm (default)');
-        let wslChoice = '';
-        for (let attempt = 0; attempt < 3; attempt++) {
-          wslChoice = (await rl.question('  Choice [2]: ')).trim();
-          if (wslChoice === '1' || wslChoice === '2' || wslChoice === '') break;
-          print('  ⚠ Enter 1 or 2 (or press Enter for the default).');
-        }
-        if (wslChoice !== '1' && wslChoice !== '2' && wslChoice !== '') {
-          print(
-            '  ⚠ No valid choice entered after 3 attempts — defaulting to Linux Claude Code mode.',
-          );
-        }
-        if (wslChoice === '1') {
+        const wslChoice = await ask.select({
+          message: 'WSL detected. How is Claude Code installed on this machine?',
+          options: [
+            {
+              value: 'windows',
+              label: 'Claude Code for Windows',
+              hint: 'the desktop app on Windows',
+            },
+            { value: 'linux', label: 'Claude Code inside WSL', hint: 'installed with npm' },
+          ],
+          initialValue: 'linux',
+        });
+        if (wslChoice === 'windows') {
           // Pre-validate before committing to --windows-cc: handleInstall calls
           // process.exit(1) when windowsHome is null, which skips the wizard's
-          // finally block and leaves stdin with readline listeners attached.
+          // rest of the wizard.
           const windowsHome = resolveWindowsHome();
           if (windowsHome === null) {
             print(
@@ -789,14 +762,12 @@ export async function runSetupWizard(
     // config.json already has them — the Copilot CLI's own `copilot mcp add`
     // bakes the literal license key/account ID into Copilot's own MCP
     // config, which is separate from and doesn't read our config.json.
-    const installCopilotHooks = (
-      await rl.question(
-        '\nInstall GitHub Copilot hooks now? Configures both the Copilot CLI and VS Code Copilot Chat [Y/n]: ',
-      )
-    )
-      .trim()
-      .toLowerCase();
-    if (installCopilotHooks !== 'n' && installCopilotHooks !== 'no') {
+    const installCopilotHooks = await ask.confirm({
+      message:
+        'Install GitHub Copilot hooks now? Configures both the Copilot CLI and VS Code Copilot Chat',
+      initialValue: true,
+    });
+    if (installCopilotHooks) {
       print('\nRunning Copilot installer...');
       const copilotInstallArgs = ['install', '--copilot'];
       if (mode !== 'local' && licenseKey) {
@@ -815,18 +786,18 @@ export async function runSetupWizard(
     }
 
     // Step 6b: Always-on background dashboard daemon
+    let dashboardRunning = false;
     if ((mode === 'local' || mode === 'both') && process.platform === 'darwin') {
       const binaryPath = resolveBinaryPath();
-      const daemonAnswer = (
-        await rl.question(
-          '\nInstall always-on background dashboard? Keeps the local dashboard running even when Claude Code is closed [y/N]: ',
-        )
-      )
-        .trim()
-        .toLowerCase();
-      // Daemon install is explicitly opt-in ([y/N]) — unlike every other wizard prompt —
-      // because it installs a persistent launchd service that survives Claude Code restarts.
-      if (daemonAnswer === 'y' || daemonAnswer === 'yes') {
+      // Daemon install is explicitly opt-in (defaults to No) — unlike every other wizard
+      // prompt — because it installs a persistent launchd service that survives Claude
+      // Code restarts.
+      const installDaemon = await ask.confirm({
+        message:
+          'Install always-on background dashboard? Keeps the local dashboard running even when Claude Code is closed',
+        initialValue: false,
+      });
+      if (installDaemon) {
         if (binaryPath) {
           try {
             // installDashboardDaemon calls launchctl unload before load, so
@@ -841,6 +812,7 @@ export async function runSetupWizard(
             const address = getDashboardAddress();
             const healthy =
               address === null || (await waitForHealthyDashboard(address.host, address.port, null));
+            dashboardRunning = healthy && address !== null;
             if (healthy) {
               print(
                 `✓ Background dashboard daemon installed — dashboard will be available at http://127.0.0.1:${dashboardPort ?? 7777} after login.`,
@@ -889,12 +861,16 @@ export async function runSetupWizard(
           : `\n  ℹ Auto-update needs a source clone. To upgrade, run: ${upgradeCommandFor(updateSupport.blocker)}`,
       );
     } else if (updateSupport !== null) {
-      const enableUpdate = (await rl.question('\nEnable daily auto-updates? [Y/n]: '))
-        .trim()
-        .toLowerCase();
-      if (enableUpdate !== 'n' && enableUpdate !== 'no') {
-        const timeRaw = (await rl.question('Update time (24h HH:MM) [08:00]: ')).trim();
-        const timeStr = timeRaw || '08:00';
+      const enableUpdate = await ask.confirm({
+        message: 'Enable daily auto-updates?',
+        initialValue: true,
+      });
+      if (enableUpdate) {
+        const timeStr = await ask.text({
+          message: 'Update time (24h HH:MM)',
+          placeholder: '08:00',
+          defaultValue: '08:00',
+        });
         const match = timeStr.match(/^(\d{1,2}):(\d{2})$/);
         const parsedHour = match ? parseInt(match[1], 10) : -1;
         const parsedMinute = match ? parseInt(match[2], 10) : -1;
@@ -948,29 +924,46 @@ export async function runSetupWizard(
       print(`\nLocal mode selected — dashboard and metrics will be available locally.`);
     }
 
+    // Last question: usage reports, asked only when nothing else (highSecurity,
+    // DO_NOT_TRACK, the env var, CI, config.json) already decides it.
+    await askUsageReportsInWizard({
+      highSecurity: config.highSecurity === true,
+      configValue: typeof config.usageReports === 'boolean' ? config.usageReports : undefined,
+      print,
+    });
+
     // The MCP server is launched automatically by Claude Code based on the
     // .mcp.json entry written above — there is no manual start step. Telling
     // users to run `preflight --stdio` themselves leads them to
     // start a second process that competes with the auto-launched one for
     // the buffer file lock and produces interleaved metrics.
-    print('\n✓ Setup complete.');
-    print('  Start a new Claude Code session — the MCP server and hooks are loaded at session');
-    print('  start. If you ran this setup inside an existing session, exit and start a fresh one');
-    print('  for the hooks to take effect.');
-    if (mode !== 'cloud') {
-      print(
-        `  Dashboard is available at http://127.0.0.1:${dashboardPort ?? 7777} once Claude Code starts.`,
-      );
-      print(
-        '  On first launch you will see only nr_observe_health and nr_observe_get_config until',
-      );
-      print('  the first tool call fires the hook — all tools appear automatically after that.');
-    } else {
-      print('  Metrics will appear in your New Relic dashboard within a few minutes.');
+    // The MCP server is launched automatically by Claude Code based on the
+    // .mcp.json entry written above — there is no manual start step. Telling
+    // users to run `preflight --stdio` themselves leads them to
+    // start a second process that competes with the auto-launched one for
+    // the buffer file lock and produces interleaved metrics.
+    const dashboardUrl = `http://127.0.0.1:${dashboardPort ?? 7777}`;
+    const nextSteps = [
+      'Start a new Claude Code session. The MCP server and hooks load at session start,',
+      'so if you ran setup inside a session, exit it and start a fresh one.',
+    ];
+    if (mode === 'cloud') {
+      nextSteps.push('', 'Metrics appear in your New Relic dashboards within a few minutes.');
+    } else if (!dashboardRunning) {
+      nextSteps.push('', `Then open the dashboard: ${dashboardUrl}`);
     }
-    print('');
-  } finally {
-    process.removeListener('exit', rlCleanupOnExit);
-    rl.close();
+    note(nextSteps.join('\n'), 'Next steps');
+    if (dashboardRunning) {
+      const open = await ask.confirm({
+        message: `Open the dashboard now? It's running at ${dashboardUrl}`,
+        initialValue: true,
+      });
+      if (open && !openUrl(dashboardUrl)) print(`Couldn't open a browser. Go to ${dashboardUrl}`);
+    }
+    outro('✓ Setup complete.');
+  } catch (err) {
+    if (!(err instanceof WizardCancelled)) throw err;
+    cancel('Setup cancelled. Anything already written stays as it is.');
+    process.exitCode = 130;
   }
 }

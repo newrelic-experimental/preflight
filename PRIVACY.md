@@ -1,6 +1,6 @@
 # Privacy and Data Collection
 
-This document describes what data this tool collects, what is sent to New Relic when cloud mode is active, and which configuration settings have privacy implications. It does not constitute legal advice. Individuals and organizations should review the information below and take whatever actions are appropriate for their situation before enabling cloud telemetry.
+This document describes what data this tool collects, what is sent to New Relic when cloud mode is active, what the opt-in usage reports contain, and which configuration settings have privacy implications. It does not constitute legal advice. Individuals and organizations should review the information below and take whatever actions are appropriate for their situation before enabling cloud telemetry.
 
 For the data flow diagram, the New Relic certifications that apply to stored data, and a security FAQ, see [docs/COMPLIANCE.md](./docs/COMPLIANCE.md).
 
@@ -60,6 +60,82 @@ Take whatever access-control actions are appropriate for your situation.
 
 ---
 
+## Usage Reports (Opt-In)
+
+If you say yes, Preflight sends a daily usage report to the Preflight team at New Relic. A report is identified only by a random install ID and holds nothing that names you, your machine or your New Relic account. Until you say yes, or an administrator turns reports on for you (see [Saying yes or no](#saying-yes-or-no)), Preflight sends no report and has no install ID. Reports go to New Relic's product-analytics service, not to your New Relic account, and are sent in every `mode`, `local` included.
+
+> The fields listed here reflect the usage data Preflight collects as of this release. The authoritative source of truth is the Preflight source code, which you can review yourself. If this document and the code ever differ, the code governs.
+
+The code is in [`src/usage-reports/`](./src/usage-reports/), and [`constants.ts`](./src/usage-reports/constants.ts) lists every event and its fields. `preflight usage-reports show` prints what your install has queued and what it sent recently.
+
+### What a report contains
+
+A report is a set of events. Every event carries these fields:
+
+| Field         | Value                                                                                                                                             |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `type`        | `track`                                                                                                                                           |
+| `event`       | The event's name, from the next table                                                                                                             |
+| `anonymousId` | The install ID: a random UUID created when reports are first turned on. It's derived from nothing on your machine and used only in usage reports. |
+| `messageId`   | A random UUID per event                                                                                                                           |
+| `timestamp`   | When the event was built                                                                                                                          |
+| `platform`    | `preflight`                                                                                                                                       |
+| `section`     | `usage_reports`                                                                                                                                   |
+| `path`        | `/preflight/usage-reports`                                                                                                                        |
+| `event_type`  | `state_load`                                                                                                                                      |
+| `session_id`  | A random UUID per Preflight process, unrelated to your AI assistant's session ID                                                                  |
+
+| Event                                    | Fields                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Sent                                                  |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| `preflight/install state_loaded`         | `preflight_version` (Preflight's version), `preflight_os` (such as `darwin`), `preflight_arch` (such as `arm64`), `preflight_node_major` (Node.js major version), `preflight_adapter` (the AI assistant Preflight detected, such as `claude-code`), `preflight_install_channel` (`npm`, `homebrew`, `git`, `claude_plugin`, `smithery` or `other`), `preflight_mode` (`local`, `cloud` or `both`), `preflight_hooks_installed` (whether Preflight's hooks are installed) | Once a day                                            |
+| `preflight/feature state_loaded`         | `preflight_feature` (`otlp_export`, `otlp_receiver`, `proxy`, `budget`, `digest`, `alerts`, `tiers` or `companion_mode`), `preflight_feature_enabled` (whether it's configured)                                                                                                                                                                                                                                                                                          | Once a day, one event per feature                     |
+| `preflight/daily_usage state_loaded`     | `preflight_usage_date` (a UTC date such as `2026-11-20`), `preflight_sessions_observed` (how many Preflight processes ran that day with reports on)                                                                                                                                                                                                                                                                                                                      | After each UTC day Preflight ran                      |
+| `preflight/dashboard_usage state_loaded` | `preflight_usage_date`, `preflight_page_loads`, `preflight_live_connections`, `preflight_open_on_start` (whether the dashboard opens when Preflight starts)                                                                                                                                                                                                                                                                                                              | After each UTC day the dashboard was opened           |
+| `preflight/tool_usage state_loaded`      | `preflight_usage_date`, `preflight_tool_name` (one of Preflight's own MCP tools, such as `nr_observe_get_session_stats`), `preflight_call_count`                                                                                                                                                                                                                                                                                                                         | After each UTC day, one event per Preflight tool used |
+
+Text values are cut to 64 characters. `preflight_os`, `preflight_arch` and `preflight_adapter` are short lowercase identifiers; any other value is sent as `other`, or `unknown` for `preflight_adapter`.
+
+Reports never contain:
+
+- usernames or hostnames
+- file paths or commands
+- prompts, code, or tool input and output
+- error messages or error codes
+- repository, project, org, team or account IDs
+- license keys
+- model names, token counts or cost
+
+New Relic doesn't store an IP address with these events: Preflight leaves out the `context` field, the only place the product-analytics service reads one from. Each request's user agent is `preflight/<version>`, which the service's request monitoring records.
+
+### Saying yes or no
+
+Preflight asks in three places: `preflight setup`, a form in your AI assistant when a session starts or at the first Preflight tool call, and a banner on the local dashboard. If you dismiss the question or don't answer, Preflight asks again later, and it stops after three unanswered questions across all three places. The form isn't shown in non-interactive sessions such as `claude -p`, in the Claude desktop app, or in clients that can't show MCP forms. A form left open for 10 minutes counts as unanswered.
+
+| To                                             | Do this                                                                                                                                                                                                                 |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Turn reports on                                | Answer yes, or run `preflight usage-reports enable` in a terminal.                                                                                                                                                      |
+| Turn reports off                               | Answer no, or run `preflight usage-reports disable`. This deletes the install ID, the counts not yet sent and the log of sent events. If an administrator turned reports on, that setting has to change instead.        |
+| Start over with a new install ID               | Run `preflight usage-reports reset-id`, then restart your AI assistant. Reports sent after the restart can't be linked to earlier ones. Counts not yet sent go out under the new ID.                                    |
+| See the current setting                        | Run `preflight usage-reports status`.                                                                                                                                                                                   |
+| See what would be sent, without sending it     | Set `NEW_RELIC_AI_USAGE_REPORTS_DEBUG=1`. Preflight prints each report to stderr and sends nothing.                                                                                                                     |
+| Set it for every developer on managed machines | Set `NEW_RELIC_AI_USAGE_REPORTS=true` or `false` (for example in Claude Code managed settings), or `"usageReports": true` or `false` in `~/.newrelic-preflight/config.json`. Developers on those machines aren't asked. |
+
+Reports are always off with `highSecurity: true` or `DO_NOT_TRACK=1`. In CI (`CI` or a common CI vendor variable is set), they're off unless `NEW_RELIC_AI_USAGE_REPORTS=true` is set.
+
+### Where reports are stored
+
+On your machine, in the `usage-reports/` directory of Preflight's storage (`~/.newrelic-preflight/` unless you've moved it):
+
+- `consent.json`: your answer, when and where you gave it, and the last 20 times you were asked
+- `install-id`
+- `pending/`: counts not yet sent, deleted once sent or after seven days
+- `claims/`: markers that stop two Preflight processes from sending the same report
+- `sent.log`: a copy of the events sent, trimmed once it passes 512 KB
+
+At New Relic, reports are stored in New Relic's own product-analytics account as `ProductAnalyticsEvents` and kept for 395 days, and copied into New Relic's internal data platform. Reports already sent stay under the install ID they were sent with until they expire.
+
+---
+
 ## Privacy-Relevant Configuration Settings
 
 The settings below have direct privacy implications. Each one is documented fully in [README.md](./README.md) (configuration section) and [SECURITY.md](./SECURITY.md) (technical enforcement). This section focuses only on why each setting matters from a privacy standpoint.
@@ -102,9 +178,9 @@ By default the tool also sends the full git remote URL as `repo_url`, derived fr
 
 **Privacy implication:** A full remote URL can reveal more than an `org/repo` pair alone, for example an internal git hostname. It has its own opt-out, independent of `projectId`'s: set `repoUrlEnabled: false` in `~/.newrelic-preflight/config.json`, or `NEW_RELIC_AI_REPO_URL_ENABLED=false`, to stop sending it while still sending `project_id`. The `preflight install` setup wizard prompts for this explicitly, so sending it is an informed choice rather than a silent default.
 
-### `mode: 'local'` — no data leaves the machine
+### `mode: 'local'` — no telemetry to your New Relic account
 
-Local mode disables all cloud transport entirely. The local dashboard and analytics still work.
+Local mode sends no telemetry to your New Relic account. The local dashboard and analytics still work. If you say yes to [usage reports](#usage-reports-opt-in), Preflight sends them in local mode too.
 
 **Privacy implication:** This is the appropriate starting point for evaluating the tool before deciding whether cloud telemetry is suitable for your environment or organization.
 

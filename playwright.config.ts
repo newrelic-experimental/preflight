@@ -62,6 +62,9 @@ function isolatedServer(name: string, port: number, prelude?: (dir: string) => s
       // which a run launched inside a Claude Code session would adopt that session's id.
       DOTENV_CONFIG_PATH: join(dir, '.env'),
       NR_AI_MODE: 'local',
+      // Off, so the unasked usage-reports banner stays out of every screenshot. Its own tests
+      // are in src/web/components/UsageReportsBanner.test.tsx.
+      NEW_RELIC_AI_USAGE_REPORTS: 'false',
       // The transcript and usage watchers run in --local too, unscoped, reading
       // ~/.claude/projects, VS Code's workspaceStorage and the Copilot app's data.db under
       // os.homedir(). On a machine that used Claude Code in the last 24 hours they would
