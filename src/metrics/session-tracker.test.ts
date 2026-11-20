@@ -695,6 +695,13 @@ describe('SessionTracker', () => {
       expect(tracker.getMetrics().toolCallCount).toBe(0);
     });
 
+    it("skips another session's record once it is reset to a pending id", () => {
+      const tracker = new SessionTracker('sess-own');
+      tracker.reset('pending-1700000000000');
+      tracker.recordToolCall(makeRecord({ sessionId: 'sess-other' }));
+      expect(tracker.getMetrics().toolCallCount).toBe(0);
+    });
+
     it('counts a record of another session under a real id', () => {
       const tracker = new SessionTracker('sess-own');
       tracker.recordToolCall(makeRecord({ sessionId: 'sess-other' }));
