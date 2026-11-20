@@ -30,7 +30,7 @@ import {
   type ModelShareRow,
 } from '../components/UsageContributionPanel';
 import { AttentionList, type AttentionRow } from '../components/AttentionList';
-import { Card, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
+import { Card, EstimateMarker, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
 import {
   fetchRecentAlerts,
   fetchBudget,
@@ -531,6 +531,7 @@ export function Today(): JSX.Element {
                 <Kpi
                   label="spend today"
                   tone="good"
+                  marker={spendLoading ? undefined : <EstimateMarker />}
                   value={spendLoading ? '…' : formatUsd(todayTotal)}
                   sub={
                     forecast && forecast.usd > todayTotal
