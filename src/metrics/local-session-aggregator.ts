@@ -37,6 +37,7 @@ import { isAwaitingLatePost } from './session-tracker.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
 import { CallUsageBook } from './call-usage.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
+import { parsePrRepo } from './pr-ref.js';
 import { resolvePricingDetail } from './pricing-overlay.js';
 import { readShell, type ShellReading } from './shell-lexer.js';
 import { QualityProxyTracker } from './quality-proxy-tracker.js';
@@ -391,6 +392,7 @@ export class LocalSessionAggregator {
     platform?: string | null;
     agentId?: unknown;
     createdPrNumber?: unknown;
+    createdPrRepo?: unknown;
     mcpPrNumber?: unknown;
     mcpPrRepo?: unknown;
     runInBackground?: unknown;
@@ -440,6 +442,7 @@ export class LocalSessionAggregator {
     // SessionTracker caps its own timeline so a long session can't grow the
     // session file without bound. Keeps the most recent entries.
     if (rollup.timeline.length >= MAX_TIMELINE_ENTRIES) rollup.timeline.shift();
+    const createdPrRepo = parsePrRepo(record.createdPrRepo);
     rollup.timeline.push({
       timestamp,
       ...(typeof record.toolUseId === 'string' && { toolUseId: record.toolUseId }),
@@ -457,6 +460,7 @@ export class LocalSessionAggregator {
       ...(typeof record.createdPrNumber === 'string' && {
         createdPrNumber: record.createdPrNumber,
       }),
+      ...(createdPrRepo !== undefined && { createdPrRepo }),
       ...(typeof record.mcpPrNumber === 'string' && { mcpPrNumber: record.mcpPrNumber }),
       ...(typeof record.mcpPrRepo === 'string' && { mcpPrRepo: record.mcpPrRepo }),
       ...(record.runInBackground === true && { runInBackground: true }),

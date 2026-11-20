@@ -36,6 +36,7 @@ import {
 import { breadcrumbRoot, breadcrumbWriter } from './session-breadcrumbs.js';
 import { appendToHookBuffer, LineWrittenError } from '../storage/hook-buffer.js';
 import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
+import { parsePrRepo } from '../metrics/pr-ref.js';
 import { mintToolUseId, takeMintedToolUseId } from './minted-tool-use-ids.js';
 
 // ---------------------------------------------------------------------------
@@ -692,25 +693,34 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
 
 // `https://<host>/<owner>/<repo>/pull/<N>`: what `gh pr create` prints on
 // success and what an MCP create_pull_request result carries as html_url.
-const PR_URL_RE = /https?:\/\/[^\s"'/]+\/[^\s"'/]+\/[^\s"'/]+\/pull\/(\d{1,9})\b/g;
+const PR_URL_RE = /https?:\/\/[^\s"'/]+\/([^\s"'/]+)\/([^\s"'/]+)\/pull\/(\d{1,9})\b/g;
 const GH_PR_CREATE_RE = /(?:^|[\s;&|(])gh\s+pr\s+create\b/;
 
-/** The PR number named by the PR URLs in a tool's output text, or undefined
- *  when they name none or several, since then the created one is unknown (a
- *  second create, or a `gh pr comment` URL on another PR). Only the digits
- *  leave this function; the output itself is never kept. */
-function findCreatedPrNumber(output: Record<string, unknown> | unknown[]): string | undefined {
+/** The PR named by the PR URLs in a tool's output text, as its number and
+ *  (when the owner and repo are plain names) its lowercased `owner/repo`, or
+ *  undefined when they name none or several, since then the created one is
+ *  unknown (a second create, or a `gh pr comment` URL on another PR). Only
+ *  these leave this function; the output itself is never kept. */
+function findCreatedPr(
+  output: Record<string, unknown> | unknown[],
+): { createdPrNumber: string; createdPrRepo?: string } | undefined {
   const texts: string[] = [];
   const blocks = Array.isArray(output) ? output : output.content;
   if (!Array.isArray(output) && typeof output.stdout === 'string') texts.push(output.stdout);
   if (Array.isArray(blocks)) {
     for (const block of blocks) if (hasStringText(block)) texts.push(block.text);
   }
-  const prNumbers = new Set<string>();
+  const prs = new Map<string, { createdPrNumber: string; createdPrRepo?: string }>();
   for (const text of texts) {
-    for (const match of text.matchAll(PR_URL_RE)) prNumbers.add(match[1]);
+    for (const [, owner, repo, createdPrNumber] of text.matchAll(PR_URL_RE)) {
+      const createdPrRepo = parsePrRepo(`${owner}/${repo}`);
+      prs.set(`${owner}/${repo}#${createdPrNumber}`.toLowerCase(), {
+        createdPrNumber,
+        ...(createdPrRepo !== undefined && { createdPrRepo }),
+      });
+    }
   }
-  return prNumbers.size === 1 ? [...prNumbers][0] : undefined;
+  return prs.size === 1 ? [...prs.values()][0] : undefined;
 }
 
 /**
@@ -726,8 +736,7 @@ function extractOutputMeta(
   const obj = output as Record<string, unknown>;
 
   if (mcpPrToolAction(toolName) === 'create') {
-    const createdPrNumber = findCreatedPrNumber(output as Record<string, unknown> | unknown[]);
-    return createdPrNumber === undefined ? undefined : { createdPrNumber };
+    return findCreatedPr(output as Record<string, unknown> | unknown[]);
   }
 
   if (toolName === 'Bash') {
@@ -743,8 +752,7 @@ function extractOutputMeta(
         ? (input as Record<string, unknown>).command
         : undefined;
     if (typeof command === 'string' && GH_PR_CREATE_RE.test(command)) {
-      const createdPrNumber = findCreatedPrNumber(obj);
-      if (createdPrNumber !== undefined) meta.createdPrNumber = createdPrNumber;
+      Object.assign(meta, findCreatedPr(obj));
     }
     if (Object.keys(meta).length > 0) return meta;
   }
