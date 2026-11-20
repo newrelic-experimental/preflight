@@ -487,7 +487,7 @@ describe('collector-script', () => {
       expect(event.toolOutput).toEqual({ exitCode: 0 });
     });
 
-    it('keeps only the PR number from a gh pr create URL, never the output text', () => {
+    it('keeps only the PR number and repo from a gh pr create URL, never the output text', () => {
       const response = {
         stdout: 'Creating pull request for fix into main\n\nhttps://github.com/acme/app/pull/42\n',
         stderr: '',
@@ -501,7 +501,22 @@ describe('collector-script', () => {
       );
 
       const event = readBufferEvents()[0]!;
-      expect(event.toolOutput).toEqual({ createdPrNumber: '42' });
+      expect(event.toolOutput).toEqual({ createdPrNumber: '42', createdPrRepo: 'acme/app' });
+    });
+
+    it('lowercases the repo a gh pr create URL names', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr create --fill' },
+          tool_response: { stdout: 'https://github.example.com/Acme/My.App/pull/7\n' },
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({
+        createdPrNumber: '7',
+        createdPrRepo: 'acme/my.app',
+      });
     });
 
     it.each([
@@ -509,6 +524,11 @@ describe('collector-script', () => {
         'two creates',
         'gh pr create --base main --fill && gh pr create --base part-1 --fill',
         'https://github.com/acme/app/pull/41\nhttps://github.com/acme/app/pull/42\n',
+      ],
+      [
+        'the same number in two repos',
+        'gh pr create --fill && gh pr create -R acme/other --fill',
+        'https://github.com/acme/app/pull/41\nhttps://github.com/acme/other/pull/41\n',
       ],
       [
         'a comment on another PR',
@@ -542,7 +562,10 @@ describe('collector-script', () => {
         }),
       );
 
-      expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '41' });
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({
+        createdPrNumber: '41',
+        createdPrRepo: 'acme/app',
+      });
     });
 
     it('ignores a PR URL in the output of a command that is not gh pr create', () => {
@@ -571,7 +594,10 @@ describe('collector-script', () => {
         }),
       );
 
-      expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '57' });
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({
+        createdPrNumber: '57',
+        createdPrRepo: 'acme/app',
+      });
     });
 
     it('keeps the repo and PR number an MCP merge_pull_request call names', () => {
