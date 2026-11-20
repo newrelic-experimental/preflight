@@ -9,7 +9,7 @@ Preflight supports 18 named AI coding platforms plus a generic MCP fallback, eac
 
 This doc is the canonical reference for what each adapter can and can't observe, how detection and setup actually work, and where the gaps are. It mirrors `src/platforms/*.ts` and the hook-event handling in `src/hooks/collector-script.ts` — if you change either, update this doc in the same PR.
 
-> **Telemetry mode in the setup examples:** the examples below set `NR_AI_MODE=cloud` (New Relic only) together with `NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_ACCOUNT_ID`; a license key with no mode makes the server refuse to start, and the account ID is required in `cloud` and `both`. `cloud` turns off the localhost dashboard and the local alert rules. Use `NR_AI_MODE=both` to keep them.
+> **Telemetry mode in the setup examples:** the examples below set `NR_AI_MODE=cloud` (New Relic only) together with `NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_ACCOUNT_ID`; a license key with no mode makes the server refuse to start, and the account ID is optional. `cloud` turns off the localhost dashboard and the local alert rules. Use `NR_AI_MODE=both` to keep them.
 
 > **Maintenance note:** every adapter implements `getHookInstallInstructions()`, which returns the setup text reproduced below. That method is not currently called from any CLI command (`preflight doctor --platform <x>` explicitly skips it and tells the user to verify manually) — this document is presently the only place that text is surfaced to a user. If a CLI surface is added later, keep this doc and the adapter methods in sync, or replace the relevant section here with a pointer to the command output.
 
