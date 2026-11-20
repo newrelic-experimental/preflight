@@ -15,6 +15,7 @@ import {
   DEFAULT_STORAGE_PATH,
   digestWebhookUrlOverride,
   loadMcpConfig,
+  parseLogLevel,
   redactSensitive,
   resolveStartupLogLevel,
 } from './config.js';
@@ -811,7 +812,7 @@ export function parseArgs(argv: string[]): CliOptions {
   return {
     port: parsed,
     config: opts.config ?? null,
-    logLevel: opts.logLevel as CliOptions['logLevel'],
+    logLevel: parseLogLevel(opts.logLevel),
     stdio,
     local,
     validate,

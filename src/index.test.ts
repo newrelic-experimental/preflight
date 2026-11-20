@@ -119,6 +119,11 @@ describe('parseArgs()', () => {
     expect(opts.logLevel).toBe('debug');
   });
 
+  it('drops an invalid --log-level value so the next source applies', () => {
+    const opts = parseArgs([...base, '--log-level', 'verbose']);
+    expect(opts.logLevel).toBeUndefined();
+  });
+
   it('parses -l shorthand for log-level', () => {
     const opts = parseArgs([...base, '-l', 'warn']);
     expect(opts.logLevel).toBe('warn');
@@ -5516,6 +5521,15 @@ describe('log level at startup', () => {
       extraArgs: ['--log-level', 'debug'],
     });
     expect(jsonLevels(stderr)).toContain('debug');
+  }, 30000);
+
+  it('an invalid --log-level falls through to the environment', async () => {
+    const stderr = await runLocalAndCollectStderr({
+      env: { NEW_RELIC_AI_LOG_LEVEL: 'error' },
+      extraArgs: ['--log-level', 'verbose'],
+    });
+    expect(stderr).not.toContain('Starting preflight');
+    expect(jsonLevels(stderr)).not.toContain('info');
   }, 30000);
 
   it('logs an invalid config file error once and exits with the config error status', async () => {

@@ -565,8 +565,8 @@ function envInt(
   return clampNumber(parsed, bounds);
 }
 
-function envLogLevel(key: string): LogLevel | undefined {
-  const val = process.env[key]?.toLowerCase();
+export function parseLogLevel(raw: string | undefined): LogLevel | undefined {
+  const val = raw?.toLowerCase();
   if (val === 'debug' || val === 'info' || val === 'warn' || val === 'error') return val;
   return undefined;
 }
@@ -582,8 +582,8 @@ function resolveConfiguredLogLevel(
 ): LogLevel {
   return (
     cliLevel ??
-    envLogLevel('NEW_RELIC_AI_MCP_LOG_LEVEL') ??
-    envLogLevel('NEW_RELIC_AI_LOG_LEVEL') ??
+    parseLogLevel(process.env.NEW_RELIC_AI_MCP_LOG_LEVEL) ??
+    parseLogLevel(process.env.NEW_RELIC_AI_LOG_LEVEL) ??
     fileLevel ??
     'info'
   );
