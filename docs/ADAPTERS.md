@@ -75,7 +75,7 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 
 **Setup:**
 
-1. Register the Preflight MCP server for `nr_observe_*` tools: Cursor Settings → MCP → add server under a key that contains `preflight` (the installer uses `newrelic-preflight`), command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
+1. Register the Preflight MCP server for `nr_observe_*` tools: Cursor Settings → MCP → add server under a key that contains `preflight`, such as `newrelic-preflight` (no installer writes Cursor's `mcp.json`, so you register the key by hand), command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
 2. Configure Cursor hooks so tool-call activity is captured — create `.cursor/hooks.json` (project) or `~/.cursor/hooks.json` (global):
    ```json
    {

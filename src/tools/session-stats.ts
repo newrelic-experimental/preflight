@@ -622,6 +622,14 @@ function registerCoreTools(deps: ToolRegistrationOptions): RegisteredToolSet {
 // Registration
 // ---------------------------------------------------------------------------
 
+/**
+ * Pre-resolution stand-in: registers `tools/list` with just the health,
+ * install and config tools, and a `tools/call` handler that returns a
+ * structured "session not yet resolved" error for everything else. Replaced by
+ * `registerTools()` once the session_id is known. With `hookRecordedReports`
+ * (Cursor and Windsurf), it also lists `nr_observe_report_tokens`, which leaves
+ * each report to the client's post-MCP hook, and the error hint names that client.
+ */
 export function registerPendingTools(
   server: Server,
   options: {

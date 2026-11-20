@@ -47,10 +47,12 @@ export class WindsurfAdapter implements PlatformAdapter {
     instructionFilePaths: ['.windsurfrules'] as const,
     // docs.windsurf.com/windsurf/cascade/hooks: hooks send trajectory_id, never session_id, so they write no breadcrumb.
     sessionBreadcrumbWriters: [] as const,
-    // post_mcp_tool_use carries trajectory_id and tool_info.mcp_tool_arguments/
-    // mcp_result, and the user and workspace hooks files are
-    // ~/.codeium/windsurf/hooks.json and .windsurf/hooks.json
-    // (https://docs.windsurf.com/de/windsurf/cascade/hooks).
+    // https://docs.windsurf.com/de/windsurf/cascade/hooks: post_mcp_tool_use carries
+    // trajectory_id and tool_info.mcp_server_name, mcp_tool_arguments and mcp_result,
+    // and the user and workspace hooks files are ~/.codeium/windsurf/hooks.json and
+    // .windsurf/hooks.json. https://docs.windsurf.com/de/windsurf/cascade/mcp: the MCP
+    // config is ~/.codeium/windsurf/mcp_config.json. These cite the /de/ pages because
+    // the unlocalized URLs now redirect to docs.devin.ai, which no longer lists these paths.
     tokenReportHook: {
       clientName: 'Windsurf',
       postMcpEvent: 'post_mcp_tool_use',

@@ -1,4 +1,7 @@
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import {
   handleReportTokens,
   REPORT_TOKENS_TOOL,
@@ -11,9 +14,6 @@ import {
 } from './cost-tools.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { CursorAdapter } from '../platforms/cursor-adapter.js';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import { BudgetTracker } from '../metrics/budget-tracker.js';
 import { SessionResumeTracker } from '../metrics/session-resume-tracker.js';
@@ -23,6 +23,7 @@ import type { TokenReport } from './cost-tools.js';
 import type { CostMetrics } from '../metrics/cost-tracker.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
+let tempDir: string | undefined;
 
 beforeEach(() => {
   stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -30,6 +31,8 @@ beforeEach(() => {
 
 afterEach(() => {
   stderrSpy.mockRestore();
+  if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+  tempDir = undefined;
 });
 
 // ---------------------------------------------------------------------------
@@ -735,7 +738,7 @@ describe('registerCostTools()', () => {
 
   it('on the hook path, records a report without report_id in process and leaves one with it to the hook', async () => {
     const costTracker = new CostTracker();
-    const dir = mkdtempSync(join(tmpdir(), 'nr-cost-tools-hook-'));
+    const dir = (tempDir = mkdtempSync(join(tmpdir(), 'nr-cost-tools-hook-')));
     const hook = new CursorAdapter().capabilities.tokenReportHook!;
     const { tools, handlers } = registerCostTools({
       costTracker,
@@ -753,7 +756,6 @@ describe('registerCostTools()', () => {
     const listed = tools.find((t: { name: string }) => t.name === 'nr_observe_report_tokens');
     expect(listed?.inputSchema.required).not.toContain('report_id');
     expect(costTracker.getMetrics().reportCount).toBe(1);
-    rmSync(dir, { recursive: true, force: true });
   });
 
   it('rejects an invalid token report the same way the raw handler does', async () => {

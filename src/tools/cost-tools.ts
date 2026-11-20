@@ -171,6 +171,10 @@ export function hookRecordedReportTokensTool(
     const { report } = parsed;
     const found = hooksDetected(options);
     const keyMatches = mcpPaths.some(namesPreflightServer);
+    // accepted stays true when no hook is found: the hook records only a reply
+    // with accepted, recorded_by and report_id, and the check can miss a hook
+    // that runs, so false would drop that report. This engine serves every chat
+    // in the window, so it cannot record the report itself.
     return reply({
       accepted: true,
       report_id: report.reportId,
