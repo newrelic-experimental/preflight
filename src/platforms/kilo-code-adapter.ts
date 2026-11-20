@@ -157,7 +157,7 @@ export class KiloCodeAdapter implements PlatformAdapter {
       '   }',
       '',
       '   function report(payload: unknown) {',
-      '     const child = spawn("preflight-collector", [], { stdio: ["pipe", "ignore", "ignore"] })',
+      '     const child = spawn("preflight-collector", [], { env: { ...process.env, MCP_CLIENT: "kilocode" }, stdio: ["pipe", "ignore", "ignore"] })',
       '     child.stdin.write(JSON.stringify(payload))',
       '     child.stdin.end()',
       '   }',

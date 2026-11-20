@@ -28,7 +28,11 @@ import {
   type DrainClaim,
 } from './drain-claims.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
-import { BREADCRUMBS_DIR, breadcrumbRoot } from '../hooks/session-breadcrumbs.js';
+import {
+  BREADCRUMBS_DIR,
+  STALE_CWD_BREADCRUMB_MS,
+  breadcrumbRoot,
+} from '../hooks/session-breadcrumbs.js';
 import { countMintedToolUseId, MINTED_IDS_DIR_PREFIX } from '../hooks/minted-tool-use-ids.js';
 import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
 import type { HookEvent, AuditEntry } from './types.js';
@@ -1178,19 +1182,25 @@ export class LocalStore {
    * `<storage>/breadcrumbs/<writer>/session-by-ppid/<pid>.txt`, and at
    * `<storage>/session-by-ppid/<pid>.txt` where older collectors wrote
    * them. A breadcrumb is stale when its PID names a process that no longer
-   * exists (its engine's session ended).
+   * exists (its engine's session ended). A cwd breadcrumb at
+   * `session-by-cwd/<cwd>.txt` names no process, so it is stale when it and
+   * every same-root ppid breadcrumb naming its session are older than
+   * `STALE_CWD_BREADCRUMB_MS`. A collector that never refreshes an unchanged
+   * cwd breadcrumb still touches the ppid one on each event.
    *
    * @returns the number of breadcrumb files deleted
    */
   gcStaleBreadcrumbs(): number {
-    const breadcrumbDirs = [
-      resolve(this.storagePath, 'session-by-ppid'),
+    const roots = [
+      this.storagePath,
       ...breadcrumbWriters(this.storagePath).map((writer) =>
-        resolve(breadcrumbRoot(this.storagePath, writer), 'session-by-ppid'),
+        breadcrumbRoot(this.storagePath, writer),
       ),
     ];
+    const breadcrumbDirs = roots.map((root) => resolve(root, 'session-by-ppid'));
 
     let deleted = 0;
+    for (const root of roots) deleted += this.gcStaleCwdBreadcrumbs(root);
     for (const breadcrumbDir of breadcrumbDirs) {
       let entries: string[];
       try {
@@ -1217,6 +1227,55 @@ export class LocalStore {
     }
     if (deleted > 0) {
       logger.info('Cleaned up stale breadcrumbs', { deleted });
+    }
+    return deleted;
+  }
+
+  private gcStaleCwdBreadcrumbs(root: string): number {
+    const cutoff = Date.now() - STALE_CWD_BREADCRUMB_MS;
+    const cwdDir = resolve(root, 'session-by-cwd');
+    let names: string[];
+    try {
+      names = readdirSync(cwdDir).filter((name) => name.endsWith('.txt'));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn('Failed to enumerate cwd breadcrumb dir', { error: String(err) });
+      }
+      return 0;
+    }
+    const readFresh = (path: string): string | null => {
+      try {
+        return statSync(path).mtimeMs >= cutoff ? readFileSync(path, 'utf-8').trim() : null;
+      } catch {
+        return null;
+      }
+    };
+    const ppidDir = resolve(root, 'session-by-ppid');
+    let liveSessions: Set<string> | undefined;
+    const liveSessionIds = () => {
+      if (liveSessions) return liveSessions;
+      liveSessions = new Set();
+      try {
+        for (const name of readdirSync(ppidDir)) {
+          const id = readFresh(resolve(ppidDir, name));
+          if (id) liveSessions.add(id);
+        }
+      } catch {
+        // no ppid dir means no fresh ppid breadcrumbs
+      }
+      return liveSessions;
+    };
+    let deleted = 0;
+    for (const name of names) {
+      const path = resolve(cwdDir, name);
+      try {
+        if (statSync(path).mtimeMs >= cutoff) continue;
+        if (liveSessionIds().has(readFileSync(path, 'utf-8').trim())) continue;
+        unlinkSync(path);
+        deleted++;
+      } catch (err) {
+        logger.debug('Failed to delete stale cwd breadcrumb', { name, error: String(err) });
+      }
     }
     return deleted;
   }
