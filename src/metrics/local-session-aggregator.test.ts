@@ -769,7 +769,12 @@ describe('LocalSessionAggregator panel rehydration', () => {
         toolSelectionScorer: new ToolSelectionScorer(),
         ...(backfillRecord && { backfillRecord }),
       });
-      return (summary?.toolSelectionMetrics as { redundantReadCount: number }).redundantReadCount;
+      const metrics = summary?.toolSelectionMetrics as {
+        totalCalls: number;
+        redundantReadCount: number;
+      };
+      expect(metrics.totalCalls).toBe(3);
+      return metrics.redundantReadCount;
     };
     const agentByToolUse = new Map([
       ['toolu_a', 'agent-1'],

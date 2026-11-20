@@ -2896,6 +2896,7 @@ async function main(): Promise<void> {
           outcome: opts?.periodic ? 'in progress' : 'completed',
           platform: eventProcessor?.activePlatform,
           instructionPromptHash: instructionDriftTracker.promptHash,
+          backfillRecord: (record) => subagentAttribution.backfill(record),
         });
         // The rollup counts only this session's own tasks; the detector above sees every drained session's.
         const summary = {

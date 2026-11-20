@@ -163,7 +163,8 @@ export class ToolSelectionScorer {
   /**
    * Scores `toolCalls` as given: nothing here fills in a missing `agentId`.
    * Only the live process holds the `toolUseId → agentId` index, so
-   * `LocalSessionAggregator.toSummaries()` backfills before calling this.
+   * `buildSessionSummary()` and `LocalSessionAggregator.toSummaries()` backfill
+   * before calling this.
    * Callers that read persisted records (session store, dashboard, MCP tools)
    * score the attribution each record was saved with.
    */

@@ -1267,6 +1267,14 @@ export interface BuildSessionSummarySources {
   outcome?: string;
   platform?: string;
   instructionPromptHash?: string | null;
+  /**
+   * Re-runs the agent attribution join on each tool call before the anti-pattern
+   * and tool-selection analyses. By save time `SubagentWatcher` has tailed more
+   * transcript than at hook intake, so more calls resolve to their subagent.
+   */
+  backfillRecord?: (
+    record: import('../storage/types.js').ToolCallRecord,
+  ) => import('../storage/types.js').ToolCallRecord;
 }
 
 function skillInvocationCounts(
@@ -1357,6 +1365,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     antiPatternDetector,
     efficiencyScorer,
     developer,
+    backfillRecord,
   } = sources;
 
   const sessionMetrics = sessionTracker.getMetrics();
@@ -1396,7 +1405,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
       totalBuildsRun += task.buildRun;
       totalBuildsPassed += task.buildPassed;
       totalAgentSpawns += task.subAgentsSpawned;
-      allToolCalls.push(...task.toolCalls);
+      allToolCalls.push(...(backfillRecord ? task.toolCalls.map(backfillRecord) : task.toolCalls));
     }
 
     // Fold in pre-restart totals recovered by TaskDetector.seedFromPersisted()
