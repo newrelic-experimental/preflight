@@ -37,6 +37,7 @@ import type { CostTracker } from '../metrics/cost-tracker.js';
 import type { GitEfficiencyTracker } from '../metrics/git-efficiency-tracker.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
 import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
+import type { RetryDetector } from '../metrics/retry-detector.js';
 import { classifyProvider } from '../metrics/model-provider.js';
 import type { FeedbackCollector } from '../tools/workflow-tools.js';
 import type { BudgetThresholdEvent } from '../metrics/budget-tracker.js';
@@ -56,7 +57,7 @@ import type {
 import type { LocalStore } from '../storage/index.js';
 import { LogIngestManager } from './log-ingest.js';
 import { TierRouter } from './tier-router.js';
-import { DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './tier-types.js';
+import { DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE, summarizeTiers } from './tier-types.js';
 import type { ResolvedTier } from './tier-types.js';
 import { TierLocalWriter } from '../storage/tier-local-writer.js';
 
@@ -128,6 +129,7 @@ export interface NrIngestOptions {
   feedbackCollector?: FeedbackCollector;
   /** API failure tracker for emitting ai.api.* metrics. */
   apiFailureTracker?: ApiFailureTracker;
+  retryDetector?: RetryDetector;
   /** Git efficiency tracker for emitting ai.git.* metrics. */
   gitEfficiencyTracker?: GitEfficiencyTracker;
   teamId?: string | null;
@@ -163,7 +165,7 @@ export interface NrIngestOptions {
   /**
    * Multi-tier telemetry routing. Threaded from `config.tiers`.
    * Absent or empty → one implicit `default` tier is synthesized from
-   * `licenseKey` + `transportOptions.accountId`, reproducing the existing
+   * `licenseKey`, reproducing the existing
    * single-scheduler behavior exactly.
    *
    * The FIRST nr-type tier in array order is the **primary tier**: it carries
@@ -922,8 +924,9 @@ export function retryAlertToNrEvent(
  * turn's cost and tokens split evenly. `tool_use_id` cross-references the
  * call's `AiToolCall` row.
  *
- * A response turn (no calls) yields a single row with no `tool`,
- * `tool_use_id` or `skillName`, carrying the whole report's cost and tokens.
+ * A response turn (no calls) yields a single row with no `tool` or
+ * `tool_use_id`, carrying the whole report's cost and tokens. It carries the
+ * skill of the run open when the report arrived, if any.
  * Its `turn_tool_call_count` is 0.
  */
 export function turnCostToNrEvents(
@@ -964,8 +967,9 @@ export function turnCostToNrEvents(
     if (call !== null) {
       event.tool_use_id = call.toolUseId;
       event.tool = call.toolName;
-      if (call.skill !== null) Object.assign(event, skillRunAttributes(call.skill));
     }
+    const skill = call !== null ? call.skill : turn.skill;
+    if (skill !== null) Object.assign(event, skillRunAttributes(skill));
 
     if (attrs.teamId) event.team_id = attrs.teamId;
     if (attrs.projectId) event.project_id = attrs.projectId;
@@ -1091,6 +1095,7 @@ export class NrIngestManager {
   private readonly efficiencyScorer?: EfficiencyScorer;
   private readonly feedbackCollector?: FeedbackCollector;
   private readonly apiFailureTracker?: ApiFailureTracker;
+  private readonly retryDetector?: RetryDetector;
   private readonly gitEfficiencyTracker?: GitEfficiencyTracker;
   readonly auditTrail: AuditTrailManager;
   private readonly developer: string;
@@ -1126,6 +1131,7 @@ export class NrIngestManager {
     this.efficiencyScorer = options.efficiencyScorer;
     this.feedbackCollector = options.feedbackCollector;
     this.apiFailureTracker = options.apiFailureTracker;
+    this.retryDetector = options.retryDetector;
     this.gitEfficiencyTracker = options.gitEfficiencyTracker;
     this.turnCostAttributor = options.turnCostAttributor;
     this.auditTrail =
@@ -1235,7 +1241,6 @@ export class NrIngestManager {
               destination: {
                 type: 'nr',
                 licenseKey: options.licenseKey,
-                accountId: options.transportOptions.accountId,
               },
               eventTypes: [WILDCARD_EVENT_TYPE],
             },
@@ -1276,13 +1281,9 @@ export class NrIngestManager {
       }
 
       const isPrimary: boolean = primaryScheduler === null;
-      const tierTransportOptions: TransportOptions = {
-        ...transportOptions,
-        accountId: tier.destination.accountId,
-      };
       const scheduler: HarvestScheduler = new HarvestScheduler({
         licenseKey: tier.destination.licenseKey,
-        transportOptions: tierTransportOptions,
+        transportOptions,
         eventHarvestIntervalMs: options.eventHarvestIntervalMs,
         metricHarvestIntervalMs: options.metricHarvestIntervalMs,
         sendEventsFn: makeClassifyingEventsFn(tier.name, isPrimary),
@@ -1300,7 +1301,7 @@ export class NrIngestManager {
         primaryScheduler = scheduler;
         primaryTierName = tier.name;
         primaryLicenseKey = tier.destination.licenseKey;
-        primaryTransportOptions = tierTransportOptions;
+        primaryTransportOptions = transportOptions;
       }
     }
 
@@ -1319,6 +1320,11 @@ export class NrIngestManager {
     }
     this.primaryScheduler = primaryScheduler;
     this.primaryTierName = primaryTierName;
+
+    logger.info('Telemetry tiers resolved', {
+      tiers: summarizeTiers(tiers),
+      primaryTier: primaryTierName,
+    });
 
     this.logIngest = new LogIngestManager({
       licenseKey: primaryLicenseKey,
@@ -1353,6 +1359,13 @@ export class NrIngestManager {
    */
   getTierNames(): readonly string[] {
     return [...this.schedulers.keys(), ...this.localWriters.keys()];
+  }
+
+  /** Write and failure counts per local tier, keyed by tier name. */
+  getLocalTierStats(): Readonly<Record<string, { writes: number; failures: number }>> {
+    const stats: Record<string, { writes: number; failures: number }> = {};
+    for (const [name, writer] of this.localWriters) stats[name] = writer.getStats();
+    return stats;
   }
 
   /** The tier carrying metrics, logs, OTLP, and send-health. */
@@ -1837,6 +1850,7 @@ export class NrIngestManager {
       this.efficiencyScorer ||
       this.feedbackCollector ||
       this.apiFailureTracker ||
+      this.retryDetector ||
       this.gitEfficiencyTracker
     ) {
       const developer = this.developer;
@@ -1863,6 +1877,7 @@ export class NrIngestManager {
       this.efficiencyScorer?.emitMetrics(devAggregator);
       this.feedbackCollector?.emitMetrics(devAggregator);
       this.apiFailureTracker?.emitMetrics(devAggregator);
+      this.retryDetector?.emitMetrics(devAggregator);
       this.gitEfficiencyTracker?.emitMetrics(devAggregator);
     }
 

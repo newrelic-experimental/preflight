@@ -19,6 +19,9 @@ import {
 } from '../../metrics/tool-selection-scorer.js';
 import { LiveSessionRegistry } from '../../metrics/live-session-registry.js';
 import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
+import { TaskCompletionTracker } from '../../metrics/task-completion-tracker.js';
+import type { AiCodingTask } from '../../metrics/task-detector.js';
+import { handleGetTaskCompletionRate } from '../../tools/analytics-tools.js';
 import { makeUsage } from '../../__test-utils__/token-usage.js';
 import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
@@ -6873,6 +6876,13 @@ describe('api-handler GET /api/settings', () => {
       highSecurity: false,
       licenseKey: 'NRAK-ABCDEFGHIJKLMNOP1234',
       secretSources: { licenseKey: 'file', nrApiKey: 'unset', digestWebhookUrl: 'file' },
+      tiers: [
+        {
+          name: 'personal',
+          destination: { type: 'nr', licenseKey: 'NRAK-ABCDEFGHIJKLMNOP1234', accountId: '12345' },
+          eventTypes: ['*'],
+        },
+      ],
     } as unknown as Parameters<typeof createApiHandler>[0]['config'];
   }
 
@@ -6886,6 +6896,15 @@ describe('api-handler GET /api/settings', () => {
     await handler(req, res);
     return JSON.parse(body()) as Record<string, unknown>;
   }
+
+  it('reports the resolved tiers without their license keys', async () => {
+    const result = await getSettings(fakeStartupConfig(), makeConfigFile({}));
+
+    expect(result.primaryTier).toBe('personal');
+    expect(result.tiers).toEqual([
+      { name: 'personal', type: 'nr', accountId: '12345', primary: true, eventTypes: ['*'] },
+    ]);
+  });
 
   it('reports the file as the webhook source when nothing overrides it', async () => {
     const configFilePath = makeConfigFile({
@@ -10079,5 +10098,51 @@ describe('api-handler Today aggregate git identity reuse', () => {
       Date.now = realNow;
     }
     expect(gitCallCount(logFile)).toBe(afterFirst);
+  });
+});
+
+describe('api-handler GET /api/task-completion', () => {
+  function completedTask(durationMs: number, toolCallCount: number): AiCodingTask {
+    return { durationMs, toolCallCount } as unknown as AiCodingTask;
+  }
+
+  it('returns 503 when taskCompletionTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/task-completion' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'taskCompletionTracker' });
+  });
+
+  it('returns the same numbers as the get_task_completion_rate MCP tool for the same tracker state', async () => {
+    const tracker = new TaskCompletionTracker();
+    tracker.recordTask(completedTask(60_000, 10));
+    tracker.recordTask(completedTask(180_000, 4));
+    const handler = createApiHandler({ taskCompletionTracker: tracker });
+    const req = { method: 'GET', url: '/api/task-completion' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const mcpText = handleGetTaskCompletionRate(tracker).content[0].text;
+    expect(JSON.parse(body())).toEqual(JSON.parse(mcpText));
+    expect(JSON.parse(body())).toEqual({
+      completedTasks: 2,
+      avgTaskDurationMs: 120_000,
+      avgToolCallsPerTask: 7,
+    });
+  });
+
+  it('reports null averages when no task has completed', async () => {
+    const handler = createApiHandler({ taskCompletionTracker: new TaskCompletionTracker() });
+    const req = { method: 'GET', url: '/api/task-completion' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({
+      completedTasks: 0,
+      avgTaskDurationMs: null,
+      avgToolCallsPerTask: null,
+    });
   });
 });

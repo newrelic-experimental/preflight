@@ -108,7 +108,7 @@ The config-file schema (`ConfigFileSchema`) still accepts the flat legacy keys s
 
 Every dollar figure Preflight reports — session cost, budget-threshold alerts, cost-per-outcome, everything downstream of `CostTracker` — is computed the same way regardless of how your organization is actually billed: `tokens × Preflight's own built-in public list-price table`. Two config options narrow that gap, and one config option (already existing, undocumented until now) lets you close it exactly:
 
-**`customPricingFile`** (env: `NEW_RELIC_AI_CUSTOM_PRICING_FILE`): path to a JSON file of `{ "model-id": { "inputPerMTok": ..., "outputPerMTok": ..., ... } }` entries (see `ModelPricing` in `src/core/pricing.ts`) that fully replaces the built-in table for the models it lists. If your organization has contracted per-model rates, enter them here model-by-model and Preflight reports at your real rate, no multiplier needed. Mutually exclusive with the bundled gap-fill pricing overlay — see the doc comment on `applyPricingOverlay()` in `src/metrics/pricing-overlay.ts`.
+**`customPricingFile`** (env: `NEW_RELIC_AI_CUSTOM_PRICING_FILE`): path to a JSON file of `{ "model-id": { "inputPerMTok": ..., "outputPerMTok": ..., ... } }` entries (see `ModelPricing` in `src/core/pricing.ts`) that fully replaces the built-in table for the models it lists. If your organization has contracted per-model rates, enter them here model-by-model and Preflight reports at your real rate, no multiplier needed. Without this file, Preflight prices from the built-in table in `src/core/pricing-data.ts` alone.
 
 **Model name matching.** Preflight strips Bedrock system inference-profile ARNs (`arn:aws:bedrock:<region>:<account>:inference-profile/us.anthropic.claude-sonnet-4-6`, `arn:aws:bedrock:<region>::foundation-model/...`) and a leading `<provider>/` segment (`bedrock/claude-sonnet-4-6`) down to the embedded model id before looking up a price. Application inference profile ARNs and names your gateway invents (`gw-claude-sonnet`) say nothing about the model behind them, so they price at $0 until you map them. Add an `aliases` object to the custom pricing file:
 
@@ -121,9 +121,9 @@ Every dollar figure Preflight reports — session cost, budget-threshold alerts,
 }
 ```
 
-An alias reuses the target model's rates, so there is no rate table to keep current. The target must be a model Preflight can price, either built in or defined by a rate entry in the same file. An alias to an unknown model is logged once at startup and ignored. A file may hold only `aliases`, only rate entries, or both. A file with only `aliases` keeps the bundled gap-fill overlay, so an alias can target a model the overlay prices; a file with any rate entries replaces the overlay as before. Models that still cannot be priced are listed in `unpriced_models` in the `nr_observe_get_cost_breakdown` response.
+An alias reuses the target model's rates, so there is no rate table to keep current. The target must be a model Preflight can price, either built in or defined by a rate entry in the same file. An alias to an unknown model is logged once at startup and ignored. A file may hold only `aliases`, only rate entries, or both. A file with only `aliases` keeps the built-in table, so an alias can target any model the built-in table prices. Models that still cannot be priced are listed in `unpriced_models` in the `nr_observe_get_cost_breakdown` response.
 
-**`pricingRefresh`** (env: `NEW_RELIC_AI_PRICING_REFRESH`, default `true`): fetches LiteLLM's community price file in the background at server start, caches it at `<storagePath>/pricing-cache.json`, and refetches once the cache is a day old, at a later start or at the hourly recheck a long-running server makes. It prices models the bundled table, the pricing overlay, and `customPricingFile` do not resolve, by exact model ID only, and takes precedence over family estimates. Set it to `false` to make no request and read or write no cache file. `highSecurity=true` forces it off.
+**`pricingRefresh`** (env: `NEW_RELIC_AI_PRICING_REFRESH`, default `true`): fetches LiteLLM's community price file in the background at server start, caches it at `<storagePath>/pricing-cache.json`, and refetches once the cache is a day old, at a later start or at the hourly recheck a long-running server makes. It prices models the built-in table and `customPricingFile` do not resolve, by exact model ID only, and takes precedence over family estimates. Set it to `false` to make no request and read or write no cache file. `highSecurity=true` forces it off.
 
 **`costRateMultiplier`** (env: `NEW_RELIC_AI_COST_RATE_MULTIPLIER`): a flat discount factor, `0 < x ≤ 1`, applied to every dollar figure `CostTracker` computes — a cheaper alternative to `customPricingFile` when you have a single blended discount off list price rather than distinct per-model contracted rates. Mirrors the semantics of Claude Code's own `modelPricing.multiplier` managed setting.
 
@@ -265,7 +265,7 @@ Requires `mode: "cloud"` or `mode: "both"`. Tiers fan out the cloud export path;
 | `destination.type`              | yes          | `"nr"` or `"local"`.                                                                                                                 |
 | `destination.licenseKey`        | `nr` only    | This tier's own NR ingest license key.                                                                                               |
 | `destination.licenseKeyCommand` | `nr` only    | Argv array run to read this tier's key instead of `licenseKey`. See [Secret Helper Commands](#secret-helper-commands).               |
-| `destination.accountId`         | `nr` only    | 1–12 decimal digits, as a JSON string.                                                                                               |
+| `destination.accountId`         | no           | Optional. 1–12 decimal digits, as a JSON string. Shown in diagnostics only; the license key selects the account events go to.        |
 | `destination.path`              | `local` only | Directory for JSONL output. Relative paths are resolved to absolute at config load.                                                  |
 | `eventTypes`                    | yes          | Non-empty. Either `["*"]` (everything) or an explicit list of known event types.                                                     |
 
@@ -301,13 +301,15 @@ Every `nr` tier gets its own `HarvestScheduler`, so each keeps an independent re
 
 ### Backward compatibility
 
-Omit `tiers` entirely and nothing changes: the flat `licenseKey`/`accountId` become one implicit tier (`name: "default"`, `eventTypes: ["*"]`), resolved in memory and never written back to the config file.
+Omit `tiers` entirely and nothing changes: the flat `licenseKey` (and `accountId`, when set) become one implicit tier (`name: "default"`, `eventTypes: ["*"]`), resolved in memory and never written back to the config file.
 
 ### Misconfiguration is fatal at startup
 
-The following throw at config load with a specific message, following the same fail-fast convention as the `licenseKey`/`accountId`/`homelabServerUrl` checks: an empty `tiers` array, a duplicate tier name, a blank name, an unknown `destination.type`, an `nr` destination missing both `licenseKey` and `licenseKeyCommand` or with a malformed `accountId`, a `local` destination missing `path`, an empty or unknown-valued `eventTypes`, and an array with no `nr`-type tier.
+The following throw at config load with a specific message, following the same fail-fast convention as the `licenseKey`/`accountId`/`homelabServerUrl` checks: an empty `tiers` array, a duplicate tier name, a blank name, an unknown `destination.type`, an `nr` destination missing both `licenseKey` and `licenseKeyCommand` or with an `accountId` that is set but malformed, a `local` destination missing `path`, an empty or unknown-valued `eventTypes`, and an array with no `nr`-type tier.
 
 ### Not covered
+
+**Confirming the routing.** At startup Preflight logs `Telemetry tiers resolved` with each tier's name, destination, event types, and the primary tier. The same list is returned by `nr_observe_get_config` and `GET /api/settings` as `tiers` and `primaryTier`, with no license keys. In `nr_observe_get_config`, a local tier also reports `writes` and `failures` since startup. Read `tiers` rather than the flat `accountId` when tiers are configured.
 
 Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a separate mechanism and is unaffected by tiers.
 
@@ -378,7 +380,7 @@ Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a sep
 
 **Weekly digest.** When `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` or `digestWebhookUrlCommand` supplies the webhook URL, sending the digest uses that value. A URL written to the file by the dashboard is ignored until you remove both, and `nr_observe_subscribe_digest` refuses to save one while either is set. The dashboard's Alerts page says when an override is active, without showing the overriding value. If the command fails, the digest is not sent to the file's URL.
 
-**Tier destinations.** An `nr` tier can set `destination.licenseKeyCommand` (an argv array) instead of `destination.licenseKey`. See [Tier fields](#tier-fields). It follows the same rules as the top-level field: no shell, stripped env, 20-second timeout, and an error that never contains the output. A failure names the tier, for example `Could not read licenseKey for tier "team" from licenseKeyCommand: the command exited with a non-zero status (1)`. Tiers have no environment variable, so the order is `licenseKeyCommand` > `licenseKey`; with both set, the command wins and Preflight logs a warning. The top-level `licenseKey` (or `licenseKeyCommand`) and `accountId` are still required when `mode` is not `local`.
+**Tier destinations.** An `nr` tier can set `destination.licenseKeyCommand` (an argv array) instead of `destination.licenseKey`. See [Tier fields](#tier-fields). It follows the same rules as the top-level field: no shell, stripped env, 20-second timeout, and an error that never contains the output. A failure names the tier, for example `Could not read licenseKey for tier "team" from licenseKeyCommand: the command exited with a non-zero status (1)`. Tiers have no environment variable, so the order is `licenseKeyCommand` > `licenseKey`; with both set, the command wins and Preflight logs a warning. The top-level `licenseKey` (or `licenseKeyCommand`) is still required when `mode` is not `local`. `accountId` is optional.
 
 ### Scoping `nrApiKey`
 

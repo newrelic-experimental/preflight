@@ -870,6 +870,18 @@ export async function handleGetTeamSummary(options: {
   }
   const safeTeamId = options.teamId;
 
+  if (!options.accountId.trim()) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ error: 'nr_observe_get_team_summary needs accountId' }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
   const accountId = Number(options.accountId);
   if (!Number.isFinite(accountId) || accountId <= 0) {
     return {
