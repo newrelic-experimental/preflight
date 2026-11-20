@@ -143,6 +143,27 @@ Similarly, Preflight cannot detect the data-residency premium per-response the w
 
 ---
 
+## Reported Spend
+
+**`reportedSpend`** is a config-file-only field with no env var or CLI flag. It holds the spend your organization reports, typed in from a finance dashboard, so it can sit beside Preflight's estimate. Set it from the Reported spend section of the dashboard's Settings page, or through `PATCH /api/settings`.
+
+```json
+{
+  "reportedSpend": [
+    { "periodKind": "daily", "amountUsd": 412.5, "asOf": "2026-11-20T15:00:00.000Z" },
+    { "periodKind": "weekly", "amountUsd": 2100, "asOf": "2026-11-20T15:00:00.000Z" }
+  ]
+}
+```
+
+- `periodKind` is `daily` or `weekly`. A save replaces that period's entry, so there is one of each at most.
+- `amountUsd` is a number from 0 to 1,000,000,000.
+- `asOf` is an ISO timestamp the server sets when the value is saved. `PATCH /api/settings` takes `reportedSpend: { periodKind, amountUsd }`, rejects a client-sent `asOf`, and clears that period when `amountUsd` is `null`.
+
+An entry that breaks these rules fails config load, like any other invalid config field. The daily value shows on Today's daily budget tile, and both show in Settings. A daily value saved before today, or a weekly value saved before this week's Monday, in local time, is labeled stale. The reported value never feeds the estimate, `BudgetTracker` or budget alerts.
+
+---
+
 ## allowHeadlessInstall
 
 **`allowHeadlessInstall`** (env: `NEW_RELIC_AI_ALLOW_HEADLESS_INSTALL`, default `false`): lets the `nr_observe_install_hooks` MCP tool write Preflight's hook entries into `~/.claude/settings.json`. Any connected MCP client can call that tool, so it is off by default. With the default, the tool returns an error that tells the user to run `preflight install` or set this flag, and changes nothing on disk. `highSecurity` forces it off. Each install the tool makes is recorded as a `HookInstall` entry in the local audit trail and sent to New Relic as an `AiAuditEvent`. The event is sent at install time, including on a fresh install whose session is not yet identified. If Preflight hooks already exist in the project's `.claude/settings.json`, the tool reports them as installed and writes nothing.
