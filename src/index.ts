@@ -1216,6 +1216,7 @@ async function main(): Promise<void> {
       options.stdio && !isProvisional
         ? new LocalStore(config.storagePath, sessionTraceId)
         : new LocalStore(config.storagePath);
+    localStore.setOwnIdPending(isProvisional);
     localStore.initialize();
 
     // Register every --local process in the instance registry, regardless
@@ -3304,6 +3305,9 @@ async function main(): Promise<void> {
       // realId, and runs before the tracker adopts realId, so adoptSessionId()
       // replays what it drains.
       sessionTraceId = realId;
+      // Keep this above replaceStore. Its halt() runs a final drain-all on the old
+      // store, which must stay drain-all so the adopter gets the no-session buffer.
+      localStore.setOwnIdPending(false);
       eventProcessor!.replaceStore(realLocalStore, false);
 
       sessionTracker!.adoptSessionId(
