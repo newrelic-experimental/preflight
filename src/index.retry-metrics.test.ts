@@ -1,5 +1,5 @@
-import { describe, it, expect } from '@jest/globals';
-import { spawn, spawnSync } from 'node:child_process';
+import { beforeAll, describe, it, expect } from '@jest/globals';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -33,13 +33,20 @@ function retryMetricNames(captureFile: string): Set<string> {
 }
 
 describe('stdio engine in cloud mode', () => {
+  const dist = resolve(__dirname, '..', 'dist');
+
+  beforeAll(() => {
+    if (!existsSync(join(dist, 'index.js'))) {
+      execFileSync('npm', ['run', 'build'], { stdio: 'inherit' });
+    }
+  }, 120_000);
+
   it.each([
     ['a session known at launch', true],
     ['a session adopted after launch', false],
   ])(
     'sends ai.retry.* metrics to the Metric API after repeated identical tool calls (%s)',
     async (_label, knownAtLaunch) => {
-      const dist = resolve(__dirname, '..', 'dist');
       const root = mkdtempSync(join(tmpdir(), 'nr-retry-metrics-'));
       const home = join(root, 'home');
       const sid = randomUUID();
