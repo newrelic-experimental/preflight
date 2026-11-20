@@ -19,7 +19,7 @@ import {
   mergeSummaries,
   sessionSummaryToDriftRecord,
 } from './session-store.js';
-import type { FullSessionSummary } from './session-store.js';
+import type { BuildSessionSummarySources, FullSessionSummary } from './session-store.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { buildCostTrackerSeed } from '../metrics/cost-tracker-seed.js';
@@ -432,6 +432,50 @@ describe('buildSessionSummary anti-patterns', () => {
     expect(summary.antiPatterns).toEqual([
       { type: 'thrashing', file: '/src/auth.ts', iterations: 4 },
     ]);
+  });
+
+  it('scores tool selection with each call attributed by backfillRecord', () => {
+    const [task] = mockTaskDetector.getMetrics().completedTasks;
+    const readTaskDetector = {
+      getCurrentTask: () => null,
+      getMetrics: () => ({
+        ...mockTaskDetector.getMetrics(),
+        completedTasks: [
+          {
+            ...task,
+            toolCalls: ['toolu_a', 'toolu_b', 'toolu_c'].map((toolUseId, i) => ({
+              id: `r${i}`,
+              sessionId: 'ap-session',
+              toolName: 'Read',
+              toolUseId,
+              timestamp: 1_700_000_001_000 + i * 1000,
+              durationMs: 20,
+              success: true,
+              filePath: '/src/shared.ts',
+            })),
+          },
+        ],
+      }),
+    };
+    const agentByToolUse = new Map([
+      ['toolu_a', 'agent-1'],
+      ['toolu_b', 'agent-2'],
+      ['toolu_c', 'agent-3'],
+    ]);
+    const build = (backfillRecord?: BuildSessionSummarySources['backfillRecord']) =>
+      buildSessionSummary({
+        sessionTracker: mockSessionTracker as unknown as SessionTracker,
+        taskDetector: readTaskDetector as unknown as TaskDetector,
+        toolSelectionScorer: new ToolSelectionScorer(),
+        developer: 'alice',
+        ...(backfillRecord && { backfillRecord }),
+      }).toolSelectionMetrics;
+
+    expect(build()).toMatchObject({ totalCalls: 3, redundantReadCount: 1 });
+    expect(build((r) => ({ ...r, agentId: agentByToolUse.get(r.toolUseId ?? '') }))).toMatchObject({
+      totalCalls: 3,
+      redundantReadCount: 0,
+    });
   });
 
   it('keeps one row per incident when multiple incidents share a type', () => {

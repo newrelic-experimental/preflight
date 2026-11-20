@@ -16,6 +16,11 @@ import {
 } from './redaction-patterns.js';
 import { resolveRecordContent } from './record-content-gate.js';
 import { projectIdFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
+import {
+  MAX_REPORTED_SPEND_USD,
+  isPeriodKind,
+  isValidReportedAmountUsd,
+} from './lib/reported-spend.js';
 import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
 import type { ResolvedTier } from './transport/tier-types.js';
 import {
@@ -278,10 +283,26 @@ export interface McpServerConfig {
 
 export const DEFAULT_STORAGE_PATH = resolve(homedir(), '.newrelic-preflight');
 
-// Applied only when neither the env var nor the config file specify
-// retainSessionsDays at all — an explicit `null` in config.json still means
-// "retention disabled" (see the resolution logic below).
-const DEFAULT_RETAIN_SESSIONS_DAYS = 90;
+// Day counts for `retainSessionsDays`, keyed by the name users write in
+// `retentionPolicy` or NEW_RELIC_AI_RETENTION_POLICY. `default` is also the
+// fallback when nothing at any level sets retention.
+export const RETENTION_PRESETS = {
+  default: 90,
+  'gdpr-minimisation': 30,
+  'soc2-audit': 365,
+  'hipaa-audit': 2190,
+  minimal: 7,
+} as const;
+
+export type RetentionPolicy = keyof typeof RETENTION_PRESETS;
+
+export function isRetentionPolicy(value: unknown): value is RetentionPolicy {
+  return typeof value === 'string' && Object.hasOwn(RETENTION_PRESETS, value);
+}
+
+// Largest day count a preset sets. The dashboard's retention input accepts up
+// to this so it can show and save every preset's value.
+export const MAX_RETAIN_SESSIONS_DAYS = Math.max(...Object.values(RETENTION_PRESETS));
 
 /**
  * Bump when a change to config.json's shape is non-additive (a field is
@@ -342,6 +363,18 @@ export const ConfigFileSchema = z
     dataResidencyPremium: z.boolean().optional(),
     digestWebhookUrl: z.string().nullable().optional(),
     retainSessionsDays: z.number().nullable().optional(),
+    retentionPolicy: z.string().optional(),
+    reportedSpend: z
+      .array(
+        z.object({
+          periodKind: z.string().refine(isPeriodKind, "must be 'daily' or 'weekly'"),
+          amountUsd: z
+            .number()
+            .refine(isValidReportedAmountUsd, `must be from 0 to ${MAX_REPORTED_SPEND_USD}`),
+          asOf: z.string().refine((v) => !Number.isNaN(Date.parse(v)), 'must be a timestamp'),
+        }),
+      )
+      .optional(),
     // Legacy flat OTLP fields — deprecated in favor of the nested `otlp`
     // object below, but still accepted for backward compatibility (using
     // one logs a deprecation warning; see pickOtlpValue() in loadMcpConfig).
@@ -729,6 +762,49 @@ function validateFilePositiveNumber(value: number, fieldName: string): boolean {
     value,
   });
   return false;
+}
+
+function policyFromName(raw: string | undefined, source: string): RetentionPolicy | null {
+  if (raw === undefined || raw === '') return null;
+  const name = raw.trim().toLowerCase();
+  if (isRetentionPolicy(name)) return name;
+  logger.warn(
+    `Unknown retention policy "${raw}" in ${source} — ignoring it. Valid names: ${Object.keys(RETENTION_PRESETS).join(', ')}`,
+    { source, value: raw },
+  );
+  return null;
+}
+
+// Precedence: env days > env policy > file days > file policy > default. An
+// explicit day count beats a preset at the same level. A file `null` is an
+// opt-out, so it also beats the file policy.
+function resolveRetainSessionsDays(file: {
+  retainSessionsDays?: number | null;
+  retentionPolicy?: string;
+}): number | null {
+  const envDays = process.env.NEW_RELIC_AI_RETAIN_SESSIONS_DAYS;
+  if (envDays !== undefined && envDays !== '') {
+    const v = parseInt(envDays, 10);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  const envPolicy = policyFromName(
+    process.env.NEW_RELIC_AI_RETENTION_POLICY,
+    'NEW_RELIC_AI_RETENTION_POLICY',
+  );
+  if (envPolicy !== null) return RETENTION_PRESETS[envPolicy];
+  if (typeof file.retainSessionsDays === 'number') {
+    // An invalid (non-positive) value falls through rather than to null:
+    // null already means an explicit opt-out, and a typo'd negative number is
+    // a mistake, not an opt-out.
+    if (validateFilePositiveNumber(file.retainSessionsDays, 'retainSessionsDays')) {
+      return file.retainSessionsDays;
+    }
+  } else if (file.retainSessionsDays === null) {
+    return null;
+  }
+  const filePolicy = policyFromName(file.retentionPolicy, 'retentionPolicy');
+  if (filePolicy !== null) return RETENTION_PRESETS[filePolicy];
+  return RETENTION_PRESETS.default;
 }
 
 // costRateMultiplier is a discount factor, not an arbitrary positive number —
@@ -1337,26 +1413,7 @@ export function loadMcpConfig(
 
     digestWebhookUrl: digestWebhookUrlSecret.value ?? null,
 
-    retainSessionsDays: (() => {
-      const raw = process.env.NEW_RELIC_AI_RETAIN_SESSIONS_DAYS;
-      if (raw !== undefined && raw !== '') {
-        const v = parseInt(raw, 10);
-        if (Number.isFinite(v) && v > 0) return v;
-      }
-      if (typeof file.retainSessionsDays === 'number') {
-        // An invalid (non-positive) value falls back to the default rather
-        // than null — null already has a distinct, intentional meaning
-        // (explicit opt-out, handled below); a typo'd negative number is a
-        // mistake, not an opt-out.
-        return validateFilePositiveNumber(file.retainSessionsDays, 'retainSessionsDays')
-          ? file.retainSessionsDays
-          : DEFAULT_RETAIN_SESSIONS_DAYS;
-      }
-      // Explicit `null` in the config file is a deliberate opt-out — distinct
-      // from the key being absent entirely, which falls through to the default.
-      if (file.retainSessionsDays === null) return null;
-      return DEFAULT_RETAIN_SESSIONS_DAYS;
-    })(),
+    retainSessionsDays: resolveRetainSessionsDays(file),
 
     mode,
     tiers: resolvedTiers,
