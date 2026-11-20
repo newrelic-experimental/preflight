@@ -3,6 +3,7 @@ import {
   rateColor,
   scoreColor,
   fmtDateTime,
+  fmtReportedAsOf,
   fmtTimeOfDay,
   fmtElapsed,
   formatDuration,
@@ -68,6 +69,18 @@ describe('fmtTimeOfDay()', () => {
   it('formats epoch ms as time only, no date', () => {
     const ms = new Date(2026, 0, 5, 14, 30).getTime();
     expect(fmtTimeOfDay(ms)).toMatch(/^\d{1,2}:30\s?[AP]M$/);
+  });
+});
+
+describe('fmtReportedAsOf()', () => {
+  const asOf = new Date(2026, 10, 6, 15, 42).toISOString();
+
+  it('shows time only for a current value', () => {
+    expect(fmtReportedAsOf(asOf, false)).toMatch(/^\d{1,2}:42\s?[AP]M$/);
+  });
+
+  it('adds the date for a stale value', () => {
+    expect(fmtReportedAsOf(asOf, true)).toMatch(/^Nov 6, \d{1,2}:42\s?[AP]M$/);
   });
 });
 
@@ -311,6 +324,24 @@ describe('formatTokenBreakdown()', () => {
         cacheCreationTokens: 2_000,
       }),
     ).toBe('Input 1.2k · Output 800 · Cache read 30.0k · Cache write 2.0k');
+  });
+});
+
+describe('formatTokenBreakdown() with dollars', () => {
+  it("appends each category's dollars to its token count", () => {
+    expect(
+      formatTokenBreakdown(
+        {
+          inputTokens: 1_200,
+          outputTokens: 800,
+          cacheReadTokens: 30_000,
+          cacheCreationTokens: 2_000,
+        },
+        { inputUsd: 0.4, outputUsd: 0.12, cacheReadUsd: 0.09, cacheCreationUsd: 0.0005 },
+      ),
+    ).toBe(
+      'Input 1.2k ($0.40) · Output 800 ($0.12) · Cache read 30.0k ($0.090) · Cache write 2.0k (<$0.001)',
+    );
   });
 });
 

@@ -1761,6 +1761,72 @@ describe('LocalStore', () => {
       expect(store.gcStaleBreadcrumbs()).toBe(0);
     });
 
+    describe('stale cwd breadcrumbs', () => {
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      const WRITERS = ['claude-code', 'kiro'];
+      const roots = () => [tmpDir, ...WRITERS.map((w) => resolve(tmpDir, 'breadcrumbs', w))];
+      const crumb = (root: string, kind: string, name: string, session: string, ageMs: number) => {
+        const dir = resolve(root, kind);
+        mkdirSync(dir, { recursive: true });
+        const path = resolve(dir, name);
+        writeFileSync(path, session);
+        const when = new Date(Date.now() - ageMs);
+        utimesSync(path, when, when);
+        return path;
+      };
+
+      it('deletes 90-day-old crumbs of every kind in the legacy root and every writer', () => {
+        const paths = roots().flatMap((root) => [
+          crumb(root, 'session-by-ppid', '9999999.txt', 'sess-old', 90 * DAY_MS),
+          crumb(root, 'session-by-cwd', '-repo.txt', 'sess-old', 90 * DAY_MS),
+        ]);
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(6);
+        for (const path of paths) expect(existsSync(path)).toBe(false);
+      });
+
+      it('keeps a cwd crumb touched within the last day or two', () => {
+        const paths = roots().map((root) =>
+          crumb(root, 'session-by-cwd', '-repo.txt', 'sess-new', 2 * DAY_MS),
+        );
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(0);
+        for (const path of paths) expect(existsSync(path)).toBe(true);
+      });
+
+      it('keeps an old cwd crumb while a fresh live ppid crumb names the same session', () => {
+        const paths = roots().map((root) => {
+          crumb(root, 'session-by-ppid', `${process.pid}.txt`, 'sess-live', 1 * DAY_MS);
+          return crumb(root, 'session-by-cwd', '-repo.txt', 'sess-live', 30 * DAY_MS);
+        });
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(0);
+        for (const path of paths) expect(existsSync(path)).toBe(true);
+      });
+
+      it('keeps a 30-hour-old cwd crumb of a live long session', () => {
+        const paths = roots().map((root) => {
+          crumb(root, 'session-by-ppid', `${process.pid}.txt`, 'sess-live', 60_000);
+          return crumb(root, 'session-by-cwd', '-repo.txt', 'sess-live', 30 * 60 * 60 * 1000);
+        });
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(0);
+        for (const path of paths) expect(existsSync(path)).toBe(true);
+      });
+
+      it('deletes an old cwd crumb whose fresh ppid crumb names a different session', () => {
+        const root = roots()[1]!;
+        crumb(root, 'session-by-ppid', `${process.pid}.txt`, 'sess-other', 60_000);
+        const old = crumb(root, 'session-by-cwd', '-repo.txt', 'sess-old', 30 * DAY_MS);
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(1);
+        expect(existsSync(old)).toBe(false);
+      });
+
+      it('collects the cwd crumb just past the window and keeps it just inside', () => {
+        const inside = crumb(tmpDir, 'session-by-cwd', '-a.txt', 's1', 6.9 * DAY_MS);
+        const outside = crumb(tmpDir, 'session-by-cwd', '-b.txt', 's2', 7.1 * DAY_MS);
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(1);
+        expect(existsSync(inside)).toBe(true);
+        expect(existsSync(outside)).toBe(false);
+      });
+    });
+
     it('skips files that are not <pid>.txt', () => {
       mkdirSync(tmpDir, { recursive: true });
       const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');

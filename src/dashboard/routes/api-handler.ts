@@ -2,10 +2,18 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
 import {
+  MAX_REPORTED_SPEND_USD,
+  isPeriodKind,
+  isValidReportedAmountUsd,
+  parseStoredReportedSpend,
+  type ReportedSpend,
+} from '../../lib/reported-spend.js';
+import {
   digestWebhookUrlOverrideSource,
   digestWebhookUrlOverride,
   normalizeDeveloperName,
   redactSensitive,
+  MAX_RETAIN_SESSIONS_DAYS,
 } from '../../config.js';
 import {
   isSyntheticSessionId,
@@ -49,6 +57,7 @@ import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
 import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
 import type { ModelBreakdownEntry, ModelUsageMetrics } from '../../metrics/model-usage-tracker.js';
 import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
+import type { TaskCompletionMetrics } from '../../metrics/task-completion-tracker.js';
 import type {
   QualityEvent,
   QualityProxyMetrics,
@@ -98,6 +107,7 @@ import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import {
   digestWebhookUrlShadowedBy,
+  handleGetDigestPreview,
   handleSendDigest,
   isDigestWebhookCommandConfigured,
 } from '../../tools/cross-session-tools.js';
@@ -115,6 +125,7 @@ import { computeLatencyPercentiles } from './latency-percentiles.js';
 import type { AntiPatternSegment } from './replay-analyzer.js';
 import { analyzeReplayTimeline } from './replay-analyzer.js';
 import { pairToolCallsFromBufferEvents } from './tool-selection-aggregate.js';
+import { primaryTierName, summarizeTiers } from '../../transport/tier-types.js';
 interface RawAuditRecord {
   readonly id: string;
   readonly timestamp: number;
@@ -511,6 +522,7 @@ export interface ApiHandlerDeps {
   readonly weeklySummaryGenerator?: WeeklySummaryGenerator;
   readonly budgetTracker?: { getStatus: () => BudgetStatus };
   readonly latencyTracker?: { getMetrics: () => LatencyMetrics };
+  readonly taskCompletionTracker?: { getMetrics: () => TaskCompletionMetrics };
   readonly personalCoach?: { generate: () => PersonalInsightsResult };
   readonly trendAnalyzer?: {
     computeTrends: () => {
@@ -623,6 +635,10 @@ export interface ApiHandlerDeps {
     // see computeCrossProcessTodaySessionIds(). `?.` falls back to an empty
     // set for older fakes/mocks.
     getTodaySessionIds?: (options?: { includeSynthetic?: boolean }) => string[];
+    // Optional: sessions the live trackers hold data for, including token-only
+    // sessions and synthetic ids, never expired by midnight or staleness. Used
+    // by sessionIdsHeldByLiveTrackers() to skip persisted duplicates.
+    getHeldSessionIds?: () => string[];
   };
   readonly contextTracker?: { getMetrics: (sessionId?: string) => ContextTrackerMetrics };
   readonly contextCompositionTracker?: { getMetrics: () => ContextCompositionMetrics };
@@ -1321,12 +1337,17 @@ export function computeCrossProcessTodaySessionIds(deps: ApiHandlerDeps): string
 }
 
 // Sessions whose activity this process's in-memory trackers already hold: its
-// own id plus every session it drained today. --local drains every session, so
-// a persisted copy of any of them must not be merged on top of the live totals.
+// own id plus every session it drained. --local drains every session, so a
+// persisted copy of any of them must not be merged on top of the live totals.
+// Keyed to the registry's held set rather than today's touched sessions: a
+// token-only session (model usage, no tool call) is held too, and the trackers
+// are never reset at midnight, so the held set must not expire then either.
 function sessionIdsHeldByLiveTrackers(deps: ApiHandlerDeps): ReadonlySet<string> {
   const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
   const held = new Set<string>(
-    deps.liveSessionRegistry?.getTodaySessionIds?.({ includeSynthetic: true }) ?? [],
+    deps.liveSessionRegistry?.getHeldSessionIds?.() ??
+      deps.liveSessionRegistry?.getTodaySessionIds?.({ includeSynthetic: true }) ??
+      [],
   );
   if (ownSessionId !== undefined) held.add(ownSessionId);
   return held;
@@ -1941,8 +1962,14 @@ export function createApiHandler(
     // already-loaded `todaySessions` rather than re-invoking
     // loadTodaySessions — keeps disk reads at one per request and preserves
     // the cache-hit assertions in api-handler.test.ts.
+    // loadSessionsWithActivityToday() also returns a session resumed from an
+    // older start date (its filename keeps that date). Every cost and token
+    // figure below is clamped to today, so widening the set adds only today's
+    // share.
     const overlappingTodaySessions =
-      deps.sessionStore?.loadSessionsOverlappingToday?.() ?? todaySessions;
+      deps.sessionStore?.loadSessionsWithActivityToday?.() ??
+      deps.sessionStore?.loadSessionsOverlappingToday?.() ??
+      todaySessions;
     // Local-day key for "today", shared by the persisted-session loop below and
     // the live top-up further down. Sessions persisted with per-day cost buckets
     // (costByDayUsd) let us sum a session's REAL today-spend instead of
@@ -2044,7 +2071,9 @@ export function createApiHandler(
       // captured by the todaySessions loop (which filtered by start-date).
       if (typeof s.sessionId === 'string' && !sessionsSeen.has(s.sessionId)) {
         sessionsSeen.add(s.sessionId);
-        antiPatternCount += s.antiPatterns?.length ?? 0;
+        // antiPatterns is lifetime with no per-day split, so a session resumed
+        // from before yesterday would add its whole history to today.
+        if (s.startTime >= startMs - 86_400_000) antiPatternCount += s.antiPatterns?.length ?? 0;
       }
     }
 
@@ -2475,6 +2504,11 @@ export function createApiHandler(
       byTool: today.byTool,
       slowestCalls: live?.slowestCalls ?? [],
     });
+  });
+
+  routes.set('GET /api/task-completion', (_req, res) => {
+    if (!deps.taskCompletionTracker) return unavailable(res, 'taskCompletionTracker');
+    jsonOk(res, deps.taskCompletionTracker.getMetrics());
   });
 
   routes.set('GET /api/model-usage', (_req, res) => {
@@ -3027,13 +3061,13 @@ export function createApiHandler(
           }
         }
 
-        // Prefer loadSessionsOverlappingToday() so a session that started
-        // yesterday and is still running isn't invisible here —
-        // loadTodaySessions() filters by filename date (= start date) and
-        // would otherwise silently drop it. The `entry.timestamp >= startMs`
-        // check just below already excludes that session's yesterday-side
-        // entries, so widening the input set can't double-count anything.
+        // Prefer loadSessionsWithActivityToday() so a session resumed from an
+        // older start date isn't dropped; loadTodaySessions() filters by
+        // filename date (= start date). The `entry.timestamp >= startMs` check
+        // below excludes that session's pre-today entries, so widening the
+        // input set can't add out-of-day buckets.
         const todaySessions =
+          deps.sessionStore?.loadSessionsWithActivityToday?.() ??
           deps.sessionStore?.loadSessionsOverlappingToday?.() ??
           deps.sessionStore?.loadTodaySessions() ??
           [];
@@ -3198,12 +3232,11 @@ export function createApiHandler(
         'retainSessionsDays' in disk
           ? (disk.retainSessionsDays as number | null)
           : c.retainSessionsDays,
+      reportedSpend: parseStoredReportedSpend(disk.reportedSpend),
       digestWebhookUrl: fileWebhookUrl,
       // Where sends actually read the URL from. The value above is only the
       // file's; env or a command outranks it, and its value is never returned.
       digestWebhookUrlSource: overrideSource ?? (fileWebhookUrl ? 'file' : 'unset'),
-      digestSchedule:
-        typeof disk.digestSchedule === 'string' ? disk.digestSchedule : c.digestSchedule,
       alerts: {
         personal: {
           dailyCostUsd:
@@ -3235,6 +3268,8 @@ export function createApiHandler(
       storagePath: c.storagePath,
       highSecurity: c.highSecurity,
       licenseKey: c.licenseKey ? '••••' + c.licenseKey.slice(-4) : null,
+      tiers: summarizeTiers(c.tiers),
+      primaryTier: primaryTierName(c.tiers),
     });
   });
 
@@ -3308,14 +3343,42 @@ export function createApiHandler(
         digestUrlOnly = false;
       }
     }
+    if ('reportedSpend' in body) {
+      const rs = body.reportedSpend as Record<string, unknown> | null;
+      const unknownKeys =
+        typeof rs === 'object' && rs !== null
+          ? Object.keys(rs).filter((k) => k !== 'periodKind' && k !== 'amountUsd')
+          : [];
+      if (typeof rs !== 'object' || rs === null || Array.isArray(rs)) {
+        errors.push('reportedSpend must be an object');
+      } else if (unknownKeys.length > 0) {
+        errors.push(`reportedSpend.${unknownKeys[0]} is set by the server and cannot be sent`);
+      } else if (!isPeriodKind(rs.periodKind)) {
+        errors.push("reportedSpend.periodKind must be 'daily' or 'weekly'");
+      } else if (rs.amountUsd !== null && !isValidReportedAmountUsd(rs.amountUsd)) {
+        errors.push(
+          `reportedSpend.amountUsd must be a number from 0 to ${MAX_REPORTED_SPEND_USD}, or null to clear`,
+        );
+      } else {
+        const periodKind = rs.periodKind;
+        const kept = parseStoredReportedSpend(existing.reportedSpend).filter(
+          (e) => e.periodKind !== periodKind,
+        );
+        const next: ReportedSpend[] =
+          rs.amountUsd === null
+            ? kept
+            : [...kept, { periodKind, amountUsd: rs.amountUsd, asOf: new Date().toISOString() }];
+        existing.reportedSpend = next;
+      }
+    }
     if ('retainSessionsDays' in body) {
       if (
         body.retainSessionsDays !== null &&
         (!Number.isInteger(body.retainSessionsDays) ||
           (body.retainSessionsDays as number) < 1 ||
-          (body.retainSessionsDays as number) > 365)
+          (body.retainSessionsDays as number) > MAX_RETAIN_SESSIONS_DAYS)
       ) {
-        errors.push('retainSessionsDays must be integer 1-365 or null');
+        errors.push(`retainSessionsDays must be integer 1-${MAX_RETAIN_SESSIONS_DAYS} or null`);
       } else {
         existing.retainSessionsDays = body.retainSessionsDays;
         digestUrlOnly = false;
@@ -3340,14 +3403,6 @@ export function createApiHandler(
         } else {
           existing.digestWebhookUrl = body.digestWebhookUrl;
         }
-      }
-    }
-    if ('digestSchedule' in body) {
-      if (typeof body.digestSchedule !== 'string') {
-        errors.push('digestSchedule must be a string');
-      } else {
-        existing.digestSchedule = body.digestSchedule;
-        digestUrlOnly = false;
       }
     }
     if ('alerts' in body) {
@@ -3415,6 +3470,11 @@ export function createApiHandler(
 
     writeFileSync(deps.configFilePath, JSON.stringify(existing, null, 2), { mode: 0o600 });
     jsonOk(res, { ok: true, restartRequired: !digestUrlOnly });
+  });
+
+  routes.set('GET /api/digest/preview', (_req, res) => {
+    if (!deps.weeklySummaryGenerator) return unavailable(res, 'digest');
+    jsonOk(res, handleGetDigestPreview(deps.weeklySummaryGenerator));
   });
 
   routes.set('POST /api/digest/send', async (_req, res) => {
