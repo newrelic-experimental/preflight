@@ -1,30 +1,17 @@
 /**
- * Resolves the bundled `pricing-overlay/pricing.json` overlay path (see
- * `pricing-overlay/README.md` for what it fixes and why), or `null` when it
- * cannot be located.
- *
- * Reuses `resolveDataDir()` (src/deploy/data-paths.ts) for the actual
- * dev/bundled-layout probing, wrapped here because that function throws when
- * a directory is missing — appropriate for alerts/dashboards, which their own
- * commands cannot run without, but wrong for this overlay: pricing is a soft
- * enhancement, and its absence (e.g. an unusual install layout) must never
- * block MCP server startup.
+ * The pricing facade: every Preflight cost lookup goes through this module.
+ * Rate data lives in `src/core/pricing-data.ts`; this file layers model id
+ * normalization, aliases, custom pricing files, and the LiteLLM refresh on top.
  */
 
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { extname, join, resolve } from 'node:path';
+import { extname, join } from 'node:path';
 
 import { createLogger, DEFAULT_PRICING_TABLE } from '../core/index.js';
-import {
-  calculateCost,
-  initPricing,
-  loadCustomPricing,
-  resolveModelPricing,
-} from '../core/pricing.js';
+import { calculateCost, initPricing, resolveModelPricing } from '../core/pricing.js';
 import type { CostBreakdown, ModelPricing, PricingTable } from '../core/pricing.js';
 import type { TokenUsage } from '../core/index.js';
-import { resolveDataDir } from '../deploy/data-paths.js';
 import { estimateFromFamily, stripTrailingTag, type PricingResolution } from './model-pricing.js';
 
 const logger = createLogger('pricing-overlay');
@@ -76,9 +63,9 @@ function canonicalModelId(raw: string): string {
 const MAX_MEMOIZED_MODELS = 512;
 const pricingMemo = new Map<string, PricingResolution>();
 
-// Ids added by the gap-fill overlay or a custom pricing file. The pricing
-// singleton keeps its merged table private, so they are tracked here to let
-// them stand in as family siblings next to the bundled table.
+// Ids added by a custom pricing file. The pricing singleton keeps its merged
+// table private, so they are tracked here to let them stand in as family
+// siblings next to the built-in table.
 let extraPricingIds: readonly string[] = [];
 
 // Refreshed prices stay out of the built-in singleton: its prefix matching would
@@ -170,48 +157,6 @@ export function calculateModelCost(model: string, usage: TokenUsage): CostBreakd
   return priceModelUsage(model, usage).breakdown;
 }
 
-export function resolvePricingOverlayPath(): string | null {
-  try {
-    return resolve(resolveDataDir('pricing-overlay'), 'pricing.json');
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Loads an overlay file and applies only the entries that don't already
- * resolve against the built-in pricing table — enforcing the
- * gap-fill-only contract at the code level instead of by convention alone.
- * Without this, `initPricing()`'s `Object.assign`-based merge would happily
- * let an overlay entry silently override a built-in price. This already
- * happened once: the built-in table gained 4 models this overlay also
- * covered, with different (stale) tier semantics — caught only by a human
- * noticing during a later merge, not by any test or runtime check.
- *
- * Exported for direct testing of the collision guard without needing to
- * fake `resolvePricingOverlayPath()`'s resolution logic.
- */
-export function applyGapFilledOverlay(overlayPath: string): void {
-  const overlay = loadCustomPricing(overlayPath);
-  if (!overlay) return;
-
-  const gaps: Record<string, ModelPricing> = {};
-  for (const [modelId, pricing] of Object.entries(overlay)) {
-    if (resolveModelPricing(modelId)) {
-      logger.warn(
-        'pricing overlay entry already resolves against the built-in pricing table — dropped to avoid overriding it',
-        { modelId },
-      );
-      continue;
-    }
-    gaps[modelId] = pricing;
-  }
-  if (Object.keys(gaps).length === 0) return;
-
-  initPricingFromEntries(gaps);
-  clearPricingMemo();
-}
-
 function initPricingFromEntries(entries: Record<string, unknown>): void {
   // initPricing() only accepts a file path, so the entries are written to a
   // throwaway temp file rather than the original path.
@@ -262,8 +207,8 @@ function validateAliasTargets(aliases: Map<string, string>): void {
  * opaque model name to a known model id; the remaining entries are rate
  * objects handed to the shared loader, which would otherwise warn on the
  * `aliases` key and reject an alias-only file as having no valid entries.
- * An alias-only file sets no rates, so the bundled gap-fill overlay still
- * applies, and alias targets are validated after it.
+ * An alias-only file sets no rates, so the built-in table stays in effect,
+ * and alias targets are validated against it.
  */
 function applyCustomPricingFile(path: string): void {
   let parsed: Record<string, unknown>;
@@ -283,7 +228,6 @@ function applyCustomPricingFile(path: string): void {
     initPricingFromEntries(rates);
   } else {
     initPricing(null);
-    applyBundledOverlay();
   }
   const aliases = parseAliases(rawAliases);
   validateAliasTargets(aliases);
@@ -291,38 +235,29 @@ function applyCustomPricingFile(path: string): void {
 }
 
 /**
- * Applies the bundled pricing gap-fill overlay to the process-wide pricing
- * singleton at startup, unless the user has configured their own
- * `customPricingFile` (env or config `customPricingFile`, see
- * `src/config.ts`'s `McpServerConfig`) — that always takes precedence and is applied
- * unchanged. See pricing-overlay/README.md for why: `initPricing()`/
- * `PricingTable.reset()` accept exactly one file path and always rebuild
- * from `DEFAULT_PRICING_TABLE` — repeated calls REPLACE, they do not merge —
- * so a user's own pricing file and this bundled overlay are mutually
- * exclusive today; layering both would require a merge feature this doesn't
- * build (YAGNI unless requested).
+ * Sets the process-wide pricing state from the user's `customPricingFile`
+ * (env or config, see `src/config.ts`'s `McpServerConfig`). With no file, it
+ * resets to the built-in table (`initPricing(null)`) and clears aliases and
+ * extra ids. With a file, its rate entries replace the built-in table and its
+ * `aliases` map opaque model names to known model ids.
+ *
+ * `initPricing()` accepts one file and always rebuilds from
+ * `DEFAULT_PRICING_TABLE`, so repeated calls replace rather than merge.
  */
-export function applyPricingOverlay(customPricingFile: string | null): void {
+export function applyCustomPricing(customPricingFile: string | null): void {
   try {
-    applyPricingOverlayUncached(customPricingFile);
+    applyCustomPricingUncached(customPricingFile);
   } finally {
     clearPricingMemo();
   }
 }
 
-function applyPricingOverlayUncached(customPricingFile: string | null): void {
+function applyCustomPricingUncached(customPricingFile: string | null): void {
   pricingAliases = new Map();
   extraPricingIds = [];
   if (customPricingFile) {
     applyCustomPricingFile(customPricingFile);
     return;
   }
-  applyBundledOverlay();
-}
-
-function applyBundledOverlay(): void {
-  const overlayPath = resolvePricingOverlayPath();
-  if (overlayPath) {
-    applyGapFilledOverlay(overlayPath);
-  }
+  initPricing(null);
 }

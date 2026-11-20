@@ -1966,6 +1966,7 @@ async function main(): Promise<void> {
           weeklySummaryGenerator,
           budgetTracker,
           latencyTracker,
+          taskCompletionTracker,
           personalCoach,
           trendAnalyzer,
           recommendationEngine,
