@@ -201,6 +201,7 @@ export interface SessionListEntry {
     readonly agentCount?: number;
   }>;
   readonly model?: string | null;
+  readonly modelBreakdown?: Readonly<Record<string, { readonly requestCount?: number }>>;
   readonly toolSuccessRate?: number | null;
   readonly efficiencyScore?: number | null;
   readonly tokensInput?: number;
@@ -623,6 +624,14 @@ export interface TokenBreakdown {
   readonly cacheCreationTokens: number;
 }
 
+// Mirrors src/storage/types.ts's UsdBreakdown.
+export interface UsdBreakdown {
+  readonly inputUsd: number;
+  readonly outputUsd: number;
+  readonly cacheReadUsd: number;
+  readonly cacheCreationUsd: number;
+}
+
 export interface UsageShareRow {
   readonly key: string;
   readonly costUsd: number;
@@ -630,6 +639,7 @@ export interface UsageShareRow {
   readonly count: number;
   readonly sharePct: number;
   readonly breakdown?: TokenBreakdown;
+  readonly breakdownUsd?: UsdBreakdown;
 }
 
 export interface UsageInsight extends UsageShareRow {
@@ -1266,7 +1276,6 @@ export interface SettingsPatch {
   weeklyBudgetUsd?: number | null;
   retainSessionsDays?: number | null;
   digestWebhookUrl?: string | null;
-  digestSchedule?: string;
   alerts?: {
     personal?: {
       dailyCostUsd?: number;
@@ -1317,13 +1326,21 @@ export interface SettingsResponse {
   readonly storagePath: string;
   readonly highSecurity: boolean;
   readonly licenseKey: string | null;
+  readonly tiers: readonly {
+    readonly name: string;
+    readonly type: 'nr' | 'local';
+    readonly accountId?: string;
+    readonly path?: string;
+    readonly primary: boolean;
+    readonly eventTypes: readonly string[];
+  }[];
+  readonly primaryTier: string | null;
   readonly sessionBudgetUsd: number | null;
   readonly dailyBudgetUsd: number | null;
   readonly weeklyBudgetUsd: number | null;
   readonly retainSessionsDays: number | null;
   readonly digestWebhookUrl: string | null;
   readonly digestWebhookUrlSource: 'env' | 'command' | 'file' | 'unset';
-  readonly digestSchedule: string;
   readonly alerts: {
     readonly personal: {
       readonly dailyCostUsd: number;
@@ -1374,6 +1391,18 @@ export const postDigestSend = (): Promise<DigestSendResponse> =>
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return (await r.json()) as DigestSendResponse;
   });
+
+export function digestSendStatus(result: DigestSendResponse): string {
+  try {
+    const parsed = JSON.parse(result.content[0]?.text ?? '') as { ok?: boolean; error?: string };
+    return parsed.ok ? 'Digest sent.' : (parsed.error ?? 'Failed to send.');
+  } catch {
+    return 'Done.';
+  }
+}
+
+export const fetchDigestPreview = (): Promise<DigestSendResponse> =>
+  getJson<DigestSendResponse>('/api/digest/preview');
 
 export interface ObservabilityHealthResponse {
   readonly watcherActive?: boolean;
@@ -1575,6 +1604,7 @@ export const qk = {
   computeWaste: ['compute-waste'] as const,
   audit: ['audit'] as const,
   weekly: ['weekly'] as const,
+  digestPreview: ['digest-preview'] as const,
   budget: ['budget'] as const,
   costPerOutcome: (days: number) => ['cost-per-outcome', days] as const,
   usageInsights: (window: number | 'today') => ['usage-insights', window] as const,

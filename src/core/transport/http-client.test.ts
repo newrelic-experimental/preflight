@@ -41,7 +41,7 @@ afterEach(() => {
 
 function baseOptions(overrides: Partial<HttpSendOptions> = {}): HttpSendOptions {
   return {
-    url: 'https://insights-collector.newrelic.com/v1/accounts/12345/events',
+    url: 'https://insights-collector.newrelic.com/v1/accounts/events',
     body: [{ eventType: 'Test', value: 1 }],
     licenseKey: 'us01xxTESTKEY',
     maxRetries: 3,
@@ -177,73 +177,53 @@ describe('resolveRegion', () => {
 // ---------------------------------------------------------------------------
 describe('getEventsApiUrl', () => {
   it('returns staging endpoint for staging region', () => {
-    expect(getEventsApiUrl('908482', 'staging')).toBe(
-      `https://${stagingHost('insights-collector')}/v1/accounts/908482/events`,
+    expect(getEventsApiUrl('staging')).toBe(
+      `https://${stagingHost('insights-collector')}/v1/accounts/events`,
     );
   });
 
   it('returns US endpoint for us region', () => {
-    expect(getEventsApiUrl('12345', 'us')).toBe(
-      'https://insights-collector.newrelic.com/v1/accounts/12345/events',
+    expect(getEventsApiUrl('us')).toBe(
+      'https://insights-collector.newrelic.com/v1/accounts/events',
     );
   });
 
   it('returns EU endpoint for eu region', () => {
-    expect(getEventsApiUrl('12345', 'eu')).toBe(
-      'https://insights-collector.eu01.nr-data.net/v1/accounts/12345/events',
+    expect(getEventsApiUrl('eu')).toBe(
+      'https://insights-collector.eu01.nr-data.net/v1/accounts/events',
     );
   });
 
   it('returns FedRAMP endpoint for gov region', () => {
-    expect(getEventsApiUrl('12345', 'gov')).toBe(
-      'https://gov-insights-collector.newrelic.com/v1/accounts/12345/events',
+    expect(getEventsApiUrl('gov')).toBe(
+      'https://gov-insights-collector.newrelic.com/v1/accounts/events',
     );
   });
 
   it('returns JP endpoint for jp region', () => {
-    expect(getEventsApiUrl('12345', 'jp')).toBe(
-      'https://insights-collector.jp.nr-data.net/v1/accounts/12345/events',
+    expect(getEventsApiUrl('jp')).toBe(
+      'https://insights-collector.jp.nr-data.net/v1/accounts/events',
     );
   });
 
   // literal-hostname override
   it('uses collectorHost as literal URL host when it contains a dot', () => {
-    expect(getEventsApiUrl('12345', 'us', 'collector.example.com')).toBe(
-      'https://collector.example.com/v1/accounts/12345/events',
+    expect(getEventsApiUrl('us', 'collector.example.com')).toBe(
+      'https://collector.example.com/v1/accounts/events',
     );
   });
 
   it('uses collectorHost as literal URL host when it contains a port', () => {
-    expect(getEventsApiUrl('12345', 'us', 'proxy.local:9000')).toBe(
-      'https://proxy.local:9000/v1/accounts/12345/events',
+    expect(getEventsApiUrl('us', 'proxy.local:9000')).toBe(
+      'https://proxy.local:9000/v1/accounts/events',
     );
   });
 
   it('ignores collectorHost without dot or colon and falls through to region', () => {
     // 'staging' keyword has no dot — region resolution must determine the URL.
-    expect(getEventsApiUrl('12345', 'staging', 'staging')).toBe(
-      `https://${stagingHost('insights-collector')}/v1/accounts/12345/events`,
+    expect(getEventsApiUrl('staging', 'staging')).toBe(
+      `https://${stagingHost('insights-collector')}/v1/accounts/events`,
     );
-  });
-
-  // Defensive guard against an empty / null / undefined
-  // accountId that bypassed loadConfig's fail-fast (JS callers, non-null
-  // assertion casts, custom config paths). Without the guard, the URL becomes
-  // `.../accounts/null/events` and NR returns 404 silently.
-  it('throws when accountId is empty string', () => {
-    expect(() => getEventsApiUrl('', 'us')).toThrow('accountId is required');
-  });
-
-  it('throws when accountId is the string "null" (e.g. from `String(null)` in JS)', () => {
-    expect(() => getEventsApiUrl('null', 'us')).toThrow('accountId is required');
-  });
-
-  it('throws when accountId is the string "undefined"', () => {
-    expect(() => getEventsApiUrl('undefined', 'us')).toThrow('accountId is required');
-  });
-
-  it('error message points the operator at NEW_RELIC_ACCOUNT_ID', () => {
-    expect(() => getEventsApiUrl('', 'us')).toThrow('NEW_RELIC_ACCOUNT_ID');
   });
 });
 
@@ -370,7 +350,7 @@ describe('sendWithRetry', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0];
-    expect(url).toBe('https://insights-collector.newrelic.com/v1/accounts/12345/events');
+    expect(url).toBe('https://insights-collector.newrelic.com/v1/accounts/events');
     const headers = init!.headers as Record<string, string>;
     expect(headers['Api-Key']).toBe('us01xxTESTKEY');
     expect(headers['Content-Type']).toBe('application/json');

@@ -45,7 +45,7 @@ const mockSendLogs = jest
 function makeIngestOptions(overrides?: Partial<NrIngestOptions>): NrIngestOptions {
   return {
     licenseKey: 'test-license-key',
-    transportOptions: { accountId: '12345' },
+    transportOptions: {},
     developer: 'test-dev',
     appName: 'test-app',
     sessionTracker: new SessionTracker('test-session'),

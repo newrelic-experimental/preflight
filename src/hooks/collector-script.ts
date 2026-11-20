@@ -17,7 +17,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, utimesSync } from '
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { redactSecrets } from '../redaction-patterns.js';
+import { cutAtWord, redactSecrets } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import {
   CLAUDE_CODE_ENV_SIGNALS,
@@ -26,8 +26,15 @@ import {
 import { hookEventFromArg } from '../hook-subcommands.js';
 import { canonicalPlatformName, ENGINE_ENV_KEYS } from '../platforms/platform-names.js';
 import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
+import {
+  claimReport,
+  hookSelfReportLine,
+  releaseReport,
+  SESSION_ID_RE,
+  type HookReportCall,
+} from './self-report.js';
 import { breadcrumbRoot, breadcrumbWriter } from './session-breadcrumbs.js';
-import { appendToHookBuffer } from '../storage/hook-buffer.js';
+import { appendToHookBuffer, LineWrittenError } from '../storage/hook-buffer.js';
 import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
 import { classifyBash } from './bash-classifier.js';
 import { mintToolUseId, takeMintedToolUseId } from './minted-tool-use-ids.js';
@@ -36,8 +43,11 @@ import { mintToolUseId, takeMintedToolUseId } from './minted-tool-use-ids.js';
 // Lightweight config (env vars only — no file reads)
 // ---------------------------------------------------------------------------
 
-const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 const DEFAULT_STORAGE_DIR = resolve(homedir(), '.newrelic-preflight');
+
+function getStorageDir(): string {
+  return process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+}
 
 /**
  * Resolve the per-session buffer path. Validates sessionId against
@@ -53,7 +63,7 @@ function getBufferPath(sessionId?: string): string {
   if (process.env.NEW_RELIC_AI_MCP_BUFFER_PATH !== undefined) {
     return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   }
-  const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+  const storageDir = getStorageDir();
   const safeId =
     typeof sessionId === 'string' && SESSION_ID_RE.test(sessionId) ? sessionId : 'unknown';
   return resolve(storageDir, `buffer-${safeId}.jsonl`);
@@ -107,6 +117,24 @@ export function getMaxContentLength(): number {
   return parsed;
 }
 
+// These event names exist on only one platform, so the event itself names it.
+const HOOK_EVENT_PLATFORM: Readonly<Record<string, string>> = {
+  beforeshellexecution: 'cursor',
+  aftershellexecution: 'cursor',
+  beforemcpexecution: 'cursor',
+  aftermcpexecution: 'cursor',
+  beforereadfile: 'cursor',
+  afterfileedit: 'cursor',
+  pre_read_code: 'windsurf',
+  post_read_code: 'windsurf',
+  pre_write_code: 'windsurf',
+  post_write_code: 'windsurf',
+  pre_run_command: 'windsurf',
+  post_run_command: 'windsurf',
+  pre_mcp_tool_use: 'windsurf',
+  post_mcp_tool_use: 'windsurf',
+};
+
 /**
  * Ambient stamping is deliberately limited to Claude Code, the only platform
  * whose hook-process env signal is verified; other platforms stamp via
@@ -146,7 +174,8 @@ function redact(value: string): string {
   let result = value;
   if (Buffer.byteLength(value, 'utf8') > MAX_REDACT_BYTES) {
     const buf = Buffer.from(value, 'utf8').subarray(0, MAX_REDACT_BYTES);
-    result = buf.toString('utf8').replace(/�$/, ''); // drop any partial surrogate at cut point
+    const kept = buf.toString('utf8').replace(/�$/, ''); // drop any partial surrogate at cut point
+    result = cutAtWord(value, kept.length);
   }
   return redactSecrets(result);
 }
@@ -902,6 +931,7 @@ function processHook(raw: string, cliEvent?: string): void {
   const agyToolUseId = typeof data.stepIdx === 'number' ? { toolUseId: String(data.stepIdx) } : {};
 
   let event: Record<string, unknown>;
+  let selfReportCall: HookReportCall | undefined;
 
   if (eventName === 'pretooluse') {
     event = {
@@ -1126,6 +1156,13 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       success: true,
     };
+    // afterMCPExecution names the server from mcp.json (https://cursor.com/docs/agent/hooks).
+    selfReportCall = {
+      tool: mcpTool,
+      server: data.mcp_server_name,
+      args: data.tool_input,
+      result: data.result_json,
+    };
   } else if (eventName === 'beforereadfile') {
     // Cursor has no "afterReadFile" event — beforeReadFile is the only file-read
     // hook that exists (confirmed: https://blog.gitbutler.com/cursor-hooks-deep-dive
@@ -1243,6 +1280,13 @@ function processHook(raw: string, cliEvent?: string): void {
       tool: mcpTool,
       timestamp,
       success: true,
+    };
+    // tool_info.mcp_server_name names the server (https://docs.windsurf.com/de/windsurf/cascade/hooks).
+    selfReportCall = {
+      tool: mcpTool,
+      server: toolInfo.mcp_server_name,
+      args: toolInfo.mcp_tool_arguments,
+      result: toolInfo.mcp_result,
     };
   } else if (isAntigravityPre) {
     // Antigravity PreToolUse — see isAntigravityPre above for how it is told
@@ -1414,13 +1458,19 @@ function processHook(raw: string, cliEvent?: string): void {
   // only the light claude-code-adapter const, not the full registry) instead
   // of going through PlatformRegistry — registry-based detection adds
   // measurable overhead on this hot, pre+post-per-tool-call path.
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ''] ?? detectStampPlatform();
   if (stampedPlatform) event.platform = stampedPlatform;
+  const selfReport =
+    selfReportCall &&
+    stampedPlatform &&
+    hookSelfReportLine(selfReportCall, sessionId, timestamp, stampedPlatform);
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
 
+  const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : undefined;
   // Write to buffer — wrapped in try/catch for resilience.
+  let reportAttempted = false;
   try {
     const bufferPath = getBufferPath(sessionId);
     const bufferDir = dirname(bufferPath);
@@ -1443,7 +1493,15 @@ function processHook(raw: string, cliEvent?: string): void {
     const line = JSON.stringify(event) + '\n';
 
     appendToHookBuffer(bufferPath, line);
+    if (newReport) {
+      reportAttempted = true;
+      appendToHookBuffer(bufferPath, JSON.stringify(newReport) + '\n');
+    }
   } catch (err) {
+    // A report line a drain can read keeps its claim. Any other failure frees it for a retry.
+    if (newReport && !(reportAttempted && err instanceof LineWrittenError)) {
+      releaseReport(getStorageDir(), newReport);
+    }
     // A closed stderr (EPIPE) must not turn a dropped event into a failed hook.
     if (!stderrSinkInstalled) {
       stderrSinkInstalled = true;

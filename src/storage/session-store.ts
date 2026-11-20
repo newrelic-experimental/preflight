@@ -36,6 +36,7 @@ import type {
   AttributionFacet,
   AttributionBucket,
   TokenBreakdown,
+  UsdBreakdown,
 } from './types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type {
@@ -234,6 +235,7 @@ export interface FullSessionSummary extends SessionSummary {
   readonly assistantMessages: number;
   readonly userCorrections: number;
   readonly outcome: string;
+  readonly observerCompletedAt?: number;
   readonly platform?: string;
   readonly instructionPromptHash?: string | null;
   readonly timeline?: ReplayTimelineEntry[];
@@ -396,6 +398,20 @@ function mergeTokenBreakdown(
   };
 }
 
+function mergeUsdBreakdown(
+  a: UsdBreakdown | undefined,
+  b: UsdBreakdown | undefined,
+): UsdBreakdown | undefined {
+  if (!a && !b) return undefined;
+  const maxNum = (x: number | undefined, y: number | undefined): number => Math.max(x ?? 0, y ?? 0);
+  return {
+    inputUsd: maxNum(a?.inputUsd, b?.inputUsd),
+    outputUsd: maxNum(a?.outputUsd, b?.outputUsd),
+    cacheReadUsd: maxNum(a?.cacheReadUsd, b?.cacheReadUsd),
+    cacheCreationUsd: maxNum(a?.cacheCreationUsd, b?.cacheCreationUsd),
+  };
+}
+
 function mergeAttribution(
   existing: SessionAttribution | undefined,
   incoming: SessionAttribution | undefined,
@@ -423,12 +439,21 @@ function mergeAttribution(
       const ba = facetA[key];
       const bb = facetB[key];
       const breakdown = mergeTokenBreakdown(ba?.breakdown, bb?.breakdown);
+      // The larger `costUsd` wins the merge, so a dollar split is only valid when
+      // the side that supplied it also has one; otherwise it would understate the bucket.
+      const usdSideMissingLarger =
+        (!ba?.breakdownUsd && (ba?.costUsd ?? 0) > (bb?.costUsd ?? 0)) ||
+        (!bb?.breakdownUsd && (bb?.costUsd ?? 0) > (ba?.costUsd ?? 0));
+      const breakdownUsd = usdSideMissingLarger
+        ? undefined
+        : mergeUsdBreakdown(ba?.breakdownUsd, bb?.breakdownUsd);
       merged[key] = {
         costUsd: maxNum(ba?.costUsd, bb?.costUsd),
         tokens: maxNum(ba?.tokens, bb?.tokens),
         count: maxNum(ba?.count, bb?.count),
         durationMs: maxNum(ba?.durationMs, bb?.durationMs),
         ...(breakdown ? { breakdown } : {}),
+        ...(breakdownUsd ? { breakdownUsd } : {}),
       };
     }
     if (Object.keys(merged).length > 0) buckets[facet] = merged;
@@ -779,6 +804,10 @@ export function mergeSummaries(
       : existing.toolSelectionMetrics;
 
   const timeline = mergeTimeline(existing.timeline, incoming.timeline);
+  const outcomeSource =
+    existing.outcome === 'completed' && existing.observerCompletedAt === undefined
+      ? existing
+      : incoming;
 
   const startTime = Math.min(
     existing.startTime || incoming.startTime,
@@ -859,10 +888,8 @@ export function mergeSummaries(
       (incoming.antiPatterns?.length ?? 0) >= (existing.antiPatterns?.length ?? 0)
         ? incoming.antiPatterns
         : existing.antiPatterns,
-    outcome:
-      incoming.outcome === 'completed' || existing.outcome !== 'completed'
-        ? incoming.outcome
-        : existing.outcome,
+    outcome: outcomeSource.outcome,
+    observerCompletedAt: outcomeSource.observerCompletedAt,
     ...(timeline ? { timeline } : {}),
     toolSelectionMetrics,
     modelBreakdown,
@@ -1304,6 +1331,7 @@ function buildAttribution(
           cacheReadTokens: entry.cacheReadTokens,
           cacheCreationTokens: entry.cacheCreationTokens,
         },
+        ...(entry.breakdownUsd ? { breakdownUsd: entry.breakdownUsd } : {}),
       };
     }
     if (Object.keys(skillBuckets).length > 0) buckets.skill = skillBuckets;
@@ -1639,6 +1667,7 @@ interface SerializedFullSessionSummary {
   readonly assistantMessages?: unknown;
   readonly userCorrections?: unknown;
   readonly outcome?: unknown;
+  readonly observerCompletedAt?: unknown;
   readonly platform?: unknown;
   readonly instructionPromptHash?: unknown;
   readonly timeline?: Array<Record<string, unknown>>;
@@ -1673,6 +1702,25 @@ function parseTokenBreakdown(raw: unknown): TokenBreakdown | undefined {
   return undefined;
 }
 
+/** Same all-or-nothing rule as {@link parseTokenBreakdown}, over the four dollar fields. */
+function parseUsdBreakdown(raw: unknown): UsdBreakdown | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const { inputUsd, outputUsd, cacheReadUsd, cacheCreationUsd } = raw as Record<string, unknown>;
+  if (
+    typeof inputUsd === 'number' &&
+    Number.isFinite(inputUsd) &&
+    typeof outputUsd === 'number' &&
+    Number.isFinite(outputUsd) &&
+    typeof cacheReadUsd === 'number' &&
+    Number.isFinite(cacheReadUsd) &&
+    typeof cacheCreationUsd === 'number' &&
+    Number.isFinite(cacheCreationUsd)
+  ) {
+    return { inputUsd, outputUsd, cacheReadUsd, cacheCreationUsd };
+  }
+  return undefined;
+}
+
 /**
  * Accept a bucket only when all four core fields are finite numbers; any
  * other shape is dropped rather than partially hydrated. Used to parse each
@@ -1695,7 +1743,15 @@ function parseAttributionBucket(raw: unknown): AttributionBucket | undefined {
     Number.isFinite(durationMs)
   ) {
     const breakdown = parseTokenBreakdown(r.breakdown);
-    return { costUsd, tokens, count, durationMs, ...(breakdown ? { breakdown } : {}) };
+    const breakdownUsd = parseUsdBreakdown(r.breakdownUsd);
+    return {
+      costUsd,
+      tokens,
+      count,
+      durationMs,
+      ...(breakdown ? { breakdown } : {}),
+      ...(breakdownUsd ? { breakdownUsd } : {}),
+    };
   }
   return undefined;
 }
@@ -2052,6 +2108,9 @@ export function deserializeFullSessionSummary(
     assistantMessages: typeof obj.assistantMessages === 'number' ? obj.assistantMessages : 0,
     userCorrections: typeof obj.userCorrections === 'number' ? obj.userCorrections : 0,
     outcome: typeof obj.outcome === 'string' ? obj.outcome : 'unknown',
+    ...(typeof obj.observerCompletedAt === 'number' && {
+      observerCompletedAt: obj.observerCompletedAt,
+    }),
     platform: typeof obj.platform === 'string' ? obj.platform : undefined,
     instructionPromptHash:
       typeof obj.instructionPromptHash === 'string' ? obj.instructionPromptHash : null,
