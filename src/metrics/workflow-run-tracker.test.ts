@@ -238,14 +238,17 @@ describe('WorkflowRunTracker', () => {
     expect(byId[0]?.child_agent_count).toBe(1);
   });
 
-  it('bounds the memory of counted Agent calls', () => {
+  it.each([
+    ['once while it is among the last 1024 counted calls', 1_024, 1_024],
+    ['again once 1024 later calls push it out', 1_025, 1_026],
+  ])('counts a repeated nested Agent call %s', (_label, distinctCalls, expected) => {
     const tracker = new WorkflowRunTracker();
-    for (let i = 0; i < 5_000; i++) {
+    for (let i = 0; i < distinctCalls; i++) {
       tracker.recordToolCall(makeAgentRecord({ toolUseId: `t${i}`, agentId: 'outer' }));
     }
+    tracker.recordToolCall(makeAgentRecord({ toolUseId: 't0', agentId: 'outer' }));
     tracker.recordToolCall(makeAgentRecord({ toolUseId: 'outer_call', spawnedAgentId: 'outer' }));
-    const last = tracker.drainCompleted().at(-1);
-    expect(last?.child_agent_count).toBe(5_000);
+    expect(tracker.drainCompleted().at(-1)?.child_agent_count).toBe(expected);
   });
 
   it('truncates agent_description to descriptionMaxLength', () => {
