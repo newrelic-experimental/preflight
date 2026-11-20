@@ -1288,6 +1288,14 @@ describe('GitEfficiencyTracker', () => {
       expect(mergeEvent?.prNumber).toBe('42');
     });
 
+    it('does not count a `gh pr merge` quoted in a commit message when a `(` sits inside a later word', () => {
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "note; gh pr merge 9" && echo ${x//(/}' }),
+      );
+
+      expect(tracker.getMetrics().prMetrics.merged).toBe(0);
+    });
+
     it('tracks gh pr edit/ready as prsUpdated', () => {
       tracker.recordToolCall(makeRecord({ command: 'gh pr edit 7 --add-label ready' }));
       tracker.recordToolCall(makeRecord({ command: 'gh pr ready 7' }));

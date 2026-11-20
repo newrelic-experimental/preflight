@@ -39,8 +39,9 @@ export interface ShellReading {
 // How a scan reads quotes, `( … )` groups and `#` comments, and which `<<` it
 // takes for a heredoc. `bash` reads them as bash does. `every-heredoc` reads
 // them the same way but also takes a quoted or commented `<<` for a heredoc,
-// so a misread quote cannot hide a real one. `blind` reads quotes, groups and
-// `#` as plain text, and every `<<` as a heredoc.
+// so a misread quote cannot hide a real one. `blind` reads quotes and groups
+// as plain text, and every `<<` as a heredoc. Its `#` is still a comment
+// after `||`, `&&` or `|` when a later line follows, as bash reads it.
 type ScanMode = 'bash' | 'every-heredoc' | 'blind';
 
 type Scan = Omit<ShellReading, 'readingsDiffer'>;
@@ -153,7 +154,9 @@ function scan(command: string, mode: ScanMode): Scan {
         continuing = false;
         continue;
       }
-      if (ch === '(') open.push(ch);
+      // A `(` opens a group only where bash reads one: at the start of a
+      // word or after `$`. Mid-word, as in `${x//(/}`, it is plain text.
+      if (ch === '(' && (wordStart || command[i - 1] === '$')) open.push(ch);
       else if (ch === ')' && inner === '(') open.pop();
     }
     const token = operatorAt(command, i);

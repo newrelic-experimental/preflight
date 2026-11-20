@@ -208,6 +208,19 @@ describe('readShell segments', () => {
       balanced: false,
     });
   });
+
+  it('reads a `(` inside a word as text, so quoted operators stay quoted', () => {
+    for (const expansion of ['${x//(/}', '${sig%(*}', '${ref#*(}']) {
+      expect(readShell(`git commit -m "note; gh pr merge 9" && echo ${expansion}`)).toEqual({
+        text: `git commit -m "note; gh pr merge 9" && echo ${expansion}`,
+        segments: ['git commit -m "note; gh pr merge 9" ', ` echo ${expansion}`],
+        operators: ['&&'],
+        unclosed: false,
+        readingsDiffer: false,
+        balanced: true,
+      });
+    }
+  });
 });
 
 // Shapes that the old heredoc scanner and the old chain splitter read

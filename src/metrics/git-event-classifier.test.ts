@@ -433,7 +433,7 @@ describe('classifyGitSegments error attribution', () => {
     ]);
   });
 
-  it('attributes a git step after a heredoc to the directory a cd moved to', () => {
+  it('attributes a git step after a heredoc to the directory a `;`-joined cd moved to', () => {
     const command = "cat > notes.md <<'EOF'\nnotes\nEOF\ntrue; cd /repos/other && git push";
     const events = classifyGitSegments(
       readShell(command),
