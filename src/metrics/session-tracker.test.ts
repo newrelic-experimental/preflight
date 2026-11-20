@@ -580,6 +580,22 @@ describe('SessionTracker', () => {
       expect(metrics.bashCommandsRun).toBe(0);
     });
 
+    it('counts only its own and unattributed records after it adopts a session', () => {
+      const tracker = new SessionTracker('pending-1700000000000', 10);
+      tracker.adoptSessionId('sess-own');
+      const other = makeRecord({ id: 'c1', sessionId: 'sess-other', toolName: 'Bash' });
+
+      tracker.recordToolCall({ ...other, success: false, errorType: 'timeout' });
+      tracker.amendToolCall(other);
+      tracker.recordToolCall(makeRecord({ id: 'c2', sessionId: 'sess-own', toolName: 'Read' }));
+      tracker.recordToolCall(makeRecord({ id: 'c3', sessionId: undefined, toolName: 'Grep' }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCountByTool).toEqual({ Read: 1, Grep: 1 });
+      expect(metrics.toolErrorCount).toBe(0);
+      expect(metrics.bashCommandsRun).toBe(0);
+    });
+
     it('counts a record with no session id while pending', () => {
       const tracker = new SessionTracker('pending-1700000000000');
       tracker.recordToolCall(makeRecord({ sessionId: undefined }));
