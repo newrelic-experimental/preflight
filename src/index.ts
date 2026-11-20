@@ -4,6 +4,7 @@ import 'dotenv/config';
 import { Command, Option } from 'commander';
 import { readFileSync, realpathSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { AlertLog } from './alerts/alert-log.js';
 import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
@@ -140,6 +141,7 @@ import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import type { ConfigSummary } from './tools/session-stats.js';
 import { registerPendingTools, registerTools } from './tools/session-stats.js';
 import { primaryTierName, summarizeTiers } from './transport/tier-types.js';
+import { hooksDetected, type HookRecordedReportOptions } from './tools/cost-tools.js';
 import { FeedbackCollector } from './tools/workflow-tools.js';
 import { initMcpTracer } from './tracing/mcp-tracer.js';
 import { SessionSpan } from './tracing/session-span.js';
@@ -815,6 +817,16 @@ export function parseArgs(argv: string[]): CliOptions {
     local,
     validate,
   };
+}
+
+function hookRecordedReports(): HookRecordedReportOptions | undefined {
+  const adapter = createDefaultRegistry().getActive();
+  const hook = adapter.capabilities.tokenReportHook;
+  if (!hook) return undefined;
+  const options = { hook, homeDir: homedir(), projectDir: process.cwd() };
+  // Ambient detection alone also matches hosts launched from Cursor's terminal, which inherit CURSOR_TRACE_ID.
+  const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+  return explicit === adapter.platformName || hooksDetected(options) ? options : undefined;
 }
 
 async function main(): Promise<void> {
@@ -3395,6 +3407,7 @@ async function main(): Promise<void> {
       };
       registerTools(mcpServer!.server, {
         headlessInstaller: buildHeadlessInstaller(),
+        hookRecordedReports: hookRecordedReports(),
         sessionTracker: sessionTracker!,
         costTracker,
         budgetTracker,
@@ -3579,6 +3592,7 @@ async function main(): Promise<void> {
             hooksInstalledFn: () => areHooksInstalledAtAnyScope(),
             headlessInstaller: buildHeadlessInstaller(),
           }),
+          hookRecordedReports: hookRecordedReports(),
         });
         sessionResolutionAbort = new AbortController();
         let resolvedSource: import('./hooks/session-resolver.js').SessionIdSource | undefined;
@@ -3652,6 +3666,7 @@ async function main(): Promise<void> {
         };
         registerTools(mcpServer!.server, {
           headlessInstaller: buildHeadlessInstaller(),
+          hookRecordedReports: hookRecordedReports(),
           sessionTracker,
           costTracker,
           budgetTracker,
