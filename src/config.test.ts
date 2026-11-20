@@ -451,6 +451,29 @@ describe('loadMcpConfig()', () => {
     expect(stderrOutput).not.toMatch(/Unknown keys in config file/);
   });
 
+  it('loads the same config, budgets included, with or without a saved reportedSpend', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const path = resolve(tmpDir, 'budget-with-reported.json');
+    const budgets = { sessionBudgetUsd: 2, dailyBudgetUsd: 10, weeklyBudgetUsd: 50 };
+    writeFileSync(path, JSON.stringify(budgets));
+    const without = loadMcpConfig({ config: path });
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...budgets,
+        reportedSpend: [
+          { periodKind: 'daily', amountUsd: 500, asOf: '2026-11-07T10:00:00.000Z' },
+          { periodKind: 'weekly', amountUsd: 900, asOf: '2026-11-07T10:00:00.000Z' },
+        ],
+      }),
+    );
+    const withReported = loadMcpConfig({ config: path });
+
+    expect(withReported).toEqual(without);
+    expect(withReported).toMatchObject(budgets);
+  });
+
   it.each([
     ['a negative amount', { periodKind: 'daily', amountUsd: -1, asOf: '2026-11-07T10:00:00Z' }],
     [

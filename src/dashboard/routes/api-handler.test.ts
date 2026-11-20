@@ -10122,6 +10122,7 @@ describe('api-handler reported spend settings', () => {
   const config = {
     personalAlertThresholds: {},
     secretSources: {},
+    tiers: [],
   } as unknown as NonNullable<Parameters<typeof createApiHandler>[0]['config']>;
 
   async function call(
@@ -10247,22 +10248,31 @@ describe('api-handler reported spend settings', () => {
     ]);
   });
 
-  it('leaves budget status and alerts unchanged by a reported value', async () => {
+  it('feeds the budget tracker nothing and leaves its status and alerts unchanged', async () => {
     const configFilePath = makeConfigFilePath();
+    const thresholds: unknown[] = [];
     const budgetTracker = new BudgetTracker({
       sessionBudgetUsd: null,
       dailyBudgetUsd: 10,
-      weeklyBudgetUsd: null,
+      weeklyBudgetUsd: 20,
+      onThreshold: (event) => thresholds.push(event),
     });
     budgetTracker.updateCost(0, 6, 6);
+    const fired = thresholds.length;
+    const updateCost = jest.spyOn(budgetTracker, 'updateCost');
     const handler = createApiHandler({ configFilePath, config, budgetTracker });
     const before = await call(handler, 'GET', '/api/budget');
 
-    await call(handler, 'PATCH', '/api/settings', {
-      reportedSpend: { periodKind: 'daily', amountUsd: 500 },
-    });
+    for (const periodKind of ['daily', 'weekly'] as const) {
+      const saved = await call(handler, 'PATCH', '/api/settings', {
+        reportedSpend: { periodKind, amountUsd: 500 },
+      });
+      expect(saved.status).toBe(200);
+    }
     const after = await call(handler, 'GET', '/api/budget');
 
+    expect(updateCost).not.toHaveBeenCalled();
+    expect(thresholds).toHaveLength(fired);
     expect(after.json).toEqual(before.json);
     expect((after.json.daily as { spentUsd: number }).spentUsd).toBe(6);
     expect((after.json.alerts as unknown[]).length).toBe(1);
