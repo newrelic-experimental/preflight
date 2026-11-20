@@ -31,6 +31,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -557,7 +558,8 @@ export type SdkExtensionInstallResult =
 const PREFLIGHT_EXTENSION_MARKER = 'preflight extension:';
 
 export function installCopilotSdkExtension(): SdkExtensionInstallResult {
-  const destPath = copilotSdkExtensionInstallPath();
+  const installPath = copilotSdkExtensionInstallPath();
+  const destPath = existsSync(installPath) ? realpathSync(installPath) : installPath;
 
   let bundle: Buffer;
   try {
