@@ -1,0 +1,375 @@
+{
+  "name": "AI Coding Assistant — Anti-patterns",
+  "description": "Team-level anti-pattern identification and recommendations",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "AI Coding Assistant — Anti-patterns",
+      "description": "Anti-pattern counts, trends, offending files and commands, and fixes",
+      "widgets": [
+        {
+          "title": "Anti-patterns by Type",
+          "layout": {
+            "column": 1,
+            "row": 1,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.pie"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": true
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiAntiPattern SINCE 1 week ago FACET type"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Anti-patterns by Type & File",
+          "layout": {
+            "column": 5,
+            "row": 1,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.bar"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiAntiPattern SELECT count(*) FACET type, file"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Anti-patterns Trends",
+          "layout": {
+            "column": 9,
+            "row": 1,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiAntiPattern SELECT count(*) FACET type SINCE 1 month ago TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
+            "yAxisLeft": {
+              "zero": true
+            },
+            "yAxisRight": {
+              "zero": true
+            }
+          }
+        },
+        {
+          "title": "Blind Editing Files by Edit Count",
+          "layout": {
+            "column": 1,
+            "row": 4,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "initialSorting": {
+              "direction": "DESC",
+              "name": "edit_count"
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiAntiPattern SELECT count(*) WHERE type = 'blind_editing' FACET file, edit_count"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Blind Editing Anti-pattern Recommendations",
+          "layout": {
+            "column": 5,
+            "row": 4,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.markdown"
+          },
+          "rawConfiguration": {
+            "text": "**Blind Editing Anti-pattern Recommendations**\n\nEdits to the same file with no successful test, build or lint run in between. Reading that file resets the streak.\n\nLook at file and `edit_count`\n\n**Fix**: have the agent verify between edits, or add a \"run tests after each change\" rule to CLAUDE.md.\n"
+          }
+        },
+        {
+          "title": "Top sessions with Anti-patterns",
+          "layout": {
+            "column": 9,
+            "row": 4,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "initialSorting": {
+              "direction": "DESC",
+              "name": "antiPatterns"
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT latest(typeCount) AS 'antiPatterns' FROM (SELECT count(*) AS typeCount FROM AiAntiPattern FACET type, session_id LIMIT 500) FACET session_id LIMIT 10 SINCE 1 month ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Re-Reading Files by Read Count",
+          "layout": {
+            "column": 1,
+            "row": 7,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "initialSorting": {
+              "direction": "DESC",
+              "name": "read_count"
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiAntiPattern SELECT count(*) WHERE type = 're_reading' FACET file, read_count"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Re-Reading Anti-pattern Recommendations",
+          "layout": {
+            "column": 5,
+            "row": 7,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.markdown"
+          },
+          "rawConfiguration": {
+            "text": "**Re-Reading Anti-pattern Recommendations**\n\nThe same file is read several times in a task.\n\nLook at file and `read_count`\n\n**Fix**: this usually means context was compacted and the agent lost the file. Split the task into smaller pieces, or put the key facts in CLAUDE.md."
+          }
+        },
+        {
+          "title": "Stuck Loops by Command",
+          "layout": {
+            "column": 1,
+            "row": 10,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "initialSorting": {
+              "direction": "DESC",
+              "name": "repeat_count"
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiAntiPattern SELECT command, repeat_count WHERE type = 'stuck_loop'"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Stuck Loop Anti-pattern Recommendations",
+          "layout": {
+            "column": 5,
+            "row": 10,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.markdown"
+          },
+          "rawConfiguration": {
+            "text": "**Stuck Loop Anti-pattern Recommendations**\n\nThe exact same Bash command runs several times in a row. Other tool calls in between don't break the streak.\n\nLook at command and `repeat_count`.\n\n**Fix**: re-running rarely changes the result. Read the output, or change the code or the request before retrying. The suggestion text varies here by command category (test, build, git, network).\n"
+          }
+        },
+        {
+          "title": "Thrashing by File & Iterations",
+          "layout": {
+            "column": 1,
+            "row": 13,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "initialSorting": {
+              "direction": "DESC",
+              "name": "iterations"
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiAntiPattern SELECT count(*) WHERE type = 'thrashing' FACET file, iterations"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Thrashing Anti-pattern Recommendations",
+          "layout": {
+            "column": 5,
+            "row": 13,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.markdown"
+          },
+          "rawConfiguration": {
+            "text": "**Thrashing Anti-pattern Recommendations**\n\nThe agent edits a file, a test fails, and this repeats several times on the same file. A passing test resets the count.\n\nLook at file and iterations.\n\n**Fix**: the agent is guessing instead of diagnosing. Have it read the full failure output first, or give it the failing test and expected behavior up front.\n"
+          }
+        },
+        {
+          "title": "Over-Delegation by Session & Task",
+          "layout": {
+            "column": 1,
+            "row": 16,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "initialSorting": {
+              "direction": "DESC",
+              "name": "agent_count"
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM AiAntiPattern SELECT count(*) WHERE type = 'over_delegation' FACET session_id, task_id, agent_count"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Over-Delegation Anti-pattern Recommendations",
+          "layout": {
+            "column": 5,
+            "row": 16,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.markdown"
+          },
+          "rawConfiguration": {
+            "text": "**Over-Delegation Anti-pattern Recommendations**\n\nSub-agent calls that failed or were interrupted in one task. Successful spawns don't count.\n\nLook at `agent_count`.\n\n**Fix**: find out why the first sub-agent failed (bad prompt, missing tool access, permissions) before spawning another.\n"
+          }
+        }
+      ]
+    }
+  ],
+  "variables": [
+    {
+      "name": "developer",
+      "title": "Developer",
+      "type": "NRQL",
+      "nrqlQuery": {
+        "query": "SELECT uniques(developer) FROM AiToolCall SINCE 7 days ago",
+        "accountIds": [0]
+      },
+      "isMultiSelection": false,
+      "defaultValues": [],
+      "replacementStrategy": "STRING",
+      "options": {
+        "excluded": true
+      }
+    }
+  ]
+}
