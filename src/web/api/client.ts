@@ -201,6 +201,7 @@ export interface SessionListEntry {
     readonly agentCount?: number;
   }>;
   readonly model?: string | null;
+  readonly modelBreakdown?: Readonly<Record<string, { readonly requestCount?: number }>>;
   readonly toolSuccessRate?: number | null;
   readonly efficiencyScore?: number | null;
   readonly tokensInput?: number;

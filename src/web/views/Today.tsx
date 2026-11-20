@@ -1834,6 +1834,7 @@ function LiveSessionPane({
           contextWindow={contextData?.contextWindow}
           contextComposition={contextComposition}
           contextEfficiency={contextEfficiency}
+          summary={todaySessions.find((s) => s.sessionId === activeId)}
           onClose={() => setShowDetail(false)}
         />
       )}
