@@ -2714,11 +2714,8 @@ describe('stdio integration', () => {
             expect(await drained(storage, 'conv-fails')).toBe('');
 
             await adopt('real-owner-session');
-            const retried = await until(
-              () => savedSession(storage, 'conv-fails')?.tokensInput,
-              (tokens) => tokens === 1000,
-            );
-            expect(retried).toBe(1000);
+            const retried = () => savedSession(storage, 'conv-fails')?.tokensInput;
+            expect(await until(retried, (tokens) => tokens === 1000)).toBe(1000);
             const savesOf = (id: string) =>
               readFileSync(saveLog, 'utf-8')
                 .split('\n')

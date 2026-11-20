@@ -2670,8 +2670,6 @@ async function main(): Promise<void> {
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
         seedLocalTrackersFromFile(turn.parentSessionId);
         const usage = tokenUsageFromSubagentTurn(turn);
-        // Same split as onTokenEvent: another session's turn, drained while the
-        // id is still provisional, is priced for that session's rollup only.
         const isOwnTurn = isTokenEventForThisProcess({
           stdio: options.stdio === true,
           eventSessionId: turn.parentSessionId || null,
