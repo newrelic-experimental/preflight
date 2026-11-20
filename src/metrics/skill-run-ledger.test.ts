@@ -183,7 +183,7 @@ describe('AiWorkUnit through the hook buffer', () => {
     };
     const manager = new NrIngestManager({
       licenseKey: 'test-license-key',
-      transportOptions: { accountId: '1' },
+      transportOptions: {},
       developer: 'dev',
       appName: 'app',
       sessionTracker: new SessionTracker(SESSION),
