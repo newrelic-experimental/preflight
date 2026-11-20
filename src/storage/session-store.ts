@@ -66,6 +66,7 @@ import type { EfficiencyScorer, EfficiencyScoreComponents } from '../metrics/eff
 import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
+import { parsePrRepo } from '../metrics/pr-ref.js';
 import {
   ToolSelectionScorer,
   toToolSelectionSummary,
@@ -1472,6 +1473,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     skillName: tc.toolName === 'Skill' && tc.skillName ? tc.skillName : undefined,
     agentType: tc.toolName === 'Agent' && tc.agentType ? tc.agentType : undefined,
     createdPrNumber: tc.createdPrNumber,
+    createdPrRepo: parsePrRepo(tc.createdPrRepo),
     mcpPrNumber: tc.mcpPrNumber,
     mcpPrRepo: tc.mcpPrRepo,
     runInBackground: tc.runInBackground === true || undefined,
@@ -2159,6 +2161,7 @@ export function deserializeFullSessionSummary(
               typeof e.createdPrNumber === 'string' && /^\d{1,9}$/.test(e.createdPrNumber)
                 ? e.createdPrNumber
                 : undefined,
+            createdPrRepo: parsePrRepo(e.createdPrRepo),
             mcpPrNumber:
               typeof e.mcpPrNumber === 'string' && /^\d{1,9}$/.test(e.mcpPrNumber)
                 ? e.mcpPrNumber
