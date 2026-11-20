@@ -343,6 +343,8 @@ function makeConfigSummary(overrides?: Partial<ConfigSummary>): ConfigSummary {
     allowHeadlessInstall: false,
     companionMode: false,
     companionModeSource: 'default',
+    tiers: [],
+    primaryTier: null,
     ...overrides,
   };
 }
@@ -362,6 +364,38 @@ describe('handleGetConfig()', () => {
     expect(data.storagePath).toBe('/home/alice/.newrelic-preflight');
     expect(data.dashboardUrl).toBe('http://127.0.0.1:9847');
     expect(data.configFilePath).toBe('/home/alice/.newrelic-preflight/config.json');
+  });
+
+  it('returns the resolved tiers with live local-tier write counts', () => {
+    const summary = makeConfigSummary({
+      tiers: [
+        { name: 'personal', type: 'nr', accountId: '111', primary: true, eventTypes: ['*'] },
+        {
+          name: 'org',
+          type: 'local',
+          path: '/tmp/org',
+          primary: false,
+          eventTypes: ['AiToolCall'],
+        },
+      ],
+      primaryTier: 'personal',
+    });
+    const result = handleGetConfig(summary, { org: { writes: 7, failures: 2 } });
+    const data = JSON.parse(result.content[0].text) as ConfigSummary;
+
+    expect(data.primaryTier).toBe('personal');
+    expect(data.tiers).toEqual([
+      { name: 'personal', type: 'nr', accountId: '111', primary: true, eventTypes: ['*'] },
+      {
+        name: 'org',
+        type: 'local',
+        path: '/tmp/org',
+        primary: false,
+        eventTypes: ['AiToolCall'],
+        writes: 7,
+        failures: 2,
+      },
+    ]);
   });
 
   it('handles null sensitive fields (local mode)', () => {
@@ -1168,6 +1202,8 @@ describe('registerPendingTools()', () => {
       companionMode: false,
       allowHeadlessInstall: false,
       companionModeSource: 'default',
+      tiers: [],
+      primaryTier: null,
     };
     registerPendingTools(server.server, {
       sessionStartMs: Date.now(),

@@ -294,10 +294,10 @@ export interface AttributableActivity {
   readonly toolCallCount?: number;
   readonly subagentCostUsd?: number;
   readonly timeline?: ReadonlyArray<unknown>;
-  readonly selfReportCount?: number;
 }
 
 export interface RecordedUsage extends AttributableActivity {
+  readonly selfReportCount?: number;
   readonly estimatedCostUsd?: number | null;
   readonly tokensInput?: number;
   readonly tokensOutput?: number;
@@ -326,8 +326,7 @@ export function hasAttributableActivity(s: AttributableActivity): boolean {
   return (
     (s.toolCallCount ?? 0) > 0 ||
     (s.subagentCostUsd ?? 0) > 0 ||
-    (Array.isArray(s.timeline) && s.timeline.length > 0) ||
-    (s.selfReportCount ?? 0) > 0
+    (Array.isArray(s.timeline) && s.timeline.length > 0)
   );
 }
 
@@ -344,6 +343,7 @@ export function hasRecordedUsage(s: RecordedUsage): boolean {
   return (
     hasAttributableActivity(s) ||
     (s.estimatedCostUsd ?? 0) > 0 ||
+    (s.selfReportCount ?? 0) > 0 ||
     (s.tokensInput ?? 0) + (s.tokensOutput ?? 0) + (s.tokensThinking ?? 0) > 0
   );
 }

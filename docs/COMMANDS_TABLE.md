@@ -92,13 +92,32 @@ Show the current server configuration with sensitive fields masked.
   "region": "US",
   "storagePath": "/Users/alice/.newrelic-preflight",
   "dashboardUrl": "https://one.newrelic.com/dashboards/...",
-  "configFilePath": "/Users/alice/.newrelic-preflight/config.json"
+  "configFilePath": "/Users/alice/.newrelic-preflight/config.json",
+  "tiers": [
+    {
+      "name": "personal",
+      "type": "nr",
+      "accountId": "12345",
+      "primary": true,
+      "eventTypes": ["*"]
+    },
+    {
+      "name": "org",
+      "type": "local",
+      "path": "/data/org",
+      "primary": false,
+      "eventTypes": ["AiCodingTask"],
+      "writes": 42,
+      "failures": 0
+    }
+  ],
+  "primaryTier": "personal"
 }
 ```
 
-**Data source:** Server config at startup
+**Data source:** Server config at startup, plus live write counts for local tiers
 
-**How it works:** Returns a sanitized snapshot of the active configuration. `licenseKeyMasked` shows the first 8 characters and last 4 characters only. `nrApiKeyMasked` shows the prefix only. Use this to diagnose misconfiguration (wrong region, unset developer name, unexpected mode) without exposing credentials.
+**How it works:** Returns a sanitized snapshot of the active configuration. `licenseKeyMasked` shows the first 8 characters and last 4 characters only. `nrApiKeyMasked` shows the prefix only. `tiers` lists each tier's destination and event types, so read it instead of `accountId` when `tiers` is configured. A tier's `accountId` is the configured value for display; the license key selects the account events go to. A local tier reports `writes` and `failures`, and a nonzero `failures` means its path cannot be written. Tier license keys are never returned. Use this to diagnose misconfiguration (wrong region, unset developer name, unexpected mode, a tier with the wrong license key or path) without exposing credentials.
 
 **Requires:** Always available
 
@@ -1994,9 +2013,8 @@ Register a Slack webhook URL to receive weekly AI coding cost and efficiency sum
 **Config fields:**
 
 - `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` — Slack incoming webhook endpoint
-- `NEW_RELIC_AI_DIGEST_SCHEDULE` — cron expression for digest delivery (default: `"0 9 * * 1"`)
 
-**Note:** Digest delivery is manual-only today. `digestSchedule`/`NEW_RELIC_AI_DIGEST_SCHEDULE` is stored for future use but nothing currently reads it to trigger a send — call `nr_observe_send_digest` on-demand (e.g. from an external cron job or CI schedule) to actually deliver a digest.
+**Note:** Digest delivery is manual. Preflight does not send a digest on a timer. To deliver one on a schedule, run an external cron job or CI schedule that calls `nr_observe_send_digest`.
 
 **Requires:** `configFilePath`
 
@@ -2058,5 +2076,31 @@ Generate the current weekly AI coding summary and POST it to the configured Slac
 4. POSTs the payload to the webhook URL
 
 **Requires:** `configFilePath` + `WeeklySummaryGenerator`
+
+Source: `src/tools/cross-session-tools.ts`
+
+---
+
+### `nr_observe_get_digest_preview`
+
+Return the current week's digest as `nr_observe_send_digest` would deliver it, as Block Kit blocks plus plain text. Nothing is sent, and no webhook is needed.
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "week": "2026-W20",
+  "blocks": [
+    { "type": "header", "text": { "type": "plain_text", "text": "🤖 Weekly AI Coding Summary" } }
+  ],
+  "text": "🤖 Weekly AI Coding Summary\nTotal Cost: $12.5000\n..."
+}
+```
+
+**Data source:** `WeeklySummaryGenerator`. The same builder that the send tool uses, so the content matches for the same moment.
+
+**Requires:** `WeeklySummaryGenerator`
 
 Source: `src/tools/cross-session-tools.ts`

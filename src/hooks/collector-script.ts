@@ -116,11 +116,7 @@ export function getMaxContentLength(): number {
   return parsed;
 }
 
-/**
- * Ambient stamping is deliberately limited to Claude Code, the only platform
- * whose hook-process env signal is verified; other platforms stamp via
- * explicit MCP_CLIENT in their generated hook commands.
- */
+// These event names exist on only one platform, so the event itself names it.
 const HOOK_EVENT_PLATFORM: Readonly<Record<string, string>> = {
   beforeshellexecution: 'cursor',
   aftershellexecution: 'cursor',
@@ -138,6 +134,11 @@ const HOOK_EVENT_PLATFORM: Readonly<Record<string, string>> = {
   post_mcp_tool_use: 'windsurf',
 };
 
+/**
+ * Ambient stamping is deliberately limited to Claude Code, the only platform
+ * whose hook-process env signal is verified; other platforms stamp via
+ * explicit MCP_CLIENT in their generated hook commands.
+ */
 function detectStampPlatform(): string | undefined {
   for (const key of ENGINE_ENV_KEYS) {
     const name = canonicalPlatformName(process.env[key]);

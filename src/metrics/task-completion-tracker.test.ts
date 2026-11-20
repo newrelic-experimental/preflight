@@ -69,6 +69,15 @@ describe('TaskCompletionTracker', () => {
     expect(t.getMetrics().avgToolCallsPerTask).toBe(5);
   });
 
+  it('a single completed task reports its own averages', () => {
+    const t = new TaskCompletionTracker();
+    t.recordTask(makeTask({ durationMs: 42000, toolCallCount: 3 }));
+    const m = t.getMetrics();
+    expect(m.completedTasks).toBe(1);
+    expect(m.avgTaskDurationMs).toBe(42000);
+    expect(m.avgToolCallsPerTask).toBe(3);
+  });
+
   it('reset clears all state', () => {
     const t = new TaskCompletionTracker();
     t.recordTask(makeTask());

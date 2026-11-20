@@ -360,7 +360,7 @@ export function handleGetCostForecast(
   const todayKey = localDateKey();
   const forecast = buildCostForecastFromInputs({
     sessionSpentUsd: metrics.sessionTotalCostUsd ?? 0,
-    sessionStartMs,
+    sessionStartMs: costTracker.getSessionStartMs(sessionStartMs),
     dailySpentUsd: costTracker.getCostForDay(todayKey),
     dailyFirstActivityMs: costTracker.getFirstActivityMsForDay(todayKey),
   });

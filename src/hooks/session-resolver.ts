@@ -342,8 +342,8 @@ function listFiles(dir: string): string[] {
  * closest ancestor wins across them), the unattributed writer, then the legacy
  * layout under `storagePath`. A legacy breadcrumb names no engine, so it counts
  * only when no writer ever filed its session and the session has been active
- * since this process started. A tagged cwd breadcrumb is never removed, so it
- * counts only while its session was active in the last 12 hours, which keeps
+ * since this process started. A tagged cwd breadcrumb lives until 7 idle days,
+ * so it counts only while its session was active in the last 12 hours, which keeps
  * a session that ended yesterday from shadowing a live one in a later tier.
  * A session is active since a time when its breadcrumb, or a ppid breadcrumb
  * in the same root naming it, was touched since then. Older collectors leave

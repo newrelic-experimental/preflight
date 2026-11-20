@@ -687,6 +687,24 @@ describe('ProxyManager observability', () => {
 
     expect(records).toHaveLength(1);
     expect(records[0].success).toBe(false);
+    expect(records[0].errorType).toBe('http_5xx');
+  });
+
+  it('leaves errorType unset for successful calls', async () => {
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer((_rpc, _req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"jsonrpc":"2.0","id":1,"result":{}}');
+    }));
+    const records: ProxyToolCallRecord[] = [];
+    await setupWithCallbacks(proxyPort, { onToolCall: (r) => records.push(r) });
+
+    await httpRequest(`http://127.0.0.1:${proxyPort}/proxy/test-mcp`, {
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'ok' } }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(records[0].success).toBe(true);
+    expect(records[0].errorType).toBeUndefined();
   });
 
   it('computes proxyOverheadMs as totalDuration - upstreamLatency', async () => {

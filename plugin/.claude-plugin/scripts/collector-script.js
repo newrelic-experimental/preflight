@@ -493,6 +493,7 @@ function releaseReport(storageDir, line) {
 // src/hooks/session-breadcrumbs.ts
 import { resolve as resolve2 } from "node:path";
 var BREADCRUMBS_DIR = "breadcrumbs";
+var STALE_CWD_BREADCRUMB_MS = 7 * 24 * 60 * 60 * 1e3;
 function breadcrumbRoot(storagePath, writer) {
   return resolve2(storagePath, BREADCRUMBS_DIR, writer);
 }
@@ -592,7 +593,7 @@ function appendToHookBuffer(path, text) {
   if (!text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) {
     throw new Error(`Hook buffer text must be exactly one newline-terminated line: ${path}`);
   }
-  const data = Buffer.from(text);
+  const data = Buffer.from("\n" + text);
   let writes = 0;
   for (let opens = 0; opens < MAX_OPENS; opens++) {
     const landing = appendOnce(path, data);
