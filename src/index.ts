@@ -1471,7 +1471,10 @@ async function main(): Promise<void> {
     const firstSaveBaselines = new FirstSaveBaselines();
     // A session's calls in its file before this process first wrote it, none of them this process's.
     const callsBeforeFirstWrite = new Map<string, number>();
-    const saveSessionRememberingBaseline = (summary: FullSessionSummary): boolean => {
+    const saveSessionRememberingBaseline = (
+      summary: FullSessionSummary,
+      from: 'ownTrackers' | 'rollup',
+    ): boolean => {
       const saved = sessionStore!.saveSession(summary);
       if (saved && !callsBeforeFirstWrite.has(summary.sessionId)) {
         callsBeforeFirstWrite.set(summary.sessionId, saved.previous?.toolCallCount ?? 0);
@@ -1481,7 +1484,7 @@ async function main(): Promise<void> {
         firstSaveBaselines.recordSave({
           sessionId: summary.sessionId,
           previous: saved.previous,
-          ownSession: summary.sessionId === sessionTraceId,
+          ownSession: from === 'ownTrackers',
         });
       }
       return saved !== null;
@@ -1491,11 +1494,10 @@ async function main(): Promise<void> {
       try {
         const saved = sessionStore.loadSession(sessionId);
         if (saved?.observerCompletedAt === undefined) return;
-        saveSessionRememberingBaseline({
-          ...saved,
-          outcome: 'in progress',
-          observerCompletedAt: undefined,
-        });
+        saveSessionRememberingBaseline(
+          { ...saved, outcome: 'in progress', observerCompletedAt: undefined },
+          'rollup',
+        );
       } catch (err) {
         logger.warn('Failed to lift an observer-completed session', { error: String(err) });
       }
@@ -2147,6 +2149,7 @@ async function main(): Promise<void> {
         efficiencyScorer,
         feedbackCollector,
         apiFailureTracker,
+        retryDetector,
         gitEfficiencyTracker,
         turnCostAttributor,
         sessionTraceId,
@@ -2627,12 +2630,20 @@ async function main(): Promise<void> {
           cacheCreationTokens: report.cacheCreationTokens,
           totalTokens: report.inputTokens + report.outputTokens + report.thinkingTokens,
         };
+        if (report.sessionId === sessionTraceId) {
+          const breakdown = costTracker.recordTokenUsage(usage, report.model, {
+            timestampMs: report.timestamp,
+          });
+          modelUsageTracker.recordUsage(report.model, usage, breakdown.totalUsd);
+          return;
+        }
         localSessionAggregator.recordTokenUsage(report.sessionId, {
           ...usage,
           timestamp: report.timestamp,
           costUsd: costTracker.priceUsage(usage, report.model).totalUsd,
           model: report.model,
           ...(report.platform !== undefined && { platform: report.platform }),
+          selfReported: true,
         });
       },
       // Feed each Agent-tool ToolCallRecord into the workflow tracker
@@ -2660,16 +2671,23 @@ async function main(): Promise<void> {
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
         seedLocalTrackersFromFile(turn.parentSessionId);
         const usage = tokenUsageFromSubagentTurn(turn);
-        const breakdown = costTracker.recordTokenUsage(usage, turn.model, {
-          timestampMs: turn.timestampMs,
-          workflowRunId: turn.workflowRunId,
-          agentId: turn.agentId,
-          agentType,
+        const isOwnTurn = isTokenEventForThisProcess({
+          stdio: options.stdio === true,
+          eventSessionId: turn.parentSessionId || null,
+          ownSessionId: sessionTraceId,
         });
+        const breakdown = isOwnTurn
+          ? costTracker.recordTokenUsage(usage, turn.model, {
+              timestampMs: turn.timestampMs,
+              workflowRunId: turn.workflowRunId,
+              agentId: turn.agentId,
+              agentType,
+            })
+          : costTracker.priceUsage(usage, turn.model);
         // Subagent turns are real model requests and cost real money, so they
         // belong in the model breakdown too — recording them only in the cost
         // tracker left Model Usage blind to every subagent-only session.
-        modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
+        if (isOwnTurn) modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
         if (turn.parentSessionId) liveSessionRegistry?.hold(turn.parentSessionId);
         holdLocalCost(turn.parentSessionId, breakdown.totalUsd, turn.timestampMs);
         // The only line that makes an orphan session's subagent spend durable:
@@ -2805,9 +2823,23 @@ async function main(): Promise<void> {
       },
     });
 
-    const saveObservedSessions = (
-      when: 'exit' | 'running',
+    const observedRollups = (
       savesSession?: (sessionId: string) => boolean,
+    ): Array<Record<string, unknown>> => {
+      if (!config) return [];
+      return localSessionAggregator.toSummaries({
+        developer: config.developer ?? 'unknown',
+        platform: eventProcessor?.activePlatform,
+        outcome: 'in progress',
+        toolSelectionScorer,
+        repoResolver: repoNameResolver,
+        ...(savesSession !== undefined && { savesSession }),
+      });
+    };
+
+    const saveRollups = (
+      rollups: ReturnType<typeof observedRollups>,
+      when: 'exit' | 'running',
     ): number => {
       if (!sessionStore || !config) return 0;
       const storagePath = config.storagePath;
@@ -2825,14 +2857,6 @@ async function main(): Promise<void> {
           ? { outcome: 'completed', observerCompletedAt: completedAt }
           : { outcome: 'in progress' };
       };
-      const rollups = localSessionAggregator.toSummaries({
-        developer: config.developer ?? 'unknown',
-        platform: eventProcessor?.activePlatform,
-        outcome: 'in progress',
-        toolSelectionScorer,
-        repoResolver: repoNameResolver,
-        ...(savesSession !== undefined && { savesSession }),
-      });
       let saved = 0;
       for (const rollup of rollups) {
         const sessionId = String(rollup.sessionId);
@@ -2853,7 +2877,9 @@ async function main(): Promise<void> {
             ...outcomeOf(sessionId, onFile, Number(rollup.endTime)),
             toolCallCount: prior + Number(kept.toolCallCount),
           };
-          if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary)) continue;
+          if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary, 'rollup'))
+            continue;
+          localSessionAggregator.markSaved(sessionId);
           saved += 1;
           if (prior === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
         } catch (err) {
@@ -2862,6 +2888,27 @@ async function main(): Promise<void> {
       }
       return saved;
     };
+
+    const saveObservedSessions = (
+      when: 'exit' | 'running',
+      savesSession?: (sessionId: string) => boolean,
+    ): number => saveRollups(observedRollups(savesSession), when);
+
+    const readRollups = (
+      savesSession: (sessionId: string) => boolean,
+    ): ReturnType<typeof observedRollups> => {
+      try {
+        return observedRollups(savesSession);
+      } catch (err) {
+        logger.warn('Failed to read observed rollups', { error: String(err) });
+        return [];
+      }
+    };
+    // Taken as the engine adopts the session: every later turn it drains for
+    // its own session also reaches CostTracker, which seeds from what this saves.
+    const rolledUpWhilePending = (sessionId: string): ReturnType<typeof observedRollups> =>
+      readRollups((id) => id === sessionId);
+    let cwdGuessRolledUpWhilePending: ReturnType<typeof observedRollups> = [];
 
     persistSession = (opts?: { periodic?: boolean }) => {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
@@ -2927,7 +2974,11 @@ async function main(): Promise<void> {
           }
           return;
         }
-        if (saveSessionRememberingBaseline(summary)) {
+        saveRollups(
+          readRollups((id) => id !== summary.sessionId && localSessionAggregator.isUnsaved(id)),
+          'running',
+        );
+        if (saveSessionRememberingBaseline(summary, 'ownTrackers')) {
           eventProcessor?.persistCountedIdsOfSavedSessions([summary.sessionId]);
         }
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
@@ -3234,6 +3285,8 @@ async function main(): Promise<void> {
       // against the corrected id's own transcript, replacing any name derived
       // for the previously-adopted (wrong) id.
       applyAuthoritativeSessionName(realId);
+      if (opts?.viaCwdOnly) cwdGuessRolledUpWhilePending = rolledUpWhilePending(realId);
+      else saveRollups(rolledUpWhilePending(realId), 'running');
       // viaCwdOnly means this id came from the collision-prone cwd fallback
       // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
       // resolvedViaCwdOnly gate on the synchronous resolution path's own
@@ -3287,6 +3340,7 @@ async function main(): Promise<void> {
           efficiencyScorer,
           feedbackCollector,
           apiFailureTracker,
+          retryDetector,
           gitEfficiencyTracker,
           turnCostAttributor,
           sessionTraceId: realId,
@@ -3418,6 +3472,7 @@ async function main(): Promise<void> {
             // the resolvedViaCwdOnly gate on rehydrateTrackersIfResumed's
             // first call site) precisely because it wasn't confirmed yet —
             // seed it now that it is.
+            saveRollups(cwdGuessRolledUpWhilePending, 'running');
             rehydrateTrackersIfResumed(staleId);
             refreshPriorCostBaseline();
             if (localStoreForShutdown) writeHeartbeat(localStoreForShutdown, false);
