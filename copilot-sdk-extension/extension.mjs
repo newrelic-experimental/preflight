@@ -48,22 +48,39 @@ function isAt(path, file) {
   const now = statSync(path, { bigint: true, throwIfNoEntry: false });
   return now !== void 0 && now.ino === file.ino && now.dev === file.dev;
 }
+var LineWrittenError = class extends Error {
+  constructor(cause) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+};
+function landedBeforeSeal(fd, sealFloor) {
+  return !readRange(fd, sealFloor, offsetAfterWrite(fd)).includes(DRAIN_SEAL);
+}
 function appendOnce(path, data) {
   const fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_APPEND, 384);
+  let landed = false;
   try {
-    const opened = fstatSync(fd, { bigint: true });
-    if (!isAt(path, opened)) return "moved";
-    const sealFloor = Number(opened.size);
-    const written = writeSync(fd, data);
-    if (written < data.length) {
-      writeSync(fd, TORN_LINE_END);
-      return "redo";
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      if (!isAt(path, opened)) return "moved";
+      const sealFloor = Number(opened.size);
+      const written = writeSync(fd, data);
+      try {
+        if (written < data.length) {
+          writeSync(fd, TORN_LINE_END);
+          return "redo";
+        }
+        landed = isAt(path, opened) || landedBeforeSeal(fd, sealFloor);
+      } catch (err) {
+        landed = written >= data.length - 1 && landedBeforeSeal(fd, sealFloor);
+        throw err;
+      }
+      return landed ? "kept" : "redo";
+    } finally {
+      closeSync(fd);
     }
-    if (isAt(path, opened)) return "kept";
-    const start = offsetAfterWrite(fd) - data.length;
-    return readRange(fd, sealFloor, start).includes(DRAIN_SEAL) ? "redo" : "kept";
-  } finally {
-    closeSync(fd);
+  } catch (err) {
+    throw landed ? new LineWrittenError(err) : err;
   }
 }
 function appendToHookBuffer(path, text) {
@@ -73,7 +90,7 @@ function appendToHookBuffer(path, text) {
   if (!text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) {
     throw new Error(`Hook buffer text must be exactly one newline-terminated line: ${path}`);
   }
-  const data = Buffer.from(text);
+  const data = Buffer.from("\n" + text);
   let writes = 0;
   for (let opens = 0; opens < MAX_OPENS; opens++) {
     const landing = appendOnce(path, data);
