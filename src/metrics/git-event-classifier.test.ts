@@ -432,6 +432,16 @@ describe('classifyGitSegments error attribution', () => {
       ['push', true],
     ]);
   });
+
+  it('attributes a git step after a heredoc to the directory a cd moved to', () => {
+    const command = "cat > notes.md <<'EOF'\nnotes\nEOF\ntrue; cd /repos/other && git push";
+    const events = classifyGitSegments(
+      readShell(command),
+      makeRecord({ command, cwd: '/repos/main' }),
+      (dir) => dir,
+    );
+    expect(events.map(({ event }) => [event.type, event.repo])).toEqual([['push', '/repos/other']]);
+  });
 });
 
 describe('classifyGitSegments per-segment outcome', () => {
