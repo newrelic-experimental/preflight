@@ -2885,6 +2885,9 @@ describe('stdio integration', () => {
             expect(await drained(storage, 'conv-edits')).toBe('');
 
             await adopt('real-owner-session');
+            const ownEdit = { conversation_id: 'real-owner-session', file_path: '/repo/b.ts' };
+            runHook(env, { hook_event_name: 'afterFileEdit', ...ownEdit });
+            expect(await drained(storage, 'real-owner-session')).toBe('');
             await close();
 
             expect(savedSession(storage, 'real-owner-session')).not.toBeNull();
