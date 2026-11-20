@@ -27,9 +27,9 @@ type NrIngestConfigOptions = Pick<
 
 /** The NrIngestManager options every server mode derives from config alone. */
 export function nrIngestOptionsFromConfig(config: McpServerConfig): NrIngestConfigOptions {
-  if (!config.licenseKey || !config.accountId) {
+  if (!config.licenseKey) {
     throw new Error(
-      'licenseKey and accountId must be defined. ' +
+      'licenseKey must be defined. ' +
         'This should have been caught by config validation. ' +
         'Check that mode is not "local" or that cloud credentials are configured.',
     );
@@ -37,7 +37,6 @@ export function nrIngestOptionsFromConfig(config: McpServerConfig): NrIngestConf
   return {
     licenseKey: config.licenseKey,
     transportOptions: {
-      accountId: config.accountId,
       collectorHost: config.collectorHost,
     },
     transport: config.otlp.transport,

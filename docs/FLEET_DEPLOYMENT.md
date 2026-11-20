@@ -60,7 +60,7 @@ One managed settings document does three jobs.
 | ----------------------- | ------------------------------------------------------------------------ |
 | `NR_AI_MODE`            | `cloud` or `both`. Required, or a license key stops the server starting. |
 | `NEW_RELIC_LICENSE_KEY` | Ingest license key for the destination account.                          |
-| `NEW_RELIC_ACCOUNT_ID`  | Numeric account ID, 1 to 12 digits.                                      |
+| `NEW_RELIC_ACCOUNT_ID`  | Optional. Numeric account ID, 1 to 12 digits.                            |
 | `NEW_RELIC_AI_ORG_ID`   | Organization identifier stamped on every event.                          |
 | `NEW_RELIC_AI_TEAM_ID`  | Team identifier stamped on every event.                                  |
 
