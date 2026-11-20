@@ -2670,16 +2670,25 @@ async function main(): Promise<void> {
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
         seedLocalTrackersFromFile(turn.parentSessionId);
         const usage = tokenUsageFromSubagentTurn(turn);
-        const breakdown = costTracker.recordTokenUsage(usage, turn.model, {
-          timestampMs: turn.timestampMs,
-          workflowRunId: turn.workflowRunId,
-          agentId: turn.agentId,
-          agentType,
+        // Same split as onTokenEvent: another session's turn, drained while the
+        // id is still provisional, is priced for that session's rollup only.
+        const isOwnTurn = isTokenEventForThisProcess({
+          stdio: options.stdio === true,
+          eventSessionId: turn.parentSessionId || null,
+          ownSessionId: sessionTraceId,
         });
+        const breakdown = isOwnTurn
+          ? costTracker.recordTokenUsage(usage, turn.model, {
+              timestampMs: turn.timestampMs,
+              workflowRunId: turn.workflowRunId,
+              agentId: turn.agentId,
+              agentType,
+            })
+          : costTracker.priceUsage(usage, turn.model);
         // Subagent turns are real model requests and cost real money, so they
         // belong in the model breakdown too — recording them only in the cost
         // tracker left Model Usage blind to every subagent-only session.
-        modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
+        if (isOwnTurn) modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
         if (turn.parentSessionId) liveSessionRegistry?.hold(turn.parentSessionId);
         holdLocalCost(turn.parentSessionId, breakdown.totalUsd, turn.timestampMs);
         // The only line that makes an orphan session's subagent spend durable:
@@ -2886,18 +2895,20 @@ async function main(): Promise<void> {
       savesSession?: (sessionId: string) => boolean,
     ): number => saveRollups(observedRollups(savesSession), when);
 
-    // Taken as the engine adopts the session: every later turn it drains for
-    // its own session also reaches CostTracker, which seeds from what this saves.
-    const rolledUpWhilePending = (sessionId: string): ReturnType<typeof observedRollups> => {
+    const readRollups = (
+      savesSession: (sessionId: string) => boolean,
+    ): ReturnType<typeof observedRollups> => {
       try {
-        return observedRollups((id) => id === sessionId);
+        return observedRollups(savesSession);
       } catch (err) {
-        logger.warn('Failed to read what the session rolled up while pending', {
-          error: String(err),
-        });
+        logger.warn('Failed to read observed rollups', { error: String(err) });
         return [];
       }
     };
+    // Taken as the engine adopts the session: every later turn it drains for
+    // its own session also reaches CostTracker, which seeds from what this saves.
+    const rolledUpWhilePending = (sessionId: string): ReturnType<typeof observedRollups> =>
+      readRollups((id) => id === sessionId);
     let cwdGuessRolledUpWhilePending: ReturnType<typeof observedRollups> = [];
 
     persistSession = (opts?: { periodic?: boolean }) => {
@@ -2964,9 +2975,9 @@ async function main(): Promise<void> {
           }
           return;
         }
-        saveObservedSessions(
+        saveRollups(
+          readRollups((id) => id !== summary.sessionId && localSessionAggregator.isUnsaved(id)),
           'running',
-          (id) => id !== summary.sessionId && localSessionAggregator.isUnsaved(id),
         );
         if (saveSessionRememberingBaseline(summary, 'ownTrackers')) {
           eventProcessor?.persistCountedIdsOfSavedSessions([summary.sessionId]);

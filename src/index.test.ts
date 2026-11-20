@@ -2587,36 +2587,51 @@ describe('stdio integration', () => {
       });
     }, 40000);
 
-    it('a pending engine counts a subagent turn it drained before adopting its conversation once', async () => {
-      await withPendingEngine('600000', async (env, adopt, close) => {
-        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
-        appendToHookBuffer(
-          resolve(storage, 'buffer-conv-sub.jsonl'),
-          JSON.stringify({
-            mode: 'subagent_token',
-            tool: 'subagent',
-            timestamp: Date.now(),
-            sessionId: 'conv-sub',
-            agentId: 'a1234567890abcdef',
-            messageId: 'msg_sub_1',
-            model: 'claude-sonnet-4-6',
-            inputTokens: 100000,
-            outputTokens: 20000,
-            cacheReadTokens: 0,
-            cacheCreationTokens: 0,
-            reasoningTokens: 0,
-          }) + '\n',
-        );
-        expect(await drained(storage, 'conv-sub')).toBe('');
-        await adopt('conv-sub');
-        await close();
+    it.each([
+      ['its conversation', 'conv-sub', 2],
+      ['another session', 'real-owner-session', 1],
+    ])(
+      'a pending engine counts a subagent turn it drained before adopting %s once',
+      async (_label, adoptedId, adoptedTurns) => {
+        await withPendingEngine('600000', async (env, adopt, close) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          const subagentTurn = async (sessionId: string, messageId: string) => {
+            appendToHookBuffer(
+              resolve(storage, `buffer-${sessionId}.jsonl`),
+              JSON.stringify({
+                mode: 'subagent_token',
+                tool: 'subagent',
+                timestamp: Date.now(),
+                sessionId,
+                agentId: 'a1234567890abcdef',
+                messageId,
+                model: 'claude-sonnet-4-6',
+                inputTokens: 100000,
+                outputTokens: 20000,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+                reasoningTokens: 0,
+              }) + '\n',
+            );
+            expect(await drained(storage, sessionId)).toBe('');
+          };
+          await subagentTurn('conv-sub', 'msg_sub_1');
+          await adopt(adoptedId);
+          await subagentTurn(adoptedId, 'msg_sub_2');
+          await close();
 
-        const saved = savedSession(storage, 'conv-sub');
-        expect(saved).toMatchObject({ tokensInput: 100000 });
-        expect(saved?.estimatedCostUsd).toBeCloseTo(0.6);
-        expect(saved?.subagentCostUsd).toBeCloseTo(0.6);
-      });
-    }, 40000);
+          const sub = savedSession(storage, 'conv-sub');
+          expect(sub).toMatchObject({ tokensInput: 100000 * adoptedTurns });
+          expect(sub?.subagentCostUsd).toBeCloseTo(0.6 * adoptedTurns);
+          const adopted = savedSession(storage, adoptedId);
+          expect(adopted?.estimatedCostUsd).toBeCloseTo(0.6 * adoptedTurns);
+          expect(adopted?.modelBreakdown).toMatchObject({
+            'claude-sonnet-4-6': { totalInputTokens: 100000 * adoptedTurns },
+          });
+        });
+      },
+      40000,
+    );
 
     it('a pending engine adds the report it drained before its cwd guess is confirmed to the ones after', async () => {
       await withPendingEngine('600000', async (env, _adopt, close) => {
@@ -2673,11 +2688,14 @@ describe('stdio integration', () => {
           "import { appendFileSync } from 'node:fs';",
           `const { SessionStore } = await import(${JSON.stringify(storeUrl)});`,
           'const save = SessionStore.prototype.saveSession;',
-          'let failed = false;',
+          'let ownerSaved = false;',
+          'let failedAfterOwner = false;',
           'SessionStore.prototype.saveSession = function (summary) {',
           `  appendFileSync(${JSON.stringify(saveLog)}, summary.sessionId + '\\n');`,
+          "  if (summary.sessionId === 'real-owner-session') ownerSaved = true;",
           "  if (summary.sessionId === 'conv-throws') throw new Error('injected save failure');",
-          "  if (summary.sessionId === 'conv-fails' && !failed) return (failed = true), null;",
+          "  if (summary.sessionId === 'conv-fails' && !failedAfterOwner)",
+          '    return (failedAfterOwner = ownerSaved), null;',
           '  return save.call(this, summary);',
           '};',
         ].join('\n'),
@@ -2685,7 +2703,7 @@ describe('stdio integration', () => {
       const preload = pathToFileURL(resolve(preloadDir, 'preload.mjs')).href;
       try {
         await withPendingEngine(
-          '600000',
+          '300',
           async (env, adopt, close) => {
             const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
             runHook(env, reportHook('conv-throws', 'r-throws-001'));
@@ -2696,21 +2714,70 @@ describe('stdio integration', () => {
             expect(await drained(storage, 'conv-fails')).toBe('');
 
             await adopt('real-owner-session');
+            const retried = await until(
+              () => savedSession(storage, 'conv-fails')?.tokensInput,
+              (tokens) => tokens === 1000,
+            );
+            expect(retried).toBe(1000);
+            const savesOf = (id: string) =>
+              readFileSync(saveLog, 'utf-8')
+                .split('\n')
+                .filter((s) => s === id).length;
+            const savedOnce = savesOf('conv-saved');
+            await until(
+              () => savesOf('real-owner-session'),
+              (n) => n > 2,
+            );
+            expect(savesOf('conv-saved')).toBe(savedOnce);
             await close();
 
             const saves = readFileSync(saveLog, 'utf-8').trim().split('\n');
-            expect([...saves.slice(0, 3), saves.at(-1)]).toEqual([
-              'conv-throws',
-              'conv-saved',
-              'conv-fails',
-              'real-owner-session',
-            ]);
+            expect(saves.at(-1)).toBe('real-owner-session');
             expect(saves.filter((id) => id === 'conv-throws').length).toBeGreaterThan(1);
             expect(savedSession(storage, 'conv-saved')).toMatchObject({ tokensInput: 1000 });
             expect(savedSession(storage, 'conv-fails')).toMatchObject({
               tokensInput: 1000,
               outcome: 'in progress',
             });
+          },
+          () => ['--import', preload],
+        );
+      } finally {
+        rmSync(preloadDir, { recursive: true, force: true });
+      }
+    }, 40000);
+
+    it('an observed rollup that throws while it is built does not stop the owner save', async () => {
+      const preloadDir = mkdtempSync(join(tmpdir(), 'nr-throwing-rollup-'));
+      const aggregatorUrl = pathToFileURL(
+        resolve(distDir, 'metrics', 'local-session-aggregator.js'),
+      ).href;
+      writeFileSync(
+        resolve(preloadDir, 'preload.mjs'),
+        [
+          `const { LocalSessionAggregator } = await import(${JSON.stringify(aggregatorUrl)});`,
+          'const toSummaries = LocalSessionAggregator.prototype.toSummaries;',
+          'LocalSessionAggregator.prototype.toSummaries = function (opts) {',
+          "  if (opts.savesSession?.('conv-edits') && !opts.savesSession('real-owner-session'))",
+          "    throw new Error('injected rollup failure');",
+          '  return toSummaries.call(this, opts);',
+          '};',
+        ].join('\n'),
+      );
+      const preload = pathToFileURL(resolve(preloadDir, 'preload.mjs')).href;
+      try {
+        await withPendingEngine(
+          '600000',
+          async (env, adopt, close) => {
+            const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+            const edit = { conversation_id: 'conv-edits', file_path: '/repo/a.ts' };
+            runHook(env, { hook_event_name: 'afterFileEdit', ...edit });
+            expect(await drained(storage, 'conv-edits')).toBe('');
+
+            await adopt('real-owner-session');
+            await close();
+
+            expect(savedSession(storage, 'real-owner-session')).not.toBeNull();
           },
           () => ['--import', preload],
         );
