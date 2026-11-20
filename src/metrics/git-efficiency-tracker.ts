@@ -1,15 +1,14 @@
 import type { MetricAggregator } from '../core/index.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
-import { stripHeredocBodies } from './local-session-aggregator.js';
 import {
   classifyGitSegments,
   isAmendCommit,
   isCountedCommit,
   isCountedPush,
   processGhCommand,
-  splitShellSegments,
   type GitEvent,
 } from './git-event-classifier.js';
+import { readShell } from './shell-lexer.js';
 import { RepoNameResolver } from './local-session-aggregator.js';
 import { mcpPrEvent } from './mcp-pr-tools.js';
 
@@ -316,14 +315,14 @@ export class GitEfficiencyTracker {
     if (!rawCommand) return;
     // Classify on the command *minus* any inline script bodies: a heredoc that
     // merely mentions git words is not a git operation.
-    const command = stripHeredocBodies(rawCommand);
+    const reading = readShell(rawCommand);
 
     // Track GitHub CLI PR commands. Split on shell separators first so a
     // `gh` invocation chained after a `git` command (e.g. `git push && gh pr
     // create --fill`) is still detected. `processGhCommand`'s own anchoring
     // is what skips "gh" text inside a git argument, e.g. `git commit -m "gh
     // pr create note"` — that segment doesn't START with `gh pr ...`.
-    for (const segment of splitShellSegments(command)) {
+    for (const segment of reading.segments) {
       const prEvent = processGhCommand(segment.trim(), record.timestamp);
       if (!prEvent) continue;
       // A failed `gh pr create` made no PR — see git-activity-recorder.ts's
@@ -333,7 +332,7 @@ export class GitEfficiencyTracker {
     }
 
     const resolveRepo = (dir: string | null): string | null => this.repoResolver.resolve(dir);
-    for (const { segment, event } of classifyGitSegments(command, record, resolveRepo)) {
+    for (const { segment, event } of classifyGitSegments(reading, record, resolveRepo)) {
       // A hook-observed commit whose timestamp `hydrateGitLog()` already saw
       // is the same commit; a live event's `command` is the raw shell string,
       // not `git commit (<hash>)`, so the hash-based dedup can't catch it.

@@ -4,6 +4,7 @@ import 'dotenv/config';
 import { Command, Option } from 'commander';
 import { readFileSync, realpathSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { AlertLog } from './alerts/alert-log.js';
 import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
@@ -140,6 +141,7 @@ import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import type { ConfigSummary } from './tools/session-stats.js';
 import { registerPendingTools, registerTools } from './tools/session-stats.js';
 import { primaryTierName, summarizeTiers } from './transport/tier-types.js';
+import { hooksDetected, type HookRecordedReportOptions } from './tools/cost-tools.js';
 import { FeedbackCollector } from './tools/workflow-tools.js';
 import { initMcpTracer } from './tracing/mcp-tracer.js';
 import { SessionSpan } from './tracing/session-span.js';
@@ -817,6 +819,16 @@ export function parseArgs(argv: string[]): CliOptions {
   };
 }
 
+function hookRecordedReports(): HookRecordedReportOptions | undefined {
+  const adapter = createDefaultRegistry().getActive();
+  const hook = adapter.capabilities.tokenReportHook;
+  if (!hook) return undefined;
+  const options = { hook, homeDir: homedir(), projectDir: process.cwd() };
+  // Ambient detection alone also matches hosts launched from Cursor's terminal, which inherit CURSOR_TRACE_ID.
+  const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+  return explicit === adapter.platformName || hooksDetected(options) ? options : undefined;
+}
+
 async function main(): Promise<void> {
   const nodeVersionError = checkNodeVersion();
   if (nodeVersionError) {
@@ -1471,7 +1483,10 @@ async function main(): Promise<void> {
     const firstSaveBaselines = new FirstSaveBaselines();
     // A session's calls in its file before this process first wrote it, none of them this process's.
     const callsBeforeFirstWrite = new Map<string, number>();
-    const saveSessionRememberingBaseline = (summary: FullSessionSummary): boolean => {
+    const saveSessionRememberingBaseline = (
+      summary: FullSessionSummary,
+      from: 'ownTrackers' | 'rollup',
+    ): boolean => {
       const saved = sessionStore!.saveSession(summary);
       if (saved && !callsBeforeFirstWrite.has(summary.sessionId)) {
         callsBeforeFirstWrite.set(summary.sessionId, saved.previous?.toolCallCount ?? 0);
@@ -1481,7 +1496,7 @@ async function main(): Promise<void> {
         firstSaveBaselines.recordSave({
           sessionId: summary.sessionId,
           previous: saved.previous,
-          ownSession: summary.sessionId === sessionTraceId,
+          ownSession: from === 'ownTrackers',
         });
       }
       return saved !== null;
@@ -1491,11 +1506,10 @@ async function main(): Promise<void> {
       try {
         const saved = sessionStore.loadSession(sessionId);
         if (saved?.observerCompletedAt === undefined) return;
-        saveSessionRememberingBaseline({
-          ...saved,
-          outcome: 'in progress',
-          observerCompletedAt: undefined,
-        });
+        saveSessionRememberingBaseline(
+          { ...saved, outcome: 'in progress', observerCompletedAt: undefined },
+          'rollup',
+        );
       } catch (err) {
         logger.warn('Failed to lift an observer-completed session', { error: String(err) });
       }
@@ -1782,7 +1796,16 @@ async function main(): Promise<void> {
       const expired = now - priorCostCache.lastRefreshMs > PRIOR_COST_CACHE_TTL_MS;
       if (dayChanged || expired) refreshPriorCostBaseline();
     };
-    refreshPriorCostBaseline();
+    // Rereads the baseline first. A cached one still counts a session this process
+    // has since seeded, counting it twice, and misses sessions other engines saved since.
+    const seedBudgetPeriods = (): void => {
+      refreshPriorCostBaseline();
+      budgetTracker.seedPeriodSpend(
+        priorCostCache.priorDailyCostUsd + costTracker.getCostForDay(localDateKey()),
+        priorCostCache.priorWeeklyCostUsd + (costTracker.getMetrics().sessionTotalCostUsd ?? 0),
+      );
+    };
+    seedBudgetPeriods();
     weeklySummaryGenerator = new WeeklySummaryGenerator({
       storagePath: config.storagePath,
       sessionStore,
@@ -1966,6 +1989,7 @@ async function main(): Promise<void> {
           weeklySummaryGenerator,
           budgetTracker,
           latencyTracker,
+          taskCompletionTracker,
           personalCoach,
           trendAnalyzer,
           recommendationEngine,
@@ -2146,6 +2170,7 @@ async function main(): Promise<void> {
         efficiencyScorer,
         feedbackCollector,
         apiFailureTracker,
+        retryDetector,
         gitEfficiencyTracker,
         turnCostAttributor,
         sessionTraceId,
@@ -2321,6 +2346,9 @@ async function main(): Promise<void> {
         // transcript has no meta sidecar (see onSubagentTurn). Its PostToolUse
         // normally fires only after a foreground subagent returns.
         subagentAttribution.recordAgentToolCall(rawRecord);
+        // Agent records reach the tracker through onWorkflowAgent, which also
+        // covers the late-post amend path that skips onRecord.
+        if (rawRecord.toolName !== 'Agent') workflowRunTracker.recordToolCall(rawRecord);
 
         if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
           // Emit tool call span — parent is the active task span (or session span if no task)
@@ -2626,18 +2654,28 @@ async function main(): Promise<void> {
           cacheCreationTokens: report.cacheCreationTokens,
           totalTokens: report.inputTokens + report.outputTokens + report.thinkingTokens,
         };
+        if (report.sessionId === sessionTraceId) {
+          const breakdown = costTracker.recordTokenUsage(usage, report.model, {
+            timestampMs: report.timestamp,
+          });
+          modelUsageTracker.recordUsage(report.model, usage, breakdown.totalUsd);
+          return;
+        }
         localSessionAggregator.recordTokenUsage(report.sessionId, {
           ...usage,
           timestamp: report.timestamp,
           costUsd: costTracker.priceUsage(usage, report.model).totalUsd,
           model: report.model,
           ...(report.platform !== undefined && { platform: report.platform }),
+          selfReported: true,
         });
       },
       // Feed each Agent-tool ToolCallRecord into the workflow tracker
       // so AiWorkflowRun events ship for `run_source='agent_tool'`.
-      onWorkflowAgent: (record) => {
-        workflowRunTracker.recordToolCall(record);
+      onWorkflowAgent: (incomingRecord) => {
+        // onRecord's intake read already populated the index for this record,
+        // so a plain backfill gives the tracker the same agentId.
+        workflowRunTracker.recordToolCall(subagentAttribution.backfill(incomingRecord));
         // Drain immediately — recordToolCall already pushes the completed run
         // into the drainable queue, so each Agent call yields exactly one
         // AiWorkflowRun event with no harvest-tick latency.
@@ -2659,16 +2697,23 @@ async function main(): Promise<void> {
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
         seedLocalTrackersFromFile(turn.parentSessionId);
         const usage = tokenUsageFromSubagentTurn(turn);
-        const breakdown = costTracker.recordTokenUsage(usage, turn.model, {
-          timestampMs: turn.timestampMs,
-          workflowRunId: turn.workflowRunId,
-          agentId: turn.agentId,
-          agentType,
+        const isOwnTurn = isTokenEventForThisProcess({
+          stdio: options.stdio === true,
+          eventSessionId: turn.parentSessionId || null,
+          ownSessionId: sessionTraceId,
         });
+        const breakdown = isOwnTurn
+          ? costTracker.recordTokenUsage(usage, turn.model, {
+              timestampMs: turn.timestampMs,
+              workflowRunId: turn.workflowRunId,
+              agentId: turn.agentId,
+              agentType,
+            })
+          : costTracker.priceUsage(usage, turn.model);
         // Subagent turns are real model requests and cost real money, so they
         // belong in the model breakdown too — recording them only in the cost
         // tracker left Model Usage blind to every subagent-only session.
-        modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
+        if (isOwnTurn) modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
         if (turn.parentSessionId) liveSessionRegistry?.hold(turn.parentSessionId);
         holdLocalCost(turn.parentSessionId, breakdown.totalUsd, turn.timestampMs);
         // The only line that makes an orphan session's subagent spend durable:
@@ -2804,9 +2849,24 @@ async function main(): Promise<void> {
       },
     });
 
-    const saveObservedSessions = (
-      when: 'exit' | 'running',
+    const observedRollups = (
       savesSession?: (sessionId: string) => boolean,
+    ): Array<Record<string, unknown>> => {
+      if (!config) return [];
+      return localSessionAggregator.toSummaries({
+        developer: config.developer ?? 'unknown',
+        platform: eventProcessor?.activePlatform,
+        outcome: 'in progress',
+        toolSelectionScorer,
+        backfillRecord: (record) => subagentAttribution.backfill(record),
+        repoResolver: repoNameResolver,
+        ...(savesSession !== undefined && { savesSession }),
+      });
+    };
+
+    const saveRollups = (
+      rollups: ReturnType<typeof observedRollups>,
+      when: 'exit' | 'running',
     ): number => {
       if (!sessionStore || !config) return 0;
       const storagePath = config.storagePath;
@@ -2824,14 +2884,6 @@ async function main(): Promise<void> {
           ? { outcome: 'completed', observerCompletedAt: completedAt }
           : { outcome: 'in progress' };
       };
-      const rollups = localSessionAggregator.toSummaries({
-        developer: config.developer ?? 'unknown',
-        platform: eventProcessor?.activePlatform,
-        outcome: 'in progress',
-        toolSelectionScorer,
-        repoResolver: repoNameResolver,
-        ...(savesSession !== undefined && { savesSession }),
-      });
       let saved = 0;
       for (const rollup of rollups) {
         const sessionId = String(rollup.sessionId);
@@ -2852,7 +2904,9 @@ async function main(): Promise<void> {
             ...outcomeOf(sessionId, onFile, Number(rollup.endTime)),
             toolCallCount: prior + Number(kept.toolCallCount),
           };
-          if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary)) continue;
+          if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary, 'rollup'))
+            continue;
+          localSessionAggregator.markSaved(sessionId);
           saved += 1;
           if (prior === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
         } catch (err) {
@@ -2861,6 +2915,27 @@ async function main(): Promise<void> {
       }
       return saved;
     };
+
+    const saveObservedSessions = (
+      when: 'exit' | 'running',
+      savesSession?: (sessionId: string) => boolean,
+    ): number => saveRollups(observedRollups(savesSession), when);
+
+    const readRollups = (
+      savesSession: (sessionId: string) => boolean,
+    ): ReturnType<typeof observedRollups> => {
+      try {
+        return observedRollups(savesSession);
+      } catch (err) {
+        logger.warn('Failed to read observed rollups', { error: String(err) });
+        return [];
+      }
+    };
+    // Taken as the engine adopts the session: every later turn it drains for
+    // its own session also reaches CostTracker, which seeds from what this saves.
+    const rolledUpWhilePending = (sessionId: string): ReturnType<typeof observedRollups> =>
+      readRollups((id) => id === sessionId);
+    let cwdGuessRolledUpWhilePending: ReturnType<typeof observedRollups> = [];
 
     persistSession = (opts?: { periodic?: boolean }) => {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
@@ -2894,6 +2969,7 @@ async function main(): Promise<void> {
           outcome: opts?.periodic ? 'in progress' : 'completed',
           platform: eventProcessor?.activePlatform,
           instructionPromptHash: instructionDriftTracker.promptHash,
+          backfillRecord: (record) => subagentAttribution.backfill(record),
         });
         // The rollup counts only this session's own tasks; the detector above sees every drained session's.
         const summary = {
@@ -2926,7 +3002,11 @@ async function main(): Promise<void> {
           }
           return;
         }
-        if (saveSessionRememberingBaseline(summary)) {
+        saveRollups(
+          readRollups((id) => id !== summary.sessionId && localSessionAggregator.isUnsaved(id)),
+          'running',
+        );
+        if (saveSessionRememberingBaseline(summary, 'ownTrackers')) {
           eventProcessor?.persistCountedIdsOfSavedSessions([summary.sessionId]);
         }
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
@@ -3233,6 +3313,8 @@ async function main(): Promise<void> {
       // against the corrected id's own transcript, replacing any name derived
       // for the previously-adopted (wrong) id.
       applyAuthoritativeSessionName(realId);
+      if (opts?.viaCwdOnly) cwdGuessRolledUpWhilePending = rolledUpWhilePending(realId);
+      else saveRollups(rolledUpWhilePending(realId), 'running');
       // viaCwdOnly means this id came from the collision-prone cwd fallback
       // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
       // resolvedViaCwdOnly gate on the synchronous resolution path's own
@@ -3245,7 +3327,7 @@ async function main(): Promise<void> {
         rehydrateTrackersIfResumed(realId);
         liftObserverCompleted(realId);
       }
-      refreshPriorCostBaseline();
+      seedBudgetPeriods();
 
       try {
         saveObservedSessions('running', (id) =>
@@ -3286,6 +3368,7 @@ async function main(): Promise<void> {
           efficiencyScorer,
           feedbackCollector,
           apiFailureTracker,
+          retryDetector,
           gitEfficiencyTracker,
           turnCostAttributor,
           sessionTraceId: realId,
@@ -3324,6 +3407,7 @@ async function main(): Promise<void> {
       };
       registerTools(mcpServer!.server, {
         headlessInstaller: buildHeadlessInstaller(),
+        hookRecordedReports: hookRecordedReports(),
         sessionTracker: sessionTracker!,
         costTracker,
         budgetTracker,
@@ -3417,6 +3501,7 @@ async function main(): Promise<void> {
             // the resolvedViaCwdOnly gate on rehydrateTrackersIfResumed's
             // first call site) precisely because it wasn't confirmed yet —
             // seed it now that it is.
+            saveRollups(cwdGuessRolledUpWhilePending, 'running');
             rehydrateTrackersIfResumed(staleId);
             refreshPriorCostBaseline();
             if (localStoreForShutdown) writeHeartbeat(localStoreForShutdown, false);
@@ -3507,6 +3592,7 @@ async function main(): Promise<void> {
             hooksInstalledFn: () => areHooksInstalledAtAnyScope(),
             headlessInstaller: buildHeadlessInstaller(),
           }),
+          hookRecordedReports: hookRecordedReports(),
         });
         sessionResolutionAbort = new AbortController();
         let resolvedSource: import('./hooks/session-resolver.js').SessionIdSource | undefined;
@@ -3580,6 +3666,7 @@ async function main(): Promise<void> {
         };
         registerTools(mcpServer!.server, {
           headlessInstaller: buildHeadlessInstaller(),
+          hookRecordedReports: hookRecordedReports(),
           sessionTracker,
           costTracker,
           budgetTracker,

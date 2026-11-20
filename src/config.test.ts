@@ -64,6 +64,7 @@ beforeEach(() => {
   delete process.env.NR_AI_DASHBOARD_HOST;
   delete process.env.NR_AI_DASHBOARD_OPEN;
   delete process.env.NEW_RELIC_AI_RETAIN_SESSIONS_DAYS;
+  delete process.env.NEW_RELIC_AI_RETENTION_POLICY;
   delete process.env.NR_AI_COMPANION_MODE;
   delete process.env.NEW_RELIC_AI_HOMELAB_URL;
   delete process.env.NEW_RELIC_AI_HOMELAB_TOKEN;
@@ -432,6 +433,68 @@ describe('loadMcpConfig()', () => {
     const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(stderrOutput).not.toMatch(/Unknown keys in config file/);
   });
+
+  it('does not warn about a saved reportedSpend as an unknown config-file key', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const path = resolve(tmpDir, 'reported-spend.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        reportedSpend: [
+          { periodKind: 'daily', amountUsd: 42.5, asOf: '2026-11-07T10:00:00.000Z' },
+          { periodKind: 'weekly', amountUsd: 0, asOf: '2026-11-07T10:00:00.000Z' },
+        ],
+      }),
+    );
+    loadMcpConfig({ config: path });
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).not.toMatch(/Unknown keys in config file/);
+  });
+
+  it('loads the same config, budgets included, with or without a saved reportedSpend', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const path = resolve(tmpDir, 'budget-with-reported.json');
+    const budgets = { sessionBudgetUsd: 2, dailyBudgetUsd: 10, weeklyBudgetUsd: 50 };
+    writeFileSync(path, JSON.stringify(budgets));
+    const without = loadMcpConfig({ config: path });
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...budgets,
+        reportedSpend: [
+          { periodKind: 'daily', amountUsd: 500, asOf: '2026-11-07T10:00:00.000Z' },
+          { periodKind: 'weekly', amountUsd: 900, asOf: '2026-11-07T10:00:00.000Z' },
+        ],
+      }),
+    );
+    const withReported = loadMcpConfig({ config: path });
+
+    expect(withReported).toEqual(without);
+    expect(withReported).toMatchObject(budgets);
+  });
+
+  it.each([
+    ['a negative amount', { periodKind: 'daily', amountUsd: -1, asOf: '2026-11-07T10:00:00Z' }],
+    [
+      'an amount over the limit',
+      { periodKind: 'daily', amountUsd: 2e9, asOf: '2026-11-07T10:00:00Z' },
+    ],
+    ['an unknown period', { periodKind: 'monthly', amountUsd: 1, asOf: '2026-11-07T10:00:00Z' }],
+    ['a bad timestamp', { periodKind: 'daily', amountUsd: 1, asOf: 'yesterday' }],
+  ])(
+    'rejects a reportedSpend entry with %s like any other invalid config field',
+    (_name, entry) => {
+      process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+      process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+      const path = resolve(tmpDir, 'bad-reported-spend.json');
+      writeFileSync(path, JSON.stringify({ reportedSpend: [entry] }));
+      expect(() => loadMcpConfig({ config: path })).toThrow(
+        /Config file validation failed.*reportedSpend/,
+      );
+    },
+  );
 
   it('does not warn for recognized keys in config file (task #22)', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
@@ -1478,6 +1541,105 @@ describe('retainSessionsDays', () => {
     expect(config.retainSessionsDays).toBeNull();
     const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(stderrOutput).not.toMatch(/retainSessionsDays/);
+  });
+});
+
+describe('retentionPolicy presets', () => {
+  function loadRetention(
+    file: Record<string, unknown>,
+    env: Record<string, string> = {},
+  ): number | null {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    for (const [key, value] of Object.entries(env)) process.env[key] = value;
+    const configPath = writeConfigFile(file);
+    return loadMcpConfig({ config: configPath }).retainSessionsDays;
+  }
+
+  function stderrText(): string {
+    return stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+  }
+
+  it.each([
+    ['default', 90],
+    ['gdpr-minimisation', 30],
+    ['soc2-audit', 365],
+    ['hipaa-audit', 2190],
+    ['minimal', 7],
+  ])('file retentionPolicy "%s" resolves to %i days', (policy, days) => {
+    expect(loadRetention({ retentionPolicy: policy })).toBe(days);
+  });
+
+  it('matches preset names ignoring case and surrounding spaces', () => {
+    expect(loadRetention({ retentionPolicy: 'Hipaa-Audit' })).toBe(2190);
+    expect(loadRetention({}, { NEW_RELIC_AI_RETENTION_POLICY: ' HIPAA-audit ' })).toBe(2190);
+  });
+
+  it('env NEW_RELIC_AI_RETENTION_POLICY resolves a preset when no days are set', () => {
+    expect(loadRetention({}, { NEW_RELIC_AI_RETENTION_POLICY: 'minimal' })).toBe(7);
+  });
+
+  it('env days beat an env policy', () => {
+    expect(
+      loadRetention(
+        {},
+        { NEW_RELIC_AI_RETAIN_SESSIONS_DAYS: '14', NEW_RELIC_AI_RETENTION_POLICY: 'minimal' },
+      ),
+    ).toBe(14);
+  });
+
+  it('env policy beats file days', () => {
+    expect(
+      loadRetention({ retainSessionsDays: 30 }, { NEW_RELIC_AI_RETENTION_POLICY: 'minimal' }),
+    ).toBe(7);
+  });
+
+  it('env policy beats a file null (env outranks file at every level)', () => {
+    expect(
+      loadRetention({ retainSessionsDays: null }, { NEW_RELIC_AI_RETENTION_POLICY: 'minimal' }),
+    ).toBe(7);
+  });
+
+  it('file days beat a file policy at the same level', () => {
+    expect(loadRetention({ retainSessionsDays: 30, retentionPolicy: 'soc2-audit' })).toBe(30);
+  });
+
+  it('file null beats a file policy and keeps retention disabled', () => {
+    expect(loadRetention({ retainSessionsDays: null, retentionPolicy: 'soc2-audit' })).toBeNull();
+  });
+
+  it('an invalid file day count falls through to the file policy', () => {
+    expect(loadRetention({ retainSessionsDays: -30, retentionPolicy: 'minimal' })).toBe(7);
+  });
+
+  it('an unknown env policy logs a warning and falls through to the file policy', () => {
+    const days = loadRetention(
+      { retentionPolicy: 'minimal' },
+      { NEW_RELIC_AI_RETENTION_POLICY: 'soc2' },
+    );
+    expect(days).toBe(7);
+    expect(stderrText()).toMatch(/Unknown retention policy/);
+    expect(stderrText()).toMatch(/"source":"NEW_RELIC_AI_RETENTION_POLICY"/);
+    expect(stderrText()).toMatch(/"value":"soc2"/);
+  });
+
+  it('an unknown file policy logs a warning and falls through to the default', () => {
+    expect(loadRetention({ retentionPolicy: 'gdpr' })).toBe(90);
+    expect(stderrText()).toMatch(/"source":"retentionPolicy"/);
+    expect(stderrText()).toMatch(/"value":"gdpr"/);
+  });
+
+  it('an unknown env policy with no file policy falls through to the default without throwing', () => {
+    expect(loadRetention({}, { NEW_RELIC_AI_RETENTION_POLICY: 'bogus' })).toBe(90);
+  });
+
+  it('an Object.prototype key is not a preset name', () => {
+    expect(loadRetention({ retentionPolicy: 'constructor' })).toBe(90);
+    expect(stderrText()).toMatch(/"value":"constructor"/);
+  });
+
+  it('the default is unchanged when no level sets retention', () => {
+    expect(loadRetention({})).toBe(90);
   });
 });
 

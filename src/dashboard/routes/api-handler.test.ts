@@ -19,11 +19,15 @@ import {
 } from '../../metrics/tool-selection-scorer.js';
 import { LiveSessionRegistry } from '../../metrics/live-session-registry.js';
 import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
+import { TaskCompletionTracker } from '../../metrics/task-completion-tracker.js';
+import type { AiCodingTask } from '../../metrics/task-detector.js';
+import { handleGetTaskCompletionRate } from '../../tools/analytics-tools.js';
 import { makeUsage } from '../../__test-utils__/token-usage.js';
 import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
 import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
 import { CostTracker } from '../../metrics/cost-tracker.js';
+import { BudgetTracker } from '../../metrics/budget-tracker.js';
 import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { buildCostTrackerSeed } from '../../metrics/cost-tracker-seed.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../../metrics/quality-proxy-tracker.js';
@@ -6600,7 +6604,7 @@ describe('api-handler PATCH /api/settings', () => {
     },
   );
 
-  it('accepts retainSessionsDays as integer 1-365 or null, rejects out-of-range/non-integer', async () => {
+  it('accepts retainSessionsDays as integer 1-2190 or null, rejects out-of-range/non-integer', async () => {
     const configFilePath = makeConfigFilePath({});
     const handler = createApiHandler({ configFilePath });
 
@@ -6609,18 +6613,23 @@ describe('api-handler PATCH /api/settings', () => {
     await handler(reqOk, resOk);
     expect(statusOk()).toBe(200);
 
+    const reqMax = makePatchRequest({ retainSessionsDays: 2190 });
+    const { res: resMax, status: statusMax } = fakeRes();
+    await handler(reqMax, resMax);
+    expect(statusMax()).toBe(200);
+
     const reqNull = makePatchRequest({ retainSessionsDays: null });
     const { res: resNull, status: statusNull } = fakeRes();
     await handler(reqNull, resNull);
     expect(statusNull()).toBe(200);
 
-    const reqTooHigh = makePatchRequest({ retainSessionsDays: 366 });
+    const reqTooHigh = makePatchRequest({ retainSessionsDays: 2191 });
     const { res: resTooHigh, status: statusTooHigh, body: bodyTooHigh } = fakeRes();
     await handler(reqTooHigh, resTooHigh);
     expect(statusTooHigh()).toBe(400);
     expect(JSON.parse(bodyTooHigh())).toEqual({
       error: 'validation_failed',
-      errors: ['retainSessionsDays must be integer 1-365 or null'],
+      errors: ['retainSessionsDays must be integer 1-2190 or null'],
     });
 
     const reqFloat = makePatchRequest({ retainSessionsDays: 1.5 });
@@ -6801,7 +6810,7 @@ describe('api-handler PATCH /api/settings', () => {
       errors: [
         'developer must be a string',
         'teamId must be string or null',
-        'retainSessionsDays must be integer 1-365 or null',
+        'retainSessionsDays must be integer 1-2190 or null',
       ],
     });
   });
@@ -10095,5 +10104,236 @@ describe('api-handler Today aggregate git identity reuse', () => {
       Date.now = realNow;
     }
     expect(gitCallCount(logFile)).toBe(afterFirst);
+  });
+});
+
+describe('api-handler reported spend settings', () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tmpDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function makeConfigFilePath(initial: Record<string, unknown> = {}): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-reported-spend-test-'));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, 'config.json');
+    fs.writeFileSync(filePath, JSON.stringify(initial, null, 2));
+    return filePath;
+  }
+
+  const config = {
+    personalAlertThresholds: {},
+    secretSources: {},
+    tiers: [],
+  } as unknown as NonNullable<Parameters<typeof createApiHandler>[0]['config']>;
+
+  async function call(
+    handler: ReturnType<typeof createApiHandler>,
+    method: 'GET' | 'PATCH',
+    url: string,
+    bodyObj?: unknown,
+  ): Promise<{ status: number; json: Record<string, unknown> }> {
+    const readable = Readable.from(
+      bodyObj === undefined ? [] : [Buffer.from(JSON.stringify(bodyObj))],
+    );
+    const req = readable as unknown as IncomingMessage;
+    req.method = method;
+    req.url = url;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    return { status: status(), json: JSON.parse(body()) as Record<string, unknown> };
+  }
+
+  const saved = (configFilePath: string): unknown =>
+    (JSON.parse(fs.readFileSync(configFilePath, 'utf-8')) as Record<string, unknown>).reportedSpend;
+
+  it('stamps asOf from the server clock on save and returns it from GET', async () => {
+    const configFilePath = makeConfigFilePath({ developer: 'kept' });
+    const handler = createApiHandler({ configFilePath, config });
+    const before = Date.now();
+
+    const patch = await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: 42.5 },
+    });
+    const after = Date.now();
+
+    expect(patch.status).toBe(200);
+    expect(patch.json).toEqual({ ok: true, restartRequired: false });
+    const stored = saved(configFilePath) as Array<{
+      periodKind: string;
+      amountUsd: number;
+      asOf: string;
+    }>;
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ periodKind: 'daily', amountUsd: 42.5 });
+    expect(Date.parse(stored[0]!.asOf)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(stored[0]!.asOf)).toBeLessThanOrEqual(after);
+    expect(JSON.parse(fs.readFileSync(configFilePath, 'utf-8')).developer).toBe('kept');
+
+    const get = await call(handler, 'GET', '/api/settings');
+    expect(get.json.reportedSpend).toEqual(stored);
+  });
+
+  it('keeps the daily and weekly values separate and replaces one on a second save', async () => {
+    const configFilePath = makeConfigFilePath();
+    const handler = createApiHandler({ configFilePath, config });
+
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: 1 },
+    });
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'weekly', amountUsd: 9 },
+    });
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: 2 },
+    });
+
+    const stored = saved(configFilePath) as Array<{ periodKind: string; amountUsd: number }>;
+    expect(stored.map((e) => [e.periodKind, e.amountUsd]).sort()).toEqual([
+      ['daily', 2],
+      ['weekly', 9],
+    ]);
+  });
+
+  it.each([
+    ['a negative amount', { periodKind: 'daily', amountUsd: -1 }],
+    ['a string amount', { periodKind: 'daily', amountUsd: '5' }],
+    ['an amount above the bound', { periodKind: 'daily', amountUsd: 1e12 }],
+    ['an unknown period', { periodKind: 'monthly', amountUsd: 5 }],
+    ['a client-supplied asOf', { periodKind: 'daily', amountUsd: 5, asOf: '2020-01-01T00:00:00Z' }],
+  ])('rejects %s and writes nothing', async (_name, reportedSpend) => {
+    const configFilePath = makeConfigFilePath({ developer: 'kept' });
+    const handler = createApiHandler({ configFilePath, config });
+
+    const { status, json } = await call(handler, 'PATCH', '/api/settings', { reportedSpend });
+
+    expect(status).toBe(400);
+    expect(json.error).toBe('validation_failed');
+    expect(saved(configFilePath)).toBeUndefined();
+  });
+
+  it('clears one period with a null amount and leaves the other', async () => {
+    const configFilePath = makeConfigFilePath();
+    const handler = createApiHandler({ configFilePath, config });
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: 1 },
+    });
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'weekly', amountUsd: 9 },
+    });
+
+    const cleared = await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: null },
+    });
+
+    expect(cleared.status).toBe(200);
+    const get = await call(handler, 'GET', '/api/settings');
+    expect(get.json.reportedSpend).toEqual([
+      expect.objectContaining({ periodKind: 'weekly', amountUsd: 9 }),
+    ]);
+  });
+
+  it('ignores malformed stored entries when reading settings', async () => {
+    const configFilePath = makeConfigFilePath({
+      reportedSpend: [
+        { periodKind: 'daily', amountUsd: 'x', asOf: '2026-01-01T00:00:00Z' },
+        { periodKind: 'weekly', amountUsd: 3, asOf: 'not a date' },
+        { periodKind: 'daily', amountUsd: 4, asOf: '2026-01-01T00:00:00Z' },
+      ],
+    });
+    const handler = createApiHandler({ configFilePath, config });
+
+    const get = await call(handler, 'GET', '/api/settings');
+
+    expect(get.json.reportedSpend).toEqual([
+      { periodKind: 'daily', amountUsd: 4, asOf: '2026-01-01T00:00:00Z' },
+    ]);
+  });
+
+  it('feeds the budget tracker nothing and leaves its status and alerts unchanged', async () => {
+    const configFilePath = makeConfigFilePath({ dailyBudgetUsd: 10, weeklyBudgetUsd: 20 });
+    const withoutReported = (): Record<string, unknown> => {
+      const { reportedSpend: _reported, ...rest } = JSON.parse(
+        fs.readFileSync(configFilePath, 'utf-8'),
+      ) as Record<string, unknown>;
+      return rest;
+    };
+    const diskBefore = withoutReported();
+    const thresholds: unknown[] = [];
+    const budgetTracker = new BudgetTracker({
+      sessionBudgetUsd: null,
+      dailyBudgetUsd: 10,
+      weeklyBudgetUsd: 20,
+      onThreshold: (event) => thresholds.push(event),
+    });
+    budgetTracker.updateCost(0, 6, 6);
+    const fired = thresholds.length;
+    const updateCost = jest.spyOn(budgetTracker, 'updateCost');
+    const handler = createApiHandler({ configFilePath, config, budgetTracker });
+    const before = await call(handler, 'GET', '/api/budget');
+
+    for (const periodKind of ['daily', 'weekly'] as const) {
+      const saved = await call(handler, 'PATCH', '/api/settings', {
+        reportedSpend: { periodKind, amountUsd: 500 },
+      });
+      expect(saved.status).toBe(200);
+    }
+    const after = await call(handler, 'GET', '/api/budget');
+
+    expect(updateCost).not.toHaveBeenCalled();
+    expect(thresholds).toHaveLength(fired);
+    expect(after.json).toEqual(before.json);
+    expect((after.json.daily as { spentUsd: number }).spentUsd).toBe(6);
+    expect((after.json.alerts as unknown[]).length).toBe(1);
+    expect(withoutReported()).toEqual(diskBefore);
+  });
+});
+
+describe('api-handler GET /api/task-completion', () => {
+  function completedTask(durationMs: number, toolCallCount: number): AiCodingTask {
+    return { durationMs, toolCallCount } as unknown as AiCodingTask;
+  }
+
+  it('returns 503 when taskCompletionTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/task-completion' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'taskCompletionTracker' });
+  });
+
+  it('returns the same numbers as the get_task_completion_rate MCP tool for the same tracker state', async () => {
+    const tracker = new TaskCompletionTracker();
+    tracker.recordTask(completedTask(60_000, 10));
+    tracker.recordTask(completedTask(180_000, 4));
+    const handler = createApiHandler({ taskCompletionTracker: tracker });
+    const req = { method: 'GET', url: '/api/task-completion' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const mcpText = handleGetTaskCompletionRate(tracker).content[0].text;
+    expect(JSON.parse(body())).toEqual(JSON.parse(mcpText));
+    expect(JSON.parse(body())).toEqual({
+      completedTasks: 2,
+      avgTaskDurationMs: 120_000,
+      avgToolCallsPerTask: 7,
+    });
+  });
+
+  it('reports null averages when no task has completed', async () => {
+    const handler = createApiHandler({ taskCompletionTracker: new TaskCompletionTracker() });
+    const req = { method: 'GET', url: '/api/task-completion' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({
+      completedTasks: 0,
+      avgTaskDurationMs: null,
+      avgToolCallsPerTask: null,
+    });
   });
 });

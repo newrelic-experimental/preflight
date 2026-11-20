@@ -19,7 +19,7 @@ import {
   mergeSummaries,
   sessionSummaryToDriftRecord,
 } from './session-store.js';
-import type { FullSessionSummary } from './session-store.js';
+import type { BuildSessionSummarySources, FullSessionSummary } from './session-store.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { buildCostTrackerSeed } from '../metrics/cost-tracker-seed.js';
@@ -434,6 +434,50 @@ describe('buildSessionSummary anti-patterns', () => {
     ]);
   });
 
+  it('scores tool selection with each call attributed by backfillRecord', () => {
+    const [task] = mockTaskDetector.getMetrics().completedTasks;
+    const readTaskDetector = {
+      getCurrentTask: () => null,
+      getMetrics: () => ({
+        ...mockTaskDetector.getMetrics(),
+        completedTasks: [
+          {
+            ...task,
+            toolCalls: ['toolu_a', 'toolu_b', 'toolu_c'].map((toolUseId, i) => ({
+              id: `r${i}`,
+              sessionId: 'ap-session',
+              toolName: 'Read',
+              toolUseId,
+              timestamp: 1_700_000_001_000 + i * 1000,
+              durationMs: 20,
+              success: true,
+              filePath: '/src/shared.ts',
+            })),
+          },
+        ],
+      }),
+    };
+    const agentByToolUse = new Map([
+      ['toolu_a', 'agent-1'],
+      ['toolu_b', 'agent-2'],
+      ['toolu_c', 'agent-3'],
+    ]);
+    const build = (backfillRecord?: BuildSessionSummarySources['backfillRecord']) =>
+      buildSessionSummary({
+        sessionTracker: mockSessionTracker as unknown as SessionTracker,
+        taskDetector: readTaskDetector as unknown as TaskDetector,
+        toolSelectionScorer: new ToolSelectionScorer(),
+        developer: 'alice',
+        ...(backfillRecord && { backfillRecord }),
+      }).toolSelectionMetrics;
+
+    expect(build()).toMatchObject({ totalCalls: 3, redundantReadCount: 1 });
+    expect(build((r) => ({ ...r, agentId: agentByToolUse.get(r.toolUseId ?? '') }))).toMatchObject({
+      totalCalls: 3,
+      redundantReadCount: 0,
+    });
+  });
+
   it('keeps one row per incident when multiple incidents share a type', () => {
     const mockAntiPatternDetector = {
       analyze: () => ({
@@ -683,6 +727,53 @@ describe('SessionStore', () => {
     const saved = store.loadSession('chat-after')!;
     expect(saved.estimatedCostUsd).toBeCloseTo(0.0288, 4);
     expect(saved.toolCallCount).toBe(12);
+  });
+
+  it('merges a self-reported summary with no tool calls into a recorded session', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'reported', startTime, toolCallCount: 12 }));
+
+    store.saveSession(
+      makeSummary({
+        sessionId: 'reported',
+        startTime,
+        toolCallCount: 0,
+        toolBreakdown: {},
+        tokensInput: 99_000,
+        selfReportCount: 1,
+      }),
+    );
+
+    expect(store.loadSession('reported')).toMatchObject({ toolCallCount: 12, tokensInput: 99_000 });
+  });
+
+  it('writes the first file of a session that holds only a self-report', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const idle = {
+      toolCallCount: 0,
+      toolBreakdown: {},
+      estimatedCostUsd: 0,
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensThinking: 0,
+    };
+
+    const saved = store.saveSession(
+      makeSummary({ ...idle, sessionId: 'reported-only', selfReportCount: 1 }),
+    );
+
+    expect(saved).not.toBeNull();
+  });
+
+  it('keeps the larger selfReportCount', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'counted', startTime, selfReportCount: 2 }));
+
+    store.saveSession(makeSummary({ sessionId: 'counted', startTime, selfReportCount: 1 }));
+
+    expect(store.loadSession('counted')?.selfReportCount).toBe(2);
   });
 
   it('does not create a file for a session that recorded no usage', () => {

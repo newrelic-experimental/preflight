@@ -2,10 +2,18 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
 import {
+  MAX_REPORTED_SPEND_USD,
+  isPeriodKind,
+  isValidReportedAmountUsd,
+  parseStoredReportedSpend,
+  type ReportedSpend,
+} from '../../lib/reported-spend.js';
+import {
   digestWebhookUrlOverrideSource,
   digestWebhookUrlOverride,
   normalizeDeveloperName,
   redactSensitive,
+  MAX_RETAIN_SESSIONS_DAYS,
 } from '../../config.js';
 import {
   isSyntheticSessionId,
@@ -49,6 +57,7 @@ import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
 import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
 import type { ModelBreakdownEntry, ModelUsageMetrics } from '../../metrics/model-usage-tracker.js';
 import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
+import type { TaskCompletionMetrics } from '../../metrics/task-completion-tracker.js';
 import type {
   QualityEvent,
   QualityProxyMetrics,
@@ -513,6 +522,7 @@ export interface ApiHandlerDeps {
   readonly weeklySummaryGenerator?: WeeklySummaryGenerator;
   readonly budgetTracker?: { getStatus: () => BudgetStatus };
   readonly latencyTracker?: { getMetrics: () => LatencyMetrics };
+  readonly taskCompletionTracker?: { getMetrics: () => TaskCompletionMetrics };
   readonly personalCoach?: { generate: () => PersonalInsightsResult };
   readonly trendAnalyzer?: {
     computeTrends: () => {
@@ -2496,6 +2506,11 @@ export function createApiHandler(
     });
   });
 
+  routes.set('GET /api/task-completion', (_req, res) => {
+    if (!deps.taskCompletionTracker) return unavailable(res, 'taskCompletionTracker');
+    jsonOk(res, deps.taskCompletionTracker.getMetrics());
+  });
+
   routes.set('GET /api/model-usage', (_req, res) => {
     if (!deps.modelUsageTracker) return unavailable(res, 'modelUsageTracker');
     // Same own-live + persisted-today, excluding-sessions-already-held-live
@@ -3217,6 +3232,7 @@ export function createApiHandler(
         'retainSessionsDays' in disk
           ? (disk.retainSessionsDays as number | null)
           : c.retainSessionsDays,
+      reportedSpend: parseStoredReportedSpend(disk.reportedSpend),
       digestWebhookUrl: fileWebhookUrl,
       // Where sends actually read the URL from. The value above is only the
       // file's; env or a command outranks it, and its value is never returned.
@@ -3327,14 +3343,42 @@ export function createApiHandler(
         digestUrlOnly = false;
       }
     }
+    if ('reportedSpend' in body) {
+      const rs = body.reportedSpend as Record<string, unknown> | null;
+      const unknownKeys =
+        typeof rs === 'object' && rs !== null
+          ? Object.keys(rs).filter((k) => k !== 'periodKind' && k !== 'amountUsd')
+          : [];
+      if (typeof rs !== 'object' || rs === null || Array.isArray(rs)) {
+        errors.push('reportedSpend must be an object');
+      } else if (unknownKeys.length > 0) {
+        errors.push(`reportedSpend.${unknownKeys[0]} is set by the server and cannot be sent`);
+      } else if (!isPeriodKind(rs.periodKind)) {
+        errors.push("reportedSpend.periodKind must be 'daily' or 'weekly'");
+      } else if (rs.amountUsd !== null && !isValidReportedAmountUsd(rs.amountUsd)) {
+        errors.push(
+          `reportedSpend.amountUsd must be a number from 0 to ${MAX_REPORTED_SPEND_USD}, or null to clear`,
+        );
+      } else {
+        const periodKind = rs.periodKind;
+        const kept = parseStoredReportedSpend(existing.reportedSpend).filter(
+          (e) => e.periodKind !== periodKind,
+        );
+        const next: ReportedSpend[] =
+          rs.amountUsd === null
+            ? kept
+            : [...kept, { periodKind, amountUsd: rs.amountUsd, asOf: new Date().toISOString() }];
+        existing.reportedSpend = next;
+      }
+    }
     if ('retainSessionsDays' in body) {
       if (
         body.retainSessionsDays !== null &&
         (!Number.isInteger(body.retainSessionsDays) ||
           (body.retainSessionsDays as number) < 1 ||
-          (body.retainSessionsDays as number) > 365)
+          (body.retainSessionsDays as number) > MAX_RETAIN_SESSIONS_DAYS)
       ) {
-        errors.push('retainSessionsDays must be integer 1-365 or null');
+        errors.push(`retainSessionsDays must be integer 1-${MAX_RETAIN_SESSIONS_DAYS} or null`);
       } else {
         existing.retainSessionsDays = body.retainSessionsDays;
         digestUrlOnly = false;
