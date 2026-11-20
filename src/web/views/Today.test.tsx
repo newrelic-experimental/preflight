@@ -85,6 +85,11 @@ describe('Today view', () => {
     ).toBeTruthy();
   });
 
+  it('mounts the process-scoped Tasks panel', async () => {
+    renderToday();
+    expect(await screen.findByText('Tasks (this process)')).toBeInTheDocument();
+  });
+
   // Anti-pattern/flag rendering moved to the "Needs attention" panel — see
   // the dedicated "Today view — Needs attention panel" describe block below.
 
@@ -193,6 +198,42 @@ describe('Today view', () => {
     expect(screen.getByText('$0.06')).toBeInTheDocument();
     expect(screen.getByText(/longest failure streak/i)).toBeInTheDocument();
     expect(await screen.findByText('tool_results')).toBeInTheDocument();
+  });
+
+  it('passes the live session to the detail dialog so its copy buttons are enabled', async () => {
+    stubTurnCostsAndDecisionTree(1);
+    const stubbed = globalThis.fetch;
+    const json = (body: unknown): Response =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/live')) {
+        return json([
+          { sessionId: 'session-copy', sessionName: 'copy me', startTime: 1, lastActivity: 2 },
+        ]);
+      }
+      if (url.includes('/api/sessions/session-copy/replay')) {
+        return json({ sessionId: 'session-copy', timeline: [] });
+      }
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return json({
+          toolCallCount: 1,
+          totalCostUsd: 0,
+          antiPatternCount: 0,
+          avgDurationMs: 0,
+          sessionCount: 1,
+          sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
+        });
+      }
+      return stubbed(input, init);
+    }) as typeof fetch;
+    renderToday();
+    fireEvent.click(await screen.findByText(/session detail/i));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /copy as markdown/i })).toBeEnabled();
   });
 
   it('hides the trigger when neither tracker has data', async () => {
