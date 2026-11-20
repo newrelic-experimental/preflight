@@ -81,6 +81,13 @@ jest.mock('./dashboard-health.js', () => ({
   waitForHealthyDashboard: jest.fn(),
 }));
 
+// The retention prompt sits between the budget and dashboard-port questions. The
+// positional answer lists predate it, so every helper answers it with Enter and
+// consumes no slot. Retention tests answer it explicitly.
+function isRetentionPrompt(prompt: unknown): boolean {
+  return String(prompt).includes('Retention policy');
+}
+
 // Typed handles to the mocked module functions.
 const mockedKeyValidator = {
   validateLicenseKey: keyValidator.validateLicenseKey as jest.MockedFunction<
@@ -310,7 +317,9 @@ describe('defaultStarterRulesSource fallback (via runSetupWizard)', () => {
     // copyStarterAlertRules actually runs), installHooks='n' (skip hooks).
     let i = 0;
     const values = ['local', 'tester', '', '', '', '', '', '', 'n'];
-    mockRl.question.mockImplementation(async () => values[i++] ?? '');
+    mockRl.question.mockImplementation(async (prompt: unknown) =>
+      isRetentionPrompt(prompt) ? '' : (values[i++] ?? ''),
+    );
 
     await runSetupWizard();
 
@@ -544,7 +553,9 @@ describe('setup-wizard idempotency and env-detection', () => {
   //   dashboardPort, copyStarterRules, installHooks.
   function sequenceAnswers(...answers: (string | undefined)[]): void {
     let i = 0;
-    mockRl.question.mockImplementation(async () => answers[i++] ?? '');
+    mockRl.question.mockImplementation(async (prompt: unknown) =>
+      isRetentionPrompt(prompt) ? '' : (answers[i++] ?? ''),
+    );
   }
 
   it('re-run with existing config preserves unrelated custom fields', async () => {
@@ -714,7 +725,9 @@ describe('setupWizard repoUrlEnabled prompt', () => {
   //   teamId, projectId, repoUrlEnabled, sessionBudget, installHooks.
   function sequenceAnswers(...answers: (string | undefined)[]): void {
     let i = 0;
-    mockRl.question.mockImplementation(async () => answers[i++] ?? '');
+    mockRl.question.mockImplementation(async (prompt: unknown) =>
+      isRetentionPrompt(prompt) ? '' : (answers[i++] ?? ''),
+    );
   }
 
   it("explicit decline ('n') writes repoUrlEnabled: false", async () => {
@@ -789,7 +802,9 @@ describe('setupWizard mode branch', () => {
 
   function answers(...values: string[]): void {
     let i = 0;
-    mockRl.question.mockImplementation(async () => values[i++] ?? '');
+    mockRl.question.mockImplementation(async (prompt: unknown) =>
+      isRetentionPrompt(prompt) ? '' : (values[i++] ?? ''),
+    );
   }
 
   it("when mode='local' is chosen, does NOT prompt for licenseKey or accountId", async () => {
@@ -917,7 +932,9 @@ describe('setupWizard input validation', () => {
 
   function answers(...values: string[]): void {
     let i = 0;
-    mockRl.question.mockImplementation(async () => values[i++] ?? '');
+    mockRl.question.mockImplementation(async (prompt: unknown) =>
+      isRetentionPrompt(prompt) ? '' : (values[i++] ?? ''),
+    );
   }
 
   it('rejects an account ID that is not 1–12 digits', async () => {
@@ -1132,7 +1149,9 @@ describe('setupWizard auto-update step', () => {
   // repoUrlEnabled, sessionBudget, installHooks, installCopilotHooks, autoUpdate, updateTime
   function cloudAnswers(...values: string[]): void {
     let i = 0;
-    mockRl.question.mockImplementation(async () => values[i++] ?? '');
+    mockRl.question.mockImplementation(async (prompt: unknown) =>
+      isRetentionPrompt(prompt) ? '' : (values[i++] ?? ''),
+    );
   }
 
   it('calls installSchedule with parsed hour and minute when user accepts', async () => {
@@ -1300,7 +1319,9 @@ describe('setupWizard daemon install step', () => {
   // installHooks, installCopilotHooks, daemonAnswer, autoUpdate
   function answers(...values: string[]): void {
     let i = 0;
-    mockRl.question.mockImplementation(async () => values[i++] ?? '');
+    mockRl.question.mockImplementation(async (prompt: unknown) =>
+      isRetentionPrompt(prompt) ? '' : (values[i++] ?? ''),
+    );
   }
 
   it('reports success and calls waitForHealthyDashboard when the daemon health-checks OK', async () => {
@@ -1428,7 +1449,9 @@ describe('setupWizard auto-update step on an install where update cannot run', (
       mockedUpdateSupport.detectUpdateSupport.mockReturnValue({ supported: false, blocker });
       const values = ['local', 'tester', '', '', '', '', '', 'n', 'n', 'n', 'n'];
       let i = 0;
-      mockRl.question.mockImplementation(async () => values[i++] ?? '');
+      mockRl.question.mockImplementation(async (prompt: unknown) =>
+        isRetentionPrompt(prompt) ? '' : (values[i++] ?? ''),
+      );
 
       await runSetupWizard();
 
@@ -1517,7 +1540,9 @@ describe('setupWizard environment and nrApiKey steps', () => {
 
   function answers(...values: string[]): void {
     let i = 0;
-    mockRl.question.mockImplementation(async () => values[i++] ?? '');
+    mockRl.question.mockImplementation(async (prompt: unknown) =>
+      isRetentionPrompt(prompt) ? '' : (values[i++] ?? ''),
+    );
   }
 
   it('writes collectorHost eu when EU environment selected', async () => {
@@ -1967,7 +1992,9 @@ describe('setupWizard WSL CC-mode selection', () => {
   // repoUrlEnabled, sessionBudget, installHooks='y', wslChoice
   function answers(...values: string[]): void {
     let i = 0;
-    mockRl.question.mockImplementation(async () => values[i++] ?? '');
+    mockRl.question.mockImplementation(async (prompt: unknown) =>
+      isRetentionPrompt(prompt) ? '' : (values[i++] ?? ''),
+    );
   }
 
   it("calls runInstallCli with ['install', '--windows-cc'] when wslChoice is '1'", async () => {
@@ -2077,7 +2104,9 @@ describe('setupWizard Copilot hooks install step', () => {
   // dashboardPort, copyStarterRules, installHooks, installCopilotHooks
   function answers(...values: string[]): void {
     let i = 0;
-    mockRl.question.mockImplementation(async () => values[i++] ?? '');
+    mockRl.question.mockImplementation(async (prompt: unknown) =>
+      isRetentionPrompt(prompt) ? '' : (values[i++] ?? ''),
+    );
   }
 
   it('accepts the default (Enter) and runs the Copilot installer', async () => {
@@ -2211,7 +2240,7 @@ describe('setupWizard macOS Keychain offer', () => {
     let i = 0;
     mockRl.question.mockImplementation(async (prompt: unknown) => {
       prompts.push(String(prompt));
-      return values[i++] ?? '';
+      return isRetentionPrompt(prompt) ? '' : (values[i++] ?? '');
     });
   }
 
@@ -2405,5 +2434,239 @@ describe('setupWizard macOS Keychain offer', () => {
       expect(config.nrApiKey).toBe('NRAK-new');
       expect(config).not.toHaveProperty('nrApiKeyCommand');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retention preset step and --retention flag
+// ---------------------------------------------------------------------------
+describe('setupWizard retention preset', () => {
+  let stdoutSpy: ReturnType<typeof jest.spyOn>;
+  let stderrSpy: ReturnType<typeof jest.spyOn>;
+  let mockRl: { question: jest.Mock; close: jest.Mock };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockRl = { question: jest.fn(), close: jest.fn() };
+    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedFs.mkdirSync.mockReturnValue(undefined);
+    mockedFs.writeFileSync.mockReturnValue(undefined);
+    mockedFs.readFileSync.mockReturnValue('{}');
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    delete process.env.NEW_RELIC_API_KEY;
+    mockedKeyValidator.validateLicenseKey.mockResolvedValue({ valid: true });
+    mockedKeyValidator.validateApiKey.mockResolvedValue({ valid: true });
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+    delete process.env.NEW_RELIC_API_KEY;
+  });
+
+  // Local mode, Enter on every optional question, copy alerts declined, hooks declined.
+  // The retention prompt is answered by `retentionAnswer`, never by a positional slot.
+  function answersWithRetention(retentionAnswer: string): void {
+    const values = ['local', 'tester', '', '', '', '', '', 'n', 'n'];
+    let i = 0;
+    mockRl.question.mockImplementation(async (prompt: unknown) =>
+      String(prompt).includes('Retention policy') ? retentionAnswer : (values[i++] ?? ''),
+    );
+  }
+
+  function promptsAsked(): string[] {
+    return mockRl.question.mock.calls.map((c: unknown[]) => String(c[0]));
+  }
+
+  function outputText(): string {
+    return stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+  }
+
+  function writtenConfig(): Record<string, unknown> {
+    return JSON.parse(mockedFs.writeFileSync.mock.calls[0][1] as string) as Record<string, unknown>;
+  }
+
+  it('--retention skips the question and writes the named preset', async () => {
+    answersWithRetention('');
+
+    await runSetupWizard({ retention: 'soc2-audit' });
+
+    expect(promptsAsked().some((p) => p.includes('Retention policy'))).toBe(false);
+    expect(outputText()).toContain('Retention: soc2-audit (--retention flag)');
+    expect(writtenConfig().retentionPolicy).toBe('soc2-audit');
+  });
+
+  it('lists every preset with its day count when the question is asked', async () => {
+    answersWithRetention('');
+
+    await runSetupWizard();
+
+    const output = outputText();
+    expect(output).toMatch(/gdpr-minimisation\s+30 days/);
+    expect(output).toMatch(/soc2-audit\s+365 days/);
+    expect(output).toMatch(/hipaa-audit\s+2190 days/);
+    expect(output).toMatch(/minimal\s+7 days/);
+    expect(output).toMatch(/default\s+90 days/);
+  });
+
+  it('asks the question after the budget and before the dashboard port', async () => {
+    answersWithRetention('');
+
+    await runSetupWizard();
+
+    const prompts = promptsAsked();
+    const budget = prompts.findIndex((p) => p.includes('Session budget'));
+    const retention = prompts.findIndex((p) => p.includes('Retention policy'));
+    const port = prompts.findIndex((p) => p.includes('Dashboard port'));
+    expect(budget).toBeGreaterThanOrEqual(0);
+    expect(retention).toBe(budget + 1);
+    expect(port).toBe(retention + 1);
+  });
+
+  it('Enter on a config with no preset leaves retentionPolicy unset', async () => {
+    answersWithRetention('');
+
+    await runSetupWizard();
+
+    expect(writtenConfig()).not.toHaveProperty('retentionPolicy');
+  });
+
+  it('typing default writes it', async () => {
+    answersWithRetention('default');
+
+    await runSetupWizard();
+
+    expect(writtenConfig().retentionPolicy).toBe('default');
+  });
+
+  it('a typed name is matched ignoring case and surrounding spaces', async () => {
+    answersWithRetention('  HIPAA-Audit ');
+
+    await runSetupWizard();
+
+    expect(writtenConfig().retentionPolicy).toBe('hipaa-audit');
+  });
+
+  it('Enter keeps the retentionPolicy already in the config', async () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retentionPolicy: 'minimal' }));
+    answersWithRetention('');
+
+    await runSetupWizard();
+
+    expect(writtenConfig().retentionPolicy).toBe('minimal');
+  });
+
+  it('Enter normalises a differently-cased retentionPolicy already in the config', async () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retentionPolicy: 'SOC2-Audit' }));
+    answersWithRetention('');
+
+    await runSetupWizard();
+
+    expect(outputText()).not.toContain('unrecognised retentionPolicy');
+    expect(writtenConfig().retentionPolicy).toBe('soc2-audit');
+  });
+
+  it('a typed preset name is written', async () => {
+    answersWithRetention('gdpr-minimisation');
+
+    await runSetupWizard();
+
+    expect(writtenConfig().retentionPolicy).toBe('gdpr-minimisation');
+  });
+
+  it('an unknown typed name warns and leaves an unset policy unset', async () => {
+    answersWithRetention('gdpr');
+
+    await runSetupWizard();
+
+    expect(outputText()).toContain('Unknown retention policy "gdpr" — leaving it unset');
+    expect(writtenConfig()).not.toHaveProperty('retentionPolicy');
+  });
+
+  it('an unknown typed name keeps the preset already in the config', async () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retentionPolicy: 'minimal' }));
+    answersWithRetention('gdpr');
+
+    await runSetupWizard();
+
+    expect(outputText()).toContain('Unknown retention policy "gdpr" — keeping minimal');
+    expect(writtenConfig().retentionPolicy).toBe('minimal');
+  });
+
+  it('Enter leaves an unrecognised retentionPolicy in the file and warns', async () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retentionPolicy: 'hipaa-audit-typo' }));
+    answersWithRetention('');
+
+    await runSetupWizard();
+
+    expect(outputText()).toContain('unrecognised retentionPolicy ("hipaa-audit-typo")');
+    expect(writtenConfig().retentionPolicy).toBe('hipaa-audit-typo');
+  });
+
+  it('leaves an explicit retainSessionsDays alone and says it still wins', async () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retainSessionsDays: 30 }));
+    answersWithRetention('');
+
+    await runSetupWizard({ retention: 'soc2-audit' });
+
+    const written = writtenConfig();
+    expect(written.retainSessionsDays).toBe(30);
+    expect(written.retentionPolicy).toBe('soc2-audit');
+    expect(outputText()).toContain(
+      'config.json already sets retainSessionsDays (30 days). It is unchanged and takes precedence over any retentionPolicy.',
+    );
+  });
+
+  it('reports an explicit null retainSessionsDays as disabled', async () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retainSessionsDays: null }));
+    answersWithRetention('');
+
+    await runSetupWizard({ retention: 'minimal' });
+
+    expect(writtenConfig().retainSessionsDays).toBeNull();
+    expect(outputText()).toContain('retainSessionsDays (disabled (null))');
+  });
+
+  it('prints no retainSessionsDays note when the config does not set it', async () => {
+    answersWithRetention('');
+
+    await runSetupWizard();
+
+    expect(outputText()).not.toContain('already sets retainSessionsDays');
+    expect(writtenConfig()).not.toHaveProperty('retainSessionsDays');
+  });
+});
+
+describe('buildConfig retentionPolicy', () => {
+  const base = {
+    accountId: '12345',
+    licenseKey: 'lk',
+    developer: 'dev',
+    teamId: null,
+    projectId: null,
+    repoUrlEnabled: false,
+    sessionBudgetUsd: null,
+    mode: 'local' as const,
+  };
+
+  it('writes the chosen retentionPolicy', () => {
+    const result = buildConfig({}, { ...base, retentionPolicy: 'hipaa-audit' });
+    expect(result.retentionPolicy).toBe('hipaa-audit');
+  });
+
+  it('leaves an existing retentionPolicy alone when none is passed', () => {
+    const result = buildConfig({ retentionPolicy: 'minimal' }, base);
+    expect(result.retentionPolicy).toBe('minimal');
+  });
+
+  it('never writes a retainSessionsDays of its own', () => {
+    const result = buildConfig(
+      { retainSessionsDays: 30 },
+      { ...base, retentionPolicy: 'soc2-audit' },
+    );
+    expect(result.retainSessionsDays).toBe(30);
+    expect(result.retentionPolicy).toBe('soc2-audit');
   });
 });

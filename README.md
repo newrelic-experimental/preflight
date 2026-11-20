@@ -231,6 +231,7 @@ Add `--project` to `install`/`uninstall` to scope changes to the current directo
 - [**CONTRIBUTING.md**](CONTRIBUTING.md) — Development, testing, submitting PRs
 - [**SECURITY.md**](./SECURITY.md) — Security guidelines and best practices
 - [**PRIVACY.md**](./PRIVACY.md) — Data collection inventory and pre-cloud checklist
+- [**COMPLIANCE.md**](docs/COMPLIANCE.md): for security reviews, the data flow from the developer machine to New Relic, the controls at each hop, the New Relic certifications that cover stored data (such as SOC 2 and ISO 27001), and a security FAQ
 
 ---
 
