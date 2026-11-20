@@ -7,7 +7,8 @@ import {
   GitEfficiencyTracker,
   parseDefaultBranchFromSymbolicRef,
 } from './git-efficiency-tracker.js';
-import { gitCommandTargetDir, stripHeredocBodies } from './local-session-aggregator.js';
+import { gitCommandTargetDir } from './local-session-aggregator.js';
+import { readShell } from './shell-lexer.js';
 import { HookEventProcessor } from '../hooks/event-processor.js';
 import { ClaudeCodeAdapter } from '../platforms/claude-code-adapter.js';
 import { LocalStore } from '../storage/local-store.js';
@@ -1287,6 +1288,14 @@ describe('GitEfficiencyTracker', () => {
       expect(mergeEvent?.prNumber).toBe('42');
     });
 
+    it('does not count a `gh pr merge` quoted in a commit message when a `(` sits inside a later word', () => {
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "note; gh pr merge 9" && echo ${x//(/}' }),
+      );
+
+      expect(tracker.getMetrics().prMetrics.merged).toBe(0);
+    });
+
     it('tracks gh pr edit/ready as prsUpdated', () => {
       tracker.recordToolCall(makeRecord({ command: 'gh pr edit 7 --add-label ready' }));
       tracker.recordToolCall(makeRecord({ command: 'gh pr ready 7' }));
@@ -2243,41 +2252,41 @@ describe('GitEfficiencyTracker', () => {
 
 describe('gitCommandTargetDir()', () => {
   it('falls back to the tool call cwd for a plain git command', () => {
-    expect(gitCommandTargetDir('git status --short', '/home/u/aic')).toBe('/home/u/aic');
+    expect(gitCommandTargetDir(readShell('git status --short'), '/home/u/aic')).toBe('/home/u/aic');
   });
 
   it('prefers the -C target over cwd, so work driven from one repo at another is attributed correctly', () => {
-    expect(gitCommandTargetDir('git -C /home/u/other log --oneline -1', '/home/u/aic')).toBe(
-      '/home/u/other',
-    );
+    expect(
+      gitCommandTargetDir(readShell('git -C /home/u/other log --oneline -1'), '/home/u/aic'),
+    ).toBe('/home/u/other');
   });
 
   it('handles a quoted -C path containing spaces', () => {
-    expect(gitCommandTargetDir('git -C "/home/u/my repo" status', '/home/u/aic')).toBe(
+    expect(gitCommandTargetDir(readShell('git -C "/home/u/my repo" status'), '/home/u/aic')).toBe(
       '/home/u/my repo',
     );
   });
 
   it('resolves the target of a cd && git chain', () => {
-    expect(gitCommandTargetDir('cd /home/u/worktree && git commit -m x', '/home/u/aic')).toBe(
-      '/home/u/worktree',
-    );
+    expect(
+      gitCommandTargetDir(readShell('cd /home/u/worktree && git commit -m x'), '/home/u/aic'),
+    ).toBe('/home/u/worktree');
   });
 
   it('ignores -C belonging to a different command', () => {
-    expect(gitCommandTargetDir('tar -C /tmp -xf a.tar && git status', '/home/u/aic')).toBe(
-      '/home/u/aic',
-    );
+    expect(
+      gitCommandTargetDir(readShell('tar -C /tmp -xf a.tar && git status'), '/home/u/aic'),
+    ).toBe('/home/u/aic');
   });
 
   it('returns null when there is no target and no cwd', () => {
-    expect(gitCommandTargetDir('git status', undefined)).toBeNull();
+    expect(gitCommandTargetDir(readShell('git status'), undefined)).toBeNull();
   });
 
   it('skips -c config flags preceding -C', () => {
-    expect(gitCommandTargetDir('git -c core.pager=cat -C /home/u/repo log', '/home/u/aic')).toBe(
-      '/home/u/repo',
-    );
+    expect(
+      gitCommandTargetDir(readShell('git -c core.pager=cat -C /home/u/repo log'), '/home/u/aic'),
+    ).toBe('/home/u/repo');
   });
 });
 
@@ -2320,27 +2329,6 @@ describe('GitEfficiencyTracker repo attribution', () => {
     );
     const [event] = tracker.getMetrics().gitCommandTimeline;
     expect(event?.command).not.toContain('ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
-  });
-});
-
-describe('stripHeredocBodies()', () => {
-  it('drops an inline script body but keeps the introducing line', () => {
-    const out = stripHeredocBodies("python3 - <<'PY'\ngit push --force\nPY\necho done");
-    expect(out).toBe("python3 - <<'PY'\necho done");
-  });
-
-  it('keeps the body of an unterminated heredoc from leaking a terminator match', () => {
-    const out = stripHeredocBodies('cat <<EOF\ngit log\n');
-    expect(out).toBe('cat <<EOF');
-  });
-
-  it('honours <<- tab-stripped terminators', () => {
-    const out = stripHeredocBodies('cat <<-EOF\n\tgit push\n\tEOF\ngit status');
-    expect(out).toBe('cat <<-EOF\ngit status');
-  });
-
-  it('leaves commands without a heredoc untouched', () => {
-    expect(stripHeredocBodies('git push origin main')).toBe('git push origin main');
   });
 });
 

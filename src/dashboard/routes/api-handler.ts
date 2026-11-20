@@ -2,10 +2,18 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
 import {
+  MAX_REPORTED_SPEND_USD,
+  isPeriodKind,
+  isValidReportedAmountUsd,
+  parseStoredReportedSpend,
+  type ReportedSpend,
+} from '../../lib/reported-spend.js';
+import {
   digestWebhookUrlOverrideSource,
   digestWebhookUrlOverride,
   normalizeDeveloperName,
   redactSensitive,
+  MAX_RETAIN_SESSIONS_DAYS,
 } from '../../config.js';
 import {
   isSyntheticSessionId,
@@ -3224,6 +3232,7 @@ export function createApiHandler(
         'retainSessionsDays' in disk
           ? (disk.retainSessionsDays as number | null)
           : c.retainSessionsDays,
+      reportedSpend: parseStoredReportedSpend(disk.reportedSpend),
       digestWebhookUrl: fileWebhookUrl,
       // Where sends actually read the URL from. The value above is only the
       // file's; env or a command outranks it, and its value is never returned.
@@ -3334,14 +3343,42 @@ export function createApiHandler(
         digestUrlOnly = false;
       }
     }
+    if ('reportedSpend' in body) {
+      const rs = body.reportedSpend as Record<string, unknown> | null;
+      const unknownKeys =
+        typeof rs === 'object' && rs !== null
+          ? Object.keys(rs).filter((k) => k !== 'periodKind' && k !== 'amountUsd')
+          : [];
+      if (typeof rs !== 'object' || rs === null || Array.isArray(rs)) {
+        errors.push('reportedSpend must be an object');
+      } else if (unknownKeys.length > 0) {
+        errors.push(`reportedSpend.${unknownKeys[0]} is set by the server and cannot be sent`);
+      } else if (!isPeriodKind(rs.periodKind)) {
+        errors.push("reportedSpend.periodKind must be 'daily' or 'weekly'");
+      } else if (rs.amountUsd !== null && !isValidReportedAmountUsd(rs.amountUsd)) {
+        errors.push(
+          `reportedSpend.amountUsd must be a number from 0 to ${MAX_REPORTED_SPEND_USD}, or null to clear`,
+        );
+      } else {
+        const periodKind = rs.periodKind;
+        const kept = parseStoredReportedSpend(existing.reportedSpend).filter(
+          (e) => e.periodKind !== periodKind,
+        );
+        const next: ReportedSpend[] =
+          rs.amountUsd === null
+            ? kept
+            : [...kept, { periodKind, amountUsd: rs.amountUsd, asOf: new Date().toISOString() }];
+        existing.reportedSpend = next;
+      }
+    }
     if ('retainSessionsDays' in body) {
       if (
         body.retainSessionsDays !== null &&
         (!Number.isInteger(body.retainSessionsDays) ||
           (body.retainSessionsDays as number) < 1 ||
-          (body.retainSessionsDays as number) > 365)
+          (body.retainSessionsDays as number) > MAX_RETAIN_SESSIONS_DAYS)
       ) {
-        errors.push('retainSessionsDays must be integer 1-365 or null');
+        errors.push(`retainSessionsDays must be integer 1-${MAX_RETAIN_SESSIONS_DAYS} or null`);
       } else {
         existing.retainSessionsDays = body.retainSessionsDays;
         digestUrlOnly = false;
