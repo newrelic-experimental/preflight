@@ -17,6 +17,7 @@ import {
   LocalSessionAggregator,
   RepoNameResolver,
 } from './local-session-aggregator.js';
+import { backfillAgentId } from './agent-partition.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
 
 // git sets GIT_DIR/GIT_WORK_TREE for hook subprocesses, which override `-C
@@ -742,6 +743,46 @@ describe('LocalSessionAggregator panel rehydration', () => {
     expect(typeof quality?.totalSignals).toBe('number');
     const toolSelection = summary?.toolSelectionMetrics as { totalCalls: number } | null;
     expect(toolSelection?.totalCalls).toBe(2);
+  });
+
+  it('scores tool selection with each call attributed to its subagent by backfillRecord', () => {
+    const agg = new LocalSessionAggregator();
+    for (const [i, toolUseId] of ['toolu_a', 'toolu_b', 'toolu_c'].entries()) {
+      agg.recordToolCall({
+        id: `r${i}`,
+        sessionId: REAL_ID,
+        toolName: 'Read',
+        filePath: '/src/shared.ts',
+        toolUseId,
+        timestamp: 1000 + i * 1000,
+        success: true,
+      } as never);
+    }
+    const redundantReads = (
+      backfillRecord?: Parameters<LocalSessionAggregator['toSummaries']>[0]['backfillRecord'],
+    ) => {
+      const [summary] = agg.toSummaries({
+        developer: 'tester',
+        outcome: 'in progress',
+        repoResolver: new StubRepoResolver(),
+        toolSelectionScorer: new ToolSelectionScorer(),
+        ...(backfillRecord && { backfillRecord }),
+      });
+      const metrics = summary?.toolSelectionMetrics as {
+        totalCalls: number;
+        redundantReadCount: number;
+      };
+      expect(metrics.totalCalls).toBe(3);
+      return metrics.redundantReadCount;
+    };
+    const agentByToolUse = new Map([
+      ['toolu_a', 'agent-1'],
+      ['toolu_b', 'agent-2'],
+      ['toolu_c', 'agent-3'],
+    ]);
+
+    expect(redundantReads()).toBe(1);
+    expect(redundantReads((r) => backfillAgentId(r, agentByToolUse))).toBe(0);
   });
 
   it('carries the cache savings of recorded token usage into the summary', () => {
