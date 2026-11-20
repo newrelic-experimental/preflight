@@ -278,9 +278,9 @@ const RETENTION_RATIONALE: Record<RetentionPolicy, string> = {
   minimal: 'for teams with strict data residency constraints',
 };
 
-function parseRetentionAnswer(raw: string, fallback: RetentionPolicy): RetentionPolicy {
-  if (raw === '') return fallback;
-  return isRetentionPolicy(raw) ? raw : fallback;
+function parseRetentionAnswer(raw: string): RetentionPolicy | null {
+  const name = raw.trim().toLowerCase();
+  return isRetentionPolicy(name) ? name : null;
 }
 
 export async function runSetupWizard(
@@ -572,10 +572,14 @@ export async function runSetupWizard(
     // Step 5a: Retention preset. --retention pre-selects and skips the question.
     // The preset only sets how long local files are kept; an explicit
     // retainSessionsDays already in the file keeps winning, so it is left alone.
-    const existingRetention: RetentionPolicy = isRetentionPolicy(existing.retentionPolicy)
+    // Enter with no valid existing preset writes nothing, so a config that never
+    // chose one stays without the key.
+    const existingRetention: RetentionPolicy | undefined = isRetentionPolicy(
+      existing.retentionPolicy,
+    )
       ? existing.retentionPolicy
-      : 'default';
-    let retentionPolicy: RetentionPolicy;
+      : undefined;
+    let retentionPolicy: RetentionPolicy | undefined;
     if (opts.retention) {
       retentionPolicy = opts.retention;
       print(`Retention: ${retentionPolicy} (--retention flag)`);
@@ -587,11 +591,21 @@ export async function runSetupWizard(
           `  ${name.padEnd(nameWidth)}  ${RETENTION_PRESETS[name]} days — ${RETENTION_RATIONALE[name]}`,
         );
       }
-      const retentionRaw = (await rl.question(`Retention policy [${existingRetention}]: `)).trim();
-      retentionPolicy = parseRetentionAnswer(retentionRaw, existingRetention);
-      if (retentionRaw !== '' && retentionPolicy !== retentionRaw) {
-        print(`  ⚠ Unknown retention policy "${retentionRaw}" — keeping ${retentionPolicy}`);
+      const retentionRaw = (
+        await rl.question(`Retention policy [${existingRetention ?? 'default'}]: `)
+      ).trim();
+      const answered = retentionRaw === '' ? null : parseRetentionAnswer(retentionRaw);
+      retentionPolicy = answered ?? existingRetention;
+      if (retentionRaw !== '' && answered === null) {
+        print(
+          `  ⚠ Unknown retention policy "${retentionRaw}" — ${retentionPolicy ? `keeping ${retentionPolicy}` : 'leaving it unset'}`,
+        );
       }
+    }
+    if (existing.retentionPolicy !== undefined && existingRetention === undefined) {
+      print(
+        `  ⚠ config.json has an unrecognised retentionPolicy (${JSON.stringify(existing.retentionPolicy)})${retentionPolicy ? '' : ' — left unchanged'}. Valid names: ${Object.keys(RETENTION_PRESETS).join(', ')}`,
+      );
     }
     if (existing.retainSessionsDays !== undefined) {
       const explicit =
@@ -599,7 +613,7 @@ export async function runSetupWizard(
           ? 'disabled (null)'
           : `${existing.retainSessionsDays} days`;
       print(
-        `  ℹ config.json already sets retainSessionsDays (${explicit}). It is unchanged and takes precedence over retentionPolicy "${retentionPolicy}".`,
+        `  ℹ config.json already sets retainSessionsDays (${explicit}). It is unchanged and takes precedence over any retentionPolicy.`,
       );
     }
 

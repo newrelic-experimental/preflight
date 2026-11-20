@@ -2496,12 +2496,28 @@ describe('setupWizard retention preset', () => {
     expect(port).toBe(retention + 1);
   });
 
-  it('Enter on a new config writes the default preset', async () => {
+  it('Enter on a config with no preset leaves retentionPolicy unset', async () => {
     answersWithRetention('');
 
     await runSetupWizard();
 
+    expect(writtenConfig()).not.toHaveProperty('retentionPolicy');
+  });
+
+  it('typing default writes it', async () => {
+    answersWithRetention('default');
+
+    await runSetupWizard();
+
     expect(writtenConfig().retentionPolicy).toBe('default');
+  });
+
+  it('a typed name is matched ignoring case and surrounding spaces', async () => {
+    answersWithRetention('  HIPAA-Audit ');
+
+    await runSetupWizard();
+
+    expect(writtenConfig().retentionPolicy).toBe('hipaa-audit');
   });
 
   it('Enter keeps the retentionPolicy already in the config', async () => {
@@ -2521,13 +2537,33 @@ describe('setupWizard retention preset', () => {
     expect(writtenConfig().retentionPolicy).toBe('gdpr-minimisation');
   });
 
-  it('an unknown typed name warns and keeps the default', async () => {
+  it('an unknown typed name warns and leaves an unset policy unset', async () => {
     answersWithRetention('gdpr');
 
     await runSetupWizard();
 
-    expect(outputText()).toContain('Unknown retention policy "gdpr" — keeping default');
-    expect(writtenConfig().retentionPolicy).toBe('default');
+    expect(outputText()).toContain('Unknown retention policy "gdpr" — leaving it unset');
+    expect(writtenConfig()).not.toHaveProperty('retentionPolicy');
+  });
+
+  it('an unknown typed name keeps the preset already in the config', async () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retentionPolicy: 'minimal' }));
+    answersWithRetention('gdpr');
+
+    await runSetupWizard();
+
+    expect(outputText()).toContain('Unknown retention policy "gdpr" — keeping minimal');
+    expect(writtenConfig().retentionPolicy).toBe('minimal');
+  });
+
+  it('Enter leaves an unrecognised retentionPolicy in the file and warns', async () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retentionPolicy: 'hipaa-audit-typo' }));
+    answersWithRetention('');
+
+    await runSetupWizard();
+
+    expect(outputText()).toContain('unrecognised retentionPolicy ("hipaa-audit-typo")');
+    expect(writtenConfig().retentionPolicy).toBe('hipaa-audit-typo');
   });
 
   it('leaves an explicit retainSessionsDays alone and says it still wins', async () => {
@@ -2540,7 +2576,7 @@ describe('setupWizard retention preset', () => {
     expect(written.retainSessionsDays).toBe(30);
     expect(written.retentionPolicy).toBe('soc2-audit');
     expect(outputText()).toContain(
-      'config.json already sets retainSessionsDays (30 days). It is unchanged and takes precedence over retentionPolicy "soc2-audit".',
+      'config.json already sets retainSessionsDays (30 days). It is unchanged and takes precedence over any retentionPolicy.',
     );
   });
 

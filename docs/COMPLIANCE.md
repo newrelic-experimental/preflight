@@ -60,7 +60,7 @@ Preflight reads hook payloads and MCP calls on the same machine. No network is i
 - Directories under `~/.newrelic-preflight/` are created with mode `0o700` and files with `0o600`, so other users on the machine cannot read them. See [SECURITY.md § Storage permissions](../SECURITY.md#storage-permissions).
 - File contents, command output and agent text are not recorded unless `recordContent` is enabled. See [PRIVACY.md § `recordContent`](../PRIVACY.md#recordcontent--off-by-default).
 
-For how long local data is kept and how to shorten it, see [ADVANCED.md § Data Retention](./ADVANCED.md#data-retention).
+For how long local data is kept and how to shorten it, see [ADVANCED.md § Data Retention](./ADVANCED.md#data-retention). Retention covers session summaries, weekly summaries and the cost ledger. The local audit log is not pruned automatically.
 
 ### Hop 2: Preflight to New Relic ingest APIs
 
@@ -135,7 +135,7 @@ In New Relic, retention depends on the data type and your account settings. New 
 
 Data Plus extends custom event retention to 120 days. ([View and manage data retention](https://docs.newrelic.com/docs/data-apis/manage-data/manage-data-retention/))
 
-On the developer's machine, see [ADVANCED.md § Data Retention](./ADVANCED.md#data-retention).
+On the developer's machine, session summaries, weekly summaries and the cost ledger follow your retention setting (see [ADVANCED.md § Data Retention](./ADVANCED.md#data-retention)). The local audit log is not pruned automatically.
 
 ### Can we request data deletion?
 
@@ -147,7 +147,7 @@ Local data can be deleted by removing files under `~/.newrelic-preflight/`.
 
 ### Is Preflight available in EU and GDPR-compliant New Relic regions?
 
-Preflight supports the US, EU and JP regions. A license key starting with `eu01` routes to the EU region automatically. See [PRIVACY.md § NR Account Region](../PRIVACY.md#nr-account-region).
+Preflight supports the US, EU, JP and US government (`gov01` license key) regions. A license key starting with `eu01` routes to the EU region automatically. See [PRIVACY.md § NR Account Region](../PRIVACY.md#nr-account-region).
 
 New Relic hosts data in a US region (the default), an EU region and a JP region. New Relic states that you are "solely responsible for the selection of the appropriate processing and storage region" under any data localization law that applies to you. ([Choose your data center](https://docs.newrelic.com/docs/accounts/accounts-billing/account-setup/choose-your-data-center/))
 

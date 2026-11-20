@@ -295,6 +295,10 @@ export function isRetentionPolicy(value: unknown): value is RetentionPolicy {
   return typeof value === 'string' && Object.hasOwn(RETENTION_PRESETS, value);
 }
 
+// Largest day count a preset sets. The dashboard's retention input accepts up
+// to this so it can show and save every preset's value.
+export const MAX_RETAIN_SESSIONS_DAYS = Math.max(...Object.values(RETENTION_PRESETS));
+
 /**
  * Bump when a change to config.json's shape is non-additive (a field is
  * renamed, moved, or removed) so a future migration path has something to
@@ -701,7 +705,8 @@ function validateFilePositiveNumber(value: number, fieldName: string): boolean {
 
 function policyFromName(raw: string | undefined, source: string): RetentionPolicy | null {
   if (raw === undefined || raw === '') return null;
-  if (isRetentionPolicy(raw)) return raw;
+  const name = raw.trim().toLowerCase();
+  if (isRetentionPolicy(name)) return name;
   logger.warn(
     `Unknown retention policy "${raw}" in ${source} — ignoring it. Valid names: ${Object.keys(RETENTION_PRESETS).join(', ')}`,
     { source, value: raw },

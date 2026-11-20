@@ -1508,6 +1508,11 @@ describe('retentionPolicy presets', () => {
     expect(loadRetention({ retentionPolicy: policy })).toBe(days);
   });
 
+  it('matches preset names ignoring case and surrounding spaces', () => {
+    expect(loadRetention({ retentionPolicy: 'Hipaa-Audit' })).toBe(2190);
+    expect(loadRetention({}, { NEW_RELIC_AI_RETENTION_POLICY: ' HIPAA-audit ' })).toBe(2190);
+  });
+
   it('env NEW_RELIC_AI_RETENTION_POLICY resolves a preset when no days are set', () => {
     expect(loadRetention({}, { NEW_RELIC_AI_RETENTION_POLICY: 'minimal' })).toBe(7);
   });
