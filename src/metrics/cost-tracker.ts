@@ -82,9 +82,9 @@ const LATE_ARRIVAL_REJECTION_MS = 48 * 60 * 60 * 1000;
  * Scales every dollar field of a `CostBreakdown` by `factor`, leaving token
  * counts and everything else untouched. Used to correct Preflight's own
  * list-price computation to an org's real contracted rate (see
- * `CostTrackerOptions.rateMultiplier`) — `calculateCost()` itself lives in
- * `src/core/`, so the correction is applied to its output here instead of
- * inside it.
+ * `CostTrackerOptions.rateMultiplier`). It stays out of `calculateCost()`
+ * because the dashboard API, the subagent timeline and `AiTurnCost` share
+ * that function and report list price.
  */
 function scaleCostBreakdown(breakdown: CostBreakdown, factor: number): CostBreakdown {
   return {
