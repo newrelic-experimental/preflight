@@ -34,7 +34,6 @@ const testLogs: NrLogEntry[] = [
 ];
 
 const baseOptions: TransportOptions = {
-  accountId: '12345',
   maxRetries: 3,
   baseDelayMs: 1,
   maxDelayMs: 10,
@@ -148,7 +147,7 @@ const HAS_NR_CREDS = process.env.NEW_RELIC_LICENSE_KEY && process.env.NEW_RELIC_
         },
       ],
       process.env.NEW_RELIC_LICENSE_KEY!,
-      { accountId: process.env.NEW_RELIC_ACCOUNT_ID! },
+      {},
     );
     expect(result.success).toBe(true);
     expect(result.statusCode).toBe(200);
