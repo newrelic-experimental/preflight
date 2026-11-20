@@ -865,6 +865,30 @@ describe('LocalSessionAggregator subagent cost', () => {
     expect(summary?.subagentCostUsd).toBe(5);
   });
 
+  it('keeps subagent reasoning tokens out of the persisted tokensThinking', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, {
+      costUsd: 1,
+      timestamp: 1000,
+      inputTokens: 10,
+      thinkingTokens: 40,
+      agentId: 'agent-1',
+      model: 'claude-sonnet-4-6',
+    });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.tokensThinking).toBe(0);
+  });
+
+  it('takes the platform of a token usage that arrives first, and keeps it afterwards', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, inputTokens: 10, platform: 'cursor' });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, inputTokens: 10, platform: 'windsurf' });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.platform).toBe('cursor');
+  });
+
   it('omits costByDayUsd (undefined, not {}) for a rollup with only tool calls and no token usage', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
@@ -1026,6 +1050,26 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
 
 describe('LocalSessionAggregator baseline fold after its own checkpoint', () => {
   const DAY = new Date(2026, 8, 10, 12).getTime();
+  const foldedAfter = (confirmed: boolean) => {
+    let written = false;
+    const agg = new LocalSessionAggregator({
+      persistedCostBaseline: () => (written ? { estimatedCostUsd: 5, subagentCostUsd: 0 } : null),
+    });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
+    summariesOf(agg);
+    written = true;
+    if (confirmed) agg.markSaved(REAL_ID);
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
+    return summariesOf(agg)[0]?.estimatedCostUsd;
+  };
+
+  it.each([
+    ['a checkpoint the store did not confirm', false, 11],
+    ['a checkpoint the store confirmed', true, 6],
+  ])('folds the whole baseline after %s', (_label, confirmed, expected) => {
+    expect(foldedAfter(confirmed)).toBe(expected);
+  });
 
   it('does not re-add parent cost the aggregator already checkpointed', () => {
     let file: ReturnType<typeof summariesOf>[number] | undefined;
@@ -1043,6 +1087,7 @@ describe('LocalSessionAggregator baseline fold after its own checkpoint', () => 
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
     agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
     [file] = summariesOf(agg);
+    agg.markSaved(REAL_ID);
 
     agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
 
@@ -1066,6 +1111,7 @@ describe('LocalSessionAggregator baseline fold after its own checkpoint', () => 
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
     agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
     summariesOf(agg);
+    agg.markSaved(REAL_ID);
     fileCost = 8;
 
     agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
@@ -1073,6 +1119,69 @@ describe('LocalSessionAggregator baseline fold after its own checkpoint', () => 
     const [summary] = summariesOf(agg);
     expect(summary?.estimatedCostUsd).toBe(9);
     expect(summary?.costByDayUsd).toEqual({ '2026-09-10': 9 });
+  });
+});
+
+describe('LocalSessionAggregator unsaved rollups', () => {
+  it.each([
+    [
+      'a tool call',
+      (agg: LocalSessionAggregator) =>
+        agg.recordToolCall({ sessionId: 'conv-a', toolName: 'Edit', timestamp: 2000 }),
+    ],
+    [
+      'a self-report',
+      (agg: LocalSessionAggregator) =>
+        agg.recordTokenUsage('conv-a', { timestamp: 2000, inputTokens: 10, selfReported: true }),
+    ],
+    [
+      'subagent usage',
+      (agg: LocalSessionAggregator) =>
+        agg.recordTokenUsage('conv-a', { timestamp: 2000, costUsd: 1, agentId: 'agent-1' }),
+    ],
+  ])('is unsaved from creation, clean once saved, and unsaved again after %s', (_label, change) => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: 'conv-a', toolName: 'Read', timestamp: 1000 });
+    const states = [agg.isUnsaved('conv-a')];
+    agg.markSaved('conv-a');
+    states.push(agg.isUnsaved('conv-a'));
+    change(agg);
+    states.push(agg.isUnsaved('conv-a'));
+
+    expect(states).toEqual([true, false, true]);
+  });
+
+  it('summarizes a self-report that carries no tokens', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { timestamp: 1000, selfReported: true });
+
+    expect(summariesOf(agg)).toMatchObject([{ sessionId: REAL_ID, selfReportCount: 1 }]);
+  });
+
+  it('is unsaved again after a late result amends a failed call', () => {
+    const agg = new LocalSessionAggregator();
+    const call = { sessionId: 'conv-a', id: 'call-1', toolName: 'Read', timestamp: 1000 };
+    agg.recordToolCall({ ...call, success: false });
+    agg.markSaved('conv-a');
+
+    agg.amendToolCall({ ...call, success: true, durationMs: 5 } as never);
+
+    expect(agg.isUnsaved('conv-a')).toBe(true);
+  });
+
+  it('summarizes a rollup that holds only a self-report', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { timestamp: 1000, inputTokens: 10, selfReported: true });
+
+    expect(summariesOf(agg)).toMatchObject([{ sessionId: REAL_ID, selfReportCount: 1 }]);
+  });
+
+  it('never makes a rollup for an id that cannot name a session file', () => {
+    const agg = new LocalSessionAggregator();
+    for (const id of ['bad id!', 'unknown', 'conv-a'])
+      agg.recordToolCall({ sessionId: id, toolName: 'Read', timestamp: 1000 });
+
+    expect(summariesOf(agg).map((s) => s.sessionId)).toEqual(['conv-a']);
   });
 });
 
@@ -1378,5 +1487,72 @@ describe('saved timeline past the cap', () => {
     expect(stamps).toHaveLength(10_000);
     expect(stamps[0]).toBe(26);
     expect(stamps.at(-1)).toBe(10_025);
+  });
+});
+
+describe('saved taskCount', () => {
+  const OTHER_ID = '5b0f3c1e-92d4-4f7a-8a63-0d2c7e9b1a55';
+  const taskCountsById = (agg: LocalSessionAggregator): Record<string, unknown> =>
+    Object.fromEntries(summariesOf(agg).map((s) => [String(s.sessionId), s.taskCount]));
+  const closedTask = (agg: LocalSessionAggregator, sessionId: string, at: number): void => {
+    agg.recordToolCall({ sessionId, toolName: 'Read', timestamp: at });
+    agg.recordToolCall({ sessionId, toolName: 'AskUserQuestion', timestamp: at + 1 });
+  };
+
+  it('counts the tasks a session closed', () => {
+    const agg = new LocalSessionAggregator();
+    closedTask(agg, REAL_ID, 1000);
+    closedTask(agg, REAL_ID, 2000);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 2 });
+  });
+
+  it('keeps two concurrent sessions from sharing a count', () => {
+    const agg = new LocalSessionAggregator();
+    closedTask(agg, REAL_ID, 1000);
+    closedTask(agg, OTHER_ID, 1100);
+    closedTask(agg, REAL_ID, 2000);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 2, [OTHER_ID]: 1 });
+  });
+
+  it('closes a session task on its own Stop and leaves another session open', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1000 });
+    agg.recordToolCall({ sessionId: OTHER_ID, toolName: 'Read', timestamp: 1000 });
+    agg.markTaskBoundary(REAL_ID, 1500);
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 2000 });
+    agg.recordToolCall({ sessionId: OTHER_ID, toolName: 'Read', timestamp: 2000 });
+    agg.markTaskBoundary(REAL_ID, 2500);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 2, [OTHER_ID]: 0 });
+  });
+
+  it('does not count a prompt that made no tool call', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1000 });
+    agg.markTaskBoundary(REAL_ID, 1500);
+    agg.startTask(REAL_ID, 2000);
+    agg.markTaskBoundary(REAL_ID, 2500);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 1 });
+  });
+
+  it('counts a task only once it closes', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1000 });
+    agg.startTask(REAL_ID, 1500);
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 0 });
+
+    agg.markTaskBoundary(REAL_ID, 1700);
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 1 });
+  });
+
+  it('adds to the tasks an earlier process saved, once', () => {
+    const agg = new LocalSessionAggregator({ persistedTaskCount: () => 3 });
+    closedTask(agg, REAL_ID, 1000);
+    closedTask(agg, REAL_ID, 2000);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 5 });
   });
 });

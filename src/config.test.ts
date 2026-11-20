@@ -93,12 +93,17 @@ describe('loadMcpConfig()', () => {
     );
   });
 
-  it('throws with descriptive error when accountId is missing', () => {
+  it('loads without an accountId and leaves it undefined', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const configPath = writeConfigFile({});
-    expect(() => loadMcpConfig({ config: configPath })).toThrow(
-      /Missing required configuration: accountId/,
-    );
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.accountId).toBeUndefined();
+    expect(config.tiers).toEqual([
+      {
+        name: 'default',
+        destination: { type: 'nr', licenseKey: 'test-key-1234567890' },
+        eventTypes: ['*'],
+      },
+    ]);
   });
 
   // accountId format validation
@@ -1434,6 +1439,25 @@ describe('costRateMultiplier / dataResidencyPremium', () => {
   });
 });
 
+describe('removed digestSchedule key', () => {
+  it('loads a config file that still contains digestSchedule, without the field', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ digestSchedule: '0 8 * * 2', retainSessionsDays: 30 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(30);
+    expect(config).not.toHaveProperty('digestSchedule');
+  });
+
+  it('still loads when the removed digestSchedule key holds a non-string value', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ digestSchedule: 42, retainSessionsDays: 30 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(30);
+  });
+});
+
 describe('retainSessionsDays', () => {
   it('defaults to 90 when neither env var nor config file key is set', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
@@ -1993,21 +2017,10 @@ describe('licenseKey gating', () => {
     expect(() => loadMcpConfig({ config: configPath })).not.toThrow();
   });
 
-  it("throws when mode='cloud' and accountId missing", () => {
+  it.each(['cloud', 'both'])("does NOT throw when mode='%s' and accountId missing", (mode) => {
+    process.env.NR_AI_MODE = mode;
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const configPath = writeConfigFile({});
-    expect(() => loadMcpConfig({ config: configPath })).toThrow(
-      /Missing required configuration: accountId/,
-    );
-  });
-
-  it("throws when mode='both' and accountId missing", () => {
-    process.env.NR_AI_MODE = 'both';
-    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const configPath = writeConfigFile({});
-    expect(() => loadMcpConfig({ config: configPath })).toThrow(
-      /Missing required configuration: accountId/,
-    );
+    expect(() => loadMcpConfig({ config: writeConfigFile({}) })).not.toThrow();
   });
 
   // --local falls back to local mode on this type, not on the message (#479).
@@ -2025,12 +2038,6 @@ describe('licenseKey gating', () => {
     const noKey = thrown(() => loadMcpConfig({ config: writeConfigFile({ accountId: '12345' }) }));
     expect(noKey).toBeInstanceOf(MissingCloudCredentialError);
     expect(noKey).toMatchObject({ missingField: 'licenseKey', mode: 'both' });
-
-    process.env.NR_AI_MODE = 'cloud';
-    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const noAccount = thrown(() => loadMcpConfig({ config: writeConfigFile({}) }));
-    expect(noAccount).toBeInstanceOf(MissingCloudCredentialError);
-    expect(noAccount).toMatchObject({ missingField: 'accountId', mode: 'cloud' });
   });
 
   it('throws when NR_AI_MODE is set to an invalid value', () => {

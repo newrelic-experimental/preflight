@@ -9,10 +9,12 @@ import {
   rmSync,
   existsSync,
   readdirSync,
+  renameSync,
   utimesSync,
   realpathSync,
   readFileSync,
 } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -36,6 +38,7 @@ import {
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { DashboardServer } from './dashboard/dashboard-server.js';
 import { sanitizeCwdForFilename } from './hooks/session-resolver.js';
+import { calculateCost } from './core/pricing.js';
 import { SessionStore } from './storage/session-store.js';
 import { appendToHookBuffer } from './storage/hook-buffer.js';
 import type { LocalStore } from './storage/index.js';
@@ -2305,6 +2308,517 @@ describe('stdio integration', () => {
     }, 30000);
   });
 
+  describe('self-report lines', () => {
+    const distDir = resolve(__dirname, '..', 'dist');
+    const report = {
+      input_tokens: 1000,
+      output_tokens: 200,
+      thinking_tokens: 100,
+      model: 'claude-sonnet-4-6',
+    };
+    const hookReply = (reportId: string) =>
+      JSON.stringify({ accepted: true, recorded_by: 'hook', report_id: reportId });
+    const reportHook = (conversationId: string, reportId: string) => ({
+      hook_event_name: 'afterMCPExecution',
+      conversation_id: conversationId,
+      mcp_server_name: 'newrelic-preflight',
+      tool_name: 'nr_observe_report_tokens',
+      tool_input: JSON.stringify({ ...report, report_id: reportId }),
+      result_json: JSON.stringify({ content: [{ type: 'text', text: hookReply(reportId) }] }),
+    });
+    const isolatedEnv = (overrides: Record<string, string>): Record<string, string> => {
+      const env: Record<string, string> = {};
+      for (const [name, value] of Object.entries(process.env)) {
+        if (value === undefined || /^(CLAUDE|CURSOR)/.test(name)) continue;
+        if (['MCP_CLIENT', 'NEW_RELIC_AI_PLATFORM', 'NR_AI_MODE'].includes(name)) continue;
+        env[name] = value;
+      }
+      return { ...env, ...overrides };
+    };
+    const runHook = (
+      env: Record<string, string>,
+      payload: Record<string, unknown>,
+      args: string[] = [],
+    ) =>
+      spawnSync('node', [resolve(distDir, 'hooks', 'collector-script.js'), ...args], {
+        input: JSON.stringify(payload),
+        env,
+        cwd: env.NEW_RELIC_AI_MCP_STORAGE_PATH,
+      });
+    const savedSession = (storagePath: string, id: string): Record<string, unknown> | null => {
+      const dir = resolve(storagePath, 'sessions');
+      const name = existsSync(dir) ? readdirSync(dir).find((f) => f.includes(id)) : undefined;
+      return name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
+    };
+    const until = async <T>(read: () => T | Promise<T>, done: (v: T) => boolean): Promise<T> => {
+      let value = await read();
+      for (let i = 0; i < 40 && !done(value); i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        value = await read();
+      }
+      return value;
+    };
+
+    it('a --local process saves a drained report to its conversation and keeps its own estimates', async () => {
+      const { createServer: createNetServer } = await import('node:net');
+      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-local-report-storage-'));
+      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-local-report-home-'));
+      const port = await new Promise<number>((resolvePort, reject) => {
+        const srv = createNetServer();
+        srv.listen(0, '127.0.0.1', () => {
+          const p = (srv.address() as { port: number }).port;
+          srv.close((err) => (err ? reject(err) : resolvePort(p)));
+        });
+        srv.on('error', reject);
+      });
+      const env = isolatedEnv({
+        HOME: tmpHome,
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        NR_AI_DASHBOARD_PORT: String(port),
+        NR_AI_ALERTS_ENABLED: 'false',
+        NEW_RELIC_LICENSE_KEY: '',
+        NEW_RELIC_ACCOUNT_ID: '',
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+      });
+      const api = async (path: string): Promise<Record<string, unknown>> =>
+        (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as Record<string, unknown>;
+      type Cost = { reportCount: number; byteEstimates?: { costUsd: number } };
+      const cost = async (): Promise<Cost> => (await api('/api/cost')).cost as Cost;
+
+      const child = spawn(process.execPath, [resolve(distDir, 'index.js'), '--local'], {
+        env,
+        cwd: tmpStoragePath,
+        stdio: 'ignore',
+      });
+      try {
+        await until(
+          () => api('/api/health').catch(() => null),
+          (v) => v !== null,
+        );
+        const read = { tool_name: 'Read', tool_use_id: 'tu-1', tool_input: { file_path: '/a' } };
+        runHook(env, { hook_event_name: 'PreToolUse', ...read }, ['pre-tool']);
+        const response = { tool_response: { content: 'y'.repeat(40_000) } };
+        runHook(env, { hook_event_name: 'PostToolUse', ...read, ...response }, ['post-tool']);
+        const estimated = await until(cost, (c) => (c.byteEstimates?.costUsd ?? 0) > 0);
+        expect(estimated.byteEstimates?.costUsd).toBeGreaterThan(0);
+
+        runHook(env, reportHook('conv-local', 'r-local-0001'));
+
+        const saved = await until(
+          () => savedSession(tmpStoragePath, 'conv-local'),
+          (v) => typeof v?.tokensInput === 'number' && v.tokensInput > 0,
+        );
+        const after = await cost();
+        expect(after.byteEstimates?.costUsd).toBe(estimated.byteEstimates?.costUsd);
+        expect(after.reportCount).toBe(0);
+        expect((await api('/api/context?sessionId=conv-local')).turnCount).toBe(0);
+        expect(saved).toMatchObject({ tokensInput: 1000, tokensThinking: 100, platform: 'cursor' });
+        expect(saved?.estimatedCostUsd).toBeGreaterThan(0);
+      } finally {
+        child.kill('SIGKILL');
+        rmSync(tmpStoragePath, { recursive: true, force: true });
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    }, 40000);
+    const withPendingEngine = async (
+      persistIntervalMs: string,
+      body: (
+        env: Record<string, string>,
+        adopt: (id: string) => Promise<void>,
+        close: () => Promise<void>,
+      ) => Promise<void>,
+      nodeArgs: (env: Record<string, string>) => string[] = () => [],
+      mcpClient = 'claude-code',
+    ): Promise<void> => {
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+      const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-adopt-report-storage-'));
+      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-adopt-report-home-'));
+      const env = isolatedEnv({
+        HOME: tmpHome,
+        MCP_CLIENT: mcpClient,
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: persistIntervalMs,
+      });
+      const client = new Client({ name: 'test-client', version: '1.0.0' });
+      const adopt = async (id: string) => {
+        const breadcrumbDir = resolve(
+          breadcrumbRoot(tmpStoragePath, 'claude-code'),
+          'session-by-ppid',
+        );
+        mkdirSync(breadcrumbDir, { recursive: true });
+        writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), id);
+        const toolNames = async () => (await client.listTools()).tools.map((t) => t.name);
+        const adopted = await until(toolNames, (n) => n.includes('nr_observe_get_session_stats'));
+        expect(adopted).toContain('nr_observe_get_session_stats');
+      };
+      const alive = (pid: number) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      try {
+        const args = [...nodeArgs(env), resolve(distDir, 'index.js'), '--stdio'];
+        const transport = new StdioClientTransport({ command: 'node', args, env });
+        await client.connect(transport);
+        const pid = transport.pid!;
+        let closed = false;
+        const close = async () => {
+          closed = true;
+          await client.close();
+          expect(
+            await until(
+              () => alive(pid),
+              (a) => !a,
+            ),
+          ).toBe(false);
+        };
+        try {
+          await body(env, adopt, close);
+        } finally {
+          if (!closed) await client.close().catch(() => undefined);
+        }
+      } finally {
+        rmSync(tmpStoragePath, { recursive: true, force: true });
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    };
+    const drained = (storage: string, conversationId: string) => {
+      const bufferPath = resolve(storage, `buffer-${conversationId}.jsonl`);
+      const pending = () => (existsSync(bufferPath) ? readFileSync(bufferPath, 'utf-8') : '');
+      return until(pending, (v) => v === '');
+    };
+
+    it('a cursor engine saves a self-report for its conversation on shutdown without adopting', async () => {
+      await withPendingEngine(
+        '600000',
+        async (env, _adopt, close) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          runHook(env, reportHook('conv-cursor', 'r-cursor-0001'));
+          expect(await drained(storage, 'conv-cursor')).toBe('');
+
+          await close();
+
+          expect(savedSession(storage, 'conv-cursor')).toMatchObject({
+            platform: 'cursor',
+            tokensInput: 1000,
+            tokensThinking: 100,
+            selfReportCount: 1,
+          });
+        },
+        () => [],
+        'cursor',
+      );
+    }, 40000);
+
+    it.each([
+      ['another session', 'in progress', 'real-owner-session'],
+      ['the reporting conversation', 'completed', 'conv-adopt'],
+    ])(
+      'a pending engine that drains a report and then adopts %s saves the report with outcome %s',
+      async (_label, outcome, adoptedId) => {
+        await withPendingEngine('600000', async (env, adopt, close) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          runHook(env, reportHook('conv-adopt', 'r-adopt-0001'));
+          expect(await drained(storage, 'conv-adopt')).toBe('');
+
+          await adopt(adoptedId);
+          await close();
+
+          const saved = savedSession(storage, 'conv-adopt');
+          expect(saved).toMatchObject({
+            tokensInput: 1000,
+            tokensThinking: 100,
+            selfReportCount: 1,
+          });
+          expect(saved?.outcome).toBe(outcome);
+        });
+      },
+      40000,
+    );
+
+    it('a pending engine saves a drained report for its cwd guess once the ppid confirms the guess', async () => {
+      await withPendingEngine('600000', async (env, _adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        runHook(env, reportHook('conv-guess', 'r-guess-0001'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+        const crumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-cwd');
+        mkdirSync(crumbs, { recursive: true });
+        writeFileSync(
+          resolve(crumbs, `${realpathSync(process.cwd()).replace(/[\\/:]/g, '-')}.txt`),
+          'conv-guess',
+        );
+        await until(
+          () => existsSync(resolve(storage, 'active-conv-guess.pid')),
+          (alive) => alive,
+        );
+
+        const ppidCrumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-ppid');
+        mkdirSync(ppidCrumbs, { recursive: true });
+        writeFileSync(resolve(ppidCrumbs, `${process.pid}.txt`), 'conv-guess');
+        const confirmed = await until(
+          () => savedSession(storage, 'conv-guess')?.tokensInput,
+          (tokens) => tokens === 1000,
+        );
+        await close();
+
+        expect(confirmed).toBe(1000);
+      });
+    }, 40000);
+
+    it('a pending engine adds the report it drained before adopting its conversation to the ones after', async () => {
+      await withPendingEngine('600000', async (env, adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        runHook(env, reportHook('conv-own', 'r-own-00001'));
+        expect(await drained(storage, 'conv-own')).toBe('');
+        await adopt('conv-own');
+        runHook(env, reportHook('conv-own', 'r-own-00002'));
+        expect(await drained(storage, 'conv-own')).toBe('');
+        await close();
+
+        expect(savedSession(storage, 'conv-own')).toMatchObject({
+          tokensInput: 2000,
+          selfReportCount: 1,
+        });
+      });
+    }, 40000);
+
+    it.each([
+      ['its conversation', 'conv-sub', 2],
+      ['another session', 'real-owner-session', 1],
+    ])(
+      'a pending engine counts a subagent turn it drained before adopting %s once',
+      async (_label, adoptedId, adoptedTurns) => {
+        await withPendingEngine('600000', async (env, adopt, close) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          const subagentTurn = async (sessionId: string, messageId: string) => {
+            appendToHookBuffer(
+              resolve(storage, `buffer-${sessionId}.jsonl`),
+              JSON.stringify({
+                mode: 'subagent_token',
+                tool: 'subagent',
+                timestamp: Date.now(),
+                sessionId,
+                agentId: 'a1234567890abcdef',
+                messageId,
+                model: 'claude-sonnet-4-6',
+                inputTokens: 100000,
+                outputTokens: 20000,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+                reasoningTokens: 0,
+              }) + '\n',
+            );
+            expect(await drained(storage, sessionId)).toBe('');
+          };
+          await subagentTurn('conv-sub', 'msg_sub_1');
+          await adopt(adoptedId);
+          await subagentTurn(adoptedId, 'msg_sub_2');
+          await close();
+
+          const sub = savedSession(storage, 'conv-sub');
+          expect(sub).toMatchObject({ tokensInput: 100000 * adoptedTurns });
+          expect(sub?.subagentCostUsd).toBeCloseTo(0.6 * adoptedTurns);
+          const adopted = savedSession(storage, adoptedId);
+          expect(adopted?.estimatedCostUsd).toBeCloseTo(0.6 * adoptedTurns);
+          expect(adopted?.modelBreakdown).toMatchObject({
+            'claude-sonnet-4-6': { totalInputTokens: 100000 * adoptedTurns },
+          });
+        });
+      },
+      40000,
+    );
+
+    it('a pending engine adds the report it drained before its cwd guess is confirmed to the ones after', async () => {
+      await withPendingEngine('600000', async (env, _adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        runHook(env, reportHook('conv-guess', 'r-guess-0001'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+        const crumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-cwd');
+        mkdirSync(crumbs, { recursive: true });
+        writeFileSync(
+          resolve(crumbs, `${realpathSync(process.cwd()).replace(/[\\/:]/g, '-')}.txt`),
+          'conv-guess',
+        );
+        await until(
+          () => existsSync(resolve(storage, 'active-conv-guess.pid')),
+          (alive) => alive,
+        );
+        const ppidCrumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-ppid');
+        mkdirSync(ppidCrumbs, { recursive: true });
+        writeFileSync(resolve(ppidCrumbs, `${process.pid}.txt`), 'conv-guess');
+        await until(
+          () => savedSession(storage, 'conv-guess')?.tokensInput,
+          (tokens) => tokens === 1000,
+        );
+        expect(savedSession(storage, 'conv-guess')?.outcome).toBe('in progress');
+        runHook(env, reportHook('conv-guess', 'r-guess-0002'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+        await close();
+
+        expect(savedSession(storage, 'conv-guess')?.tokensInput).toBe(2000);
+      });
+    }, 40000);
+
+    it("a pending engine that drains another conversation's tool calls and then adopts saves them", async () => {
+      await withPendingEngine('600000', async (env, adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        const edit = { conversation_id: 'conv-edits', file_path: '/repo/a.ts' };
+        runHook(env, { hook_event_name: 'afterFileEdit', ...edit });
+        expect(await drained(storage, 'conv-edits')).toBe('');
+
+        await adopt('real-owner-session');
+        await close();
+
+        expect(savedSession(storage, 'conv-edits')).toMatchObject({ toolCallCount: 1 });
+      });
+    }, 40000);
+
+    it('an observed save that throws or fails neither stops the next one nor the owner save, and is retried', async () => {
+      const preloadDir = mkdtempSync(join(tmpdir(), 'nr-throwing-save-'));
+      const saveLog = resolve(preloadDir, 'saves.log');
+      const storeUrl = pathToFileURL(resolve(distDir, 'storage', 'session-store.js')).href;
+      writeFileSync(
+        resolve(preloadDir, 'preload.mjs'),
+        [
+          "import { appendFileSync } from 'node:fs';",
+          `const { SessionStore } = await import(${JSON.stringify(storeUrl)});`,
+          'const save = SessionStore.prototype.saveSession;',
+          'let ownerSaved = false;',
+          'let failedAfterOwner = false;',
+          'SessionStore.prototype.saveSession = function (summary) {',
+          `  appendFileSync(${JSON.stringify(saveLog)}, summary.sessionId + '\\n');`,
+          "  if (summary.sessionId === 'real-owner-session') ownerSaved = true;",
+          "  if (summary.sessionId === 'conv-throws') throw new Error('injected save failure');",
+          "  if (summary.sessionId === 'conv-fails' && !failedAfterOwner)",
+          '    return (failedAfterOwner = ownerSaved), null;',
+          '  return save.call(this, summary);',
+          '};',
+        ].join('\n'),
+      );
+      const preload = pathToFileURL(resolve(preloadDir, 'preload.mjs')).href;
+      try {
+        await withPendingEngine(
+          '300',
+          async (env, adopt, close) => {
+            const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+            runHook(env, reportHook('conv-throws', 'r-throws-001'));
+            expect(await drained(storage, 'conv-throws')).toBe('');
+            runHook(env, reportHook('conv-saved', 'r-saved-0001'));
+            expect(await drained(storage, 'conv-saved')).toBe('');
+            runHook(env, reportHook('conv-fails', 'r-fails-0001'));
+            expect(await drained(storage, 'conv-fails')).toBe('');
+
+            await adopt('real-owner-session');
+            const retried = () => savedSession(storage, 'conv-fails')?.tokensInput;
+            expect(await until(retried, (tokens) => tokens === 1000)).toBe(1000);
+            const savesOf = (id: string) =>
+              readFileSync(saveLog, 'utf-8')
+                .split('\n')
+                .filter((s) => s === id).length;
+            const savedOnce = savesOf('conv-saved');
+            await until(
+              () => savesOf('real-owner-session'),
+              (n) => n > 2,
+            );
+            expect(savesOf('conv-saved')).toBe(savedOnce);
+            await close();
+
+            const saves = readFileSync(saveLog, 'utf-8').trim().split('\n');
+            expect(saves.at(-1)).toBe('real-owner-session');
+            expect(saves.filter((id) => id === 'conv-throws').length).toBeGreaterThan(1);
+            expect(savedSession(storage, 'conv-saved')).toMatchObject({ tokensInput: 1000 });
+            expect(savedSession(storage, 'conv-fails')).toMatchObject({
+              tokensInput: 1000,
+              outcome: 'in progress',
+            });
+          },
+          () => ['--import', preload],
+        );
+      } finally {
+        rmSync(preloadDir, { recursive: true, force: true });
+      }
+    }, 40000);
+
+    it('an observed rollup that throws while it is built does not stop the owner save', async () => {
+      const preloadDir = mkdtempSync(join(tmpdir(), 'nr-throwing-rollup-'));
+      const aggregatorUrl = pathToFileURL(
+        resolve(distDir, 'metrics', 'local-session-aggregator.js'),
+      ).href;
+      writeFileSync(
+        resolve(preloadDir, 'preload.mjs'),
+        [
+          `const { LocalSessionAggregator } = await import(${JSON.stringify(aggregatorUrl)});`,
+          'const toSummaries = LocalSessionAggregator.prototype.toSummaries;',
+          'LocalSessionAggregator.prototype.toSummaries = function (opts) {',
+          "  if (opts.savesSession?.('conv-edits') && !opts.savesSession('real-owner-session'))",
+          "    throw new Error('injected rollup failure');",
+          '  return toSummaries.call(this, opts);',
+          '};',
+        ].join('\n'),
+      );
+      const preload = pathToFileURL(resolve(preloadDir, 'preload.mjs')).href;
+      try {
+        await withPendingEngine(
+          '600000',
+          async (env, adopt, close) => {
+            const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+            const edit = { conversation_id: 'conv-edits', file_path: '/repo/a.ts' };
+            runHook(env, { hook_event_name: 'afterFileEdit', ...edit });
+            expect(await drained(storage, 'conv-edits')).toBe('');
+
+            await adopt('real-owner-session');
+            await close();
+
+            expect(savedSession(storage, 'real-owner-session')).not.toBeNull();
+          },
+          () => ['--import', preload],
+        );
+      } finally {
+        rmSync(preloadDir, { recursive: true, force: true });
+      }
+    }, 40000);
+
+    it('a resumed engine saves a report for its own conversation once, on top of the saved total', async () => {
+      await withPendingEngine('600000', async (env, adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        const startTime = Date.now() - 60_000;
+        const prior = {
+          sessionId: 'conv-resumed',
+          startTime,
+          endTime: startTime,
+          toolCallCount: 3,
+        };
+        const day = new Date(startTime).toISOString().slice(0, 10);
+        mkdirSync(resolve(storage, 'sessions'), { recursive: true });
+        writeFileSync(
+          resolve(storage, 'sessions', `${day}_conv-resumed.json`),
+          JSON.stringify({
+            ...prior,
+            estimatedCostUsd: 10,
+            tokensInput: 100,
+            outcome: 'in progress',
+          }),
+        );
+
+        await adopt('conv-resumed');
+        runHook(env, reportHook('conv-resumed', 'r-resumed-01'));
+        expect(await drained(storage, 'conv-resumed')).toBe('');
+        await close();
+
+        const saved = savedSession(storage, 'conv-resumed');
+        expect(saved).toMatchObject({ tokensInput: 1100, outcome: 'completed' });
+        expect(saved?.modelBreakdown).toHaveProperty(['claude-sonnet-4-6']);
+        expect(saved?.estimatedCostUsd).toBeCloseTo(10.0075, 6);
+      });
+    }, 40000);
+  });
+
   it('self-corrects when the pending path resolves via the cwd fallback and a differing PPID breadcrumb appears later', async () => {
     // The pending -> async poller flow (not the eager synchronous one) can
     // also resolve via cwd instead of ppid. Mirrors the provisional-path
@@ -2676,7 +3190,15 @@ describe('stdio integration', () => {
       count: (pattern: RegExp) => number;
       settle: () => Promise<void>;
       reportInputTokens: (inputTokens: number) => Promise<unknown>;
+      budget: () => Promise<BudgetStatus>;
       close: () => Promise<void>;
+    }
+
+    interface BudgetStatus {
+      readonly session: { readonly spentUsd: number };
+      readonly daily: { readonly spentUsd: number };
+      readonly weekly: { readonly spentUsd: number };
+      readonly alerts: ReadonlyArray<{ readonly period: string }>;
     }
 
     async function startEngine(
@@ -2722,6 +3244,13 @@ describe('stdio integration', () => {
             name: 'nr_observe_report_tokens',
             arguments: { input_tokens: inputTokens, output_tokens: 0, model: 'claude-sonnet-5' },
           }),
+        budget: async () => {
+          const result = (await client.callTool({
+            name: 'nr_observe_get_budget_status',
+            arguments: {},
+          })) as { content: Array<{ text: string }> };
+          return JSON.parse(result.content[0]!.text) as BudgetStatus;
+        },
         close: () => client.close(),
       };
       startedEngines.push(engine);
@@ -2926,13 +3455,14 @@ describe('stdio integration', () => {
       sessionId: string,
       messageId: string,
       inputTokens: number,
+      timestamp = Date.now(),
     ): void {
       appendToHookBuffer(
         resolve(storagePath, `buffer-${sessionId}.jsonl`),
         JSON.stringify({
           mode: 'token',
           tool: 'copilot-sdk-usage',
-          timestamp: Date.now(),
+          timestamp,
           sessionId,
           messageId,
           model: 'claude-sonnet-5',
@@ -2944,9 +3474,9 @@ describe('stdio integration', () => {
       );
     }
 
-    // Prior spend is 60% of each budget and this engine adds about 15%: counting
-    // each once crosses 50% and not 80%, double counting either crosses 80%, and
-    // dropping the prior spend never crosses 50%.
+    // Prior spend is 40% of each budget and this engine adds about 15%: counting
+    // each once crosses 50% and not 80%, double counting the prior spend already
+    // reads 80% at the seed so 50% never alerts, and dropping it never crosses 50%.
     async function expectPriorAndOwnSpendCountedOnce(engine: Engine): Promise<void> {
       expect(await waitUntil(() => engine.count(crossedBudget('daily', 50)) > 0)).toBe(true);
       expect(await waitUntil(() => engine.count(crossedBudget('weekly', 50)) > 0)).toBe(true);
@@ -2955,18 +3485,78 @@ describe('stdio integration', () => {
       expect(engine.count(crossedBudget('weekly', 80))).toBe(0);
     }
 
+    it("starts a restarted engine's daily and weekly spend at what other sessions already spent", async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(
+          storagePath,
+          projectCwd,
+          'spent-before-restart-id',
+          400,
+        );
+        const budgetUsd = String(prior.estimatedCostUsd / 0.4);
+        writeCwdBreadcrumb(storagePath, projectCwd, 'owned-after-restart-id');
+        const engine = await startEngine(storagePath, projectCwd, {
+          NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
+          NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
+        });
+
+        const spent = await engine.budget();
+        expect(spent.daily.spentUsd).toBeCloseTo(prior.estimatedCostUsd, 9);
+        expect(spent.weekly.spentUsd).toBeCloseTo(prior.estimatedCostUsd, 9);
+
+        appendTokenEvent(storagePath, 'owned-after-restart-id', 'msg_after_restart', 150);
+        await expectPriorAndOwnSpendCountedOnce(engine);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
+    it('counts a session another engine saved between this engine starting and adopting', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(
+          storagePath,
+          projectCwd,
+          'saved-while-pending-id',
+          400,
+        );
+        const sessionsDir = resolve(storagePath, 'sessions');
+        const savedFile = readdirSync(sessionsDir).find((f) =>
+          f.endsWith('_saved-while-pending-id.json'),
+        )!;
+        const held = resolve(storagePath, savedFile);
+        renameSync(resolve(sessionsDir, savedFile), held);
+        const engine = await startEngine(storagePath, projectCwd);
+        renameSync(held, resolve(sessionsDir, savedFile));
+        writeFileSync(ppidBreadcrumb(storagePath), 'owned-after-pending-id');
+        expect(await engine.logged(ADOPTED)).toBe(true);
+
+        const spent = await engine.budget();
+        expect(spent.daily.spentUsd).toBeCloseTo(prior.estimatedCostUsd, 9);
+        expect(spent.weekly.spentUsd).toBeCloseTo(prior.estimatedCostUsd, 9);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
     it("counts an adopted session's saved cost once in daily and weekly spend", async () => {
       const { storagePath, projectCwd, cleanup } = makeDirs();
       try {
         const prior = await savePriorSession(storagePath, projectCwd, 'adopted-budget-id', 400);
-        const budgetUsd = String(prior.estimatedCostUsd / 0.6);
+        const budgetUsd = String(prior.estimatedCostUsd / 0.4);
         const engine = await startEngine(storagePath, projectCwd, {
           NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
           NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
         });
         writeFileSync(ppidBreadcrumb(storagePath), 'adopted-budget-id');
         expect(await engine.logged(ADOPTED)).toBe(true);
-        appendTokenEvent(storagePath, 'adopted-budget-id', 'msg_after_adopt', 100);
+        const spent = await engine.budget();
+        expect(spent.daily.spentUsd).toBeCloseTo(prior.estimatedCostUsd, 9);
+        expect(spent.weekly.spentUsd).toBeCloseTo(prior.estimatedCostUsd, 9);
+        appendTokenEvent(storagePath, 'adopted-budget-id', 'msg_after_adopt', 150);
 
         await expectPriorAndOwnSpendCountedOnce(engine);
         await engine.close();
@@ -2979,7 +3569,7 @@ describe('stdio integration', () => {
       const { storagePath, projectCwd, cleanup } = makeDirs();
       try {
         const prior = await savePriorSession(storagePath, projectCwd, 'guess-budget-id', 400);
-        const budgetUsd = String(prior.estimatedCostUsd / 0.6);
+        const budgetUsd = String(prior.estimatedCostUsd / 0.4);
         const engine = await startEngine(storagePath, projectCwd, {
           NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
           NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
@@ -2988,12 +3578,39 @@ describe('stdio integration', () => {
         });
         writeCwdBreadcrumb(storagePath, projectCwd, 'guess-budget-id');
         expect(await engine.logged(ADOPTED)).toBe(true);
-        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_before_confirm', 50);
+        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_before_confirm', 75);
 
         await confirmViaPpid(storagePath, engine, 'guess-budget-id');
-        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_after_confirm', 50);
+        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_after_confirm', 75);
 
         await expectPriorAndOwnSpendCountedOnce(engine);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
+    it('saves the turns a cwd guess resolved at startup drained before confirmation once', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        writeCwdBreadcrumb(storagePath, projectCwd, 'startup-guess-id');
+        const engine = await startEngine(storagePath, projectCwd, {
+          NR_AI_PENDING_CONFIRMATION_CAP_MS: '120000',
+        });
+        appendTokenEvent(storagePath, 'startup-guess-id', 'msg_before_confirm', 50);
+        const buffer = resolve(storagePath, 'buffer-startup-guess-id.jsonl');
+        expect(
+          await waitUntil(() => !existsSync(buffer) || readFileSync(buffer, 'utf8') === ''),
+        ).toBe(true);
+
+        await confirmViaPpid(storagePath, engine, 'startup-guess-id');
+        appendTokenEvent(storagePath, 'startup-guess-id', 'msg_after_confirm', 50);
+        expect(
+          await waitUntil(() => readSaved(storagePath, 'startup-guess-id')?.tokensInput === 100),
+        ).toBe(true);
+        await engine.settle();
+
+        expect(readSaved(storagePath, 'startup-guess-id')?.tokensInput).toBe(100);
         await engine.close();
       } finally {
         await cleanup();
@@ -3112,6 +3729,237 @@ describe('stdio integration', () => {
         await cleanup();
       }
     }, 60000);
+
+    describe('the budget of a session resumed from its saved file', () => {
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      // The engine runs in UTC, so its local day is the UTC date.
+      const localDay = (daysAgo: number): string =>
+        new Date(Date.now() - daysAgo * DAY_MS).toISOString().slice(0, 10);
+
+      function writeSessionFile(
+        storagePath: string,
+        sessionId: string,
+        startDaysAgo: number,
+        costByDayUsd: Record<string, number>,
+        byteEstimates?: Record<string, number>,
+      ): void {
+        const sum = (days: Record<string, number>): number =>
+          Object.values(days).reduce((total, usd) => total + usd, 0);
+        const estimatedUsd = byteEstimates ? sum(byteEstimates) : 0;
+        const exactByDayUsd = { ...costByDayUsd };
+        for (const [day, usd] of Object.entries(byteEstimates ?? {})) exactByDayUsd[day]! -= usd;
+        mkdirSync(resolve(storagePath, 'sessions'), { recursive: true });
+        writeFileSync(
+          resolve(storagePath, 'sessions', `${localDay(startDaysAgo)}_${sessionId}.json`),
+          JSON.stringify({
+            sessionId,
+            toolCallCount: 1,
+            startTime: Date.now() - startDaysAgo * DAY_MS,
+            endTime: Date.now() - DAY_MS,
+            estimatedCostUsd: sum(costByDayUsd),
+            costByDayUsd,
+            exactTotals: {
+              costUsd: sum(costByDayUsd) - estimatedUsd,
+              inputTokens: 0,
+              outputTokens: 0,
+              costByDayUsd: exactByDayUsd,
+            },
+            ...(byteEstimates && {
+              byteEstimates: {
+                costUsd: estimatedUsd,
+                inputTokens: 0,
+                outputTokens: 0,
+                costByModel: {},
+                costByDayUsd: byteEstimates,
+              },
+            }),
+          }),
+        );
+      }
+
+      // Each event is 100k input tokens on claude-sonnet-5.
+      const EVENT_USD = calculateCost('claude-sonnet-5', {
+        inputTokens: 100_000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        thinkingTokens: 0,
+        totalTokens: 100_000,
+      }).totalUsd;
+
+      async function adoptAndSpend(
+        storagePath: string,
+        projectCwd: string,
+        sessionId: string,
+        keptUsd: number,
+        eventDaysAgo: ReadonlyArray<number>,
+        onAdopted?: (budget: () => Promise<BudgetStatus>) => Promise<void>,
+      ): Promise<BudgetStatus> {
+        const engine = await startEngine(storagePath, projectCwd, {
+          TZ: 'UTC',
+          NEW_RELIC_AI_DAILY_BUDGET_USD: '100',
+          NEW_RELIC_AI_WEEKLY_BUDGET_USD: '40',
+        });
+        writeFileSync(ppidBreadcrumb(storagePath), sessionId);
+        expect(await engine.logged(ADOPTED)).toBe(true);
+        await onAdopted?.(engine.budget);
+        for (const [i, daysAgo] of eventDaysAgo.entries()) {
+          appendTokenEvent(
+            storagePath,
+            sessionId,
+            `msg_${i}`,
+            100_000,
+            Date.now() - daysAgo * DAY_MS,
+          );
+        }
+        const sessionUsd = keptUsd + eventDaysAgo.length * EVENT_USD;
+        let status = await engine.budget();
+        for (const deadline = Date.now() + 15_000; Date.now() < deadline;) {
+          if (Math.abs(status.session.spentUsd - sessionUsd) < 1e-9) break;
+          await sleep(100);
+          status = await engine.budget();
+        }
+        await engine.close();
+        expect(status.session.spentUsd).toBeCloseTo(sessionUsd, 9);
+        return status;
+      }
+
+      it('counts only the in-window days of a session resumed from three weeks ago', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          writeSessionFile(storagePath, 'resumed-weekly-id', 21, {
+            [localDay(21)]: 38,
+            [localDay(2)]: 2,
+          });
+          const status = await adoptAndSpend(storagePath, projectCwd, 'resumed-weekly-id', 40, [0]);
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(2 + EVENT_USD, 9);
+          expect(status.alerts.filter((a) => a.period === 'weekly')).toEqual([]);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it("keeps today's saved share in the daily figure of a session resumed from three weeks ago", async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          writeSessionFile(storagePath, 'resumed-daily-id', 21, {
+            [localDay(21)]: 37,
+            [localDay(2)]: 2,
+            [localDay(0)]: 1,
+          });
+          const status = await adoptAndSpend(storagePath, projectCwd, 'resumed-daily-id', 40, [0]);
+          expect(status.daily.spentUsd).toBeCloseTo(1 + EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(3 + EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts the whole saved cost of a session resumed from yesterday', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          writeSessionFile(storagePath, 'resumed-yesterday-id', 1, { [localDay(1)]: 10 });
+          const status = await adoptAndSpend(
+            storagePath,
+            projectCwd,
+            'resumed-yesterday-id',
+            10,
+            [0],
+          );
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(10 + EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts a session with no saved file once in daily and weekly spend', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          const status = await adoptAndSpend(storagePath, projectCwd, 'fresh-budget-id', 0, [0]);
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts a saved estimate once in the week when its exact report replays onto its day', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          writeSessionFile(
+            storagePath,
+            'resumed-ledger-id',
+            21,
+            { [localDay(21)]: 38, [localDay(1)]: 3 },
+            { [localDay(1)]: 1 },
+          );
+          // The first exact report drops the $1 estimate, so the session keeps $40.
+          let pendingWeeklyUsd: number | undefined;
+          const status = await adoptAndSpend(
+            storagePath,
+            projectCwd,
+            'resumed-ledger-id',
+            40,
+            [1, 0],
+            async (budget) => {
+              // A tool call updates the budget without an exact report.
+              const toolCall = {
+                tool: 'Read',
+                sessionId: 'resumed-ledger-id',
+                toolUseId: 'toolu_1',
+              };
+              const bufferPath = resolve(storagePath, 'buffer-resumed-ledger-id.jsonl');
+              for (const mode of ['pre', 'post']) {
+                appendToHookBuffer(
+                  bufferPath,
+                  JSON.stringify({ ...toolCall, mode, timestamp: Date.now() }) + '\n',
+                );
+              }
+              for (const deadline = Date.now() + 15_000; Date.now() < deadline;) {
+                pendingWeeklyUsd = (await budget()).weekly.spentUsd;
+                if (pendingWeeklyUsd > 0) break;
+                await sleep(100);
+              }
+            },
+          );
+          expect(pendingWeeklyUsd).toBeCloseTo(3, 9);
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(2 + 2 * EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts no saved cost in the week for a session from three weeks ago with no day map', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          mkdirSync(resolve(storagePath, 'sessions'), { recursive: true });
+          writeFileSync(
+            resolve(storagePath, 'sessions', `${localDay(21)}_resumed-dayless-id.json`),
+            JSON.stringify({
+              sessionId: 'resumed-dayless-id',
+              toolCallCount: 1,
+              startTime: Date.now() - 21 * DAY_MS,
+              endTime: Date.now() - DAY_MS,
+              estimatedCostUsd: 40,
+            }),
+          );
+          const status = await adoptAndSpend(
+            storagePath,
+            projectCwd,
+            'resumed-dayless-id',
+            40,
+            [0],
+          );
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+    });
   });
 
   // The correction watch reads the parent level only off Linux and Windows,

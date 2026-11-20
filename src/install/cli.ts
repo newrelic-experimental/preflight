@@ -634,7 +634,7 @@ function handleInstall(options: {
   migrateStoragePath(true);
   const scope = options.project ? 'project' : 'user';
   const binPath = resolveBinaryPath();
-  const credentialsProvided = !!(options.licenseKey && options.accountId);
+  const credentialsProvided = !!options.licenseKey;
   const inWsl = isWsl();
 
   // Read config.json once. Serves two purposes:
@@ -699,10 +699,7 @@ function handleInstall(options: {
     try {
       const nrConfig: Record<string, unknown> = { ...existingNrConfig, platformTarget: platform };
       if (credentialsProvided) {
-        Object.assign(
-          nrConfig,
-          generateNrConfig(options.licenseKey as string, options.accountId as string),
-        );
+        Object.assign(nrConfig, generateNrConfig(options.licenseKey as string, options.accountId));
       }
       if (options.mode) {
         nrConfig.mode = options.mode;
@@ -744,7 +741,7 @@ function handleInstall(options: {
     print(`\n✓ New Relic config written: ${NR_CONFIG_PATH}`);
   } else if (!credentialsProvided && options.credentialsRequested) {
     print(
-      '\n⚠ A license key (--license-key, --license-key-file, or NEW_RELIC_LICENSE_KEY) and an account ID (--account-id or NEW_RELIC_ACCOUNT_ID) are both required to save NR config. Skipped.',
+      '\n⚠ A license key (--license-key, --license-key-file, or NEW_RELIC_LICENSE_KEY) is required to save NR config. Skipped.',
     );
   }
 
@@ -930,13 +927,19 @@ function handleCopilotInstall(options: {
     }
 
     const ext = installCopilotSdkExtension();
-    if (ext.copied) {
-      print('✓ Copilot SDK usage extension installed (token-exact cost)');
+    if (ext.action === 'copied' || ext.action === 'updated') {
+      print(
+        ext.action === 'copied'
+          ? '✓ Copilot SDK usage extension installed (token-exact cost)'
+          : `✓ Copilot SDK usage extension updated to the current version at ${copilotSdkExtensionInstallPath()}`,
+      );
       print(
         '  Restart the Copilot CLI with --experimental (or run /experimental on) to activate it.',
       );
-    } else if (ext.reason === 'exists') {
-      print('  Copilot SDK usage extension already installed');
+    } else if (ext.action === 'unchanged') {
+      print('  Copilot SDK usage extension already up to date');
+    } else if (ext.action === 'skipped') {
+      print('  ⚠ Left the existing Copilot extension alone: it is not a Preflight extension');
     } else {
       print(`  ⚠ Could not install Copilot SDK usage extension: ${ext.reason}`);
     }
