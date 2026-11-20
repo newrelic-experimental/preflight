@@ -566,9 +566,10 @@ export async function runSetupWizard(
           `  ${name.padEnd(nameWidth)}  ${RETENTION_PRESETS[name]} days — ${RETENTION_RATIONALE[name]}`,
         );
       }
-      const retentionRaw = (
-        await rl.question(`Retention policy [${existingRetention ?? 'default'}]: `)
-      ).trim();
+      const retentionRaw = await ask.text({
+        message: 'Retention policy',
+        placeholder: existingRetention ?? 'default',
+      });
       const answered = retentionRaw === '' ? null : parseRetentionAnswer(retentionRaw);
       retentionPolicy = answered ?? existingRetention;
       if (retentionRaw !== '' && answered === null) {

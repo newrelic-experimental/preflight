@@ -2450,7 +2450,7 @@ describe('setupWizard retention preset', () => {
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockRl = { question: jest.fn(), close: jest.fn() };
-    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedPrompts.createWizardPrompts.mockReturnValue(scriptedPrompts(mockRl));
     mockedFs.mkdirSync.mockReturnValue(undefined);
     mockedFs.writeFileSync.mockReturnValue(undefined);
     mockedFs.readFileSync.mockReturnValue('{}');
