@@ -49,6 +49,8 @@ import {
   DEFAULT_STORAGE_PATH,
   ConfigFileSchema,
   loadMcpConfig,
+  RETENTION_PRESETS,
+  isRetentionPolicy,
 } from '../config.js';
 import { VALID_MODES, type Mode } from '../config.js';
 import type { PlatformTarget } from '../config.js';
@@ -1887,10 +1889,19 @@ export function createInstallProgram(): Command {
       'Interactive first-run setup: configure New Relic keys, install hooks, and deploy dashboards',
     )
     .addOption(new Option('--staging', 'pre-select the New Relic staging environment').hideHelp())
+    .addOption(
+      new Option(
+        '--retention <policy>',
+        'retention preset for local session, weekly summary and ledger files (skips the prompt)',
+      ).choices(Object.keys(RETENTION_PRESETS)),
+    )
     .action(async (opts: Record<string, unknown>) => {
       try {
         const { runSetupWizard } = await import('./setup-wizard.js');
-        await runSetupWizard({ staging: opts.staging === true });
+        await runSetupWizard({
+          staging: opts.staging === true,
+          retention: isRetentionPolicy(opts.retention) ? opts.retention : undefined,
+        });
       } catch (err) {
         print(`\n✗ Setup failed: ${errMsg(err)}`);
         process.exitCode = 1;
