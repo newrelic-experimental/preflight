@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { JSX } from 'react';
 
 import {
@@ -23,6 +23,7 @@ export function ReportedSpendField({
   pending,
   onSave,
 }: ReportedSpendFieldProps): JSX.Element {
+  const inputId = useId();
   const [draft, setDraft] = useState('');
   const amount = draft.trim() === '' ? null : Number(draft);
   const valid = isValidReportedAmountUsd(amount);
@@ -31,11 +32,11 @@ export function ReportedSpendField({
   return (
     <div className="py-1.5">
       <div className="flex items-center gap-3">
-        <label htmlFor={`reported-${label}`} className="text-xs text-ink-muted w-36 shrink-0">
+        <label htmlFor={inputId} className="text-xs text-ink-muted w-36 shrink-0">
           {label}
         </label>
         <input
-          id={`reported-${label}`}
+          id={inputId}
           type="number"
           min={0}
           max={MAX_REPORTED_SPEND_USD}

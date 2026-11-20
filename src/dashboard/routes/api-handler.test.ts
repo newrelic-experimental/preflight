@@ -10249,7 +10249,14 @@ describe('api-handler reported spend settings', () => {
   });
 
   it('feeds the budget tracker nothing and leaves its status and alerts unchanged', async () => {
-    const configFilePath = makeConfigFilePath();
+    const configFilePath = makeConfigFilePath({ dailyBudgetUsd: 10, weeklyBudgetUsd: 20 });
+    const withoutReported = (): Record<string, unknown> => {
+      const { reportedSpend: _reported, ...rest } = JSON.parse(
+        fs.readFileSync(configFilePath, 'utf-8'),
+      ) as Record<string, unknown>;
+      return rest;
+    };
+    const diskBefore = withoutReported();
     const thresholds: unknown[] = [];
     const budgetTracker = new BudgetTracker({
       sessionBudgetUsd: null,
@@ -10276,6 +10283,7 @@ describe('api-handler reported spend settings', () => {
     expect(after.json).toEqual(before.json);
     expect((after.json.daily as { spentUsd: number }).spentUsd).toBe(6);
     expect((after.json.alerts as unknown[]).length).toBe(1);
+    expect(withoutReported()).toEqual(diskBefore);
   });
 });
 
