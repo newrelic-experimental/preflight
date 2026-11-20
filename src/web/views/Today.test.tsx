@@ -71,6 +71,29 @@ describe('Today view', () => {
     expect(screen.getByText('$12.17')).toBeInTheDocument();
   });
 
+  it('marks the spend today figure as an estimate', () => {
+    renderToday();
+    const tile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+    expect(within(tile).getByText('est.')).toBeInTheDocument();
+  });
+
+  it('hides the estimate marker while the spend today figure is still loading', () => {
+    useLiveStore.setState({ cost: null });
+    globalThis.fetch = vi.fn(async (input) => {
+      if (String(input).includes('/api/sessions/today/aggregate')) {
+        return new Promise<Response>(() => {});
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    renderToday();
+    const tile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+    expect(within(tile).getByText('…')).toBeInTheDocument();
+    expect(within(tile).queryByText('est.')).toBeNull();
+  });
+
   it('renders the efficiency score KPI', () => {
     renderToday();
     expect(screen.getByText('efficiency')).toBeInTheDocument();
