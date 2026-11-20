@@ -2308,6 +2308,53 @@ describe('stdio integration', () => {
     }, 30000);
   });
 
+  const dashboardApi =
+    (port: string) =>
+    async (path: string): Promise<Record<string, unknown> | null> =>
+      fetch(`http://127.0.0.1:${port}${path}`)
+        .then((r) => r.json() as Promise<Record<string, unknown>>)
+        .catch(() => null);
+  const pollUntil = async <T>(read: () => Promise<T>, done: (v: T) => boolean): Promise<T> => {
+    let value = await read();
+    for (let i = 0; i < 40 && !done(value); i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      value = await read();
+    }
+    return value;
+  };
+  type Spend = { daily: { spentUsd: number }; session: { spentUsd: number } };
+  const spendOf = (budget: Record<string, unknown> | null): Spend =>
+    (budget ?? { daily: { spentUsd: 0 }, session: { spentUsd: 0 } }) as unknown as Spend;
+  const watchCostUpdates = async (port: string) => {
+    const controller = new AbortController();
+    const events: Array<{ sessionId: string; sessionTotalUsd: number; todayTotalUsd: number }> = [];
+    const response = await fetch(`http://127.0.0.1:${port}/sse`, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    const reading = (async () => {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        pending += decoder.decode(value, { stream: true });
+        const frames = pending.split('\n\n');
+        pending = frames.pop() ?? '';
+        for (const frame of frames) {
+          const data = frame.split('\n').find((line) => line.startsWith('data: '));
+          if (frame.startsWith('event: cost-update') && data)
+            events.push(JSON.parse(data.slice(6)));
+        }
+      }
+    })().catch(() => undefined);
+    return {
+      events,
+      stop: async () => {
+        controller.abort();
+        await reading;
+      },
+    };
+  };
+
   describe('self-report lines', () => {
     const distDir = resolve(__dirname, '..', 'dist');
     const report = {
@@ -2429,6 +2476,7 @@ describe('stdio integration', () => {
       ) => Promise<void>,
       nodeArgs: (env: Record<string, string>) => string[] = () => [],
       mcpClient = 'claude-code',
+      envOverrides: Record<string, string> = {},
     ): Promise<void> => {
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
       const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
@@ -2441,6 +2489,7 @@ describe('stdio integration', () => {
         NR_AI_MODE: 'local',
         NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
         NR_AI_SESSION_PERSIST_INTERVAL_MS: persistIntervalMs,
+        ...envOverrides,
       });
       const client = new Client({ name: 'test-client', version: '1.0.0' });
       const adopt = async (id: string) => {
@@ -2813,6 +2862,50 @@ describe('stdio integration', () => {
       }
     }, 40000);
 
+    it('a report saved while pending counts once after the engine adopts its conversation', async () => {
+      const port = '17007';
+      const api = dashboardApi(port);
+      await withPendingEngine(
+        '600000',
+        async (env, adopt) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          await pollUntil(
+            () => api('/api/health'),
+            (v) => v !== null,
+          );
+          runHook(env, reportHook('conv-adopted', 'r-pending-01'));
+          expect(await drained(storage, 'conv-adopted')).toBe('');
+          const pending = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).daily.spentUsd > 0,
+            ),
+          );
+          expect(pending.daily.spentUsd).toBeCloseTo(0.0075, 9);
+
+          await adopt('conv-adopted');
+          runHook(env, reportHook('conv-adopted', 'r-pending-01'));
+          runHook(env, reportHook('conv-adopted', 'r-adopted-02'));
+          expect(await drained(storage, 'conv-adopted')).toBe('');
+          const adopted = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).session.spentUsd > 0.0075,
+            ),
+          );
+          expect(adopted.daily.spentUsd).toBeCloseTo(0.015, 9);
+          expect(adopted.session.spentUsd).toBeCloseTo(0.015, 9);
+          const usage = (await api('/api/model-usage')) as {
+            byModel: Record<string, { requestCount: number }>;
+          };
+          expect(usage.byModel[report.model]?.requestCount).toBe(2);
+        },
+        () => [],
+        'claude-code',
+        { NR_AI_DASHBOARD_PORT: port },
+      );
+    }, 40000);
+
     it('a resumed engine saves a report for its own conversation once, on top of the saved total', async () => {
       await withPendingEngine('600000', async (env, adopt, close) => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
@@ -2922,9 +3015,9 @@ describe('stdio integration', () => {
             env: {
               ...env,
               HOME: tmpHome,
-              ...engineEnv,
               NR_AI_DASHBOARD_PORT: '0',
               NR_AI_MODE: 'local',
+              ...engineEnv,
               NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
               NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
             } as Record<string, string>,
@@ -2937,6 +3030,73 @@ describe('stdio integration', () => {
         rmSync(tmpHome, { recursive: true, force: true });
       }
     }
+
+    it.each([
+      ['local', '7007'],
+      ['both', '7507'],
+    ])(
+      'in %s mode, a hook-recorded report reaches the budget, Model Usage and the live cost tile',
+      async (mode, port) => {
+        const api = dashboardApi(port);
+        await withPendingEngine(
+          'cursor',
+          async (client, hook, sessionFile) => {
+            await pollUntil(
+              () => api('/api/health'),
+              (v) => v !== null,
+            );
+            const costs = await watchCostUpdates(port);
+            try {
+              const result = await client.callTool({
+                name: 'nr_observe_report_tokens',
+                arguments: report,
+              });
+              hook({
+                hook_event_name: 'afterMCPExecution',
+                conversation_id: 'conv-reported',
+                mcp_server_name: 'newrelic-preflight',
+                tool_name: 'nr_observe_report_tokens',
+                tool_input: JSON.stringify(report),
+                result_json: JSON.stringify(result),
+              });
+              const costUsd = Number((await sessionFile('conv-reported'))?.estimatedCostUsd);
+              expect(costUsd).toBeGreaterThan(0);
+
+              const budget = spendOf(
+                await pollUntil(
+                  () => api('/api/budget'),
+                  (b) => spendOf(b).daily.spentUsd > 0,
+                ),
+              );
+              expect(budget.daily.spentUsd).toBeCloseTo(costUsd, 9);
+              expect(budget.session.spentUsd).toBeCloseTo(costUsd, 9);
+              const usage = (await api('/api/model-usage')) as {
+                byModel: Record<string, { requestCount: number }>;
+              };
+              expect(usage.byModel[report.model]?.requestCount).toBe(1);
+              await pollUntil(
+                async () => costs.events.length,
+                (n) => n > 0,
+              );
+              expect(costs.events).toContainEqual(
+                expect.objectContaining({ sessionId: 'conv-reported', sessionTotalUsd: costUsd }),
+              );
+            } finally {
+              await costs.stop();
+            }
+          },
+          {
+            MCP_CLIENT: 'cursor',
+            NR_AI_MODE: mode,
+            NR_AI_DASHBOARD_PORT: port,
+            NEW_RELIC_LICENSE_KEY: mode === 'both' ? `${'0'.repeat(36)}NRAL` : '',
+            NEW_RELIC_ACCOUNT_ID: mode === 'both' ? '1' : '',
+            NEW_RELIC_HOST: '127.0.0.1:9',
+          },
+        );
+      },
+      40000,
+    );
 
     it('saves a Cursor report once, to the conversation whose hook carried it', async () => {
       await withPendingEngine('cursor', async (client, hook, sessionFile) => {
