@@ -4,6 +4,7 @@ import type { JSX } from 'react';
 import {
   MAX_REPORTED_SPEND_USD,
   isReportedSpendStale,
+  isValidReportedAmountUsd,
   type ReportedSpend,
 } from '../../lib/reported-spend.js';
 import { fmtReportedAsOf, formatUsd } from '../lib/format';
@@ -24,7 +25,7 @@ export function ReportedSpendField({
 }: ReportedSpendFieldProps): JSX.Element {
   const [draft, setDraft] = useState('');
   const amount = draft.trim() === '' ? null : Number(draft);
-  const valid = amount !== null && Number.isFinite(amount) && amount >= 0;
+  const valid = isValidReportedAmountUsd(amount);
   const stale = entry !== null && isReportedSpendStale(entry);
 
   return (

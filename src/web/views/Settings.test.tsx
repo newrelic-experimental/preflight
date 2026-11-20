@@ -185,13 +185,17 @@ describe('Reported spend', () => {
     );
   });
 
-  it('does not offer to save an empty or negative amount', async () => {
+  it('does not offer to save an empty, negative, or over-limit amount', async () => {
     wrap(<Settings />);
     const input = await screen.findByLabelText('Reported spend today');
     const save = screen.getAllByRole('button', { name: 'Save' })[0]!;
     expect(save).toBeDisabled();
     fireEvent.change(input, { target: { value: '-3' } });
     expect(save).toBeDisabled();
+    fireEvent.change(input, { target: { value: '2000000000' } });
+    expect(save).toBeDisabled();
+    fireEvent.change(input, { target: { value: '1000000000' } });
+    expect(save).toBeEnabled();
   });
 
   it('shows a saved value with its as-of time and clears it', async () => {
