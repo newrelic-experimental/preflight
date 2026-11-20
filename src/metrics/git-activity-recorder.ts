@@ -12,12 +12,11 @@ import {
   processGhCommand,
   segmentAssignsGhRepo,
   segmentSuccessFollowsCommand,
-  splitShellChain,
   type GitEvent,
 } from './git-event-classifier.js';
 import { UNATTRIBUTED_WORKSPACE_KEY, WorktreeIdentityResolver } from './git-workspace-identity.js';
-import { stripHeredocs } from './local-session-aggregator.js';
 import { mcpPrEvent } from './mcp-pr-tools.js';
+import { readShell } from './shell-lexer.js';
 import type { PrEvent } from './git-efficiency-tracker.js';
 
 /** `sessionId` used for commit records hydrated from `git log` rather than
@@ -122,11 +121,9 @@ export class GitActivityRecorder {
     if (!rawCommand) return;
     // Classify on the command *minus* any inline script bodies: a heredoc
     // that merely mentions git/gh words is not a git or PR operation.
-    const heredocs = stripHeredocs(rawCommand);
-    const command = heredocs.text;
-    const heredocsUncertain = heredocs.unclosed || heredocs.readingsDiffer;
-    const chain = splitShellChain(command);
-    const { segments } = chain;
+    const reading = readShell(rawCommand);
+    const heredocsUncertain = reading.unclosed || reading.readingsDiffer;
+    const { segments } = reading;
 
     // Track GitHub CLI PR commands. Each segment is checked on its own — a
     // `gh` invocation can be chained before or after a `git` command, or
@@ -154,7 +151,7 @@ export class GitActivityRecorder {
         (record.runInBackground === true ||
           heredocsUncertain ||
           ghPrMergeTogglesAuto(segment) ||
-          !segmentSuccessFollowsCommand(chain, i))
+          !segmentSuccessFollowsCommand(reading, i))
       ) {
         continue;
       }
@@ -188,7 +185,7 @@ export class GitActivityRecorder {
     const resolveRepo = (dir: string | null): string | null =>
       this.identityResolver.resolve(dir)?.repoName ?? null;
 
-    classifyGitSegments(command, record, resolveRepo).forEach(({ event }, i) => {
+    classifyGitSegments(reading, record, resolveRepo).forEach(({ event }, i) => {
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',
         kind: 'git',
