@@ -6604,7 +6604,7 @@ describe('api-handler PATCH /api/settings', () => {
     },
   );
 
-  it('accepts retainSessionsDays as integer 1-365 or null, rejects out-of-range/non-integer', async () => {
+  it('accepts retainSessionsDays as integer 1-2190 or null, rejects out-of-range/non-integer', async () => {
     const configFilePath = makeConfigFilePath({});
     const handler = createApiHandler({ configFilePath });
 
@@ -6613,18 +6613,23 @@ describe('api-handler PATCH /api/settings', () => {
     await handler(reqOk, resOk);
     expect(statusOk()).toBe(200);
 
+    const reqMax = makePatchRequest({ retainSessionsDays: 2190 });
+    const { res: resMax, status: statusMax } = fakeRes();
+    await handler(reqMax, resMax);
+    expect(statusMax()).toBe(200);
+
     const reqNull = makePatchRequest({ retainSessionsDays: null });
     const { res: resNull, status: statusNull } = fakeRes();
     await handler(reqNull, resNull);
     expect(statusNull()).toBe(200);
 
-    const reqTooHigh = makePatchRequest({ retainSessionsDays: 366 });
+    const reqTooHigh = makePatchRequest({ retainSessionsDays: 2191 });
     const { res: resTooHigh, status: statusTooHigh, body: bodyTooHigh } = fakeRes();
     await handler(reqTooHigh, resTooHigh);
     expect(statusTooHigh()).toBe(400);
     expect(JSON.parse(bodyTooHigh())).toEqual({
       error: 'validation_failed',
-      errors: ['retainSessionsDays must be integer 1-365 or null'],
+      errors: ['retainSessionsDays must be integer 1-2190 or null'],
     });
 
     const reqFloat = makePatchRequest({ retainSessionsDays: 1.5 });
@@ -6805,7 +6810,7 @@ describe('api-handler PATCH /api/settings', () => {
       errors: [
         'developer must be a string',
         'teamId must be string or null',
-        'retainSessionsDays must be integer 1-365 or null',
+        'retainSessionsDays must be integer 1-2190 or null',
       ],
     });
   });

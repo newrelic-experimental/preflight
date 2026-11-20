@@ -2878,6 +2878,36 @@ describe('preflight setup', () => {
     const helpText = prog.commands.find((c) => c.name() === 'setup')!.helpInformation();
     expect(helpText).not.toContain('--staging');
   });
+
+  it('passes the retention preset to the wizard when --retention is given', async () => {
+    mockedSetupWizard.runSetupWizard.mockResolvedValue(undefined);
+    await runInstallCli(['setup', '--retention', 'soc2-audit']);
+    expect(mockedSetupWizard.runSetupWizard).toHaveBeenCalledWith({
+      staging: false,
+      retention: 'soc2-audit',
+    });
+  });
+
+  it('rejects an unknown --retention name before the wizard runs, listing the valid names', async () => {
+    mockedSetupWizard.runSetupWizard.mockResolvedValue(undefined);
+    jest.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
+      throw new Error(`process.exit(${String(code)})`);
+    });
+    const stderrWrites: string[] = [];
+    jest.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderrWrites.push(String(chunk));
+      return true;
+    });
+
+    await expect(runInstallCli(['setup', '--retention', 'soc2'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+
+    const stderrText = stderrWrites.join('');
+    expect(stderrText).toContain("'soc2' is invalid");
+    expect(stderrText).toContain('default, gdpr-minimisation, soc2-audit, hipaa-audit, minimal');
+    expect(mockedSetupWizard.runSetupWizard).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
