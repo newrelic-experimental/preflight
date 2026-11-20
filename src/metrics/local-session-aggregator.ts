@@ -37,7 +37,9 @@ import { isAwaitingLatePost } from './session-tracker.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
 import { CallUsageBook } from './call-usage.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
+import { parsePrRepo } from './pr-ref.js';
 import { resolvePricingDetail } from './pricing-overlay.js';
+import { readShell, type ShellReading } from './shell-lexer.js';
 import { QualityProxyTracker } from './quality-proxy-tracker.js';
 import { TaskDetector } from './task-detector.js';
 import { ToolSelectionScorer, toToolSelectionSummary } from './tool-selection-scorer.js';
@@ -157,119 +159,6 @@ export interface LocalSessionRollup {
   successCount: number;
 }
 
-/** A command with its heredoc bodies stripped (see `stripHeredocs`). */
-export interface StrippedHeredocs {
-  readonly text: string;
-  /** True when a heredoc never reached its terminator line, so every line
-   *  after its `<<` was dropped. Heredocs that agents write close, so this
-   *  usually means a `<<` that bash doesn't read as a heredoc was taken for
-   *  one, such as `$((1<<N))`, and the text left is not what bash ran. */
-  readonly unclosed: boolean;
-  /** True when reading quotes changes which lines are kept, as when a `<<`
-   *  sits in quoted text. Which lines bash ran then rests on a quote reading
-   *  the scan can get wrong (`$'it\'s'`), so `text` may not be what ran. */
-  readonly readingsDiffer: boolean;
-}
-
-// `<<` or `<<-` and its delimiter word, but not the `<<<` of a here-string.
-const HEREDOC_START_RE = /(?<!<)<<(?!<)(-?)\s*(?:'([^']+)'|"([^"]+)"|\\?([A-Za-z_][A-Za-z0-9_]*))/y;
-
-// Characters after which a `#` starts a comment, as in `splitShellChain`.
-const COMMENT_AFTER_RE = /[\s;&|(<>]/;
-
-/**
- * Strips heredoc bodies from a shell command so its *text* is not mistaken for
- * its *actions*. Agents routinely pipe scripts inline (`python3 - <<'PY' ...`),
- * and a body that merely mentions git words made the command classify as a real
- * `push`/`log` and made a `cd` inside the script hijack repo attribution.
- *
- * The line introducing the heredoc is kept — `git commit -F- <<'MSG'` is still
- * a commit.
- *
- * The first reading takes every `<<` for a heredoc, because a misread quote
- * (`$'it\'s'`) could otherwise hide a real one. When one of its heredocs never
- * closes, a second reading that knows quotes, `$( … )` and `#` comments
- * replaces it if that reading's quotes balance and all of its heredocs close,
- * so a `<<` in quoted text (`--body "see <<X"`) drops no lines. Both readings
- * always run, because a quoted `<<` that a real heredoc's terminator closes
- * leaves the first reading closed but missing lines; `readingsDiffer` reports
- * that.
- */
-export function stripHeredocs(command: string): StrippedHeredocs {
-  if (!command.includes('<<')) return { text: command, unclosed: false, readingsDiffer: false };
-  const blind = scanHeredocs(command, false);
-  const quoted = scanHeredocs(command, true);
-  const { text, unclosed } = blind.unclosed && quoted.balanced && !quoted.unclosed ? quoted : blind;
-  return { text, unclosed, readingsDiffer: blind.text !== quoted.text };
-}
-
-/** The text of `stripHeredocs`. */
-export function stripHeredocBodies(command: string): string {
-  return stripHeredocs(command).text;
-}
-
-/** `stripHeredocs`' scan. With `readQuotes` false, quotes, parentheses and
- *  `#` are plain text. `balanced` is false when a quote or group is left open. */
-function scanHeredocs(
-  command: string,
-  readQuotes: boolean,
-): { readonly text: string; readonly unclosed: boolean; readonly balanced: boolean } {
-  const kept: string[] = [];
-  const pending: { tag: string; stripTabs: boolean }[] = [];
-  // Open quotes and `(`/`$(` groups, innermost last, carried across lines.
-  const open: string[] = [];
-
-  for (const line of command.split('\n')) {
-    if (pending.length > 0) {
-      const current = pending[0];
-      // bash ends a heredoc only on a line that is exactly its delimiter;
-      // `<<-` strips leading tabs, not spaces. A trailing `\r` is a CRLF line end.
-      const candidate = (current.stripTabs ? line.replace(/^\t+/, '') : line).replace(/\r$/, '');
-      if (candidate === current.tag) pending.shift();
-      continue;
-    }
-
-    kept.push(line);
-    let wordStart = true;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      const inner = open.at(-1);
-      if (inner === "'") {
-        if (ch === "'") open.pop();
-        continue;
-      }
-      if (readQuotes && ch === '\\') {
-        i++;
-        wordStart = false;
-        continue;
-      }
-      if (inner === '"') {
-        if (ch === '"') {
-          open.pop();
-        } else if (line.startsWith('$(', i)) {
-          open.push('(');
-          i++;
-        }
-        continue;
-      }
-      if (readQuotes) {
-        if (ch === '#' && wordStart) break;
-        if (ch === "'" || ch === '"' || ch === '(') open.push(ch);
-        else if (ch === ')' && inner === '(') open.pop();
-      }
-      wordStart = COMMENT_AFTER_RE.test(ch);
-      if (ch !== '<') continue;
-      HEREDOC_START_RE.lastIndex = i;
-      const match = HEREDOC_START_RE.exec(line);
-      if (!match) continue;
-      pending.push({ tag: match[2] ?? match[3] ?? match[4], stripTabs: match[1] === '-' });
-      i = HEREDOC_START_RE.lastIndex - 1;
-    }
-  }
-
-  return { text: kept.join('\n'), unclosed: pending.length > 0, balanced: open.length === 0 };
-}
-
 /**
  * Directory a git command actually acts on. Work is often driven from one
  * workspace but targeted at another repo (`git -C <path>`, or `cd <path> &&
@@ -277,10 +166,9 @@ function scanHeredocs(
  * driving repo instead of the one being changed.
  */
 export function gitCommandTargetDir(
-  rawCommand: string,
+  { text: command }: ShellReading,
   cwd: string | null | undefined,
 ): string | null {
-  const command = stripHeredocBodies(rawCommand);
   const dashC = /(?:^|[|&;]\s*)git\s+(?:-c\s+\S+\s+)*-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(
     command,
   );
@@ -504,6 +392,7 @@ export class LocalSessionAggregator {
     platform?: string | null;
     agentId?: unknown;
     createdPrNumber?: unknown;
+    createdPrRepo?: unknown;
     mcpPrNumber?: unknown;
     mcpPrRepo?: unknown;
     runInBackground?: unknown;
@@ -528,7 +417,10 @@ export class LocalSessionAggregator {
     // cwd never names, so without this the repo would be invisible to commit
     // hydration — the whole point of driving other repos from one workspace.
     if (typeof record.command === 'string' && /(?:^|[|&;]\s*)(?:cd\s|git\s)/.test(record.command)) {
-      const target = gitCommandTargetDir(record.command, record.cwd as string | undefined);
+      const target = gitCommandTargetDir(
+        readShell(record.command),
+        record.cwd as string | undefined,
+      );
       if (target) this.gitTargetDirs.add(target);
     }
     // Matches TaskDetector's Read-vs-Write/Edit split (task-detector.ts) —
@@ -550,6 +442,7 @@ export class LocalSessionAggregator {
     // SessionTracker caps its own timeline so a long session can't grow the
     // session file without bound. Keeps the most recent entries.
     if (rollup.timeline.length >= MAX_TIMELINE_ENTRIES) rollup.timeline.shift();
+    const createdPrRepo = parsePrRepo(record.createdPrRepo);
     rollup.timeline.push({
       timestamp,
       ...(typeof record.toolUseId === 'string' && { toolUseId: record.toolUseId }),
@@ -567,6 +460,7 @@ export class LocalSessionAggregator {
       ...(typeof record.createdPrNumber === 'string' && {
         createdPrNumber: record.createdPrNumber,
       }),
+      ...(createdPrRepo !== undefined && { createdPrRepo }),
       ...(typeof record.mcpPrNumber === 'string' && { mcpPrNumber: record.mcpPrNumber }),
       ...(typeof record.mcpPrRepo === 'string' && { mcpPrRepo: record.mcpPrRepo }),
       ...(record.runInBackground === true && { runInBackground: true }),
@@ -765,6 +659,12 @@ export class LocalSessionAggregator {
     outcome: string;
     repoResolver: RepoNameResolver;
     toolSelectionScorer: ToolSelectionScorer;
+    /**
+     * Re-runs the agent attribution join on each record before tool-selection
+     * scoring. By save time `SubagentWatcher` has tailed far more transcript
+     * than at hook intake, so more records resolve to their subagent.
+     */
+    backfillRecord?: (record: ToolCallRecord) => ToolCallRecord;
     savesSession?: (sessionId: string) => boolean;
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
@@ -805,7 +705,13 @@ export class LocalSessionAggregator {
         qualityProxy: rollup.quality.getRawCounts(),
         toolSelectionMetrics:
           rollup.records.length > 0
-            ? toToolSelectionSummary(context.toolSelectionScorer.scoreSession(rollup.records))
+            ? toToolSelectionSummary(
+                context.toolSelectionScorer.scoreSession(
+                  context.backfillRecord
+                    ? rollup.records.map(context.backfillRecord)
+                    : rollup.records,
+                ),
+              )
             : null,
         linesAdded: 0,
         linesRemoved: 0,

@@ -232,4 +232,87 @@ describe('BudgetTracker', () => {
     expect(events).toHaveLength(1);
     expect((events[0] as { thresholdPct: number }).thresholdPct).toBe(50);
   });
+
+  describe('seedPeriodSpend', () => {
+    const makeRestarted = (events: unknown[]) =>
+      new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: 10,
+        weeklyBudgetUsd: 50,
+        onThreshold: (e) => events.push(e),
+      });
+
+    it('reports the recorded daily and weekly spend before any cost event', () => {
+      const t = makeRestarted([]);
+      t.seedPeriodSpend(6, 30);
+      const status = t.getStatus();
+      expect(status.daily.spentUsd).toBe(6);
+      expect(status.daily.pctUsed).toBe(60);
+      expect(status.weekly.spentUsd).toBe(30);
+      expect(status.weekly.remainingUsd).toBe(20);
+      expect(status.session.spentUsd).toBe(0);
+    });
+
+    it('does not alert on spend recorded before the restart', () => {
+      const events: unknown[] = [];
+      const t = makeRestarted(events);
+      t.seedPeriodSpend(8.5, 45);
+      expect(events).toHaveLength(0);
+      expect(t.getStatus().alerts).toHaveLength(0);
+    });
+
+    it('treats spend exactly at a threshold as crossed', () => {
+      const fired: string[] = [];
+      const tracker = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: 10,
+        weeklyBudgetUsd: 50,
+        onThreshold: (e) => fired.push(`${e.period}_${e.thresholdPct}`),
+      });
+      tracker.seedPeriodSpend(5, 25);
+      tracker.updateCost(0, 5, 25);
+      expect(fired).toEqual([]);
+    });
+
+    it('fires no threshold twice across a restart, and still fires a newly crossed one', () => {
+      const firedBefore: Array<{ period: string; thresholdPct: number }> = [];
+      const before = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: 10,
+        weeklyBudgetUsd: 50,
+        onThreshold: (e) => firedBefore.push(e),
+      });
+      before.updateCost(0, 8.5, 45);
+      expect(firedBefore.map((e) => `${e.period}_${e.thresholdPct}`)).toEqual([
+        'daily_50',
+        'daily_80',
+        'weekly_50',
+        'weekly_80',
+      ]);
+
+      const firedAfter: Array<{ period: string; thresholdPct: number }> = [];
+      const after = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: 10,
+        weeklyBudgetUsd: 50,
+        onThreshold: (e) => firedAfter.push(e),
+      });
+      after.seedPeriodSpend(8.5, 45);
+      after.updateCost(0, 8.6, 45.5);
+      expect(firedAfter).toHaveLength(0);
+
+      after.updateCost(0, 10.2, 45.5);
+      expect(firedAfter.map((e) => `${e.period}_${e.thresholdPct}`)).toEqual(['daily_100']);
+    });
+
+    it('is a no-op for a period with no budget', () => {
+      const t = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: null,
+        weeklyBudgetUsd: null,
+      });
+      expect(() => t.seedPeriodSpend(1000, 5000)).not.toThrow();
+      expect(t.getStatus().daily.pctUsed).toBeNull();
+    });
+  });
 });
