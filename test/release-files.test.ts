@@ -89,6 +89,7 @@ function makeFiles(
       `{\n  "name": "newrelic-preflight",\n  "version": "${version}",\n  "keywords": ["observability", "mcp"]\n}\n`,
     ],
     ['plugin/.mcp.json', makeMcpConfig(`@newrelic/preflight@${version}`)],
+    ['kiro-power/mcp.json', makeMcpConfig(`@newrelic/preflight@${version}`)],
     ['kiro-power/plugin.json', `{\n  "name": "preflight",\n  "version": "${version}"\n}\n`],
     ['CHANGELOG.md', changelog],
   ]);

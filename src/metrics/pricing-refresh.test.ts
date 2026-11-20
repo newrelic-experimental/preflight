@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { DEFAULT_PRICING_TABLE, initPricing } from '../shared/index.js';
+import { DEFAULT_PRICING_TABLE, initPricing } from '../core/index.js';
 import { makeUsage } from '../__test-utils__/token-usage.js';
 import {
   clearPricingMemo,
@@ -393,10 +393,15 @@ describe('schedulePricingRecheck', () => {
         .mockResolvedValue(jsonResponse({ 'claude-opus-8-5': OPUS, 'acme-chat-1': SONNET_5_5 })),
     };
     await startPricingRefresh(opts);
+    // The write stamps mtime from the real filesystem clock, which on Linux is
+    // coarse and can trail the faked Date.now() by a few ms. Pin it half an
+    // hour back so the cache is still fresh at the 23h tick and stale at the 24h tick.
+    const writtenAt = new Date(Date.now() - 30 * 60 * 1000);
+    utimesSync(cachePath, writtenAt, writtenAt);
     schedulePricingRecheck(opts);
     expect(resolvePricingDetail('acme-chat-1').kind).toBe('unpriced');
 
-    await jest.advanceTimersByTimeAsync(25 * 60 * 60 * 1000);
+    await jest.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
 
     expect(resolvePricingDetail('acme-chat-1')).toMatchObject({
       kind: 'priced',

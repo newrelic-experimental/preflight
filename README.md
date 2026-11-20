@@ -63,7 +63,7 @@ See cost breakdown, efficiency scoring, anti-patterns, and live session tracking
   - **Session Detail** — deep-dive into a single session's tool calls
   - **Team View** — aggregated cost and efficiency across developers
   - **Manager View** — high-level team metrics, no tool-call content
-  - **Adoption & Cost** — adoption momentum, spend, skill and MCP usage, and per-developer outcomes for engineering managers
+  - **Adoption & Cost** — adoption momentum, spend, skill and MCP usage, and per-developer activity for engineering managers
   - **Platform Comparison** — Claude Code vs. Cursor vs. Windsurf, etc.
   - **Security Audit** — audit trail of sensitive file access
 
@@ -164,7 +164,7 @@ NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
   preflight deploy-dashboards --all
 ```
 
-You'll need a **license key** (telemetry ingest) and your **account ID**, plus a **user API key** (`NRAK-…`) to deploy dashboards and alerts. See [ADVANCED.md](docs/ADVANCED.md) for alerts, OTLP export to other backends, and Terraform.
+You'll need a **license key** (telemetry ingest). To deploy dashboards and alerts you also need your **account ID** and a **user API key** (`NRAK-…`). See [ADVANCED.md](docs/ADVANCED.md) for alerts, OTLP export to other backends, and Terraform.
 
 > **No dashboard until you run `deploy-dashboards`.** Cloud mode ships telemetry to New Relic as soon as it's configured, but nothing creates a dashboard automatically — that's the separate step above, and it needs a **different** credential (a user API key, not your license key). Until you run it, there's no UI to look at. In the meantime, query the raw events directly in New Relic's **Query Builder**, e.g.:
 >

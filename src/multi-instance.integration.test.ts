@@ -1,11 +1,20 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { appendToHookBuffer } from './storage/hook-buffer.js';
 
 // ---------------------------------------------------------------------------
 // Multi-instance integration test (proposal task #11)
@@ -222,6 +231,118 @@ describe('multi-instance integration (proposal #11)', () => {
     }
   }, 30_000);
 
+  describe('the outcome a pending engine saves for a session it drained', () => {
+    const sessionId = 'drained-session';
+    let ownStorage: string;
+    let jobDir: string;
+    let port: number;
+    let pending: ChildHandle;
+    let owner: ChildHandle | undefined;
+
+    const savedOutcome = (): string | undefined => {
+      const sessionsDir = resolve(ownStorage, 'sessions');
+      const saved = existsSync(sessionsDir)
+        ? readdirSync(sessionsDir).filter((f) => f.endsWith(`_${sessionId}.json`))
+        : [];
+      if (saved.length !== 1) return undefined;
+      return (
+        JSON.parse(readFileSync(resolve(sessionsDir, saved[0]!), 'utf-8')) as { outcome: string }
+      ).outcome;
+    };
+    const startOwner = async (env?: NodeJS.ProcessEnv): Promise<ChildHandle> => {
+      const child = spawnChild(sessionId, ownStorage, jobDir, distIndex, port, env);
+      await waitForStderr(child, 'Event processor started', BOOT_TIMEOUT_MS);
+      return child;
+    };
+    const stop = async (child: ChildHandle): Promise<void> => {
+      child.proc.stdin.end();
+      await waitExit(child, 4000);
+    };
+
+    const waitForDrain = async (): Promise<void> => {
+      const bufferPath = resolve(ownStorage, `buffer-${sessionId}.jsonl`);
+      const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
+      while (existsSync(bufferPath) && Date.now() < deadline) await delay(50);
+      expect(existsSync(bufferPath)).toBe(false);
+    };
+
+    beforeEach(async () => {
+      ownStorage = mkdtempSync(join(tmpdir(), 'nr-mi-pending-'));
+      jobDir = resolve(jobDirRoot, sessionId);
+      mkdirSync(jobDir, { recursive: true, mode: 0o700 });
+      writeFileSync(
+        resolve(jobDir, 'state.json'),
+        JSON.stringify({ linkScanPath: `/fake/transcript/${sessionId}.jsonl` }),
+        { mode: 0o600 },
+      );
+      seedBuffer(ownStorage, sessionId, 5);
+      port = await getFreePort();
+      owner = undefined;
+      pending = spawnChild('pending', ownStorage, undefined, distIndex, port);
+      await waitForStderr(pending, 'Event processor started', BOOT_TIMEOUT_MS);
+      await waitForDrain();
+    });
+
+    afterEach(async () => {
+      await Promise.all([stop(pending), owner && stop(owner)]);
+      rmSync(ownStorage, { recursive: true, force: true });
+    });
+
+    it('is in progress while the session runs in its own engine, which then completes it', async () => {
+      owner = await startOwner();
+      await stop(pending);
+      expect(savedOutcome()).toBe('in progress');
+
+      seedBuffer(ownStorage, sessionId, 3, 5);
+      await waitForDrain();
+      await stop(owner);
+      expect(savedOutcome()).toBe('completed');
+    }, 30_000);
+
+    it('is completed when no engine for the session is live', async () => {
+      await stop(pending);
+
+      expect(savedOutcome()).toBe('completed');
+    }, 30_000);
+
+    it('gives way to an engine that starts for the session later', async () => {
+      await stop(pending);
+      expect(savedOutcome()).toBe('completed');
+
+      owner = await startOwner({ NR_AI_SESSION_PERSIST_INTERVAL_MS: '200' });
+      seedBuffer(ownStorage, sessionId, 3, 5);
+      const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
+      while (savedOutcome() !== 'in progress' && Date.now() < deadline) await delay(50);
+      expect(savedOutcome()).toBe('in progress');
+
+      await stop(owner);
+      expect(savedOutcome()).toBe('completed');
+    }, 30_000);
+
+    it('goes back to in progress as soon as an engine for the session boots', async () => {
+      await stop(pending);
+      expect(savedOutcome()).toBe('completed');
+
+      owner = await startOwner();
+      const deadline = Date.now() + 2000;
+      while (savedOutcome() !== 'in progress' && Date.now() < deadline) await delay(50);
+      expect(savedOutcome()).toBe('in progress');
+    }, 30_000);
+
+    it('keeps a completed outcome that its own engine saved', async () => {
+      owner = await startOwner();
+      await stop(pending);
+      seedBuffer(ownStorage, sessionId, 3, 5);
+      await waitForDrain();
+      await stop(owner);
+      expect(savedOutcome()).toBe('completed');
+
+      owner = await startOwner();
+      await delay(1000);
+      expect(savedOutcome()).toBe('completed');
+    }, 30_000);
+  });
+
   // -----------------------------------------------------------------------
   // Dashboard ownership re-poll. After this fix the second MCP runs
   // headless. This test verifies it takes over the dashboard if the owner
@@ -315,6 +436,199 @@ describe('multi-instance integration (proposal #11)', () => {
   }, 30_000);
 });
 
+describe('AiCodingTask emission in cloud mode', () => {
+  const SESSION = 'task-emit-test';
+  let root: string;
+  let storage: string;
+  let capturePath: string;
+  let preloadPath: string;
+  let jobDir: string;
+  let port: number;
+
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), 'nr-task-emit-'));
+    storage = resolve(root, 'storage');
+    mkdirSync(resolve(storage, 'session-by-ppid'), { recursive: true, mode: 0o700 });
+    capturePath = resolve(root, 'captured.jsonl');
+    preloadPath = resolve(root, 'preload.mjs');
+    // Captures the events ingest would send to New Relic.
+    writeFileSync(
+      preloadPath,
+      [
+        "import { gunzipSync } from 'node:zlib';",
+        "import { appendFileSync } from 'node:fs';",
+        'const real = globalThis.fetch;',
+        'globalThis.fetch = async (url, init) => {',
+        "  if (!String(url).includes('insights-collector')) return real(url, init);",
+        "  for (const e of JSON.parse(gunzipSync(init.body).toString('utf8'))) {",
+        "    appendFileSync(process.env.CAPTURE_PATH, JSON.stringify(e) + '\\n');",
+        '  }',
+        '  return new Response(\'{"success":true}\', { status: 200 });',
+        '};',
+      ].join('\n'),
+    );
+    jobDir = resolve(root, 'job');
+    mkdirSync(jobDir, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      resolve(jobDir, 'state.json'),
+      JSON.stringify({ linkScanPath: `/fake/transcript/${SESSION}.jsonl` }),
+      { mode: 0o600 },
+    );
+    port = await getFreePort();
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** With no job dir the engine starts on a provisional id and has no ingest until it resolves. */
+  function startCloudEngine(
+    harvestEventsMs: number,
+    engineJobDir: string | undefined,
+  ): ChildHandle {
+    return spawnChild(SESSION, storage, engineJobDir, distIndex, port, {
+      NR_AI_MODE: 'cloud',
+      NEW_RELIC_LICENSE_KEY: 'a'.repeat(40),
+      NEW_RELIC_ACCOUNT_ID: '1',
+      NEW_RELIC_AI_MCP_HARVEST_EVENTS_MS: String(harvestEventsMs),
+      CAPTURE_PATH: capturePath,
+      NODE_OPTIONS: `--import ${preloadPath}`,
+    });
+  }
+
+  /**
+   * `Read` calls all read one file, so four of them form a repeated-read anti-pattern.
+   * An `AskUserQuestion` call closes the task it joins.
+   */
+  function seedToolCalls(
+    sessionId: string,
+    count: number,
+    tool: 'Bash' | 'Read' | 'AskUserQuestion' = 'Bash',
+  ): void {
+    const bufferPath = resolve(storage, `buffer-${sessionId}.jsonl`);
+    const base = Date.now() - 1000;
+    for (let i = 0; i < count; i++) {
+      const common = { tool, sessionId, toolUseId: `toolu_${sessionId}_${tool}_${i}` };
+      appendToHookBuffer(
+        bufferPath,
+        JSON.stringify({
+          ...common,
+          mode: 'pre',
+          timestamp: base + 2 * i,
+          inputSize: 16,
+          toolInput: tool === 'Read' ? { file_path: '/fake/same.ts' } : { command: `echo ${i}` },
+        }) + '\n',
+      );
+      appendToHookBuffer(
+        bufferPath,
+        JSON.stringify({
+          ...common,
+          mode: 'post',
+          timestamp: base + 2 * i + 1,
+          success: true,
+          outputSize: 8,
+        }) + '\n',
+      );
+    }
+  }
+
+  /** A `Stop` hook frame, which closes the session's open task. */
+  function seedStop(sessionId: string): void {
+    appendToHookBuffer(
+      resolve(storage, `buffer-${sessionId}.jsonl`),
+      JSON.stringify({ mode: 'stop', sessionId, timestamp: Date.now() }) + '\n',
+    );
+  }
+
+  async function waitForDrain(sessionId: string): Promise<void> {
+    const bufferPath = resolve(storage, `buffer-${sessionId}.jsonl`);
+    const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
+    while (existsSync(bufferPath)) {
+      if (Date.now() > deadline) throw new Error(`${bufferPath} was not drained`);
+      await delay(50);
+    }
+  }
+
+  function capturedEvents(eventType: string): Array<Record<string, unknown>> {
+    if (!existsSync(capturePath)) return [];
+    return readFileSync(capturePath, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((event) => event.eventType === eventType);
+  }
+
+  const capturedTasks = () => capturedEvents('AiCodingTask');
+
+  it('sends a task closed by a Stop hook while the engine keeps running', async () => {
+    const child = startCloudEngine(200, jobDir);
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 1);
+      seedStop(SESSION);
+
+      const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
+      while (capturedTasks().length === 0 && Date.now() < deadline) await delay(100);
+
+      expect(child.proc.exitCode).toBeNull();
+      const tasks = capturedTasks();
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0]?.session_id).toBe(SESSION);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 4000);
+    }
+  }, 60_000);
+
+  it('sends a task that is still open when the engine shuts down', async () => {
+    const child = startCloudEngine(3_600_000, jobDir);
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 1);
+      await waitForStats(child, 1, TOOLS_CALL_TIMEOUT_MS);
+      expect(capturedTasks()).toHaveLength(0);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    expect(capturedTasks()).toHaveLength(1);
+  }, 60_000);
+
+  it("sends only the adopted session's tasks that closed before the session resolved", async () => {
+    const OTHER = 'task-emit-other';
+    const child = startCloudEngine(200, undefined);
+    try {
+      await waitForStderr(child, 'Awaiting session_id resolution', BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 4, 'Read');
+      seedToolCalls(SESSION, 1, 'AskUserQuestion');
+      await waitForDrain(SESSION);
+      seedToolCalls(OTHER, 2);
+      seedToolCalls(OTHER, 1, 'AskUserQuestion');
+      await waitForDrain(OTHER);
+      expect(capturedTasks()).toHaveLength(0);
+
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), SESSION, {
+        mode: 0o600,
+      });
+      await waitForStderr(child, 'Session ID resolved, full initialization complete', 15_000);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    const tasks = capturedTasks();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({ session_id: SESSION, tool_call_count: 5 });
+    const antiPatterns = capturedEvents('AiAntiPattern');
+    expect(antiPatterns.length).toBeGreaterThan(0);
+    expect(antiPatterns.every((event) => event.session_id === SESSION)).toBe(true);
+  }, 60_000);
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -325,14 +639,14 @@ describe('multi-instance integration (proposal #11)', () => {
  * src/hooks/collector-script.ts so the event-processor pairs them into
  * 1 ToolCallRecord per pre+post pair.
  */
-function seedBuffer(storagePath: string, sessionId: string, count: number): void {
+function seedBuffer(storagePath: string, sessionId: string, count: number, from = 0): void {
   if (!existsSync(storagePath)) mkdirSync(storagePath, { recursive: true, mode: 0o700 });
   const bufferPath = resolve(storagePath, `buffer-${sessionId}.jsonl`);
   const lines: string[] = [];
   // Use a baseline timestamp safely in the past so orphan-sweep timeouts
   // (60s in event-processor) don't fire mid-test.
   const baseTs = Date.now() - 1000;
-  for (let i = 0; i < count; i++) {
+  for (let i = from; i < from + count; i++) {
     const toolUseId = `toolu_${sessionId}_${i}`;
     lines.push(
       JSON.stringify({
@@ -374,17 +688,20 @@ function getFreePort(): Promise<number> {
 function spawnChild(
   sessionId: string,
   storagePath: string,
-  jobDir: string,
+  jobDir: string | undefined,
   distPath: string,
   port: number,
+  extraEnv?: NodeJS.ProcessEnv,
 ): ChildHandle {
   const proc = spawn(process.execPath, [distPath, '--stdio'], {
     env: {
       ...process.env,
+      ...extraEnv,
       // mode=local skips cloud licenseKey requirement and confines the test
       // to the local pipeline (per index.privacy.test.ts pattern).
       NR_AI_MODE: 'local',
       NEW_RELIC_AI_MCP_STORAGE_PATH: storagePath,
+      CLAUDECODE: '1',
       // CLAUDE_JOB_DIR is the resolver's fast path — bypasses ppid breadcrumb
       // collisions when multiple children share the same parent test process.
       CLAUDE_JOB_DIR: jobDir,
@@ -396,6 +713,7 @@ function spawnChild(
       // Disable the local alerts engine so the test isn't sensitive to
       // periodic alert evaluation noise on stderr.
       NR_AI_ALERTS_ENABLED: 'false',
+      ...extraEnv,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   }) as ChildProcessWithoutNullStreams;
@@ -439,6 +757,7 @@ function spawnChildOnPort(
       ...process.env,
       NR_AI_MODE: 'local',
       NEW_RELIC_AI_MCP_STORAGE_PATH: storagePath,
+      CLAUDECODE: '1',
       CLAUDE_JOB_DIR: jobDir,
       NR_AI_DASHBOARD_PORT: String(dashboardPort),
       // Compress the re-poll interval so the takeover scenario fits inside

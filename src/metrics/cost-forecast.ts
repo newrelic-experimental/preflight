@@ -117,7 +117,9 @@ export function buildCostForecastFromInputs(
   const heldReason = !forecastHeld
     ? null
     : anchorMissing
-      ? 'held: no spend yet today'
+      ? typeof dailySpentUsd === 'number' && dailySpentUsd > 0
+        ? 'held: spend today, start of day unknown'
+        : 'held: no spend yet today'
       : `held: under ${MIN_FORECAST_WINDOW_MIN} minutes of today's data`;
   const project = (msRemaining: number): number | null =>
     forecastHeld ? null : effectiveBaseUsd + effectiveRateUsdPerMs * msRemaining;
@@ -127,7 +129,12 @@ export function buildCostForecastFromInputs(
   const now = new Date(nowMs);
   const dayOfWeek = now.getDay();
   const isoDay = dayOfWeek === 0 ? 7 : dayOfWeek;
-  const msUntilEndOfWeek = ((7 - isoDay) % 7) * 86_400_000 + msUntilEndOfDay;
+  // Built from Y/M/D parts like localEndOfDay, so a 23h or 25h DST day in the
+  // rest of the week isn't counted as 24h.
+  const weekEndMs = localStartOfDay(
+    new Date(now.getFullYear(), now.getMonth(), now.getDate() + (7 - isoDay) + 1).getTime(),
+  );
+  const msUntilEndOfWeek = Math.max(0, weekEndMs - nowMs);
   const forecastEndOfWeekUsd = project(msUntilEndOfWeek);
 
   // Assumes a full 8-hour workday as the session-end horizon — there's no

@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-import type { TokenUsage } from '../shared/index.js';
+import type { TokenUsage } from '../core/index.js';
 import { calculateModelCost } from './pricing-overlay.js';
-import type { SkillStamp, ToolCallRecord, TokenEvent } from '../storage/types.js';
+import type { SkillStamp, ToolCallRecord, TokenEvent, UsdBreakdown } from '../storage/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -61,6 +61,8 @@ export interface SkillCostEntry {
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
   readonly totalDurationMs: number;
+  /** Dollars per token category, priced with each turn's own model before the split across its calls. Absent on entries rebuilt from persisted buckets. */
+  readonly breakdownUsd?: UsdBreakdown;
   /**
    * Authoritative token total: `inputTokens + outputTokens + cacheReadTokens
    * + cacheCreationTokens` for a live (this-process) entry. `GET
@@ -91,6 +93,12 @@ export interface ClosedTurn {
    */
   readonly calls: readonly TurnToolCall[];
   /**
+   * The skill run a response turn's report arrived inside, so a text-only
+   * skill run's cost reaches its AiTurnCost row. Null for a tool turn, whose
+   * calls carry their own skill, and for a report outside any run.
+   */
+  readonly skill: SkillStamp | null;
+  /**
    * For a tool turn, `ToolCallRecord.platform` of its first call. For a
    * response turn, the token report's platform, else the session's most
    * recent stamped tool call's. Undefined when neither is known.
@@ -110,7 +118,7 @@ export interface CostAttributionMetrics {
    * report no burst claims is not counted here: it becomes a response turn.
    * See `recordTokenEvent()`.
    */
-  readonly droppedTokenEvents: number;
+  readonly evictedToolBursts: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +176,10 @@ interface AttributionBucket extends BucketIdentity {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  inputUsd: number;
+  outputUsd: number;
+  cacheReadUsd: number;
+  cacheCreationUsd: number;
   totalDurationMs: number;
 }
 
@@ -179,6 +191,10 @@ const BUCKET_COUNTERS = [
   'outputTokens',
   'cacheReadTokens',
   'cacheCreationTokens',
+  'inputUsd',
+  'outputUsd',
+  'cacheReadUsd',
+  'cacheCreationUsd',
   'totalDurationMs',
 ] as const;
 
@@ -216,7 +232,7 @@ interface SessionState {
   totalAttributedCost: number;
   totalToolCalls: number;
   attributedToolCalls: number;
-  droppedTokenEvents: number;
+  evictedToolBursts: number;
   /**
    * Platform of the most recent stamped tool call, for a response turn whose
    * token report came from a source with no known platform.
@@ -234,7 +250,7 @@ function createSessionState(): SessionState {
     totalAttributedCost: 0,
     totalToolCalls: 0,
     attributedToolCalls: 0,
-    droppedTokenEvents: 0,
+    evictedToolBursts: 0,
     lastPlatform: undefined,
     skillRuns: new Map(),
   };
@@ -273,6 +289,10 @@ function createBucket(id: BucketIdentity): AttributionBucket {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
+    inputUsd: 0,
+    outputUsd: 0,
+    cacheReadUsd: 0,
+    cacheCreationUsd: 0,
     totalDurationMs: 0,
   };
 }
@@ -382,7 +402,7 @@ export class TurnCostAttributor {
     // been delayed) — evict the oldest rather than grow unboundedly.
     if (state.pendingTurns.length > MAX_PENDING_TURNS) {
       state.pendingTurns.shift();
-      state.droppedTokenEvents++;
+      state.evictedToolBursts++;
     }
   }
 
@@ -391,7 +411,12 @@ export class TurnCostAttributor {
     addSkillRun(this.getOrCreateSession(sessionId).skillRuns, stamp.name, stamp.runId);
   }
 
-  recordTokenEvent(event: TokenEvent): ClosedTurn {
+  /**
+   * `openRun` is the skill run open in the event's session when the report
+   * arrives. Only a response turn uses it, since the attributor never learns
+   * when a run ends.
+   */
+  recordTokenEvent(event: TokenEvent, openRun: SkillStamp | null = null): ClosedTurn {
     const state = this.getOrCreateSession(event.sessionId);
 
     // Self-heal: a pending turn sitting unclosed for longer than any
@@ -403,26 +428,26 @@ export class TurnCostAttributor {
       event.timestamp - state.pendingTurns[0].endTime > STALE_PENDING_TURN_MS
     ) {
       state.pendingTurns.shift();
-      state.droppedTokenEvents++;
+      state.evictedToolBursts++;
     }
 
     const pendingTurn = state.pendingTurns[0];
     if (!pendingTurn) {
-      return this.responseTurn(state, event);
+      return this.responseTurn(state, event, openRun);
     }
 
     // The event must postdate the turn it's closing. One that doesn't can't
     // belong to that burst (it hadn't even finished yet), so it stays queued
     // for the next token report and this one is claimed by no burst. If no
     // later report arrives, the burst is evicted as stale above and counted
-    // in `droppedTokenEvents`.
+    // in `evictedToolBursts`.
     const timeSinceLastTool = event.timestamp - pendingTurn.endTime;
     if (timeSinceLastTool < 0) {
-      return this.responseTurn(state, event);
+      return this.responseTurn(state, event, openRun);
     }
     state.pendingTurns.shift();
 
-    const costUsd = this.priceTokenEvent(event);
+    const { costUsd, usd } = this.priceTokenEvent(event);
     const toolCount = pendingTurn.toolCalls.length;
     const costPerTool = costUsd / toolCount;
 
@@ -459,6 +484,10 @@ export class TurnCostAttributor {
       bucket.outputTokens += event.outputTokens / toolCount;
       bucket.cacheReadTokens += event.cacheReadTokens / toolCount;
       bucket.cacheCreationTokens += event.cacheCreationTokens / toolCount;
+      bucket.inputUsd += usd.inputUsd / toolCount;
+      bucket.outputUsd += usd.outputUsd / toolCount;
+      bucket.cacheReadUsd += usd.cacheReadUsd / toolCount;
+      bucket.cacheCreationUsd += usd.cacheCreationUsd / toolCount;
     }
 
     // Minted here rather than reusing `attribution.turnId`: the caller's turn
@@ -472,6 +501,7 @@ export class TurnCostAttributor {
         toolName: tc.toolName,
         skill: tc.skill,
       })),
+      skill: null,
       platform: pendingTurn.platform,
     };
 
@@ -484,8 +514,12 @@ export class TurnCostAttributor {
    * `costPerToolCall` equal to the whole cost since it has no calls to split
    * across.
    */
-  private responseTurn(state: SessionState, event: TokenEvent): ClosedTurn {
-    const costUsd = this.priceTokenEvent(event);
+  private responseTurn(
+    state: SessionState,
+    event: TokenEvent,
+    openRun: SkillStamp | null,
+  ): ClosedTurn {
+    const { costUsd } = this.priceTokenEvent(event);
     const id = randomUUID();
     return {
       id,
@@ -505,11 +539,12 @@ export class TurnCostAttributor {
         sessionId: event.sessionId ?? null,
       },
       calls: [],
+      skill: openRun,
       platform: event.platform ?? state.lastPlatform,
     };
   }
 
-  private priceTokenEvent(event: TokenEvent): number {
+  private priceTokenEvent(event: TokenEvent): { costUsd: number; usd: UsdBreakdown } {
     const usage: TokenUsage = {
       inputTokens: event.inputTokens,
       outputTokens: event.outputTokens,
@@ -521,7 +556,17 @@ export class TurnCostAttributor {
       }),
       totalTokens: event.inputTokens + event.outputTokens,
     };
-    return calculateModelCost(event.model, usage).totalUsd * this.rateMultiplier;
+    const priced = calculateModelCost(event.model, usage);
+    const rate = this.rateMultiplier;
+    return {
+      costUsd: priced.totalUsd * rate,
+      usd: {
+        inputUsd: priced.inputUsd * rate,
+        outputUsd: priced.outputUsd * rate,
+        cacheReadUsd: priced.cacheReadUsd * rate,
+        cacheCreationUsd: priced.cacheCreationUsd * rate,
+      },
+    };
   }
 
   getCostForToolCall(
@@ -557,7 +602,7 @@ export class TurnCostAttributor {
       costBySkill: {},
       totalAttributedCost: 0,
       attributionRate: 0,
-      droppedTokenEvents: 0,
+      evictedToolBursts: 0,
     };
 
     if (sessionId !== undefined) {
@@ -578,7 +623,7 @@ export class TurnCostAttributor {
       aggregate.totalAttributedCost += state.totalAttributedCost;
       aggregate.totalToolCalls += state.totalToolCalls;
       aggregate.attributedToolCalls += state.attributedToolCalls;
-      aggregate.droppedTokenEvents += state.droppedTokenEvents;
+      aggregate.evictedToolBursts += state.evictedToolBursts;
       for (const [key, bucket] of state.buckets) {
         const merged = getOrCreateBucket(aggregate.buckets, key, bucket);
         for (const counter of BUCKET_COUNTERS) merged[counter] += bucket[counter];
@@ -669,6 +714,12 @@ export class TurnCostAttributor {
         cacheReadTokens: Math.round(entry.cacheReadTokens),
         cacheCreationTokens: Math.round(entry.cacheCreationTokens),
         totalDurationMs: entry.totalDurationMs,
+        breakdownUsd: {
+          inputUsd: entry.inputUsd,
+          outputUsd: entry.outputUsd,
+          cacheReadUsd: entry.cacheReadUsd,
+          cacheCreationUsd: entry.cacheCreationUsd,
+        },
         tokens:
           Math.round(entry.inputTokens) +
           Math.round(entry.outputTokens) +
@@ -702,7 +753,7 @@ export class TurnCostAttributor {
       totalAttributedCost: state.totalAttributedCost,
       attributionRate:
         state.totalToolCalls > 0 ? state.attributedToolCalls / state.totalToolCalls : 0,
-      droppedTokenEvents: state.droppedTokenEvents,
+      evictedToolBursts: state.evictedToolBursts,
     };
   }
 

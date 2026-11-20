@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom';
  * `width="100%"` + `viewBox` + `xMidYMax meet`. Tooltip placement uses
  * `getBoundingClientRect` against the actually-rendered column group rather
  * than a viewBox-derived percentage, so it survives BOTH the horizontal scale
- * (Today's 96-bucket case where the chart fills width) AND the centering
+ * (Today's 92-100 bucket case where the chart fills width) AND the centering
  * offset (History's narrow-data case where the chart is height-limited and
  * centered with empty side margins). The tooltip itself is portaled to
  * `document.body` and positioned `fixed` from those same viewport
@@ -58,6 +58,13 @@ export interface DiscreteBlockChartProps {
    * (History's per-day peak grid and other existing callers are unaffected).
    */
   readonly levels?: number;
+  /**
+   * Caps the block count per column without changing the scale for charts
+   * that fit under it. Applies `levels` semantics only when the tallest
+   * column exceeds `maxLevels`; otherwise each count still draws one block.
+   * An explicit `levels` takes precedence.
+   */
+  readonly maxLevels?: number;
 }
 
 // Sourced from `--color-chart-block` / `--color-chart-block-peak` in
@@ -76,6 +83,7 @@ export function DiscreteBlockChart({
   maxCount,
   ariaLabel,
   levels,
+  maxLevels,
 }: DiscreteBlockChartProps): JSX.Element | null {
   const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
 
@@ -104,14 +112,20 @@ export function DiscreteBlockChart({
   }
 
   const effectiveMax = Math.max(maxCount ?? 0, ...data.map((d) => d.count), 1);
-  const chartLevels = levels ?? effectiveMax;
+  const scaleLevels =
+    levels ?? (maxLevels !== undefined && effectiveMax > maxLevels ? maxLevels : undefined);
+  const chartLevels = scaleLevels ?? effectiveMax;
   const chartHeight = chartLevels * (BLOCK_SIZE + BLOCK_GAP);
   const chartWidth = data.length * COL_WIDTH;
 
-  // Raw count when `levels` is unset; otherwise scale so the tallest
-  // column renders exactly `levels` blocks.
+  // Raw count when `scaleLevels` is unset; otherwise scale so the tallest
+  // column renders exactly `scaleLevels` blocks.
   const blockCount = (count: number): number =>
-    levels === undefined ? count : count <= 0 ? 0 : Math.ceil((count / effectiveMax) * levels);
+    scaleLevels === undefined
+      ? count
+      : count <= 0
+        ? 0
+        : Math.ceil((count / effectiveMax) * scaleLevels);
 
   return (
     <>

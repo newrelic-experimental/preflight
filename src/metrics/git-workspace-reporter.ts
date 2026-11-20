@@ -445,6 +445,8 @@ export function replaySessionToActivityRecords(
       isBuildCommand: entry.isBuildCommand,
       errorType: entry.errorType,
       createdPrNumber: entry.createdPrNumber,
+      mcpPrNumber: entry.mcpPrNumber,
+      mcpPrRepo: entry.mcpPrRepo,
       runInBackground: entry.runInBackground,
     };
     replayRecorder.recordToolCall(syntheticRecord);

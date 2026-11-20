@@ -23,6 +23,7 @@ import type { FullSessionSummary } from './session-store.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { buildCostTrackerSeed } from '../metrics/cost-tracker-seed.js';
+import { makeUsage } from '../__test-utils__/token-usage.js';
 import type { CostMetrics } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
@@ -1145,9 +1146,16 @@ describe('buildSessionSummary', () => {
         reportCount: 3,
         estimationCount: 0,
         latestCostBreakdown: null,
+        firstActivityByDayMs: {},
         unpricedByModel: { 'claude-foo-9-9': { calls: 2, tokens: 30 } },
         estimatedByModel: {
           'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+        },
+        unpricedByDay: { '2026-11-06': { 'claude-foo-9-9': { calls: 2, tokens: 30 } } },
+        estimatedByDay: {
+          '2026-11-06': {
+            'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+          },
         },
       }),
     };
@@ -1236,6 +1244,9 @@ describe('buildSessionSummary', () => {
     expect(summary.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 2, tokens: 30 } });
     expect(summary.estimatedByModel).toEqual({
       'claude-opus-5-9': { calls: 1, tokens: 5, estimatedFrom: 'claude-opus-5' },
+    });
+    expect(summary.unpricedByDay).toEqual({
+      '2026-11-06': { 'claude-foo-9-9': { calls: 2, tokens: 30 } },
     });
     expect(summary.toolCallCount).toBe(15);
     expect(summary.toolBreakdown).toEqual({ Read: 5, Edit: 7, Bash: 3 });
@@ -1708,6 +1719,35 @@ describe('buildSessionSummary', () => {
     expect(merged.sessionIntent).toBe('the original prompt');
   });
 
+  it("mergeSummaries keeps an owner's completed against later saves", () => {
+    const owner = makeSummary({ outcome: 'completed' });
+    for (const later of [
+      makeSummary({ outcome: 'in progress' }),
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
+    ]) {
+      expect(mergeSummaries(owner, later)).toMatchObject({
+        outcome: 'completed',
+        observerCompletedAt: undefined,
+      });
+    }
+  });
+
+  it("mergeSummaries keeps an observer's completed over an earlier in-progress save", () => {
+    const merged = mergeSummaries(
+      makeSummary({ outcome: 'in progress' }),
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
+    );
+    expect(merged).toMatchObject({ outcome: 'completed', observerCompletedAt: 1_000 });
+  });
+
+  it("mergeSummaries lets a later in-progress save replace an observer's completed", () => {
+    const merged = mergeSummaries(
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
+      makeSummary({ outcome: 'in progress' }),
+    );
+    expect(merged).toMatchObject({ outcome: 'in progress', observerCompletedAt: undefined });
+  });
+
   it('mergeSummaries keeps a real platform label against an incoming generic-mcp checkpoint', () => {
     const existing = makeSummary({ platform: 'claude-code' });
     const incoming = makeSummary({ platform: 'generic-mcp' });
@@ -1748,6 +1788,45 @@ describe('buildSessionSummary', () => {
     expect(merged.subagentCostByDayUsd).toBeUndefined();
   });
 
+  it('mergeSummaries keeps the earliest firstActivityByDayMs per day key', () => {
+    const existing = makeSummary({
+      firstActivityByDayMs: { '2026-09-10': 1_000, '2026-09-11': 5_000 },
+    });
+    const incoming = makeSummary({
+      firstActivityByDayMs: { '2026-09-11': 9_000, '2026-09-12': 7_000 },
+    });
+    expect(mergeSummaries(existing, incoming).firstActivityByDayMs).toEqual({
+      '2026-09-10': 1_000,
+      '2026-09-11': 5_000,
+      '2026-09-12': 7_000,
+    });
+    expect(mergeSummaries(incoming, existing).firstActivityByDayMs).toEqual({
+      '2026-09-10': 1_000,
+      '2026-09-11': 5_000,
+      '2026-09-12': 7_000,
+    });
+  });
+
+  it('mergeSummaries drops a first spend when the other side spent that day without saving one', () => {
+    const legacy = makeSummary({ costByDayUsd: { '2026-09-10': 2, '2026-09-11': 1 } });
+    const anchored = makeSummary({
+      costByDayUsd: { '2026-09-10': 3 },
+      firstActivityByDayMs: { '2026-09-10': 9_000 },
+    });
+    for (const merged of [mergeSummaries(legacy, anchored), mergeSummaries(anchored, legacy)]) {
+      expect(merged.firstActivityByDayMs).toEqual({});
+    }
+  });
+
+  it('mergeSummaries keeps a first spend when the other side spent nothing that day', () => {
+    const quiet = makeSummary({ costByDayUsd: { '2026-09-10': 0 } });
+    const anchored = makeSummary({
+      costByDayUsd: { '2026-09-10': 3 },
+      firstActivityByDayMs: { '2026-09-10': 9_000 },
+    });
+    expect(mergeSummaries(quiet, anchored).firstActivityByDayMs).toEqual({ '2026-09-10': 9_000 });
+  });
+
   it('mergeSummaries takes the per-model max of unpriced calls and tokens', () => {
     const existing = makeSummary({
       unpricedByModel: { a: { calls: 3, tokens: 100 }, b: { calls: 1, tokens: 10 } },
@@ -1775,6 +1854,283 @@ describe('buildSessionSummary', () => {
     expect(
       mergeSummaries(makeSummary(), makeSummary({ unpricedByModel: only })).unpricedByModel,
     ).toEqual(only);
+  });
+
+  describe('call counts and the byte-estimate ledger', () => {
+    const ledger = (calls: number, tokens: number, day = '2026-11-06') => ({
+      costUsd: 0.01,
+      inputTokens: 10,
+      outputTokens: 5,
+      costByModel: {},
+      costByDayUsd: {},
+      unpricedByModel: { a: { calls, tokens } },
+      unpricedByDay: { [day]: { a: { calls, tokens } } },
+    });
+
+    it('mergeSummaries drops the calls of byte estimates a later write replaced', () => {
+      const existing = makeSummary({
+        unpricedByModel: { a: { calls: 3, tokens: 30 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 3, tokens: 30 } } },
+        byteEstimates: ledger(2, 20),
+      });
+      const incoming = makeSummary({
+        unpricedByModel: { a: { calls: 1, tokens: 10 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 1, tokens: 10 } } },
+        byteEstimates: {
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByModel: {},
+          costByDayUsd: {},
+        },
+      });
+
+      const merged = mergeSummaries(existing, incoming);
+
+      expect(merged.unpricedByModel).toEqual({ a: { calls: 1, tokens: 10 } });
+      expect(merged.unpricedByDay).toEqual({ '2026-11-06': { a: { calls: 1, tokens: 10 } } });
+    });
+
+    it('mergeSummaries drops every call when the later write replaced them all', () => {
+      const existing = makeSummary({
+        unpricedByModel: { a: { calls: 2, tokens: 200 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 2, tokens: 200 } } },
+        byteEstimates: ledger(2, 200),
+      });
+      const incoming = makeSummary({
+        byteEstimates: {
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByModel: {},
+          costByDayUsd: {},
+        },
+      });
+
+      const merged = mergeSummaries(existing, incoming);
+
+      expect(merged.unpricedByModel).toBeUndefined();
+      expect(merged.unpricedByDay).toEqual({});
+    });
+
+    it('saves, reloads, restarts and merges the calls of a replaced byte estimate once', () => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const startTime = new Date('2026-11-06T10:00:00Z').getTime();
+      const unpriced = 'claude-foo-9-9';
+      const summarize = (tracker: CostTracker): FullSessionSummary => ({
+        ...buildSessionSummary({
+          sessionTracker: makeSessionTracker(),
+          costTracker: tracker,
+          developer: 'alice',
+        }),
+        sessionId: 'sess-e2e',
+        startTime,
+      });
+
+      const first = new CostTracker();
+      first.recordEstimatedTokens(4_000, 2_000, unpriced);
+      first.recordEstimatedTokens(4_000, 2_000, unpriced);
+      store.saveSession(summarize(first));
+      const saved = store.loadSession('sess-e2e')!;
+      expect(saved.unpricedByModel?.[unpriced]?.calls).toBe(2);
+
+      const restarted = new CostTracker();
+      restarted.seedFromPersisted(buildCostTrackerSeed(saved));
+      expect(restarted.getMetrics().unpricedByModel[unpriced]?.calls).toBe(2);
+      restarted.recordTokenUsage(
+        makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 }),
+        'claude-sonnet-4',
+        { replacesEstimates: true },
+      );
+      expect(restarted.getMetrics().unpricedByModel).toEqual({});
+      store.saveSession(summarize(restarted));
+
+      const reloaded = store.loadSession('sess-e2e')!;
+      expect(reloaded.unpricedByModel).toBeUndefined();
+      expect(reloaded.unpricedByDay).toEqual({});
+      const afterSecondRestart = new CostTracker();
+      afterSecondRestart.seedFromPersisted(buildCostTrackerSeed(reloaded));
+      expect(afterSecondRestart.getMetrics().unpricedByModel).toEqual({});
+    });
+
+    it('mergeSummaries keeps the calls of byte estimates the latest write still holds', () => {
+      const existing = makeSummary({
+        unpricedByModel: { a: { calls: 1, tokens: 10 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 1, tokens: 10 } } },
+      });
+      const incoming = makeSummary({
+        unpricedByModel: { a: { calls: 3, tokens: 30 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 3, tokens: 30 } } },
+        byteEstimates: ledger(2, 20),
+      });
+
+      const merged = mergeSummaries(existing, incoming);
+
+      expect(merged.unpricedByModel).toEqual({ a: { calls: 3, tokens: 30 } });
+      expect(merged.unpricedByDay).toEqual({ '2026-11-06': { a: { calls: 3, tokens: 30 } } });
+    });
+
+    it('mergeSummaries drops the estimated-price calls of byte estimates a later write replaced', () => {
+      const e = (calls: number, tokens: number) => ({
+        b: { calls, tokens, estimatedFrom: 'claude-opus-5' },
+      });
+      const existing = makeSummary({
+        estimatedByModel: e(3, 30),
+        estimatedByDay: { '2026-11-06': e(3, 30) },
+        byteEstimates: {
+          ...ledger(0, 0),
+          unpricedByModel: {},
+          unpricedByDay: {},
+          estimatedByModel: e(2, 20),
+          estimatedByDay: { '2026-11-06': e(2, 20) },
+        },
+      });
+      const incoming = makeSummary({
+        estimatedByModel: e(1, 10),
+        estimatedByDay: { '2026-11-06': e(1, 10) },
+        byteEstimates: {
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByModel: {},
+          costByDayUsd: {},
+        },
+      });
+
+      const merged = mergeSummaries(existing, incoming);
+
+      expect(merged.estimatedByModel).toEqual(e(1, 10));
+      expect(merged.estimatedByDay).toEqual({ '2026-11-06': e(1, 10) });
+    });
+
+    it('mergeSummaries keeps an empty day map beside counts that have no day', () => {
+      const lateOnly = {
+        unpricedByModel: { a: { calls: 1, tokens: 10 } },
+        unpricedByDay: {},
+      };
+      const merged = mergeSummaries(makeSummary(lateOnly), makeSummary(lateOnly));
+      expect(merged.unpricedByModel).toEqual({ a: { calls: 1, tokens: 10 } });
+      expect(merged.unpricedByDay).toEqual({});
+    });
+
+    it('mergeSummaries drops the day split when a legacy side holds calls the other side lacks', () => {
+      const legacy = makeSummary({
+        unpricedByModel: { a: { calls: 5, tokens: 50 } },
+        estimatedByModel: { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } },
+        estimatedByDay: { '2026-11-06': { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } } },
+      });
+      const current = makeSummary({
+        unpricedByModel: { a: { calls: 1, tokens: 10 } },
+        unpricedByDay: { '2026-11-06': { a: { calls: 1, tokens: 10 } } },
+        estimatedByModel: { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } },
+        estimatedByDay: { '2026-11-06': { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } } },
+      });
+
+      for (const merged of [mergeSummaries(legacy, current), mergeSummaries(current, legacy)]) {
+        expect(merged.unpricedByModel).toEqual({ a: { calls: 5, tokens: 50 } });
+        expect(merged.unpricedByDay).toBeUndefined();
+        expect(merged.estimatedByDay).toEqual({
+          '2026-11-06': { b: { calls: 1, tokens: 1, estimatedFrom: 'c' } },
+        });
+      }
+    });
+
+    it('mergeSummaries keeps the day split of a resumed session over its legacy file', () => {
+      const legacy = makeSummary({ unpricedByModel: { a: { calls: 5, tokens: 50 } } });
+      const resumed = makeSummary({
+        unpricedByModel: { a: { calls: 6, tokens: 60 } },
+        unpricedByDay: {
+          '2026-11-05': { a: { calls: 5, tokens: 50 } },
+          '2026-11-06': { a: { calls: 1, tokens: 10 } },
+        },
+      });
+
+      const merged = mergeSummaries(legacy, resumed);
+
+      expect(merged.unpricedByModel).toEqual({ a: { calls: 6, tokens: 60 } });
+      expect(merged.unpricedByDay).toEqual({
+        '2026-11-05': { a: { calls: 5, tokens: 50 } },
+        '2026-11-06': { a: { calls: 1, tokens: 10 } },
+      });
+    });
+
+    it('buildSessionSummary writes an empty day map when every counted call is a late arrival', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(makeUsage({ inputTokens: 10, totalTokens: 10 }), 'claude-foo-9-9', {
+        timestampMs: Date.now() - 72 * 60 * 60 * 1000,
+      });
+      const sessionTracker = {
+        getMetrics: () => ({
+          sessionId: 'sess-late',
+          sessionName: null,
+          sessionStartTime: Date.now(),
+          toolCallCount: 0,
+          toolCallCountByTool: {},
+          bashCommandsRun: 0,
+          toolSuccessRate: null,
+        }),
+      } as unknown as SessionTracker;
+
+      const summary = buildSessionSummary({ sessionTracker, costTracker: tracker, developer: 'd' });
+      const roundTripped = deserializeFullSessionSummary(
+        JSON.parse(JSON.stringify(summary)) as Parameters<typeof deserializeFullSessionSummary>[0],
+      );
+
+      expect(roundTripped.unpricedByModel).toEqual({ 'claude-foo-9-9': { calls: 1, tokens: 10 } });
+      expect(roundTripped.unpricedByDay).toEqual({});
+      expect(roundTripped.estimatedByModel).toBeUndefined();
+      expect(roundTripped.estimatedByDay).toBeUndefined();
+    });
+
+    it('deserializeFullSessionSummary leaves the day counts undefined for a file written before them', () => {
+      const result = deserializeFullSessionSummary({
+        ...makeSummary(),
+        unpricedByModel: { a: { calls: 2, tokens: 4 } },
+      } as unknown as Parameters<typeof deserializeFullSessionSummary>[0]);
+      expect(result.unpricedByModel).toEqual({ a: { calls: 2, tokens: 4 } });
+      expect(result.unpricedByDay).toBeUndefined();
+    });
+
+    it('mergeSummaries leaves the day counts undefined when neither side has them', () => {
+      const merged = mergeSummaries(
+        makeSummary({ unpricedByModel: { a: { calls: 1, tokens: 1 } } }),
+        makeSummary(),
+      );
+      expect(merged.unpricedByDay).toBeUndefined();
+      expect(merged.estimatedByDay).toBeUndefined();
+    });
+
+    it('mergeSummaries takes the per-day max of calls', () => {
+      const merged = mergeSummaries(
+        makeSummary({
+          unpricedByDay: {
+            d1: { a: { calls: 2, tokens: 20 } },
+            d2: { a: { calls: 1, tokens: 5 } },
+          },
+        }),
+        makeSummary({ unpricedByDay: { d1: { a: { calls: 3, tokens: 10 } } } }),
+      );
+      expect(merged.unpricedByDay).toEqual({
+        d1: { a: { calls: 3, tokens: 20 } },
+        d2: { a: { calls: 1, tokens: 5 } },
+      });
+    });
+
+    it('deserializeFullSessionSummary round-trips the day counts and the ledger counts', () => {
+      const result = deserializeFullSessionSummary({
+        ...makeSummary(),
+        unpricedByDay: { d1: { a: { calls: 1, tokens: 2 }, bad: { calls: -1, tokens: 2 } } },
+        estimatedByDay: { d1: { b: { calls: 1, tokens: 2, estimatedFrom: 'c' } }, d2: 5 },
+        byteEstimates: ledger(2, 20, 'd1'),
+      } as unknown as Parameters<typeof deserializeFullSessionSummary>[0]);
+
+      expect(result.unpricedByDay).toEqual({ d1: { a: { calls: 1, tokens: 2 } } });
+      expect(result.estimatedByDay).toEqual({
+        d1: { b: { calls: 1, tokens: 2, estimatedFrom: 'c' } },
+      });
+      expect(result.byteEstimates?.unpricedByModel).toEqual({ a: { calls: 2, tokens: 20 } });
+      expect(result.byteEstimates?.unpricedByDay).toEqual({ d1: { a: { calls: 2, tokens: 20 } } });
+    });
   });
 
   it('mergeSummaries takes the per-model max of estimated calls and keeps the incoming estimatedFrom', () => {
@@ -1993,6 +2349,69 @@ describe('buildSessionSummary', () => {
     expect(merged.timeline?.map((e) => e.timestamp)).toEqual([100, 200, 300]);
   });
 
+  it('mergeSummaries keeps distinct calls sharing a millisecond and tool when they carry a toolUseId', () => {
+    const call = (toolUseId: string) => ({
+      timestamp: 100,
+      toolName: 'Read',
+      toolUseId,
+      durationMs: 5,
+      success: true,
+    });
+    const existing = makeSummary({ timeline: [call('a'), call('b')] });
+    const incoming = makeSummary({ timeline: [call('b'), call('c')] });
+    const merged = mergeSummaries(existing, incoming);
+    expect(merged.timeline?.map((e) => e.toolUseId)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('keeps same-millisecond calls with distinct ids across a reload through a new SessionStore', () => {
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    const call = (toolUseId: string) => ({
+      timestamp: startTime + 100,
+      toolName: 'Read',
+      toolUseId,
+      durationMs: 5,
+      success: true,
+    });
+    new SessionStore({ storagePath: tmpDir }).saveSession(
+      makeSummary({ sessionId: 'reload-ids', startTime, timeline: [call('a'), call('b')] }),
+    );
+
+    const resumed = new SessionStore({ storagePath: tmpDir });
+    resumed.saveSession(makeSummary({ sessionId: 'reload-ids', startTime, timeline: [] }));
+
+    expect(resumed.loadSession('reload-ids')!.timeline?.map((e) => e.toolUseId)).toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
+  it('mergeSummaries still collapses id-less entries by timestamp and tool', () => {
+    const legacy = { timestamp: 100, toolName: 'Read', durationMs: 5, success: true };
+    const merged = mergeSummaries(
+      makeSummary({ timeline: [legacy] }),
+      makeSummary({ timeline: [{ ...legacy, durationMs: 9 }] }),
+    );
+    expect(merged.timeline).toHaveLength(1);
+  });
+
+  it('mergeSummaries treats an empty toolUseId as no id, so entries at different times both survive', () => {
+    const entry = { toolName: 'Read', toolUseId: '', durationMs: 5, success: true };
+    const merged = mergeSummaries(
+      makeSummary({ timeline: [{ ...entry, timestamp: 100 }] }),
+      makeSummary({ timeline: [{ ...entry, timestamp: 200 }] }),
+    );
+    expect(merged.timeline?.map((e) => e.timestamp)).toEqual([100, 200]);
+  });
+
+  it('mergeSummaries replaces a legacy entry with the id-bearing entry for the same call', () => {
+    const legacy = { timestamp: 100, toolName: 'Read', durationMs: 5, success: true };
+    const merged = mergeSummaries(
+      makeSummary({ timeline: [legacy] }),
+      makeSummary({ timeline: [{ ...legacy, toolUseId: 'a' }] }),
+    );
+    expect(merged.timeline?.map((e) => e.toolUseId)).toEqual(['a']);
+  });
+
   it('mergeSummaries caps a unioned timeline at MAX_TIMELINE_ENTRIES, keeping the newest entries', () => {
     const existingEntries = Array.from({ length: 6000 }, (_, i) => ({
       timestamp: i,
@@ -2090,6 +2509,41 @@ describe('buildSessionSummary', () => {
     expect(summary.taskCount).toBe(1);
   });
 
+  it('omits firstActivityByDayMs when CostTracker has no spend, so a legacy file keeps its fallback', () => {
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      costTracker: new CostTracker(),
+      developer: 'dev',
+    });
+    expect(summary.firstActivityByDayMs).toBeUndefined();
+    expect(mergeSummaries(makeSummary(), summary).firstActivityByDayMs).toBeUndefined();
+  });
+
+  it('persists the earliest token event per local day from CostTracker', () => {
+    const nowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date(2026, 8, 10, 12, 0, 0).getTime());
+    try {
+      const costTracker = new CostTracker();
+      const first = new Date(2026, 8, 10, 9, 0, 0).getTime();
+      for (const timestampMs of [first + 30 * 60_000, first]) {
+        costTracker.recordTokenUsage(
+          makeUsage({ inputTokens: 1_000, outputTokens: 100, totalTokens: 1_100 }),
+          'claude-sonnet-4',
+          { timestampMs },
+        );
+      }
+      const summary = buildSessionSummary({
+        sessionTracker: makeSessionTracker(),
+        costTracker,
+        developer: 'dev',
+      });
+      expect(summary.firstActivityByDayMs).toEqual({ '2026-09-10': first });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('includes cache token fields from CostTracker', () => {
     const sessionTracker = makeSessionTracker();
     const costTracker = new CostTracker();
@@ -2115,9 +2569,12 @@ describe('buildSessionSummary', () => {
       parentCostUsd: 0.029,
       costByWorkflowRunId: {},
       costByDayUsd: {},
+      firstActivityByDayMs: {},
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},
+      unpricedByDay: {},
+      estimatedByDay: {},
       subagentByAgentType: {},
       highContextCostUsd: 0,
       apiDurationMs: null,
@@ -2158,9 +2615,12 @@ describe('buildSessionSummary', () => {
       parentCostUsd: 0.029,
       costByWorkflowRunId: { wf_test_run: { '2026-08-14': 0.05 } },
       costByDayUsd: { '2026-08-14': 0.05 },
+      firstActivityByDayMs: {},
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},
+      unpricedByDay: {},
+      estimatedByDay: {},
       subagentByAgentType: {},
       highContextCostUsd: 0,
       apiDurationMs: null,
@@ -2385,6 +2845,26 @@ describe('buildSessionSummary', () => {
     };
     const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
     expect(result.costByDayUsd).toBeUndefined();
+  });
+
+  it('deserializeFullSessionSummary round-trips firstActivityByDayMs and drops non-finite entries', () => {
+    const raw = {
+      sessionId: 'sess-first-activity',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+      firstActivityByDayMs: { '2026-08-18': 1_700_000_500_000, bad: 'nope', worse: null },
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.firstActivityByDayMs).toEqual({ '2026-08-18': 1_700_000_500_000 });
+
+    const legacy = deserializeFullSessionSummary({
+      ...raw,
+      firstActivityByDayMs: undefined,
+    } as unknown as Record<string, unknown>);
+    expect(legacy.firstActivityByDayMs).toBeUndefined();
   });
 
   it('deserializeFullSessionSummary keeps valid unpricedByModel entries and drops malformed ones', () => {
@@ -2973,6 +3453,7 @@ describe('buildSessionSummary timeline', () => {
     expect(summary.timeline![2]!.toolName).toBe('Bash');
     expect(summary.timeline![2]!.command).toBe('npm test');
     expect(summary.timeline![2]!.isTestCommand).toBe(true);
+    expect(summary.timeline!.map((e) => e.toolUseId)).toEqual(['tu1', 'tu2', 'tu3']);
   });
 
   it('returns undefined timeline when no tool calls are present', () => {
@@ -3135,6 +3616,17 @@ describe('buildSessionSummary timeline', () => {
                 createdPrNumber: '42',
                 runInBackground: true,
               },
+              {
+                id: 'tc4',
+                sessionId: 'skill-agent-session',
+                toolName: 'mcp__github__merge_pull_request',
+                toolUseId: 'tu4',
+                timestamp: 1700000025000,
+                durationMs: 700,
+                success: true,
+                mcpPrNumber: '42',
+                mcpPrRepo: 'acme/app',
+              },
             ],
           },
         ],
@@ -3147,8 +3639,17 @@ describe('buildSessionSummary timeline', () => {
       developer: 'alice',
     });
 
-    expect(summary.timeline).toHaveLength(3);
+    expect(summary.timeline).toHaveLength(4);
     expect(summary.timeline![2]!.createdPrNumber).toBe('42');
+    expect(summary.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
+    expect(summary.timeline![0]!.mcpPrNumber).toBeUndefined();
+    expect(summary.timeline![0]!.mcpPrRepo).toBeUndefined();
+
+    // And through a save and reload.
+    const store = new SessionStore({ storagePath: tmpDir });
+    store.saveSession(summary);
+    const reloaded = store.loadSession(summary.sessionId);
+    expect(reloaded!.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
     expect(summary.timeline![0]!.createdPrNumber).toBeUndefined();
     expect(summary.timeline![2]!.runInBackground).toBe(true);
     expect(summary.timeline![0]!.runInBackground).toBeUndefined();
@@ -3207,6 +3708,33 @@ describe('SessionStore deserialization', () => {
     const session = store.loadSession('pr-num');
     expect(session!.timeline![0]!.createdPrNumber).toBe('42');
     expect(session!.timeline![1]!.createdPrNumber).toBeUndefined();
+  });
+
+  it('keeps a GitHub MCP PR target on timeline entries and drops a malformed one', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const raw = JSON.stringify({
+      sessionId: 'mcp-pr',
+      startTime: 1000,
+      endTime: 2000,
+      durationMs: 1000,
+      toolCallCount: 2,
+      developer: 'alice',
+      timeline: [
+        {
+          timestamp: 1100,
+          toolName: 'merge_pull_request',
+          mcpPrNumber: '12',
+          mcpPrRepo: 'acme/app',
+        },
+        { timestamp: 1200, toolName: 'merge_pull_request', mcpPrNumber: '1x', mcpPrRepo: 'a/b/c' },
+      ],
+    });
+    writeFileSync(join(tmpDir, 'sessions', '2026-01-01_mcp-pr.json'), raw + '\n');
+
+    const session = store.loadSession('mcp-pr');
+    expect(session!.timeline![0]).toMatchObject({ mcpPrNumber: '12', mcpPrRepo: 'acme/app' });
+    expect(session!.timeline![1]!.mcpPrNumber).toBeUndefined();
+    expect(session!.timeline![1]!.mcpPrRepo).toBeUndefined();
   });
 
   it('keeps runInBackground on timeline entries only when it is true', () => {
@@ -3893,8 +4421,11 @@ describe('attribution field', () => {
         },
         highContextCostUsd: 0.75,
         apiDurationMs: 12_000,
+        firstActivityByDayMs: {},
         unpricedByModel: {},
         estimatedByModel: {},
+        unpricedByDay: {},
+        estimatedByDay: {},
       }),
     } as unknown as CostTracker;
 
@@ -3993,6 +4524,97 @@ describe('attribution field', () => {
     expect(roundTripped.attribution?.buckets.skill).toEqual({
       unslop: { costUsd: 0.03, tokens: 165, count: 2, durationMs: 4000 },
     });
+  });
+
+  it('round-trips breakdownUsd and drops a malformed one while keeping the bucket', () => {
+    const attributionWith = (breakdownUsd: unknown): unknown => ({
+      buckets: {
+        skill: {
+          unslop: { costUsd: 0.03, tokens: 165, count: 2, durationMs: 4000, breakdownUsd },
+        },
+      },
+      highContextCostUsd: 0,
+      apiDurationMs: null,
+    });
+    const parse = (breakdownUsd: unknown) =>
+      deserializeFullSessionSummary(
+        JSON.parse(
+          JSON.stringify({ ...makeSummary(), attribution: attributionWith(breakdownUsd) }),
+        ) as Parameters<typeof deserializeFullSessionSummary>[0],
+      ).attribution?.buckets.skill?.unslop;
+
+    expect(
+      parse({ inputUsd: 0.01, outputUsd: 0.02, cacheReadUsd: 0.003, cacheCreationUsd: 0 })
+        ?.breakdownUsd,
+    ).toEqual({ inputUsd: 0.01, outputUsd: 0.02, cacheReadUsd: 0.003, cacheCreationUsd: 0 });
+
+    const malformed = parse({ inputUsd: 0.01, outputUsd: 'nope' });
+    expect(malformed?.costUsd).toBe(0.03);
+    expect(malformed?.breakdownUsd).toBeUndefined();
+  });
+
+  it("merge keeps the one side's breakdownUsd when the other side has none", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-breakdown-usd-${Date.now()}`;
+    const bucket = (extra: object) => ({
+      costUsd: 0.05,
+      tokens: 40,
+      count: 6,
+      durationMs: 300,
+      ...extra,
+    });
+    const save = (extra: object) =>
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          attribution: {
+            buckets: { skill: { unslop: bucket(extra) } },
+            highContextCostUsd: 0,
+            apiDurationMs: null,
+          },
+        }),
+      );
+
+    save({
+      breakdownUsd: { inputUsd: 0.01, outputUsd: 0.02, cacheReadUsd: 0, cacheCreationUsd: 0 },
+    });
+    save({});
+
+    expect(store.loadSession(id)?.attribution?.buckets.skill?.unslop.breakdownUsd).toEqual({
+      inputUsd: 0.01,
+      outputUsd: 0.02,
+      cacheReadUsd: 0,
+      cacheCreationUsd: 0,
+    });
+  });
+
+  it('merge drops breakdownUsd when the side with the larger costUsd has none', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-breakdown-usd-older-${Date.now()}`;
+    const save = (bucket: object) =>
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          attribution: {
+            buckets: { skill: { unslop: bucket as never } },
+            highContextCostUsd: 0,
+            apiDurationMs: null,
+          },
+        }),
+      );
+
+    save({ costUsd: 5, tokens: 500, count: 5, durationMs: 1 });
+    save({
+      costUsd: 2,
+      tokens: 200,
+      count: 2,
+      durationMs: 1,
+      breakdownUsd: { inputUsd: 1, outputUsd: 1, cacheReadUsd: 0, cacheCreationUsd: 0 },
+    });
+
+    const merged = store.loadSession(id)?.attribution?.buckets.skill?.unslop;
+    expect(merged?.costUsd).toBe(5);
+    expect(merged?.breakdownUsd).toBeUndefined();
   });
 
   it('drops a malformed breakdown but keeps the bucket', () => {

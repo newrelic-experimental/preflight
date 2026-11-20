@@ -366,9 +366,12 @@ describe('handleGetPromptCacheHealth()', () => {
       parentCostUsd: 0,
       costByWorkflowRunId: {},
       costByDayUsd: {},
+      firstActivityByDayMs: {},
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},
+      unpricedByDay: {},
+      estimatedByDay: {},
       subagentByAgentType: {},
       highContextCostUsd: 0,
       apiDurationMs: null,
@@ -497,6 +500,39 @@ describe('handleGetBudgetStatus()', () => {
 // ---------------------------------------------------------------------------
 
 describe('handleGetCostForecast()', () => {
+  it('ages a resumed session from its saved start, not from the process start', () => {
+    const MIN = 60_000;
+    const now = new Date(2024, 0, 3, 14).getTime();
+    jest.useFakeTimers({ now });
+    try {
+      const tracker = new CostTracker();
+      tracker.seedFromPersisted({
+        totalCostUsd: 50,
+        subagentCostUsd: 0,
+        parentCostUsd: 50,
+        totalInputTokens: 1,
+        totalOutputTokens: 1,
+        totalThinkingTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
+        totalCacheSavingsUsd: 0,
+        costByModel: {},
+        costByWorkflowRunId: {},
+        dayKey: localDateKey(now),
+        dayCostUsd: 0,
+        daySubagentCostUsd: 0,
+        sessionStartMs: now - 180 * MIN,
+      });
+
+      const body = JSON.parse(handleGetCostForecast(tracker, now - 10 * MIN).content[0].text);
+
+      // 50 spent over 3h, with 5h left of the 8h horizon: 50 + (50 / 180min) * 300min.
+      expect(body.forecastSessionEndUsd).toBeCloseTo(50 + (50 / 180) * 300, 6);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('anchors the end-of-day forecast to getCostForDay()/getFirstActivityMsForDay(), not the full session spend', () => {
     jest.useFakeTimers({ now: new Date(2024, 0, 3, 12).getTime() });
     try {

@@ -24,7 +24,7 @@ import {
 } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
 import { isSyntheticSessionId, type SessionNameSource } from '../hooks/session-resolver.js';
@@ -36,6 +36,7 @@ import type {
   AttributionFacet,
   AttributionBucket,
   TokenBreakdown,
+  UsdBreakdown,
 } from './types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type {
@@ -45,7 +46,16 @@ import type {
   EstimatedModelUsage,
   UnpricedModelUsage,
 } from '../metrics/cost-tracker.js';
-import { mergeCallUsageMax, parseCallUsageRecord } from '../metrics/call-usage.js';
+import {
+  addCallUsageRecords,
+  combineCallUsageByDay,
+  mergeCallUsageMax,
+  parseCallUsageByDay,
+  parseCallUsageRecord,
+  subtractCallUsage,
+  type CallUsage,
+  type CallUsageByDay,
+} from '../metrics/call-usage.js';
 import type {
   TurnCostAttributor,
   CostAttributionMetrics,
@@ -151,6 +161,7 @@ export interface FullSessionSummary extends SessionSummary {
    * path in the aggregate route.
    */
   readonly costByDayUsd?: Record<string, number>;
+  readonly firstActivityByDayMs?: Record<string, number>;
   /** Subagent-attributed cost by local-day key; today-scoped counterpart to
    * `subagentCostUsd`. Optional for the same backward-compat reason as
    * `costByDayUsd`. */
@@ -162,6 +173,14 @@ export interface FullSessionSummary extends SessionSummary {
   readonly unpricedByModel?: Record<string, UnpricedModelUsage>;
   /** Calls priced from a sibling model; their cost is in the totals as an estimate. */
   readonly estimatedByModel?: Record<string, EstimatedModelUsage>;
+  /**
+   * `unpricedByModel` split by local day, like `costByDayUsd`, so a today-scoped
+   * reader counts only that day's calls. Absent on summaries written before this
+   * field; readers then fall back to the whole-session counts.
+   */
+  readonly unpricedByDay?: CallUsageByDay<UnpricedModelUsage>;
+  /** `estimatedByModel` split by local day; see `unpricedByDay`. */
+  readonly estimatedByDay?: CallUsageByDay<EstimatedModelUsage>;
   /**
    * Byte-estimated share of the cost and token totals that a real token report
    * has not yet replaced (see `ByteEstimateLedger`). Written all-zero once the
@@ -216,6 +235,7 @@ export interface FullSessionSummary extends SessionSummary {
   readonly assistantMessages: number;
   readonly userCorrections: number;
   readonly outcome: string;
+  readonly observerCompletedAt?: number;
   readonly platform?: string;
   readonly instructionPromptHash?: string | null;
   readonly timeline?: ReplayTimelineEntry[];
@@ -378,6 +398,20 @@ function mergeTokenBreakdown(
   };
 }
 
+function mergeUsdBreakdown(
+  a: UsdBreakdown | undefined,
+  b: UsdBreakdown | undefined,
+): UsdBreakdown | undefined {
+  if (!a && !b) return undefined;
+  const maxNum = (x: number | undefined, y: number | undefined): number => Math.max(x ?? 0, y ?? 0);
+  return {
+    inputUsd: maxNum(a?.inputUsd, b?.inputUsd),
+    outputUsd: maxNum(a?.outputUsd, b?.outputUsd),
+    cacheReadUsd: maxNum(a?.cacheReadUsd, b?.cacheReadUsd),
+    cacheCreationUsd: maxNum(a?.cacheCreationUsd, b?.cacheCreationUsd),
+  };
+}
+
 function mergeAttribution(
   existing: SessionAttribution | undefined,
   incoming: SessionAttribution | undefined,
@@ -405,12 +439,21 @@ function mergeAttribution(
       const ba = facetA[key];
       const bb = facetB[key];
       const breakdown = mergeTokenBreakdown(ba?.breakdown, bb?.breakdown);
+      // The larger `costUsd` wins the merge, so a dollar split is only valid when
+      // the side that supplied it also has one; otherwise it would understate the bucket.
+      const usdSideMissingLarger =
+        (!ba?.breakdownUsd && (ba?.costUsd ?? 0) > (bb?.costUsd ?? 0)) ||
+        (!bb?.breakdownUsd && (bb?.costUsd ?? 0) > (ba?.costUsd ?? 0));
+      const breakdownUsd = usdSideMissingLarger
+        ? undefined
+        : mergeUsdBreakdown(ba?.breakdownUsd, bb?.breakdownUsd);
       merged[key] = {
         costUsd: maxNum(ba?.costUsd, bb?.costUsd),
         tokens: maxNum(ba?.tokens, bb?.tokens),
         count: maxNum(ba?.count, bb?.count),
         durationMs: maxNum(ba?.durationMs, bb?.durationMs),
         ...(breakdown ? { breakdown } : {}),
+        ...(breakdownUsd ? { breakdownUsd } : {}),
       };
     }
     if (Object.keys(merged).length > 0) buckets[facet] = merged;
@@ -433,19 +476,26 @@ const MAX_TIMELINE_ENTRIES = 10_000;
  * `--stdio` resume starts the new process with an empty in-memory timeline;
  * under longest-wins, every checkpoint the new process writes loses the merge
  * race to the old process's on-disk timeline until it outgrows it, silently
- * dropping entries from whichever side was shorter. Entries are deduped by
- * `(timestamp, toolName)` — no toolUseId is carried on `ReplayTimelineEntry`,
- * but two distinct real tool calls sharing a millisecond timestamp and tool
- * name is not a case that occurs in practice.
+ * dropping entries from whichever side was shorter.
+ *
+ * An entry is identified by its `toolUseId`, so parallel calls to one tool
+ * that share a millisecond all survive. Entries saved before the id existed
+ * have none and fall back to `(timestamp, toolName)`. A legacy entry whose
+ * `(timestamp, toolName)` an id-bearing entry also carries is the same call
+ * recorded before the upgrade, so it is dropped rather than doubled.
  */
 function mergeTimeline(
   existing: readonly ReplayTimelineEntry[] | undefined,
   incoming: readonly ReplayTimelineEntry[] | undefined,
 ): ReplayTimelineEntry[] | undefined {
   if (existing === undefined && incoming === undefined) return undefined;
+  const legacyKey = (e: ReplayTimelineEntry): string => `${e.timestamp}:${e.toolName}`;
+  const all = [...(existing ?? []), ...(incoming ?? [])];
+  const legacyKeysWithId = new Set(all.filter((e) => e.toolUseId).map(legacyKey));
   const byKey = new Map<string, ReplayTimelineEntry>();
-  for (const entry of [...(existing ?? []), ...(incoming ?? [])]) {
-    byKey.set(`${entry.timestamp}:${entry.toolName}`, entry);
+  for (const entry of all) {
+    if (entry.toolUseId) byKey.set(`id:${entry.toolUseId}`, entry);
+    else if (!legacyKeysWithId.has(legacyKey(entry))) byKey.set(legacyKey(entry), entry);
   }
   const merged = [...byKey.values()].sort((a, b) => a.timestamp - b.timestamp);
   return merged.length > MAX_TIMELINE_ENTRIES
@@ -461,12 +511,18 @@ export interface ExactTotals {
   readonly costByDayUsd: Readonly<Record<string, number>>;
 }
 
+export type ExactTotalsSource = Pick<
+  FullSessionSummary,
+  'exactTotals' | 'byteEstimates' | 'estimatedCostUsd' | 'costByDayUsd'
+> &
+  Partial<Pick<FullSessionSummary, 'tokensInput' | 'tokensOutput'>>;
+
 /**
  * `exactTotals` as stored, or derived as total minus ledger for a summary that
  * predates the field. A merged total cannot be split afterwards (the file does
  * not record which writer's figure won the max), so writers persist the split.
  */
-export function exactTotalsOf(s: FullSessionSummary): ExactTotals {
+export function exactTotalsOf(s: ExactTotalsSource): ExactTotals {
   if (s.exactTotals) return s.exactTotals;
   const ledger = s.byteEstimates;
   return {
@@ -487,6 +543,33 @@ function addRecord(
   return out;
 }
 
+/**
+ * A day's first spend is only known when every side that spent that day
+ * recorded it. A side with spend but no saved first spend (a file written
+ * before the field existed) makes the other side's anchor a later guess, so
+ * that day stays unanchored and readers fall back to the first tool call.
+ */
+function mergeFirstActivity(
+  a: FullSessionSummary,
+  b: FullSessionSummary,
+): Record<string, number> | undefined {
+  if (a.firstActivityByDayMs === undefined && b.firstActivityByDayMs === undefined) {
+    return undefined;
+  }
+  const out: Record<string, number> = {};
+  const take = (own: FullSessionSummary, other: FullSessionSummary): void => {
+    for (const [day, ms] of Object.entries(own.firstActivityByDayMs ?? {})) {
+      const otherSpentUnanchored =
+        other.firstActivityByDayMs?.[day] === undefined && (other.costByDayUsd?.[day] ?? 0) > 0;
+      if (otherSpentUnanchored) continue;
+      out[day] = Math.min(out[day] ?? ms, ms);
+    }
+  };
+  take(a, b);
+  take(b, a);
+  return out;
+}
+
 /** Per-key `a - b`, clamped at zero. */
 function subtractRecord(
   a: Readonly<Record<string, number>>,
@@ -495,6 +578,69 @@ function subtractRecord(
   const out: Record<string, number> = {};
   for (const [k, v] of Object.entries(a)) out[k] = Math.max(0, v - (b[k] ?? 0));
   return out;
+}
+
+type CallUsageSide<T extends CallUsage> = readonly [
+  total: Readonly<Record<string, T>> | undefined,
+  ledger: Readonly<Record<string, T>> | undefined,
+];
+
+/**
+ * Merges one session's call counts the way `mergeSummaries` merges its cost: the
+ * exact share (total minus the writer's ledger) is max-merged and the merged
+ * ledger is added back. A max over the estimate-laden totals would keep the
+ * calls of byte estimates a real report has since replaced.
+ */
+function mergeCallUsageWithLedger<T extends CallUsage>(
+  existing: CallUsageSide<T>,
+  incoming: CallUsageSide<T>,
+  mergedLedger: Readonly<Record<string, T>> | undefined,
+): Record<string, T> | undefined {
+  if (existing[0] === undefined && incoming[0] === undefined) return undefined;
+  const exact = mergeCallUsageMax(
+    subtractCallUsage(existing[0], existing[1]),
+    subtractCallUsage(incoming[0], incoming[1]),
+  );
+  const merged = addCallUsageRecords(exact, mergedLedger);
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+type CallUsageByDaySide<T extends CallUsage> = readonly [
+  byModel: Readonly<Record<string, T>> | undefined,
+  total: Readonly<CallUsageByDay<T>> | undefined,
+  ledger: Readonly<CallUsageByDay<T>> | undefined,
+];
+
+/**
+ * True when `side` was written before day buckets (counts but no day split) and
+ * holds calls `other`'s totals lack. No day can be named for those calls, so the
+ * merged file keeps only whole-session counts, as a legacy file does. A resumed
+ * session was seeded from its legacy file, so its own totals already cover it.
+ */
+function legacySideAddsCalls<T extends CallUsage>(
+  [byModel, byDay]: CallUsageByDaySide<T>,
+  other: Readonly<Record<string, T>> | undefined,
+): boolean {
+  if (byModel === undefined || byDay !== undefined) return false;
+  return Object.entries(byModel).some(
+    ([model, usage]) => usage.calls > (other?.[model]?.calls ?? 0),
+  );
+}
+
+function mergeCallUsageByDayWithLedger<T extends CallUsage>(
+  existing: CallUsageByDaySide<T>,
+  incoming: CallUsageByDaySide<T>,
+  mergedLedger: Readonly<CallUsageByDay<T>> | undefined,
+): CallUsageByDay<T> | undefined {
+  if (existing[1] === undefined && incoming[1] === undefined) return undefined;
+  if (legacySideAddsCalls(existing, incoming[0]) || legacySideAddsCalls(incoming, existing[0]))
+    return undefined;
+  const exact = combineCallUsageByDay(
+    combineCallUsageByDay(existing[1], existing[2], subtractCallUsage),
+    combineCallUsageByDay(incoming[1], incoming[2], subtractCallUsage),
+    mergeCallUsageMax,
+  );
+  return combineCallUsageByDay(exact, mergedLedger, addCallUsageRecords);
 }
 
 export function mergeSummaries(
@@ -581,9 +727,28 @@ export function mergeSummaries(
     existing.subagentCostByDayUsd,
     incoming.subagentCostByDayUsd,
   );
+  const firstActivityByDayMs = mergeFirstActivity(existing, incoming);
 
-  const unpricedByModel = mergeCallUsageMax(existing.unpricedByModel, incoming.unpricedByModel);
-  const estimatedByModel = mergeCallUsageMax(existing.estimatedByModel, incoming.estimatedByModel);
+  const unpricedByModel = mergeCallUsageWithLedger(
+    [existing.unpricedByModel, existing.byteEstimates?.unpricedByModel],
+    [incoming.unpricedByModel, incoming.byteEstimates?.unpricedByModel],
+    mergedLedger?.unpricedByModel,
+  );
+  const estimatedByModel = mergeCallUsageWithLedger(
+    [existing.estimatedByModel, existing.byteEstimates?.estimatedByModel],
+    [incoming.estimatedByModel, incoming.byteEstimates?.estimatedByModel],
+    mergedLedger?.estimatedByModel,
+  );
+  const unpricedByDay = mergeCallUsageByDayWithLedger(
+    [existing.unpricedByModel, existing.unpricedByDay, existing.byteEstimates?.unpricedByDay],
+    [incoming.unpricedByModel, incoming.unpricedByDay, incoming.byteEstimates?.unpricedByDay],
+    mergedLedger?.unpricedByDay,
+  );
+  const estimatedByDay = mergeCallUsageByDayWithLedger(
+    [existing.estimatedByModel, existing.estimatedByDay, existing.byteEstimates?.estimatedByDay],
+    [incoming.estimatedByModel, incoming.estimatedByDay, incoming.byteEstimates?.estimatedByDay],
+    mergedLedger?.estimatedByDay,
+  );
   // Latest writer wins, not max: the ledger shrinks to zero when a real report
   // replaces it, and a max-merge would resurrect the stale estimate.
   const byteEstimates = mergedLedger;
@@ -639,6 +804,10 @@ export function mergeSummaries(
       : existing.toolSelectionMetrics;
 
   const timeline = mergeTimeline(existing.timeline, incoming.timeline);
+  const outcomeSource =
+    existing.outcome === 'completed' && existing.observerCompletedAt === undefined
+      ? existing
+      : incoming;
 
   const startTime = Math.min(
     existing.startTime || incoming.startTime,
@@ -689,8 +858,11 @@ export function mergeSummaries(
     subagentCostUsd: maxNum(existing.subagentCostUsd, incoming.subagentCostUsd),
     ...(costByDayUsd !== undefined ? { costByDayUsd } : {}),
     ...(subagentCostByDayUsd !== undefined ? { subagentCostByDayUsd } : {}),
-    ...(unpricedByModel !== undefined ? { unpricedByModel } : {}),
-    ...(estimatedByModel !== undefined ? { estimatedByModel } : {}),
+    ...(firstActivityByDayMs !== undefined ? { firstActivityByDayMs } : {}),
+    unpricedByModel,
+    estimatedByModel,
+    unpricedByDay,
+    estimatedByDay,
     ...(byteEstimates !== undefined ? { byteEstimates } : {}),
     exactTotals,
     tokensInput: exactTotals.inputTokens + (mergedLedger?.inputTokens ?? 0),
@@ -716,10 +888,8 @@ export function mergeSummaries(
       (incoming.antiPatterns?.length ?? 0) >= (existing.antiPatterns?.length ?? 0)
         ? incoming.antiPatterns
         : existing.antiPatterns,
-    outcome:
-      incoming.outcome === 'completed' || existing.outcome !== 'completed'
-        ? incoming.outcome
-        : existing.outcome,
+    outcome: outcomeSource.outcome,
+    observerCompletedAt: outcomeSource.observerCompletedAt,
     ...(timeline ? { timeline } : {}),
     toolSelectionMetrics,
     modelBreakdown,
@@ -1161,6 +1331,7 @@ function buildAttribution(
           cacheReadTokens: entry.cacheReadTokens,
           cacheCreationTokens: entry.cacheCreationTokens,
         },
+        ...(entry.breakdownUsd ? { breakdownUsd: entry.breakdownUsd } : {}),
       };
     }
     if (Object.keys(skillBuckets).length > 0) buckets.skill = skillBuckets;
@@ -1273,6 +1444,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
   // Enriched timeline for session replay
   const timeline: ReplayTimelineEntry[] = allToolCalls.map((tc) => ({
     timestamp: tc.timestamp,
+    toolUseId: tc.toolUseId || undefined,
     toolName: tc.toolName,
     durationMs: tc.durationMs,
     success: tc.success,
@@ -1286,6 +1458,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     skillName: tc.toolName === 'Skill' && tc.skillName ? tc.skillName : undefined,
     agentType: tc.toolName === 'Agent' && tc.agentType ? tc.agentType : undefined,
     createdPrNumber: tc.createdPrNumber,
+    mcpPrNumber: tc.mcpPrNumber,
+    mcpPrRepo: tc.mcpPrRepo,
     runInBackground: tc.runInBackground === true || undefined,
   }));
 
@@ -1327,12 +1501,20 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     estimatedCostUsd: costMetrics?.sessionTotalCostUsd ?? null,
     subagentCostUsd: costMetrics?.subagentCostUsd ?? 0,
     costByDayUsd: costMetrics?.costByDayUsd ?? {},
+    ...(costMetrics && Object.keys(costMetrics.firstActivityByDayMs).length > 0
+      ? { firstActivityByDayMs: costMetrics.firstActivityByDayMs }
+      : {}),
     subagentCostByDayUsd: costMetrics?.subagentCostByDayUsd ?? {},
+    // A day map rides with its counts even when empty (all late arrivals):
+    // readers treat an absent one as a summary written before day buckets.
     ...(costMetrics && Object.keys(costMetrics.unpricedByModel).length > 0
-      ? { unpricedByModel: costMetrics.unpricedByModel }
+      ? { unpricedByModel: costMetrics.unpricedByModel, unpricedByDay: costMetrics.unpricedByDay }
       : {}),
     ...(costMetrics && Object.keys(costMetrics.estimatedByModel).length > 0
-      ? { estimatedByModel: costMetrics.estimatedByModel }
+      ? {
+          estimatedByModel: costMetrics.estimatedByModel,
+          estimatedByDay: costMetrics.estimatedByDay,
+        }
       : {}),
     ...(costMetrics?.byteEstimates !== undefined
       ? { byteEstimates: costMetrics.byteEstimates }
@@ -1458,9 +1640,12 @@ interface SerializedFullSessionSummary {
   readonly estimatedCostUsd?: unknown;
   readonly subagentCostUsd?: unknown;
   readonly costByDayUsd?: unknown;
+  readonly firstActivityByDayMs?: unknown;
   readonly subagentCostByDayUsd?: unknown;
   readonly unpricedByModel?: unknown;
   readonly estimatedByModel?: unknown;
+  readonly unpricedByDay?: unknown;
+  readonly estimatedByDay?: unknown;
   readonly byteEstimates?: unknown;
   readonly exactTotals?: unknown;
   readonly tokensInput?: unknown;
@@ -1482,6 +1667,7 @@ interface SerializedFullSessionSummary {
   readonly assistantMessages?: unknown;
   readonly userCorrections?: unknown;
   readonly outcome?: unknown;
+  readonly observerCompletedAt?: unknown;
   readonly platform?: unknown;
   readonly instructionPromptHash?: unknown;
   readonly timeline?: Array<Record<string, unknown>>;
@@ -1516,6 +1702,25 @@ function parseTokenBreakdown(raw: unknown): TokenBreakdown | undefined {
   return undefined;
 }
 
+/** Same all-or-nothing rule as {@link parseTokenBreakdown}, over the four dollar fields. */
+function parseUsdBreakdown(raw: unknown): UsdBreakdown | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const { inputUsd, outputUsd, cacheReadUsd, cacheCreationUsd } = raw as Record<string, unknown>;
+  if (
+    typeof inputUsd === 'number' &&
+    Number.isFinite(inputUsd) &&
+    typeof outputUsd === 'number' &&
+    Number.isFinite(outputUsd) &&
+    typeof cacheReadUsd === 'number' &&
+    Number.isFinite(cacheReadUsd) &&
+    typeof cacheCreationUsd === 'number' &&
+    Number.isFinite(cacheCreationUsd)
+  ) {
+    return { inputUsd, outputUsd, cacheReadUsd, cacheCreationUsd };
+  }
+  return undefined;
+}
+
 /**
  * Accept a bucket only when all four core fields are finite numbers; any
  * other shape is dropped rather than partially hydrated. Used to parse each
@@ -1538,7 +1743,15 @@ function parseAttributionBucket(raw: unknown): AttributionBucket | undefined {
     Number.isFinite(durationMs)
   ) {
     const breakdown = parseTokenBreakdown(r.breakdown);
-    return { costUsd, tokens, count, durationMs, ...(breakdown ? { breakdown } : {}) };
+    const breakdownUsd = parseUsdBreakdown(r.breakdownUsd);
+    return {
+      costUsd,
+      tokens,
+      count,
+      durationMs,
+      ...(breakdown ? { breakdown } : {}),
+      ...(breakdownUsd ? { breakdownUsd } : {}),
+    };
   }
   return undefined;
 }
@@ -1611,6 +1824,13 @@ function parseByteEstimates(value: unknown): ByteEstimateLedger | undefined {
     outputTokens: finite(obj.outputTokens),
     costByModel: parseNumberRecord(obj.costByModel) ?? {},
     costByDayUsd: parseNumberRecord(obj.costByDayUsd) ?? {},
+    unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
+    estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
+    unpricedByDay: parseCallUsageByDay<UnpricedModelUsage>(obj.unpricedByDay, parseUnpricedExtra),
+    estimatedByDay: parseCallUsageByDay<EstimatedModelUsage>(
+      obj.estimatedByDay,
+      parseEstimatedExtra,
+    ),
   };
 }
 
@@ -1626,18 +1846,26 @@ function parseExactTotals(value: unknown): ExactTotals | undefined {
   };
 }
 
+function parseUnpricedExtra(): Omit<UnpricedModelUsage, keyof CallUsage> {
+  return {};
+}
+
+function parseEstimatedExtra({
+  estimatedFrom,
+}: Record<string, unknown>): Omit<EstimatedModelUsage, keyof CallUsage> | null {
+  return typeof estimatedFrom === 'string' &&
+    estimatedFrom.length > 0 &&
+    estimatedFrom.length <= MAX_MODEL_ID_LENGTH
+    ? { estimatedFrom }
+    : null;
+}
+
 function parseUnpricedByModel(value: unknown): Record<string, UnpricedModelUsage> | undefined {
-  return parseCallUsageRecord<UnpricedModelUsage>(value, () => ({}));
+  return parseCallUsageRecord<UnpricedModelUsage>(value, parseUnpricedExtra);
 }
 
 function parseEstimatedByModel(value: unknown): Record<string, EstimatedModelUsage> | undefined {
-  return parseCallUsageRecord<EstimatedModelUsage>(value, ({ estimatedFrom }) =>
-    typeof estimatedFrom === 'string' &&
-    estimatedFrom.length > 0 &&
-    estimatedFrom.length <= MAX_MODEL_ID_LENGTH
-      ? { estimatedFrom }
-      : null,
-  );
+  return parseCallUsageRecord<EstimatedModelUsage>(value, parseEstimatedExtra);
 }
 
 /**
@@ -1849,9 +2077,15 @@ export function deserializeFullSessionSummary(
     estimatedCostUsd: typeof obj.estimatedCostUsd === 'number' ? obj.estimatedCostUsd : null,
     subagentCostUsd: typeof obj.subagentCostUsd === 'number' ? obj.subagentCostUsd : 0,
     costByDayUsd: parseNumberRecord(obj.costByDayUsd),
+    firstActivityByDayMs: parseNumberRecord(obj.firstActivityByDayMs),
     subagentCostByDayUsd: parseNumberRecord(obj.subagentCostByDayUsd),
     unpricedByModel: parseUnpricedByModel(obj.unpricedByModel),
     estimatedByModel: parseEstimatedByModel(obj.estimatedByModel),
+    unpricedByDay: parseCallUsageByDay<UnpricedModelUsage>(obj.unpricedByDay, parseUnpricedExtra),
+    estimatedByDay: parseCallUsageByDay<EstimatedModelUsage>(
+      obj.estimatedByDay,
+      parseEstimatedExtra,
+    ),
     byteEstimates: parseByteEstimates(obj.byteEstimates),
     exactTotals: parseExactTotals(obj.exactTotals),
     tokensInput: typeof obj.tokensInput === 'number' ? obj.tokensInput : 0,
@@ -1874,6 +2108,9 @@ export function deserializeFullSessionSummary(
     assistantMessages: typeof obj.assistantMessages === 'number' ? obj.assistantMessages : 0,
     userCorrections: typeof obj.userCorrections === 'number' ? obj.userCorrections : 0,
     outcome: typeof obj.outcome === 'string' ? obj.outcome : 'unknown',
+    ...(typeof obj.observerCompletedAt === 'number' && {
+      observerCompletedAt: obj.observerCompletedAt,
+    }),
     platform: typeof obj.platform === 'string' ? obj.platform : undefined,
     instructionPromptHash:
       typeof obj.instructionPromptHash === 'string' ? obj.instructionPromptHash : null,
@@ -1889,6 +2126,7 @@ export function deserializeFullSessionSummary(
           .map((e) => ({
             timestamp: e.timestamp as number,
             toolName: e.toolName as string,
+            toolUseId: typeof e.toolUseId === 'string' ? e.toolUseId : undefined,
             durationMs: typeof e.durationMs === 'number' ? e.durationMs : null,
             success: typeof e.success === 'boolean' ? e.success : true,
             filePath: typeof e.filePath === 'string' ? e.filePath : undefined,
@@ -1903,6 +2141,14 @@ export function deserializeFullSessionSummary(
             createdPrNumber:
               typeof e.createdPrNumber === 'string' && /^\d{1,9}$/.test(e.createdPrNumber)
                 ? e.createdPrNumber
+                : undefined,
+            mcpPrNumber:
+              typeof e.mcpPrNumber === 'string' && /^\d{1,9}$/.test(e.mcpPrNumber)
+                ? e.mcpPrNumber
+                : undefined,
+            mcpPrRepo:
+              typeof e.mcpPrRepo === 'string' && /^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(e.mcpPrRepo)
+                ? e.mcpPrRepo
                 : undefined,
             runInBackground: e.runInBackground === true || undefined,
           }))

@@ -7,7 +7,7 @@
  *   nr_observe_get_recommendations, nr_observe_get_platform_comparison,
  *   nr_observe_get_team_summary, nr_observe_subscribe_digest,
  *   nr_observe_unsubscribe_digest, nr_observe_send_digest,
- *   nr_observe_get_personal_insights
+ *   nr_observe_get_digest_preview, nr_observe_get_personal_insights
  *
  * Tool defs and handlers are exported for integration into the main
  * registerTools() in session-stats.ts.
@@ -17,9 +17,9 @@ import { readFileSync, writeFileSync } from 'node:fs';
 
 import { SecretCommandSchema } from '../config.js';
 import { validateSsrfUrl } from '../security/index.js';
-import { stagingHost } from '../shared/transport/http-client.js';
+import { stagingHost } from '../core/transport/http-client.js';
 import type { SessionStore } from '../storage/session-store.js';
-import { formatSlackDigest } from '../digest/digest-formatter.js';
+import { digestPlainText, formatSlackDigest } from '../digest/digest-formatter.js';
 import { sendSlackDigest } from '../digest/digest-sender.js';
 import type { WeeklySummaryGenerator, WeeklySummary } from '../storage/weekly-summary.js';
 import { getIsoWeekId } from '../storage/weekly-summary.js';
@@ -269,6 +269,14 @@ export const SEND_DIGEST_TOOL = {
     'Generate the current weekly AI coding summary and POST it to the configured Slack webhook immediately.',
   inputSchema: { type: 'object' as const, properties: {} },
   annotations: { readOnlyHint: false },
+};
+
+export const GET_DIGEST_PREVIEW_TOOL = {
+  name: 'nr_observe_get_digest_preview',
+  description:
+    'Return the current weekly AI coding summary as the Slack digest would deliver it: Block Kit blocks plus plain text. Nothing is sent, and no webhook is needed. nr_observe_send_digest builds a fresh digest when it runs, so its content can differ if sessions were saved since.',
+  inputSchema: { type: 'object' as const, properties: {} },
+  annotations: { readOnlyHint: true },
 };
 
 export const PERSONAL_INSIGHTS_TOOL = {
@@ -862,6 +870,18 @@ export async function handleGetTeamSummary(options: {
   }
   const safeTeamId = options.teamId;
 
+  if (!options.accountId.trim()) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ error: 'nr_observe_get_team_summary needs accountId' }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
   const accountId = Number(options.accountId);
   if (!Number.isFinite(accountId) || accountId <= 0) {
     return {
@@ -1088,6 +1108,26 @@ export function handleUnsubscribeDigest(configFilePath: string): {
   }
 }
 
+function buildCurrentDigest(weeklySummaryGenerator: WeeklySummaryGenerator, persist = true) {
+  const week = getIsoWeekId(new Date());
+  const payload = formatSlackDigest(weeklySummaryGenerator.generate(week, { persist }));
+  return { week, payload };
+}
+
+export function handleGetDigestPreview(weeklySummaryGenerator: WeeklySummaryGenerator): {
+  content: Array<{ type: 'text'; text: string }>;
+} {
+  const { week, payload } = buildCurrentDigest(weeklySummaryGenerator, false);
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({ week, blocks: payload.blocks, text: digestPlainText(payload) }),
+      },
+    ],
+  };
+}
+
 export async function handleSendDigest(
   weeklySummaryGenerator: WeeklySummaryGenerator,
   configFilePath: string,
@@ -1128,9 +1168,7 @@ export async function handleSendDigest(
     };
   }
 
-  const currentWeek = getIsoWeekId(new Date());
-  const summary = weeklySummaryGenerator.generate(currentWeek);
-  const payload = formatSlackDigest(summary);
+  const { week: currentWeek, payload } = buildCurrentDigest(weeklySummaryGenerator);
 
   try {
     await sendSlackDigest(webhookUrl, payload);
@@ -1363,6 +1401,18 @@ export function registerCrossSessionTools(deps: CrossSessionToolsDeps): Register
           deps.configFilePath!,
           deps.digestWebhookUrlOverride,
         );
+      },
+    },
+    {
+      definition: GET_DIGEST_PREVIEW_TOOL,
+      available: !!deps.weeklySummaryGenerator,
+      handle: () => {
+        const missing = requireAvailable(
+          !!deps.weeklySummaryGenerator,
+          'WeeklySummaryGenerator not available',
+        );
+        if (missing) return missing;
+        return handleGetDigestPreview(deps.weeklySummaryGenerator!);
       },
     },
     {

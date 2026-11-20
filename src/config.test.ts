@@ -91,12 +91,17 @@ describe('loadMcpConfig()', () => {
     );
   });
 
-  it('throws with descriptive error when accountId is missing', () => {
+  it('loads without an accountId and leaves it undefined', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const configPath = writeConfigFile({});
-    expect(() => loadMcpConfig({ config: configPath })).toThrow(
-      /Missing required configuration: accountId/,
-    );
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.accountId).toBeUndefined();
+    expect(config.tiers).toEqual([
+      {
+        name: 'default',
+        destination: { type: 'nr', licenseKey: 'test-key-1234567890' },
+        eventTypes: ['*'],
+      },
+    ]);
   });
 
   // accountId format validation
@@ -1440,6 +1445,25 @@ describe('costRateMultiplier / dataResidencyPremium', () => {
   });
 });
 
+describe('removed digestSchedule key', () => {
+  it('loads a config file that still contains digestSchedule, without the field', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ digestSchedule: '0 8 * * 2', retainSessionsDays: 30 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(30);
+    expect(config).not.toHaveProperty('digestSchedule');
+  });
+
+  it('still loads when the removed digestSchedule key holds a non-string value', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ digestSchedule: 42, retainSessionsDays: 30 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(30);
+  });
+});
+
 describe('retainSessionsDays', () => {
   it('defaults to 90 when neither env var nor config file key is set', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
@@ -1999,21 +2023,10 @@ describe('licenseKey gating', () => {
     expect(() => loadMcpConfig({ config: configPath })).not.toThrow();
   });
 
-  it("throws when mode='cloud' and accountId missing", () => {
+  it.each(['cloud', 'both'])("does NOT throw when mode='%s' and accountId missing", (mode) => {
+    process.env.NR_AI_MODE = mode;
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const configPath = writeConfigFile({});
-    expect(() => loadMcpConfig({ config: configPath })).toThrow(
-      /Missing required configuration: accountId/,
-    );
-  });
-
-  it("throws when mode='both' and accountId missing", () => {
-    process.env.NR_AI_MODE = 'both';
-    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const configPath = writeConfigFile({});
-    expect(() => loadMcpConfig({ config: configPath })).toThrow(
-      /Missing required configuration: accountId/,
-    );
+    expect(() => loadMcpConfig({ config: writeConfigFile({}) })).not.toThrow();
   });
 
   // --local falls back to local mode on this type, not on the message (#479).
@@ -2031,12 +2044,6 @@ describe('licenseKey gating', () => {
     const noKey = thrown(() => loadMcpConfig({ config: writeConfigFile({ accountId: '12345' }) }));
     expect(noKey).toBeInstanceOf(MissingCloudCredentialError);
     expect(noKey).toMatchObject({ missingField: 'licenseKey', mode: 'both' });
-
-    process.env.NR_AI_MODE = 'cloud';
-    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const noAccount = thrown(() => loadMcpConfig({ config: writeConfigFile({}) }));
-    expect(noAccount).toBeInstanceOf(MissingCloudCredentialError);
-    expect(noAccount).toMatchObject({ missingField: 'accountId', mode: 'cloud' });
   });
 
   it('throws when NR_AI_MODE is set to an invalid value', () => {
@@ -3117,5 +3124,177 @@ describe('resolveCompanionMode()', () => {
     ['nothing set', {}, undefined, false, 'default'],
   ])('%s', (_name, env, fileValue, value, source) => {
     expect(resolveCompanionMode(env, fileValue)).toEqual({ value, source });
+  });
+});
+
+describe('redactSensitive() — secrets passed as command arguments', () => {
+  const AWS_SECRET = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+
+  it.each([
+    ['npm run deploy -- --token secret123', 'secret123'],
+    ['npm test -- --password hunter2', 'hunter2'],
+    ['deploy --api-key secret123', 'secret123'],
+    ['deploy --api_key secret123', 'secret123'],
+    ['deploy --auth-token secret123', 'secret123'],
+    ['deploy --access-key secret123', 'secret123'],
+    ['deploy --secret secret123', 'secret123'],
+    ['keytool -password hunter2', 'hunter2'],
+    ['deploy --api-key=secret123', 'secret123'],
+    ['mysql -u root -psecret123', 'secret123'],
+    ['mysqldump -h db -u root -phunter2 shop', 'hunter2'],
+    ['mysql -h db -P 3306 -u root -psecret123 shop', 'secret123'],
+    ['mysql -h my-prod -u root -psecret123', 'secret123'],
+    ['curl -H "X-Api-Key secret123" https://api.example.com', 'secret123'],
+    ['curl -H "X-Api-Key: secret123" https://api.example.com', 'secret123'],
+    ["curl -H 'X-Auth-Token: secret123' https://api.example.com", 'secret123'],
+    ['curl --header "Api-Key secret123" https://api.example.com', 'secret123'],
+    [`aws configure set aws_secret_access_key ${AWS_SECRET}`, AWS_SECRET],
+    [`AWS_SECRET_ACCESS_KEY=${AWS_SECRET} aws s3 ls`, AWS_SECRET],
+    ['deploy --access-token secret123', 'secret123'],
+    ['deploy --client-secret secret123', 'secret123'],
+    ['deploy --secret-key secret123', 'secret123'],
+    ['deploy --private-key secret123', 'secret123'],
+    ['deploy --db-password secret123', 'secret123'],
+    ['mysql -h db -e "use shop; select 1" -psecret123', 'secret123'],
+    ['mysql -u root \\\n  -psecret123 db', 'secret123'],
+    [`mysql ${'-h db '.repeat(50)}-psecret123`, 'secret123'],
+  ])('redacts the value in %s', (command, secret) => {
+    const result = redactSensitive(command);
+    expect(result).not.toContain(secret);
+    expect(result).toContain('[REDACTED]');
+  });
+
+  it.each([
+    'docker login -u me --password-stdin',
+    'tool --token-file ./token.txt',
+    'tool --password-file /run/secrets/pw',
+    'aws secretsmanager get-secret-value --secret-name prod/db',
+    'cmd --token --verbose',
+    'git log --format=%s',
+    'mkdir -p src/lib',
+    'cp -p a.txt b.txt',
+    'ps -p 123',
+    'ssh -p 2222 host',
+    'mysql -u root -p',
+    'mysql -h db -P 3306 -u root -p shop',
+    'refresh the token before it expires',
+    'the password prompt appears',
+    'curl -H "Content-Type: application/json" https://api.example.com',
+    'rotate the auth-token every day',
+    'mkdir -pv src/lib',
+    'mysql -h db -P3306 -u root -p shop',
+    'mysql --pager=less shop',
+    'pass the api-key header',
+    'aws_secret_access_key is required',
+    'some-cli --token\nls -la',
+    'gh auth token',
+    'npm token list',
+    'kubectl create secret generic x --from-literal=name=web',
+    'docker run -p 8080:80 nginx',
+    'pg_dump -p 5432 mydb',
+    'git commit -m "fix password reset"',
+    "terraform apply -var 'token_ttl=3600'",
+    'openssl pkey -in key.pem -passin env:PW',
+    'curl -H "Authorization: Bearer short" https://api.example.com',
+    'vault kv get -field=token secret/app',
+    'cat ~/.config/tool/token-cache.json',
+    'mysql -e "select 1" && ls -pa',
+    'mysql -e "select 1"; ls -pa',
+    'mysql -e "select 1"\nls -pa',
+    'mysqldump shop | pv -pt > dump.sql',
+    'ls pymysql -pa',
+    'ls mysqlbackups -pa',
+    'tool --db-password-file ./pw',
+    'docker run --name mysql -p3306:3306 mysql:8',
+    'docker run --name mysql -p127.0.0.1:3306:3306 mysql:8',
+    'git log -p',
+    'ls -p',
+    'grep -p foo file.txt',
+    'some-cli --token \\\n  --verbose',
+  ])('leaves %s unchanged', (command) => {
+    expect(redactSensitive(command)).toBe(command);
+  });
+
+  it.each([
+    ['curl --token "my secret" https://x', 'curl [REDACTED] https://x'],
+    ["curl --token 'my secret' https://x", 'curl [REDACTED] https://x'],
+    ['mysql -p"sec ret" shop', 'mysql [REDACTED] shop'],
+    ['curl -H "Api-Key: abc def" https://x', 'curl -H "[REDACTED]" https://x'],
+    ["curl -H 'X-Api-Key: abc def' https://x", "curl -H '[REDACTED]' https://x"],
+    [
+      JSON.stringify('curl --token "my secret" -H "Api-Key: abc def" x'),
+      '"curl [REDACTED] -H \\"[REDACTED]\\" x"',
+    ],
+    ['curl --token="my secret" x', 'curl --[REDACTED] x'],
+    ["tool --password='a b S3CRET9' x", 'tool --[REDACTED] x'],
+    ['API_KEY="a b S3CRET9" x', '[REDACTED] x'],
+    ['deploy --api-key="a b S3CRET9" x', 'deploy [REDACTED] x'],
+    ['curl --token "sec\\"S3CRET9" x', 'curl [REDACTED] x'],
+    ["curl --token $'a\\' S3CRET9' x", 'curl [REDACTED] x'],
+    ['curl --token "a \\\nS3CRET9" x', 'curl [REDACTED] x'],
+    ['mysql -p"sec\\"S3CRET9" shop', 'mysql [REDACTED] shop'],
+    ['curl -H "X-Api-Key: a\\"S3CRET9" x', 'curl -H "[REDACTED]" x'],
+    ['curl --token \\\n  S3CRET9 x', 'curl [REDACTED] x'],
+    ['curl -H \\\n    "X-Api-Key: S3CRET9" x', 'curl -H \\\n    "[REDACTED]" x'],
+    ['mysql -u root --password= db', 'mysql -u root --[REDACTED]'],
+    ['API_KEY="abc"S3CRET9 x', '[REDACTED] x'],
+    ['curl --token S3\\\nCRET9 x', 'curl [REDACTED] x'],
+    ['mysql -e "select \\"a;b\\"" -pS3CRET9 shop', 'mysql -e "select \\"a;b\\"" [REDACTED] shop'],
+    ['deploy --api-key= db', 'deploy [REDACTED]'],
+    [
+      JSON.stringify('curl --token "sec\\"S3CRET9" -H "X-Api-Key: a\\"S3CRET9" x'),
+      '"curl [REDACTED] -H \\"[REDACTED]\\" x"',
+    ],
+    [JSON.stringify('curl --token \\\n  S3CRET9 x'), '"curl [REDACTED] x"'],
+    [
+      JSON.stringify('curl --token "a\tS3CRET9" -H "X-Api-Key: k" x'),
+      '"curl [REDACTED] -H \\"[REDACTED]\\" x"',
+    ],
+  ])('redacts the whole quoted value in %s', (command, expected) => {
+    expect(redactSensitive(command)).toBe(expected);
+  });
+
+  // The collector redacts tool input after JSON.stringify, and terminal output carries
+  // colour codes, so a flag often follows a letter or digit.
+  describe.each([
+    ['--token', 'echo hi', '--token Zq7Xw9secret'],
+    ['--db-password', 'echo hi', '--db-password Zq7Xw9secret'],
+    ['mysql -p', 'mysql -u root', '-pZq7Xw9secret'],
+    ['-H', 'curl', '-H "X-Api-Key: Zq7Xw9 secret"'],
+    ['aws_secret_access_key', 'echo hi', `aws_secret_access_key=Zq7Xw9${'a'.repeat(34)}`],
+  ])('a %s argument right after a letter or digit', (_rule, before, argument) => {
+    it.each([
+      ['a JSON-escaped line break', JSON.stringify({ command: `${before}\n${argument}` })],
+      ['a JSON-escaped tab', JSON.stringify({ command: `${before}\t${argument}` })],
+      ['a JSON \\u escape', JSON.stringify({ command: `${before}\u0007${argument}` })],
+      ['an ANSI colour code', `${before} \u001b[32m${argument}`],
+      ['a percent-escape', `${before}%3A${argument}`],
+    ])('is redacted after %s', (_context, input) => {
+      expect(input).toContain('Zq7Xw9');
+      expect(redactSensitive(input)).not.toContain('Zq7Xw9');
+    });
+  });
+
+  it.each([
+    ['repeated mysql -p flags', `mysql${' -p'.repeat(349_000)}`],
+    ['repeated quoted mysql -p flags', `mysql${' " -p'.repeat(209_000)}`],
+    ['a mysql -e quote that never closes', `mysql -e "${'x -p '.repeat(209_000)}`],
+    ['repeated line continuations', `mysql${' \\\n -p'.repeat(150_000)}`],
+    ['repeated unclosed --token quotes', '--token "'.repeat(116_000)],
+    ['a chain of hyphenated flag words', '--a-'.repeat(262_000)],
+    ['repeated unclosed escaped header quotes', '-H \\"Api-Key: '.repeat(75_000)],
+    ['repeated JSON escapes before a dash', '\\u0000-'.repeat(131_000)],
+    ['repeated unclosed --token= quotes', '--token="'.repeat(117_000)],
+    ['repeated --token line continuations', '--token \\\n'.repeat(105_000)],
+    ["repeated unclosed --token $' quotes", "--token $'".repeat(105_000)],
+    ['repeated unclosed escaped --token quotes', '--token \\"\\\\'.repeat(87_500)],
+    ['one --token value of escaped spaces', `--token ${'\\ '.repeat(524_000)}`],
+    ['one --token value of quotes, the last unclosed', `--token ${'"'.repeat(1_048_001)}`],
+  ])('scans a 1 MB command of %s in linear time', (_shape, command) => {
+    const start = performance.now();
+    redactSensitive(command);
+    // A 1 MB scan takes about 14 ms locally and about 104 ms on a loaded CI runner. A quadratic
+    // scan takes minutes at this size, so a 1 s bound keeps the runner's noise from failing it.
+    expect(performance.now() - start).toBeLessThan(1000);
   });
 });

@@ -4,13 +4,14 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
   readdirSync,
   statSync,
 } from 'node:fs';
 import { basename, dirname, resolve, sep } from 'node:path';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import {
   DRAINS_DIR,
   DrainHold,
@@ -27,6 +28,12 @@ import {
   type DrainClaim,
 } from './drain-claims.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
+import {
+  BREADCRUMBS_DIR,
+  STALE_CWD_BREADCRUMB_MS,
+  breadcrumbRoot,
+} from '../hooks/session-breadcrumbs.js';
+import { countMintedToolUseId, MINTED_IDS_DIR_PREFIX } from '../hooks/minted-tool-use-ids.js';
 import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
@@ -54,6 +61,7 @@ const SUBAGENT_CURSOR_RE = new RegExp(
 );
 const TRANSCRIPT_CURSOR_RE = /^\.transcript-pos-(.+)$/;
 const PARENT_TRANSCRIPT_CURSOR_RE = /^\.parent-transcript-pos-(.+)$/;
+const MINTED_IDS_DIR_RE = new RegExp(`^${MINTED_IDS_DIR_PREFIX}buffer-(.+)$`);
 
 /**
  * A buffer file is treated as orphan when its mtime is older than this AND
@@ -123,6 +131,24 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+let warnedUnlistableWriters = false;
+
+export function breadcrumbWriters(storagePath: string): string[] {
+  try {
+    const writers = readdirSync(resolve(storagePath, BREADCRUMBS_DIR), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+    warnedUnlistableWriters = false;
+    return writers;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT' && !warnedUnlistableWriters) {
+      warnedUnlistableWriters = true;
+      logger.warn('Failed to list breadcrumb writers', { error: String(err) });
+    }
+    return [];
+  }
+}
+
 /**
  * True when `<storagePath>/active-<sessionId>.pid` names a live process, i.e.
  * some `--stdio` engine has adopted `sessionId` and is still running. An
@@ -146,6 +172,7 @@ export function hasLiveOwningEngine(storagePath: string, sessionId: string): boo
 export class LocalStore {
   private readonly storagePath: string;
   private readonly bufferPath: string;
+  private readonly bufferPathIsOverride: boolean;
   private readonly sessionId: string | null;
   private readonly countedDir: string;
   private readonly ownCountedIds = new Map<string, Set<string>>();
@@ -202,6 +229,8 @@ export class LocalStore {
     }
 
     this.bufferPath = resolvedBufferPath;
+    this.bufferPathIsOverride =
+      bufferPathOrSessionId !== undefined && bufferPathOrSessionId.includes(sep);
     this.sessionId = resolvedSessionId;
   }
 
@@ -319,13 +348,27 @@ export class LocalStore {
     }
   }
 
+  /** See `countMintedToolUseId`. The collector keeps minted ids beside the buffer it writes. */
+  countMintedToolUseId(sessionId: string | undefined, id: string, lateUntil: number): void {
+    const bufferPath = this.bufferPathIsOverride
+      ? this.bufferPath
+      : resolve(
+          this.storagePath,
+          `buffer-${typeof sessionId === 'string' && SESSION_ID_RE.test(sessionId) ? sessionId : 'unknown'}.jsonl`,
+        );
+    countMintedToolUseId(bufferPath, id, lateUntil);
+  }
+
   hasCountedToolUseId(sessionId: string, toolUseId: string): boolean {
-    if (!SESSION_ID_RE.test(sessionId)) return false;
-    return this.countedFileNames().some(
-      (name) =>
-        name.startsWith(`${sessionId}.`) &&
-        name.endsWith('.json') &&
-        readCountedToolUseIds(resolve(this.countedDir, name)).includes(toolUseId),
+    return this.countedToolUseIds(sessionId).has(toolUseId);
+  }
+
+  countedToolUseIds(sessionId: string): Set<string> {
+    if (!SESSION_ID_RE.test(sessionId)) return new Set();
+    return new Set(
+      this.countedFileNames()
+        .filter((name) => name.startsWith(`${sessionId}.`) && name.endsWith('.json'))
+        .flatMap((name) => readCountedToolUseIds(resolve(this.countedDir, name))),
     );
   }
 
@@ -489,14 +532,18 @@ export class LocalStore {
    * Called from the shutdown handler so the next maintenance GC pass knows
    * the buffer is up for adoption.
    *
-   * No-op if no heartbeat was ever written or if the file is already gone.
+   * No-op if no heartbeat was ever written, if the file is already gone, or
+   * if it names a process other than `pid`, which now owns the session.
    */
-  removeHeartbeat(): void {
+  removeHeartbeat(pid: number = process.pid): void {
     if (!this.sessionId) return;
     const heartbeatPath = resolve(this.storagePath, `active-${this.sessionId}.pid`);
     const metaPath = resolve(this.storagePath, `active-${this.sessionId}.meta.json`);
     try {
-      if (existsSync(heartbeatPath)) unlinkSync(heartbeatPath);
+      if (existsSync(heartbeatPath)) {
+        if (readFileSync(heartbeatPath, 'utf-8').trim() !== String(pid)) return;
+        unlinkSync(heartbeatPath);
+      }
       if (existsSync(metaPath)) unlinkSync(metaPath);
     } catch (err) {
       logger.debug('Failed to remove heartbeat file', { error: String(err) });
@@ -893,10 +940,19 @@ export class LocalStore {
   gcWatcherCursors(
     activeSessionIds: ReadonlySet<string>,
     discoveryHours: number,
-  ): { subagentCursors: number; transcriptCursors: number; parentTranscriptCursors: number } {
-    if (!existsSync(this.storagePath)) {
-      return { subagentCursors: 0, transcriptCursors: 0, parentTranscriptCursors: 0 };
-    }
+  ): {
+    subagentCursors: number;
+    transcriptCursors: number;
+    parentTranscriptCursors: number;
+    mintedIdDirs: number;
+  } {
+    const none = {
+      subagentCursors: 0,
+      transcriptCursors: 0,
+      parentTranscriptCursors: 0,
+      mintedIdDirs: 0,
+    };
+    if (!existsSync(this.storagePath)) return none;
     let entries: string[];
     try {
       entries = readdirSync(this.storagePath);
@@ -904,7 +960,7 @@ export class LocalStore {
       logger.warn('Failed to enumerate storage path for gcWatcherCursors', {
         error: String(err),
       });
-      return { subagentCursors: 0, transcriptCursors: 0, parentTranscriptCursors: 0 };
+      return none;
     }
 
     const cutoffMs = Date.now() - discoveryHours * 60 * 60 * 1000;
@@ -913,8 +969,25 @@ export class LocalStore {
     let subagentCursors = 0;
     let transcriptCursors = 0;
     let parentTranscriptCursors = 0;
+    let mintedIdDirs = 0;
 
     for (const name of entries) {
+      // A post can arrive long after its session's engine exits, so a minted id
+      // stays until the session is dead and idle past the discovery window.
+      const mintedMatch = MINTED_IDS_DIR_RE.exec(name);
+      if (mintedMatch) {
+        if (activeSessionIds.has(mintedMatch[1])) continue;
+        const path = resolve(this.storagePath, name);
+        try {
+          if (statSync(path).mtimeMs >= cutoffMs) continue;
+          rmSync(path, { recursive: true, force: true });
+          mintedIdDirs++;
+        } catch (err) {
+          logger.debug('Failed to delete stale minted ids', { error: String(err) });
+        }
+        continue;
+      }
+
       const subagentMatch = SUBAGENT_CURSOR_RE.exec(name);
       if (subagentMatch) {
         const parentSessionId = subagentMatch[1];
@@ -967,15 +1040,21 @@ export class LocalStore {
       }
     }
 
-    if (subagentCursors > 0 || transcriptCursors > 0 || parentTranscriptCursors > 0) {
+    if (
+      subagentCursors > 0 ||
+      transcriptCursors > 0 ||
+      parentTranscriptCursors > 0 ||
+      mintedIdDirs > 0
+    ) {
       logger.info('Cleaned up watcher cursor files', {
         subagentCursors,
         transcriptCursors,
         parentTranscriptCursors,
+        mintedIdDirs,
       });
     }
 
-    return { subagentCursors, transcriptCursors, parentTranscriptCursors };
+    return { subagentCursors, transcriptCursors, parentTranscriptCursors, mintedIdDirs };
   }
 
   /**
@@ -1100,42 +1179,103 @@ export class LocalStore {
 
   /**
    * Garbage-collect stale per-PPID breadcrumb files at
-   * `<storage>/session-by-ppid/<pid>.txt`. A breadcrumb is stale when its
-   * PID names a process that no longer exists (Claude Code session ended).
+   * `<storage>/breadcrumbs/<writer>/session-by-ppid/<pid>.txt`, and at
+   * `<storage>/session-by-ppid/<pid>.txt` where older collectors wrote
+   * them. A breadcrumb is stale when its PID names a process that no longer
+   * exists (its engine's session ended). A cwd breadcrumb at
+   * `session-by-cwd/<cwd>.txt` names no process, so it is stale when it and
+   * every same-root ppid breadcrumb naming its session are older than
+   * `STALE_CWD_BREADCRUMB_MS`. A collector that never refreshes an unchanged
+   * cwd breadcrumb still touches the ppid one on each event.
    *
    * @returns the number of breadcrumb files deleted
    */
   gcStaleBreadcrumbs(): number {
-    const breadcrumbDir = resolve(this.storagePath, 'session-by-ppid');
-    if (!existsSync(breadcrumbDir)) return 0;
-
-    let entries: string[];
-    try {
-      entries = readdirSync(breadcrumbDir);
-    } catch (err) {
-      logger.warn('Failed to enumerate breadcrumb dir for gcStaleBreadcrumbs', {
-        error: String(err),
-      });
-      return 0;
-    }
+    const roots = [
+      this.storagePath,
+      ...breadcrumbWriters(this.storagePath).map((writer) =>
+        breadcrumbRoot(this.storagePath, writer),
+      ),
+    ];
+    const breadcrumbDirs = roots.map((root) => resolve(root, 'session-by-ppid'));
 
     let deleted = 0;
-    for (const name of entries) {
-      if (!name.endsWith('.txt')) continue;
-      const pidStr = name.slice(0, -'.txt'.length);
-      const pid = Number.parseInt(pidStr, 10);
-      if (!Number.isFinite(pid) || pid <= 0) continue;
-      if (isPidAlive(pid)) continue;
-      const path = resolve(breadcrumbDir, name);
+    for (const root of roots) deleted += this.gcStaleCwdBreadcrumbs(root);
+    for (const breadcrumbDir of breadcrumbDirs) {
+      let entries: string[];
       try {
-        unlinkSync(path);
-        deleted++;
+        entries = readdirSync(breadcrumbDir);
       } catch (err) {
-        logger.debug('Failed to delete stale breadcrumb', { pid, error: String(err) });
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        logger.warn('Failed to enumerate breadcrumb dir for gcStaleBreadcrumbs', {
+          error: String(err),
+        });
+        continue;
+      }
+      for (const name of entries) {
+        if (!name.endsWith('.txt')) continue;
+        const pid = Number.parseInt(name.slice(0, -'.txt'.length), 10);
+        if (!Number.isFinite(pid) || pid <= 0) continue;
+        if (isPidAlive(pid)) continue;
+        try {
+          unlinkSync(resolve(breadcrumbDir, name));
+          deleted++;
+        } catch (err) {
+          logger.debug('Failed to delete stale breadcrumb', { pid, error: String(err) });
+        }
       }
     }
     if (deleted > 0) {
       logger.info('Cleaned up stale breadcrumbs', { deleted });
+    }
+    return deleted;
+  }
+
+  private gcStaleCwdBreadcrumbs(root: string): number {
+    const cutoff = Date.now() - STALE_CWD_BREADCRUMB_MS;
+    const cwdDir = resolve(root, 'session-by-cwd');
+    let names: string[];
+    try {
+      names = readdirSync(cwdDir).filter((name) => name.endsWith('.txt'));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn('Failed to enumerate cwd breadcrumb dir', { error: String(err) });
+      }
+      return 0;
+    }
+    const readFresh = (path: string): string | null => {
+      try {
+        return statSync(path).mtimeMs >= cutoff ? readFileSync(path, 'utf-8').trim() : null;
+      } catch {
+        return null;
+      }
+    };
+    const ppidDir = resolve(root, 'session-by-ppid');
+    let liveSessions: Set<string> | undefined;
+    const liveSessionIds = () => {
+      if (liveSessions) return liveSessions;
+      liveSessions = new Set();
+      try {
+        for (const name of readdirSync(ppidDir)) {
+          const id = readFresh(resolve(ppidDir, name));
+          if (id) liveSessions.add(id);
+        }
+      } catch {
+        // no ppid dir means no fresh ppid breadcrumbs
+      }
+      return liveSessions;
+    };
+    let deleted = 0;
+    for (const name of names) {
+      const path = resolve(cwdDir, name);
+      try {
+        if (statSync(path).mtimeMs >= cutoff) continue;
+        if (liveSessionIds().has(readFileSync(path, 'utf-8').trim())) continue;
+        unlinkSync(path);
+        deleted++;
+      } catch (err) {
+        logger.debug('Failed to delete stale cwd breadcrumb', { name, error: String(err) });
+      }
     }
     return deleted;
   }
@@ -1300,34 +1440,42 @@ export class LocalStore {
       readonly path: string;
       readonly firstClaimedAt: number;
       readonly origin: string;
+      readonly stuck: boolean;
     }[] = [];
     let mayAdopt: boolean | undefined;
     for (const claim of drain.claims) {
-      if (claim.owner === process.pid) owned.push({ ...claim, origin: claim.path });
+      if (claim.owner === process.pid) owned.push({ ...claim, origin: claim.path, stuck: false });
       else if (isAdoptable(claim, isPidAlive) && (mayAdopt ??= !ownerLive())) {
-        const path = this.claimDrain(claim.path, drainsDir, claim.buffer, claim.firstClaimedAt);
-        if (path) owned.push({ path, firstClaimedAt: claim.firstClaimedAt, origin: claim.path });
+        const claimed = this.claimDrain(claim.path, drainsDir, claim.buffer, claim.firstClaimedAt);
+        if (claimed === 'gone') continue;
+        const stuck = claimed === 'stuck';
+        owned.push({
+          path: stuck ? claim.path : claimed.path,
+          firstClaimedAt: claim.firstClaimedAt,
+          origin: claim.path,
+          stuck,
+        });
       }
     }
-    const paths = owned
-      .sort((a, b) => a.firstClaimedAt - b.firstClaimedAt || (a.origin < b.origin ? -1 : 1))
-      .map(({ path }) => path);
+    owned.sort((a, b) => a.firstClaimedAt - b.firstClaimedAt || (a.origin < b.origin ? -1 : 1));
 
     const hold = this.holds.get(bufferPath) ?? new DrainHold();
     const events: HookEvent[] = [];
-    const take = (path: string): boolean => {
-      const taken = hold.take(path, this.giveUpOrder);
+    const take = ({ path, stuck }: { readonly path: string; readonly stuck: boolean }): boolean => {
+      const taken = stuck
+        ? hold.holdBehind(path, this.giveUpOrder)
+        : hold.take(path, this.giveUpOrder);
       if (taken === 'stop') return false;
       if (taken !== 'skip') for (const event of parseHookEvents(taken.text)) events.push(event);
       return true;
     };
-    const finished = paths.every(take);
+    const finished = owned.every(take);
     // The buffer is claimed only once every older claim is taken or given up, and ownerLive is
     // asked again on purpose: an engine can adopt the session while the claims above are taken.
     const olderEventsPending = drain.claims.some((claim) => holdsBuffer(claim, isPidAlive));
     if (finished && drain.present && !olderEventsPending && !ownerLive()) {
-      const path = this.claimDrain(bufferPath, drainsDir, basename(bufferPath));
-      if (path) take(path);
+      const claimed = this.claimDrain(bufferPath, drainsDir, basename(bufferPath));
+      if (typeof claimed === 'object') take({ path: claimed.path, stuck: false });
     }
     hold.endPoll();
     if (hold.idle) this.holds.delete(bufferPath);
@@ -1340,7 +1488,7 @@ export class LocalStore {
     drainsDir: string,
     buffer: string,
     firstClaimedAt?: number,
-  ): string | null {
+  ): { readonly path: string } | 'gone' | 'stuck' {
     const to = resolve(drainsDir, formatClaimName(buffer, process.pid, Date.now(), firstClaimedAt));
     try {
       try {
@@ -1351,14 +1499,14 @@ export class LocalStore {
         renameSync(from, to);
       }
       clearFailure(from);
-      return to;
+      return { path: to };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         clearFailure(from);
-      } else {
-        noteFailure(from, 'Failed to claim a buffer for draining — retrying each poll', err);
+        return 'gone';
       }
-      return null;
+      noteFailure(from, 'Failed to claim a buffer for draining — retrying each poll', err);
+      return 'stuck';
     }
   }
 

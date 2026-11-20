@@ -72,6 +72,29 @@ describe('Today view', () => {
     expect(screen.getByText('$12.17')).toBeInTheDocument();
   });
 
+  it('marks the spend today figure as an estimate', () => {
+    renderToday();
+    const tile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+    expect(within(tile).getByText('est.')).toBeInTheDocument();
+  });
+
+  it('hides the estimate marker while the spend today figure is still loading', () => {
+    useLiveStore.setState({ cost: null });
+    globalThis.fetch = vi.fn(async (input) => {
+      if (String(input).includes('/api/sessions/today/aggregate')) {
+        return new Promise<Response>(() => {});
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    renderToday();
+    const tile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+    expect(within(tile).getByText('…')).toBeInTheDocument();
+    expect(within(tile).queryByText('est.')).toBeNull();
+  });
+
   it('renders the efficiency score KPI', () => {
     renderToday();
     expect(screen.getByText('efficiency')).toBeInTheDocument();
@@ -84,6 +107,11 @@ describe('Today view', () => {
     expect(
       spendHeading.compareDocumentPosition(attentionHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it('mounts the process-scoped Tasks panel', async () => {
+    renderToday();
+    expect(await screen.findByText('Tasks (this process)')).toBeInTheDocument();
   });
 
   // Anti-pattern/flag rendering moved to the "Needs attention" panel — see
@@ -194,6 +222,42 @@ describe('Today view', () => {
     expect(screen.getByText('$0.06')).toBeInTheDocument();
     expect(screen.getByText(/longest failure streak/i)).toBeInTheDocument();
     expect(await screen.findByText('tool_results')).toBeInTheDocument();
+  });
+
+  it('passes the live session to the detail dialog so its copy buttons are enabled', async () => {
+    stubTurnCostsAndDecisionTree(1);
+    const stubbed = globalThis.fetch;
+    const json = (body: unknown): Response =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/live')) {
+        return json([
+          { sessionId: 'session-copy', sessionName: 'copy me', startTime: 1, lastActivity: 2 },
+        ]);
+      }
+      if (url.includes('/api/sessions/session-copy/replay')) {
+        return json({ sessionId: 'session-copy', timeline: [] });
+      }
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return json({
+          toolCallCount: 1,
+          totalCostUsd: 0,
+          antiPatternCount: 0,
+          avgDurationMs: 0,
+          sessionCount: 1,
+          sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
+        });
+      }
+      return stubbed(input, init);
+    }) as typeof fetch;
+    renderToday();
+    fireEvent.click(await screen.findByText(/session detail/i));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /copy as markdown/i })).toBeEnabled();
   });
 
   it('hides the trigger when neither tracker has data', async () => {
@@ -593,6 +657,110 @@ describe('Today view', () => {
 
     renderToday();
     await waitFor(() => expect(screen.getByText(/^→ \$8\.00 by end of day/)).toBeInTheDocument());
+  });
+
+  function stubForecastSources(
+    aggregateBody: Record<string, unknown>,
+    costBody: Record<string, unknown> = {
+      cost: { sessionTotalCostUsd: 5 },
+      forecast: { forecastEndOfDayUsd: 27.62 },
+      sessionTodayUsd: 5,
+    },
+    sessions: unknown[] = [],
+  ): void {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      const body = url.includes('/api/sessions/today/aggregate')
+        ? aggregateBody
+        : url.includes('/api/sessions?limit=')
+          ? sessions
+          : url.includes('/api/cost')
+            ? costBody
+            : [];
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+  }
+
+  it('falls back to the SSE forecast when the aggregate has today spend but a null forecast', async () => {
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 12.17, forecastEodUsd: 80.53 },
+    });
+    stubForecastSources({ totalCostUsd: 20, forecastEndOfDayUsd: null, sessionCount: 4 });
+
+    renderToday();
+    await waitFor(() => {
+      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+      expect(within(spendTile).getByText('$20.00')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/^→ \$80\.53 by end of day/)).toBeInTheDocument();
+  });
+
+  async function renderBehindAggregate(
+    apiForecastUsd: number | null,
+    aggregateForecastUsd = 12,
+  ): Promise<void> {
+    useLiveStore.setState({ cost: null });
+    stubForecastSources(
+      { totalCostUsd: 10, forecastEndOfDayUsd: aggregateForecastUsd, sessionCount: 4 },
+      {
+        cost: { sessionTotalCostUsd: 15 },
+        forecast: apiForecastUsd === null ? null : { forecastEndOfDayUsd: apiForecastUsd },
+        sessionTodayUsd: 15,
+      },
+      [{ sessionId: 's1', startTime: Date.now() - 60_000, estimatedCostUsd: 10, toolCallCount: 3 }],
+    );
+
+    renderToday();
+    await waitFor(() => expect(screen.getByText('Spend by hour')).toBeInTheDocument());
+    await waitFor(() => {
+      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+      expect(within(spendTile).getByText('$15.00')).toBeInTheDocument();
+      expect(screen.getByText('4')).toBeInTheDocument();
+    });
+  }
+
+  it('hides the day forecast but keeps the week forecast when every forecast is below spend', async () => {
+    await renderBehindAggregate(null);
+    expect(screen.queryByText(/by end of day/)).toBeNull();
+    expect(screen.getByText(/On pace for ~\$\d/)).toBeInTheDocument();
+  });
+
+  it('falls through a stale aggregate forecast below spend to the /api/cost one, naming its source', async () => {
+    await renderBehindAggregate(20);
+    expect(screen.getByText(/^→ \$20\.00 by end of day \(this session\)/)).toBeInTheDocument();
+  });
+
+  it('keeps an aggregate forecast equal to spend rather than falling through to a later source', async () => {
+    await renderBehindAggregate(20, 15);
+    expect(screen.queryByText(/by end of day/)).toBeNull();
+  });
+
+  it('bridges with the SSE forecast while the aggregate has seen no spend today', async () => {
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 4, forecastEodUsd: 8 },
+    });
+    stubForecastSources({ totalCostUsd: 0, forecastEndOfDayUsd: null, sessionCount: 3 });
+
+    renderToday();
+    await waitFor(() => expect(screen.getByText('3')).toBeInTheDocument());
+    expect(
+      screen.getByText(/^→ \$8\.00 by end of day \(all spend so far, this session's pace\)/),
+    ).toBeInTheDocument();
+  });
+
+  it('uses the aggregate forecast over the SSE forecast once the aggregate has one', async () => {
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 4, forecastEodUsd: 80.53 },
+    });
+    stubForecastSources({ totalCostUsd: 5, forecastEndOfDayUsd: 9, sessionCount: 2 });
+
+    renderToday();
+    await waitFor(() =>
+      expect(screen.getByText(/^→ \$9\.00 by end of day \(all sessions\)/)).toBeInTheDocument(),
+    );
   });
 
   function stubObservabilityHealth(body: Record<string, unknown>): void {
@@ -1504,6 +1672,44 @@ describe('Today view — Cache Health panel', () => {
       </QueryClientProvider>,
     );
     expect(await screen.findByText(/\$1\.50 saved today/)).toBeInTheDocument();
+  });
+
+  it('shows sub-cent savings as $0.004, not $0.00', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 0,
+            totalCostUsd: 0,
+            antiPatternCount: 0,
+            avgDurationMs: 0,
+            sessionCount: 1,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
+            cacheHealth: {
+              status: 'needs_attention',
+              cacheHitRatePct: 12,
+              totalCacheReadTokens: 3000,
+              totalCacheCreationTokens: 500,
+              totalSavingsUsd: 0.004,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Today />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/\$0\.004 saved today/)).toBeInTheDocument();
   });
 
   it('renders the cache hit rate from the aggregate endpoint, not the per-process cache-health snapshot', async () => {
@@ -3097,15 +3303,19 @@ describe('Today view — daily budget KPI', () => {
   async function expectTile(
     value: string,
     sub: string,
-    tone: 'neutral' | 'amber' | 'red',
+    tone: 'neutral' | 'caution' | 'amber' | 'red',
   ): Promise<void> {
     const tile = await budgetTile();
-    await waitFor(() => expect(within(tile).getByText(sub)).toBeInTheDocument());
+    await waitFor(() => expect(tile.lastElementChild?.textContent).toBe(sub));
     const v = within(tile).getByText(value);
+    const valueTone = tone === 'caution' ? 'neutral' : tone;
     for (const t of ['amber', 'red'] as const) {
-      if (t === tone) expect(v).toHaveClass(`text-accent-${t}`);
+      if (t === valueTone) expect(v).toHaveClass(`text-accent-${t}`);
       else expect(v).not.toHaveClass(`text-accent-${t}`);
     }
+    const percent = within(tile).getByText(/% used$/);
+    if (tone === 'caution') expect(percent).toHaveClass('text-accent-amber');
+    else expect(percent).not.toHaveClass('text-accent-amber');
   }
 
   it('shows spend against the daily cap and the percent used when a daily budget is set', async () => {
@@ -3132,7 +3342,9 @@ describe('Today view — daily budget KPI', () => {
     const reported = await screen.findByText(`reported $7.25 as of ${asOfTime(now)}`);
     expect(reported).not.toHaveClass('opacity-60');
     expect(screen.queryByText('stale')).toBeNull();
-    expect(screen.getByText('of $10.00 · 40% used')).toBeInTheDocument();
+    expect(within(await budgetTile()).getByText(/^of \$10\.00 · /)).toHaveTextContent(
+      'of $10.00 · 40% used',
+    );
     expect(within(await budgetTile()).getByText('$4.00')).toBeInTheDocument();
     expect(within(screen.getByText('daily budget').parentElement!).getByText('est.')).toBeTruthy();
   });
@@ -3193,23 +3405,21 @@ describe('Today view — daily budget KPI', () => {
     expect(screen.queryByText(/No daily budget set/)).toBeNull();
   });
 
-  it('switches the budget value to the warning tone at 50 percent used', async () => {
-    stubBudget({ budgetUsd: 10, spentUsd: 5, pctUsed: 50, exceeded: false });
-    renderToday();
-    await expectTile('$5.00', 'of $10.00 · 50% used', 'amber');
-  });
-
-  it('keeps the budget value out of the warning tone below 50 percent used', async () => {
-    stubBudget({ budgetUsd: 10, spentUsd: 4.9, pctUsed: 49, exceeded: false });
-    renderToday();
-    await expectTile('$4.90', 'of $10.00 · 49% used', 'neutral');
-  });
-
-  it('switches the budget value to the warning tone at 80 percent used', async () => {
-    stubBudget({ budgetUsd: 10, spentUsd: 8, pctUsed: 80, exceeded: false });
-    renderToday();
-    await expectTile('$8.00', 'of $10.00 · 80% used', 'amber');
-  });
+  it.each([
+    [4.9, 49, '$4.90', 'neutral'],
+    [5, 50, '$5.00', 'caution'],
+    [7.9, 79, '$7.90', 'caution'],
+    [8, 80, '$8.00', 'amber'],
+    [9.9, 99, '$9.90', 'amber'],
+    [10, 100, '$10.00', 'red'],
+  ] as const)(
+    'spent %s of a 10 dollar cap (%s percent) reads %s',
+    async (spent, pct, value, tone) => {
+      stubBudget({ budgetUsd: 10, spentUsd: spent, pctUsed: pct, exceeded: false });
+      renderToday();
+      await expectTile(value, `of $10.00 · ${pct}% used`, tone);
+    },
+  );
 
   it('switches the budget value to the danger tone and says over budget once the cap is passed', async () => {
     stubBudget({ budgetUsd: 10, spentUsd: 12.5, pctUsed: 125, exceeded: true });
@@ -3250,9 +3460,60 @@ describe('Today view — daily budget KPI', () => {
     await expectTile('$10.00', 'of $10.00 · 99% used', 'amber');
   });
 
-  it('goes red when the API says exceeded even if the local total is under the cap', async () => {
+  it('labels a spend that is exactly 80 percent of the cap as 80 despite float error', async () => {
+    stubBudget({ budgetUsd: 5.65, spentUsd: 4.52, pctUsed: 80, exceeded: false });
+    renderToday();
+    await expectTile('$4.52', 'of $5.65 · 80% used', 'amber');
+  });
+
+  it('ignores the API exceeded flag when the day total is under the cap', async () => {
     stubBudget({ budgetUsd: 10, spentUsd: 11, pctUsed: 110, exceeded: true }, 4);
     renderToday();
-    await expectTile('$4.00', 'of $10.00 · 40% used · over budget', 'red');
+    await expectTile('$4.00', 'of $10.00 · 40% used', 'neutral');
+  });
+
+  it('does not call float noise just above the cap over budget', async () => {
+    stubBudget({ budgetUsd: 0.3, spentUsd: 0.1 + 0.2, pctUsed: 100, exceeded: false });
+    renderToday();
+    await expectTile('$0.30', 'of $0.30 · 100% used', 'red');
+  });
+
+  it('shows a loading figure, not $0.00 and 0 percent, while spend is still loading', async () => {
+    useLiveStore.setState({ cost: null });
+    const period = { budgetUsd: null, spentUsd: 0, pctUsed: null, exceeded: false };
+    globalThis.fetch = vi.fn(async (input) => {
+      if (!String(input).startsWith('/api/budget')) return new Promise<Response>(() => {});
+      const daily = { budgetUsd: 10, spentUsd: 0, pctUsed: 0, exceeded: false };
+      return new Response(JSON.stringify({ session: period, daily, weekly: period, alerts: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    renderToday();
+
+    const tile = await budgetTile();
+    expect(within(tile).getByText('…')).toBeInTheDocument();
+    expect(tile.lastElementChild?.textContent).toBe('loading…');
+    expect(tile.textContent).not.toMatch(/\$0\.00|% used/);
+  });
+
+  it('shows the danger tone at exactly the cap without saying over budget', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 10, pctUsed: 100, exceeded: false });
+    renderToday();
+    await expectTile('$10.00', 'of $10.00 · 100% used', 'red');
+  });
+
+  it('adds a sixth column to the strip only while the budget tile shows', async () => {
+    stubBudget({ budgetUsd: 10, spentUsd: 4, pctUsed: 40, exceeded: false });
+    renderToday();
+    const grid = (await budgetTile()).parentElement as HTMLElement;
+    expect(grid).toHaveClass('grid-cols-6');
+  });
+
+  it('keeps five columns in the strip when no daily budget is set', async () => {
+    stubBudget({ budgetUsd: null, spentUsd: 1.5, pctUsed: null, exceeded: false });
+    renderToday();
+    const label = await screen.findByText('spend today');
+    expect((label.parentElement as HTMLElement).parentElement).toHaveClass('grid-cols-5');
   });
 });

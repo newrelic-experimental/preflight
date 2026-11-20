@@ -79,21 +79,6 @@ describe('LiveSessionRegistry', () => {
     expect(all).toHaveLength(2);
   });
 
-  it('getPeakConcurrent() still counts synthetic sessions (unfiltered internal tracking)', () => {
-    const reg = new LiveSessionRegistry(5000);
-    reg.touch('local-a');
-    reg.touch('local-b');
-    reg.touch('real-c');
-    expect(reg.getPeakConcurrent()).toBe(3);
-  });
-
-  it('getConcurrentCount() still counts synthetic sessions (unfiltered internal tracking)', () => {
-    const reg = new LiveSessionRegistry(5000);
-    reg.touch('local-a');
-    reg.touch('proxy-b');
-    expect(reg.getConcurrentCount()).toBe(2);
-  });
-
   it('reset() clears all tracked sessions', () => {
     const reg = new LiveSessionRegistry();
     reg.touch('sess-a');
@@ -149,62 +134,54 @@ describe('LiveSessionRegistry', () => {
     });
   });
 
-  describe('concurrency tracking', () => {
-    it('tracks peak concurrent sessions via touch()', () => {
-      const reg = new LiveSessionRegistry(5000);
-      reg.touch('a');
-      reg.touch('b');
-      reg.touch('c');
-      expect(reg.getPeakConcurrent()).toBe(3);
-    });
-
-    it('getConcurrentCount() returns current live count', () => {
-      const reg = new LiveSessionRegistry(5000);
-      reg.touch('a');
-      reg.touch('b');
-      expect(reg.getConcurrentCount()).toBe(2);
-      jest.advanceTimersByTime(6000);
-      expect(reg.getConcurrentCount()).toBe(0);
-    });
-
-    it('peak persists even after sessions go stale', () => {
-      const reg = new LiveSessionRegistry(5000);
-      reg.touch('a');
-      reg.touch('b');
-      reg.touch('c');
-      jest.advanceTimersByTime(6000);
-      expect(reg.getConcurrentCount()).toBe(0);
-      expect(reg.getPeakConcurrent()).toBe(3);
-    });
-
-    it('startSampling() records time series entries', () => {
-      const reg = new LiveSessionRegistry(60_000);
-      reg.touch('a');
-      reg.startSampling();
-      jest.advanceTimersByTime(30_000);
-      const ts = reg.getConcurrencyTimeSeries();
-      expect(ts.length).toBe(1);
-      expect(ts[0]!.count).toBe(1);
-      reg.stopSampling();
-    });
-
-    it('stopSampling() halts recording', () => {
-      const reg = new LiveSessionRegistry(60_000);
-      reg.startSampling();
-      jest.advanceTimersByTime(30_000);
-      reg.stopSampling();
-      jest.advanceTimersByTime(60_000);
-      expect(reg.getConcurrencyTimeSeries().length).toBe(1);
-    });
-
-    it('time series caps at max buffer size', () => {
+  describe('hold and getHeldSessionIds', () => {
+    it('hold() does not make a session live, seen today, or named', () => {
       const reg = new LiveSessionRegistry();
-      reg.touch('a');
-      reg.startSampling();
-      jest.advanceTimersByTime(30_000 * 2900);
-      const ts = reg.getConcurrencyTimeSeries();
-      expect(ts.length).toBeLessThanOrEqual(2880);
-      reg.stopSampling();
+      reg.hold('sess-tokens');
+      expect(reg.isLive('sess-tokens')).toBe(false);
+      expect(reg.getLiveSessions({ includeSynthetic: true })).toEqual([]);
+      expect(reg.getTodaySessionIds({ includeSynthetic: true })).toEqual([]);
+      expect(reg.getSessionName('sess-tokens')).toBeNull();
+      expect(reg.getHeldSessionIds()).toEqual(['sess-tokens']);
+    });
+
+    it('touch() also holds the session', () => {
+      const reg = new LiveSessionRegistry();
+      reg.touch('sess-a');
+      expect(reg.getHeldSessionIds()).toEqual(['sess-a']);
+    });
+
+    it('includes synthetic session IDs', () => {
+      const reg = new LiveSessionRegistry();
+      reg.hold('local-1234567890');
+      expect(reg.getHeldSessionIds()).toEqual(['local-1234567890']);
+    });
+
+    it('survives staleness eviction in getLiveSessions and isLive', () => {
+      const reg = new LiveSessionRegistry(5000);
+      reg.touch('sess-a');
+      reg.hold('sess-tokens');
+      jest.advanceTimersByTime(6000);
+      expect(reg.getLiveSessions()).toEqual([]);
+      expect(reg.isLive('sess-a')).toBe(false);
+      expect(reg.getHeldSessionIds()).toEqual(expect.arrayContaining(['sess-a', 'sess-tokens']));
+    });
+
+    it('survives the local-midnight rollover that expires getTodaySessionIds', () => {
+      jest.setSystemTime(new Date(2026, 0, 15, 23, 59, 0));
+      const reg = new LiveSessionRegistry();
+      reg.hold('sess-tokens');
+      jest.setSystemTime(new Date(2026, 0, 16, 0, 1, 0));
+      expect(reg.getTodaySessionIds({ includeSynthetic: true })).toEqual([]);
+      expect(reg.getHeldSessionIds()).toEqual(['sess-tokens']);
+    });
+
+    it('is cleared on reset()', () => {
+      const reg = new LiveSessionRegistry();
+      reg.hold('sess-tokens');
+      reg.touch('sess-a');
+      reg.reset();
+      expect(reg.getHeldSessionIds()).toEqual([]);
     });
   });
 

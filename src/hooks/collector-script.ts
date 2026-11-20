@@ -7,8 +7,8 @@
  * extracts key fields, and appends a single JSONL line to the buffer file.
  *
  * Design constraints:
- *   - <5ms execution budget — must never slow Claude Code
- *   - No heavy imports (no shared package, no commander, no zod)
+ *   - ~5ms in-process execution budget — must never slow Claude Code
+ *   - No heavy imports (no core imports, no commander, no zod)
  *   - All errors caught silently — always exits 0
  *   - Config via env vars only (no file reads for config)
  */
@@ -17,18 +17,36 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, utimesSync } from '
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { REDACTION_PATTERNS } from '../redaction-patterns.js';
+import { cutAtWord, redactSecrets } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
-import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
+import {
+  CLAUDE_CODE_ENV_SIGNALS,
+  CLAUDE_CODE_PLATFORM_NAME,
+} from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
-import { appendToHookBuffer } from '../storage/hook-buffer.js';
+import { canonicalPlatformName, ENGINE_ENV_KEYS } from '../platforms/platform-names.js';
+import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
+import {
+  claimReport,
+  hookSelfReportLine,
+  releaseReport,
+  SESSION_ID_RE,
+  type HookReportCall,
+} from './self-report.js';
+import { breadcrumbRoot, breadcrumbWriter } from './session-breadcrumbs.js';
+import { appendToHookBuffer, LineWrittenError } from '../storage/hook-buffer.js';
+import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
+import { mintToolUseId, takeMintedToolUseId } from './minted-tool-use-ids.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
 // ---------------------------------------------------------------------------
 
-const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 const DEFAULT_STORAGE_DIR = resolve(homedir(), '.newrelic-preflight');
+
+function getStorageDir(): string {
+  return process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+}
 
 /**
  * Resolve the per-session buffer path. Validates sessionId against
@@ -44,14 +62,14 @@ function getBufferPath(sessionId?: string): string {
   if (process.env.NEW_RELIC_AI_MCP_BUFFER_PATH !== undefined) {
     return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   }
-  const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+  const storageDir = getStorageDir();
   const safeId =
     typeof sessionId === 'string' && SESSION_ID_RE.test(sessionId) ? sessionId : 'unknown';
   return resolve(storageDir, `buffer-${safeId}.jsonl`);
 }
 
 // Cache only the file-read result to avoid repeated disk I/O on the hot path
-// (<5ms budget per hook invocation) while keeping the env-var check dynamic
+// (~5ms budget per hook invocation) while keeping the env-var check dynamic
 // so runtime changes in tests (and future dynamic config) are respected.
 // This also eliminates the TOCTOU window between existsSync and readFileSync.
 const HIGH_SECURITY_FROM_FILE: boolean = (() => {
@@ -82,12 +100,39 @@ function getRecordContent(): boolean {
   );
 }
 
-function getMaxContentLength(): number {
+const DEFAULT_MAX_CONTENT_LENGTH = 10_240;
+const MIN_MAX_CONTENT_LENGTH = 256;
+const MAX_MAX_CONTENT_LENGTH = 1_048_576;
+
+// Clamps like envInt in src/config.ts. Not imported: config.ts pulls zod and the
+// config loader into the plugin bundle.
+export function getMaxContentLength(): number {
   const val = process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
-  if (val === undefined) return 10_240;
+  if (val === undefined) return DEFAULT_MAX_CONTENT_LENGTH;
   const parsed = parseInt(val, 10);
-  return Number.isNaN(parsed) ? 10_240 : parsed;
+  if (Number.isNaN(parsed)) return DEFAULT_MAX_CONTENT_LENGTH;
+  if (parsed < MIN_MAX_CONTENT_LENGTH) return MIN_MAX_CONTENT_LENGTH;
+  if (parsed > MAX_MAX_CONTENT_LENGTH) return MAX_MAX_CONTENT_LENGTH;
+  return parsed;
 }
+
+// These event names exist on only one platform, so the event itself names it.
+const HOOK_EVENT_PLATFORM: Readonly<Record<string, string>> = {
+  beforeshellexecution: 'cursor',
+  aftershellexecution: 'cursor',
+  beforemcpexecution: 'cursor',
+  aftermcpexecution: 'cursor',
+  beforereadfile: 'cursor',
+  afterfileedit: 'cursor',
+  pre_read_code: 'windsurf',
+  post_read_code: 'windsurf',
+  pre_write_code: 'windsurf',
+  post_write_code: 'windsurf',
+  pre_run_command: 'windsurf',
+  post_run_command: 'windsurf',
+  pre_mcp_tool_use: 'windsurf',
+  post_mcp_tool_use: 'windsurf',
+};
 
 /**
  * Ambient stamping is deliberately limited to Claude Code, the only platform
@@ -95,11 +140,14 @@ function getMaxContentLength(): number {
  * explicit MCP_CLIENT in their generated hook commands.
  */
 function detectStampPlatform(): string | undefined {
-  const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
-  if (explicit) return explicit;
-  return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)
-    ? 'claude-code'
-    : undefined;
+  for (const key of ENGINE_ENV_KEYS) {
+    const name = canonicalPlatformName(process.env[key]);
+    if (name !== undefined) return name;
+  }
+  if (CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)) {
+    return CLAUDE_CODE_PLATFORM_NAME;
+  }
+  return (process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM) || undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -114,13 +162,10 @@ function redact(value: string): string {
   let result = value;
   if (Buffer.byteLength(value, 'utf8') > MAX_REDACT_BYTES) {
     const buf = Buffer.from(value, 'utf8').subarray(0, MAX_REDACT_BYTES);
-    result = buf.toString('utf8').replace(/�$/, ''); // drop any partial surrogate at cut point
+    const kept = buf.toString('utf8').replace(/�$/, ''); // drop any partial surrogate at cut point
+    result = cutAtWord(value, kept.length);
   }
-  for (const pattern of REDACTION_PATTERNS) {
-    const re = new RegExp(pattern.source, pattern.flags);
-    result = result.replace(re, '[REDACTED]');
-  }
-  return result;
+  return redactSecrets(result);
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +208,7 @@ function hasStringText(block: unknown): block is { text: string } {
 }
 
 // ---------------------------------------------------------------------------
-// PPID + cwd breadcrumbs — let the MCP server learn the Claude Code session_id
+// PPID + cwd breadcrumbs — let the MCP server learn its engine's session_id
 //
 // Claude Code spawns its MCP server and hook collector scripts as children of
 // the same process; they share a PPID. The MCP can read its own process.ppid
@@ -178,7 +223,7 @@ function hasStringText(block: unknown): block is { text: string } {
 //
 // Hot-path: every PreToolUse / PostToolUse hook runs this. The
 // existsSync + content-equality short-circuit makes the steady state a single
-// stat() and one read per breadcrumb — well under the <5ms budget.
+// stat() and one read per breadcrumb — well under the ~5ms budget.
 // ---------------------------------------------------------------------------
 
 /**
@@ -230,16 +275,21 @@ export function getLinuxAncestorPids(startPpid: number, maxDepth = 5): number[] 
 
 let _breadcrumbWriteFailed = false;
 
-function writePpidBreadcrumb(sessionId: string): void {
+function touch(path: string): void {
+  const now = new Date();
+  try {
+    utimesSync(path, now, now);
+  } catch {}
+}
+
+let _unknownEngineWarned = false;
+
+function writePpidBreadcrumb(sessionId: string, root: string, legacyRoot?: string): void {
   if (!SESSION_ID_RE.test(sessionId)) return;
   const ppid = process.ppid;
   if (typeof ppid !== 'number' || ppid <= 0) return;
 
   try {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    const breadcrumbDir = resolve(storageDir, 'session-by-ppid');
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
-
     // Walk ancestor PIDs. On Linux this includes any intermediate shell
     // processes interposed by the hook runner. On macOS/Windows the array
     // has exactly one element (process.ppid) — identical to before.
@@ -248,40 +298,36 @@ function writePpidBreadcrumb(sessionId: string): void {
     // sessions sharing a common ancestor PID may overwrite each other there.
     const pids = getLinuxAncestorPids(ppid);
 
-    let wroteAny = false;
-    for (const pid of pids) {
-      const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
-      // Short-circuit: no content rewrite needed if it already matches, but
-      // still touch mtime — resolveFromBreadcrumb() (session-resolver.ts)
-      // rejects a breadcrumb older than the reading process's own start
-      // time, so an actively-hooked session's breadcrumb must keep looking
-      // fresh across an MCP server restart (same ppid, same session_id,
-      // content genuinely unchanged) or that restart would permanently lose
-      // ppid-based resolution for the rest of the session. A breadcrumb from
-      // a session that's actually over stops getting touched here (nothing
-      // calls this with its old ppid+session_id again), so it still goes
-      // stale and gets rejected exactly as intended.
-      if (existsSync(breadcrumbPath)) {
-        try {
-          if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
-            const now = new Date();
-            try {
-              utimesSync(breadcrumbPath, now, now);
-            } catch {
-              // Best-effort — an unwritable mtime doesn't block the session.
+    for (const dir of legacyRoot === undefined ? [root] : [root, legacyRoot]) {
+      const breadcrumbDir = resolve(dir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
+      for (const pid of pids) {
+        const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
+        // Short-circuit: no content rewrite needed if it already matches, but
+        // still touch mtime — resolveFromBreadcrumb() (session-resolver.ts)
+        // rejects a breadcrumb older than the reading process's own start
+        // time, so an actively-hooked session's breadcrumb must keep looking
+        // fresh across an MCP server restart (same ppid, same session_id,
+        // content genuinely unchanged) or that restart would permanently lose
+        // ppid-based resolution for the rest of the session. A breadcrumb from
+        // a session that's actually over stops getting touched here (nothing
+        // calls this with its old ppid+session_id again), so it still goes
+        // stale and gets rejected exactly as intended.
+        if (existsSync(breadcrumbPath)) {
+          try {
+            if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
+              touch(breadcrumbPath);
+              continue;
             }
-            wroteAny = true;
-            continue;
+          } catch {
+            // Fall through to rewrite if the read failed.
           }
-        } catch {
-          // Fall through to rewrite if the read failed.
         }
+        writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
       }
-      writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
-      wroteAny = true;
     }
 
-    if (wroteAny) _breadcrumbWriteFailed = false;
+    _breadcrumbWriteFailed = false;
   } catch (err) {
     if (!_breadcrumbWriteFailed) {
       process.stderr.write(
@@ -294,36 +340,41 @@ function writePpidBreadcrumb(sessionId: string): void {
 
 let _cwdBreadcrumbWriteFailed = false;
 
-function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined): void {
+function writeCwdBreadcrumb(
+  sessionId: string,
+  cwd: string | undefined,
+  root: string,
+  legacyRoot?: string,
+): void {
   if (!SESSION_ID_RE.test(sessionId)) return;
   if (typeof cwd !== 'string' || cwd.length === 0) return;
 
+  // Same sanitization scheme as getTranscriptPath() above, so the MCP
+  // server's resolveFromCwd() can derive an identical filename from its
+  // own process.cwd() without any shared state beyond this convention.
+  // Colons are also stripped (unlike getTranscriptPath) — a Windows drive
+  // letter like "C:" left in the filename gets misinterpreted by
+  // path.resolve() on win32 as a drive-relative path component rather than
+  // a literal character, which can write/read outside this storage dir.
+  const sanitizedCwd = cwd.replace(/[\\/:]/g, '-');
+
   try {
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
-    const breadcrumbDir = resolve(storageDir, 'session-by-cwd');
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
-
-    // Same sanitization scheme as getTranscriptPath() above, so the MCP
-    // server's resolveFromCwd() can derive an identical filename from its
-    // own process.cwd() without any shared state beyond this convention.
-    // Colons are also stripped (unlike getTranscriptPath) — a Windows drive
-    // letter like "C:" left in the filename gets misinterpreted by
-    // path.resolve() on win32 as a drive-relative path component rather than
-    // a literal character, which can write/read outside this storage dir.
-    const sanitizedCwd = cwd.replace(/[\\/:]/g, '-');
-    const breadcrumbPath = resolve(breadcrumbDir, `${sanitizedCwd}.txt`);
-
-    if (existsSync(breadcrumbPath)) {
-      try {
-        if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
-          _cwdBreadcrumbWriteFailed = false;
-          return;
+    for (const dir of legacyRoot === undefined ? [root] : [root, legacyRoot]) {
+      const breadcrumbDir = resolve(dir, 'session-by-cwd');
+      mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
+      const breadcrumbPath = resolve(breadcrumbDir, `${sanitizedCwd}.txt`);
+      if (existsSync(breadcrumbPath)) {
+        try {
+          if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
+            touch(breadcrumbPath);
+            continue;
+          }
+        } catch {
+          // Fall through to rewrite if the read failed.
         }
-      } catch {
-        // Fall through to rewrite if the read failed.
       }
+      writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
     }
-    writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
     _cwdBreadcrumbWriteFailed = false;
   } catch (err) {
     if (!_cwdBreadcrumbWriteFailed) {
@@ -456,6 +507,33 @@ interface HookInput {
   [key: string]: unknown;
 }
 
+// GitHub owner and repo names: letters, digits, `.`, `_` and `-`.
+const GITHUB_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
+
+/** The target of a GitHub MCP PR call (`owner`, `repo`, and for an update or
+ *  merge `pullNumber`; see mcp-pr-tools.ts), as `prRepo` (`owner/repo`) and
+ *  `prNumber` (digits). A value that isn't a plain name or number is dropped. */
+function mcpPrInputMeta(
+  input: Record<string, unknown>,
+  action: ReturnType<typeof mcpPrToolAction>,
+): Record<string, string> {
+  const meta: Record<string, string> = {};
+  const { owner, repo, pullNumber } = input;
+  if (
+    typeof owner === 'string' &&
+    typeof repo === 'string' &&
+    GITHUB_NAME_RE.test(owner) &&
+    GITHUB_NAME_RE.test(repo)
+  ) {
+    meta.prRepo = `${owner}/${repo}`;
+  }
+  if (action !== 'create') {
+    const number = typeof pullNumber === 'number' ? String(pullNumber) : pullNumber;
+    if (typeof number === 'string' && /^[1-9]\d{0,8}$/.test(number)) meta.prNumber = number;
+  }
+  return meta;
+}
+
 /**
  * Extract only the metadata fields from tool_input that the tool-specific
  * parsers need. Full content strings are replaced with their lengths to
@@ -471,6 +549,9 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
   // (https://code.visualstudio.com/docs/copilot/customization/hooks).
   if (typeof obj.file_path === 'string') meta.file_path = obj.file_path;
   else if (typeof obj.filePath === 'string') meta.file_path = obj.filePath;
+
+  const prAction = mcpPrToolAction(toolName);
+  if (prAction !== undefined) Object.assign(meta, mcpPrInputMeta(obj, prAction));
 
   switch (toolName) {
     case 'Read':
@@ -644,7 +725,7 @@ function extractOutputMeta(
   if (output === null || output === undefined || typeof output !== 'object') return undefined;
   const obj = output as Record<string, unknown>;
 
-  if (toolName.endsWith('create_pull_request')) {
+  if (mcpPrToolAction(toolName) === 'create') {
     const createdPrNumber = findCreatedPrNumber(output as Record<string, unknown> | unknown[]);
     return createdPrNumber === undefined ? undefined : { createdPrNumber };
   }
@@ -727,6 +808,9 @@ function getWindsurfToolInfo(data: HookInput): Record<string, unknown> {
 
 let stderrSinkInstalled = false;
 
+// Cursor fires no pre for these, so their post has no minted id to take.
+const POST_ONLY_EVENTS: ReadonlySet<string> = new Set(['beforereadfile', 'afterfileedit']);
+
 /**
  * @param cliEvent The hook command's first argument (`process.argv[2]`), if
  *   any. Only consulted for Antigravity, whose payloads never name their own
@@ -755,7 +839,7 @@ function processHook(raw: string, cliEvent?: string): void {
     data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
 
   // Drop a PPID breadcrumb at the very top so the MCP server can resolve its
-  // Claude Code session_id without an env-var or initialize-payload extension.
+  // engine's session_id without an env-var or initialize-payload extension.
   // The function itself is a no-op when sessionId is missing or invalid, and
   // short-circuits if the breadcrumb is already current. Cursor's
   // conversation_id is deliberately excluded here — there is no confirmed
@@ -763,8 +847,22 @@ function processHook(raw: string, cliEvent?: string): void {
   // ancestry-based session-resolution model, so extending this to
   // conversation_id would be a guess, not a fix.
   if (typeof data.session_id === 'string' && data.session_id.length > 0) {
-    writePpidBreadcrumb(data.session_id);
-    writeCwdBreadcrumb(data.session_id, data.cwd);
+    const writer = breadcrumbWriter(process.env);
+    if (writer === UNATTRIBUTED_BREADCRUMB_WRITER && !_unknownEngineWarned) {
+      const unknownNames = ENGINE_ENV_KEYS.filter(
+        (key) => process.env[key] && canonicalPlatformName(process.env[key]) === undefined,
+      ).map((key) => `${key}=${JSON.stringify(process.env[key])}`);
+      if (unknownNames.length > 0) {
+        process.stderr.write(
+          `[preflight-collector] Warning: ${unknownNames.join(', ')} names no engine Preflight knows; filing the session breadcrumb as unattributed\n`,
+        );
+        _unknownEngineWarned = true;
+      }
+    }
+    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    const tagged = breadcrumbRoot(storageDir, writer);
+    writePpidBreadcrumb(data.session_id, tagged, storageDir);
+    writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);
   }
 
   // Claude Code sends PascalCase hook names ('PreToolUse'); Kiro sends
@@ -788,8 +886,9 @@ function processHook(raw: string, cliEvent?: string): void {
   // valid JSON — every one of its own example hooks prints "{}" even for
   // pure side-effect hooks. No other platform reads this collector's
   // stdout, so this check is scoped to Gemini CLI only.
-  const isGeminiCli =
-    process.env.MCP_CLIENT === 'gemini-cli' || process.env.NEW_RELIC_AI_PLATFORM === 'gemini-cli';
+  const isGeminiCli = ENGINE_ENV_KEYS.some(
+    (key) => canonicalPlatformName(process.env[key]) === 'gemini-cli',
+  );
 
   // Antigravity (https://antigravity.google/docs/hooks#inputoutput-contract)
   // sends no field naming which event fired, and both PreToolUse and
@@ -820,6 +919,7 @@ function processHook(raw: string, cliEvent?: string): void {
   const agyToolUseId = typeof data.stepIdx === 'number' ? { toolUseId: String(data.stepIdx) } : {};
 
   let event: Record<string, unknown>;
+  let selfReportCall: HookReportCall | undefined;
 
   if (eventName === 'pretooluse') {
     event = {
@@ -1044,6 +1144,13 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       success: true,
     };
+    // afterMCPExecution names the server from mcp.json (https://cursor.com/docs/agent/hooks).
+    selfReportCall = {
+      tool: mcpTool,
+      server: data.mcp_server_name,
+      args: data.tool_input,
+      result: data.result_json,
+    };
   } else if (eventName === 'beforereadfile') {
     // Cursor has no "afterReadFile" event — beforeReadFile is the only file-read
     // hook that exists (confirmed: https://blog.gitbutler.com/cursor-hooks-deep-dive
@@ -1161,6 +1268,13 @@ function processHook(raw: string, cliEvent?: string): void {
       tool: mcpTool,
       timestamp,
       success: true,
+    };
+    // tool_info.mcp_server_name names the server (https://docs.windsurf.com/de/windsurf/cascade/hooks).
+    selfReportCall = {
+      tool: mcpTool,
+      server: toolInfo.mcp_server_name,
+      args: toolInfo.mcp_tool_arguments,
+      result: toolInfo.mcp_result,
     };
   } else if (isAntigravityPre) {
     // Antigravity PreToolUse — see isAntigravityPre above for how it is told
@@ -1332,13 +1446,19 @@ function processHook(raw: string, cliEvent?: string): void {
   // only the light claude-code-adapter const, not the full registry) instead
   // of going through PlatformRegistry — registry-based detection adds
   // measurable overhead on this hot, pre+post-per-tool-call path.
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ''] ?? detectStampPlatform();
   if (stampedPlatform) event.platform = stampedPlatform;
+  const selfReport =
+    selfReportCall &&
+    stampedPlatform &&
+    hookSelfReportLine(selfReportCall, sessionId, timestamp, stampedPlatform);
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
 
+  const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : undefined;
   // Write to buffer — wrapped in try/catch for resilience.
+  let reportAttempted = false;
   try {
     const bufferPath = getBufferPath(sessionId);
     const bufferDir = dirname(bufferPath);
@@ -1346,10 +1466,30 @@ function processHook(raw: string, cliEvent?: string): void {
       mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
     }
 
+    if (
+      event.toolUseId === undefined &&
+      (event.mode === 'pre' || event.mode === 'post') &&
+      !POST_ONLY_EVENTS.has(eventName ?? '')
+    ) {
+      const id =
+        event.mode === 'pre'
+          ? mintToolUseId(bufferPath, String(event.tool), timestamp)
+          : takeMintedToolUseId(bufferPath, String(event.tool), timestamp);
+      if (id !== undefined) event.toolUseId = id;
+    }
+
     const line = JSON.stringify(event) + '\n';
 
     appendToHookBuffer(bufferPath, line);
+    if (newReport) {
+      reportAttempted = true;
+      appendToHookBuffer(bufferPath, JSON.stringify(newReport) + '\n');
+    }
   } catch (err) {
+    // A report line a drain can read keeps its claim. Any other failure frees it for a retry.
+    if (newReport && !(reportAttempted && err instanceof LineWrittenError)) {
+      releaseReport(getStorageDir(), newReport);
+    }
     // A closed stderr (EPIPE) must not turn a dropped event into a failed hook.
     if (!stderrSinkInstalled) {
       stderrSinkInstalled = true;

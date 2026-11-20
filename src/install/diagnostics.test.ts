@@ -15,6 +15,7 @@ jest.mock('node:fs', () => {
     readFileSync: jest.fn(),
     accessSync: jest.fn(),
     statSync: jest.fn(),
+    realpathSync: jest.fn(),
     constants: real.constants,
   };
 });
@@ -95,12 +96,13 @@ import * as config from '../config.js';
 import * as installHelper from './install-helper.js';
 import * as platform from './platform.js';
 import { LocalStore, SessionStore } from '../storage/index.js';
-import { applyPricingOverlay, resolvePricing } from '../metrics/pricing-overlay.js';
+import { applyCustomPricing, resolvePricing } from '../metrics/pricing-overlay.js';
 
 const mockedExistSync = nodeFs.existsSync as jest.Mock;
 const mockedReadFileSync = nodeFs.readFileSync as jest.Mock;
 const mockedAccessSync = nodeFs.accessSync as jest.Mock;
 const mockedStatSync = nodeFs.statSync as jest.Mock;
+const mockedRealpathSync = nodeFs.realpathSync as unknown as jest.Mock;
 const mockedPlatform = nodeOs.platform as jest.Mock;
 const mockedGetDaemonStatus = schedule.getDashboardDaemonStatus as jest.Mock;
 const mockedFindExecutableNodeDir = schedule.findExecutableNodeDir as jest.Mock;
@@ -142,6 +144,7 @@ describe('runDiagnostics', () => {
     mockedExistSync.mockReturnValue(false);
     mockedReadFileSync.mockReturnValue('{}');
     mockedAccessSync.mockImplementation(() => undefined);
+    mockedRealpathSync.mockImplementation((p) => String(p));
     mockedGetDaemonStatus.mockReturnValue({ installed: false, readable: false });
     mockedValidateConfig.mockReturnValue({
       fileExists: false,
@@ -424,9 +427,9 @@ describe('runDiagnostics', () => {
         (nodeFs.readFileSync as jest.Mock).mockReturnValue(
           JSON.stringify({ aliases: { 'acme-gateway-x': 'claude-sonnet-4-6' } }),
         );
-        applyPricingOverlay('/test-home/pricing.json');
+        applyCustomPricing('/test-home/pricing.json');
       };
-      afterEach(() => applyPricingOverlay(null));
+      afterEach(() => applyCustomPricing(null));
 
       it('drops a model the loaded file aliases to a priced one', async () => {
         mockSessions([{ unpricedByModel: { 'acme-gateway-x': { calls: 3, tokens: 1200 } } }]);
@@ -908,6 +911,32 @@ describe('runDiagnostics', () => {
       expect(c.status).toBe('warn');
       expect(c.detail).toContain('/opt/other-node/bin');
       expect(c.fix).toBeDefined();
+    });
+
+    it('returns ok when the hook sits in a version-manager alias that links to the current Node install', async () => {
+      const aliasDir = '/test-home/.local/share/fnm/aliases/default/bin';
+      const currentNodeDir = dirname(process.execPath);
+      settingsWithHookCommand(`"${aliasDir}/preflight-collector" pre-tool`);
+      mockedFindExecutableNodeDir.mockReturnValue({ dir: aliasDir, hasNonExecutable: false });
+      mockedRealpathSync.mockImplementation((p) => (p === aliasDir ? currentNodeDir : String(p)));
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hook node path')!;
+      expect(c.status).toBe('ok');
+    });
+
+    it('compares the paths unresolved when the hook directory no longer exists', async () => {
+      settingsWithHookCommand('"/opt/removed-node/bin/preflight-collector" pre-tool');
+      mockedFindExecutableNodeDir.mockReturnValue({
+        dir: '/opt/removed-node/bin',
+        hasNonExecutable: false,
+      });
+      mockedRealpathSync.mockImplementation((p) => {
+        if (p === '/opt/removed-node/bin') throw new Error('ENOENT');
+        return String(p);
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hook node path')!;
+      expect(c.status).toBe('warn');
     });
   });
 

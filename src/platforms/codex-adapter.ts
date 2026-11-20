@@ -1,8 +1,9 @@
-import type {
-  NormalizedToolCall,
-  PlatformAdapter,
-  PlatformConfig,
-  PlatformSessionMetadata,
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformConfig,
+  type PlatformSessionMetadata,
 } from './types.js';
 
 /**
@@ -64,7 +65,11 @@ export class CodexAdapter implements PlatformAdapter {
   // model_instructions_file field: "Replacement for built-in instructions
   // instead of AGENTS.md." Same convention Droid, Cursor, and Gemini CLI
   // also read.
-  readonly capabilities = { instructionFilePaths: ['AGENTS.md'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['AGENTS.md'] as const,
+    // developers.openai.com/codex/hooks sends session_id; the documented command names no engine.
+    sessionBreadcrumbWriters: ['codex', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Codex hooks are configured externally (hooks.json or inline [hooks]
@@ -112,13 +117,16 @@ export class CodexAdapter implements PlatformAdapter {
       '   {',
       '     "hooks": {',
       '       "PreToolUse": [',
-      '         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }',
+      '         { "matcher": "*", "hooks": [{ "type": "command", "command": "MCP_CLIENT=codex preflight-collector" }] }',
       '       ],',
       '       "PostToolUse": [',
-      '         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }',
+      '         { "matcher": "*", "hooks": [{ "type": "command", "command": "MCP_CLIENT=codex preflight-collector" }] }',
       '       ]',
       '     }',
       '   }',
+      '   Keep the MCP_CLIENT=codex prefix: the hook runs apart from the MCP server, so an',
+      '   unstamped command files its breadcrumbs under a pool shared with other engines.',
+      '   On Windows use: "command": "cmd /c \\"set MCP_CLIENT=codex&& preflight-collector\\""',
       '2. Non-managed hooks require one-time review and trust before they run —',
       '   run `/hooks` in the Codex CLI to review and trust this hook definition.',
       '3. Ensure preflight-collector is on your PATH (npm link, or npm install -g @newrelic/preflight)',

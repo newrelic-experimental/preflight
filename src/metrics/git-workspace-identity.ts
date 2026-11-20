@@ -77,6 +77,10 @@ export class WorktreeIdentityResolver {
   // an empty directory must see its `git init` and first commit within a few
   // seconds. It only needs to outlast one replay burst of repeated lookups.
   private readonly missTtlMs = 3_000;
+  private readonly remoteNamesCache = new Map<
+    string,
+    { names: readonly string[]; resolvedAt: number }
+  >();
 
   resolve(dir: string | null | undefined): WorktreeIdentity | null {
     if (typeof dir !== 'string' || dir.length === 0) return null;
@@ -108,6 +112,35 @@ export class WorktreeIdentityResolver {
     const lookup = this.computeIdentity(dir);
     if (lookup.ok) this.cache.set(key, { identity: lookup.identity, resolvedAt: now });
     return lookup.identity;
+  }
+
+  /** `owner/name` of every remote of the repo at `dir` (`origin`, and in a
+   *  fork clone usually `upstream` too), lowercased because GitHub names are
+   *  case-insensitive. Empty when `dir` isn't a repo, has no remotes, or git
+   *  failed. A failure is not cached, so the next call retries. */
+  remoteRepoNames(dir: string | null | undefined): readonly string[] {
+    if (typeof dir !== 'string' || dir.length === 0) return [];
+    const key = cacheKeyOf(dir);
+    const now = Date.now();
+    const cached = this.remoteNamesCache.get(key);
+    if (cached && now - cached.resolvedAt < this.ttlMs) return cached.names;
+    try {
+      const result = spawnSync('git', ['-C', dir, 'remote', '-v'], GIT_OPTS);
+      if (typeof result.status !== 'number' || typeof result.stdout !== 'string') return [];
+      const names = new Set<string>();
+      if (result.status === 0) {
+        for (const line of result.stdout.split('\n')) {
+          const url = line.split(/\s+/)[1];
+          const name = url ? repoNameFromRemote(url) : null;
+          if (name) names.add(name.toLowerCase());
+        }
+      }
+      const list = [...names];
+      this.remoteNamesCache.set(key, { names: list, resolvedAt: now });
+      return list;
+    } catch {
+      return [];
+    }
   }
 
   /** `ok: false` means the git process itself failed (timeout, signal, spawn

@@ -296,6 +296,20 @@ describe('parseToolSpecificFields', () => {
       );
     });
 
+    it('drops a malformed or oversized subagent_type', () => {
+      expect(
+        parseToolSpecificFields('Agent', { subagent_type: 'x'.repeat(500) }, undefined)
+          .subagentType,
+      ).toBeUndefined();
+      expect(
+        parseToolSpecificFields('Agent', { subagent_type: 'Explore\nforged' }, undefined)
+          .subagentType,
+      ).toBeUndefined();
+      expect(
+        parseToolSpecificFields('Agent', { subagent_type: '' }, undefined).subagentType,
+      ).toBeUndefined();
+    });
+
     it('extracts runInBackground flag', () => {
       const input = {
         description: 'Background task',
@@ -405,6 +419,26 @@ describe('parseToolSpecificFields', () => {
         parseToolSpecificFields('mcp__github__create_pull_request', {}, { createdPrNumber: '57' })
           .createdPrNumber,
       ).toBe('57');
+    });
+
+    it('reads the repo and PR number the collector kept from a GitHub MCP PR call', () => {
+      const fields = parseToolSpecificFields(
+        'mcp__github__merge_pull_request',
+        { prRepo: 'acme/app', prNumber: '57' },
+        undefined,
+      );
+      expect(fields.mcpPrRepo).toBe('acme/app');
+      expect(fields.mcpPrNumber).toBe('57');
+    });
+
+    it('ignores PR target fields on a tool that is not a GitHub MCP PR tool', () => {
+      const fields = parseToolSpecificFields(
+        'mcp__github__get_issue',
+        { prRepo: 'acme/app', prNumber: '57' },
+        undefined,
+      );
+      expect(fields.mcpPrRepo).toBeUndefined();
+      expect(fields.mcpPrNumber).toBeUndefined();
     });
 
     it('extracts non-zero exitCode', () => {

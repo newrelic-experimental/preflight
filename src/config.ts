@@ -3,13 +3,17 @@ import { execSync } from 'node:child_process';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
-import { createLogger } from './shared/index.js';
-import type { LogLevel } from './shared/index.js';
+import { createLogger } from './core/index.js';
+import type { LogLevel } from './core/index.js';
 import type { CliOptions } from './types.js';
 import type { UpstreamConfig } from './proxy/types.js';
 import type { PersonalAlertThresholds } from './alerts/types.js';
 import { DEFAULT_PERSONAL_THRESHOLDS } from './alerts/types.js';
-import { REDACTION_PATTERNS as DEFAULT_REDACTION_PATTERNS } from './redaction-patterns.js';
+import {
+  REDACTION_PATTERNS as DEFAULT_REDACTION_PATTERNS,
+  cutAtWord,
+  redactSecrets,
+} from './redaction-patterns.js';
 import { resolveRecordContent } from './record-content-gate.js';
 import { projectIdFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
 import {
@@ -208,7 +212,6 @@ export interface McpServerConfig {
    */
   readonly dataResidencyPremium: boolean;
   readonly digestWebhookUrl: string | null;
-  readonly digestSchedule: string; // cron expression, default: "0 9 * * 1" (Monday 9am)
   /** Default: 90. `null` disables retention (only reachable via an explicit `null` in config.json). */
   readonly retainSessionsDays: number | null;
   readonly personalAlertThresholds: PersonalAlertThresholds;
@@ -343,7 +346,6 @@ export const ConfigFileSchema = z
     costRateMultiplier: z.number().nullable().optional(),
     dataResidencyPremium: z.boolean().optional(),
     digestWebhookUrl: z.string().nullable().optional(),
-    digestSchedule: z.string().optional(),
     retainSessionsDays: z.number().nullable().optional(),
     reportedSpend: z
       .array(
@@ -766,14 +768,13 @@ function parseProxyUpstreams(
  * type (#479), so the message can change without breaking that fallback.
  */
 export class MissingCloudCredentialError extends Error {
-  readonly missingField: 'licenseKey' | 'accountId';
+  readonly missingField: 'licenseKey';
   readonly mode: Mode;
 
-  constructor(missingField: 'licenseKey' | 'accountId', mode: Mode, configFilePath: string) {
-    const envVar = missingField === 'licenseKey' ? 'NEW_RELIC_LICENSE_KEY' : 'NEW_RELIC_ACCOUNT_ID';
+  constructor(missingField: 'licenseKey', mode: Mode, configFilePath: string) {
     super(
       `Missing required configuration: ${missingField} (mode='${mode}'). ` +
-        `Set the ${envVar} environment variable or add "${missingField}" to ` +
+        `Set the NEW_RELIC_LICENSE_KEY environment variable or add "${missingField}" to ` +
         configFilePath +
         ", or switch to mode='local' to skip cloud transport.",
     );
@@ -1002,16 +1003,13 @@ export function loadMcpConfig(
   const accountIdRaw =
     (process.env.NEW_RELIC_ACCOUNT_ID?.trim() ? process.env.NEW_RELIC_ACCOUNT_ID : undefined) ??
     (typeof file.accountId === 'string' ? file.accountId : undefined);
-  if (mode !== 'local' && !accountIdRaw) {
-    throw new MissingCloudCredentialError('accountId', mode, configFilePath);
-  }
   if (accountIdRaw && !/^\d{1,12}$/.test(accountIdRaw)) {
     throw new Error(
       'Invalid configuration: accountId must be 1–12 decimal digits. ' +
         `Received: "${accountIdRaw}"`,
     );
   }
-  // In local mode, undefined if accountId is missing (NR transport won't be used)
+  // Optional: the Events API URL carries no account ID, so this is for display and deploy commands only
   const accountId = accountIdRaw;
 
   // --- tiers: config file only (no env var / CLI flag equivalent exists) ---
@@ -1046,12 +1044,12 @@ export function loadMcpConfig(
     ) {
       resolvedTiers = [];
     }
-  } else if (mode !== 'local' && licenseKey !== undefined && accountId !== undefined) {
+  } else if (mode !== 'local' && licenseKey !== undefined) {
     // Implicit single tier — byte-identical to the existing single-tier default.
     resolvedTiers = [
       {
         name: DEFAULT_TIER_NAME,
-        destination: { type: 'nr', licenseKey, accountId },
+        destination: { type: 'nr', licenseKey, ...(accountId !== undefined && { accountId }) },
         eventTypes: [WILDCARD_EVENT_TYPE],
       },
     ];
@@ -1317,10 +1315,6 @@ export function loadMcpConfig(
     ),
 
     digestWebhookUrl: digestWebhookUrlSecret.value ?? null,
-
-    digestSchedule:
-      process.env.NEW_RELIC_AI_DIGEST_SCHEDULE ??
-      (typeof file.digestSchedule === 'string' ? file.digestSchedule : '0 9 * * 1'),
 
     retainSessionsDays: (() => {
       const raw = process.env.NEW_RELIC_AI_RETAIN_SESSIONS_DAYS;
@@ -1900,9 +1894,9 @@ const MAX_REDACT_LEN = 1_048_576; // 1 MB
 
 export function redactSensitive(value: string, patterns?: readonly RegExp[]): string {
   if (typeof value !== 'string') return String(value ?? '');
-  const pats = patterns ?? DEFAULT_REDACTION_PATTERNS;
-  let result = value.length > MAX_REDACT_LEN ? value.slice(0, MAX_REDACT_LEN) : value;
-  for (const pattern of pats) {
+  let result = value.length > MAX_REDACT_LEN ? cutAtWord(value, MAX_REDACT_LEN) : value;
+  if (patterns === undefined) return redactSecrets(result);
+  for (const pattern of patterns) {
     pattern.lastIndex = 0;
     result = result.replace(pattern, '[REDACTED]');
   }
@@ -1924,28 +1918,5 @@ const WORD_CHAR_RE = /[A-Za-z0-9]/;
  * colour code (`ESC[32m`) or `%3A`.
  */
 export function redactIdentifier(value: string): string {
-  let result = value;
-  for (const pattern of DEFAULT_REDACTION_PATTERNS) {
-    const re = new RegExp(
-      pattern.source,
-      pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`,
-    );
-    let out = '';
-    let last = 0;
-    let match: RegExpExecArray | null;
-    while ((match = re.exec(result)) !== null) {
-      if (match[0] === '') {
-        re.lastIndex++;
-        continue;
-      }
-      if (match.index > 0 && WORD_CHAR_RE.test(result[match.index - 1])) {
-        re.lastIndex = match.index + 1;
-        continue;
-      }
-      out += `${result.slice(last, match.index)}[REDACTED]`;
-      last = re.lastIndex;
-    }
-    result = out + result.slice(last);
-  }
-  return result;
+  return redactSecrets(value, (text, index) => index === 0 || !WORD_CHAR_RE.test(text[index - 1]));
 }

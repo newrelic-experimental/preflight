@@ -9,6 +9,7 @@ import {
   type AntiPatternEvent,
 } from '../store/liveStore';
 import { Kpi, type KpiTone } from '../components/Kpi';
+import { TaskCompletionPanel } from '../components/TaskCompletionPanel';
 import { AnimatedCard } from '../components/AnimatedCard';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
 import { EmptyState } from '../components/EmptyState';
@@ -34,7 +35,6 @@ import {
   fetchRecentAlerts,
   fetchBudget,
   fetchSettings,
-  type BudgetPeriod,
   type BudgetStatus,
   fetchCacheHealth,
   fetchCost,
@@ -113,6 +113,8 @@ const HEADER_TIMESTAMP_FORMAT = {
 } as const;
 
 const RECENT_ALERTS_REFETCH_MS = 30_000;
+
+const CONCURRENCY_CHART_MAX_LEVELS = 8;
 
 const SEVERITY_DOT: Record<AlertEvent['severity'], string> = {
   info: 'text-ink-muted',
@@ -238,35 +240,43 @@ interface ToolSelectionMetrics {
 
 const QUALITY_REFETCH_MS = 10_000;
 
-const BUDGET_WARN_PCT = 50;
+const BUDGET_CAUTION_PCT = 50;
+const BUDGET_WARN_PCT = 80;
 const BUDGET_DANGER_PCT = 100;
 
 function DailyBudgetKpi({
   spentUsd,
   capUsd,
-  apiExceeded,
   reported,
 }: {
-  spentUsd: number;
+  spentUsd: number | null;
   capUsd: number | null;
-  apiExceeded: boolean;
   reported: ReportedSpend | null;
 }): JSX.Element {
+  if (spentUsd === null) return <Kpi label="daily budget" value="…" sub="loading…" />;
   const reportedStale = reported !== null && isReportedSpendStale(reported);
-  const pct = capUsd === null ? 0 : (spentUsd / capUsd) * 100;
-  const overBudget = capUsd !== null && (apiExceeded || spentUsd > capUsd);
+  // Round first so float error cannot drop a boundary: 4.52 / 5.65 * 100 is 79.999…
+  const pct = capUsd === null ? 0 : Math.round((spentUsd / capUsd) * 1e6) / 1e4;
+  const overBudget = pct > BUDGET_DANGER_PCT;
   const tone: KpiTone =
-    overBudget || pct >= BUDGET_DANGER_PCT ? 'bad' : pct >= BUDGET_WARN_PCT ? 'warn' : 'neutral';
+    pct >= BUDGET_DANGER_PCT ? 'bad' : pct >= BUDGET_WARN_PCT ? 'warn' : 'neutral';
+  const caution = pct >= BUDGET_CAUTION_PCT && pct < BUDGET_WARN_PCT;
   return (
     <Kpi
       label="daily budget"
       tone={tone}
       value={formatUsd(spentUsd)}
-      marker={<EstimateMarker />}
+      marker={reported ? <EstimateMarker /> : undefined}
       sub={
         <>
           {capUsd !== null && (
-            <span className="block">{`of ${formatUsd(capUsd)} · ${Math.floor(pct)}% used${overBudget ? ' · over budget' : ''}`}</span>
+            <span className="block">
+              {`of ${formatUsd(capUsd)} · `}
+              <span className={caution ? 'text-accent-amber' : undefined}>
+                {`${Math.floor(pct)}% used`}
+              </span>
+              {overBudget ? ' · over budget' : ''}
+            </span>
           )}
           {reported && (
             <span className={`block ${reportedStale ? 'opacity-60' : ''}`}>
@@ -304,8 +314,7 @@ export function Today(): JSX.Element {
     queryKey: qk.settings,
     queryFn: ({ signal }) => fetchSettings(signal),
   });
-  const dailyBudget: BudgetPeriod | null = budget?.daily ?? null;
-  const dailyBudgetCap = dailyBudget?.budgetUsd ?? null;
+  const dailyBudgetCap = budget?.daily?.budgetUsd ?? null;
   const reportedDaily = findReportedSpend(settings?.reportedSpend, 'daily');
   const showBudgetKpi = dailyBudgetCap !== null || reportedDaily !== null;
   const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
@@ -397,12 +406,17 @@ export function Today(): JSX.Element {
     aggregate?.antiPatternCount ?? 0,
     persistedTodayFlags + currentSessionFlags,
   );
-  const forecastKpiUsd = spendLoading
-    ? null
-    : (aggregate?.forecastEndOfDayUsd ??
-      cost?.forecastEodUsd ??
-      costApi?.forecast?.forecastEndOfDayUsd ??
-      null);
+  // In order of preference. A source below the spend on the tile is stale, so
+  // the page shows the next one rather than a forecast under money spent.
+  const forecastSources = spendLoading
+    ? []
+    : [
+        { usd: aggregate?.forecastEndOfDayUsd, scope: 'all sessions' },
+        { usd: cost?.forecastEodUsd, scope: "all spend so far, this session's pace" },
+        { usd: costApi?.forecast?.forecastEndOfDayUsd, scope: 'this session' },
+      ].filter((source): source is { usd: number; scope: string } => source.usd != null);
+  const forecast = forecastSources.find((source) => source.usd >= todayTotal);
+  const forecastKpiUsd = forecast?.usd ?? null;
 
   // The subagent KPI must source from the polled aggregate
   // endpoint, not the liveStore — the SSE frames that would populate
@@ -430,8 +444,13 @@ export function Today(): JSX.Element {
   const weekForecastTotalUsd =
     aggregate && aggregate.totalCostUsd >= todayTotal ? aggregate.totalCostUsd : todayTotal;
   const weekForecast =
-    forecastKpiUsd !== null
-      ? buildWeekForecast(todaySessions ?? [], forecastKpiUsd, weekForecastTotalUsd, Date.now())
+    forecastSources.length > 0
+      ? buildWeekForecast(
+          todaySessions ?? [],
+          forecastKpiUsd ?? todayTotal,
+          weekForecastTotalUsd,
+          Date.now(),
+        )
       : null;
   const [headerTimestamp, setHeaderTimestamp] = useState(() =>
     new Date().toLocaleString(undefined, HEADER_TIMESTAMP_FORMAT),
@@ -540,10 +559,10 @@ export function Today(): JSX.Element {
                   marker={spendLoading ? undefined : <EstimateMarker />}
                   value={spendLoading ? '…' : formatUsd(todayTotal)}
                   sub={
-                    forecastKpiUsd != null && forecastKpiUsd > todayTotal
+                    forecast && forecast.usd > todayTotal
                       ? weekForecast != null
-                        ? `→ ${formatUsd(forecastKpiUsd)} by end of day · ~${formatUsd(weekForecast)} by end of week`
-                        : `→ ${formatUsd(forecastKpiUsd)} by end of day`
+                        ? `→ ${formatUsd(forecast.usd)} by end of day (${forecast.scope}) · ~${formatUsd(weekForecast)} by end of week`
+                        : `→ ${formatUsd(forecast.usd)} by end of day (${forecast.scope})`
                       : undefined
                   }
                   {...(!spendLoading
@@ -578,9 +597,8 @@ export function Today(): JSX.Element {
                 />
                 {showBudgetKpi && (
                   <DailyBudgetKpi
-                    spentUsd={todayTotal}
+                    spentUsd={spendLoading ? null : todayTotal}
                     capUsd={dailyBudgetCap}
-                    apiExceeded={dailyBudget?.exceeded ?? false}
                     reported={reportedDaily}
                   />
                 )}
@@ -637,6 +655,10 @@ export function Today(): JSX.Element {
             <ComputeWasteCard liveSessions={liveSessions ?? []} />
             <LatencyCard aggregate={aggregate} />
             <ApiFailuresCard />
+          </AnimatedCard>
+
+          <AnimatedCard index={6}>
+            <TaskCompletionPanel />
           </AnimatedCard>
         </>
       )}
@@ -1360,6 +1382,7 @@ function ActivityTodayPanel({
             {hasConcurrencyData ? (
               <DiscreteBlockChart
                 data={concurrencyItems}
+                maxLevels={CONCURRENCY_CHART_MAX_LEVELS}
                 ariaLabel={`Concurrency over time, peak ${concurrency?.peak ?? 0}`}
               />
             ) : concurrencyLoading ? (
@@ -1838,6 +1861,7 @@ function LiveSessionPane({
           contextWindow={contextData?.contextWindow}
           contextComposition={contextComposition}
           contextEfficiency={contextEfficiency}
+          summary={todaySessions.find((s) => s.sessionId === activeId)}
           onClose={() => setShowDetail(false)}
         />
       )}

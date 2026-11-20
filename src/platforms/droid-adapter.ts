@@ -1,8 +1,9 @@
-import type {
-  NormalizedToolCall,
-  PlatformAdapter,
-  PlatformConfig,
-  PlatformSessionMetadata,
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformConfig,
+  type PlatformSessionMetadata,
 } from './types.js';
 
 /**
@@ -49,7 +50,11 @@ function isDroidToolCallEvent(x: unknown): x is DroidToolCallEvent {
 export class DroidAdapter implements PlatformAdapter {
   readonly platformName = 'droid';
   readonly visibilityLevel = 'full-hooks' as const;
-  readonly capabilities = { instructionFilePaths: ['AGENTS.md'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['AGENTS.md'] as const,
+    // docs.factory.ai/reference/hooks-reference sends session_id; the documented command names no engine.
+    sessionBreadcrumbWriters: ['droid', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Droid hooks are configured externally (hooks.json).
@@ -94,10 +99,13 @@ export class DroidAdapter implements PlatformAdapter {
       '   (~/.factory/hooks.json user scope, or .factory/hooks.json project scope):',
       '   {',
       '     "hooks": {',
-      '       "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }],',
-      '       "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }]',
+      '       "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "MCP_CLIENT=droid preflight-collector" }] }],',
+      '       "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "MCP_CLIENT=droid preflight-collector" }] }]',
       '     }',
       '   }',
+      '   Keep the MCP_CLIENT=droid prefix: the hook runs apart from the MCP server, so an',
+      '   unstamped command files its breadcrumbs under a pool shared with other engines.',
+      '   On Windows use: "command": "cmd /c \\"set MCP_CLIENT=droid&& preflight-collector\\""',
       '2. Ensure preflight-collector is on PATH (npm link, or npm install -g @newrelic/preflight)',
       '3. Register the Preflight MCP server:',
       '   droid mcp add preflight "npx preflight --stdio" \\',

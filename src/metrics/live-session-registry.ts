@@ -12,13 +12,6 @@ import {
 } from '../hooks/session-resolver.js';
 
 export const DEFAULT_STALE_THRESHOLD_MS = 180_000; // 3 minutes
-const MAX_CONCURRENCY_SAMPLES = 2880; // 24h at 30s intervals
-const SAMPLE_INTERVAL_MS = 30_000;
-
-export interface ConcurrencySample {
-  readonly timestamp: number;
-  readonly count: number;
-}
 
 export class LiveSessionRegistry {
   private readonly lastActivity = new Map<string, number>();
@@ -29,6 +22,10 @@ export class LiveSessionRegistry {
   // protection, the dashboard session list, and today's aggregate counts.
   // Expires at local midnight via getTodaySessionIds() so it stays bounded.
   private readonly seenToday = new Map<string, number>();
+  // Sessions the live trackers hold data for, including token-only sessions
+  // that never produce a tool call. Unlike `seenToday`, this is not expired at
+  // midnight, because the trackers it mirrors are never reset then.
+  private readonly heldByTrackers = new Set<string>();
   private readonly sessionNames = new Map<string, string>();
   // Sessions whose name was set authoritatively (job-state title / transcript
   // ai-title). `touch()` must never overwrite these with a cwd basename.
@@ -39,9 +36,6 @@ export class LiveSessionRegistry {
   // `authoritativeNames`; cleared alongside it on eviction/reset.
   private readonly authoritativeSources = new Map<string, SessionNameSource>();
   private readonly staleThresholdMs: number;
-  private peakConcurrent = 0;
-  private readonly concurrencyTimeSeries: ConcurrencySample[] = [];
-  private samplingInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(staleThresholdMs = DEFAULT_STALE_THRESHOLD_MS) {
     this.staleThresholdMs = staleThresholdMs;
@@ -50,6 +44,7 @@ export class LiveSessionRegistry {
   touch(sessionId: string, cwd?: string): void {
     this.lastActivity.set(sessionId, Date.now());
     this.seenToday.set(sessionId, Date.now());
+    this.heldByTrackers.add(sessionId);
     // Streaming FALLBACK naming: skip when an authoritative name is set, and
     // (as before) only fill the first time we see a cwd for this session.
     if (cwd && !this.authoritativeNames.has(sessionId) && !this.sessionNames.has(sessionId)) {
@@ -65,10 +60,15 @@ export class LiveSessionRegistry {
         this.authoritativeSources.set(sessionId, 'cwd');
       }
     }
-    const liveCount = this.getLiveSessions({ includeSynthetic: true }).length;
-    if (liveCount > this.peakConcurrent) {
-      this.peakConcurrent = liveCount;
-    }
+  }
+
+  /**
+   * Record that the live trackers hold data for this session without marking
+   * it live or seen today. Used for token-only events (model usage with no
+   * tool call), which must not make a session look active.
+   */
+  hold(sessionId: string): void {
+    this.heldByTrackers.add(sessionId);
   }
 
   /**
@@ -164,9 +164,18 @@ export class LiveSessionRegistry {
     return options?.includeSynthetic ? today : today.filter((id) => !isSyntheticSessionId(id));
   }
 
+  /**
+   * Session IDs the live trackers hold data for, including synthetic IDs and
+   * sessions outside the staleness window. Only `reset()` removes entries.
+   */
+  getHeldSessionIds(): string[] {
+    return [...this.heldByTrackers];
+  }
+
   reset(): void {
     this.lastActivity.clear();
     this.seenToday.clear();
+    this.heldByTrackers.clear();
     this.sessionNames.clear();
     this.authoritativeNames.clear();
     this.authoritativeSources.clear();
@@ -183,36 +192,5 @@ export class LiveSessionRegistry {
       return false;
     }
     return true;
-  }
-
-  startSampling(): void {
-    if (this.samplingInterval) return;
-    this.samplingInterval = setInterval(() => {
-      const count = this.getLiveSessions({ includeSynthetic: true }).length;
-      this.concurrencyTimeSeries.push({ timestamp: Date.now(), count });
-      if (this.concurrencyTimeSeries.length > MAX_CONCURRENCY_SAMPLES) {
-        this.concurrencyTimeSeries.shift();
-      }
-    }, SAMPLE_INTERVAL_MS);
-    this.samplingInterval.unref();
-  }
-
-  stopSampling(): void {
-    if (this.samplingInterval) {
-      clearInterval(this.samplingInterval);
-      this.samplingInterval = null;
-    }
-  }
-
-  getConcurrentCount(): number {
-    return this.getLiveSessions({ includeSynthetic: true }).length;
-  }
-
-  getPeakConcurrent(): number {
-    return this.peakConcurrent;
-  }
-
-  getConcurrencyTimeSeries(): readonly ConcurrencySample[] {
-    return this.concurrencyTimeSeries;
   }
 }

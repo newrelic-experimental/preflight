@@ -1,6 +1,6 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { TurnCostAttributor } from './turn-cost-attributor.js';
-import type { ToolCallRecord, TokenEvent } from '../storage/types.js';
+import type { SkillStamp, ToolCallRecord, TokenEvent } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -130,7 +130,29 @@ describe('TurnCostAttributor', () => {
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(0);
       expect(metrics.totalAttributedCost).toBe(0);
-      expect(metrics.droppedTokenEvents).toBe(0);
+      expect(metrics.evictedToolBursts).toBe(0);
+    });
+
+    it('stamps a response turn with the skill run open when its report arrives', () => {
+      const attributor = new TurnCostAttributor();
+      const run: SkillStamp = { name: 'review', source: 'slash', runId: 'run-1' };
+
+      const inRun = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1000 }), run);
+      const afterRun = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 2000 }), null);
+
+      expect(inRun.skill).toEqual(run);
+      expect(afterRun.skill).toBeNull();
+    });
+
+    it('leaves the skill of a tool turn to its calls', () => {
+      const attributor = new TurnCostAttributor();
+      const run: SkillStamp = { name: 'review', source: 'slash', runId: 'run-1' };
+
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      const result = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1050 }), run);
+
+      expect(result.calls).toHaveLength(1);
+      expect(result.skill).toBeNull();
     });
 
     it('returns a response turn for a token event that predates the pending turn it would close', () => {
@@ -149,7 +171,7 @@ describe('TurnCostAttributor', () => {
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(0);
       expect(metrics.totalAttributedCost).toBe(0);
-      expect(metrics.droppedTokenEvents).toBe(0);
+      expect(metrics.evictedToolBursts).toBe(0);
     });
 
     it('leaves the pending turn queued for the token event that does postdate it', () => {
@@ -228,7 +250,7 @@ describe('TurnCostAttributor', () => {
 
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(2);
-      expect(metrics.droppedTokenEvents).toBe(0);
+      expect(metrics.evictedToolBursts).toBe(0);
     });
 
     it('evicts a pending turn that has sat unclosed far longer than any plausible thinking time', () => {
@@ -249,7 +271,7 @@ describe('TurnCostAttributor', () => {
 
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(1);
-      expect(metrics.droppedTokenEvents).toBe(1);
+      expect(metrics.evictedToolBursts).toBe(1);
     });
 
     it('counts a burst as dropped when only a report that predates it ever arrives before it goes stale', () => {
@@ -268,7 +290,7 @@ describe('TurnCostAttributor', () => {
       expect(early.id).not.toBe(late.id);
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(0);
-      expect(metrics.droppedTokenEvents).toBe(1);
+      expect(metrics.evictedToolBursts).toBe(1);
     });
 
     it('evicts the oldest queued burst once more than MAX_PENDING_TURNS bursts are outstanding', () => {
@@ -284,7 +306,7 @@ describe('TurnCostAttributor', () => {
       }
 
       const metrics = attributor.getMetrics();
-      expect(metrics.droppedTokenEvents).toBe(1);
+      expect(metrics.evictedToolBursts).toBe(1);
 
       // The oldest (toolu_0) was evicted; the next token event closes
       // whatever is now the front of the queue (toolu_1).
@@ -302,7 +324,7 @@ describe('TurnCostAttributor', () => {
       expect(metrics.costByToolType).toEqual({});
       expect(metrics.totalAttributedCost).toBe(0);
       expect(metrics.attributionRate).toBe(0);
-      expect(metrics.droppedTokenEvents).toBe(0);
+      expect(metrics.evictedToolBursts).toBe(0);
     });
 
     it('tracks costByToolType across multiple turns', () => {
@@ -373,7 +395,7 @@ describe('TurnCostAttributor', () => {
       expect(metrics.costByToolType).toEqual({});
       expect(metrics.totalAttributedCost).toBe(0);
       expect(metrics.attributionRate).toBe(0);
-      expect(metrics.droppedTokenEvents).toBe(0);
+      expect(metrics.evictedToolBursts).toBe(0);
     });
   });
 
@@ -648,10 +670,56 @@ describe('TurnCostAttributor', () => {
         cacheReadTokens: 0,
         cacheCreationTokens: 0,
         totalDurationMs: 500,
+        breakdownUsd: { inputUsd: 0, outputUsd: 0, cacheReadUsd: 0, cacheCreationUsd: 0 },
         tokens: 0,
       });
       expect(metrics.costByToolType).toEqual({});
       expect(metrics.attributionRate).toBe(0);
+    });
+
+    it('prices each turn with its own model so a skill spanning two models gets correct per-category dollars', () => {
+      const attributor = new TurnCostAttributor();
+      const skill = { name: 'design', source: 'tool' as const, runId: 'run-1' };
+      const call = (toolUseId: string, timestamp: number): void =>
+        attributor.recordToolCall(
+          makeRecord({
+            toolName: 'Skill',
+            activeSkill: skill,
+            skillName: skill.name,
+            timestamp,
+            toolUseId,
+          }),
+        );
+
+      call('t1', 1000);
+      attributor.recordTokenEvent(
+        makeTokenEvent({
+          timestamp: 1100,
+          model: 'claude-haiku-4-5',
+          inputTokens: 10_000,
+          outputTokens: 0,
+          cacheReadTokens: 100_000,
+        }),
+      );
+      call('t2', 2000);
+      attributor.recordTokenEvent(
+        makeTokenEvent({
+          timestamp: 2100,
+          model: 'claude-opus-4-5',
+          inputTokens: 10_000,
+          outputTokens: 0,
+          cacheReadTokens: 100_000,
+        }),
+      );
+
+      const entry = attributor.getMetrics().costBySkill.design;
+
+      // haiku 4.5: $1/MTok input, $0.10/MTok cache read. opus 4.5: $5 and $0.50.
+      expect(entry.breakdownUsd?.inputUsd).toBeCloseTo(0.06, 10);
+      expect(entry.breakdownUsd?.cacheReadUsd).toBeCloseTo(0.06, 10);
+      expect(entry.breakdownUsd?.outputUsd).toBe(0);
+      expect(entry.breakdownUsd?.cacheCreationUsd).toBe(0);
+      expect(entry.totalCost).toBeCloseTo(0.12, 10);
     });
 
     it('tokens equals inputTokens + outputTokens + cacheReadTokens for a live entry', () => {

@@ -54,6 +54,26 @@ interface VersionFile {
   readonly layout: 'npm' | 'in-place';
 }
 
+/** The `<package>@<version>` args of every server in an MCP config, which a release pins. */
+function npxPins(path: string): NonNullable<VersionFile['pins']> {
+  return (mcp, packageName) => {
+    const servers = asObject(mcp.mcpServers, 'mcpServers');
+    const pins = Object.entries(servers).flatMap(([server, entry]) => {
+      const { args } = asObject(entry, `mcpServers.${server}`);
+      if (args === undefined) return [];
+      return asArray(args, `mcpServers.${server}.args`).flatMap((arg, i, all) =>
+        typeof arg === 'string' && arg.startsWith(`${packageName}@`)
+          ? [[`mcpServers.${server}.args[${i}]`, all, i] as const]
+          : [],
+      );
+    });
+    if (pins.length === 0) {
+      throw new Error(`${path} has no server that runs ${packageName}@<version>`);
+    }
+    return pins;
+  };
+}
+
 export const VERSION_FILES: readonly VersionFile[] = [
   {
     path: 'package-lock.json',
@@ -91,22 +111,15 @@ export const VERSION_FILES: readonly VersionFile[] = [
     // substitution, so the release pins it to the version it releases.
     path: 'plugin/.mcp.json',
     layout: 'in-place',
-    pins: (mcp, packageName) => {
-      const servers = asObject(mcp.mcpServers, 'mcpServers');
-      const pins = Object.entries(servers).flatMap(([server, entry]) => {
-        const { args } = asObject(entry, `mcpServers.${server}`);
-        if (args === undefined) return [];
-        return asArray(args, `mcpServers.${server}.args`).flatMap((arg, i, all) =>
-          typeof arg === 'string' && arg.startsWith(`${packageName}@`)
-            ? [[`mcpServers.${server}.args[${i}]`, all, i] as const]
-            : [],
-        );
-      });
-      if (pins.length === 0) {
-        throw new Error(`plugin/.mcp.json has no server that runs ${packageName}@<version>`);
-      }
-      return pins;
-    },
+    pins: npxPins('plugin/.mcp.json'),
+  },
+  {
+    // The Kiro Power's MCP server, pinned the same way. Kiro Powers are reviewed against an
+    // exact version, and the Power depends on fixes in the published package (the ancestor walk
+    // in docs/KIRO_POWER.md), so each release moves the pin along with the version.
+    path: 'kiro-power/mcp.json',
+    layout: 'in-place',
+    pins: npxPins('kiro-power/mcp.json'),
   },
   { path: 'kiro-power/plugin.json', layout: 'in-place', holders: (m) => [['version', m]] },
 ];

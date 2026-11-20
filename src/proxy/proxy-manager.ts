@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import type {
   ForwardResult,
   ProxyRequestRecord,
@@ -55,6 +55,13 @@ interface JsonRpcPeek {
   method: string;
   id?: string | number;
   params?: Record<string, unknown>;
+}
+
+/** Failure class for a proxied call whose HTTP status was not 2xx. */
+function httpErrorType(statusCode: number): string {
+  if (statusCode >= 500) return 'http_5xx';
+  if (statusCode >= 400) return 'http_4xx';
+  return 'http_error';
 }
 
 function peekJsonRpc(body: Buffer): JsonRpcPeek | null {
@@ -439,6 +446,7 @@ export class ProxyManager {
           : undefined;
     const command = typeof args.command === 'string' ? args.command : undefined;
 
+    const success = result.statusCode >= 200 && result.statusCode < 300;
     const record: ProxyToolCallRecord = {
       id: randomUUID(),
       sessionId,
@@ -446,7 +454,8 @@ export class ProxyManager {
       toolUseId: String(rpc.id ?? ''),
       timestamp: Date.now(),
       durationMs,
-      success: result.statusCode >= 200 && result.statusCode < 300,
+      success,
+      ...(!success && { errorType: httpErrorType(result.statusCode) }),
       serverName: upstream.name,
       upstreamLatencyMs: result.upstreamLatencyMs,
       proxyOverheadMs,

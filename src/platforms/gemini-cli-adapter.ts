@@ -1,8 +1,9 @@
-import type {
-  NormalizedToolCall,
-  PlatformAdapter,
-  PlatformConfig,
-  PlatformSessionMetadata,
+import {
+  UNATTRIBUTED_BREADCRUMB_WRITER,
+  type NormalizedToolCall,
+  type PlatformAdapter,
+  type PlatformConfig,
+  type PlatformSessionMetadata,
 } from './types.js';
 
 /**
@@ -49,7 +50,11 @@ function isGeminiCliToolCallEvent(x: unknown): x is GeminiCliToolCallEvent {
 export class GeminiCliAdapter implements PlatformAdapter {
   readonly platformName = 'gemini-cli';
   readonly visibilityLevel = 'full-hooks' as const;
-  readonly capabilities = { instructionFilePaths: ['GEMINI.md'] as const };
+  readonly capabilities = {
+    instructionFilePaths: ['GEMINI.md'] as const,
+    // Gemini CLI's hooks reference sends session_id; the documented command names no engine.
+    sessionBreadcrumbWriters: ['gemini-cli', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
+  };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Gemini CLI hooks are configured externally (settings.json).
@@ -94,10 +99,13 @@ export class GeminiCliAdapter implements PlatformAdapter {
       '   (~/.gemini/settings.json user scope, or .gemini/settings.json project scope):',
       '   {',
       '     "hooks": {',
-      '       "BeforeTool": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }],',
-      '       "AfterTool": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }]',
+      '       "BeforeTool": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "MCP_CLIENT=gemini-cli preflight-collector" }] }],',
+      '       "AfterTool": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "MCP_CLIENT=gemini-cli preflight-collector" }] }]',
       '     }',
       '   }',
+      '   Keep the MCP_CLIENT=gemini-cli prefix: the hook runs apart from the MCP server, so an',
+      '   unstamped command files its breadcrumbs under a pool shared with other engines.',
+      '   On Windows use: "command": "cmd /c \\"set MCP_CLIENT=gemini-cli&& preflight-collector\\""',
       '2. Ensure preflight-collector is on PATH (npm link, or npm install -g @newrelic/preflight)',
       '3. Register the Preflight MCP server:',
       '   gemini mcp add preflight "npx preflight --stdio" \\',

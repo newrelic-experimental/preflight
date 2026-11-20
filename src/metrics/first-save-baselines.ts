@@ -1,5 +1,6 @@
 import type { FullSessionSummary } from '../storage/session-store.js';
-import { buildCostTrackerSeed } from './cost-tracker-seed.js';
+import { buildCostTrackerSeed, unbookedSeedCostOf } from './cost-tracker-seed.js';
+import type { UnbookedSeedCost } from './cost-tracker-seed.js';
 import type { CostTrackerSeed } from './cost-tracker.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import type { EfficiencyScoreSeed } from './efficiency-score.js';
@@ -42,13 +43,17 @@ export interface CostSeed {
   readonly modelBreakdown: Readonly<Record<string, ModelBreakdownEntry>>;
   /** The prior spend alone, which is all the budget thresholds may be seeded from. */
   readonly estimatedCostUsd: number | null;
+  /** What the budget windows by day on top of the seeded CostTracker. */
+  readonly unbooked: UnbookedSeedCost;
 }
 
 export function costSeedOf(summary: FullSessionSummary): CostSeed {
+  const costTracker = buildCostTrackerSeed(summary);
   return {
-    costTracker: buildCostTrackerSeed(summary),
+    costTracker,
     modelBreakdown: summary.modelBreakdown,
     estimatedCostUsd: summary.estimatedCostUsd,
+    unbooked: unbookedSeedCostOf(summary, costTracker),
   };
 }
 
@@ -62,12 +67,13 @@ export interface RehydrationSeeds {
 /**
  * Seeding adds, so each tracker family of a --stdio engine must seed a
  * session from its file as it stood before this process saved anything that
- * family already counted. The tool-call trackers count every record the
- * process drains, provisional rollups of other sessions included, so their
- * snapshot is taken at the first save of any kind. The cost trackers only
- * price another session's tokens, so theirs is taken at the first save of
- * the process's own summary; until then they seed from the current file,
- * which holds the rollup cost they never counted.
+ * family already counted. The tool-call trackers count every record of the
+ * session the process drained, even one drained before it adopted the id, and
+ * a provisional rollup saves those records too, so their snapshot is taken at
+ * the first save of any kind. The cost trackers only price another session's
+ * tokens, so theirs is taken at the first save of the process's own summary;
+ * until then they seed from the current file, which holds the rollup cost they
+ * never counted.
  *
  * Entries stay until their id is rehydrated. A provisional engine keeps one
  * small tool-call record per session it rolls up, next to the full rollup
@@ -78,6 +84,7 @@ export interface RehydrationSeeds {
 export class FirstSaveBaselines {
   private readonly toolCalls = new Map<string, ToolCallSeed | null>();
   private readonly cost = new Map<string, CostSeed | null>();
+  private readonly costFile = new Map<string, FullSessionSummary | null>();
 
   /** `previous` is the file the save merged against, null for a new file. */
   recordSave(save: {
@@ -89,14 +96,20 @@ export class FirstSaveBaselines {
     if (!this.toolCalls.has(sessionId)) {
       this.toolCalls.set(sessionId, previous && toolCallSeedOf(previous));
     }
-    if (ownSession && !this.cost.has(sessionId))
+    if (ownSession && !this.cost.has(sessionId)) {
       this.cost.set(sessionId, previous && costSeedOf(previous));
+      this.costFile.set(sessionId, previous);
+    }
   }
 
-  /** Drops a session id that a correction showed was a wrong guess. */
-  forget(sessionId: string): void {
-    this.toolCalls.delete(sessionId);
-    this.cost.delete(sessionId);
+  /**
+   * The file `sessionId`'s cost seed will come from: the file before this
+   * process's first own save (null for a new file), or undefined when there
+   * has been no own save yet and the current file still holds none of this
+   * process's cost.
+   */
+  costFileBeforeOwnSave(sessionId: string): FullSessionSummary | null | undefined {
+    return this.costFile.get(sessionId);
   }
 
   /** Seeds for `sessionId`, falling back to `loadCurrent()` per family, and forgets it. */
@@ -113,6 +126,7 @@ export class FirstSaveBaselines {
     };
     this.toolCalls.delete(sessionId);
     this.cost.delete(sessionId);
+    this.costFile.delete(sessionId);
     return seeds;
   }
 }

@@ -6,6 +6,7 @@ import { CostTracker } from '../metrics/cost-tracker.js';
 import { TaskDetector } from '../metrics/task-detector.js';
 import { AntiPatternDetector } from '../metrics/anti-patterns.js';
 import { EfficiencyScorer } from '../metrics/efficiency-score.js';
+import { LocalSessionAggregator } from '../metrics/local-session-aggregator.js';
 import {
   FeedbackCollector,
   handleGetWorkflowTrace,
@@ -624,7 +625,7 @@ describe('FeedbackCollector.emitMetrics()', () => {
       record(name: string, value: number, attrs: Record<string, string | number> = {}) {
         recorded.push({ name, value, attrs });
       },
-    } as unknown as import('../shared/index.js').MetricAggregator;
+    } as unknown as import('../core/index.js').MetricAggregator;
 
     collector.emitMetrics(aggregator);
 
@@ -641,11 +642,11 @@ describe('FeedbackCollector.emitMetrics()', () => {
     const collector = new FeedbackCollector();
     collector.record({ quality: 'good' });
 
-    const agg1 = { record: jest.fn() } as unknown as import('../shared/index.js').MetricAggregator;
+    const agg1 = { record: jest.fn() } as unknown as import('../core/index.js').MetricAggregator;
     collector.emitMetrics(agg1);
     expect(agg1.record).toHaveBeenCalledTimes(1);
 
-    const agg2 = { record: jest.fn() } as unknown as import('../shared/index.js').MetricAggregator;
+    const agg2 = { record: jest.fn() } as unknown as import('../core/index.js').MetricAggregator;
     collector.emitMetrics(agg2);
     expect(agg2.record).not.toHaveBeenCalled();
   });
@@ -654,7 +655,7 @@ describe('FeedbackCollector.emitMetrics()', () => {
     const collector = new FeedbackCollector();
     collector.record({ quality: 'good' });
 
-    const agg1 = { record: jest.fn() } as unknown as import('../shared/index.js').MetricAggregator;
+    const agg1 = { record: jest.fn() } as unknown as import('../core/index.js').MetricAggregator;
     collector.emitMetrics(agg1);
 
     collector.record({ quality: 'bad' });
@@ -664,7 +665,7 @@ describe('FeedbackCollector.emitMetrics()', () => {
       record(_name: string, _value: number, attrs: Record<string, string | number> = {}) {
         recorded2.push({ attrs });
       },
-    } as unknown as import('../shared/index.js').MetricAggregator;
+    } as unknown as import('../core/index.js').MetricAggregator;
     collector.emitMetrics(agg2);
 
     expect(recorded2).toHaveLength(1);
@@ -867,5 +868,25 @@ describe('registerWorkflowTools — mark_task_boundary', () => {
   it('is not listed when taskDetector is absent', () => {
     const { tools } = registerWorkflowTools({});
     expect(tools.some((t) => t.name === 'nr_observe_mark_task_boundary')).toBe(false);
+  });
+
+  it("closes the engine session's own task too, so its saved count matches the process detector", async () => {
+    const taskDetector = new TaskDetector();
+    const aggregator = new LocalSessionAggregator();
+    const sessionId = '0d9e4c2a-7b61-4f3e-9a85-2c6f1b8e5d47';
+    const { handlers } = registerWorkflowTools({
+      taskDetector,
+      onTaskBoundary: (timestamp) => aggregator.markTaskBoundary(sessionId, timestamp),
+    });
+
+    for (const id of ['rec-a', 'rec-b']) {
+      const record = makeRecord({ id, sessionId, toolName: 'Read' });
+      taskDetector.recordToolCall(record);
+      aggregator.recordToolCall(record);
+      await handlers.nr_observe_mark_task_boundary!(undefined);
+    }
+
+    expect(taskDetector.getMetrics().totalTasksCompleted).toBe(2);
+    expect(aggregator.taskCountOf(sessionId)).toBe(2);
   });
 });
