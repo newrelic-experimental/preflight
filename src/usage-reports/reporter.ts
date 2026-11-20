@@ -78,11 +78,17 @@ function release(dir: string, key: string): void {
 export function buildStartReport(inputs: ReportInputs, identity: EventIdentity): TrackEvent[] {
   const install = buildEvent(
     EVENTS.install,
-    inputs.install as unknown as Record<string, PropertyValue>,
+    Object.fromEntries(
+      Object.entries(inputs.install).map(([key, value]) => [`preflight_${key}`, value]),
+    ) as Record<string, PropertyValue>,
     identity,
   );
   const features = Object.entries(inputs.features).map(([feature, enabled]) =>
-    buildEvent(EVENTS.feature, { feature, enabled }, identity),
+    buildEvent(
+      EVENTS.feature,
+      { preflight_feature: feature, preflight_feature_enabled: enabled },
+      identity,
+    ),
   );
   return [install, ...features];
 }
@@ -92,7 +98,7 @@ export function buildSummary(summary: DaySummary, identity: EventIdentity): Trac
   const events: TrackEvent[] = [
     buildEvent(
       EVENTS.usage,
-      { usage_date: date, sessions_observed: summary.sessions_observed },
+      { preflight_usage_date: date, preflight_sessions_observed: summary.sessions_observed },
       identity,
     ),
   ];
@@ -101,17 +107,27 @@ export function buildSummary(summary: DaySummary, identity: EventIdentity): Trac
       buildEvent(
         EVENTS.dashboard,
         {
-          usage_date: date,
-          page_loads: summary.page_loads,
-          live_connections: summary.live_connections,
-          open_on_start: summary.open_on_start,
+          preflight_usage_date: date,
+          preflight_page_loads: summary.page_loads,
+          preflight_live_connections: summary.live_connections,
+          preflight_open_on_start: summary.open_on_start,
         },
         identity,
       ),
     );
   }
-  for (const [tool_name, call_count] of Object.entries(summary.tools)) {
-    events.push(buildEvent(EVENTS.tool, { usage_date: date, tool_name, call_count }, identity));
+  for (const [toolName, callCount] of Object.entries(summary.tools)) {
+    events.push(
+      buildEvent(
+        EVENTS.tool,
+        {
+          preflight_usage_date: date,
+          preflight_tool_name: toolName,
+          preflight_call_count: callCount,
+        },
+        identity,
+      ),
+    );
   }
   return events;
 }

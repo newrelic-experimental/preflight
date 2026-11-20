@@ -157,20 +157,26 @@ describe('buildEvent', () => {
   it('keeps only listed properties and never adds context', () => {
     const e = buildEvent(
       EVENTS.tool,
-      { usage_date: '2026-11-01', tool_name: 'x', call_count: 2, path: '/etc', secret: 'nope' },
+      {
+        preflight_usage_date: '2026-11-01',
+        preflight_tool_name: 'x',
+        preflight_call_count: 2,
+        path: '/etc',
+        secret: 'nope',
+      },
       identity(),
     );
     expect(e).not.toHaveProperty('context');
     expect(Object.keys(e.properties).sort()).toEqual(
       [
-        'call_count',
+        'preflight_call_count',
         'event_type',
         'path',
         'platform',
         'section',
         'session_id',
-        'tool_name',
-        'usage_date',
+        'preflight_tool_name',
+        'preflight_usage_date',
       ].sort(),
     );
     expect(e.properties.path).toBe('/preflight/usage-reports');
@@ -179,10 +185,10 @@ describe('buildEvent', () => {
   it('drops fields newer than the consented field list', () => {
     const e = buildEvent(
       EVENTS.usage,
-      { usage_date: '2026-11-01', sessions_observed: 1 },
+      { preflight_usage_date: '2026-11-01', preflight_sessions_observed: 1 },
       { ...identity(), fieldListVersion: 0 },
     );
-    expect(e.properties).not.toHaveProperty('sessions_observed');
+    expect(e.properties).not.toHaveProperty('preflight_sessions_observed');
   });
 
   it('lists properties for every event', () => {
@@ -231,9 +237,13 @@ describe('runReportTick', () => {
       now: new Date('2026-11-02T01:00:00Z'),
     });
     expect(r.summariesSent).toEqual(['2026-11-01']);
-    expect(bodies.find((b) => b.event === EVENTS.usage)?.properties.sessions_observed).toBe(2);
-    expect(bodies.find((b) => b.event === EVENTS.tool)?.properties.call_count).toBe(2);
-    expect(bodies.find((b) => b.event === EVENTS.dashboard)?.properties.page_loads).toBe(2);
+    expect(
+      bodies.find((b) => b.event === EVENTS.usage)?.properties.preflight_sessions_observed,
+    ).toBe(2);
+    expect(bodies.find((b) => b.event === EVENTS.tool)?.properties.preflight_call_count).toBe(2);
+    expect(bodies.find((b) => b.event === EVENTS.dashboard)?.properties.preflight_page_loads).toBe(
+      2,
+    );
     expect(
       existsSync(join(dir, 'pending', '2026-11-01-11111111-1111-4111-8111-111111111111.json')),
     ).toBe(false);

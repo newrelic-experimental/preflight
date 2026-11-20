@@ -18,9 +18,16 @@ vi.mock('../api/client', () => ({
     },
   })),
   fetchUsageReportsPreview: vi.fn(async () => ({
-    start: [{ event: 'preflight/install reported', anonymousId: 'id-1' }],
-    queued: [{ date: '2026-11-20', today: true, events: [{ event: 'preflight/tool called' }] }],
-    sent: [{ sentAt: '2026-11-19T01:00:00.000Z', event: { event: 'preflight/usage reported' } }],
+    start: [{ event: 'preflight/install state_loaded', anonymousId: 'id-1' }],
+    queued: [
+      { date: '2026-11-20', today: true, events: [{ event: 'preflight/tool_usage state_loaded' }] },
+    ],
+    sent: [
+      {
+        sentAt: '2026-11-19T01:00:00.000Z',
+        event: { event: 'preflight/daily_usage state_loaded' },
+      },
+    ],
     sentTotal: 1,
   })),
   qk: { settings: ['settings'], usageReportsPreview: ['usage-reports', 'preview'] },
@@ -48,9 +55,9 @@ describe('UsageReportsPanel', () => {
   it('loads the exact payloads only when asked', async () => {
     wrap();
     fireEvent.click(await screen.findByRole('button', { name: /show exact payloads/i }));
-    expect(await screen.findByText(/preflight\/install reported/)).toBeTruthy();
+    expect(await screen.findByText(/preflight\/install state_loaded/)).toBeTruthy();
     expect(screen.getByText(/today, still counting/)).toBeTruthy();
     expect(screen.getByText(/1 event, newest last/)).toBeTruthy();
-    expect(screen.getByText(/preflight\/usage reported/)).toBeTruthy();
+    expect(screen.getByText(/preflight\/daily_usage state_loaded/)).toBeTruthy();
   });
 });

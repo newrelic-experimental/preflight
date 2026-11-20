@@ -28,12 +28,16 @@ export const SECTION = 'usage_reports';
 export const PATH = '/preflight/usage-reports';
 export const EVENT_TYPE = 'state_load';
 
+/**
+ * taxonomy-enforcer accepts only names that end in one of its actions, and its
+ * schema for these lives in schemas/capabilities/preflight.yml there.
+ */
 export const EVENTS = {
-  install: 'preflight/install reported',
-  feature: 'preflight/feature reported',
-  usage: 'preflight/usage reported',
-  dashboard: 'preflight/dashboard viewed',
-  tool: 'preflight/tool called',
+  install: 'preflight/install state_loaded',
+  feature: 'preflight/feature state_loaded',
+  usage: 'preflight/daily_usage state_loaded',
+  dashboard: 'preflight/dashboard_usage state_loaded',
+  tool: 'preflight/tool_usage state_loaded',
 } as const;
 
 export type UsageEventName = (typeof EVENTS)[keyof typeof EVENTS];
@@ -43,23 +47,31 @@ const COMMON_PROPERTIES = ['platform', 'section', 'path', 'event_type', 'session
 /**
  * Every property each event may carry, with the field-list version that
  * introduced it. `buildEvent()` drops anything not listed here, and anything
- * newer than the install's consent.
+ * newer than the install's consent. Names carry a `preflight_` prefix because
+ * taxonomy-enforcer registers event properties in one list shared by every
+ * product. A field added later must be optional in that schema, since installs
+ * that consented earlier never send it.
  */
 export const EVENT_PROPERTIES: Record<UsageEventName, Readonly<Record<string, number>>> = {
   [EVENTS.install]: {
-    version: 1,
-    os: 1,
-    arch: 1,
-    node_major: 1,
-    adapter: 1,
-    install_channel: 1,
-    mode: 1,
-    hooks_installed: 1,
+    preflight_version: 1,
+    preflight_os: 1,
+    preflight_arch: 1,
+    preflight_node_major: 1,
+    preflight_adapter: 1,
+    preflight_install_channel: 1,
+    preflight_mode: 1,
+    preflight_hooks_installed: 1,
   },
-  [EVENTS.feature]: { feature: 1, enabled: 1 },
-  [EVENTS.usage]: { usage_date: 1, sessions_observed: 1 },
-  [EVENTS.dashboard]: { usage_date: 1, page_loads: 1, live_connections: 1, open_on_start: 1 },
-  [EVENTS.tool]: { usage_date: 1, tool_name: 1, call_count: 1 },
+  [EVENTS.feature]: { preflight_feature: 1, preflight_feature_enabled: 1 },
+  [EVENTS.usage]: { preflight_usage_date: 1, preflight_sessions_observed: 1 },
+  [EVENTS.dashboard]: {
+    preflight_usage_date: 1,
+    preflight_page_loads: 1,
+    preflight_live_connections: 1,
+    preflight_open_on_start: 1,
+  },
+  [EVENTS.tool]: { preflight_usage_date: 1, preflight_tool_name: 1, preflight_call_count: 1 },
 };
 
 /**
