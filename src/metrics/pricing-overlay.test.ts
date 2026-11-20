@@ -179,6 +179,17 @@ describe('model pricing through the boundary', () => {
     expect(resolveModelPricing('claude-opus-4-8')).toEqual(opus);
   });
 
+  it('restores built-in rates when a rate file is replaced by an alias-only file', () => {
+    const opus = resolveModelPricing('claude-opus-4-8');
+    applyCustomPricing(
+      writePricing({
+        'claude-opus-4-8': { inputPerMTok: 99, outputPerMTok: 99, contextWindow: 1000 },
+      }),
+    );
+    applyCustomPricing(writePricing({ aliases: { 'gw-claude-sonnet': 'claude-sonnet-4-6' } }));
+    expect(resolveModelPricing('claude-opus-4-8')).toEqual(opus);
+  });
+
   it('keeps the built-in table for an alias-only file', () => {
     const opus = resolveModelPricing('claude-opus-4-8');
     applyCustomPricing(writePricing({ aliases: { 'gw-claude-sonnet': 'claude-sonnet-4-6' } }));
