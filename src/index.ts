@@ -1966,6 +1966,7 @@ async function main(): Promise<void> {
           weeklySummaryGenerator,
           budgetTracker,
           latencyTracker,
+          taskCompletionTracker,
           personalCoach,
           trendAnalyzer,
           recommendationEngine,
@@ -2616,6 +2617,23 @@ async function main(): Promise<void> {
                 : null,
           });
         }
+      },
+      onSelfReport: (report) => {
+        const usage = {
+          inputTokens: report.inputTokens,
+          outputTokens: report.outputTokens,
+          thinkingTokens: report.thinkingTokens,
+          cacheReadTokens: report.cacheReadTokens,
+          cacheCreationTokens: report.cacheCreationTokens,
+          totalTokens: report.inputTokens + report.outputTokens + report.thinkingTokens,
+        };
+        localSessionAggregator.recordTokenUsage(report.sessionId, {
+          ...usage,
+          timestamp: report.timestamp,
+          costUsd: costTracker.priceUsage(usage, report.model).totalUsd,
+          model: report.model,
+          ...(report.platform !== undefined && { platform: report.platform }),
+        });
       },
       // Feed each Agent-tool ToolCallRecord into the workflow tracker
       // so AiWorkflowRun events ship for `run_source='agent_tool'`.

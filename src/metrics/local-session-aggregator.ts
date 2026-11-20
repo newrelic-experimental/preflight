@@ -142,6 +142,7 @@ export interface LocalSessionRollup {
   lastEmittedCost: EmittedCost | null;
   tokensInput: number;
   tokensOutput: number;
+  tokensThinking: number;
   tokensCacheRead: number;
   tokensCacheCreation: number;
   cacheSavingsUsd: number;
@@ -385,6 +386,7 @@ export class LocalSessionAggregator {
         lastEmittedCost: null,
         tokensInput: 0,
         tokensOutput: 0,
+        tokensThinking: 0,
         tokensCacheRead: 0,
         tokensCacheCreation: 0,
         cacheSavingsUsd: 0,
@@ -576,11 +578,13 @@ export class LocalSessionAggregator {
        * trackers. Absent for parent-transcript token events.
        */
       agentId?: string;
+      platform?: string;
     },
   ): void {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
     const timestamp = usage.timestamp ?? Date.now();
     const rollup = this.ensure(sessionId, timestamp);
+    if (rollup.platform === null && usage.platform) rollup.platform = usage.platform;
     // Seed from disk on this session's first usage, not at rollup creation: an
     // unscoped process creates a rollup from a session's first drained hook
     // event, which happens before that session's own engine has written
@@ -608,6 +612,7 @@ export class LocalSessionAggregator {
     }
     rollup.tokensInput += usage.inputTokens ?? 0;
     rollup.tokensOutput += usage.outputTokens ?? 0;
+    if (usage.agentId === undefined) rollup.tokensThinking += usage.thinkingTokens ?? 0;
     rollup.tokensCacheRead += usage.cacheReadTokens ?? 0;
     rollup.tokensCacheCreation += usage.cacheCreationTokens ?? 0;
     rollup.cacheSavingsUsd += usage.cacheSavingsUsd ?? 0;
@@ -821,7 +826,7 @@ export class LocalSessionAggregator {
         ...callUsageFields(rollup),
         tokensInput: rollup.tokensInput,
         tokensOutput: rollup.tokensOutput,
-        tokensThinking: 0,
+        tokensThinking: rollup.tokensThinking,
         tokensCacheRead: rollup.tokensCacheRead,
         tokensCacheCreation: rollup.tokensCacheCreation,
         cacheSavingsUsd: rollup.cacheSavingsUsd,
