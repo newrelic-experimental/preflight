@@ -4971,6 +4971,19 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
     });
 
+    it('keeps ready_for_review when a PR created against another repo shares a number with a merge in the same clone', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', {
+          cwd: a,
+          createdPrNumber: '42',
+          createdPrRepo: 'acme/upstream',
+        }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: a }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+
     it('clears ready_for_review when its own clone has several remotes and no default, so the merge has no repo', async () => {
       const a = clone('https://github.com/fork/app.git');
       const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
