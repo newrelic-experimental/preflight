@@ -49,6 +49,8 @@ import {
   DEFAULT_STORAGE_PATH,
   ConfigFileSchema,
   loadMcpConfig,
+  RETENTION_PRESETS,
+  isRetentionPolicy,
 } from '../config.js';
 import { VALID_MODES, type Mode } from '../config.js';
 import type { PlatformTarget } from '../config.js';
@@ -927,13 +929,19 @@ function handleCopilotInstall(options: {
     }
 
     const ext = installCopilotSdkExtension();
-    if (ext.copied) {
-      print('✓ Copilot SDK usage extension installed (token-exact cost)');
+    if (ext.action === 'copied' || ext.action === 'updated') {
+      print(
+        ext.action === 'copied'
+          ? '✓ Copilot SDK usage extension installed (token-exact cost)'
+          : `✓ Copilot SDK usage extension updated to the current version at ${copilotSdkExtensionInstallPath()}`,
+      );
       print(
         '  Restart the Copilot CLI with --experimental (or run /experimental on) to activate it.',
       );
-    } else if (ext.reason === 'exists') {
-      print('  Copilot SDK usage extension already installed');
+    } else if (ext.action === 'unchanged') {
+      print('  Copilot SDK usage extension already up to date');
+    } else if (ext.action === 'skipped') {
+      print('  ⚠ Left the existing Copilot extension alone: it is not a Preflight extension');
     } else {
       print(`  ⚠ Could not install Copilot SDK usage extension: ${ext.reason}`);
     }
@@ -1887,10 +1895,19 @@ export function createInstallProgram(): Command {
       'Interactive first-run setup: configure New Relic keys, install hooks, and deploy dashboards',
     )
     .addOption(new Option('--staging', 'pre-select the New Relic staging environment').hideHelp())
+    .addOption(
+      new Option(
+        '--retention <policy>',
+        'retention preset for local session, weekly summary and ledger files (skips the prompt)',
+      ).choices(Object.keys(RETENTION_PRESETS)),
+    )
     .action(async (opts: Record<string, unknown>) => {
       try {
         const { runSetupWizard } = await import('./setup-wizard.js');
-        await runSetupWizard({ staging: opts.staging === true });
+        await runSetupWizard({
+          staging: opts.staging === true,
+          retention: isRetentionPolicy(opts.retention) ? opts.retention : undefined,
+        });
       } catch (err) {
         print(`\n✗ Setup failed: ${errMsg(err)}`);
         process.exitCode = 1;

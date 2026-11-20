@@ -438,6 +438,7 @@ describe('HookEventProcessor', () => {
       expect(records).toHaveLength(1);
       const record = records[0]!;
       expect(record.toolUseId).toBe('toolu_orphan');
+      expect(record.timestamp).toBe(2000);
       expect(record.durationMs).toBeNull();
       expect(record.success).toBe(true);
       expect(record.outputSizeBytes).toBe(512);
@@ -461,7 +462,7 @@ describe('HookEventProcessor', () => {
       expect(record.agentType).toBe('general-purpose');
     });
 
-    it('still reports durationMs from nativeDurationMs even with no matching pre-event', () => {
+    it('reports durationMs from nativeDurationMs and starts the call that long before the post', () => {
       const processor = new HookEventProcessor({ store, onRecord });
 
       processor.processEvents([
@@ -474,6 +475,7 @@ describe('HookEventProcessor', () => {
 
       const record = records[0]!;
       expect(record.durationMs).toBe(75);
+      expect(record.timestamp).toBe(1925);
     });
   });
 

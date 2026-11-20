@@ -1,7 +1,7 @@
 import { openSync, closeSync, readSync, statSync, constants as fsConstants } from 'node:fs';
 
 import { isRealAssistantTurn } from '../lib/subagent-transcript-parser.js';
-import { splitShellChain } from './git-event-classifier.js';
+import { readShell } from './shell-lexer.js';
 
 import type { RawTranscriptEntry } from '../lib/transcript-types.js';
 
@@ -401,9 +401,9 @@ function commandOnlyReads(command: string): boolean {
  */
 function isReadOnlyCommand(command: unknown): boolean {
   if (typeof command !== 'string' || REDIRECT_OR_SUBSTITUTION_RE.test(command)) return false;
-  const chain = splitShellChain(command);
-  const commands = chain.segments.map((segment) => segment.trim()).filter((s) => s.length > 0);
-  return chain.quotesBalanced && commands.length > 0 && commands.every(commandOnlyReads);
+  const reading = readShell(command);
+  const commands = reading.segments.map((segment) => segment.trim()).filter((s) => s.length > 0);
+  return reading.balanced && commands.length > 0 && commands.every(commandOnlyReads);
 }
 
 /** Verbs that open the name of an MCP tool that changes something. */

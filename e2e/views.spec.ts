@@ -165,6 +165,36 @@ async function expectView(page: Page, view: ViewCase): Promise<void> {
   await expect(page.getByText('Not found', { exact: true })).toHaveCount(0);
 }
 
+// Runs in the page, so it must stay self-contained. Composites every translucent ancestor
+// background over white, then applies the WCAG 2 contrast formula to the text color.
+function contrastAgainstBackground(el: Element): number {
+  type Rgba = readonly [number, number, number, number];
+  const parse = (css: string): Rgba => {
+    const [r = 0, g = 0, b = 0, a = 1] = (css.match(/[\d.]+/g) ?? []).map(Number);
+    return [r, g, b, a];
+  };
+  const over = (top: Rgba, under: Rgba): Rgba => [
+    top[0] * top[3] + under[0] * (1 - top[3]),
+    top[1] * top[3] + under[1] * (1 - top[3]),
+    top[2] * top[3] + under[2] * (1 - top[3]),
+    1,
+  ];
+  const luminance = ([r, g, b]: Rgba): number => {
+    const f = (v: number): number =>
+      v / 255 <= 0.03928 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4;
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
+  const layers: Rgba[] = [];
+  for (let n: Element | null = el; n; n = n.parentElement) {
+    layers.unshift(parse(getComputedStyle(n).backgroundColor));
+  }
+  const bg = layers.reduce<Rgba>((under, top) => over(top, under), [255, 255, 255, 1]);
+  const [hi, lo] = [luminance(over(parse(getComputedStyle(el).color), bg)), luminance(bg)].sort(
+    (a, b) => b - a,
+  );
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 test('VIEWS lists every sidebar entry, in order', async ({ page }) => {
   // The router and the sidebar are edited together when a view is added; this is what makes
   // leaving VIEWS behind fail instead of silently skipping the new view's smoke test.
@@ -243,6 +273,49 @@ test.describe('store with one session', () => {
     await log.settle([SESSIONS_LIST, new RegExp(`^/api/sessions/${FIXTURE_SESSION_ID}$`)]);
     expect(log.errors).toEqual([]);
   });
+
+  for (const theme of ['dark', 'light'] as const) {
+    test(`the row's est. marker meets WCAG AA contrast in the ${theme} theme`, async ({ page }) => {
+      await page.addInitScript((t) => localStorage.setItem('preflight-theme', t), theme);
+      await page.goto('/sessions');
+      const marker = page
+        .getByRole('button', { name: new RegExp(FIXTURE_SESSION_NAME) })
+        .getByText('est.', { exact: true });
+      await expect(marker).toBeVisible();
+      const ratio = await marker.evaluate(contrastAgainstBackground);
+      expect(ratio).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+
+  for (const width of [640, 720, 800]) {
+    test(`the workflow spend estimate tooltip stays on screen at ${width}px wide`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 800 });
+      await page.route('**/api/workflows', (route) =>
+        route.fulfill({
+          json: [
+            {
+              runId: 'run-tooltip',
+              parentSessionId: FIXTURE_SESSION_ID,
+              taskId: null,
+              workflowName: 'review',
+              status: 'completed',
+              defaultModel: FIXTURE_MODEL,
+              startedAt: Date.now(),
+              totalUsd: 1.25,
+            },
+          ],
+        }),
+      );
+      await page.goto('/sessions');
+      await page.getByRole('button', { name: 'Why this is an estimate' }).hover();
+      const box = await page.getByRole('tooltip').boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+    });
+  }
 
   test('History counts it and breaks it out by model', async ({ page, log }) => {
     await page.goto('/history');

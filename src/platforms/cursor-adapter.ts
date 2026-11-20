@@ -69,6 +69,19 @@ export class CursorAdapter implements PlatformAdapter {
     instructionFilePaths: ['.cursorrules', '.cursor/rules/'] as const,
     // cursor.com/docs/agent/hooks: hooks send conversation_id, never session_id, so they write no breadcrumb.
     sessionBreadcrumbWriters: [] as const,
+    // https://cursor.com/docs/agent/hooks: afterMCPExecution carries conversation_id,
+    // mcp_server_name (the server's key in mcp.json), tool_input and result_json, and
+    // the user and project hooks files are ~/.cursor/hooks.json and .cursor/hooks.json.
+    // https://cursor.com/docs/context/mcp: the global and project MCP configs are
+    // ~/.cursor/mcp.json and .cursor/mcp.json.
+    tokenReportHook: {
+      clientName: 'Cursor',
+      postMcpEvent: 'afterMCPExecution',
+      homeHooksFile: '.cursor/hooks.json',
+      projectHooksFile: '.cursor/hooks.json',
+      homeMcpFile: '.cursor/mcp.json',
+      projectMcpFile: '.cursor/mcp.json',
+    },
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {

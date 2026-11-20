@@ -1,3 +1,5 @@
+import type { ReportedSpend, ReportedSpendPeriod } from '../../lib/reported-spend.js';
+
 // Distinct error class for 404 responses so callers can treat
 // "feature unavailable" differently from a real server error. Used by the
 // recent-alerts panel: in cloud mode the alert engine is not constructed,
@@ -1080,6 +1082,12 @@ export interface ModelStats {
   readonly avgOutputTokensPerRequest: number | null;
 }
 
+export interface TaskCompletionMetrics {
+  readonly completedTasks: number;
+  readonly avgTaskDurationMs: number | null;
+  readonly avgToolCallsPerTask: number | null;
+}
+
 export interface ModelUsageMetrics {
   readonly byModel: Readonly<Record<string, ModelStats>>;
   readonly mostUsedModel: string | null;
@@ -1275,6 +1283,7 @@ export interface SettingsPatch {
   dailyBudgetUsd?: number | null;
   weeklyBudgetUsd?: number | null;
   retainSessionsDays?: number | null;
+  reportedSpend?: { periodKind: ReportedSpendPeriod; amountUsd: number | null };
   digestWebhookUrl?: string | null;
   alerts?: {
     personal?: {
@@ -1287,6 +1296,8 @@ export interface SettingsPatch {
   };
 }
 
+export const fetchTaskCompletion = (signal?: AbortSignal): Promise<TaskCompletionMetrics> =>
+  getJson<TaskCompletionMetrics>('/api/task-completion', signal);
 export const fetchModelUsage = (signal?: AbortSignal): Promise<ModelUsageMetrics> =>
   getJson<ModelUsageMetrics>('/api/model-usage', signal);
 export const fetchCacheHealth = (signal?: AbortSignal): Promise<CacheHealthResponse> =>
@@ -1339,6 +1350,7 @@ export interface SettingsResponse {
   readonly dailyBudgetUsd: number | null;
   readonly weeklyBudgetUsd: number | null;
   readonly retainSessionsDays: number | null;
+  readonly reportedSpend: readonly ReportedSpend[];
   readonly digestWebhookUrl: string | null;
   readonly digestWebhookUrlSource: 'env' | 'command' | 'file' | 'unset';
   readonly alerts: {
@@ -1627,6 +1639,7 @@ export const qk = {
   activityHeatmap: (view: string) => ['activity-heatmap', view] as const,
   context: ['context'] as const,
   modelUsage: ['model-usage'] as const,
+  taskCompletion: ['task-completion'] as const,
   cacheHealth: ['cache-health'] as const,
   costPerTool: (days?: number) => ['cost-per-tool', days] as const,
   settings: ['settings'] as const,
