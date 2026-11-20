@@ -28,6 +28,8 @@ describe('ghSegmentRepo', () => {
     ['gh pr merge 5 -R github.example.com/acme/app', 'acme/app'],
     ['gh pr merge 5 -R "acme/app"', 'acme/app'],
     ['GH_REPO=acme/app gh pr merge 5', 'acme/app'],
+    ['GH_REPO="Acme/App" gh pr merge 5', 'acme/app'],
+    ["gh pr merge 5 -R 'acme/app'", 'acme/app'],
   ])('reads the repo %s names', (segment, repo) => {
     expect(ghSegmentRepo(segment)).toBe(repo);
   });
@@ -36,6 +38,7 @@ describe('ghSegmentRepo', () => {
     ['no repo named', 'gh pr merge 5'],
     ['a value it cannot read', 'gh pr merge 5 -R acme'],
     ['a short-flag cluster', 'gh pr merge 5 -dR acme/app'],
+    ['a value attached to the flag', 'gh pr merge 5 -Racme/app'],
     ['two repos named', 'GH_REPO=acme/one gh pr merge 5 -R acme/two'],
   ])('is null for %s', (_label, segment) => {
     expect(ghSegmentRepo(segment)).toBeNull();

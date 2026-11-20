@@ -4971,6 +4971,21 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
     });
 
+    it('clears ready_for_review when its own clone has several remotes and no default, so the merge has no repo', async () => {
+      const a = clone('https://github.com/fork/app.git');
+      const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+      spawnSync('git', ['remote', 'add', 'upstream', 'https://github.com/acme/app.git'], {
+        cwd: a,
+        env,
+        stdio: 'ignore',
+      });
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: a }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    });
+
     it('keeps ready_for_review for a create saved before its repo was recorded', async () => {
       const a = clone('https://github.com/acme/app.git');
       const b = clone('https://github.com/acme/app.git');

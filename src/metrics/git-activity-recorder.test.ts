@@ -559,6 +559,41 @@ describe('GitActivityRecorder', () => {
       ]);
     });
 
+    describe('with a default saved on one of two remotes', () => {
+      const setDefault = (remote: string, value: string) =>
+        spawnSync('git', ['config', `remote.${remote}.gh-resolved`, value], {
+          cwd: repoDir,
+          stdio: 'ignore',
+        });
+      const mergeRef = () => refsOf(makeRecord({ command: 'gh pr merge 42', cwd: repoDir }))[0];
+
+      beforeEach(() => {
+        addRemote('origin', 'https://github.com/fork/app.git');
+        addRemote('upstream', 'https://github.com/acme/app.git');
+      });
+
+      it('takes an owner/name default as written, lowercased', () => {
+        setDefault('origin', 'Acme/Other');
+        expect(mergeRef()).toEqual(['merge', '42', 'acme/other#42']);
+      });
+
+      it('takes a host/owner/name default without its host', () => {
+        setDefault('origin', 'github.com/acme/other');
+        expect(mergeRef()).toEqual(['merge', '42', 'acme/other#42']);
+      });
+
+      it('gives no ref when two remotes save different defaults', () => {
+        setDefault('origin', 'base');
+        setDefault('upstream', 'base');
+        expect(mergeRef()).toEqual(['merge', '42', null]);
+      });
+
+      it('gives no ref when the default is not an owner/name', () => {
+        setDefault('upstream', 'not-a-repo-name');
+        expect(mergeRef()).toEqual(['merge', '42', null]);
+      });
+    });
+
     it('gives a merge no ref when an earlier segment assigns GH_REPO', () => {
       addRemote('origin', 'https://github.com/acme/app.git');
       expect(
