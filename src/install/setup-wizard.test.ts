@@ -2529,6 +2529,16 @@ describe('setupWizard retention preset', () => {
     expect(writtenConfig().retentionPolicy).toBe('minimal');
   });
 
+  it('Enter normalises a differently-cased retentionPolicy already in the config', async () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retentionPolicy: 'SOC2-Audit' }));
+    answersWithRetention('');
+
+    await runSetupWizard();
+
+    expect(outputText()).not.toContain('unrecognised retentionPolicy');
+    expect(writtenConfig().retentionPolicy).toBe('soc2-audit');
+  });
+
   it('a typed preset name is written', async () => {
     answersWithRetention('gdpr-minimisation');
 

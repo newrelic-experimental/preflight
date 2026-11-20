@@ -574,11 +574,8 @@ export async function runSetupWizard(
     // retainSessionsDays already in the file keeps winning, so it is left alone.
     // Enter with no valid existing preset writes nothing, so a config that never
     // chose one stays without the key.
-    const existingRetention: RetentionPolicy | undefined = isRetentionPolicy(
-      existing.retentionPolicy,
-    )
-      ? existing.retentionPolicy
-      : undefined;
+    const existingRetention: RetentionPolicy | undefined =
+      parseRetentionAnswer(existing.retentionPolicy ?? '') ?? undefined;
     let retentionPolicy: RetentionPolicy | undefined;
     if (opts.retention) {
       retentionPolicy = opts.retention;
