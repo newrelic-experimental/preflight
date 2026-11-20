@@ -1796,7 +1796,16 @@ async function main(): Promise<void> {
       const expired = now - priorCostCache.lastRefreshMs > PRIOR_COST_CACHE_TTL_MS;
       if (dayChanged || expired) refreshPriorCostBaseline();
     };
-    refreshPriorCostBaseline();
+    // Rereads the baseline first. A cached one still counts a session this process
+    // has since seeded, counting it twice, and misses sessions other engines saved since.
+    const seedBudgetPeriods = (): void => {
+      refreshPriorCostBaseline();
+      budgetTracker.seedPeriodSpend(
+        priorCostCache.priorDailyCostUsd + costTracker.getCostForDay(localDateKey()),
+        priorCostCache.priorWeeklyCostUsd + (costTracker.getMetrics().sessionTotalCostUsd ?? 0),
+      );
+    };
+    seedBudgetPeriods();
     weeklySummaryGenerator = new WeeklySummaryGenerator({
       storagePath: config.storagePath,
       sessionStore,
@@ -2844,6 +2853,7 @@ async function main(): Promise<void> {
         platform: eventProcessor?.activePlatform,
         outcome: 'in progress',
         toolSelectionScorer,
+        backfillRecord: (record) => subagentAttribution.backfill(record),
         repoResolver: repoNameResolver,
         ...(savesSession !== undefined && { savesSession }),
       });
@@ -2954,6 +2964,7 @@ async function main(): Promise<void> {
           outcome: opts?.periodic ? 'in progress' : 'completed',
           platform: eventProcessor?.activePlatform,
           instructionPromptHash: instructionDriftTracker.promptHash,
+          backfillRecord: (record) => subagentAttribution.backfill(record),
         });
         // The rollup counts only this session's own tasks; the detector above sees every drained session's.
         const summary = {
@@ -3311,7 +3322,7 @@ async function main(): Promise<void> {
         rehydrateTrackersIfResumed(realId);
         liftObserverCompleted(realId);
       }
-      refreshPriorCostBaseline();
+      seedBudgetPeriods();
 
       try {
         saveObservedSessions('running', (id) =>

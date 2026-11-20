@@ -1741,6 +1741,8 @@ Tool selection quality score with penalty breakdown for redundant reads, repeate
 
 **Data source:** `ToolSelectionScorer`
 
+Redundant-read and repeated-failure checks compare calls within one agent, so a call without `agent_id` can be counted against the parent session instead of its subagent. Preflight fills `agent_id` from the subagent transcripts when the hook payload omits it. The live process repeats that fill when it saves the session summary, so the saved `toolSelectionMetrics` resolve more calls than were known at intake. This tool, the dashboard and the stored-session rollups score records as they were saved, so a record the intake pass could not attribute stays unattributed there.
+
 **How it works:** Scores the full session tool call sequence. Penalizes: redundant reads (same file read again without intervening modification), repeated failures (same Bash command failed twice), and unused large outputs (tool returned a large response that was never referenced). Score 0–1 where 1 is perfect selection. `worstOffenders` lists the highest-penalty calls. See [Improving Your Tool Selection Score](ADVANCED.md#improving-your-tool-selection-score) for prompt-writing tips to reduce penalties.
 
 **Requires:** `ToolSelectionScorer`
