@@ -63,8 +63,6 @@ Each status means one of the following:
 | Parent-session id    | `AiSubagentTurn.parent_session_id`, `AiWorkflowRun.session_id`                  | Exact       | Both name the session that spawned the subagent.                                                                                                                                                                                                                                               |
 | Team, project, org   | `team_id`, `project_id`, `org_id` on both events                                | Exact       | Each is omitted when not configured or derived.                                                                                                                                                                                                                                                |
 
-`AiWorkflowRun.started_at` is outside this schema. On a paired hook call, the tracker (`workflow-run-tracker.ts`, `record.timestamp - durationMs`) subtracts the duration from a timestamp that is already the call's start, so `started_at` is one duration too early.
-
 ## The existing events leave these gaps
 
 These gaps affect the questions a shared skill library asks. None has a fix inside this schema, because each needs an emitter change.
