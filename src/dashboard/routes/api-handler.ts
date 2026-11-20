@@ -2,10 +2,18 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
 import {
+  MAX_REPORTED_SPEND_USD,
+  isPeriodKind,
+  isValidReportedAmountUsd,
+  parseStoredReportedSpend,
+  type ReportedSpend,
+} from '../../lib/reported-spend.js';
+import {
   digestWebhookUrlOverrideSource,
   digestWebhookUrlOverride,
   normalizeDeveloperName,
   redactSensitive,
+  MAX_RETAIN_SESSIONS_DAYS,
 } from '../../config.js';
 import {
   isSyntheticSessionId,
@@ -33,6 +41,7 @@ import {
   GitActivityRecorder,
   type GitActivityRecord,
 } from '../../metrics/git-activity-recorder.js';
+import type { PrRef } from '../../metrics/pr-ref.js';
 import { ActivityStore } from '../../metrics/git-activity-store.js';
 import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
 import { resolveScopeParam, resolveWindowParam } from '../../metrics/git-window-params.js';
@@ -49,6 +58,7 @@ import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
 import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
 import type { ModelBreakdownEntry, ModelUsageMetrics } from '../../metrics/model-usage-tracker.js';
 import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
+import type { TaskCompletionMetrics } from '../../metrics/task-completion-tracker.js';
 import type {
   QualityEvent,
   QualityProxyMetrics,
@@ -98,6 +108,7 @@ import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import {
   digestWebhookUrlShadowedBy,
+  handleGetDigestPreview,
   handleSendDigest,
   isDigestWebhookCommandConfigured,
 } from '../../tools/cross-session-tools.js';
@@ -115,6 +126,7 @@ import { computeLatencyPercentiles } from './latency-percentiles.js';
 import type { AntiPatternSegment } from './replay-analyzer.js';
 import { analyzeReplayTimeline } from './replay-analyzer.js';
 import { pairToolCallsFromBufferEvents } from './tool-selection-aggregate.js';
+import { primaryTierName, summarizeTiers } from '../../transport/tier-types.js';
 interface RawAuditRecord {
   readonly id: string;
   readonly timestamp: number;
@@ -511,6 +523,7 @@ export interface ApiHandlerDeps {
   readonly weeklySummaryGenerator?: WeeklySummaryGenerator;
   readonly budgetTracker?: { getStatus: () => BudgetStatus };
   readonly latencyTracker?: { getMetrics: () => LatencyMetrics };
+  readonly taskCompletionTracker?: { getMetrics: () => TaskCompletionMetrics };
   readonly personalCoach?: { generate: () => PersonalInsightsResult };
   readonly trendAnalyzer?: {
     computeTrends: () => {
@@ -623,6 +636,10 @@ export interface ApiHandlerDeps {
     // see computeCrossProcessTodaySessionIds(). `?.` falls back to an empty
     // set for older fakes/mocks.
     getTodaySessionIds?: (options?: { includeSynthetic?: boolean }) => string[];
+    // Optional: sessions the live trackers hold data for, including token-only
+    // sessions and synthetic ids, never expired by midnight or staleness. Used
+    // by sessionIdsHeldByLiveTrackers() to skip persisted duplicates.
+    getHeldSessionIds?: () => string[];
   };
   readonly contextTracker?: { getMetrics: (sessionId?: string) => ContextTrackerMetrics };
   readonly contextCompositionTracker?: { getMetrics: () => ContextCompositionMetrics };
@@ -1321,12 +1338,17 @@ export function computeCrossProcessTodaySessionIds(deps: ApiHandlerDeps): string
 }
 
 // Sessions whose activity this process's in-memory trackers already hold: its
-// own id plus every session it drained today. --local drains every session, so
-// a persisted copy of any of them must not be merged on top of the live totals.
+// own id plus every session it drained. --local drains every session, so a
+// persisted copy of any of them must not be merged on top of the live totals.
+// Keyed to the registry's held set rather than today's touched sessions: a
+// token-only session (model usage, no tool call) is held too, and the trackers
+// are never reset at midnight, so the held set must not expire then either.
 function sessionIdsHeldByLiveTrackers(deps: ApiHandlerDeps): ReadonlySet<string> {
   const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
   const held = new Set<string>(
-    deps.liveSessionRegistry?.getTodaySessionIds?.({ includeSynthetic: true }) ?? [],
+    deps.liveSessionRegistry?.getHeldSessionIds?.() ??
+      deps.liveSessionRegistry?.getTodaySessionIds?.({ includeSynthetic: true }) ??
+      [],
   );
   if (ownSessionId !== undefined) held.add(ownSessionId);
   return held;
@@ -1378,38 +1400,69 @@ function isPrRecord(
 
 type PrRecord = Extract<GitActivityRecord, { kind: 'pr' }>;
 
-// Identifies the PR a numbered record refers to: the repo (the git common dir,
-// shared by every worktree of one clone) plus the number. A merge run from
-// another session or worktree of the same repo matches; the same number in
-// another repo does not. A record with no resolvable repo matches only within
-// its own session.
-function prMatchKey(record: PrRecord, repoKeyByWorkspace: ReadonlyMap<string, string>): string {
+// The repo (the git common dir, shared by every worktree of one clone) plus
+// number of a numbered record, or null for a record with no number. A
+// record with no resolvable repo matches only within its own session.
+function prRepoKey(
+  record: PrRecord,
+  repoKeyByWorkspace: ReadonlyMap<string, string>,
+): string | null {
+  if (record.prEvent.prNumber === null) return null;
   const repo =
     record.workspaceKey === UNATTRIBUTED_WORKSPACE_KEY
       ? `${UNATTRIBUTED_WORKSPACE_KEY}:${record.sessionId}`
       : (repoKeyByWorkspace.get(record.workspaceKey) ?? record.workspaceKey);
-  return `${repo}#${record.prEvent.prNumber ?? ''}`;
+  return `${repo}#${record.prEvent.prNumber}`;
 }
 
-// A 'create' whose number was never captured (no PR URL in its output, or a
-// session persisted before createdPrNumber existed) can't be matched, so it
-// always counts as open. `mergeTimesByKey` spans every session in the window.
-function countOpenPrs(
-  records: readonly PrRecord[],
-  mergeTimesByKey: ReadonlyMap<string, readonly number[]>,
-  repoKeyByWorkspace: ReadonlyMap<string, string>,
-): number {
-  let open = 0;
-  for (const record of records) {
-    if (record.prEvent.action !== 'create') continue;
-    if (record.prEvent.prNumber === null) {
-      open++;
-      continue;
+interface PrMergeTime {
+  readonly timestamp: number;
+  readonly hasRef: boolean;
+}
+
+/**
+ * Every merge in the window, indexed both ways a create can match one. A
+ * create and a merge that both carry a `prRef` (`owner/repo#N`) match on it
+ * alone, so a merge from another clone of the same GitHub repo clears the
+ * create and the same number in another repo doesn't. Otherwise they match
+ * on `prRepoKey`, so a merge from any worktree of the create's clone clears
+ * it. A create with neither (no number captured, or a session persisted
+ * before createdPrNumber existed) can't be matched and always counts as open.
+ */
+class PrMergeIndex {
+  private readonly byRef = new Map<PrRef, number[]>();
+  private readonly byRepoKey = new Map<string, PrMergeTime[]>();
+
+  constructor(private readonly repoKeyByWorkspace: ReadonlyMap<string, string>) {}
+
+  add(merge: PrRecord): void {
+    if (merge.prRef !== null) {
+      const times = this.byRef.get(merge.prRef);
+      if (times) times.push(merge.timestamp);
+      else this.byRef.set(merge.prRef, [merge.timestamp]);
     }
-    const merges = mergeTimesByKey.get(prMatchKey(record, repoKeyByWorkspace)) ?? [];
-    if (!merges.some((ts) => ts >= record.timestamp)) open++;
+    const key = prRepoKey(merge, this.repoKeyByWorkspace);
+    if (key === null) return;
+    const time = { timestamp: merge.timestamp, hasRef: merge.prRef !== null };
+    const times = this.byRepoKey.get(key);
+    if (times) times.push(time);
+    else this.byRepoKey.set(key, [time]);
   }
-  return open;
+
+  isMerged(create: PrRecord): boolean {
+    const after = (ts: number): boolean => ts >= create.timestamp;
+    if (create.prRef !== null && (this.byRef.get(create.prRef) ?? []).some(after)) return true;
+    const key = prRepoKey(create, this.repoKeyByWorkspace);
+    if (key === null) return false;
+    return (this.byRepoKey.get(key) ?? []).some(
+      (merge) => after(merge.timestamp) && !(merge.hasRef && create.prRef !== null),
+    );
+  }
+}
+
+function countOpenPrs(records: readonly PrRecord[], merges: PrMergeIndex): number {
+  return records.filter((record) => record.prEvent.action === 'create' && !merges.isMerged(record))
+    .length;
 }
 
 interface SessionStatusAggregateInput {
@@ -1420,7 +1473,9 @@ interface SessionStatusAggregateInput {
   readonly startMs: number;
   readonly now: number;
   readonly peeked: readonly { readonly [key: string]: unknown }[];
-  readonly todaySessions: readonly FullSessionSummary[];
+  /** Every persisted session with activity today, including one that started
+   *  on an earlier day, so its creates and merges today are seen. */
+  readonly sessions: readonly FullSessionSummary[];
 }
 
 // Per-session lifecycle status for today's Sessions today KPI.
@@ -1433,7 +1488,7 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
   counts: Record<SessionStatus, number>;
   sessionIds: Record<SessionStatus, readonly string[]>;
 } {
-  const { sessionIds, liveSet, startMs, now, peeked, todaySessions } = input;
+  const { sessionIds, liveSet, startMs, now, peeked, sessions } = input;
 
   const lastToolBySession = new Map<string, { toolName: string; ts: number }>();
   const trackLatestTool = (sessionId: string, toolName: string, ts: number): void => {
@@ -1448,7 +1503,7 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
     if (typeof sid !== 'string' || sid.length === 0) continue;
     trackLatestTool(sid, typeof ev.tool === 'string' ? ev.tool : 'Unknown', ts);
   }
-  for (const session of todaySessions) {
+  for (const session of sessions) {
     if (!session.timeline) continue;
     for (const entry of session.timeline) {
       if (entry.timestamp < startMs) continue;
@@ -1468,24 +1523,20 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
   // 'unattributed' and matches within its own session until the periodic
   // session checkpoint persists it with a cwd.
   const repoKeyByWorkspace = new Map<string, string>();
-  for (const session of todaySessions) {
+  for (const session of sessions) {
     const replayed = input.replayCache.replay(session, identityResolver);
     for (const record of replayed.records) activityStore.ingest(record);
     for (const [key, identity] of replayed.identities)
       repoKeyByWorkspace.set(key, identity.repoKey);
   }
   const prRecordsBySession = new Map<string, PrRecord[]>();
-  const mergeTimesByKey = new Map<string, number[]>();
+  const merges = new PrMergeIndex(repoKeyByWorkspace);
   for (const record of activityStore.query({ since: startMs, until: now })) {
     if (!isPrRecord(record)) continue;
     const list = prRecordsBySession.get(record.sessionId);
     if (list) list.push(record);
     else prRecordsBySession.set(record.sessionId, [record]);
-    if (record.prEvent.action !== 'merge' || record.prEvent.prNumber === null) continue;
-    const key = prMatchKey(record, repoKeyByWorkspace);
-    const times = mergeTimesByKey.get(key);
-    if (times) times.push(record.timestamp);
-    else mergeTimesByKey.set(key, [record.timestamp]);
+    if (record.prEvent.action === 'merge') merges.add(record);
   }
 
   const counts = Object.fromEntries(SESSION_STATUSES.map((s) => [s, 0])) as Record<
@@ -1499,11 +1550,7 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
     const status = deriveSessionStatus({
       live: liveSet.has(sessionId),
       lastToolName: lastToolBySession.get(sessionId)?.toolName ?? null,
-      openPrCount: countOpenPrs(
-        prRecordsBySession.get(sessionId) ?? [],
-        mergeTimesByKey,
-        repoKeyByWorkspace,
-      ),
+      openPrCount: countOpenPrs(prRecordsBySession.get(sessionId) ?? [], merges),
     });
     counts[status]++;
     idsByStatus[status].push(sessionId);
@@ -1941,8 +1988,14 @@ export function createApiHandler(
     // already-loaded `todaySessions` rather than re-invoking
     // loadTodaySessions — keeps disk reads at one per request and preserves
     // the cache-hit assertions in api-handler.test.ts.
+    // loadSessionsWithActivityToday() also returns a session resumed from an
+    // older start date (its filename keeps that date). Every cost and token
+    // figure below is clamped to today, so widening the set adds only today's
+    // share.
     const overlappingTodaySessions =
-      deps.sessionStore?.loadSessionsOverlappingToday?.() ?? todaySessions;
+      deps.sessionStore?.loadSessionsWithActivityToday?.() ??
+      deps.sessionStore?.loadSessionsOverlappingToday?.() ??
+      todaySessions;
     // Local-day key for "today", shared by the persisted-session loop below and
     // the live top-up further down. Sessions persisted with per-day cost buckets
     // (costByDayUsd) let us sum a session's REAL today-spend instead of
@@ -2044,7 +2097,9 @@ export function createApiHandler(
       // captured by the todaySessions loop (which filtered by start-date).
       if (typeof s.sessionId === 'string' && !sessionsSeen.has(s.sessionId)) {
         sessionsSeen.add(s.sessionId);
-        antiPatternCount += s.antiPatterns?.length ?? 0;
+        // antiPatterns is lifetime with no per-day split, so a session resumed
+        // from before yesterday would add its whole history to today.
+        if (s.startTime >= startMs - 86_400_000) antiPatternCount += s.antiPatterns?.length ?? 0;
       }
     }
 
@@ -2056,7 +2111,7 @@ export function createApiHandler(
       startMs,
       now,
       peeked,
-      todaySessions,
+      sessions: overlappingTodaySessions,
     });
 
     // (3) include this MCP's live session today-portion. Per-day attribution
@@ -2475,6 +2530,11 @@ export function createApiHandler(
       byTool: today.byTool,
       slowestCalls: live?.slowestCalls ?? [],
     });
+  });
+
+  routes.set('GET /api/task-completion', (_req, res) => {
+    if (!deps.taskCompletionTracker) return unavailable(res, 'taskCompletionTracker');
+    jsonOk(res, deps.taskCompletionTracker.getMetrics());
   });
 
   routes.set('GET /api/model-usage', (_req, res) => {
@@ -3027,13 +3087,13 @@ export function createApiHandler(
           }
         }
 
-        // Prefer loadSessionsOverlappingToday() so a session that started
-        // yesterday and is still running isn't invisible here —
-        // loadTodaySessions() filters by filename date (= start date) and
-        // would otherwise silently drop it. The `entry.timestamp >= startMs`
-        // check just below already excludes that session's yesterday-side
-        // entries, so widening the input set can't double-count anything.
+        // Prefer loadSessionsWithActivityToday() so a session resumed from an
+        // older start date isn't dropped; loadTodaySessions() filters by
+        // filename date (= start date). The `entry.timestamp >= startMs` check
+        // below excludes that session's pre-today entries, so widening the
+        // input set can't add out-of-day buckets.
         const todaySessions =
+          deps.sessionStore?.loadSessionsWithActivityToday?.() ??
           deps.sessionStore?.loadSessionsOverlappingToday?.() ??
           deps.sessionStore?.loadTodaySessions() ??
           [];
@@ -3198,12 +3258,11 @@ export function createApiHandler(
         'retainSessionsDays' in disk
           ? (disk.retainSessionsDays as number | null)
           : c.retainSessionsDays,
+      reportedSpend: parseStoredReportedSpend(disk.reportedSpend),
       digestWebhookUrl: fileWebhookUrl,
       // Where sends actually read the URL from. The value above is only the
       // file's; env or a command outranks it, and its value is never returned.
       digestWebhookUrlSource: overrideSource ?? (fileWebhookUrl ? 'file' : 'unset'),
-      digestSchedule:
-        typeof disk.digestSchedule === 'string' ? disk.digestSchedule : c.digestSchedule,
       alerts: {
         personal: {
           dailyCostUsd:
@@ -3235,6 +3294,8 @@ export function createApiHandler(
       storagePath: c.storagePath,
       highSecurity: c.highSecurity,
       licenseKey: c.licenseKey ? '••••' + c.licenseKey.slice(-4) : null,
+      tiers: summarizeTiers(c.tiers),
+      primaryTier: primaryTierName(c.tiers),
     });
   });
 
@@ -3308,14 +3369,42 @@ export function createApiHandler(
         digestUrlOnly = false;
       }
     }
+    if ('reportedSpend' in body) {
+      const rs = body.reportedSpend as Record<string, unknown> | null;
+      const unknownKeys =
+        typeof rs === 'object' && rs !== null
+          ? Object.keys(rs).filter((k) => k !== 'periodKind' && k !== 'amountUsd')
+          : [];
+      if (typeof rs !== 'object' || rs === null || Array.isArray(rs)) {
+        errors.push('reportedSpend must be an object');
+      } else if (unknownKeys.length > 0) {
+        errors.push(`reportedSpend.${unknownKeys[0]} is set by the server and cannot be sent`);
+      } else if (!isPeriodKind(rs.periodKind)) {
+        errors.push("reportedSpend.periodKind must be 'daily' or 'weekly'");
+      } else if (rs.amountUsd !== null && !isValidReportedAmountUsd(rs.amountUsd)) {
+        errors.push(
+          `reportedSpend.amountUsd must be a number from 0 to ${MAX_REPORTED_SPEND_USD}, or null to clear`,
+        );
+      } else {
+        const periodKind = rs.periodKind;
+        const kept = parseStoredReportedSpend(existing.reportedSpend).filter(
+          (e) => e.periodKind !== periodKind,
+        );
+        const next: ReportedSpend[] =
+          rs.amountUsd === null
+            ? kept
+            : [...kept, { periodKind, amountUsd: rs.amountUsd, asOf: new Date().toISOString() }];
+        existing.reportedSpend = next;
+      }
+    }
     if ('retainSessionsDays' in body) {
       if (
         body.retainSessionsDays !== null &&
         (!Number.isInteger(body.retainSessionsDays) ||
           (body.retainSessionsDays as number) < 1 ||
-          (body.retainSessionsDays as number) > 365)
+          (body.retainSessionsDays as number) > MAX_RETAIN_SESSIONS_DAYS)
       ) {
-        errors.push('retainSessionsDays must be integer 1-365 or null');
+        errors.push(`retainSessionsDays must be integer 1-${MAX_RETAIN_SESSIONS_DAYS} or null`);
       } else {
         existing.retainSessionsDays = body.retainSessionsDays;
         digestUrlOnly = false;
@@ -3340,14 +3429,6 @@ export function createApiHandler(
         } else {
           existing.digestWebhookUrl = body.digestWebhookUrl;
         }
-      }
-    }
-    if ('digestSchedule' in body) {
-      if (typeof body.digestSchedule !== 'string') {
-        errors.push('digestSchedule must be a string');
-      } else {
-        existing.digestSchedule = body.digestSchedule;
-        digestUrlOnly = false;
       }
     }
     if ('alerts' in body) {
@@ -3415,6 +3496,11 @@ export function createApiHandler(
 
     writeFileSync(deps.configFilePath, JSON.stringify(existing, null, 2), { mode: 0o600 });
     jsonOk(res, { ok: true, restartRequired: !digestUrlOnly });
+  });
+
+  routes.set('GET /api/digest/preview', (_req, res) => {
+    if (!deps.weeklySummaryGenerator) return unavailable(res, 'digest');
+    jsonOk(res, handleGetDigestPreview(deps.weeklySummaryGenerator));
   });
 
   routes.set('POST /api/digest/send', async (_req, res) => {

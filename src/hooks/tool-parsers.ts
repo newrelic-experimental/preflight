@@ -9,7 +9,9 @@
  * parsing error is caught and returns {}.
  */
 
+import { normalizeAgentType } from '../lib/agent-id.js';
 import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
+import { parsePrRepo } from '../metrics/pr-ref.js';
 import { classifyBash } from './bash-classifier.js';
 
 type ToolFields = Record<string, string | number | boolean>;
@@ -126,7 +128,8 @@ function parseGlob(input: Record<string, unknown>): ToolFields {
 function parseAgent(input: Record<string, unknown>): ToolFields {
   const fields: ToolFields = {};
   if (typeof input.description === 'string') fields.agentDescription = input.description;
-  if (typeof input.subagent_type === 'string') fields.subagentType = input.subagent_type;
+  const subagentType = normalizeAgentType(input.subagent_type);
+  if (subagentType !== undefined) fields.subagentType = subagentType;
   if (typeof input.promptLength === 'number') {
     fields.promptLength = input.promptLength;
   } else if (typeof input.prompt === 'string') {
@@ -269,12 +272,12 @@ export function parseToolSpecificFields(
     }
     // Set by the collector for `gh pr create` and MCP create_pull_request, so
     // it is tool-name independent here.
-    const createdPrNumber =
-      output !== null && typeof output === 'object'
-        ? (output as Record<string, unknown>).createdPrNumber
-        : undefined;
+    const { createdPrNumber, createdPrRepo } =
+      output !== null && typeof output === 'object' ? (output as Record<string, unknown>) : {};
     if (typeof createdPrNumber === 'string' && /^\d{1,9}$/.test(createdPrNumber)) {
       fields.createdPrNumber = createdPrNumber;
+      const repo = parsePrRepo(createdPrRepo);
+      if (repo !== undefined) fields.createdPrRepo = repo;
     }
     // Set by the collector from a GitHub MCP PR call's owner, repo and
     // pullNumber inputs.

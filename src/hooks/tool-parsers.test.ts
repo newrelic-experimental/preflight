@@ -296,6 +296,20 @@ describe('parseToolSpecificFields', () => {
       );
     });
 
+    it('drops a malformed or oversized subagent_type', () => {
+      expect(
+        parseToolSpecificFields('Agent', { subagent_type: 'x'.repeat(500) }, undefined)
+          .subagentType,
+      ).toBeUndefined();
+      expect(
+        parseToolSpecificFields('Agent', { subagent_type: 'Explore\nforged' }, undefined)
+          .subagentType,
+      ).toBeUndefined();
+      expect(
+        parseToolSpecificFields('Agent', { subagent_type: '' }, undefined).subagentType,
+      ).toBeUndefined();
+    });
+
     it('extracts runInBackground flag', () => {
       const input = {
         description: 'Background task',
@@ -405,6 +419,16 @@ describe('parseToolSpecificFields', () => {
         parseToolSpecificFields('mcp__github__create_pull_request', {}, { createdPrNumber: '57' })
           .createdPrNumber,
       ).toBe('57');
+    });
+
+    it('carries the created PR repo through lowercased, and drops a malformed or numberless one', () => {
+      const cmd = { command: 'gh pr create --fill' };
+      const repoOf = (output: Record<string, unknown>) =>
+        parseToolSpecificFields('Bash', cmd, output).createdPrRepo;
+      expect(repoOf({ createdPrNumber: '42', createdPrRepo: 'Acme/App' })).toBe('acme/app');
+      expect(repoOf({ createdPrNumber: '42', createdPrRepo: 'acme/app/extra' })).toBeUndefined();
+      expect(repoOf({ createdPrNumber: '42', createdPrRepo: 'acme app/x' })).toBeUndefined();
+      expect(repoOf({ createdPrRepo: 'acme/app' })).toBeUndefined();
     });
 
     it('reads the repo and PR number the collector kept from a GitHub MCP PR call', () => {

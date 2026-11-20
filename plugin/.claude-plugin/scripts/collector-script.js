@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 // src/hooks/collector-script.ts
-import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, mkdirSync as mkdirSync2, existsSync, utimesSync } from "node:fs";
-import { resolve as resolve2, dirname as dirname2 } from "node:path";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, mkdirSync as mkdirSync3, existsSync, utimesSync } from "node:fs";
+import { resolve as resolve3, dirname as dirname3 } from "node:path";
 import { homedir } from "node:os";
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 
 // src/redaction-patterns.ts
 var AFTER_ESCAPE = String.raw`\\[nrt]|\\u[0-9a-fA-F]{4}|\x1b\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
@@ -47,6 +47,13 @@ var SPECIAL = charTable(`
 var isSpace = (c) => c === 32 || c >= 9 && c <= 13;
 var isOperator = (c) => c >= 0 && c < 128 && OPERATOR[c] === 1;
 var isBlankOrOperator = (c) => isSpace(c) || isOperator(c);
+function cutAtWord(text, end) {
+  let start = end;
+  if (!isSpace(text.charCodeAt(end))) {
+    while (start > 0 && !isSpace(text.charCodeAt(start - 1))) start--;
+  }
+  return text.slice(0, start);
+}
 function skipPlain(text, from) {
   let i = from;
   while (i < text.length) {
@@ -358,11 +365,137 @@ function canonicalPlatformName(name) {
 // src/platforms/types.ts
 var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
 
+// src/hooks/self-report.ts
+import { createHash } from "node:crypto";
+import { closeSync, constants, mkdirSync, openSync, unlinkSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+
+// src/hooks/synthetic-session-id.ts
+function isSyntheticSessionId(id) {
+  if (!id) return false;
+  return id.startsWith("local-") || id.startsWith("proxy-") || id.startsWith("pending-");
+}
+
+// src/hooks/self-report.ts
+var REPORT_TOKENS_TOOL_NAME = "nr_observe_report_tokens";
+var MAX_TOKENS = 1e7;
+var REPORT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
+var MODEL_RE = /^[a-zA-Z0-9._:-]{1,256}$/;
+var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
+var REQUIRED_COUNTS = ["input_tokens", "output_tokens"];
+var OPTIONAL_COUNTS = ["thinking_tokens", "cache_read_tokens", "cache_creation_tokens"];
+function clampToken(v) {
+  if (!Number.isFinite(v)) return 0;
+  return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
+}
+function isPreflightServerName(name) {
+  return typeof name === "string" && (/preflight/i.test(name) || name === "nr-ai-observability");
+}
+function reportKey(r) {
+  const counts = [r.model, r.inputTokens, r.outputTokens, r.thinkingTokens, r.cacheReadTokens];
+  const digest = createHash("sha256").update(JSON.stringify([...counts, r.cacheCreationTokens])).digest("hex");
+  return `${r.reportId}-${digest.slice(0, 16)}`;
+}
+function isConversationId(id) {
+  return typeof id === "string" && SESSION_ID_RE.test(id) && id !== "unknown" && !isSyntheticSessionId(id);
+}
+function decodeObject(raw) {
+  let value = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return void 0;
+    }
+  }
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function parseSelfReport(args) {
+  const fail = (reason) => ({ ok: false, reason });
+  const a = decodeObject(args);
+  if (!a) return fail("arguments are not a JSON object");
+  if (typeof a.report_id !== "string" || !REPORT_ID_RE.test(a.report_id)) {
+    return fail("report_id must be 8 to 128 characters of [A-Za-z0-9_-], new for every call");
+  }
+  if (typeof a.model !== "string" || !MODEL_RE.test(a.model)) {
+    return fail("model must be 1 to 256 characters of [a-zA-Z0-9._:-]");
+  }
+  const counts = {};
+  const readCounts = (fields, fallback) => {
+    for (const field of fields) {
+      const n = a[field] ?? fallback;
+      if (typeof n !== "number" || !Number.isFinite(n) || n < 0) return field;
+      counts[field] = clampToken(n);
+    }
+    return void 0;
+  };
+  const bad = readCounts(REQUIRED_COUNTS) ?? readCounts(OPTIONAL_COUNTS, 0);
+  if (bad) return fail(`${bad} must be a non-negative number`);
+  return {
+    ok: true,
+    report: {
+      reportId: a.report_id,
+      model: a.model,
+      inputTokens: counts.input_tokens,
+      outputTokens: counts.output_tokens,
+      thinkingTokens: counts.thinking_tokens,
+      cacheReadTokens: counts.cache_read_tokens,
+      cacheCreationTokens: counts.cache_creation_tokens
+    }
+  };
+}
+function hookAcknowledged(result, reportId) {
+  const value = decodeObject(result);
+  if (!value || value.isError === true) return false;
+  const replies = Array.isArray(value.content) ? value.content.map(
+    (block) => decodeObject(block?.text)
+  ) : [value];
+  return replies.some(
+    (reply) => reply?.accepted === true && reply.recorded_by === "hook" && reply.report_id === reportId
+  );
+}
+function hookSelfReportLine(call, conversationId, timestamp, platform) {
+  const isReport = call.tool === REPORT_TOKENS_TOOL_NAME && isPreflightServerName(call.server);
+  if (!isReport || !isConversationId(conversationId)) return void 0;
+  const parsed = parseSelfReport(call.args);
+  if (!parsed.ok || !hookAcknowledged(call.result, parsed.report.reportId)) return void 0;
+  const { report } = parsed;
+  return {
+    mode: "self_report",
+    tool: REPORT_TOKENS_TOOL_NAME,
+    timestamp,
+    sessionId: conversationId,
+    ...report,
+    platform
+  };
+}
+function claimPath(storageDir, line) {
+  return resolve(storageDir, "self-reports", line.sessionId, reportKey(line));
+}
+function claimReport(storageDir, line) {
+  const path = claimPath(storageDir, line);
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 448 });
+    closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 384));
+    return true;
+  } catch {
+    return false;
+  }
+}
+function releaseReport(storageDir, line) {
+  try {
+    unlinkSync(claimPath(storageDir, line));
+  } catch {
+    return;
+  }
+}
+
 // src/hooks/session-breadcrumbs.ts
-import { resolve } from "node:path";
+import { resolve as resolve2 } from "node:path";
 var BREADCRUMBS_DIR = "breadcrumbs";
+var STALE_CWD_BREADCRUMB_MS = 7 * 24 * 60 * 60 * 1e3;
 function breadcrumbRoot(storagePath, writer) {
-  return resolve(storagePath, BREADCRUMBS_DIR, writer);
+  return resolve2(storagePath, BREADCRUMBS_DIR, writer);
 }
 function breadcrumbWriter(env) {
   for (const key of ENGINE_ENV_KEYS) {
@@ -375,14 +508,14 @@ function breadcrumbWriter(env) {
 
 // src/storage/hook-buffer.ts
 import {
-  closeSync,
-  constants,
+  closeSync as closeSync2,
+  constants as constants2,
   fstatSync,
-  openSync,
+  openSync as openSync2,
   readFileSync,
   readSync,
   statSync,
-  unlinkSync,
+  unlinkSync as unlinkSync2,
   writeSync
 } from "node:fs";
 var DRAIN_SEAL = "\0preflight-drain-seal\n";
@@ -418,22 +551,39 @@ function isAt(path, file) {
   const now = statSync(path, { bigint: true, throwIfNoEntry: false });
   return now !== void 0 && now.ino === file.ino && now.dev === file.dev;
 }
+var LineWrittenError = class extends Error {
+  constructor(cause) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+};
+function landedBeforeSeal(fd, sealFloor) {
+  return !readRange(fd, sealFloor, offsetAfterWrite(fd)).includes(DRAIN_SEAL);
+}
 function appendOnce(path, data) {
-  const fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_APPEND, 384);
+  const fd = openSync2(path, constants2.O_RDWR | constants2.O_CREAT | constants2.O_APPEND, 384);
+  let landed = false;
   try {
-    const opened = fstatSync(fd, { bigint: true });
-    if (!isAt(path, opened)) return "moved";
-    const sealFloor = Number(opened.size);
-    const written = writeSync(fd, data);
-    if (written < data.length) {
-      writeSync(fd, TORN_LINE_END);
-      return "redo";
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      if (!isAt(path, opened)) return "moved";
+      const sealFloor = Number(opened.size);
+      const written = writeSync(fd, data);
+      try {
+        if (written < data.length) {
+          writeSync(fd, TORN_LINE_END);
+          return "redo";
+        }
+        landed = isAt(path, opened) || landedBeforeSeal(fd, sealFloor);
+      } catch (err) {
+        landed = written >= data.length - 1 && landedBeforeSeal(fd, sealFloor);
+        throw err;
+      }
+      return landed ? "kept" : "redo";
+    } finally {
+      closeSync2(fd);
     }
-    if (isAt(path, opened)) return "kept";
-    const start = offsetAfterWrite(fd) - data.length;
-    return readRange(fd, sealFloor, start).includes(DRAIN_SEAL) ? "redo" : "kept";
-  } finally {
-    closeSync(fd);
+  } catch (err) {
+    throw landed ? new LineWrittenError(err) : err;
   }
 }
 function appendToHookBuffer(path, text) {
@@ -443,7 +593,7 @@ function appendToHookBuffer(path, text) {
   if (!text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) {
     throw new Error(`Hook buffer text must be exactly one newline-terminated line: ${path}`);
   }
-  const data = Buffer.from(text);
+  const data = Buffer.from("\n" + text);
   let writes = 0;
   for (let opens = 0; opens < MAX_OPENS; opens++) {
     const landing = appendOnce(path, data);
@@ -469,25 +619,31 @@ function mcpPrToolAction(toolName) {
   return Object.hasOwn(MCP_PR_TOOL_ACTION, bare) ? MCP_PR_TOOL_ACTION[bare] : void 0;
 }
 
+// src/metrics/pr-ref.ts
+var PR_REPO_RE = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
+function parsePrRepo(value) {
+  return typeof value === "string" && PR_REPO_RE.test(value) ? value.toLowerCase() : void 0;
+}
+
 // src/hooks/minted-tool-use-ids.ts
 import { randomUUID } from "node:crypto";
 import {
-  closeSync as closeSync2,
-  mkdirSync,
-  openSync as openSync2,
+  closeSync as closeSync3,
+  mkdirSync as mkdirSync2,
+  openSync as openSync3,
   readdirSync,
   renameSync,
-  unlinkSync as unlinkSync2,
+  unlinkSync as unlinkSync3,
   writeFileSync
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname as dirname2, join } from "node:path";
 var MINTED_IDS_DIR_PREFIX = "minted-ids-";
 var MINTED_ID_PREFIX = "minted-";
 var CLAIM_SUFFIX = ".claimed";
 var OPEN_ENTRY_TTL_MS = 40 * 6e4;
 var MAX_LISTINGS = 5;
 function mintedIdsDir(bufferPath) {
-  return join(dirname(bufferPath), MINTED_IDS_DIR_PREFIX + basename(bufferPath, ".jsonl"));
+  return join(dirname2(bufferPath), MINTED_IDS_DIR_PREFIX + basename(bufferPath, ".jsonl"));
 }
 function toolKey(tool) {
   const name = tool.toLowerCase();
@@ -522,7 +678,7 @@ function mintToolUseId(bufferPath, tool, at) {
   const id = MINTED_ID_PREFIX + randomUUID();
   try {
     const dir = mintedIdsDir(bufferPath);
-    mkdirSync(dir, { recursive: true, mode: 448 });
+    mkdirSync2(dir, { recursive: true, mode: 448 });
     writeFileSync(join(dir, `${at}.${toolKey(tool)}.${id}`), "", {
       flag: "wx",
       mode: 384
@@ -542,7 +698,7 @@ function takeMintedToolUseId(bufferPath, tool, at) {
     const counted = entries.filter((entry) => entry.lateUntil !== void 0);
     let contended = false;
     for (const entry of [...open, ...counted]) {
-      if (!claim(join(dir, entry.name), unlinkSync2)) {
+      if (!claim(join(dir, entry.name), unlinkSync3)) {
         contended = true;
         continue;
       }
@@ -554,9 +710,9 @@ function takeMintedToolUseId(bufferPath, tool, at) {
   return void 0;
 }
 function claim(entry, act) {
-  const claimPath = entry + CLAIM_SUFFIX;
+  const claimPath2 = entry + CLAIM_SUFFIX;
   try {
-    closeSync2(openSync2(claimPath, "wx", 384));
+    closeSync3(openSync3(claimPath2, "wx", 384));
   } catch {
     return false;
   }
@@ -567,7 +723,7 @@ function claim(entry, act) {
     return false;
   } finally {
     try {
-      unlinkSync2(claimPath);
+      unlinkSync3(claimPath2);
     } catch {
     }
   }
@@ -575,20 +731,22 @@ function claim(entry, act) {
 
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
-var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
-var DEFAULT_STORAGE_DIR = resolve2(homedir(), ".newrelic-preflight");
+var DEFAULT_STORAGE_DIR = resolve3(homedir(), ".newrelic-preflight");
+function getStorageDir() {
+  return process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+}
 function getBufferPath(sessionId) {
   if (process.env.NEW_RELIC_AI_MCP_BUFFER_PATH !== void 0) {
     return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   }
-  const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+  const storageDir = getStorageDir();
   const safeId = typeof sessionId === "string" && SESSION_ID_RE.test(sessionId) ? sessionId : "unknown";
-  return resolve2(storageDir, `buffer-${safeId}.jsonl`);
+  return resolve3(storageDir, `buffer-${safeId}.jsonl`);
 }
 var HIGH_SECURITY_FROM_FILE = (() => {
   for (const dir of [".newrelic-preflight", ".nr-ai-observe"]) {
     try {
-      const configPath = resolve2(homedir(), dir, "config.json");
+      const configPath = resolve3(homedir(), dir, "config.json");
       if (existsSync(configPath)) {
         const config = JSON.parse(readFileSync2(configPath, "utf-8"));
         return config.highSecurity === true;
@@ -619,6 +777,22 @@ function getMaxContentLength() {
   if (parsed > MAX_MAX_CONTENT_LENGTH) return MAX_MAX_CONTENT_LENGTH;
   return parsed;
 }
+var HOOK_EVENT_PLATFORM = {
+  beforeshellexecution: "cursor",
+  aftershellexecution: "cursor",
+  beforemcpexecution: "cursor",
+  aftermcpexecution: "cursor",
+  beforereadfile: "cursor",
+  afterfileedit: "cursor",
+  pre_read_code: "windsurf",
+  post_read_code: "windsurf",
+  pre_write_code: "windsurf",
+  post_write_code: "windsurf",
+  pre_run_command: "windsurf",
+  post_run_command: "windsurf",
+  pre_mcp_tool_use: "windsurf",
+  post_mcp_tool_use: "windsurf"
+};
 function detectStampPlatform() {
   for (const key of ENGINE_ENV_KEYS) {
     const name = canonicalPlatformName(process.env[key]);
@@ -634,13 +808,14 @@ function redact(value) {
   let result = value;
   if (Buffer.byteLength(value, "utf8") > MAX_REDACT_BYTES) {
     const buf = Buffer.from(value, "utf8").subarray(0, MAX_REDACT_BYTES);
-    result = buf.toString("utf8").replace(/�$/, "");
+    const kept = buf.toString("utf8").replace(/�$/, "");
+    result = cutAtWord(value, kept.length);
   }
   return redactSecrets(result);
 }
 function hashInput(input) {
   const str = JSON.stringify(input) ?? "";
-  return createHash("sha256").update(str).digest("hex").slice(0, 16);
+  return createHash2("sha256").update(str).digest("hex").slice(0, 16);
 }
 function sizeOf(value) {
   if (value === void 0 || value === null) return 0;
@@ -700,10 +875,10 @@ function writePpidBreadcrumb(sessionId, root, legacyRoot) {
   try {
     const pids = getLinuxAncestorPids(ppid);
     for (const dir of legacyRoot === void 0 ? [root] : [root, legacyRoot]) {
-      const breadcrumbDir = resolve2(dir, "session-by-ppid");
-      mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
+      const breadcrumbDir = resolve3(dir, "session-by-ppid");
+      mkdirSync3(breadcrumbDir, { recursive: true, mode: 448 });
       for (const pid of pids) {
-        const breadcrumbPath = resolve2(breadcrumbDir, `${pid}.txt`);
+        const breadcrumbPath = resolve3(breadcrumbDir, `${pid}.txt`);
         if (existsSync(breadcrumbPath)) {
           try {
             if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
@@ -734,9 +909,9 @@ function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
   const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
   try {
     for (const dir of legacyRoot === void 0 ? [root] : [root, legacyRoot]) {
-      const breadcrumbDir = resolve2(dir, "session-by-cwd");
-      mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
-      const breadcrumbPath = resolve2(breadcrumbDir, `${sanitizedCwd}.txt`);
+      const breadcrumbDir = resolve3(dir, "session-by-cwd");
+      mkdirSync3(breadcrumbDir, { recursive: true, mode: 448 });
+      const breadcrumbPath = resolve3(breadcrumbDir, `${sanitizedCwd}.txt`);
       if (existsSync(breadcrumbPath)) {
         try {
           if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
@@ -914,27 +1089,32 @@ function extractInputMeta(toolName, input) {
   }
   return Object.keys(meta).length > 0 ? meta : void 0;
 }
-var PR_URL_RE = /https?:\/\/[^\s"'/]+\/[^\s"'/]+\/[^\s"'/]+\/pull\/(\d{1,9})\b/g;
+var PR_URL_RE = /https?:\/\/[^\s"'/]+\/([^\s"'/]+)\/([^\s"'/]+)\/pull\/(\d{1,9})\b/g;
 var GH_PR_CREATE_RE = /(?:^|[\s;&|(])gh\s+pr\s+create\b/;
-function findCreatedPrNumber(output) {
+function findCreatedPr(output) {
   const texts = [];
   const blocks = Array.isArray(output) ? output : output.content;
   if (!Array.isArray(output) && typeof output.stdout === "string") texts.push(output.stdout);
   if (Array.isArray(blocks)) {
     for (const block of blocks) if (hasStringText(block)) texts.push(block.text);
   }
-  const prNumbers = /* @__PURE__ */ new Set();
+  const prs = /* @__PURE__ */ new Map();
   for (const text of texts) {
-    for (const match of text.matchAll(PR_URL_RE)) prNumbers.add(match[1]);
+    for (const [, owner, repo, createdPrNumber] of text.matchAll(PR_URL_RE)) {
+      const createdPrRepo = parsePrRepo(`${owner}/${repo}`);
+      prs.set(`${owner}/${repo}#${createdPrNumber}`.toLowerCase(), {
+        createdPrNumber,
+        ...createdPrRepo !== void 0 && { createdPrRepo }
+      });
+    }
   }
-  return prNumbers.size === 1 ? [...prNumbers][0] : void 0;
+  return prs.size === 1 ? [...prs.values()][0] : void 0;
 }
 function extractOutputMeta(toolName, output, input) {
   if (output === null || output === void 0 || typeof output !== "object") return void 0;
   const obj = output;
   if (mcpPrToolAction(toolName) === "create") {
-    const createdPrNumber = findCreatedPrNumber(output);
-    return createdPrNumber === void 0 ? void 0 : { createdPrNumber };
+    return findCreatedPr(output);
   }
   if (toolName === "Bash") {
     const meta = {};
@@ -946,8 +1126,7 @@ function extractOutputMeta(toolName, output, input) {
     }
     const command = input !== null && typeof input === "object" ? input.command : void 0;
     if (typeof command === "string" && GH_PR_CREATE_RE.test(command)) {
-      const createdPrNumber = findCreatedPrNumber(obj);
-      if (createdPrNumber !== void 0) meta.createdPrNumber = createdPrNumber;
+      Object.assign(meta, findCreatedPr(obj));
     }
     if (Object.keys(meta).length > 0) return meta;
   }
@@ -1040,6 +1219,7 @@ function processHook(raw, cliEvent) {
   const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
   const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: String(data.stepIdx) } : {};
   let event;
+  let selfReportCall;
   if (eventName === "pretooluse") {
     event = {
       mode: "pre",
@@ -1166,6 +1346,12 @@ function processHook(raw, cliEvent) {
       timestamp,
       success: true
     };
+    selfReportCall = {
+      tool: mcpTool,
+      server: data.mcp_server_name,
+      args: data.tool_input,
+      result: data.result_json
+    };
   } else if (eventName === "beforereadfile") {
     event = {
       mode: "post",
@@ -1260,6 +1446,12 @@ function processHook(raw, cliEvent) {
       timestamp,
       success: true
     };
+    selfReportCall = {
+      tool: mcpTool,
+      server: toolInfo.mcp_server_name,
+      args: toolInfo.mcp_tool_arguments,
+      result: toolInfo.mcp_result
+    };
   } else if (isAntigravityPre) {
     const agyToolName = data.toolCall?.name ?? "unknown";
     event = {
@@ -1352,16 +1544,19 @@ function processHook(raw, cliEvent) {
   if (data.transcript_path) event.transcriptPath = data.transcript_path;
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ""] ?? detectStampPlatform();
   if (stampedPlatform) event.platform = stampedPlatform;
+  const selfReport = selfReportCall && stampedPlatform && hookSelfReportLine(selfReportCall, sessionId, timestamp, stampedPlatform);
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
+  const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : void 0;
+  let reportAttempted = false;
   try {
     const bufferPath = getBufferPath(sessionId);
-    const bufferDir = dirname2(bufferPath);
+    const bufferDir = dirname3(bufferPath);
     if (!existsSync(bufferDir)) {
-      mkdirSync2(bufferDir, { recursive: true, mode: 448 });
+      mkdirSync3(bufferDir, { recursive: true, mode: 448 });
     }
     if (event.toolUseId === void 0 && (event.mode === "pre" || event.mode === "post") && !POST_ONLY_EVENTS.has(eventName ?? "")) {
       const id = event.mode === "pre" ? mintToolUseId(bufferPath, String(event.tool), timestamp) : takeMintedToolUseId(bufferPath, String(event.tool), timestamp);
@@ -1369,7 +1564,14 @@ function processHook(raw, cliEvent) {
     }
     const line = JSON.stringify(event) + "\n";
     appendToHookBuffer(bufferPath, line);
+    if (newReport) {
+      reportAttempted = true;
+      appendToHookBuffer(bufferPath, JSON.stringify(newReport) + "\n");
+    }
   } catch (err) {
+    if (newReport && !(reportAttempted && err instanceof LineWrittenError)) {
+      releaseReport(getStorageDir(), newReport);
+    }
     if (!stderrSinkInstalled) {
       stderrSinkInstalled = true;
       process.stderr.on("error", () => void 0);

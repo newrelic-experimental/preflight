@@ -445,30 +445,19 @@ describe('loadConfig', () => {
 
   // null accountId is valid for OTLP-only; for nr-events-api
   // or both it must throw (the URL would become .../accounts/null/... and 404).
-  it('throws when accountId is null and transport defaults to nr-events-api', () => {
+  it('loads with a null accountId, since the Events API URL carries none', () => {
     delete process.env.NEW_RELIC_ACCOUNT_ID;
-    expect(() =>
-      loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app', accountId: null }),
-    ).toThrow('NEW_RELIC_ACCOUNT_ID');
-  });
-
-  it('throws when accountId is null and transport is "both"', () => {
-    delete process.env.NEW_RELIC_ACCOUNT_ID;
-    expect(() =>
+    expect(
+      loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app', accountId: null })
+        .accountId,
+    ).toBeNull();
+    expect(
       loadConfig({
         licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234',
         appName: 'app',
-        accountId: null,
         transport: 'both',
-      }),
-    ).toThrow('NEW_RELIC_ACCOUNT_ID');
-  });
-
-  it('throws when accountId is missing entirely (no env, no override) and transport defaults to nr-events-api', () => {
-    delete process.env.NEW_RELIC_ACCOUNT_ID;
-    expect(() =>
-      loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' }),
-    ).toThrow('NEW_RELIC_ACCOUNT_ID');
+      }).accountId,
+    ).toBeNull();
   });
 
   // envInt bounds clamping

@@ -17,7 +17,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, utimesSync } from '
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { redactSecrets } from '../redaction-patterns.js';
+import { cutAtWord, redactSecrets } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import {
   CLAUDE_CODE_ENV_SIGNALS,
@@ -26,17 +26,28 @@ import {
 import { hookEventFromArg } from '../hook-subcommands.js';
 import { canonicalPlatformName, ENGINE_ENV_KEYS } from '../platforms/platform-names.js';
 import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
+import {
+  claimReport,
+  hookSelfReportLine,
+  releaseReport,
+  SESSION_ID_RE,
+  type HookReportCall,
+} from './self-report.js';
 import { breadcrumbRoot, breadcrumbWriter } from './session-breadcrumbs.js';
-import { appendToHookBuffer } from '../storage/hook-buffer.js';
+import { appendToHookBuffer, LineWrittenError } from '../storage/hook-buffer.js';
 import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
+import { parsePrRepo } from '../metrics/pr-ref.js';
 import { mintToolUseId, takeMintedToolUseId } from './minted-tool-use-ids.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
 // ---------------------------------------------------------------------------
 
-const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 const DEFAULT_STORAGE_DIR = resolve(homedir(), '.newrelic-preflight');
+
+function getStorageDir(): string {
+  return process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+}
 
 /**
  * Resolve the per-session buffer path. Validates sessionId against
@@ -52,7 +63,7 @@ function getBufferPath(sessionId?: string): string {
   if (process.env.NEW_RELIC_AI_MCP_BUFFER_PATH !== undefined) {
     return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   }
-  const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+  const storageDir = getStorageDir();
   const safeId =
     typeof sessionId === 'string' && SESSION_ID_RE.test(sessionId) ? sessionId : 'unknown';
   return resolve(storageDir, `buffer-${safeId}.jsonl`);
@@ -106,6 +117,24 @@ export function getMaxContentLength(): number {
   return parsed;
 }
 
+// These event names exist on only one platform, so the event itself names it.
+const HOOK_EVENT_PLATFORM: Readonly<Record<string, string>> = {
+  beforeshellexecution: 'cursor',
+  aftershellexecution: 'cursor',
+  beforemcpexecution: 'cursor',
+  aftermcpexecution: 'cursor',
+  beforereadfile: 'cursor',
+  afterfileedit: 'cursor',
+  pre_read_code: 'windsurf',
+  post_read_code: 'windsurf',
+  pre_write_code: 'windsurf',
+  post_write_code: 'windsurf',
+  pre_run_command: 'windsurf',
+  post_run_command: 'windsurf',
+  pre_mcp_tool_use: 'windsurf',
+  post_mcp_tool_use: 'windsurf',
+};
+
 /**
  * Ambient stamping is deliberately limited to Claude Code, the only platform
  * whose hook-process env signal is verified; other platforms stamp via
@@ -134,7 +163,8 @@ function redact(value: string): string {
   let result = value;
   if (Buffer.byteLength(value, 'utf8') > MAX_REDACT_BYTES) {
     const buf = Buffer.from(value, 'utf8').subarray(0, MAX_REDACT_BYTES);
-    result = buf.toString('utf8').replace(/�$/, ''); // drop any partial surrogate at cut point
+    const kept = buf.toString('utf8').replace(/�$/, ''); // drop any partial surrogate at cut point
+    result = cutAtWord(value, kept.length);
   }
   return redactSecrets(result);
 }
@@ -663,25 +693,34 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
 
 // `https://<host>/<owner>/<repo>/pull/<N>`: what `gh pr create` prints on
 // success and what an MCP create_pull_request result carries as html_url.
-const PR_URL_RE = /https?:\/\/[^\s"'/]+\/[^\s"'/]+\/[^\s"'/]+\/pull\/(\d{1,9})\b/g;
+const PR_URL_RE = /https?:\/\/[^\s"'/]+\/([^\s"'/]+)\/([^\s"'/]+)\/pull\/(\d{1,9})\b/g;
 const GH_PR_CREATE_RE = /(?:^|[\s;&|(])gh\s+pr\s+create\b/;
 
-/** The PR number named by the PR URLs in a tool's output text, or undefined
- *  when they name none or several, since then the created one is unknown (a
- *  second create, or a `gh pr comment` URL on another PR). Only the digits
- *  leave this function; the output itself is never kept. */
-function findCreatedPrNumber(output: Record<string, unknown> | unknown[]): string | undefined {
+/** The PR named by the PR URLs in a tool's output text, as its number and
+ *  (when the owner and repo are plain names) its lowercased `owner/repo`, or
+ *  undefined when they name none or several, since then the created one is
+ *  unknown (a second create, or a `gh pr comment` URL on another PR). Only
+ *  these leave this function; the output itself is never kept. */
+function findCreatedPr(
+  output: Record<string, unknown> | unknown[],
+): { createdPrNumber: string; createdPrRepo?: string } | undefined {
   const texts: string[] = [];
   const blocks = Array.isArray(output) ? output : output.content;
   if (!Array.isArray(output) && typeof output.stdout === 'string') texts.push(output.stdout);
   if (Array.isArray(blocks)) {
     for (const block of blocks) if (hasStringText(block)) texts.push(block.text);
   }
-  const prNumbers = new Set<string>();
+  const prs = new Map<string, { createdPrNumber: string; createdPrRepo?: string }>();
   for (const text of texts) {
-    for (const match of text.matchAll(PR_URL_RE)) prNumbers.add(match[1]);
+    for (const [, owner, repo, createdPrNumber] of text.matchAll(PR_URL_RE)) {
+      const createdPrRepo = parsePrRepo(`${owner}/${repo}`);
+      prs.set(`${owner}/${repo}#${createdPrNumber}`.toLowerCase(), {
+        createdPrNumber,
+        ...(createdPrRepo !== undefined && { createdPrRepo }),
+      });
+    }
   }
-  return prNumbers.size === 1 ? [...prNumbers][0] : undefined;
+  return prs.size === 1 ? [...prs.values()][0] : undefined;
 }
 
 /**
@@ -697,8 +736,7 @@ function extractOutputMeta(
   const obj = output as Record<string, unknown>;
 
   if (mcpPrToolAction(toolName) === 'create') {
-    const createdPrNumber = findCreatedPrNumber(output as Record<string, unknown> | unknown[]);
-    return createdPrNumber === undefined ? undefined : { createdPrNumber };
+    return findCreatedPr(output as Record<string, unknown> | unknown[]);
   }
 
   if (toolName === 'Bash') {
@@ -714,8 +752,7 @@ function extractOutputMeta(
         ? (input as Record<string, unknown>).command
         : undefined;
     if (typeof command === 'string' && GH_PR_CREATE_RE.test(command)) {
-      const createdPrNumber = findCreatedPrNumber(obj);
-      if (createdPrNumber !== undefined) meta.createdPrNumber = createdPrNumber;
+      Object.assign(meta, findCreatedPr(obj));
     }
     if (Object.keys(meta).length > 0) return meta;
   }
@@ -890,6 +927,7 @@ function processHook(raw: string, cliEvent?: string): void {
   const agyToolUseId = typeof data.stepIdx === 'number' ? { toolUseId: String(data.stepIdx) } : {};
 
   let event: Record<string, unknown>;
+  let selfReportCall: HookReportCall | undefined;
 
   if (eventName === 'pretooluse') {
     event = {
@@ -1114,6 +1152,13 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       success: true,
     };
+    // afterMCPExecution names the server from mcp.json (https://cursor.com/docs/agent/hooks).
+    selfReportCall = {
+      tool: mcpTool,
+      server: data.mcp_server_name,
+      args: data.tool_input,
+      result: data.result_json,
+    };
   } else if (eventName === 'beforereadfile') {
     // Cursor has no "afterReadFile" event — beforeReadFile is the only file-read
     // hook that exists (confirmed: https://blog.gitbutler.com/cursor-hooks-deep-dive
@@ -1231,6 +1276,13 @@ function processHook(raw: string, cliEvent?: string): void {
       tool: mcpTool,
       timestamp,
       success: true,
+    };
+    // tool_info.mcp_server_name names the server (https://docs.windsurf.com/de/windsurf/cascade/hooks).
+    selfReportCall = {
+      tool: mcpTool,
+      server: toolInfo.mcp_server_name,
+      args: toolInfo.mcp_tool_arguments,
+      result: toolInfo.mcp_result,
     };
   } else if (isAntigravityPre) {
     // Antigravity PreToolUse — see isAntigravityPre above for how it is told
@@ -1402,13 +1454,19 @@ function processHook(raw: string, cliEvent?: string): void {
   // only the light claude-code-adapter const, not the full registry) instead
   // of going through PlatformRegistry — registry-based detection adds
   // measurable overhead on this hot, pre+post-per-tool-call path.
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ''] ?? detectStampPlatform();
   if (stampedPlatform) event.platform = stampedPlatform;
+  const selfReport =
+    selfReportCall &&
+    stampedPlatform &&
+    hookSelfReportLine(selfReportCall, sessionId, timestamp, stampedPlatform);
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
 
+  const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : undefined;
   // Write to buffer — wrapped in try/catch for resilience.
+  let reportAttempted = false;
   try {
     const bufferPath = getBufferPath(sessionId);
     const bufferDir = dirname(bufferPath);
@@ -1431,7 +1489,15 @@ function processHook(raw: string, cliEvent?: string): void {
     const line = JSON.stringify(event) + '\n';
 
     appendToHookBuffer(bufferPath, line);
+    if (newReport) {
+      reportAttempted = true;
+      appendToHookBuffer(bufferPath, JSON.stringify(newReport) + '\n');
+    }
   } catch (err) {
+    // A report line a drain can read keeps its claim. Any other failure frees it for a retry.
+    if (newReport && !(reportAttempted && err instanceof LineWrittenError)) {
+      releaseReport(getStorageDir(), newReport);
+    }
     // A closed stderr (EPIPE) must not turn a dropped event into a failed hook.
     if (!stderrSinkInstalled) {
       stderrSinkInstalled = true;

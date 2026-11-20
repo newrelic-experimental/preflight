@@ -36,6 +36,7 @@ import type {
   AttributionFacet,
   AttributionBucket,
   TokenBreakdown,
+  UsdBreakdown,
 } from './types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type {
@@ -65,6 +66,7 @@ import type { EfficiencyScorer, EfficiencyScoreComponents } from '../metrics/eff
 import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
+import { parsePrRepo } from '../metrics/pr-ref.js';
 import {
   ToolSelectionScorer,
   toToolSelectionSummary,
@@ -198,6 +200,7 @@ export interface FullSessionSummary extends SessionSummary {
   readonly tokensThinking: number;
   readonly tokensCacheRead: number;
   readonly tokensCacheCreation: number;
+  readonly selfReportCount?: number;
   readonly cacheSavingsUsd: number;
   readonly efficiencyScore: number | null;
   /**
@@ -295,6 +298,7 @@ export interface AttributableActivity {
 }
 
 export interface RecordedUsage extends AttributableActivity {
+  readonly selfReportCount?: number;
   readonly estimatedCostUsd?: number | null;
   readonly tokensInput?: number;
   readonly tokensOutput?: number;
@@ -340,6 +344,7 @@ export function hasRecordedUsage(s: RecordedUsage): boolean {
   return (
     hasAttributableActivity(s) ||
     (s.estimatedCostUsd ?? 0) > 0 ||
+    (s.selfReportCount ?? 0) > 0 ||
     (s.tokensInput ?? 0) + (s.tokensOutput ?? 0) + (s.tokensThinking ?? 0) > 0
   );
 }
@@ -397,6 +402,20 @@ function mergeTokenBreakdown(
   };
 }
 
+function mergeUsdBreakdown(
+  a: UsdBreakdown | undefined,
+  b: UsdBreakdown | undefined,
+): UsdBreakdown | undefined {
+  if (!a && !b) return undefined;
+  const maxNum = (x: number | undefined, y: number | undefined): number => Math.max(x ?? 0, y ?? 0);
+  return {
+    inputUsd: maxNum(a?.inputUsd, b?.inputUsd),
+    outputUsd: maxNum(a?.outputUsd, b?.outputUsd),
+    cacheReadUsd: maxNum(a?.cacheReadUsd, b?.cacheReadUsd),
+    cacheCreationUsd: maxNum(a?.cacheCreationUsd, b?.cacheCreationUsd),
+  };
+}
+
 function mergeAttribution(
   existing: SessionAttribution | undefined,
   incoming: SessionAttribution | undefined,
@@ -424,12 +443,21 @@ function mergeAttribution(
       const ba = facetA[key];
       const bb = facetB[key];
       const breakdown = mergeTokenBreakdown(ba?.breakdown, bb?.breakdown);
+      // The larger `costUsd` wins the merge, so a dollar split is only valid when
+      // the side that supplied it also has one; otherwise it would understate the bucket.
+      const usdSideMissingLarger =
+        (!ba?.breakdownUsd && (ba?.costUsd ?? 0) > (bb?.costUsd ?? 0)) ||
+        (!bb?.breakdownUsd && (bb?.costUsd ?? 0) > (ba?.costUsd ?? 0));
+      const breakdownUsd = usdSideMissingLarger
+        ? undefined
+        : mergeUsdBreakdown(ba?.breakdownUsd, bb?.breakdownUsd);
       merged[key] = {
         costUsd: maxNum(ba?.costUsd, bb?.costUsd),
         tokens: maxNum(ba?.tokens, bb?.tokens),
         count: maxNum(ba?.count, bb?.count),
         durationMs: maxNum(ba?.durationMs, bb?.durationMs),
         ...(breakdown ? { breakdown } : {}),
+        ...(breakdownUsd ? { breakdownUsd } : {}),
       };
     }
     if (Object.keys(merged).length > 0) buckets[facet] = merged;
@@ -790,6 +818,7 @@ export function mergeSummaries(
     incoming.startTime || existing.startTime,
   );
   const endTime = maxNum(existing.endTime, incoming.endTime);
+  const selfReportCount = maxNum(existing.selfReportCount, incoming.selfReportCount);
 
   return {
     ...existing,
@@ -844,6 +873,7 @@ export function mergeSummaries(
     tokensInput: exactTotals.inputTokens + (mergedLedger?.inputTokens ?? 0),
     tokensOutput: exactTotals.outputTokens + (mergedLedger?.outputTokens ?? 0),
     tokensThinking: maxNum(existing.tokensThinking, incoming.tokensThinking),
+    ...(selfReportCount > 0 && { selfReportCount }),
     tokensCacheRead: maxNum(existing.tokensCacheRead, incoming.tokensCacheRead),
     tokensCacheCreation: maxNum(existing.tokensCacheCreation, incoming.tokensCacheCreation),
     cacheSavingsUsd: maxNum(existing.cacheSavingsUsd, incoming.cacheSavingsUsd),
@@ -1243,6 +1273,14 @@ export interface BuildSessionSummarySources {
   outcome?: string;
   platform?: string;
   instructionPromptHash?: string | null;
+  /**
+   * Re-runs the agent attribution join on each tool call before the anti-pattern
+   * and tool-selection analyses. By save time `SubagentWatcher` has tailed more
+   * transcript than at hook intake, so more calls resolve to their subagent.
+   */
+  backfillRecord?: (
+    record: import('../storage/types.js').ToolCallRecord,
+  ) => import('../storage/types.js').ToolCallRecord;
 }
 
 function skillInvocationCounts(
@@ -1307,6 +1345,7 @@ function buildAttribution(
           cacheReadTokens: entry.cacheReadTokens,
           cacheCreationTokens: entry.cacheCreationTokens,
         },
+        ...(entry.breakdownUsd ? { breakdownUsd: entry.breakdownUsd } : {}),
       };
     }
     if (Object.keys(skillBuckets).length > 0) buckets.skill = skillBuckets;
@@ -1332,6 +1371,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     antiPatternDetector,
     efficiencyScorer,
     developer,
+    backfillRecord,
   } = sources;
 
   const sessionMetrics = sessionTracker.getMetrics();
@@ -1371,7 +1411,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
       totalBuildsRun += task.buildRun;
       totalBuildsPassed += task.buildPassed;
       totalAgentSpawns += task.subAgentsSpawned;
-      allToolCalls.push(...task.toolCalls);
+      allToolCalls.push(...(backfillRecord ? task.toolCalls.map(backfillRecord) : task.toolCalls));
     }
 
     // Fold in pre-restart totals recovered by TaskDetector.seedFromPersisted()
@@ -1433,6 +1473,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     skillName: tc.toolName === 'Skill' && tc.skillName ? tc.skillName : undefined,
     agentType: tc.toolName === 'Agent' && tc.agentType ? tc.agentType : undefined,
     createdPrNumber: tc.createdPrNumber,
+    createdPrRepo: parsePrRepo(tc.createdPrRepo),
     mcpPrNumber: tc.mcpPrNumber,
     mcpPrRepo: tc.mcpPrRepo,
     runInBackground: tc.runInBackground === true || undefined,
@@ -1628,6 +1669,7 @@ interface SerializedFullSessionSummary {
   readonly tokensThinking?: unknown;
   readonly tokensCacheRead?: unknown;
   readonly tokensCacheCreation?: unknown;
+  readonly selfReportCount?: unknown;
   readonly cacheSavingsUsd?: unknown;
   readonly efficiencyScore?: unknown;
   readonly efficiencyScoreSampleCount?: unknown;
@@ -1677,6 +1719,25 @@ function parseTokenBreakdown(raw: unknown): TokenBreakdown | undefined {
   return undefined;
 }
 
+/** Same all-or-nothing rule as {@link parseTokenBreakdown}, over the four dollar fields. */
+function parseUsdBreakdown(raw: unknown): UsdBreakdown | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const { inputUsd, outputUsd, cacheReadUsd, cacheCreationUsd } = raw as Record<string, unknown>;
+  if (
+    typeof inputUsd === 'number' &&
+    Number.isFinite(inputUsd) &&
+    typeof outputUsd === 'number' &&
+    Number.isFinite(outputUsd) &&
+    typeof cacheReadUsd === 'number' &&
+    Number.isFinite(cacheReadUsd) &&
+    typeof cacheCreationUsd === 'number' &&
+    Number.isFinite(cacheCreationUsd)
+  ) {
+    return { inputUsd, outputUsd, cacheReadUsd, cacheCreationUsd };
+  }
+  return undefined;
+}
+
 /**
  * Accept a bucket only when all four core fields are finite numbers; any
  * other shape is dropped rather than partially hydrated. Used to parse each
@@ -1699,7 +1760,15 @@ function parseAttributionBucket(raw: unknown): AttributionBucket | undefined {
     Number.isFinite(durationMs)
   ) {
     const breakdown = parseTokenBreakdown(r.breakdown);
-    return { costUsd, tokens, count, durationMs, ...(breakdown ? { breakdown } : {}) };
+    const breakdownUsd = parseUsdBreakdown(r.breakdownUsd);
+    return {
+      costUsd,
+      tokens,
+      count,
+      durationMs,
+      ...(breakdown ? { breakdown } : {}),
+      ...(breakdownUsd ? { breakdownUsd } : {}),
+    };
   }
   return undefined;
 }
@@ -2041,6 +2110,8 @@ export function deserializeFullSessionSummary(
     tokensThinking: typeof obj.tokensThinking === 'number' ? obj.tokensThinking : 0,
     tokensCacheRead: typeof obj.tokensCacheRead === 'number' ? obj.tokensCacheRead : 0,
     tokensCacheCreation: typeof obj.tokensCacheCreation === 'number' ? obj.tokensCacheCreation : 0,
+    ...(typeof obj.selfReportCount === 'number' &&
+      obj.selfReportCount > 0 && { selfReportCount: obj.selfReportCount }),
     cacheSavingsUsd: typeof obj.cacheSavingsUsd === 'number' ? obj.cacheSavingsUsd : 0,
     efficiencyScore: typeof obj.efficiencyScore === 'number' ? obj.efficiencyScore : null,
     efficiencyScoreSampleCount:
@@ -2090,6 +2161,7 @@ export function deserializeFullSessionSummary(
               typeof e.createdPrNumber === 'string' && /^\d{1,9}$/.test(e.createdPrNumber)
                 ? e.createdPrNumber
                 : undefined,
+            createdPrRepo: parsePrRepo(e.createdPrRepo),
             mcpPrNumber:
               typeof e.mcpPrNumber === 'string' && /^\d{1,9}$/.test(e.mcpPrNumber)
                 ? e.mcpPrNumber

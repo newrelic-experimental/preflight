@@ -1,4 +1,4 @@
-import type { TokenBreakdown } from '../api/client.js';
+import type { TokenBreakdown, UsdBreakdown } from '../api/client.js';
 
 /**
  * Shared number formatting helpers for the dashboard SPA.
@@ -51,6 +51,11 @@ export function fmtTimeOfDay(value: number): string {
     hour: 'numeric',
     minute: '2-digit',
   });
+}
+
+export function fmtReportedAsOf(asOf: string, stale: boolean): string {
+  const ms = Date.parse(asOf);
+  return stale ? fmtDateTime(ms) : fmtTimeOfDay(ms);
 }
 
 /**
@@ -179,14 +184,19 @@ export function formatTokensCompact(n: number): string {
 
 /**
  * Per-category token breakdown for a hover title, e.g.
- * "Input 1.2k · Output 800 · Cache read 30.0k · Cache write 2.0k".
+ * "Input 1.2k · Output 800 · Cache read 30.0k · Cache write 2.0k". With `usd`
+ * each category also carries its dollars, e.g. "Cache read 30.0k ($0.09)".
  */
-export function formatTokenBreakdown(b: TokenBreakdown): string {
+export function formatTokenBreakdown(b: TokenBreakdown, usd?: UsdBreakdown): string {
+  const withUsd = (tokens: number, dollars: number | undefined): string =>
+    dollars === undefined
+      ? formatTokensCompact(tokens)
+      : `${formatTokensCompact(tokens)} (${formatUsd(dollars)})`;
   return [
-    `Input ${formatTokensCompact(b.inputTokens)}`,
-    `Output ${formatTokensCompact(b.outputTokens)}`,
-    `Cache read ${formatTokensCompact(b.cacheReadTokens)}`,
-    `Cache write ${formatTokensCompact(b.cacheCreationTokens)}`,
+    `Input ${withUsd(b.inputTokens, usd?.inputUsd)}`,
+    `Output ${withUsd(b.outputTokens, usd?.outputUsd)}`,
+    `Cache read ${withUsd(b.cacheReadTokens, usd?.cacheReadUsd)}`,
+    `Cache write ${withUsd(b.cacheCreationTokens, usd?.cacheCreationUsd)}`,
   ].join(' · ');
 }
 
