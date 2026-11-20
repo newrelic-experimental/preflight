@@ -2973,7 +2973,7 @@ describe('stdio integration', () => {
     }, 30000);
 
     it('leaves the report to the hook and stays pending even when a breadcrumb is written', async () => {
-      await withPendingEngine('cursor', async (client, hook, _sessionFile, storagePath) => {
+      await withPendingEngine('cursor', async (client, hook, sessionFile, storagePath) => {
         for (const root of [storagePath, resolve(storagePath, 'breadcrumbs', 'claude-code')]) {
           const dir = resolve(root, 'session-by-ppid');
           mkdirSync(dir, { recursive: true });
@@ -3002,14 +3002,8 @@ describe('stdio integration', () => {
           result_json: JSON.stringify(result),
         });
 
-        const buffer = readFileSync(resolve(storagePath, 'buffer-conv-reported.jsonl'), 'utf-8');
-        const lines = buffer
-          .trim()
-          .split('\n')
-          .map((line) => JSON.parse(line));
-        expect(lines.filter((l) => l.mode === 'self_report')).toMatchObject([
-          { inputTokens: 1000 },
-        ]);
+        expect(await sessionFile('conv-reported')).toMatchObject({ tokensInput: 1000 });
+        expect(await names()).not.toContain('nr_observe_get_session_stats');
       });
     }, 30000);
 
