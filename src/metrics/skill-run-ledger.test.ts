@@ -215,7 +215,7 @@ describe('AiWorkUnit through the hook buffer', () => {
         ledger.recordToolCall(stamped);
       },
       onTokenEvent: (event) => {
-        const turn = attributor.recordTokenEvent(event);
+        const turn = attributor.recordTokenEvent(event, skills.openRun(event.sessionId));
         ledger.recordClosedTurn(turn);
         manager.ingestTurnCost(turn);
       },
@@ -266,7 +266,9 @@ describe('AiWorkUnit through the hook buffer', () => {
     const units = sent.filter((e) => e.eventType === 'AiWorkUnit');
     expect(units).toHaveLength(1);
     const runId = units[0]!.skill_run_id;
-    const shares = sent.filter((e) => e.eventType === 'AiTurnCost' && e.skill_run_id === runId);
+    const shares = sent.filter(
+      (e) => e.eventType === 'AiTurnCost' && e.skill_run_id === runId && e.tool,
+    );
     const sum = (key: string) => shares.reduce((total, e) => total + (e[key] as number), 0);
     expect(shares).toHaveLength(2);
     expect(units[0]).toMatchObject({

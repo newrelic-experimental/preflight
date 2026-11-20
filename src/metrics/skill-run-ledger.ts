@@ -53,7 +53,7 @@ const MAX_RUNS = 256;
  * next prompt in its session, or when the agent that opened it opens another
  * skill. It is handed over when every call it made has been priced, or after
  * `STALE_UNPRICED_MS`, or on `flush()`. Cost and tokens are the run's even
- * shares of each turn, the same values its `AiTurnCost` rows carry.
+ * shares of each turn, the same values its `AiTurnCost` tool rows carry.
  */
 export class SkillRunLedger {
   private readonly runs = new Map<string, Run>();
