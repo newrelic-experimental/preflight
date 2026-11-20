@@ -8,7 +8,8 @@ import {
   type AlertEvent,
   type AntiPatternEvent,
 } from '../store/liveStore';
-import { Kpi } from '../components/Kpi';
+import { Kpi, type KpiTone } from '../components/Kpi';
+import { TaskCompletionPanel } from '../components/TaskCompletionPanel';
 import { AnimatedCard } from '../components/AnimatedCard';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
 import { EmptyState } from '../components/EmptyState';
@@ -40,6 +41,8 @@ import {
 } from '../components/ui';
 import {
   fetchRecentAlerts,
+  fetchBudget,
+  type BudgetStatus,
   fetchCacheHealth,
   fetchCost,
   fetchCostPerTool,
@@ -238,6 +241,42 @@ interface ToolSelectionMetrics {
 
 const QUALITY_REFETCH_MS = 10_000;
 
+const BUDGET_CAUTION_PCT = 50;
+const BUDGET_WARN_PCT = 80;
+const BUDGET_DANGER_PCT = 100;
+
+function DailyBudgetKpi({
+  spentUsd,
+  capUsd,
+}: {
+  spentUsd: number | null;
+  capUsd: number;
+}): JSX.Element {
+  if (spentUsd === null) return <Kpi label="daily budget" value="…" sub="loading…" />;
+  // Round first so float error cannot drop a boundary: 4.52 / 5.65 * 100 is 79.999…
+  const pct = Math.round((spentUsd / capUsd) * 1e6) / 1e4;
+  const overBudget = pct > BUDGET_DANGER_PCT;
+  const tone: KpiTone =
+    pct >= BUDGET_DANGER_PCT ? 'bad' : pct >= BUDGET_WARN_PCT ? 'warn' : 'neutral';
+  const caution = pct >= BUDGET_CAUTION_PCT && pct < BUDGET_WARN_PCT;
+  return (
+    <Kpi
+      label="daily budget"
+      tone={tone}
+      value={formatUsd(spentUsd)}
+      sub={
+        <>
+          {`of ${formatUsd(capUsd)} · `}
+          <span className={caution ? 'text-accent-amber' : undefined}>
+            {`${Math.floor(pct)}% used`}
+          </span>
+          {overBudget ? ' · over budget' : ''}
+        </>
+      }
+    />
+  );
+}
+
 export function Today(): JSX.Element {
   const cost = useLiveStore((s) => s.cost);
   const antiPatterns = useLiveStore((s) => s.antiPatterns);
@@ -253,6 +292,12 @@ export function Today(): JSX.Element {
     queryFn: ({ signal }) => fetchCost(signal),
     refetchInterval: 10_000,
   });
+  const { data: budget } = useQuery<BudgetStatus>({
+    queryKey: qk.budget,
+    queryFn: ({ signal }) => fetchBudget(signal),
+    refetchInterval: 10_000,
+  });
+  const dailyBudgetCap = budget?.daily?.budgetUsd ?? null;
   const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
     queryFn: ({ signal }) => fetchTodayAggregate(signal),
@@ -481,7 +526,9 @@ export function Today(): JSX.Element {
         <>
           <AnimatedCard index={0} className="mb-4">
             <Card padding="lg" tone="elevated" glow="green">
-              <div className="grid grid-cols-5 gap-4">
+              <div
+                className={`grid ${dailyBudgetCap !== null ? 'grid-cols-6' : 'grid-cols-5'} gap-4`}
+              >
                 <Kpi
                   label="efficiency"
                   hero
@@ -533,6 +580,12 @@ export function Today(): JSX.Element {
                   value={flagsLoading ? '…' : String(flagsCount)}
                   {...(flagsLoading ? {} : { animate: true, numericValue: flagsCount })}
                 />
+                {dailyBudgetCap !== null && (
+                  <DailyBudgetKpi
+                    spentUsd={spendLoading ? null : todayTotal}
+                    capUsd={dailyBudgetCap}
+                  />
+                )}
               </div>
             </Card>
             {watcherOff && (
@@ -586,6 +639,10 @@ export function Today(): JSX.Element {
             <ComputeWasteCard liveSessions={liveSessions ?? []} />
             <LatencyCard aggregate={aggregate} />
             <ApiFailuresCard />
+          </AnimatedCard>
+
+          <AnimatedCard index={6}>
+            <TaskCompletionPanel />
           </AnimatedCard>
         </>
       )}
@@ -1788,6 +1845,7 @@ function LiveSessionPane({
           contextWindow={contextData?.contextWindow}
           contextComposition={contextComposition}
           contextEfficiency={contextEfficiency}
+          summary={todaySessions.find((s) => s.sessionId === activeId)}
           onClose={() => setShowDetail(false)}
         />
       )}

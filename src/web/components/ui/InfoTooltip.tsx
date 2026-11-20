@@ -8,6 +8,9 @@ export interface InfoTooltipProps {
   readonly label?: string;
 }
 
+const TOOLTIP_WIDTH_PX = 240;
+const VIEWPORT_MARGIN_PX = 8;
+
 interface TooltipPosition {
   readonly top: number;
   readonly left: number;
@@ -22,7 +25,8 @@ export function InfoTooltip({ text, label = 'What is this?' }: InfoTooltipProps)
   const openTooltip = (): void => {
     const rect = buttonRef.current?.getBoundingClientRect();
     if (rect) {
-      setPosition({ top: rect.bottom + 4, left: rect.left });
+      const maxLeft = window.innerWidth - TOOLTIP_WIDTH_PX - VIEWPORT_MARGIN_PX;
+      setPosition({ top: rect.bottom + 4, left: Math.min(rect.left, maxLeft) });
     }
     setIsOpen(true);
   };

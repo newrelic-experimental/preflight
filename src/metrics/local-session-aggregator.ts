@@ -37,6 +37,7 @@ import { CallUsageBook } from './call-usage.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import { resolvePricingDetail } from './pricing-overlay.js';
 import { QualityProxyTracker } from './quality-proxy-tracker.js';
+import { TaskDetector } from './task-detector.js';
 import { ToolSelectionScorer, toToolSelectionSummary } from './tool-selection-scorer.js';
 
 /** Matches SessionTracker's own cap so session files stay bounded. */
@@ -90,6 +91,8 @@ export interface LocalSessionAggregatorOptions {
    * starts at 0 as before.
    */
   readonly persistedCostBaseline?: (sessionId: string) => PersistedCostBaseline | null;
+  /** Tasks this session's file already records, so a restarted process adds to them instead of starting from 0. */
+  readonly persistedTaskCount?: (sessionId: string) => number;
 }
 
 export interface LocalSessionRollup {
@@ -116,6 +119,8 @@ export interface LocalSessionRollup {
   records: ToolCallRecord[];
   /** Per-session quality tracker, so raw counts survive into the summary. */
   quality: QualityProxyTracker;
+  /** Per-session task boundaries, so a saved `taskCount` is this session's alone. */
+  tasks: TaskDetector;
   modelBreakdown: Map<string, ModelBreakdownTally>;
   costUsd: number;
   /** All-in cost by local-day key (`localDateKey(usage.timestamp)`); same key
@@ -137,6 +142,7 @@ export interface LocalSessionRollup {
   lastEmittedCost: EmittedCost | null;
   tokensInput: number;
   tokensOutput: number;
+  tokensThinking: number;
   tokensCacheRead: number;
   tokensCacheCreation: number;
   cacheSavingsUsd: number;
@@ -337,9 +343,11 @@ export class LocalSessionAggregator {
   /** Repo dirs targeted by git commands but never entered as a cwd. */
   private readonly gitTargetDirs = new Set<string>();
   private readonly persistedCostBaseline: LocalSessionAggregatorOptions['persistedCostBaseline'];
+  private readonly persistedTaskCount: LocalSessionAggregatorOptions['persistedTaskCount'];
 
   constructor(options: LocalSessionAggregatorOptions = {}) {
     this.persistedCostBaseline = options.persistedCostBaseline;
+    this.persistedTaskCount = options.persistedTaskCount;
   }
 
   private static isReal(sessionId: string | null | undefined): sessionId is string {
@@ -367,6 +375,7 @@ export class LocalSessionAggregator {
         timeline: [],
         records: [],
         quality: new QualityProxyTracker(),
+        tasks: new TaskDetector(),
         modelBreakdown: new Map(),
         costUsd: 0,
         costByDayUsd: new Map(),
@@ -377,6 +386,7 @@ export class LocalSessionAggregator {
         lastEmittedCost: null,
         tokensInput: 0,
         tokensOutput: 0,
+        tokensThinking: 0,
         tokensCacheRead: 0,
         tokensCacheCreation: 0,
         cacheSavingsUsd: 0,
@@ -385,11 +395,26 @@ export class LocalSessionAggregator {
         estimated: new CallUsageBook(),
         successCount: 0,
       };
+      const saved = this.persistedTaskCount?.(sessionId) ?? 0;
+      if (saved > 0) applyTaskSeed(rollup.tasks, saved);
       this.sessions.set(sessionId, rollup);
     }
     if (timestamp < rollup.startTime) rollup.startTime = timestamp;
     if (timestamp > rollup.endTime) rollup.endTime = timestamp;
     return rollup;
+  }
+
+  startTask(sessionId: string | null, timestamp: number): void {
+    if (sessionId) this.sessions.get(sessionId)?.tasks.startTaskIfNone(timestamp);
+  }
+
+  markTaskBoundary(sessionId: string | null, timestamp: number): void {
+    if (sessionId) this.sessions.get(sessionId)?.tasks.markBoundary(timestamp);
+  }
+
+  taskCountOf(sessionId: string): number | null {
+    const rollup = this.sessions.get(sessionId);
+    return rollup ? taskCountOf(rollup.tasks) : null;
   }
 
   recordsOf(sessionId: string): readonly ToolCallRecord[] {
@@ -529,6 +554,7 @@ export class LocalSessionAggregator {
     // rehydrated panel shows exactly what the live one would have shown.
     const fullRecord = record as unknown as ToolCallRecord;
     rollup.quality.recordToolCall(fullRecord);
+    rollup.tasks.recordToolCall({ ...fullRecord, timestamp });
     if (rollup.records.length >= MAX_TIMELINE_ENTRIES) rollup.records.shift();
     rollup.records.push(fullRecord);
   }
@@ -552,11 +578,13 @@ export class LocalSessionAggregator {
        * trackers. Absent for parent-transcript token events.
        */
       agentId?: string;
+      platform?: string;
     },
   ): void {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
     const timestamp = usage.timestamp ?? Date.now();
     const rollup = this.ensure(sessionId, timestamp);
+    if (rollup.platform === null && usage.platform) rollup.platform = usage.platform;
     // Seed from disk on this session's first usage, not at rollup creation: an
     // unscoped process creates a rollup from a session's first drained hook
     // event, which happens before that session's own engine has written
@@ -584,6 +612,7 @@ export class LocalSessionAggregator {
     }
     rollup.tokensInput += usage.inputTokens ?? 0;
     rollup.tokensOutput += usage.outputTokens ?? 0;
+    if (usage.agentId === undefined) rollup.tokensThinking += usage.thinkingTokens ?? 0;
     rollup.tokensCacheRead += usage.cacheReadTokens ?? 0;
     rollup.tokensCacheCreation += usage.cacheCreationTokens ?? 0;
     rollup.cacheSavingsUsd += usage.cacheSavingsUsd ?? 0;
@@ -785,13 +814,13 @@ export class LocalSessionAggregator {
         ...callUsageFields(rollup),
         tokensInput: rollup.tokensInput,
         tokensOutput: rollup.tokensOutput,
-        tokensThinking: 0,
+        tokensThinking: rollup.tokensThinking,
         tokensCacheRead: rollup.tokensCacheRead,
         tokensCacheCreation: rollup.tokensCacheCreation,
         cacheSavingsUsd: rollup.cacheSavingsUsd,
         efficiencyScore: null,
         antiPatterns: [],
-        taskCount: 0,
+        taskCount: taskCountOf(rollup.tasks),
         taskSuccessRate: null,
         toolSuccessRate:
           rollup.toolCallCount > 0 ? rollup.successCount / rollup.toolCallCount : null,
@@ -806,6 +835,25 @@ export class LocalSessionAggregator {
     }
     return out;
   }
+}
+
+function applyTaskSeed(tasks: TaskDetector, taskCount: number): void {
+  tasks.seedFromPersisted({
+    filesRead: [],
+    filesModified: [],
+    linesAdded: 0,
+    linesRemoved: 0,
+    testsRun: 0,
+    testsPassed: 0,
+    buildRun: 0,
+    buildPassed: 0,
+    agentSpawns: 0,
+    taskCount,
+  });
+}
+
+function taskCountOf(tasks: TaskDetector): number {
+  return tasks.getMetrics().totalTasksCompleted;
 }
 
 /**
