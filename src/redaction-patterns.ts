@@ -60,6 +60,16 @@ const isSpace = (c: number): boolean => c === 0x20 || (c >= 0x09 && c <= 0x0d);
 const isOperator = (c: number): boolean => c >= 0 && c < 128 && OPERATOR[c] === 1;
 const isBlankOrOperator = (c: number): boolean => isSpace(c) || isOperator(c);
 
+/** The first `end` characters of `text`, without the word the cut splits, whose first part no
+ * pattern may match. */
+export function cutAtWord(text: string, end: number): string {
+  let start = end;
+  if (!isSpace(text.charCodeAt(end))) {
+    while (start > 0 && !isSpace(text.charCodeAt(start - 1))) start--;
+  }
+  return text.slice(0, start);
+}
+
 function skipPlain(text: string, from: number): number {
   let i = from;
   while (i < text.length) {

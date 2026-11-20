@@ -14,7 +14,6 @@
     "!src/web/test-setup.ts",
     "alerts/**",
     "dashboards/**",
-    "pricing-overlay/**",
     "copilot-sdk-extension/**",
     "examples/**",
     "plugin/**",

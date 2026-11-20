@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { appendToHookBuffer, DRAIN_SEAL as SEAL, takeClaimText } from './hook-buffer.js';
+import { LineWrittenError } from './hook-buffer.js';
 
 const mockHooks: {
   beforeWrite: ((text: string) => void) | null;
@@ -13,6 +14,7 @@ const mockHooks: {
   failSeal: (() => void) | null;
   shortSeal: boolean;
   bytesRead: number | null;
+  failClose: boolean;
 } = {
   beforeWrite: null,
   afterWrite: null,
@@ -22,6 +24,7 @@ const mockHooks: {
   failSeal: null,
   shortSeal: false,
   bytesRead: null,
+  failClose: false,
 };
 
 function textOf(data: unknown): string {
@@ -77,6 +80,13 @@ jest.mock('node:fs', () => {
       mockHooks.afterWrite?.(text);
       return n;
     }) as typeof real.writeSync,
+    closeSync: ((fd: number) => {
+      real.closeSync(fd);
+      if (mockHooks.failClose) {
+        mockHooks.failClose = false;
+        throw Object.assign(new Error('EIO: i/o error, close'), { code: 'EIO' });
+      }
+    }) as typeof real.closeSync,
     readSync: ((fd: number, ...rest: unknown[]) => {
       const n = (real.readSync as (fd: number, ...rest: unknown[]) => number)(fd, ...rest);
       if (mockHooks.bytesRead !== null) mockHooks.bytesRead += n;
@@ -138,6 +148,7 @@ afterEach(() => {
   mockHooks.failSeal = null;
   mockHooks.shortSeal = false;
   mockHooks.bytesRead = null;
+  mockHooks.failClose = false;
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -207,7 +218,7 @@ describe('appendToHookBuffer', () => {
     expect(live()).toEqual(['B']);
   });
 
-  it('throws when the newline that ends a short write fails too', () => {
+  it('throws a written line error when the newline that ends a short write fails too', () => {
     mockHooks.shortBy = 1;
     mockHooks.beforeWrite = (text) => {
       if (text.includes('\x1e')) {
@@ -217,8 +228,48 @@ describe('appendToHookBuffer', () => {
       }
     };
 
-    expect(() => appendToHookBuffer(bufferPath, line('B'))).toThrow(/ENOSPC/);
+    expect(() => appendToHookBuffer(bufferPath, line('B'))).toThrow(LineWrittenError);
   });
+
+  const failCloseAfter = (text: string, setUp?: () => void) => (): void => {
+    setUp?.();
+    mockHooks.afterWrite = (written) => {
+      if (written.includes(text)) mockHooks.failClose = true;
+    };
+  };
+  it.each([
+    ['the close after a whole line fails', true, failCloseAfter('"B"')],
+    [
+      'the close after a line that landed past a seal fails',
+      false,
+      () => {
+        fs.writeFileSync(bufferPath, line('A'));
+        mockHooks.beforeWrite = once(() => {
+          drainNow();
+          mockHooks.failClose = true;
+        });
+      },
+    ],
+    [
+      'the close after a torn write fails',
+      false,
+      failCloseAfter('\x1e', () => (mockHooks.shortBy = 1)),
+    ],
+  ])(
+    'marks the error as a written line only when a drain can read it: %s',
+    (_label, written, fail) => {
+      fail();
+
+      let thrown: unknown;
+      try {
+        appendToHookBuffer(bufferPath, line('B'));
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      expect(thrown instanceof LineWrittenError).toBe(written);
+    },
+  );
 
   it('writes a line again to the live buffer when it landed after a seal', () => {
     fs.writeFileSync(bufferPath, line('A'));
