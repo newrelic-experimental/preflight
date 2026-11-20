@@ -40,9 +40,9 @@ Each status means one of the following:
 | Name                 | `AiSkillRun.skill_name`, `AiToolCall.skill_name`, `AiTurnCost.skill_name`        | Exact       | Redacted like other user-derived strings. Includes built-in commands that send a prompt to the model, such as `/init`. Commands Claude Code handles locally, such as `/clear`, never reach Preflight.           |
 | Model                | `AiTurnCost.model`                                                               | Approximate | Set per response, so one run can have several models. `AiToolCall` has no model.                                                                                                                                |
 | Wall-clock duration  | None. Derive from `max(timestamp) - min(timestamp)` on `AiToolCall`              | No source   | The derived value starts at the first call's start and stops at the last call's start. It leaves out the response before the first call and everything after the last call starts. A one-call run reads as `0`. |
-| Input, output tokens | `AiTurnCost.input_tokens`, `AiTurnCost.output_tokens`                            | Approximate | A fractional share of the response, split evenly across the calls in the burst before it. See [the gaps](#the-existing-events-leave-these-gaps) for what the sum leaves out.                                    |
+| Input, output tokens | `AiTurnCost.input_tokens`, `AiTurnCost.output_tokens`                            | Approximate | On a tool row, a fractional share of the response, split evenly across the calls in the burst before it. A response row carries its whole report. See [the gaps](#the-existing-events-leave-these-gaps).        |
 | Cache tokens         | `AiTurnCost.cache_read_tokens`, `AiTurnCost.cache_creation_tokens`               | Approximate | Same split and same gaps as input and output tokens.                                                                                                                                                            |
-| Cost                 | `AiTurnCost.cost_usd`                                                            | Approximate | Same split and same gaps. The sum is a lower bound on the unit's cost.                                                                                                                                          |
+| Cost                 | `AiTurnCost.cost_usd`                                                            | Approximate | Same split and same gaps.                                                                                                                                                                                       |
 | Session id           | `AiSkillRun.session_id`, `AiToolCall.session_id`, `AiTurnCost.session_id`        | Exact       | Omitted when no session is known. A subagent's tool calls carry the main session's id plus `AiToolCall.agent_id`.                                                                                               |
 | Parent-session id    | None                                                                             | No source   | `skill_parent_run_id` is a different thing. It names the run that was open when this run started, one hop only.                                                                                                 |
 | Team, project, org   | `team_id`, `project_id`, `org_id` on `AiSkillRun`, `AiToolCall` and `AiTurnCost` | Exact       | Each is omitted when not configured or derived.                                                                                                                                                                 |
@@ -69,8 +69,8 @@ Each status means one of the following:
 
 These gaps affect the questions a shared skill library asks. None has a fix inside this schema, because each needs an emitter change.
 
-- **A skill's cost is a lower bound.** A response row has no `tool`, `tool_use_id`, or `skill_*` attributes, even inside a run. The response that follows a `/<name>` prompt and asks for the first tools is a response row, and so is any text-only reply. A slash command whose whole answer is text has no cost in New Relic.
-- **A run with no tool calls has an `AiSkillRun` row and nothing else.** Its run produces no `AiToolCall` row and no stamped `AiTurnCost` row, so it has no cost, tokens, or duration. Count runs from `AiToolCall` and `AiSkillRun` together. Per-run averages that divide by those runs understate cost.
+- **A reply at the end of a run can miss it or land on the next one.** A response row takes the run open when Preflight reads its report, which can lag the reply by about 2 seconds. A prompt sent inside that window can leave the last reply of the previous run without the stamp, or give it the stamp of a `/<skill>` the prompt opened.
+- **A run with no tool calls has no duration.** Its `AiSkillRun` row names it, and its `AiTurnCost` response rows carry its cost and tokens. It has no `AiToolCall` row, so the duration recipe leaves it out. Count runs from `AiToolCall` and `AiSkillRun` together.
 - **Subagent spend is not on the skill.** `AiSubagentTurn` has no `skill_*` attributes. The only link is `AiToolCall`, where a subagent's calls carry both `agent_id` and `skill_run_id`. A subagent that made no tool call, or whose calls had no `agent_id` when Preflight processed them, has no link. A subagent that opens its own skill links to two runs.
 - **`AiTurnCost` rows on subagent calls hold main-agent cost.** Subagent tool calls enter the same burst as main-agent calls, so they take a share of the main agent's next response. The subagent's own spend is on `AiSubagentTurn`. The session total holds, but the split between skills can shift.
 - **Run boundaries are inferred.** There is no signal for a skill returning, so work after a nested skill finishes stays on the nested run. A follow-up prompt ends the run, so later work on the same skill is not counted. A subagent keeps the run the main agent had open when the subagent first appeared, even after a later prompt, which can stretch the derived duration.
@@ -82,7 +82,7 @@ These gaps affect the questions a shared skill library asks. None has a fix insi
 | Question                                      | Answer                                                                                                                  |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | Which skills are used?                        | Answered. `AiSkillRun` counts runs with no tool calls.                                                                  |
-| What does each cost per run?                  | Not fully answered. The events give a lower bound for the main agent and an approximate join for subagent spend.        |
+| What does each cost per run?                  | Partly answered. Main-agent cost is approximate at run boundaries. Subagent spend needs an approximate join.            |
 | Did a rewrite make a skill cheaper or longer? | Partly answered. Compare two time windows of the approximate cost and duration. The events cannot identify the rewrite. |
 
 ## NRQL recipes answer each question within those gaps
@@ -101,16 +101,10 @@ To list the subagent types in use:
 FROM AiSubagentTurn SELECT uniqueCount(agent_id) AS 'Invocations' FACET agent_type SINCE 30 days ago LIMIT MAX
 ```
 
-To get main-agent cost and tokens per run, as a lower bound that counts runs with no tool calls:
+To get main-agent cost and tokens per run, counting runs with no tool calls:
 
 ```sql
 FROM AiToolCall, AiTurnCost, AiSkillRun SELECT uniqueCount(skill_run_id) AS 'Runs', sum(cost_usd) / uniqueCount(skill_run_id) AS 'USD per run', sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) / uniqueCount(skill_run_id) AS 'Tokens per run' WHERE skill_run_id IS NOT NULL FACET skill_name SINCE 30 days ago LIMIT MAX
-```
-
-To size the first gap, get the share of main-agent cost on response rows, which no skill can claim:
-
-```sql
-FROM AiTurnCost SELECT filter(sum(cost_usd), WHERE tool IS NULL) / sum(cost_usd) * 100 AS 'Unclaimed %' SINCE 30 days ago
 ```
 
 To get cost and tokens per subagent invocation:

@@ -254,16 +254,37 @@ describe('unit of agent work schema', () => {
       expect(event).not.toHaveProperty('skill_run_id');
     });
 
-    it('leaves a response row inside an open slash run without skill attributes', () => {
+    it('stamps a text-only reply with the slash run open when its report is read', () => {
       const skills = new SkillActivationTracker();
       const attributor = new TurnCostAttributor();
       const slashRun = skills.recordPrompt('sess-1', 'my-skill');
       if (!slashRun) throw new Error('a slash prompt opens a run');
-      attributor.recordSkillRun('sess-1', slashRun);
-      const [row] = turnCostToNrEvents(attributor.recordTokenEvent(makeTokenEvent(2000)), ATTRS);
+      const [row] = turnCostToNrEvents(
+        attributor.recordTokenEvent(makeTokenEvent(2000), skills.openRun('sess-1')),
+        ATTRS,
+      );
       expect(row.turn_tool_call_count).toBe(0);
-      expect(row).not.toHaveProperty('skill_name');
-      expect(row).not.toHaveProperty('skill_run_id');
+      expect(row).toMatchObject({ skill_name: 'my-skill', skill_run_id: slashRun.runId });
+    });
+
+    it('gives a reply read after the next prompt the run that prompt opened, or none', () => {
+      const skills = new SkillActivationTracker();
+      const attributor = new TurnCostAttributor();
+      skills.recordPrompt('sess-1', 'first-skill');
+      const nextRun = skills.recordPrompt('sess-1', 'next-skill');
+      if (!nextRun) throw new Error('a slash prompt opens a run');
+      const [late] = turnCostToNrEvents(
+        attributor.recordTokenEvent(makeTokenEvent(2000), skills.openRun('sess-1')),
+        ATTRS,
+      );
+      expect(late).toMatchObject({ skill_name: 'next-skill', skill_run_id: nextRun.runId });
+
+      skills.recordPrompt('sess-1', null);
+      const [unstamped] = turnCostToNrEvents(
+        attributor.recordTokenEvent(makeTokenEvent(3000), skills.openRun('sess-1')),
+        ATTRS,
+      );
+      expect(unstamped).not.toHaveProperty('skill_name');
     });
 
     it('sends no key that joins AiSubagentTurn to a skill or an Agent call', () => {

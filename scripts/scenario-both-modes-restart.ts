@@ -254,12 +254,7 @@ async function tokenOnly(): Promise<void> {
     await delay(SETTLE_MS);
     sendTurn(sid, TURN_A);
     const after = await waitFor(modelRequestCount, (n) => n >= 3);
-    check(
-      'token-only restart keeps earlier requests',
-      after,
-      3,
-      'seedLocalTrackersFromFile does not seed ModelUsageTracker',
-    );
+    check('token-only restart keeps earlier requests', after, 3);
   } finally {
     pf('down');
   }
