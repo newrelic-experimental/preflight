@@ -4349,10 +4349,10 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
         endTime: startMs + 10_000,
         estimatedCostUsd: 10,
         timeline: [
-          { timestamp: startMs - 30 * 60 * 1000 },
-          { timestamp: startMs + 1_000 },
-          { timestamp: startMs + 2_000 },
-          { timestamp: startMs + 3_000 },
+          { timestamp: startMs - 30 * 60 * 1000, toolName: 'Read' },
+          { timestamp: startMs + 1_000, toolName: 'Read' },
+          { timestamp: startMs + 2_000, toolName: 'Read' },
+          { timestamp: startMs + 3_000, toolName: 'Read' },
         ],
       };
 
@@ -4399,9 +4399,9 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costByDayUsd: { [olderKey]: 7, [todayKey]: 1.25 },
       antiPatterns: [{}, {}, {}],
       timeline: [
-        { timestamp: todayStart - 3 * 24 * 60 * 60 * 1000 },
-        { timestamp: todayStart - 24 * 60 * 60 * 1000 },
-        { timestamp: todayStart + 1_000 },
+        { timestamp: todayStart - 3 * 24 * 60 * 60 * 1000, toolName: 'Read' },
+        { timestamp: todayStart - 24 * 60 * 60 * 1000, toolName: 'Read' },
+        { timestamp: todayStart + 1_000, toolName: 'Read' },
       ],
     };
     const handler = createApiHandler({
@@ -4435,8 +4435,8 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costByDayUsd: { [todayKey]: 2 },
       antiPatterns: [{}, {}],
       timeline: [
-        { timestamp: todayStart - 12 * 60 * 60 * 1000 },
-        { timestamp: todayStart + 1_000 },
+        { timestamp: todayStart - 12 * 60 * 60 * 1000, toolName: 'Read' },
+        { timestamp: todayStart + 1_000, toolName: 'Read' },
       ],
     };
     const handler = createApiHandler({
@@ -4794,6 +4794,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       repoName?: string;
       cwd?: string;
       createdPrNumber?: string;
+      createdPrRepo?: string;
       success?: boolean;
       runInBackground?: boolean;
     },
@@ -4812,6 +4813,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
           command,
           cwd: extra.cwd,
           createdPrNumber: extra.createdPrNumber,
+          createdPrRepo: extra.createdPrRepo,
           runInBackground: extra.runInBackground,
         },
       ],
@@ -4908,6 +4910,136 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
         mcpPrSession('creator', 10_000, { ...mcpCreate, mcpPrRepo: 'acme/app' }, root),
         mcpPrSession('merger', 20_000, { ...mcpMerge, mcpPrRepo: 'acme/other' }, root),
       ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+  });
+
+  describe('two separate clones of one GitHub repo', () => {
+    let roots: string[];
+    const clone = (remote: string): string => {
+      const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pr-874-')));
+      const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+      spawnSync('git', ['init', '-q'], { cwd: root, env, stdio: 'ignore' });
+      spawnSync('git', ['remote', 'add', 'origin', remote], { cwd: root, env, stdio: 'ignore' });
+      roots.push(root);
+      return root;
+    };
+    beforeEach(() => {
+      roots = [];
+    });
+    afterEach(() => {
+      for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
+    });
+    const create = { createdPrNumber: '42', createdPrRepo: 'acme/app' };
+
+    it('clears ready_for_review when the PR created in one clone is merged from the other', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const b = clone('git@github.com:Acme/App.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42 --squash', { cwd: b }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+      expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+    });
+
+    it('clears ready_for_review when the merge names the repo with -R from outside any clone', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42 -R acme/app', { cwd: os.tmpdir() }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    });
+
+    it('keeps ready_for_review when the other clone merges the same number in another repo', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const b = clone('https://github.com/acme/other.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: b }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+
+    it('keeps ready_for_review when a merge in the same clone names another repo with -R', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42 -R acme/other', { cwd: a }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+
+    it('keeps ready_for_review for a create saved before its repo was recorded', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const b = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, createdPrNumber: '42' }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: b }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+
+    it('still clears a create saved before its repo was recorded when its own clone merges it', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, createdPrNumber: '42' }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: a }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    });
+  });
+
+  describe('sessions that started before today', () => {
+    const statusWithEarlierSessions = async (
+      today: unknown[],
+      withActivityToday: unknown[],
+    ): Promise<SessionStatusPayload> => {
+      const handler = createApiHandler({
+        localStore: { peekAllBuffers: () => [] },
+        sessionStore: {
+          loadTodaySessions: () => today,
+          loadSessionsWithActivityToday: () => withActivityToday,
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+      const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await handler(req, res);
+      return JSON.parse(body()) as SessionStatusPayload;
+    };
+    const startedYesterday = <T extends { timeline: object[] }>(session: T) => {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const startTime = startOfDay.getTime() - 3_600_000;
+      return { ...session, startTime, endTime: 0 };
+    };
+
+    it("clears ready_for_review when a session that started yesterday merges today's PR", async () => {
+      const creator = prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+        createdPrRepo: 'acme/app',
+      });
+      const merger = startedYesterday(
+        prSession('merger', 20_000, 'gh pr merge 42 -R acme/app', { repoName: 'acme/app' }),
+      );
+      const parsed = await statusWithEarlierSessions([creator], [creator, merger]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+      expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+    });
+
+    it('marks a session that started yesterday and opened a PR today as ready_for_review', async () => {
+      const creator = startedYesterday(
+        prSession('creator', 10_000, 'gh pr create --fill', {
+          repoName: 'acme/app',
+          createdPrNumber: '42',
+          createdPrRepo: 'acme/app',
+        }),
+      );
+      const parsed = await statusWithEarlierSessions([], [creator]);
       expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
     });
   });
