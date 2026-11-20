@@ -24,7 +24,7 @@ export function EstimateMarker({ withoutInfoButton = false }: EstimateMarkerProp
       <InfoTooltip
         label="Why this is an estimate"
         text={ESTIMATE_REASONS.map((reason) => (
-          <span key={reason} className="block">
+          <span key={reason} className="block mt-1 first:mt-0">
             {reason}
           </span>
         ))}
