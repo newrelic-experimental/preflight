@@ -8,6 +8,8 @@ import {
   statSync,
   readdirSync,
   rmSync,
+  symlinkSync,
+  lstatSync,
 } from 'node:fs';
 import * as fs from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -68,6 +70,19 @@ describe('installCopilotSdkExtension() upgrades an existing install', () => {
 
     expect(result).toEqual({ action: 'updated' });
     expect(readFileSync(dest, 'utf8')).toBe(bundled);
+  });
+
+  it('upgrades the target of a symlinked install and keeps the link', () => {
+    const target = join(home, 'dotfiles', 'extension.mjs');
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, OLD_EXTENSION);
+    symlinkSync(target, dest);
+
+    const result = installCopilotSdkExtension();
+
+    expect(result).toEqual({ action: 'updated' });
+    expect(lstatSync(dest).isSymbolicLink()).toBe(true);
+    expect(readFileSync(target, 'utf8')).toBe(bundled);
   });
 
   it('leaves an identical install untouched and reports it unchanged', () => {
