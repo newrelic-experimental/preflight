@@ -3705,6 +3705,7 @@ describe('buildSessionSummary timeline', () => {
                 success: true,
                 command: 'gh pr create --fill',
                 createdPrNumber: '42',
+                createdPrRepo: 'acme/app',
                 runInBackground: true,
               },
               {
@@ -3731,7 +3732,10 @@ describe('buildSessionSummary timeline', () => {
     });
 
     expect(summary.timeline).toHaveLength(4);
-    expect(summary.timeline![2]!.createdPrNumber).toBe('42');
+    expect(summary.timeline![2]).toMatchObject({
+      createdPrNumber: '42',
+      createdPrRepo: 'acme/app',
+    });
     expect(summary.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
     expect(summary.timeline![0]!.mcpPrNumber).toBeUndefined();
     expect(summary.timeline![0]!.mcpPrRepo).toBeUndefined();
@@ -3741,6 +3745,10 @@ describe('buildSessionSummary timeline', () => {
     store.saveSession(summary);
     const reloaded = store.loadSession(summary.sessionId);
     expect(reloaded!.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
+    expect(reloaded!.timeline![2]).toMatchObject({
+      createdPrNumber: '42',
+      createdPrRepo: 'acme/app',
+    });
     expect(summary.timeline![0]!.createdPrNumber).toBeUndefined();
     expect(summary.timeline![2]!.runInBackground).toBe(true);
     expect(summary.timeline![0]!.runInBackground).toBeUndefined();
@@ -3799,6 +3807,33 @@ describe('SessionStore deserialization', () => {
     const session = store.loadSession('pr-num');
     expect(session!.timeline![0]!.createdPrNumber).toBe('42');
     expect(session!.timeline![1]!.createdPrNumber).toBeUndefined();
+  });
+
+  it('keeps a well-formed createdPrRepo on timeline entries, lowercased, and drops anything else', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const raw = JSON.stringify({
+      sessionId: 'pr-repo',
+      startTime: 1000,
+      endTime: 2000,
+      durationMs: 1000,
+      toolCallCount: 4,
+      developer: 'alice',
+      timeline: [
+        { timestamp: 1100, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'Acme/App' },
+        { timestamp: 1200, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'acme/app?x=1' },
+        { timestamp: 1300, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'a/b/c' },
+        { timestamp: 1400, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 7 },
+      ],
+    });
+    writeFileSync(join(tmpDir, 'sessions', '2026-01-01_pr-repo.json'), raw + '\n');
+
+    const session = store.loadSession('pr-repo');
+    expect(session!.timeline!.map((e) => e.createdPrRepo)).toEqual([
+      'acme/app',
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 
   it('keeps a GitHub MCP PR target on timeline entries and drops a malformed one', () => {
