@@ -13,6 +13,7 @@ import {
   digestWebhookUrlOverride,
   normalizeDeveloperName,
   redactSensitive,
+  MAX_RETAIN_SESSIONS_DAYS,
 } from '../../config.js';
 import {
   isSyntheticSessionId,
@@ -3375,9 +3376,9 @@ export function createApiHandler(
         body.retainSessionsDays !== null &&
         (!Number.isInteger(body.retainSessionsDays) ||
           (body.retainSessionsDays as number) < 1 ||
-          (body.retainSessionsDays as number) > 365)
+          (body.retainSessionsDays as number) > MAX_RETAIN_SESSIONS_DAYS)
       ) {
-        errors.push('retainSessionsDays must be integer 1-365 or null');
+        errors.push(`retainSessionsDays must be integer 1-${MAX_RETAIN_SESSIONS_DAYS} or null`);
       } else {
         existing.retainSessionsDays = body.retainSessionsDays;
         digestUrlOnly = false;
