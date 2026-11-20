@@ -502,6 +502,95 @@ describe('GitActivityRecorder', () => {
     });
   });
 
+  describe('PR refs (owner/repo#N)', () => {
+    const refsOf = (...records: ToolCallRecord[]) => {
+      for (const record of records) recorder.recordToolCall(record);
+      return store
+        .query({ since: 0, until: Date.now() + 1000 })
+        .map((r) => (r.kind === 'pr' ? [r.prEvent.action, r.prEvent.prNumber, r.prRef] : null));
+    };
+    const addRemote = (name: string, url: string) =>
+      spawnSync('git', ['remote', 'add', name, url], { cwd: repoDir, stdio: 'ignore' });
+
+    it('takes a create ref from the repo its PR URL named, even with -R', () => {
+      expect(
+        refsOf(
+          makeRecord({
+            command: 'gh pr create -R acme/app --fill',
+            cwd: repoDir,
+            createdPrNumber: '42',
+            createdPrRepo: 'acme/app',
+          }),
+        ),
+      ).toEqual([['create', null, 'acme/app#42']]);
+    });
+
+    it("takes a merge ref from the cwd repo's only remote", () => {
+      addRemote('origin', 'git@github.com:Acme/App.git');
+      expect(refsOf(makeRecord({ command: 'gh pr merge 42 --squash', cwd: repoDir }))).toEqual([
+        ['merge', '42', 'acme/app#42'],
+      ]);
+    });
+
+    it('takes a merge ref from -R, which keeps the number off the cwd repo', () => {
+      addRemote('origin', 'https://github.com/fork/app.git');
+      expect(refsOf(makeRecord({ command: 'gh pr merge 42 -R acme/app', cwd: repoDir }))).toEqual([
+        ['merge', null, 'acme/app#42'],
+      ]);
+    });
+
+    it('gives a merge no ref when the cwd repo has several remotes', () => {
+      addRemote('origin', 'https://github.com/fork/app.git');
+      addRemote('upstream', 'https://github.com/acme/app.git');
+      expect(refsOf(makeRecord({ command: 'gh pr merge 42', cwd: repoDir }))).toEqual([
+        ['merge', '42', null],
+      ]);
+    });
+
+    it('takes a merge ref from the default gh repo set-default saved', () => {
+      addRemote('origin', 'https://github.com/fork/app.git');
+      addRemote('upstream', 'https://github.com/acme/app.git');
+      spawnSync('git', ['config', 'remote.upstream.gh-resolved', 'base'], {
+        cwd: repoDir,
+        stdio: 'ignore',
+      });
+      expect(refsOf(makeRecord({ command: 'gh pr merge 42', cwd: repoDir }))).toEqual([
+        ['merge', '42', 'acme/app#42'],
+      ]);
+    });
+
+    it('gives a merge no ref when an earlier segment assigns GH_REPO', () => {
+      addRemote('origin', 'https://github.com/acme/app.git');
+      expect(
+        refsOf(makeRecord({ command: 'export GH_REPO=acme/other; gh pr merge 42', cwd: repoDir })),
+      ).toEqual([['merge', null, null]]);
+    });
+
+    it('takes MCP refs from the call, preferring the URL repo on a create', () => {
+      expect(
+        refsOf(
+          makeRecord({
+            toolName: 'mcp__github__create_pull_request',
+            cwd: repoDir,
+            createdPrNumber: '57',
+            createdPrRepo: 'acme/app',
+            mcpPrRepo: 'Acme/App',
+          }),
+          makeRecord({
+            toolUseId: 'tool-2',
+            toolName: 'mcp__github__merge_pull_request',
+            cwd: repoDir,
+            mcpPrNumber: '57',
+            mcpPrRepo: 'Acme/App',
+          }),
+        ),
+      ).toEqual([
+        ['create', '57', 'acme/app#57'],
+        ['merge', '57', 'acme/app#57'],
+      ]);
+    });
+  });
+
   describe('non-git repo handling', () => {
     it('uses unattributed workspaceKey for non-git directories', () => {
       const nonGitDir = mkdtempSync(join('/tmp', 'non-git-'));
