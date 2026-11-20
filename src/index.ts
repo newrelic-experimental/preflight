@@ -1842,13 +1842,13 @@ async function main(): Promise<void> {
 
     // Sets the budget and the live cost tile from one set of totals. Another
     // session's cost counts through its saved file, never through CostTracker,
-    // so a saved report counts once. An engine that owns no session yet has no
-    // session spend of its own, so its session budget follows the conversation
-    // it just saved a report for.
+    // so a saved report counts once. A pending --stdio engine owns no session
+    // yet, so its session budget follows the conversation it just saved a
+    // report for. A --local process keeps its own session total.
     const publishCost = (savedSessionId?: string): void => {
       const ownTotalUsd = costTracker.getMetrics().sessionTotalCostUsd;
       const followed =
-        savedSessionId !== undefined && isSyntheticSessionId(sessionTraceId)
+        savedSessionId !== undefined && sessionTraceId.startsWith('pending-')
           ? sessionStoreForCostBaseline.loadSession(savedSessionId)
           : null;
       if (ownTotalUsd === null && !followed) return;
@@ -3311,6 +3311,10 @@ async function main(): Promise<void> {
       applyAuthoritativeSessionName(realId);
       if (opts?.viaCwdOnly) cwdGuessRolledUpWhilePending = rolledUpWhilePending(realId);
       else saveRollups(rolledUpWhilePending(realId), 'running');
+      // Session thresholds fired so far belong to a conversation the engine
+      // followed while pending, or to a wrong guess. The rehydrate below seeds
+      // them again from the adopted session's saved total.
+      budgetTracker.resetSession();
       // viaCwdOnly means this id came from the collision-prone cwd fallback
       // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
       // resolvedViaCwdOnly gate on the synchronous resolution path's own

@@ -46,6 +46,7 @@ import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
 import type { NrIngestManager } from './transport/nr-ingest.js';
 import { UNFORWARDED_SESSIONS_HINT } from './transport/unforwarded-session-monitor.js';
 import { breadcrumbRoot } from './hooks/session-breadcrumbs.js';
+import { DRAINS_DIR, formatClaimName } from './storage/drain-claims.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -2308,6 +2309,17 @@ describe('stdio integration', () => {
     }, 30000);
   });
 
+  const freePort = async (): Promise<string> => {
+    const { createServer: createNetServer } = await import('node:net');
+    return new Promise((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(String(p))));
+      });
+      srv.on('error', reject);
+    });
+  };
   const dashboardApi =
     (port: string) =>
     async (path: string): Promise<Record<string, unknown> | null> =>
@@ -2322,9 +2334,19 @@ describe('stdio integration', () => {
     }
     return value;
   };
-  type Spend = { daily: { spentUsd: number }; session: { spentUsd: number } };
+  type Spend = {
+    daily: { spentUsd: number };
+    session: { spentUsd: number };
+    alerts: Array<{ period: string; thresholdPct: number; timestamp: number }>;
+  };
   const spendOf = (budget: Record<string, unknown> | null): Spend =>
-    (budget ?? { daily: { spentUsd: 0 }, session: { spentUsd: 0 } }) as unknown as Spend;
+    (budget ?? {
+      daily: { spentUsd: 0 },
+      session: { spentUsd: 0 },
+      alerts: [],
+    }) as unknown as Spend;
+  const sessionAlertsOf = (budget: Record<string, unknown> | null) =>
+    spendOf(budget).alerts.filter((a) => a.period === 'session');
   const watchCostUpdates = async (port: string) => {
     const controller = new AbortController();
     const events: Array<{ sessionId: string; sessionTotalUsd: number; todayTotalUsd: number }> = [];
@@ -2448,6 +2470,7 @@ describe('stdio integration', () => {
         runHook(env, { hook_event_name: 'PostToolUse', ...read, ...response }, ['post-tool']);
         const estimated = await until(cost, (c) => (c.byteEstimates?.costUsd ?? 0) > 0);
         expect(estimated.byteEstimates?.costUsd).toBeGreaterThan(0);
+        const ownSpend = spendOf(await api('/api/budget'));
 
         runHook(env, reportHook('conv-local', 'r-local-0001'));
 
@@ -2461,6 +2484,17 @@ describe('stdio integration', () => {
         expect((await api('/api/context?sessionId=conv-local')).turnCount).toBe(0);
         expect(saved).toMatchObject({ tokensInput: 1000, tokensThinking: 100, platform: 'cursor' });
         expect(saved?.estimatedCostUsd).toBeGreaterThan(0);
+        const spend = spendOf(
+          await until(
+            () => api('/api/budget'),
+            (b) => spendOf(b).daily.spentUsd > ownSpend.daily.spentUsd,
+          ),
+        );
+        expect(spend.daily.spentUsd).toBeCloseTo(
+          ownSpend.daily.spentUsd + Number(saved?.estimatedCostUsd),
+          9,
+        );
+        expect(spend.session.spentUsd).toBe(ownSpend.session.spentUsd);
       } finally {
         child.kill('SIGKILL');
         rmSync(tmpStoragePath, { recursive: true, force: true });
@@ -2473,6 +2507,7 @@ describe('stdio integration', () => {
         env: Record<string, string>,
         adopt: (id: string) => Promise<void>,
         close: () => Promise<void>,
+        pid: number,
       ) => Promise<void>,
       nodeArgs: (env: Record<string, string>) => string[] = () => [],
       mcpClient = 'claude-code',
@@ -2528,7 +2563,7 @@ describe('stdio integration', () => {
           ).toBe(false);
         };
         try {
-          await body(env, adopt, close);
+          await body(env, adopt, close, pid);
         } finally {
           if (!closed) await client.close().catch(() => undefined);
         }
@@ -2863,7 +2898,7 @@ describe('stdio integration', () => {
     }, 40000);
 
     it('a report saved while pending counts once after the engine adopts its conversation', async () => {
-      const port = '17007';
+      const port = await freePort();
       const api = dashboardApi(port);
       await withPendingEngine(
         '600000',
@@ -2899,6 +2934,98 @@ describe('stdio integration', () => {
             byModel: Record<string, { requestCount: number }>;
           };
           expect(usage.byModel[report.model]?.requestCount).toBe(2);
+        },
+        () => [],
+        'claude-code',
+        { NR_AI_DASHBOARD_PORT: port },
+      );
+    }, 40000);
+
+    it.each([
+      ['has no saved report', false, [50]],
+      ['already has a pending report', true, [80, 100]],
+    ])(
+      'session alerts start over at adoption when the adopted conversation %s',
+      async (_label, mineWhilePending, expected) => {
+        const port = await freePort();
+        const api = dashboardApi(port);
+        await withPendingEngine(
+          '600000',
+          async (env, adopt) => {
+            const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+            await pollUntil(
+              () => api('/api/health'),
+              (v) => v !== null,
+            );
+            runHook(env, reportHook('conv-other', 'r-other-01'));
+            if (mineWhilePending) runHook(env, reportHook('conv-mine', 'r-mine-01'));
+            const pending = await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).daily.spentUsd >= (mineWhilePending ? 0.015 : 0.0075) - 1e-9,
+            );
+            expect(sessionAlertsOf(pending).map((a) => a.thresholdPct)).toEqual([50]);
+
+            const adoptedAt = Date.now();
+            await adopt('conv-mine');
+            runHook(env, reportHook('conv-mine', 'r-mine-02'));
+            expect(await drained(storage, 'conv-mine')).toBe('');
+            const target = mineWhilePending ? 0.015 : 0.0075;
+            const adopted = await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).session.spentUsd >= target - 1e-9,
+            );
+            expect(spendOf(adopted).session.spentUsd).toBeCloseTo(target, 9);
+            const alerts = sessionAlertsOf(adopted);
+            expect(alerts.map((a) => a.thresholdPct)).toEqual(expected);
+            expect(alerts.every((a) => a.timestamp >= adoptedAt)).toBe(true);
+          },
+          () => [],
+          'claude-code',
+          { NR_AI_DASHBOARD_PORT: port, NEW_RELIC_AI_SESSION_BUDGET_USD: '0.01' },
+        );
+      },
+      40000,
+    );
+
+    it("an adopted engine's session spend stays its own when it drains a leftover claim of another conversation", async () => {
+      const port = await freePort();
+      const api = dashboardApi(port);
+      await withPendingEngine(
+        '600000',
+        async (env, adopt, _close, pid) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          await pollUntil(
+            () => api('/api/health'),
+            (v) => v !== null,
+          );
+          await adopt('conv-mine');
+          runHook(env, reportHook('conv-mine', 'r-mine-01'));
+          expect(await drained(storage, 'conv-mine')).toBe('');
+          const own = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).session.spentUsd > 0,
+            ),
+          );
+          expect(own.session.spentUsd).toBeCloseTo(0.0075, 9);
+
+          runHook(env, reportHook('conv-other', 'r-other-01'));
+          runHook(env, reportHook('conv-other', 'r-other-02'));
+          const buffer = 'buffer-conv-other.jsonl';
+          mkdirSync(resolve(storage, DRAINS_DIR), { recursive: true });
+          renameSync(
+            resolve(storage, buffer),
+            resolve(storage, DRAINS_DIR, formatClaimName(buffer, pid, Date.now())),
+          );
+          const after = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).daily.spentUsd > 0.0075 + 1e-9,
+            ),
+          );
+          expect(savedSession(storage, 'conv-other')).toMatchObject({ selfReportCount: 2 });
+          expect(after.daily.spentUsd).toBeCloseTo(0.0225, 9);
+          expect(after.session.spentUsd).toBeCloseTo(0.0075, 9);
         },
         () => [],
         'claude-code',
@@ -3031,12 +3158,10 @@ describe('stdio integration', () => {
       }
     }
 
-    it.each([
-      ['local', '7007'],
-      ['both', '7507'],
-    ])(
+    it.each(['local', 'both'])(
       'in %s mode, a hook-recorded report reaches the budget, Model Usage and the live cost tile',
-      async (mode, port) => {
+      async (mode) => {
+        const port = await freePort();
         const api = dashboardApi(port);
         await withPendingEngine(
           'cursor',
