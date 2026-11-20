@@ -26,7 +26,6 @@ const testEvents: NrEventData[] = [
 ];
 
 const baseOptions: TransportOptions = {
-  accountId: '12345',
   maxRetries: 3,
   baseDelayMs: 1,
   maxDelayMs: 10,
@@ -43,7 +42,7 @@ describe('sendEvents', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
     const [url, init] = fetchSpy.mock.calls[0];
-    expect(url).toBe('https://insights-collector.newrelic.com/v1/accounts/12345/events');
+    expect(url).toBe('https://insights-collector.newrelic.com/v1/accounts/events');
 
     const headers = init!.headers as Record<string, string>;
     expect(headers['Api-Key']).toBe('us01xxTESTKEY');
@@ -87,7 +86,7 @@ describe('sendEvents', () => {
     await sendEvents(testEvents, 'eu01xxEUKEY123', baseOptions);
 
     const [url] = fetchSpy.mock.calls[0];
-    expect(url).toBe('https://insights-collector.eu01.nr-data.net/v1/accounts/12345/events');
+    expect(url).toBe('https://insights-collector.eu01.nr-data.net/v1/accounts/events');
   });
 
   // collectorHost containing a dot is treated as a literal host override.
@@ -98,7 +97,7 @@ describe('sendEvents', () => {
     });
 
     const [url] = fetchSpy.mock.calls[0];
-    expect(url).toBe('https://collector.eu01.nr-data.net/v1/accounts/12345/events');
+    expect(url).toBe('https://collector.eu01.nr-data.net/v1/accounts/events');
   });
 
   // The port-in-host variant of this literal-collectorHost passthrough is
@@ -114,7 +113,7 @@ describe('sendEvents', () => {
     });
 
     const [url] = fetchSpy.mock.calls[0];
-    expect(url).toBe(`https://${stagingHost('insights-collector')}/v1/accounts/12345/events`);
+    expect(url).toBe(`https://${stagingHost('insights-collector')}/v1/accounts/events`);
   });
 });
 
@@ -139,7 +138,7 @@ const HAS_NR_CREDS = process.env.NEW_RELIC_LICENSE_KEY && process.env.NEW_RELIC_
         },
       ],
       process.env.NEW_RELIC_LICENSE_KEY!,
-      { accountId: process.env.NEW_RELIC_ACCOUNT_ID! },
+      {},
     );
     expect(result.success).toBe(true);
     expect(result.statusCode).toBe(200);

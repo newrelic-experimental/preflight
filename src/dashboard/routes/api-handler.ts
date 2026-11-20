@@ -2,6 +2,13 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
 import {
+  MAX_REPORTED_SPEND_USD,
+  isPeriodKind,
+  isValidReportedAmountUsd,
+  parseStoredReportedSpend,
+  type ReportedSpend,
+} from '../../lib/reported-spend.js';
+import {
   digestWebhookUrlOverrideSource,
   digestWebhookUrlOverride,
   normalizeDeveloperName,
@@ -49,6 +56,7 @@ import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
 import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
 import type { ModelBreakdownEntry, ModelUsageMetrics } from '../../metrics/model-usage-tracker.js';
 import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
+import type { TaskCompletionMetrics } from '../../metrics/task-completion-tracker.js';
 import type {
   QualityEvent,
   QualityProxyMetrics,
@@ -98,6 +106,7 @@ import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import {
   digestWebhookUrlShadowedBy,
+  handleGetDigestPreview,
   handleSendDigest,
   isDigestWebhookCommandConfigured,
 } from '../../tools/cross-session-tools.js';
@@ -115,6 +124,7 @@ import { computeLatencyPercentiles } from './latency-percentiles.js';
 import type { AntiPatternSegment } from './replay-analyzer.js';
 import { analyzeReplayTimeline } from './replay-analyzer.js';
 import { pairToolCallsFromBufferEvents } from './tool-selection-aggregate.js';
+import { primaryTierName, summarizeTiers } from '../../transport/tier-types.js';
 interface RawAuditRecord {
   readonly id: string;
   readonly timestamp: number;
@@ -511,6 +521,7 @@ export interface ApiHandlerDeps {
   readonly weeklySummaryGenerator?: WeeklySummaryGenerator;
   readonly budgetTracker?: { getStatus: () => BudgetStatus };
   readonly latencyTracker?: { getMetrics: () => LatencyMetrics };
+  readonly taskCompletionTracker?: { getMetrics: () => TaskCompletionMetrics };
   readonly personalCoach?: { generate: () => PersonalInsightsResult };
   readonly trendAnalyzer?: {
     computeTrends: () => {
@@ -2494,6 +2505,11 @@ export function createApiHandler(
     });
   });
 
+  routes.set('GET /api/task-completion', (_req, res) => {
+    if (!deps.taskCompletionTracker) return unavailable(res, 'taskCompletionTracker');
+    jsonOk(res, deps.taskCompletionTracker.getMetrics());
+  });
+
   routes.set('GET /api/model-usage', (_req, res) => {
     if (!deps.modelUsageTracker) return unavailable(res, 'modelUsageTracker');
     // Same own-live + persisted-today, excluding-sessions-already-held-live
@@ -3215,12 +3231,11 @@ export function createApiHandler(
         'retainSessionsDays' in disk
           ? (disk.retainSessionsDays as number | null)
           : c.retainSessionsDays,
+      reportedSpend: parseStoredReportedSpend(disk.reportedSpend),
       digestWebhookUrl: fileWebhookUrl,
       // Where sends actually read the URL from. The value above is only the
       // file's; env or a command outranks it, and its value is never returned.
       digestWebhookUrlSource: overrideSource ?? (fileWebhookUrl ? 'file' : 'unset'),
-      digestSchedule:
-        typeof disk.digestSchedule === 'string' ? disk.digestSchedule : c.digestSchedule,
       alerts: {
         personal: {
           dailyCostUsd:
@@ -3252,6 +3267,8 @@ export function createApiHandler(
       storagePath: c.storagePath,
       highSecurity: c.highSecurity,
       licenseKey: c.licenseKey ? '••••' + c.licenseKey.slice(-4) : null,
+      tiers: summarizeTiers(c.tiers),
+      primaryTier: primaryTierName(c.tiers),
     });
   });
 
@@ -3325,6 +3342,34 @@ export function createApiHandler(
         digestUrlOnly = false;
       }
     }
+    if ('reportedSpend' in body) {
+      const rs = body.reportedSpend as Record<string, unknown> | null;
+      const unknownKeys =
+        typeof rs === 'object' && rs !== null
+          ? Object.keys(rs).filter((k) => k !== 'periodKind' && k !== 'amountUsd')
+          : [];
+      if (typeof rs !== 'object' || rs === null || Array.isArray(rs)) {
+        errors.push('reportedSpend must be an object');
+      } else if (unknownKeys.length > 0) {
+        errors.push(`reportedSpend.${unknownKeys[0]} is set by the server and cannot be sent`);
+      } else if (!isPeriodKind(rs.periodKind)) {
+        errors.push("reportedSpend.periodKind must be 'daily' or 'weekly'");
+      } else if (rs.amountUsd !== null && !isValidReportedAmountUsd(rs.amountUsd)) {
+        errors.push(
+          `reportedSpend.amountUsd must be a number from 0 to ${MAX_REPORTED_SPEND_USD}, or null to clear`,
+        );
+      } else {
+        const periodKind = rs.periodKind;
+        const kept = parseStoredReportedSpend(existing.reportedSpend).filter(
+          (e) => e.periodKind !== periodKind,
+        );
+        const next: ReportedSpend[] =
+          rs.amountUsd === null
+            ? kept
+            : [...kept, { periodKind, amountUsd: rs.amountUsd, asOf: new Date().toISOString() }];
+        existing.reportedSpend = next;
+      }
+    }
     if ('retainSessionsDays' in body) {
       if (
         body.retainSessionsDays !== null &&
@@ -3357,14 +3402,6 @@ export function createApiHandler(
         } else {
           existing.digestWebhookUrl = body.digestWebhookUrl;
         }
-      }
-    }
-    if ('digestSchedule' in body) {
-      if (typeof body.digestSchedule !== 'string') {
-        errors.push('digestSchedule must be a string');
-      } else {
-        existing.digestSchedule = body.digestSchedule;
-        digestUrlOnly = false;
       }
     }
     if ('alerts' in body) {
@@ -3432,6 +3469,11 @@ export function createApiHandler(
 
     writeFileSync(deps.configFilePath, JSON.stringify(existing, null, 2), { mode: 0o600 });
     jsonOk(res, { ok: true, restartRequired: !digestUrlOnly });
+  });
+
+  routes.set('GET /api/digest/preview', (_req, res) => {
+    if (!deps.weeklySummaryGenerator) return unavailable(res, 'digest');
+    jsonOk(res, handleGetDigestPreview(deps.weeklySummaryGenerator));
   });
 
   routes.set('POST /api/digest/send', async (_req, res) => {

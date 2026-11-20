@@ -108,7 +108,7 @@ The config-file schema (`ConfigFileSchema`) still accepts the flat legacy keys s
 
 Every dollar figure Preflight reports — session cost, budget-threshold alerts, cost-per-outcome, everything downstream of `CostTracker` — is computed the same way regardless of how your organization is actually billed: `tokens × Preflight's own built-in public list-price table`. Two config options narrow that gap, and one config option (already existing, undocumented until now) lets you close it exactly:
 
-**`customPricingFile`** (env: `NEW_RELIC_AI_CUSTOM_PRICING_FILE`): path to a JSON file of `{ "model-id": { "inputPerMTok": ..., "outputPerMTok": ..., ... } }` entries (see `ModelPricing` in `src/core/pricing.ts`) that fully replaces the built-in table for the models it lists. If your organization has contracted per-model rates, enter them here model-by-model and Preflight reports at your real rate, no multiplier needed. Mutually exclusive with the bundled gap-fill pricing overlay — see the doc comment on `applyPricingOverlay()` in `src/metrics/pricing-overlay.ts`.
+**`customPricingFile`** (env: `NEW_RELIC_AI_CUSTOM_PRICING_FILE`): path to a JSON file of `{ "model-id": { "inputPerMTok": ..., "outputPerMTok": ..., ... } }` entries (see `ModelPricing` in `src/core/pricing.ts`) that fully replaces the built-in table for the models it lists. If your organization has contracted per-model rates, enter them here model-by-model and Preflight reports at your real rate, no multiplier needed. Without this file, Preflight prices from the built-in table in `src/core/pricing-data.ts` alone.
 
 **Model name matching.** Preflight strips Bedrock system inference-profile ARNs (`arn:aws:bedrock:<region>:<account>:inference-profile/us.anthropic.claude-sonnet-4-6`, `arn:aws:bedrock:<region>::foundation-model/...`) and a leading `<provider>/` segment (`bedrock/claude-sonnet-4-6`) down to the embedded model id before looking up a price. Application inference profile ARNs and names your gateway invents (`gw-claude-sonnet`) say nothing about the model behind them, so they price at $0 until you map them. Add an `aliases` object to the custom pricing file:
 
@@ -121,9 +121,9 @@ Every dollar figure Preflight reports — session cost, budget-threshold alerts,
 }
 ```
 
-An alias reuses the target model's rates, so there is no rate table to keep current. The target must be a model Preflight can price, either built in or defined by a rate entry in the same file. An alias to an unknown model is logged once at startup and ignored. A file may hold only `aliases`, only rate entries, or both. A file with only `aliases` keeps the bundled gap-fill overlay, so an alias can target a model the overlay prices; a file with any rate entries replaces the overlay as before. Models that still cannot be priced are listed in `unpriced_models` in the `nr_observe_get_cost_breakdown` response.
+An alias reuses the target model's rates, so there is no rate table to keep current. The target must be a model Preflight can price, either built in or defined by a rate entry in the same file. An alias to an unknown model is logged once at startup and ignored. A file may hold only `aliases`, only rate entries, or both. A file with only `aliases` keeps the built-in table, so an alias can target any model the built-in table prices. Models that still cannot be priced are listed in `unpriced_models` in the `nr_observe_get_cost_breakdown` response.
 
-**`pricingRefresh`** (env: `NEW_RELIC_AI_PRICING_REFRESH`, default `true`): fetches LiteLLM's community price file in the background at server start, caches it at `<storagePath>/pricing-cache.json`, and refetches once the cache is a day old, at a later start or at the hourly recheck a long-running server makes. It prices models the bundled table, the pricing overlay, and `customPricingFile` do not resolve, by exact model ID only, and takes precedence over family estimates. Set it to `false` to make no request and read or write no cache file. `highSecurity=true` forces it off.
+**`pricingRefresh`** (env: `NEW_RELIC_AI_PRICING_REFRESH`, default `true`): fetches LiteLLM's community price file in the background at server start, caches it at `<storagePath>/pricing-cache.json`, and refetches once the cache is a day old, at a later start or at the hourly recheck a long-running server makes. It prices models the built-in table and `customPricingFile` do not resolve, by exact model ID only, and takes precedence over family estimates. Set it to `false` to make no request and read or write no cache file. `highSecurity=true` forces it off.
 
 **`costRateMultiplier`** (env: `NEW_RELIC_AI_COST_RATE_MULTIPLIER`): a flat discount factor, `0 < x ≤ 1`, applied to every dollar figure `CostTracker` computes — a cheaper alternative to `customPricingFile` when you have a single blended discount off list price rather than distinct per-model contracted rates. Mirrors the semantics of Claude Code's own `modelPricing.multiplier` managed setting.
 
@@ -140,6 +140,27 @@ Both are resolved once at startup into a single combined factor passed to `CostT
 **What this doesn't do:** Preflight does not read Claude Code's own `modelPricing` managed setting automatically. That setting is Managed-only scope, delivered through one of four mechanisms (server-managed settings from the claude.ai console, MDM/OS policy, a `managed-settings.json` file, or a policy helper program) — only one of which is a static file at a documented path, and by default only the single highest-priority source that's actually present is the one in effect. Reading the file unconditionally would risk silently applying a stale or overridden rate whenever a different mechanism is the one Claude Code actually selected. If you know your organization's contracted rate, enter it directly via `costRateMultiplier` or `customPricingFile` instead — the same numbers you'd put in Claude Code's own `modelPricing.overrides`/`multiplier` (see [Report spend at your contracted rates](https://code.claude.com/docs/en/costs#report-spend-at-your-contracted-rates)) work here too.
 
 Similarly, Preflight cannot detect the data-residency premium per-response the way Claude Code's own `/usage` figure does (that requires seeing which specific API responses were billed at the residency rate, which no hook or event exposes) — `dataResidencyPremium` is an explicit opt-in flag for "always apply 1.1×," not automatic detection.
+
+---
+
+## Reported Spend
+
+**`reportedSpend`** is a config-file-only field with no env var or CLI flag. It holds the spend your organization reports, typed in from a finance dashboard, so it can sit beside Preflight's estimate. Set it from the Reported spend section of the dashboard's Settings page, or through `PATCH /api/settings`.
+
+```json
+{
+  "reportedSpend": [
+    { "periodKind": "daily", "amountUsd": 412.5, "asOf": "2026-11-20T15:00:00.000Z" },
+    { "periodKind": "weekly", "amountUsd": 2100, "asOf": "2026-11-20T15:00:00.000Z" }
+  ]
+}
+```
+
+- `periodKind` is `daily` or `weekly`. A save replaces that period's entry, so there is one of each at most.
+- `amountUsd` is a number from 0 to 1,000,000,000.
+- `asOf` is an ISO timestamp the server sets when the value is saved. `PATCH /api/settings` takes `reportedSpend: { periodKind, amountUsd }`, rejects a client-sent `asOf`, and clears that period when `amountUsd` is `null`.
+
+An entry that breaks these rules fails config load, like any other invalid config field. The daily value shows on Today's daily budget tile, and both show in Settings. A daily value saved before today, or a weekly value saved before this week's Monday, in local time, is labeled stale. The reported value never feeds the estimate, `BudgetTracker` or budget alerts.
 
 ---
 
@@ -265,7 +286,7 @@ Requires `mode: "cloud"` or `mode: "both"`. Tiers fan out the cloud export path;
 | `destination.type`              | yes          | `"nr"` or `"local"`.                                                                                                                 |
 | `destination.licenseKey`        | `nr` only    | This tier's own NR ingest license key.                                                                                               |
 | `destination.licenseKeyCommand` | `nr` only    | Argv array run to read this tier's key instead of `licenseKey`. See [Secret Helper Commands](#secret-helper-commands).               |
-| `destination.accountId`         | `nr` only    | 1–12 decimal digits, as a JSON string.                                                                                               |
+| `destination.accountId`         | no           | Optional. 1–12 decimal digits, as a JSON string. Shown in diagnostics only; the license key selects the account events go to.        |
 | `destination.path`              | `local` only | Directory for JSONL output. Relative paths are resolved to absolute at config load.                                                  |
 | `eventTypes`                    | yes          | Non-empty. Either `["*"]` (everything) or an explicit list of known event types.                                                     |
 
@@ -301,13 +322,15 @@ Every `nr` tier gets its own `HarvestScheduler`, so each keeps an independent re
 
 ### Backward compatibility
 
-Omit `tiers` entirely and nothing changes: the flat `licenseKey`/`accountId` become one implicit tier (`name: "default"`, `eventTypes: ["*"]`), resolved in memory and never written back to the config file.
+Omit `tiers` entirely and nothing changes: the flat `licenseKey` (and `accountId`, when set) become one implicit tier (`name: "default"`, `eventTypes: ["*"]`), resolved in memory and never written back to the config file.
 
 ### Misconfiguration is fatal at startup
 
-The following throw at config load with a specific message, following the same fail-fast convention as the `licenseKey`/`accountId`/`homelabServerUrl` checks: an empty `tiers` array, a duplicate tier name, a blank name, an unknown `destination.type`, an `nr` destination missing both `licenseKey` and `licenseKeyCommand` or with a malformed `accountId`, a `local` destination missing `path`, an empty or unknown-valued `eventTypes`, and an array with no `nr`-type tier.
+The following throw at config load with a specific message, following the same fail-fast convention as the `licenseKey`/`accountId`/`homelabServerUrl` checks: an empty `tiers` array, a duplicate tier name, a blank name, an unknown `destination.type`, an `nr` destination missing both `licenseKey` and `licenseKeyCommand` or with an `accountId` that is set but malformed, a `local` destination missing `path`, an empty or unknown-valued `eventTypes`, and an array with no `nr`-type tier.
 
 ### Not covered
+
+**Confirming the routing.** At startup Preflight logs `Telemetry tiers resolved` with each tier's name, destination, event types, and the primary tier. The same list is returned by `nr_observe_get_config` and `GET /api/settings` as `tiers` and `primaryTier`, with no license keys. In `nr_observe_get_config`, a local tier also reports `writes` and `failures` since startup. Read `tiers` rather than the flat `accountId` when tiers are configured.
 
 Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a separate mechanism and is unaffected by tiers.
 
@@ -378,7 +401,7 @@ Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a sep
 
 **Weekly digest.** When `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` or `digestWebhookUrlCommand` supplies the webhook URL, sending the digest uses that value. A URL written to the file by the dashboard is ignored until you remove both, and `nr_observe_subscribe_digest` refuses to save one while either is set. The dashboard's Alerts page says when an override is active, without showing the overriding value. If the command fails, the digest is not sent to the file's URL.
 
-**Tier destinations.** An `nr` tier can set `destination.licenseKeyCommand` (an argv array) instead of `destination.licenseKey`. See [Tier fields](#tier-fields). It follows the same rules as the top-level field: no shell, stripped env, 20-second timeout, and an error that never contains the output. A failure names the tier, for example `Could not read licenseKey for tier "team" from licenseKeyCommand: the command exited with a non-zero status (1)`. Tiers have no environment variable, so the order is `licenseKeyCommand` > `licenseKey`; with both set, the command wins and Preflight logs a warning. The top-level `licenseKey` (or `licenseKeyCommand`) and `accountId` are still required when `mode` is not `local`.
+**Tier destinations.** An `nr` tier can set `destination.licenseKeyCommand` (an argv array) instead of `destination.licenseKey`. See [Tier fields](#tier-fields). It follows the same rules as the top-level field: no shell, stripped env, 20-second timeout, and an error that never contains the output. A failure names the tier, for example `Could not read licenseKey for tier "team" from licenseKeyCommand: the command exited with a non-zero status (1)`. Tiers have no environment variable, so the order is `licenseKeyCommand` > `licenseKey`; with both set, the command wins and Preflight logs a warning. The top-level `licenseKey` (or `licenseKeyCommand`) is still required when `mode` is not `local`. `accountId` is optional.
 
 ### Scoping `nrApiKey`
 
@@ -411,7 +434,6 @@ Most variables below set one config field. A row whose config field reads `None`
 | `NEW_RELIC_AI_SESSION_BUDGET_USD`     | `sessionBudgetUsd`          | None (no budget)                         | Positive USD limit per session. Budget warnings fire at 50, 80, and 100 percent.                                                                                                                                                                                                                                            |
 | `NEW_RELIC_AI_DAILY_BUDGET_USD`       | `dailyBudgetUsd`            | None (no budget)                         | Positive USD limit per day.                                                                                                                                                                                                                                                                                                 |
 | `NEW_RELIC_AI_WEEKLY_BUDGET_USD`      | `weeklyBudgetUsd`           | None (no budget)                         | Positive USD limit per week.                                                                                                                                                                                                                                                                                                |
-| `NEW_RELIC_AI_DIGEST_SCHEDULE`        | `digestSchedule`            | `0 9 * * 1`                              | Cron expression stored in the config and shown on the dashboard. No scheduler in this build reads it. Digests are sent only when `nr_observe_send_digest` runs.                                                                                                                                                             |
 | `NEW_RELIC_AI_RETAIN_SESSIONS_DAYS`   | `retainSessionsDays`        | `90`                                     | Session summary and weekly summary files older than this many days are deleted. A value that is not a positive integer is ignored.                                                                                                                                                                                          |
 | `NEW_RELIC_AI_HOMELAB_URL`            | `homelabServerUrl`          | None                                     | URL of the homelab server that receives a copy of each hook event. Forwarding starts only when `NEW_RELIC_AI_HOMELAB_TOKEN` is also set. See [homelab.md](./homelab.md).                                                                                                                                                    |
 | `NEW_RELIC_AI_HOMELAB_TOKEN`          | `homelabToken`              | None                                     | Shared bearer token for the homelab server.                                                                                                                                                                                                                                                                                 |

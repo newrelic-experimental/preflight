@@ -91,12 +91,17 @@ describe('loadMcpConfig()', () => {
     );
   });
 
-  it('throws with descriptive error when accountId is missing', () => {
+  it('loads without an accountId and leaves it undefined', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const configPath = writeConfigFile({});
-    expect(() => loadMcpConfig({ config: configPath })).toThrow(
-      /Missing required configuration: accountId/,
-    );
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.accountId).toBeUndefined();
+    expect(config.tiers).toEqual([
+      {
+        name: 'default',
+        destination: { type: 'nr', licenseKey: 'test-key-1234567890' },
+        eventTypes: ['*'],
+      },
+    ]);
   });
 
   // accountId format validation
@@ -427,6 +432,68 @@ describe('loadMcpConfig()', () => {
     const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(stderrOutput).not.toMatch(/Unknown keys in config file/);
   });
+
+  it('does not warn about a saved reportedSpend as an unknown config-file key', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const path = resolve(tmpDir, 'reported-spend.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        reportedSpend: [
+          { periodKind: 'daily', amountUsd: 42.5, asOf: '2026-11-07T10:00:00.000Z' },
+          { periodKind: 'weekly', amountUsd: 0, asOf: '2026-11-07T10:00:00.000Z' },
+        ],
+      }),
+    );
+    loadMcpConfig({ config: path });
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).not.toMatch(/Unknown keys in config file/);
+  });
+
+  it('loads the same config, budgets included, with or without a saved reportedSpend', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const path = resolve(tmpDir, 'budget-with-reported.json');
+    const budgets = { sessionBudgetUsd: 2, dailyBudgetUsd: 10, weeklyBudgetUsd: 50 };
+    writeFileSync(path, JSON.stringify(budgets));
+    const without = loadMcpConfig({ config: path });
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...budgets,
+        reportedSpend: [
+          { periodKind: 'daily', amountUsd: 500, asOf: '2026-11-07T10:00:00.000Z' },
+          { periodKind: 'weekly', amountUsd: 900, asOf: '2026-11-07T10:00:00.000Z' },
+        ],
+      }),
+    );
+    const withReported = loadMcpConfig({ config: path });
+
+    expect(withReported).toEqual(without);
+    expect(withReported).toMatchObject(budgets);
+  });
+
+  it.each([
+    ['a negative amount', { periodKind: 'daily', amountUsd: -1, asOf: '2026-11-07T10:00:00Z' }],
+    [
+      'an amount over the limit',
+      { periodKind: 'daily', amountUsd: 2e9, asOf: '2026-11-07T10:00:00Z' },
+    ],
+    ['an unknown period', { periodKind: 'monthly', amountUsd: 1, asOf: '2026-11-07T10:00:00Z' }],
+    ['a bad timestamp', { periodKind: 'daily', amountUsd: 1, asOf: 'yesterday' }],
+  ])(
+    'rejects a reportedSpend entry with %s like any other invalid config field',
+    (_name, entry) => {
+      process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+      process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+      const path = resolve(tmpDir, 'bad-reported-spend.json');
+      writeFileSync(path, JSON.stringify({ reportedSpend: [entry] }));
+      expect(() => loadMcpConfig({ config: path })).toThrow(
+        /Config file validation failed.*reportedSpend/,
+      );
+    },
+  );
 
   it('does not warn for recognized keys in config file (task #22)', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
@@ -1401,6 +1468,25 @@ describe('costRateMultiplier / dataResidencyPremium', () => {
   });
 });
 
+describe('removed digestSchedule key', () => {
+  it('loads a config file that still contains digestSchedule, without the field', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ digestSchedule: '0 8 * * 2', retainSessionsDays: 30 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(30);
+    expect(config).not.toHaveProperty('digestSchedule');
+  });
+
+  it('still loads when the removed digestSchedule key holds a non-string value', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ digestSchedule: 42, retainSessionsDays: 30 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(30);
+  });
+});
+
 describe('retainSessionsDays', () => {
   it('defaults to 90 when neither env var nor config file key is set', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
@@ -1960,21 +2046,10 @@ describe('licenseKey gating', () => {
     expect(() => loadMcpConfig({ config: configPath })).not.toThrow();
   });
 
-  it("throws when mode='cloud' and accountId missing", () => {
+  it.each(['cloud', 'both'])("does NOT throw when mode='%s' and accountId missing", (mode) => {
+    process.env.NR_AI_MODE = mode;
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const configPath = writeConfigFile({});
-    expect(() => loadMcpConfig({ config: configPath })).toThrow(
-      /Missing required configuration: accountId/,
-    );
-  });
-
-  it("throws when mode='both' and accountId missing", () => {
-    process.env.NR_AI_MODE = 'both';
-    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const configPath = writeConfigFile({});
-    expect(() => loadMcpConfig({ config: configPath })).toThrow(
-      /Missing required configuration: accountId/,
-    );
+    expect(() => loadMcpConfig({ config: writeConfigFile({}) })).not.toThrow();
   });
 
   // --local falls back to local mode on this type, not on the message (#479).
@@ -1992,12 +2067,6 @@ describe('licenseKey gating', () => {
     const noKey = thrown(() => loadMcpConfig({ config: writeConfigFile({ accountId: '12345' }) }));
     expect(noKey).toBeInstanceOf(MissingCloudCredentialError);
     expect(noKey).toMatchObject({ missingField: 'licenseKey', mode: 'both' });
-
-    process.env.NR_AI_MODE = 'cloud';
-    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const noAccount = thrown(() => loadMcpConfig({ config: writeConfigFile({}) }));
-    expect(noAccount).toBeInstanceOf(MissingCloudCredentialError);
-    expect(noAccount).toMatchObject({ missingField: 'accountId', mode: 'cloud' });
   });
 
   it('throws when NR_AI_MODE is set to an invalid value', () => {

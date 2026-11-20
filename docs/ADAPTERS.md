@@ -9,7 +9,7 @@ Preflight supports 18 named AI coding platforms plus a generic MCP fallback, eac
 
 This doc is the canonical reference for what each adapter can and can't observe, how detection and setup actually work, and where the gaps are. It mirrors `src/platforms/*.ts` and the hook-event handling in `src/hooks/collector-script.ts` — if you change either, update this doc in the same PR.
 
-> **Telemetry mode in the setup examples:** the examples below set `NR_AI_MODE=cloud` (New Relic only) together with `NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_ACCOUNT_ID`; a license key with no mode makes the server refuse to start, and the account ID is required in `cloud` and `both`. `cloud` turns off the localhost dashboard and the local alert rules. Use `NR_AI_MODE=both` to keep them.
+> **Telemetry mode in the setup examples:** the examples below set `NR_AI_MODE=cloud` (New Relic only) together with `NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_ACCOUNT_ID`; a license key with no mode makes the server refuse to start, and the account ID is optional. `cloud` turns off the localhost dashboard and the local alert rules. Use `NR_AI_MODE=both` to keep them.
 
 > **Maintenance note:** every adapter implements `getHookInstallInstructions()`, which returns the setup text reproduced below. That method is not currently called from any CLI command (`preflight doctor --platform <x>` explicitly skips it and tells the user to verify manually) — this document is presently the only place that text is surfaced to a user. If a CLI surface is added later, keep this doc and the adapter methods in sync, or replace the relevant section here with a pointer to the command output.
 
@@ -344,14 +344,21 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    {
      "hooks": {
        "PreToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=droid preflight-collector" }]
+         }
        ],
        "PostToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=droid preflight-collector" }]
+         }
        ]
      }
    }
    ```
+   The `MCP_CLIENT=droid` prefix is required. Hook commands run as a separate process from the MCP server and never see the env set by `mcp add`, so an unstamped command files its breadcrumbs under `unattributed`, a pool every unstamped engine shares. On Windows the `VAR=value` prefix is not valid in `cmd.exe` or PowerShell, so use `"command": "cmd /c \"set MCP_CLIENT=droid&& preflight-collector\""` (no space before `&&`, or the space becomes part of the value).
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
 3. Register the Preflight MCP server:
    ```
@@ -388,14 +395,21 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    {
      "hooks": {
        "BeforeTool": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=gemini-cli preflight-collector" }]
+         }
        ],
        "AfterTool": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=gemini-cli preflight-collector" }]
+         }
        ]
      }
    }
    ```
+   The `MCP_CLIENT=gemini-cli` prefix is required. Hook commands run as a separate process from the MCP server and never see the env set by `mcp add`, so an unstamped command files its breadcrumbs under `unattributed`, a pool every unstamped engine shares. On Windows the `VAR=value` prefix is not valid in `cmd.exe` or PowerShell, so use `"command": "cmd /c \"set MCP_CLIENT=gemini-cli&& preflight-collector\""` (no space before `&&`, or the space becomes part of the value).
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
 3. Register the Preflight MCP server:
    ```
@@ -430,14 +444,21 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    {
      "hooks": {
        "PreToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=codex preflight-collector" }]
+         }
        ],
        "PostToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=codex preflight-collector" }]
+         }
        ]
      }
    }
    ```
+   The `MCP_CLIENT=codex` prefix is required. Hook commands run as a separate process from the MCP server and never see the env set by `mcp add`, so an unstamped command files its breadcrumbs under `unattributed`, a pool every unstamped engine shares. On Windows the `VAR=value` prefix is not valid in `cmd.exe` or PowerShell, so use `"command": "cmd /c \"set MCP_CLIENT=codex&& preflight-collector\""` (no space before `&&`, or the space becomes part of the value).
 2. Run `/hooks` in the Codex CLI to review and trust this hook definition — non-managed hooks are skipped until reviewed.
 3. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
 4. Register the Preflight MCP server:
@@ -487,7 +508,7 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    }
    ```
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
-3. Create `.opencode/plugins/preflight.js` (project) or `~/.config/opencode/plugins/preflight.js` (global) with the snippet in `OpencodeAdapter.getHookInstallInstructions()` (`src/platforms/opencode-adapter.ts`) — reproduced there in full.
+3. Create `.opencode/plugins/preflight.js` (project) or `~/.config/opencode/plugins/preflight.js` (global) with the snippet in `OpencodeAdapter.getHookInstallInstructions()` (`src/platforms/opencode-adapter.ts`) — reproduced there in full. The snippet sets `MCP_CLIENT` in the collector spawn's `env`, which is required: without it the collector files breadcrumbs under `unattributed`, a pool every unstamped engine shares. It needs no shell syntax, so the stamp itself is not platform specific.
 4. Restart opencode.
 
 ---
@@ -528,7 +549,7 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    }
    ```
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
-3. Create `.kilo/plugin/preflight.ts` (project) or `~/.config/kilo/plugin/preflight.ts` (global) with the snippet in `KiloCodeAdapter.getHookInstallInstructions()` (`src/platforms/kilo-code-adapter.ts`) — reproduced there in full, using Kilo's current plugin module descriptor shape (`export default { id, server }`).
+3. Create `.kilo/plugin/preflight.ts` (project) or `~/.config/kilo/plugin/preflight.ts` (global) with the snippet in `KiloCodeAdapter.getHookInstallInstructions()` (`src/platforms/kilo-code-adapter.ts`) — reproduced there in full, using Kilo's current plugin module descriptor shape (`export default { id, server }`). The snippet sets `MCP_CLIENT` in the collector spawn's `env`, which is required: without it the collector files breadcrumbs under `unattributed`, a pool every unstamped engine shares. It needs no shell syntax, so the stamp itself is not platform specific.
 4. Restart Kilo Code.
 
 ---
@@ -686,7 +707,7 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
 
 **Instruction files:** `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md` (repo-relative, matched against a tool call's file path). The host also reads a user-level `$HOME/.copilot/copilot-instructions.md` and glob-based `.github/instructions/**/*.instructions.md`, neither of which is modeled here — every other adapter's `instructionFilePaths` entry is a repo-relative exact filename, which supports neither a global per-user path nor a glob pattern.
 
-**Token-exact cost (optional):** tool-call hooks alone don't carry per-call token counts. A small, hand-written plain-JavaScript Copilot SDK extension (`copilot-sdk-extension/extension.mjs`, shipped alongside Preflight and installable into `~/.copilot/extensions/preflight/`) subscribes to the SDK's `assistant.usage` event and appends a `mode: 'token'` buffer line per API call — the same buffer-line contract `CopilotUsageWatcher` uses for VS Code. It captures usage only (no tool calls, to avoid double-counting against the hooks above). Copilot SDK extensions must be plain JavaScript — TypeScript isn't supported — so this file hand-mirrors the tested logic in `src/hooks/copilot-sdk-usage-mapper.ts`; keep the two in sync when changing either. Extensions are an experimental feature, requiring `--experimental` or `/experimental on`.
+**Token-exact cost (optional):** tool-call hooks alone don't carry per-call token counts. A small plain-JavaScript Copilot SDK extension (`copilot-sdk-extension/extension.mjs`, shipped alongside Preflight and installable into `~/.copilot/extensions/preflight/`) subscribes to the SDK's `assistant.usage` event and appends a `mode: 'token'` buffer line per API call — the same buffer-line contract `CopilotUsageWatcher` uses for VS Code. It captures usage only (no tool calls, to avoid double-counting against the hooks above). Copilot SDK extensions must be plain JavaScript with no build step, so the file is bundled by `npm run build:copilot-extension` from `src/hooks/copilot-sdk-extension.ts`, which reuses `src/hooks/copilot-sdk-usage-mapper.ts` and the drain-safe `appendToHookBuffer`. Edit the source, not the bundle; `npm run verify:copilot-extension` fails on drift. Extensions are an experimental feature, requiring `--experimental` or `/experimental on`.
 
 **Known gap:** without the extension above, cost is estimated from tool-call counts rather than exact tokens (same limitation as most other hook-based adapters).
 

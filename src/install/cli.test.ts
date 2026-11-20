@@ -59,7 +59,7 @@ jest.mock('./copilot-install-helper.js', () => ({
   mergeVsCodeSettings: jest.fn((s: unknown) => s),
   removeVsCodeHookFilesLocationsEntry: jest.fn((s: unknown) => s),
   applyHookCollisionFix: jest.fn(() => ({ applied: false, reason: 'claude-hooks-absent' })),
-  installCopilotSdkExtension: jest.fn(() => ({ copied: false, reason: 'exists' })),
+  installCopilotSdkExtension: jest.fn(() => ({ action: 'unchanged' })),
 }));
 jest.mock('../hooks/copilot-sdk-extension-health.js', () => ({
   copilotSdkExtensionInstallPath: jest.fn(() => '/tmp/copilot-extension/extension.mjs'),
@@ -1430,7 +1430,7 @@ describe('platform transition matrix', () => {
       if (savedAccount !== undefined) process.env.NEW_RELIC_ACCOUNT_ID = savedAccount;
     }
     const stdout = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
-    expect(stdout).not.toContain('are both required to save NR config');
+    expect(stdout).not.toContain('is required to save NR config');
   });
 
   describe('--target-user', () => {
@@ -1612,10 +1612,10 @@ describe('platform transition matrix', () => {
     });
   });
 
-  // Bug fix: !nrConfigWriteFailed guard was suppressing the "Both required" hint when
+  // Bug fix: !nrConfigWriteFailed guard was suppressing the missing-license-key hint when
   // a partial credential was passed AND the platformTarget write failed. Both messages
   // carry independent information and must both fire.
-  it('partial credential + platformTarget write failure: "Both required" hint still prints', async () => {
+  it('account ID without a license key + platformTarget write failure: license-key hint still prints', async () => {
     const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
     mFs.readFileSync.mockReturnValue('{}');
     const writeFsMock = fsMod as unknown as { writeFileSync: jest.Mock };
@@ -1627,10 +1627,10 @@ describe('platform transition matrix', () => {
         throw new Error('EPERM: read-only file system');
       });
 
-    await runInstallCli(['install', '--license-key', 'NRLIC-partial']); // non-fatal
+    await runInstallCli(['install', '--account-id', '111']); // non-fatal
 
     const stdout = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
-    expect(stdout).toContain('are both required to save NR config');
+    expect(stdout).toContain('is required to save NR config');
     stderrSpy.mockRestore();
   });
 
@@ -3042,8 +3042,7 @@ describe('copilot install/uninstall', () => {
       reason: 'claude-hooks-absent',
     });
     mockedCopilotHelper.installCopilotSdkExtension.mockReturnValue({
-      copied: false,
-      reason: 'exists',
+      action: 'unchanged',
     });
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     exitSpy = jest

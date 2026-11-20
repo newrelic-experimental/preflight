@@ -16,6 +16,11 @@ import {
 } from './redaction-patterns.js';
 import { resolveRecordContent } from './record-content-gate.js';
 import { projectIdFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
+import {
+  MAX_REPORTED_SPEND_USD,
+  isPeriodKind,
+  isValidReportedAmountUsd,
+} from './lib/reported-spend.js';
 import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
 import type { ResolvedTier } from './transport/tier-types.js';
 import {
@@ -207,7 +212,6 @@ export interface McpServerConfig {
    */
   readonly dataResidencyPremium: boolean;
   readonly digestWebhookUrl: string | null;
-  readonly digestSchedule: string; // cron expression, default: "0 9 * * 1" (Monday 9am)
   /** Default: 90. `null` disables retention (only reachable via an explicit `null` in config.json). */
   readonly retainSessionsDays: number | null;
   readonly personalAlertThresholds: PersonalAlertThresholds;
@@ -342,8 +346,18 @@ export const ConfigFileSchema = z
     costRateMultiplier: z.number().nullable().optional(),
     dataResidencyPremium: z.boolean().optional(),
     digestWebhookUrl: z.string().nullable().optional(),
-    digestSchedule: z.string().optional(),
     retainSessionsDays: z.number().nullable().optional(),
+    reportedSpend: z
+      .array(
+        z.object({
+          periodKind: z.string().refine(isPeriodKind, "must be 'daily' or 'weekly'"),
+          amountUsd: z
+            .number()
+            .refine(isValidReportedAmountUsd, `must be from 0 to ${MAX_REPORTED_SPEND_USD}`),
+          asOf: z.string().refine((v) => !Number.isNaN(Date.parse(v)), 'must be a timestamp'),
+        }),
+      )
+      .optional(),
     // Legacy flat OTLP fields — deprecated in favor of the nested `otlp`
     // object below, but still accepted for backward compatibility (using
     // one logs a deprecation warning; see pickOtlpValue() in loadMcpConfig).
@@ -754,14 +768,13 @@ function parseProxyUpstreams(
  * type (#479), so the message can change without breaking that fallback.
  */
 export class MissingCloudCredentialError extends Error {
-  readonly missingField: 'licenseKey' | 'accountId';
+  readonly missingField: 'licenseKey';
   readonly mode: Mode;
 
-  constructor(missingField: 'licenseKey' | 'accountId', mode: Mode, configFilePath: string) {
-    const envVar = missingField === 'licenseKey' ? 'NEW_RELIC_LICENSE_KEY' : 'NEW_RELIC_ACCOUNT_ID';
+  constructor(missingField: 'licenseKey', mode: Mode, configFilePath: string) {
     super(
       `Missing required configuration: ${missingField} (mode='${mode}'). ` +
-        `Set the ${envVar} environment variable or add "${missingField}" to ` +
+        `Set the NEW_RELIC_LICENSE_KEY environment variable or add "${missingField}" to ` +
         configFilePath +
         ", or switch to mode='local' to skip cloud transport.",
     );
@@ -990,16 +1003,13 @@ export function loadMcpConfig(
   const accountIdRaw =
     (process.env.NEW_RELIC_ACCOUNT_ID?.trim() ? process.env.NEW_RELIC_ACCOUNT_ID : undefined) ??
     (typeof file.accountId === 'string' ? file.accountId : undefined);
-  if (mode !== 'local' && !accountIdRaw) {
-    throw new MissingCloudCredentialError('accountId', mode, configFilePath);
-  }
   if (accountIdRaw && !/^\d{1,12}$/.test(accountIdRaw)) {
     throw new Error(
       'Invalid configuration: accountId must be 1–12 decimal digits. ' +
         `Received: "${accountIdRaw}"`,
     );
   }
-  // In local mode, undefined if accountId is missing (NR transport won't be used)
+  // Optional: the Events API URL carries no account ID, so this is for display and deploy commands only
   const accountId = accountIdRaw;
 
   // --- tiers: config file only (no env var / CLI flag equivalent exists) ---
@@ -1034,12 +1044,12 @@ export function loadMcpConfig(
     ) {
       resolvedTiers = [];
     }
-  } else if (mode !== 'local' && licenseKey !== undefined && accountId !== undefined) {
+  } else if (mode !== 'local' && licenseKey !== undefined) {
     // Implicit single tier — byte-identical to the existing single-tier default.
     resolvedTiers = [
       {
         name: DEFAULT_TIER_NAME,
-        destination: { type: 'nr', licenseKey, accountId },
+        destination: { type: 'nr', licenseKey, ...(accountId !== undefined && { accountId }) },
         eventTypes: [WILDCARD_EVENT_TYPE],
       },
     ];
@@ -1305,10 +1315,6 @@ export function loadMcpConfig(
     ),
 
     digestWebhookUrl: digestWebhookUrlSecret.value ?? null,
-
-    digestSchedule:
-      process.env.NEW_RELIC_AI_DIGEST_SCHEDULE ??
-      (typeof file.digestSchedule === 'string' ? file.digestSchedule : '0 9 * * 1'),
 
     retainSessionsDays: (() => {
       const raw = process.env.NEW_RELIC_AI_RETAIN_SESSIONS_DAYS;
