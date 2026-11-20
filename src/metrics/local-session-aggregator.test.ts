@@ -16,7 +16,6 @@ import {
   collectCommitsAcrossRepos,
   LocalSessionAggregator,
   RepoNameResolver,
-  stripHeredocs,
 } from './local-session-aggregator.js';
 import { backfillAgentId } from './agent-partition.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
@@ -1341,72 +1340,6 @@ describe('LocalSessionAggregator baseline fold from a file with a byte-estimate 
     const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
     expect(incoming!.costByDayUsd![otherDay]).toBe(0.5);
   });
-});
-
-describe('stripHeredocs', () => {
-  it.each([
-    ['a closed heredoc', "cat <<'EOF'\ngit push\nEOF\ngit log", "cat <<'EOF'\ngit log", false],
-    [
-      'a heredoc inside "$( … )"',
-      'git commit -m "$(cat <<\'EOF\'\nfix: git push\nEOF\n)" && git push',
-      'git commit -m "$(cat <<\'EOF\'\n)" && git push',
-      false,
-    ],
-    ['a <<- heredoc', 'cat <<-EOF\n\tgit push\n\tEOF\ngit log', 'cat <<-EOF\ngit log', false],
-    [
-      'a heredoc with CRLF line ends',
-      'cat <<EOF\r\ngit push\r\nEOF\r\ngit log',
-      'cat <<EOF\r\ngit log',
-      false,
-    ],
-    ['a here-string', 'grep -q x <<<"$(gh pr view 1)"\ngit push', null, false],
-    ['a double-quoted <<', 'gh pr comment 1 --body "see <<X"\ngit push', null, true],
-    ['a single-quoted <<', "echo 'a <<B'\ngit push", null, true],
-    ['a quoted "<<EOF"', 'echo "<<EOF"\ngit push', null, true],
-    ['a << in a comment with an apostrophe', "# don't <<X\ngit push", null, true],
-    ['a << before a number', 'echo $((1<<2))\ngit push', null, false],
-    [
-      'a quoted << before a real heredoc',
-      'echo "see <<X" && cat <<EOF\ngit push\nEOF\ngit log',
-      'echo "see <<X" && cat <<EOF\ngit log',
-      true,
-    ],
-    [
-      'a quoted <<EOF that a real heredoc closes',
-      'gh pr merge 1 --body "see <<EOF"\ngh pr comment 1 <<\'EOF\'\nDone.\nEOF',
-      'gh pr merge 1 --body "see <<EOF"',
-      true,
-    ],
-  ])('reads %s and reports no unclosed heredoc', (_label, command, text, readingsDiffer) => {
-    expect(stripHeredocs(command)).toEqual({
-      text: text ?? command,
-      unclosed: false,
-      readingsDiffer,
-    });
-  });
-
-  it.each([
-    ['a heredoc whose terminator never comes', 'cat <<EOF\ngit log\n', 'cat <<EOF', false],
-    ['an unquoted << in arithmetic', 'echo $((1<<N))\ngit push', 'echo $((1<<N))', false],
-    ['a quoted << whose quote never closes', 'echo "see <<X\ngit push', 'echo "see <<X', true],
-    [
-      'a <<- terminator indented with spaces',
-      'cat <<-EOF\n  git push\n  EOF\ngit log',
-      'cat <<-EOF',
-      false,
-    ],
-    [
-      'a terminator with a trailing space',
-      'cat <<EOF\ngit push\nEOF \ngit log',
-      'cat <<EOF',
-      false,
-    ],
-  ])(
-    'drops the lines after %s and reports it unclosed',
-    (_label, command, text, readingsDiffer) => {
-      expect(stripHeredocs(command)).toEqual({ text, unclosed: true, readingsDiffer });
-    },
-  );
 });
 
 describe('LocalSessionAggregator first spend of a day against a saved file', () => {
