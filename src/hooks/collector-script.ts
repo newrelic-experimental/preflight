@@ -36,6 +36,7 @@ import {
 import { breadcrumbRoot, breadcrumbWriter } from './session-breadcrumbs.js';
 import { appendToHookBuffer, LineWrittenError } from '../storage/hook-buffer.js';
 import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
+import { classifyBash } from './bash-classifier.js';
 import { parsePrRepo } from '../metrics/pr-ref.js';
 import { mintToolUseId, takeMintedToolUseId } from './minted-tool-use-ids.js';
 
@@ -156,6 +157,17 @@ function detectStampPlatform(): string | undefined {
 // ---------------------------------------------------------------------------
 
 const MAX_REDACT_BYTES = 1_048_576; // 1 MB
+
+// The classifier backtracks quadratically on long single-line commands, so the
+// hook only classifies a command up to this length. A longer one carries no
+// flags and the processor classifies its stored text, as it did before.
+const MAX_CLASSIFY_CHARS = 16_384;
+
+function bashCommandInput(command: string): Record<string, unknown> {
+  if (command.length > MAX_CLASSIFY_CHARS) return { command: redact(command) };
+  const { isDestructive, isNetwork } = classifyBash(command);
+  return { command: redact(command), bashDestructive: isDestructive, bashNetwork: isNetwork };
+}
 
 function redact(value: string): string {
   // Truncate by byte count, not character count — 4-byte emoji chars would otherwise
@@ -587,7 +599,7 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
       if (Array.isArray(obj.replacements)) meta.replacementsCount = obj.replacements.length;
       break;
     case 'run_in_terminal':
-      if (typeof obj.command === 'string') meta.command = redact(obj.command);
+      if (typeof obj.command === 'string') Object.assign(meta, bashCommandInput(obj.command));
       if (typeof obj.explanation === 'string') meta.description = redact(obj.explanation);
       if (typeof obj.isBackground === 'boolean') meta.run_in_background = obj.isBackground;
       break;
@@ -644,7 +656,7 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
     // input shape as Bash.
     case 'Bash':
     case 'PowerShell':
-      if (typeof obj.command === 'string') meta.command = redact(obj.command);
+      if (typeof obj.command === 'string') Object.assign(meta, bashCommandInput(obj.command));
       if (typeof obj.description === 'string') meta.description = redact(obj.description);
       if (typeof obj.timeout === 'number') meta.timeout = obj.timeout;
       if (typeof obj.run_in_background === 'boolean')
@@ -1115,7 +1127,7 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       inputSize: sizeOf(command),
       inputHash: hashInput(command),
-      toolInput: { command: redact(command) },
+      toolInput: bashCommandInput(command),
     };
   } else if (eventName === 'aftershellexecution') {
     // Cursor doesn't document a distinct failure event for shell (unlike
@@ -1244,7 +1256,7 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       inputSize: sizeOf(commandLine),
       inputHash: hashInput(commandLine),
-      toolInput: { command: redact(commandLine) },
+      toolInput: bashCommandInput(commandLine),
     };
   } else if (eventName === 'post_run_command') {
     // No source documents an exit-code/output field for this event —

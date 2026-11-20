@@ -126,7 +126,7 @@ Bash tool calls additionally carry four classifier fields:
 - `bashDestructive` — `true` for recursive rm, force-push, dd, mkfs, drop/truncate, chmod 777, pipe-to-shell, etc. (`--force-with-lease` and `--force-if-includes` are NOT flagged)
 - `bashNetwork` — `true` when the leading command is a network client (curl/wget/ssh/...)
 
-Source: `src/hooks/bash-classifier.ts` — `classifyBash()`, assigned onto the record by `parseBash()` in `src/hooks/tool-parsers.ts`
+Source: `src/hooks/bash-classifier.ts` — `classifyBash()`, assigned onto the record by `parseBash()` in `src/hooks/tool-parsers.ts`. The collector classifies the raw command before redacting it and stores only `bashDestructive` and `bashNetwork` beside the redacted command, so a redaction cannot hide a destructive call. Events from an older collector carry neither flag, and `parseBash()` then classifies the stored text.
 
 #### `AiMcpToolCall`
 
