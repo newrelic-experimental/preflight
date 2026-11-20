@@ -870,19 +870,21 @@ export class HookEventProcessor {
       // Orphaned post — no matching pre; use post-event's toolInput if present.
       // There's no pre-event timestamp to build a wall-clock delta from, but
       // a native duration_ms (if the platform sent one) is still real data —
-      // no reason to discard it just because pairing failed.
+      // no reason to discard it just because pairing failed. The post fires
+      // when the call ends, so the call started one native duration earlier.
       logger.debug('Orphaned post event — no matching pre', { tool: event.tool, key });
       const toolFields = parseToolSpecificFields(event.tool, event.toolInput, event.toolOutput);
+      const nativeDurationMs =
+        typeof event.nativeDurationMs === 'number' && Number.isFinite(event.nativeDurationMs)
+          ? event.nativeDurationMs
+          : null;
       const record: ToolCallRecord = {
         id: randomUUID(),
         sessionId: event.sessionId ?? null,
         toolName: event.tool,
         toolUseId: event.toolUseId ?? key,
-        timestamp: event.timestamp,
-        durationMs:
-          typeof event.nativeDurationMs === 'number' && Number.isFinite(event.nativeDurationMs)
-            ? event.nativeDurationMs
-            : null,
+        timestamp: event.timestamp - (nativeDurationMs ?? 0),
+        durationMs: nativeDurationMs,
         ...outcomeFields(event),
         ...attributionFields(undefined, event),
         ...toolFields,
