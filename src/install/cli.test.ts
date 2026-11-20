@@ -59,7 +59,7 @@ jest.mock('./copilot-install-helper.js', () => ({
   mergeVsCodeSettings: jest.fn((s: unknown) => s),
   removeVsCodeHookFilesLocationsEntry: jest.fn((s: unknown) => s),
   applyHookCollisionFix: jest.fn(() => ({ applied: false, reason: 'claude-hooks-absent' })),
-  installCopilotSdkExtension: jest.fn(() => ({ copied: false, reason: 'exists' })),
+  installCopilotSdkExtension: jest.fn(() => ({ action: 'unchanged' })),
 }));
 jest.mock('../hooks/copilot-sdk-extension-health.js', () => ({
   copilotSdkExtensionInstallPath: jest.fn(() => '/tmp/copilot-extension/extension.mjs'),
@@ -3042,8 +3042,7 @@ describe('copilot install/uninstall', () => {
       reason: 'claude-hooks-absent',
     });
     mockedCopilotHelper.installCopilotSdkExtension.mockReturnValue({
-      copied: false,
-      reason: 'exists',
+      action: 'unchanged',
     });
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     exitSpy = jest
