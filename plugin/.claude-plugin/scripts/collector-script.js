@@ -1039,6 +1039,12 @@ function classifyBash(command) {
   return { category, leading, isDestructive, isNetwork };
 }
 
+// src/metrics/pr-ref.ts
+var PR_REPO_RE = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
+function parsePrRepo(value) {
+  return typeof value === "string" && PR_REPO_RE.test(value) ? value.toLowerCase() : void 0;
+}
+
 // src/hooks/minted-tool-use-ids.ts
 import { randomUUID } from "node:crypto";
 import {
@@ -1509,27 +1515,32 @@ function extractInputMeta(toolName, input) {
   }
   return Object.keys(meta).length > 0 ? meta : void 0;
 }
-var PR_URL_RE = /https?:\/\/[^\s"'/]+\/[^\s"'/]+\/[^\s"'/]+\/pull\/(\d{1,9})\b/g;
+var PR_URL_RE = /https?:\/\/[^\s"'/]+\/([^\s"'/]+)\/([^\s"'/]+)\/pull\/(\d{1,9})\b/g;
 var GH_PR_CREATE_RE = /(?:^|[\s;&|(])gh\s+pr\s+create\b/;
-function findCreatedPrNumber(output) {
+function findCreatedPr(output) {
   const texts = [];
   const blocks = Array.isArray(output) ? output : output.content;
   if (!Array.isArray(output) && typeof output.stdout === "string") texts.push(output.stdout);
   if (Array.isArray(blocks)) {
     for (const block of blocks) if (hasStringText(block)) texts.push(block.text);
   }
-  const prNumbers = /* @__PURE__ */ new Set();
+  const prs = /* @__PURE__ */ new Map();
   for (const text of texts) {
-    for (const match of text.matchAll(PR_URL_RE)) prNumbers.add(match[1]);
+    for (const [, owner, repo, createdPrNumber] of text.matchAll(PR_URL_RE)) {
+      const createdPrRepo = parsePrRepo(`${owner}/${repo}`);
+      prs.set(`${owner}/${repo}#${createdPrNumber}`.toLowerCase(), {
+        createdPrNumber,
+        ...createdPrRepo !== void 0 && { createdPrRepo }
+      });
+    }
   }
-  return prNumbers.size === 1 ? [...prNumbers][0] : void 0;
+  return prs.size === 1 ? [...prs.values()][0] : void 0;
 }
 function extractOutputMeta(toolName, output, input) {
   if (output === null || output === void 0 || typeof output !== "object") return void 0;
   const obj = output;
   if (mcpPrToolAction(toolName) === "create") {
-    const createdPrNumber = findCreatedPrNumber(output);
-    return createdPrNumber === void 0 ? void 0 : { createdPrNumber };
+    return findCreatedPr(output);
   }
   if (toolName === "Bash") {
     const meta = {};
@@ -1541,8 +1552,7 @@ function extractOutputMeta(toolName, output, input) {
     }
     const command = input !== null && typeof input === "object" ? input.command : void 0;
     if (typeof command === "string" && GH_PR_CREATE_RE.test(command)) {
-      const createdPrNumber = findCreatedPrNumber(obj);
-      if (createdPrNumber !== void 0) meta.createdPrNumber = createdPrNumber;
+      Object.assign(meta, findCreatedPr(obj));
     }
     if (Object.keys(meta).length > 0) return meta;
   }
