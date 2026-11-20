@@ -3342,7 +3342,7 @@ describe('Today view — daily budget KPI', () => {
     const reported = await screen.findByText(`reported $7.25 as of ${asOfTime(now)}`);
     expect(reported).not.toHaveClass('opacity-60');
     expect(screen.queryByText('stale')).toBeNull();
-    expect(within(await budgetTile()).getByText(/^of \$10\.00 · /)).toHaveTextContent(
+    expect(within(await budgetTile()).getByText(/^of \$10\.00/)).toHaveTextContent(
       'of $10.00 · 40% used',
     );
     expect(within(await budgetTile()).getByText('$4.00')).toBeInTheDocument();
