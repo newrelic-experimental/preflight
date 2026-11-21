@@ -4251,6 +4251,85 @@ describe('saveSession cross-process merge', () => {
     expect(loaded?.toolBreakdown).toEqual({ Bash: 9 });
   });
 
+  it("lets a resumed session's newer checkpoint replace a stale completed outcome", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = 'cccc1111-2222-4333-8444-555566667777';
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'completed',
+        endTime: 1000,
+        toolCallCount: 5,
+        toolBreakdown: { Bash: 5 },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'in progress',
+        endTime: 2000,
+        toolCallCount: 9,
+        toolBreakdown: { Bash: 9 },
+      }),
+    );
+    expect(store.loadSession(id)?.outcome).toBe('in progress');
+  });
+
+  it("lets a chat-only resume's newer checkpoint replace a stale completed outcome", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = 'eeee1111-2222-4333-8444-555566667777';
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'completed',
+        endTime: 1000,
+        toolCallCount: 5,
+        toolBreakdown: { Bash: 5 },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'in progress',
+        endTime: 2000,
+        toolCallCount: 5,
+        toolBreakdown: { Bash: 5 },
+      }),
+    );
+    expect(store.loadSession(id)?.outcome).toBe('in progress');
+  });
+
+  it.each([
+    ['equal endTime', 2000, 9, 'in progress'],
+    ['older endTime', 1500, 9, 'in progress'],
+    ['an unknown outcome', 3000, 9, 'unknown'],
+  ])(
+    'keeps a completed outcome against a non-completed write with %s',
+    (_label, endTime, calls, outcome) => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const id = 'dddd1111-2222-4333-8444-555566667777';
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          outcome: 'completed',
+          endTime: 2000,
+          toolCallCount: 5,
+          toolBreakdown: { Bash: 5 },
+        }),
+      );
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          outcome,
+          endTime,
+          toolCallCount: calls,
+          toolBreakdown: { Bash: calls },
+        }),
+      );
+      expect(store.loadSession(id)?.outcome).toBe('completed');
+    },
+  );
+
   it('unions per-model breakdowns contributed by different processes', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const id = 'bbbb1111-2222-4333-8444-555566667777';
