@@ -5,6 +5,7 @@ import {
   type PlatformConfig,
   type PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Maps Gemini CLI's built-in tool names to the normalized Claude Code tool
@@ -118,7 +119,8 @@ export class GeminiCliAdapter implements PlatformAdapter {
 
   isSupported(): boolean {
     return (
-      process.env.MCP_CLIENT === 'gemini-cli' || process.env.NEW_RELIC_AI_PLATFORM === 'gemini-cli'
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'gemini-cli' ||
+      canonicalPlatformName(process.env.NEW_RELIC_AI_PLATFORM) === 'gemini-cli'
     );
   }
 }

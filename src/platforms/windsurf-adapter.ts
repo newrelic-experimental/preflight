@@ -4,6 +4,7 @@ import type {
   PlatformConfig,
   PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 const WINDSURF_TOOL_MAP: Record<string, string> = {
   'Read File': 'Read',
@@ -122,7 +123,7 @@ export class WindsurfAdapter implements PlatformAdapter {
     return (
       process.env.WINDSURF_SESSION_ID !== undefined ||
       process.env.WINDSURF_CONTEXT_ID !== undefined ||
-      process.env.MCP_CLIENT === 'windsurf'
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'windsurf'
     );
   }
 }
