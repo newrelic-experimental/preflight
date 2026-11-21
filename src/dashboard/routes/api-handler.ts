@@ -2699,14 +2699,18 @@ export function createApiHandler(
     const url = new URL(req.url ?? '/', 'http://localhost');
     const nowMs = Date.now();
     if (url.searchParams.get('window') === 'today') {
-      const cutoffMs = localStartOfDay(nowMs);
       // loadAllSessions() filters by the session file's date prefix (coarse,
       // day granularity), not the session's real startTime, so go back two
       // days to guarantee a session that started just before local midnight
-      // isn't excluded before computeUsageInsights applies the exact cutoff.
+      // isn't excluded before computeUsageInsights weights it by today's share.
+      // includeModifiedSince additionally keeps resumed sessions whose file
+      // carries an older start date but was written since midnight.
       const since = new Date(nowMs - 2 * 86_400_000);
-      const sessions = deps.sessionStore.loadAllSessions({ since });
-      jsonOk(res, computeUsageInsights(sessions, { nowMs, windowDays: 1, cutoffMs }));
+      const sessions = deps.sessionStore.loadAllSessions({
+        since,
+        includeModifiedSince: new Date(localStartOfDay(nowMs)),
+      });
+      jsonOk(res, computeUsageInsights(sessions, { selection: 'today', nowMs }));
       return;
     }
     const parsedDays = parseInt(url.searchParams.get('days') ?? '', 10);

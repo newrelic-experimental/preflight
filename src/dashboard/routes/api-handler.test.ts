@@ -2939,6 +2939,7 @@ describe('api-handler GET /api/usage-insights', () => {
             {
               ...sinceLastMidnight,
               estimatedCostUsd: 2,
+              toolCallCount: 1,
               durationMs: 0,
               subagentCostUsd: 0,
               tokensInput: 0,
@@ -2973,6 +2974,27 @@ describe('api-handler GET /api/usage-insights', () => {
     expect(result.windowDays).toBe(1);
     expect(result.sessionCount).toBe(1);
     expect(result.totalCostUsd).toBe(2);
+  });
+
+  it('window=today also loads older-dated session files modified since local midnight', async () => {
+    let receivedOpts: { since?: Date; includeModifiedSince?: Date } | undefined;
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: (opts?: { since?: Date; includeModifiedSince?: Date }) => {
+          receivedOpts = opts;
+          return [];
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights?window=today' } as IncomingMessage;
+    const { res } = fakeRes();
+    await handler(req, res);
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    expect(receivedOpts?.includeModifiedSince?.getTime()).toBe(startOfToday.getTime());
   });
 
   it('window=today takes precedence over days, which stays unaffected when omitted', async () => {
