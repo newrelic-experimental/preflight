@@ -436,6 +436,8 @@ Source: `src/transport/nr-ingest.ts` — `subagentTurnToNrEvent()`
 
 Emitted for each `Agent`-tool run (`run_source: "agent_tool"`) when the call ends. An `Agent` call that outlives its 30-minute timeout can produce an `errored` row and later a `completed` row with the same `workflow_run_id`. For a script-driven run tracked by the on-disk `wf_*.json` watcher (`run_source: "script"`) it is emitted every time that file changes, including while the run is still in progress. Either way one run can produce several rows, so use the latest row per `workflow_run_id`.
 
+A background `Agent` call returns at launch, so its `tool_call_count` and `child_agent_count` count only the subagent calls that finished before then, usually none. Calls that finish later still appear on their own `AiToolCall` and `AiTurnCost` rows.
+
 | Field             | Type   | Description                                                                                                                                               |
 | ----------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `eventType`       | string | Always `"AiWorkflowRun"`                                                                                                                                  |
