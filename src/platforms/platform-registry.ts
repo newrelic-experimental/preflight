@@ -36,11 +36,11 @@ export class PlatformRegistry {
    * Explicit configuration (MCP_CLIENT / NEW_RELIC_AI_PLATFORM naming an
    * adapter's own platformName) always wins over an ambient signal, even one
    * matched by an earlier-registered adapter. Every adapter's isSupported()
-   * checks process.env.MCP_CLIENT === '<its own platformName>' (and usually
-   * NEW_RELIC_AI_PLATFORM too) alongside its ambient checks, with equal
-   * weight — so without this, an ambient signal inherited from a launching
-   * process (e.g. CLAUDE_CODE_VERSION) can outrank an explicit config for a
-   * different platform purely because that adapter registers first. Each
+   * checks whether MCP_CLIENT (and usually NEW_RELIC_AI_PLATFORM) names its
+   * own platformName alongside its ambient checks, with equal weight — so
+   * without this, an ambient signal inherited from a launching process (e.g.
+   * CLAUDE_CODE_VERSION) can outrank an explicit config for a different
+   * platform purely because that adapter registers first. Each
    * adapter compares the configured name through canonicalPlatformName, so
    * detection never rewrites process.env, which spawned children inherit.
    */
