@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 
 // src/redaction-patterns.ts
-var AFTER_ESCAPE = String.raw`\\[nrt]|\\u[0-9a-fA-F]{4}|(?:\x1b|\\u001[bB])\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
+var AFTER_ESCAPE = String.raw`\\[nrtbf]|\\u[0-9a-fA-F]{4}|(?:\x1b|\\u001[bB])\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
 var CONTINUATION = String.raw`(?:\\\r?\n|\\\\\\n)`;
 var REDACTION_PATTERNS = [
   /(?:sk-|ghp_|gho_|ghs_|github_pat_|xoxb-|xoxp-|Bearer\s+)[A-Za-z0-9_-]{20,200}/g,
