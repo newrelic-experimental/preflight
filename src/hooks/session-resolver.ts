@@ -383,7 +383,7 @@ export function sessionBreadcrumbs(
   const everTaggedIds = new Set<string>();
   const scanTaggedIds = () => {
     for (const writer of breadcrumbWriters(storagePath)) {
-      for (const kind of ['session-by-ppid', 'session-by-cwd']) {
+      for (const kind of ['session-by-ppid', 'session-by-cwd', 'session-by-id']) {
         for (const path of listFiles(resolve(breadcrumbRoot(storagePath, writer), kind))) {
           const id = readSessionId(path);
           if (id) everTaggedIds.add(id);
