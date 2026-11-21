@@ -2,13 +2,19 @@ import { describe, expect, it, jest } from '@jest/globals';
 
 import type { SkillStamp } from '../storage/types.js';
 
-import { createSkillRunEmitter, type SkillRunSink } from './skill-run-emitter.js';
+import {
+  createSkillRunEmitter,
+  createWorkUnitEmitter,
+  type SkillRunSink,
+} from './skill-run-emitter.js';
+import type { ClosedSkillRun } from './skill-run-ledger.js';
 
 const STAMP: SkillStamp = { name: 'code-review', source: 'slash', runId: 'run-1' };
 
 function makeSink() {
   const ingestSkillRun = jest.fn<SkillRunSink['ingestSkillRun']>();
-  return { sink: { ingestSkillRun } as SkillRunSink, ingestSkillRun };
+  const ingestWorkUnit = jest.fn<SkillRunSink['ingestWorkUnit']>();
+  return { sink: { ingestSkillRun, ingestWorkUnit }, ingestSkillRun, ingestWorkUnit };
 }
 
 describe('createSkillRunEmitter', () => {
@@ -96,5 +102,34 @@ describe('createSkillRunEmitter', () => {
       getSink: () => undefined,
     });
     expect(() => emit(STAMP, { sessionId: 's', timestamp: 1 })).not.toThrow();
+  });
+});
+
+describe('createWorkUnitEmitter', () => {
+  const run = (sessionId: string | null): ClosedSkillRun => ({
+    stamp: STAMP,
+    sessionId,
+    startedAt: 1,
+    endedAt: 2,
+    toolCallCount: 0,
+    pricedCallCount: 0,
+    costUsd: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+  });
+
+  it('sends only the own session run and a run with no session on --stdio', () => {
+    const { sink, ingestWorkUnit } = makeSink();
+    const emit = createWorkUnitEmitter({
+      stdio: true,
+      getOwnSessionId: () => 'own',
+      getSink: () => sink,
+    });
+    emit(run('other'));
+    emit(run('own'));
+    emit(run(null));
+    expect(ingestWorkUnit.mock.calls.map(([r]) => r.sessionId)).toEqual(['own', null]);
   });
 });
