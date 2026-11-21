@@ -331,7 +331,11 @@ export function History(): JSX.Element {
   });
 
   const hasLoadError =
-    weekly.isError || sessions.isError || costPerOutcome.isError || concurrencyHistory.isError;
+    weekly.isError ||
+    sessions.isError ||
+    costPerOutcome.isError ||
+    concurrencyHistory.isError ||
+    usageInsights.isError;
 
   // API returns newest-first; reverse for chronological left-to-right chart rendering
   const weeklyChronological = [...(weekly.data ?? [])].reverse();
@@ -341,18 +345,11 @@ export function History(): JSX.Element {
   });
 
   const rawSessions = sessions.data ?? [];
-  const windowSessions = filterSessionsToWindow(rawSessions, windowNum);
-  const dailyData = padDailyCostWindow(aggregateDailyCost(rawSessions, windowNum), windowNum);
-  // The 200-session sample can run out before it reaches back the full
-  // window (a busy account can churn through 200 sessions in far fewer
-  // days than the window covers). When it does, the padded $0 days at the
-  // start of the window aren't confirmed zero-spend — they're simply
-  // outside the sample's reach. Flag that instead of presenting them as
-  // real zeros. Only flag it when the sample actually hit the 200-row cap;
-  // an account with fewer than 200 total sessions has nothing withheld.
-  const dailySpendTruncated =
-    rawSessions.length >= 200 && isDailySpendSampleTruncated(rawSessions, windowNum);
-  const sampleSpanForWindow = dailySpendTruncated ? sampleSpanDays(rawSessions) : null;
+  // Every session with activity in the window, each scaled to its in-window
+  // share, so the KPIs, daily chart and Model performance count the same
+  // spend as the panels fed by the same window on the server.
+  const windowSessions = usageInsights.data?.sessions ?? [];
+  const dailyData = padDailyCostWindow(aggregateDailyCost(windowSessions, windowNum), windowNum);
 
   const forecastEodUsd = todayAggregate.data?.forecastEndOfDayUsd ?? null;
   const todayTotalUsd = todayAggregate.data?.totalCostUsd ?? 0;
@@ -454,10 +451,7 @@ export function History(): JSX.Element {
             numericValue={kpis.flags}
           />
         </div>
-        <div className="text-[10px] text-ink-muted mt-3">
-          {kpis.sessionCount} sessions
-          {sampleSpanForWindow !== null && ` · oldest ${sampleSpanForWindow} days shown`}
-        </div>
+        <div className="text-[10px] text-ink-muted mt-3">{kpis.sessionCount} sessions</div>
       </Card>
 
       <Panel title="Daily spend" subtitle={windowSubtitle(windowNum)} className="mb-3">
@@ -476,12 +470,6 @@ export function History(): JSX.Element {
         </div>
         {forecastCaption && (
           <p className="mt-1.5 text-[10px] text-ink-muted">On pace for {forecastCaption}</p>
-        )}
-        {dailySpendTruncated && (
-          <div className="text-[10px] text-ink-muted italic mt-1">
-            Sample doesn&apos;t reach back {windowNum} days — early days in this chart may
-            undercount actual spend.
-          </div>
         )}
       </Panel>
 
@@ -1135,92 +1123,17 @@ function ConcurrencyPanel({
 }
 
 export function aggregateDailyCost(
-  rows: SessionRow[],
+  rows: ReadonlyArray<{ readonly costByDayUsd: Readonly<Record<string, number>> }>,
   days: number,
 ): Array<{ day: string; cost: number }> {
   const byDay = new Map<string, number>();
   for (const r of rows) {
-    if (r.estimatedCostUsd == null || r.startTime == null) continue;
-    const d = new Date(r.startTime);
-    // Use local-time getters so a session at 10pm UTC-5 lands on its
-    // local day, not the UTC day after.
-    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    byDay.set(day, (byDay.get(day) ?? 0) + r.estimatedCostUsd);
+    for (const [day, usd] of Object.entries(r.costByDayUsd)) {
+      byDay.set(day, (byDay.get(day) ?? 0) + usd);
+    }
   }
   const sorted = Array.from(byDay.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   return sorted.slice(-days).map(([day, cost]) => ({ day, cost: Number(cost.toFixed(2)) }));
-}
-
-/**
- * True when the session sample (already capped upstream, e.g. to the most
- * recent 200) doesn't reach back the full `days`-day window — i.e. the
- * oldest session in `rows` is more recent than the window's start date.
- * When true, `padDailyCostWindow`'s zero-filled early days aren't confirmed
- * zero-spend; they're simply outside what the sample covers, and the UI
- * should flag that instead of presenting them as real zeros. Callers should
- * also confirm the sample actually hit its row cap before using this — a
- * short window can be genuinely complete rather than truncated.
- */
-export function isDailySpendSampleTruncated(
-  rows: SessionRow[],
-  days: number,
-  today: Date = new Date(),
-): boolean {
-  if (rows.length === 0) return false;
-  let oldest: number | null = null;
-  for (const r of rows) {
-    if (r.startTime == null) continue;
-    const t = new Date(r.startTime).getTime();
-    if (Number.isNaN(t)) continue;
-    if (oldest === null || t < oldest) oldest = t;
-  }
-  if (oldest === null) return false;
-  const windowStart = new Date(today);
-  windowStart.setDate(windowStart.getDate() - (days - 1));
-  windowStart.setHours(0, 0, 0, 0);
-  return oldest > windowStart.getTime();
-}
-
-/**
- * Number of calendar days between the oldest session in `rows` and `today`,
- * inclusive. Used to tell the reader how far back a capped sample actually
- * reaches when it doesn't cover the full requested window (see
- * `isDailySpendSampleTruncated`). Returns `0` when `rows` has no dated
- * sessions.
- */
-export function sampleSpanDays(rows: SessionRow[], today: Date = new Date()): number {
-  let oldest: number | null = null;
-  for (const r of rows) {
-    if (r.startTime == null) continue;
-    const t = new Date(r.startTime).getTime();
-    if (Number.isNaN(t)) continue;
-    if (oldest === null || t < oldest) oldest = t;
-  }
-  if (oldest === null) return 0;
-  const diffMs = today.getTime() - oldest;
-  return Math.max(1, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
-}
-
-/**
- * Filters a session list down to the ones that started within the last
- * `days` calendar days ending today (local time), inclusive. Used to derive
- * a window-scoped subset from the shared 200-session fetch instead of
- * issuing a second request.
- */
-export function filterSessionsToWindow(
-  rows: SessionRow[],
-  days: number,
-  today: Date = new Date(),
-): SessionRow[] {
-  const windowStart = new Date(today);
-  windowStart.setDate(windowStart.getDate() - (days - 1));
-  windowStart.setHours(0, 0, 0, 0);
-  const startMs = windowStart.getTime();
-  return rows.filter((r) => {
-    if (r.startTime == null) return false;
-    const t = new Date(r.startTime).getTime();
-    return Number.isFinite(t) && t >= startMs;
-  });
 }
 
 export interface HistoryKpis {
@@ -1231,7 +1144,7 @@ export interface HistoryKpis {
   readonly flags: number;
 }
 
-export function computeHistoryKpis(rows: SessionRow[]): HistoryKpis {
+export function computeHistoryKpis(rows: readonly SessionRow[]): HistoryKpis {
   let spend = 0;
   let effSum = 0;
   let effCount = 0;
@@ -1336,7 +1249,7 @@ const FLAGGED_SUCCESS_THRESHOLD = 0.85;
 // once a meaningful share of its sessions fall below FLAGGED_SUCCESS_THRESHOLD.
 const FLAGGED_LOW_SUCCESS_PROPORTION = 0.3;
 
-export function aggregateModelPerformance(rows: SessionRow[]): ModelPerformanceRow[] {
+export function aggregateModelPerformance(rows: readonly SessionRow[]): ModelPerformanceRow[] {
   const byModel = new Map<
     string,
     {

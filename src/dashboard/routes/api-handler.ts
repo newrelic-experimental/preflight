@@ -97,7 +97,11 @@ import type {
   PersistedAntiPattern,
   SessionFileInfo,
 } from '../../storage/session-store.js';
-import { loadSessionsActiveIn, type WindowedSession } from '../../storage/session-window.js';
+import {
+  lastDaysWindow,
+  loadSessionsActiveIn,
+  type WindowedSession,
+} from '../../storage/session-window.js';
 import {
   hasRecordedUsage,
   toPersistedAntiPatterns,
@@ -2683,10 +2687,10 @@ export function createApiHandler(
       if (!store?.loadAllSessions) return unavailable(res, 'sessionStore.loadAllSessions');
       const parsedDays = parseInt(daysParam, 10);
       const windowDays = Number.isNaN(parsedDays) ? 7 : Math.min(Math.max(parsedDays, 1), 90);
-      const sessions = loadSessionsActiveIn((o) => store.loadAllSessions?.(o) ?? [], {
-        startMs: Date.now() - windowDays * 86_400_000,
-        endMs: Infinity,
-      });
+      const sessions = loadSessionsActiveIn(
+        (o) => store.loadAllSessions?.(o) ?? [],
+        lastDaysWindow(windowDays, Date.now()),
+      );
       jsonOk(res, buildWindowedCostPerTool(sessions));
       return;
     }

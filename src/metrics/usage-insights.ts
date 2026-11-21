@@ -1,10 +1,12 @@
 import type { FullSessionSummary } from '../storage/session-store.js';
 import type { AttributionBucket, TokenBreakdown, UsdBreakdown } from '../storage/types.js';
-import { localEndOfDay, localStartOfDay } from '../lib/date.js';
+import { localDateKey, localEndOfDay, localStartOfDay } from '../lib/date.js';
 import {
   lastActivityMs,
+  lastDaysWindow,
   windowedSessions,
   type ActivityWindow,
+  type WindowShare,
 } from '../storage/session-window.js';
 
 /**
@@ -50,6 +52,24 @@ export interface LoopRow {
   readonly lastRunMs: number;
 }
 
+/** One session's part of the window, in the shape History's KPIs, daily chart and Model performance read. */
+export interface WindowSessionRow {
+  readonly sessionId: string;
+  readonly model: string | null;
+  readonly estimatedCostUsd: number;
+  /** In-window cost per local day, summing to `estimatedCostUsd`. */
+  readonly costByDayUsd: Readonly<Record<string, number>>;
+  readonly efficiencyScore: number | null;
+  readonly toolSuccessRate: number | null;
+  readonly antiPatterns: ReadonlyArray<{ readonly type: string }>;
+  readonly toolBreakdown: Readonly<Record<string, number>>;
+  readonly tokensInput: number;
+  readonly tokensOutput: number;
+  readonly tokensThinking: number;
+  readonly tokensCacheRead: number;
+  readonly tokensCacheCreation: number;
+}
+
 export interface UsageInsightsReport {
   readonly windowDays: number;
   readonly sessionCount: number;
@@ -71,12 +91,15 @@ export interface UsageInsightsReport {
   readonly loopsTotalCount: number;
   /** Share of window spend that carries tool/skill attribution; null when no session has attribution. */
   readonly attributionRatePct: number | null;
+  /** Every session in the window, with costs and tokens scaled to its in-window share. */
+  readonly sessions: readonly WindowSessionRow[];
 }
 
 /**
  * Both windows keep every session with activity inside them and count only
  * its in-window share of cost and tokens. `rolling` (the default) is the last
- * `windowDays` days; `today` is the local calendar day of `nowMs`.
+ * `windowDays` local calendar days, today included; `today` is the local
+ * calendar day of `nowMs`.
  */
 export type UsageInsightsOptions =
   | { readonly selection?: 'rolling'; readonly nowMs: number; readonly windowDays: number }
@@ -86,7 +109,6 @@ export type UsageInsightsOptions =
 // Constants
 // ---------------------------------------------------------------------------
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const LONG_SESSION_MS = 8 * 60 * 60 * 1000;
 /** A session counts as "subagent-heavy" once subagent cost reaches this share of its total. */
 const SUBAGENT_HEAVY_SHARE = 0.25;
@@ -293,14 +315,60 @@ export function usageInsightsWindow(opts: UsageInsightsOptions): ActivityWindow 
     const startMs = localStartOfDay(opts.nowMs);
     return { startMs, endMs: localEndOfDay(startMs) };
   }
-  return { startMs: opts.nowMs - opts.windowDays * DAY_MS, endMs: Infinity };
+  return lastDaysWindow(opts.windowDays, opts.nowMs);
+}
+
+// Scales a session's in-window day costs to sum to `costUsd`. A session with
+// no day map puts it all on its first day in the window.
+function daysSummingTo(
+  days: Readonly<Record<string, number>>,
+  costUsd: number,
+  firstDay: string,
+): Readonly<Record<string, number>> {
+  const sum = Object.values(days).reduce((a, b) => a + b, 0);
+  if (sum <= 0) return { [firstDay]: costUsd };
+  return Object.fromEntries(Object.entries(days).map(([day, usd]) => [day, (usd * costUsd) / sum]));
+}
+
+function windowSessionRow(
+  s: FullSessionSummary,
+  share: WindowShare,
+  costUsd: number,
+  w: ActivityWindow,
+): WindowSessionRow {
+  const scale = (n: number): number => scaleTokens(n, share.weight);
+  return {
+    sessionId: s.sessionId,
+    model: s.model,
+    estimatedCostUsd: costUsd,
+    costByDayUsd: daysSummingTo(
+      share.costByDayUsd,
+      costUsd,
+      localDateKey(Math.max(s.startTime, w.startMs)),
+    ),
+    efficiencyScore: s.efficiencyScore,
+    toolSuccessRate: s.toolSuccessRate,
+    antiPatterns: s.antiPatterns.map(({ type }) => ({ type })),
+    toolBreakdown: Object.fromEntries(
+      Object.entries(s.toolBreakdown)
+        .map(([tool, n]) => [tool, scale(n)] as const)
+        .filter(([, n]) => n > 0),
+    ),
+    tokensInput: scale(s.tokensInput),
+    tokensOutput: scale(s.tokensOutput),
+    tokensThinking: scale(s.tokensThinking),
+    tokensCacheRead: scale(s.tokensCacheRead),
+    tokensCacheCreation: scale(s.tokensCacheCreation),
+  };
 }
 
 export function computeUsageInsights(
   sessions: readonly FullSessionSummary[],
   opts: UsageInsightsOptions,
 ): UsageInsightsReport {
-  const windowSessions = windowedSessions(sessions, usageInsightsWindow(opts));
+  const activityWindow = usageInsightsWindow(opts);
+  const windowSessions = windowedSessions(sessions, activityWindow);
+  const rows: WindowSessionRow[] = [];
 
   let totalCostUsd = 0;
   let totalTokens = 0;
@@ -333,13 +401,12 @@ export function computeUsageInsights(
   // One per-session pass: every table and insight below is built from the
   // accumulators this loop fills, rather than re-scanning `windowSessions`
   // once per characteristic.
-  for (const {
-    session: s,
-    share: { weight },
-  } of windowSessions) {
+  for (const { session: s, share } of windowSessions) {
+    const { weight } = share;
     const lifetimeCost = s.estimatedCostUsd ?? 0;
     const cost = lifetimeCost * weight;
     totalCostUsd += cost;
+    rows.push(windowSessionRow(s, share, cost, activityWindow));
     const lifetimeTokens = sessionTotalTokens(s);
     const tokens = scaleTokens(lifetimeTokens, weight);
     totalTokens += tokens;
@@ -467,5 +534,6 @@ export function computeUsageInsights(
     loops: loopRows.sort((a, b) => b.costUsd - a.costUsd).slice(0, TABLE_CAP),
     loopsTotalCount: loopRows.length,
     attributionRatePct: anyAttribution ? sharePct(attributedCostUsd, totalCostUsd) : null,
+    sessions: rows,
   };
 }

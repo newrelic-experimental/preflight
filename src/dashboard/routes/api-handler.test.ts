@@ -2741,9 +2741,8 @@ describe('api-handler GET /api/cost-per-tool', () => {
     await handler(req, res);
     expect(status()).toBe(200);
     expect(receivedSince).toBeInstanceOf(Date);
-    // Widened by one extra day past the 7-day window, same as usage-insights.
-    const ageMs = Date.now() - (receivedSince as Date).getTime();
-    expect(ageMs).toBeGreaterThanOrEqual(8 * 86_400_000);
+    // Reaches back a day before the window's first local midnight.
+    expect((receivedSince as Date).getTime()).toBeLessThan(localStartOfDay() - 6 * 86_400_000);
     const result = JSON.parse(body());
     expect(result.turns).toEqual([]);
     expect(result.costByToolType.Read).toEqual({
@@ -2869,6 +2868,7 @@ describe('api-handler GET /api/usage-insights', () => {
             tokensCacheRead: 0,
             tokensCacheCreation: 0,
             toolBreakdown: {},
+            antiPatterns: [],
           },
         ],
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
@@ -2947,6 +2947,7 @@ describe('api-handler GET /api/usage-insights', () => {
               tokensCacheRead: 0,
               tokensCacheCreation: 0,
               toolBreakdown: {},
+              antiPatterns: [],
             },
             {
               ...beforeMidnight,
@@ -2958,6 +2959,7 @@ describe('api-handler GET /api/usage-insights', () => {
               tokensCacheRead: 0,
               tokensCacheCreation: 0,
               toolBreakdown: {},
+              antiPatterns: [],
             },
           ];
         },
