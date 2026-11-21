@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { CostTracker } from '../metrics/cost-tracker.js';
+import { makeUsage } from '../__test-utils__/token-usage.js';
 import { WorkflowWatcher } from './workflow-watcher.js';
 import type {
   ScriptWorkflowRunMetrics,
@@ -209,7 +211,7 @@ describe('WorkflowWatcher', () => {
     expect(runs[0].total_usd).toBeCloseTo(1.23, 2);
   });
 
-  it('computes token_reconciliation_delta from getSubagentTokenSumForRun', () => {
+  it('keeps the rollup total_tokens and reports the gap as token_reconciliation_delta', () => {
     writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson({ totalTokens: 1000 }));
     const watcher = new WorkflowWatcher({
       storagePath,
@@ -221,7 +223,64 @@ describe('WorkflowWatcher', () => {
     watcher.setOnRun((r) => runs.push(r));
     watcher.poll();
     expect(runs[0].token_reconciliation_delta).toBeCloseTo(0.2, 5);
+    expect(runs[0].total_tokens).toBe(1000);
+  });
+
+  it('falls back to the subagent sum for total_tokens when the rollup is 0', () => {
+    writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson({ totalTokens: 0 }));
+    const watcher = new WorkflowWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+      getSubagentTokenSumForRun: () => 800,
+    });
+    const runs: ScriptWorkflowRunMetrics[] = [];
+    watcher.setOnRun((r) => runs.push(r));
+    watcher.poll();
     expect(runs[0].total_tokens).toBe(800);
+    expect(runs[0].token_reconciliation_delta).toBeNull();
+  });
+
+  it("reconciles a real CostTracker against the rollup, which counts each agent's last turn", () => {
+    // Per-turn usage and the rollup total from a real two-agent workflow run.
+    const tracker = new CostTracker();
+    const turn = (agentId: string, usage: Parameters<CostTracker['recordTokenUsage']>[0]) =>
+      tracker.recordTokenUsage(usage, 'claude-sonnet-4', {
+        workflowRunId: 'wf_abc12345-6dd',
+        agentId,
+      });
+    turn('a1', makeUsage({ inputTokens: 2, outputTokens: 53, cacheCreationTokens: 29_925 }));
+    turn(
+      'a1',
+      makeUsage({
+        inputTokens: 2,
+        outputTokens: 37,
+        cacheReadTokens: 35_852,
+        cacheCreationTokens: 4_045,
+      }),
+    );
+    turn('a2', makeUsage({ inputTokens: 2, outputTokens: 102, cacheCreationTokens: 35_850 }));
+    turn(
+      'a2',
+      makeUsage({
+        inputTokens: 2,
+        outputTokens: 11,
+        cacheReadTokens: 35_850,
+        cacheCreationTokens: 4_074,
+      }),
+    );
+    writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson({ totalTokens: 79_873 }));
+    const watcher = new WorkflowWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+      getSubagentTokenSumForRun: (id) => tracker.getTokensForWorkflowRun(id),
+    });
+    const runs: ScriptWorkflowRunMetrics[] = [];
+    watcher.setOnRun((r) => runs.push(r));
+    watcher.poll();
+    expect(runs[0].total_tokens).toBe(79_873);
+    expect(runs[0].token_reconciliation_delta).toBe(0);
   });
 
   it('reports token_reconciliation_delta as null (not a false 100% gap) when no subagent data has arrived yet', () => {

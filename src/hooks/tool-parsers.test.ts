@@ -2,6 +2,55 @@ import { describe, it, expect } from '@jest/globals';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 describe('parseToolSpecificFields', () => {
+  describe('Bash classification flags carried by the collector', () => {
+    it('classifies the command text when an older collector sent no flags', () => {
+      const fields = parseToolSpecificFields('Bash', { command: 'rm -rf /sandbox/x' }, undefined);
+
+      expect(fields.bashDestructive).toBe(true);
+      expect(fields.bashNetwork).toBe(false);
+    });
+
+    it('adds a flag computed before redaction to what the redacted text shows', () => {
+      const fields = parseToolSpecificFields(
+        'Bash',
+        { command: 'mysql -u root --[REDACTED] -rf /sandbox/x', bashDestructive: true },
+        undefined,
+      );
+
+      expect(fields.bashDestructive).toBe(true);
+    });
+
+    it('adds a carried network flag to what the redacted text shows', () => {
+      const fields = parseToolSpecificFields(
+        'Bash',
+        { command: '[REDACTED] https://example.test', bashNetwork: true },
+        undefined,
+      );
+
+      expect(fields.bashNetwork).toBe(true);
+    });
+
+    it('keeps a destructive stored text destructive when the carried flag is false', () => {
+      const fields = parseToolSpecificFields(
+        'Bash',
+        { command: 'rm -rf /sandbox/x', bashDestructive: false },
+        undefined,
+      );
+
+      expect(fields.bashDestructive).toBe(true);
+    });
+
+    it('ignores a flag that is not a boolean', () => {
+      const fields = parseToolSpecificFields(
+        'Bash',
+        { command: 'echo hi', bashDestructive: 'true' },
+        undefined,
+      );
+
+      expect(fields.bashDestructive).toBe(false);
+    });
+  });
+
   describe('Read parser', () => {
     it('extracts filePath, lineOffset, and lineLimit', () => {
       const input = { file_path: '/src/index.ts', offset: 10, limit: 50 };
@@ -419,6 +468,16 @@ describe('parseToolSpecificFields', () => {
         parseToolSpecificFields('mcp__github__create_pull_request', {}, { createdPrNumber: '57' })
           .createdPrNumber,
       ).toBe('57');
+    });
+
+    it('carries the created PR repo through lowercased, and drops a malformed or numberless one', () => {
+      const cmd = { command: 'gh pr create --fill' };
+      const repoOf = (output: Record<string, unknown>) =>
+        parseToolSpecificFields('Bash', cmd, output).createdPrRepo;
+      expect(repoOf({ createdPrNumber: '42', createdPrRepo: 'Acme/App' })).toBe('acme/app');
+      expect(repoOf({ createdPrNumber: '42', createdPrRepo: 'acme/app/extra' })).toBeUndefined();
+      expect(repoOf({ createdPrNumber: '42', createdPrRepo: 'acme app/x' })).toBeUndefined();
+      expect(repoOf({ createdPrRepo: 'acme/app' })).toBeUndefined();
     });
 
     it('reads the repo and PR number the collector kept from a GitHub MCP PR call', () => {

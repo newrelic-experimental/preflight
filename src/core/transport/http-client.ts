@@ -178,27 +178,15 @@ const NR_INGEST_HOSTS: Readonly<
   },
 });
 
-export function getEventsApiUrl(
-  accountId: string,
-  region: Region,
-  collectorHost?: string | null,
-): string {
-  // Defensive guard against an empty/null/undefined accountId
-  // that bypassed `loadConfig`'s fail-fast (e.g. a JS caller, an explicit
-  // `accountId: config.accountId!` non-null assertion, or a custom config
-  // path that didn't go through loadConfig). Without this, the URL becomes
-  // `.../accounts/null/events` and NR responds 404 to every harvest — the
-  // scheduler silently retry-loops until the retry buffer overflows.
-  if (!accountId || accountId === 'null' || accountId === 'undefined') {
-    throw new Error(
-      `getEventsApiUrl: accountId is required (got: ${JSON.stringify(accountId)}). ` +
-        `Set the NEW_RELIC_ACCOUNT_ID environment variable or pass accountId in options.`,
-    );
-  }
+/**
+ * The Events API endpoint without an account ID. The license key alone selects
+ * the destination account, and a wrong ID in the path fails with an empty 403.
+ */
+export function getEventsApiUrl(region: Region, collectorHost?: string | null): string {
   if (isLiteralHostname(collectorHost)) {
-    return `https://${collectorHost}/v1/accounts/${accountId}/events`;
+    return `https://${collectorHost}/v1/accounts/events`;
   }
-  return `https://${NR_INGEST_HOSTS[region].events}/v1/accounts/${accountId}/events`;
+  return `https://${NR_INGEST_HOSTS[region].events}/v1/accounts/events`;
 }
 
 export function getMetricApiUrl(region: Region, collectorHost?: string | null): string {

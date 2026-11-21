@@ -117,7 +117,9 @@ export function buildCostForecastFromInputs(
   const heldReason = !forecastHeld
     ? null
     : anchorMissing
-      ? 'held: no spend yet today'
+      ? typeof dailySpentUsd === 'number' && dailySpentUsd > 0
+        ? 'held: spend today, start of day unknown'
+        : 'held: no spend yet today'
       : `held: under ${MIN_FORECAST_WINDOW_MIN} minutes of today's data`;
   const project = (msRemaining: number): number | null =>
     forecastHeld ? null : effectiveBaseUsd + effectiveRateUsdPerMs * msRemaining;

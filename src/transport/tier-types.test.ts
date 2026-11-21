@@ -7,6 +7,8 @@ import {
   DEFAULT_TIER_NAME,
   WILDCARD_EVENT_TYPE,
   validateTiers,
+  summarizeTiers,
+  primaryTierName,
 } from './tier-types.js';
 import { resolve } from 'node:path';
 
@@ -193,6 +195,17 @@ describe('validateTiers()', () => {
     ).toThrow(/requires a non-empty licenseKey/);
   });
 
+  it('accepts an nr tier without an accountId', () => {
+    const [tier] = validateTiers([makeNrTier({ destination: { type: 'nr', licenseKey: 'lk' } })]);
+    expect(tier.destination).toEqual({ type: 'nr', licenseKey: 'lk' });
+    expect(summarizeTiers([tier])[0]).toEqual({
+      name: tier.name,
+      type: 'nr',
+      primary: true,
+      eventTypes: tier.eventTypes,
+    });
+  });
+
   it('throws when an nr tier accountId is not 1-12 digits', () => {
     expect(() =>
       validateTiers([
@@ -335,5 +348,49 @@ describe('validateTiers()', () => {
         knownEventTypes: ['AiCodingTask'],
       }),
     ).toThrow(/lists unknown event type "AiToolCall"/);
+  });
+});
+
+describe('summarizeTiers', () => {
+  const tiers = [
+    {
+      name: 'org',
+      destination: { type: 'local' as const, path: '/data/org' },
+      eventTypes: ['AiCodingTask'],
+    },
+    {
+      name: 'personal',
+      destination: { type: 'nr' as const, licenseKey: 'SECRET-KEY', accountId: '111' },
+      eventTypes: ['*'],
+    },
+    {
+      name: 'team',
+      destination: { type: 'nr' as const, licenseKey: 'SECRET-KEY-2', accountId: '222' },
+      eventTypes: ['AiToolCall'],
+    },
+  ];
+
+  it('describes each tier and marks the first nr tier primary even when a local tier is first', () => {
+    expect(summarizeTiers(tiers)).toEqual([
+      {
+        name: 'org',
+        type: 'local',
+        path: '/data/org',
+        primary: false,
+        eventTypes: ['AiCodingTask'],
+      },
+      { name: 'personal', type: 'nr', accountId: '111', primary: true, eventTypes: ['*'] },
+      { name: 'team', type: 'nr', accountId: '222', primary: false, eventTypes: ['AiToolCall'] },
+    ]);
+    expect(primaryTierName(tiers)).toBe('personal');
+  });
+
+  it('never includes a license key', () => {
+    expect(JSON.stringify(summarizeTiers(tiers))).not.toContain('SECRET');
+  });
+
+  it('has no primary when there are no nr tiers', () => {
+    expect(primaryTierName([])).toBeNull();
+    expect(summarizeTiers([])).toEqual([]);
   });
 });
