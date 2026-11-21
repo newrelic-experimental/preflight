@@ -66,6 +66,23 @@ describe('windowShare', () => {
     expect(share.toolCalls).toBe(1);
   });
 
+  it('drops cost booked before the window for a session that started inside it', () => {
+    const prior = localStartOfDay(DAY - 12 * HOUR_MS);
+    const share = windowShare(
+      source({
+        startTime: DAY + 10 * 60_000,
+        estimatedCostUsd: 1,
+        costByDayUsd: { [localDateKey(prior)]: 0.4, [localDateKey(DAY)]: 0.6 },
+        timeline: calls(9, 10),
+      }),
+      { startMs: DAY, endMs: Infinity },
+    );
+    expect(share.costUsd).toBeCloseTo(0.6, 10);
+    expect(share.costByDayUsd).toEqual({ [localDateKey(DAY)]: 0.6 });
+    expect(share.weight).toBeCloseTo(0.6, 10);
+    expect(share.toolCalls).toBe(2);
+  });
+
   it('splits the whole cost by calls when there is no day map', () => {
     expect(windowShare(source({ timeline: calls(9, 13, 14, 15) }), fromNoon).costUsd).toBe(6);
   });
