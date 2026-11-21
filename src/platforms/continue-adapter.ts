@@ -4,6 +4,7 @@ import type {
   PlatformSessionMetadata,
   NormalizedToolCall,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 const CONTINUE_TOOL_MAP: Record<string, string> = {
   read_file: 'Read',
@@ -130,7 +131,7 @@ export class ContinueAdapter implements PlatformAdapter {
     return (
       process.env.CONTINUE_SESSION_ID !== undefined ||
       process.env.CONTINUE_SERVER_HOST !== undefined ||
-      process.env.MCP_CLIENT === 'continue' ||
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'continue' ||
       process.env.MCP_CLIENT_NAME === 'continue'
     );
   }

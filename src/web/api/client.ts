@@ -1,3 +1,5 @@
+import type { ReportedSpend, ReportedSpendPeriod } from '../../lib/reported-spend.js';
+
 // Distinct error class for 404 responses so callers can treat
 // "feature unavailable" differently from a real server error. Used by the
 // recent-alerts panel: in cloud mode the alert engine is not constructed,
@@ -201,6 +203,7 @@ export interface SessionListEntry {
     readonly agentCount?: number;
   }>;
   readonly model?: string | null;
+  readonly modelBreakdown?: Readonly<Record<string, { readonly requestCount?: number }>>;
   readonly toolSuccessRate?: number | null;
   readonly efficiencyScore?: number | null;
   readonly tokensInput?: number;
@@ -1079,6 +1082,12 @@ export interface ModelStats {
   readonly avgOutputTokensPerRequest: number | null;
 }
 
+export interface TaskCompletionMetrics {
+  readonly completedTasks: number;
+  readonly avgTaskDurationMs: number | null;
+  readonly avgToolCallsPerTask: number | null;
+}
+
 export interface ModelUsageMetrics {
   readonly byModel: Readonly<Record<string, ModelStats>>;
   readonly mostUsedModel: string | null;
@@ -1274,8 +1283,8 @@ export interface SettingsPatch {
   dailyBudgetUsd?: number | null;
   weeklyBudgetUsd?: number | null;
   retainSessionsDays?: number | null;
+  reportedSpend?: { periodKind: ReportedSpendPeriod; amountUsd: number | null };
   digestWebhookUrl?: string | null;
-  digestSchedule?: string;
   alerts?: {
     personal?: {
       dailyCostUsd?: number;
@@ -1287,6 +1296,8 @@ export interface SettingsPatch {
   };
 }
 
+export const fetchTaskCompletion = (signal?: AbortSignal): Promise<TaskCompletionMetrics> =>
+  getJson<TaskCompletionMetrics>('/api/task-completion', signal);
 export const fetchModelUsage = (signal?: AbortSignal): Promise<ModelUsageMetrics> =>
   getJson<ModelUsageMetrics>('/api/model-usage', signal);
 export const fetchCacheHealth = (signal?: AbortSignal): Promise<CacheHealthResponse> =>
@@ -1326,13 +1337,22 @@ export interface SettingsResponse {
   readonly storagePath: string;
   readonly highSecurity: boolean;
   readonly licenseKey: string | null;
+  readonly tiers: readonly {
+    readonly name: string;
+    readonly type: 'nr' | 'local';
+    readonly accountId?: string;
+    readonly path?: string;
+    readonly primary: boolean;
+    readonly eventTypes: readonly string[];
+  }[];
+  readonly primaryTier: string | null;
   readonly sessionBudgetUsd: number | null;
   readonly dailyBudgetUsd: number | null;
   readonly weeklyBudgetUsd: number | null;
   readonly retainSessionsDays: number | null;
+  readonly reportedSpend: readonly ReportedSpend[];
   readonly digestWebhookUrl: string | null;
   readonly digestWebhookUrlSource: 'env' | 'command' | 'file' | 'unset';
-  readonly digestSchedule: string;
   readonly alerts: {
     readonly personal: {
       readonly dailyCostUsd: number;
@@ -1383,6 +1403,18 @@ export const postDigestSend = (): Promise<DigestSendResponse> =>
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return (await r.json()) as DigestSendResponse;
   });
+
+export function digestSendStatus(result: DigestSendResponse): string {
+  try {
+    const parsed = JSON.parse(result.content[0]?.text ?? '') as { ok?: boolean; error?: string };
+    return parsed.ok ? 'Digest sent.' : (parsed.error ?? 'Failed to send.');
+  } catch {
+    return 'Done.';
+  }
+}
+
+export const fetchDigestPreview = (): Promise<DigestSendResponse> =>
+  getJson<DigestSendResponse>('/api/digest/preview');
 
 export interface ObservabilityHealthResponse {
   readonly watcherActive?: boolean;
@@ -1584,6 +1616,7 @@ export const qk = {
   computeWaste: ['compute-waste'] as const,
   audit: ['audit'] as const,
   weekly: ['weekly'] as const,
+  digestPreview: ['digest-preview'] as const,
   budget: ['budget'] as const,
   costPerOutcome: (days: number) => ['cost-per-outcome', days] as const,
   usageInsights: (window: number | 'today') => ['usage-insights', window] as const,
@@ -1606,6 +1639,7 @@ export const qk = {
   activityHeatmap: (view: string) => ['activity-heatmap', view] as const,
   context: ['context'] as const,
   modelUsage: ['model-usage'] as const,
+  taskCompletion: ['task-completion'] as const,
   cacheHealth: ['cache-health'] as const,
   costPerTool: (days?: number) => ['cost-per-tool', days] as const,
   settings: ['settings'] as const,
