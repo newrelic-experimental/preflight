@@ -438,6 +438,7 @@ describe('session-resolver', () => {
       expect(onResolutionSource).toHaveBeenCalledWith({
         source: 'ppid-ancestor',
         sessionId: 'sess-via-ancestor',
+        depth: 1,
       });
     });
 
@@ -484,6 +485,7 @@ describe('session-resolver', () => {
       expect(onResolutionSource).toHaveBeenCalledWith({
         source: 'ppid-ancestor',
         sessionId: 'sess-ancestor-wins',
+        depth: 1,
       });
     });
 
