@@ -79,6 +79,7 @@ and wiring the hooks that populate this data in the first place.
 - `nr_observe_subscribe_digest`
 - `nr_observe_unsubscribe_digest`
 - `nr_observe_send_digest`
+- `nr_observe_get_digest_preview`
 
 Full parameter/return-shape reference for every tool lives in this repo's
 `docs/COMMANDS_TABLE.md` — that file is the source of truth; keep this

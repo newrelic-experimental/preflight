@@ -5,6 +5,7 @@ import {
   type PlatformConfig,
   type PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Maps Kilo Code's built-in tool names (kilocode.ai/docs/automate/tools,
@@ -156,7 +157,7 @@ export class KiloCodeAdapter implements PlatformAdapter {
       '   }',
       '',
       '   function report(payload: unknown) {',
-      '     const child = spawn("preflight-collector", [], { stdio: ["pipe", "ignore", "ignore"] })',
+      '     const child = spawn("preflight-collector", [], { env: { ...process.env, MCP_CLIENT: "kilocode" }, stdio: ["pipe", "ignore", "ignore"] })',
       '     child.stdin.write(JSON.stringify(payload))',
       '     child.stdin.end()',
       '   }',
@@ -204,7 +205,8 @@ export class KiloCodeAdapter implements PlatformAdapter {
 
   isSupported(): boolean {
     return (
-      process.env.MCP_CLIENT === 'kilocode' || process.env.NEW_RELIC_AI_PLATFORM === 'kilocode'
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'kilocode' ||
+      canonicalPlatformName(process.env.NEW_RELIC_AI_PLATFORM) === 'kilocode'
     );
   }
 }

@@ -5,6 +5,7 @@ import {
   type PlatformSessionMetadata,
   type NormalizedToolCall,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Maps Amazon Kiro tool names to the normalized Claude Code tool vocabulary.
@@ -190,8 +191,8 @@ export class KiroAdapter implements PlatformAdapter {
     return (
       process.env.KIRO_SESSION_ID !== undefined ||
       process.env.KIRO_IDE !== undefined ||
-      process.env.MCP_CLIENT === 'kiro' ||
-      process.env.NEW_RELIC_AI_PLATFORM === 'kiro'
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'kiro' ||
+      canonicalPlatformName(process.env.NEW_RELIC_AI_PLATFORM) === 'kiro'
     );
   }
 }
