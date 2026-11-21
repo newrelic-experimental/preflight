@@ -203,6 +203,28 @@ describe('computeUsageInsights', () => {
     });
   });
 
+  it('rows sum on in-window days to the total for a session with cost booked before the window', () => {
+    const windowStart = lastDaysWindow(7, NOW).startMs;
+    const firstDay = localDateKey(windowStart);
+    const report = computeUsageInsights(
+      [
+        makeSummary({
+          startTime: windowStart + 10 * 60_000,
+          endTime: windowStart + 60 * 60_000,
+          estimatedCostUsd: 1,
+          costByDayUsd: { [localDateKey(windowStart - 60 * 60_000)]: 0.4, [firstDay]: 0.6 },
+        }),
+      ],
+      { nowMs: NOW, windowDays: 7 },
+    );
+    const chartSum = report.sessions
+      .flatMap((r) => Object.entries(r.costByDayUsd))
+      .filter(([day]) => day >= firstDay)
+      .reduce((sum, [, usd]) => sum + usd, 0);
+    expect(report.totalCostUsd).toBeCloseTo(0.6, 10);
+    expect(chartSum).toBeCloseTo(report.totalCostUsd, 10);
+  });
+
   describe("selection: 'today'", () => {
     const TODAY_START = localStartOfDay(NOW);
     const TODAY_NOW = TODAY_START + 6 * 60 * 60 * 1000;
