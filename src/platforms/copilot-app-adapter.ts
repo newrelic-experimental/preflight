@@ -10,6 +10,7 @@ import {
   type PlatformConfig,
   type PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Two app-level operations, observed live on the GitHub Copilot desktop app
@@ -163,8 +164,8 @@ export class CopilotAppAdapter implements PlatformAdapter {
 
   isSupported(): boolean {
     if (
-      process.env.MCP_CLIENT === 'copilot-app' ||
-      process.env.NEW_RELIC_AI_PLATFORM === 'copilot-app'
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'copilot-app' ||
+      canonicalPlatformName(process.env.NEW_RELIC_AI_PLATFORM) === 'copilot-app'
     ) {
       return true;
     }

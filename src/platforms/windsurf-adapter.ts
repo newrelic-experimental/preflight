@@ -4,6 +4,7 @@ import type {
   PlatformConfig,
   PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 const WINDSURF_TOOL_MAP: Record<string, string> = {
   'Read File': 'Read',
@@ -47,6 +48,19 @@ export class WindsurfAdapter implements PlatformAdapter {
     instructionFilePaths: ['.windsurfrules'] as const,
     // docs.windsurf.com/windsurf/cascade/hooks: hooks send trajectory_id, never session_id, so they write no breadcrumb.
     sessionBreadcrumbWriters: [] as const,
+    // https://docs.windsurf.com/de/windsurf/cascade/hooks: post_mcp_tool_use carries
+    // trajectory_id and tool_info.mcp_server_name, mcp_tool_arguments and mcp_result,
+    // and the user and workspace hooks files are ~/.codeium/windsurf/hooks.json and
+    // .windsurf/hooks.json. https://docs.windsurf.com/de/windsurf/cascade/mcp: the MCP
+    // config is ~/.codeium/windsurf/mcp_config.json. These cite the /de/ pages because
+    // the unlocalized URLs now redirect to docs.devin.ai, which no longer lists these paths.
+    tokenReportHook: {
+      clientName: 'Windsurf',
+      postMcpEvent: 'post_mcp_tool_use',
+      homeHooksFile: '.codeium/windsurf/hooks.json',
+      projectHooksFile: '.windsurf/hooks.json',
+      homeMcpFile: '.codeium/windsurf/mcp_config.json',
+    },
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {
@@ -97,9 +111,9 @@ export class WindsurfAdapter implements PlatformAdapter {
       '3. Set the environment variables: NEW_RELIC_LICENSE_KEY, NEW_RELIC_ACCOUNT_ID',
       '4. MCP tool calls via Cascade are captured automatically through the MCP connection',
       '5. Built-in tool calls (file reads/writes, terminal commands) require Cascade Hooks:',
-      '   a. Create .windsurf/hooks.json in your workspace root (or use the user/system-level path)',
+      '   a. Create .windsurf/hooks.json in your workspace root (or ~/.codeium/windsurf/hooks.json)',
       '   b. Register pre_read_code, post_read_code, pre_write_code, post_write_code,',
-      '      pre_run_command, and post_run_command hooks, each running:',
+      '      pre_run_command, post_run_command, and post_mcp_tool_use hooks, each running:',
       '      preflight-collector',
       '   c. See https://docs.windsurf.com/windsurf/cascade/hooks for the full hooks.json schema',
     ].join('\n');
@@ -109,7 +123,7 @@ export class WindsurfAdapter implements PlatformAdapter {
     return (
       process.env.WINDSURF_SESSION_ID !== undefined ||
       process.env.WINDSURF_CONTEXT_ID !== undefined ||
-      process.env.MCP_CLIENT === 'windsurf'
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'windsurf'
     );
   }
 }

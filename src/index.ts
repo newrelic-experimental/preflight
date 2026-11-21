@@ -4,6 +4,7 @@ import 'dotenv/config';
 import { Command, Option } from 'commander';
 import { readFileSync, realpathSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { AlertLog } from './alerts/alert-log.js';
 import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
@@ -15,7 +16,9 @@ import {
   DEFAULT_STORAGE_PATH,
   digestWebhookUrlOverride,
   loadMcpConfig,
+  parseLogLevel,
   redactSensitive,
+  resolveStartupLogLevel,
 } from './config.js';
 import { checkBasicAuthToken } from './dashboard/basic-auth.js';
 import { DashboardServer } from './dashboard/dashboard-server.js';
@@ -132,6 +135,7 @@ import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.j
 import {
   buildSessionSummary,
   type FullSessionSummary,
+  savedToolNameByUseId,
   SessionStore,
   sessionSummaryToDriftRecord,
 } from './storage/session-store.js';
@@ -140,6 +144,7 @@ import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import type { ConfigSummary } from './tools/session-stats.js';
 import { registerPendingTools, registerTools } from './tools/session-stats.js';
 import { primaryTierName, summarizeTiers } from './transport/tier-types.js';
+import { hooksDetected, type HookRecordedReportOptions } from './tools/cost-tools.js';
 import { FeedbackCollector } from './tools/workflow-tools.js';
 import { initMcpTracer } from './tracing/mcp-tracer.js';
 import { SessionSpan } from './tracing/session-span.js';
@@ -226,6 +231,12 @@ function loadConfigOrDie(
  * jest.fn()s without constructing a real NrIngestManager.
  */
 type ProxyTelemetrySink = Pick<NrIngestManager, 'ingestToolCall' | 'ingestProxyRequest'>;
+
+/** A session file's call count and the ids of the calls its timeline holds. */
+interface SavedCalls {
+  readonly count: number;
+  readonly toolUseIds: ReadonlySet<string>;
+}
 
 /**
  * Builds the ProxyManager onToolCall/onRequest callbacks for standalone proxy
@@ -779,7 +790,7 @@ export function parseArgs(argv: string[]): CliOptions {
     .version(VERSION)
     .option('-p, --port <number>', 'HTTP port for proxy mode', '9847')
     .option('-c, --config <path>', 'path to config file')
-    .option('-l, --log-level <level>', 'log level (debug|info|warn|error)', 'info')
+    .option('-l, --log-level <level>', 'log level (debug|info|warn|error, default: info)')
     .option('--stdio', 'use stdio transport (for Claude Code MCP connection)')
     .option('--local', 'start dashboard and event processor without MCP stdio transport')
     .option(
@@ -810,11 +821,21 @@ export function parseArgs(argv: string[]): CliOptions {
   return {
     port: parsed,
     config: opts.config ?? null,
-    logLevel: opts.logLevel as CliOptions['logLevel'],
+    logLevel: parseLogLevel(opts.logLevel),
     stdio,
     local,
     validate,
   };
+}
+
+function hookRecordedReports(): HookRecordedReportOptions | undefined {
+  const adapter = createDefaultRegistry().getActive();
+  const hook = adapter.capabilities.tokenReportHook;
+  if (!hook) return undefined;
+  const options = { hook, homeDir: homedir(), projectDir: process.cwd() };
+  // Ambient detection alone also matches hosts launched from Cursor's terminal, which inherit CURSOR_TRACE_ID.
+  const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+  return explicit === adapter.platformName || hooksDetected(options) ? options : undefined;
 }
 
 async function main(): Promise<void> {
@@ -837,15 +858,16 @@ async function main(): Promise<void> {
 
   const options = parseArgs(process.argv);
 
-  // Propagate --log-level into the env var that createLogger() reads.
-  // Must be set before any subsystem loggers are constructed.
-  process.env.NEW_RELIC_AI_LOG_LEVEL = options.logLevel;
+  // The shared logger reads NEW_RELIC_AI_LOG_LEVEL on its first emit, so point it at the resolved
+  // level before anything logs. Child processes inherit the variable, so they see the same level.
+  const logLevel = resolveStartupLogLevel(options.logLevel, options.config);
+  process.env.NEW_RELIC_AI_LOG_LEVEL = logLevel;
 
   logger.info('Starting preflight', {
     version: VERSION,
     stdio: options.stdio,
     port: options.port,
-    logLevel: options.logLevel,
+    logLevel,
   });
 
   if (options.validate) {
@@ -1201,6 +1223,7 @@ async function main(): Promise<void> {
       options.stdio && !isProvisional
         ? new LocalStore(config.storagePath, sessionTraceId)
         : new LocalStore(config.storagePath);
+    localStore.setOwnIdPending(isProvisional);
     localStore.initialize();
 
     // Register every --local process in the instance registry, regardless
@@ -1217,12 +1240,9 @@ async function main(): Promise<void> {
     // provisional window — the real heartbeat is written after resolution.
     // A cwd guess leaves a live engine's heartbeat for the guessed session in
     // place, since a correction must not leave that engine without one.
-    let heartbeatSkipped = false;
-    const writeHeartbeat = (store: LocalStore, viaCwdOnly: boolean): void => {
+    const writeHeartbeat = (store: LocalStore, keepLiveOwner: boolean): void => {
       const sessionId = store.getSessionId();
-      heartbeatSkipped =
-        viaCwdOnly && !!sessionId && hasLiveOwningEngine(config!.storagePath, sessionId);
-      if (heartbeatSkipped) return;
+      if (keepLiveOwner && sessionId && hasLiveOwningEngine(config!.storagePath, sessionId)) return;
       store.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
         value: config!.companionMode,
         source: config!.companionModeSource,
@@ -1470,14 +1490,18 @@ async function main(): Promise<void> {
     const ownUnbookedCosts = new Map<string, UnbookedSeedCost>();
     const firstSaveBaselines = new FirstSaveBaselines();
     // A session's calls in its file before this process first wrote it, none of them this process's.
-    const callsBeforeFirstWrite = new Map<string, number>();
+    const callsBeforeFirstWrite = new Map<string, SavedCalls>();
+    const savedCallsOf = (file: FullSessionSummary | null | undefined): SavedCalls => ({
+      count: file?.toolCallCount ?? 0,
+      toolUseIds: new Set(savedToolNameByUseId(file).keys()),
+    });
     const saveSessionRememberingBaseline = (
       summary: FullSessionSummary,
       from: 'ownTrackers' | 'rollup',
     ): boolean => {
       const saved = sessionStore!.saveSession(summary);
       if (saved && !callsBeforeFirstWrite.has(summary.sessionId)) {
-        callsBeforeFirstWrite.set(summary.sessionId, saved.previous?.toolCallCount ?? 0);
+        callsBeforeFirstWrite.set(summary.sessionId, savedCallsOf(saved.previous));
       }
       // Only a --stdio engine ever adopts a real session id and seeds it.
       if (saved && options.stdio && !rehydratedTrackerSessionIds.has(summary.sessionId)) {
@@ -1784,7 +1808,16 @@ async function main(): Promise<void> {
       const expired = now - priorCostCache.lastRefreshMs > PRIOR_COST_CACHE_TTL_MS;
       if (dayChanged || expired) refreshPriorCostBaseline();
     };
-    refreshPriorCostBaseline();
+    // Rereads the baseline first. A cached one still counts a session this process
+    // has since seeded, counting it twice, and misses sessions other engines saved since.
+    const seedBudgetPeriods = (): void => {
+      refreshPriorCostBaseline();
+      budgetTracker.seedPeriodSpend(
+        priorCostCache.priorDailyCostUsd + costTracker.getCostForDay(localDateKey()),
+        priorCostCache.priorWeeklyCostUsd + (costTracker.getMetrics().sessionTotalCostUsd ?? 0),
+      );
+    };
+    seedBudgetPeriods();
     weeklySummaryGenerator = new WeeklySummaryGenerator({
       storagePath: config.storagePath,
       sessionStore,
@@ -2325,6 +2358,9 @@ async function main(): Promise<void> {
         // transcript has no meta sidecar (see onSubagentTurn). Its PostToolUse
         // normally fires only after a foreground subagent returns.
         subagentAttribution.recordAgentToolCall(rawRecord);
+        // Agent records reach the tracker through onWorkflowAgent, which also
+        // covers the late-post amend path that skips onRecord.
+        if (rawRecord.toolName !== 'Agent') workflowRunTracker.recordToolCall(rawRecord);
 
         if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
           // Emit tool call span — parent is the active task span (or session span if no task)
@@ -2648,8 +2684,10 @@ async function main(): Promise<void> {
       },
       // Feed each Agent-tool ToolCallRecord into the workflow tracker
       // so AiWorkflowRun events ship for `run_source='agent_tool'`.
-      onWorkflowAgent: (record) => {
-        workflowRunTracker.recordToolCall(record);
+      onWorkflowAgent: (incomingRecord) => {
+        // onRecord's intake read already populated the index for this record,
+        // so a plain backfill gives the tracker the same agentId.
+        workflowRunTracker.recordToolCall(subagentAttribution.backfill(incomingRecord));
         // Drain immediately — recordToolCall already pushes the completed run
         // into the drainable queue, so each Agent call yields exactly one
         // AiWorkflowRun event with no harvest-tick latency.
@@ -2832,6 +2870,7 @@ async function main(): Promise<void> {
         platform: eventProcessor?.activePlatform,
         outcome: 'in progress',
         toolSelectionScorer,
+        backfillRecord: (record) => subagentAttribution.backfill(record),
         repoResolver: repoNameResolver,
         ...(savesSession !== undefined && { savesSession }),
       });
@@ -2862,26 +2901,30 @@ async function main(): Promise<void> {
         const sessionId = String(rollup.sessionId);
         try {
           const onFile = sessionStore.loadSession(sessionId);
-          const prior = callsBeforeFirstWrite.get(sessionId) ?? onFile?.toolCallCount ?? 0;
+          const prior = callsBeforeFirstWrite.get(sessionId) ?? savedCallsOf(onFile);
           // A file with calls adds this rollup to them, since a max-merge would drop it. It leaves
-          // out a call another process may count, and marks no ids, so that process still can.
+          // out a call the file held before this process first wrote it, or that another process
+          // marked counted or may count, and marks no ids, so that process still can.
           const kept =
-            prior === 0
+            prior.count === 0
               ? rollup
               : localSessionAggregator.withoutCallsOtherProcessesMayCount(
                   rollup,
-                  localStoreForShutdown?.countedToolUseIds(sessionId) ?? new Set<string>(),
+                  new Set([
+                    ...prior.toolUseIds,
+                    ...(localStoreForShutdown?.countedToolUseIds(sessionId) ?? []),
+                  ]),
                 );
           const summary = {
             ...kept,
             ...outcomeOf(sessionId, onFile, Number(rollup.endTime)),
-            toolCallCount: prior + Number(kept.toolCallCount),
+            toolCallCount: prior.count + Number(kept.toolCallCount),
           };
           if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary, 'rollup'))
             continue;
           localSessionAggregator.markSaved(sessionId);
           saved += 1;
-          if (prior === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
+          if (prior.count === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
         } catch (err) {
           logger.warn('Failed to save observed session', { sessionId, error: String(err) });
         }
@@ -2942,6 +2985,7 @@ async function main(): Promise<void> {
           outcome: opts?.periodic ? 'in progress' : 'completed',
           platform: eventProcessor?.activePlatform,
           instructionPromptHash: instructionDriftTracker.promptHash,
+          backfillRecord: (record) => subagentAttribution.backfill(record),
         });
         // The rollup counts only this session's own tasks; the detector above sees every drained session's.
         const summary = {
@@ -3007,8 +3051,8 @@ async function main(): Promise<void> {
     // is safe to arm immediately. unref'd so it never keeps the process alive.
     const SESSION_PERSIST_INTERVAL_MS = getSessionPersistIntervalMs();
     sessionPersistInterval = setInterval(() => {
-      // A cwd guess whose session had a live engine takes the heartbeat once that engine exits.
-      if (heartbeatSkipped && localStoreForShutdown) writeHeartbeat(localStoreForShutdown, true);
+      // Engines of one session share its heartbeat, so each takes it once the engine it names exits.
+      if (localStoreForShutdown) writeHeartbeat(localStoreForShutdown, true);
       // Skip while the live session id is an unconfirmed cwd-fallback guess —
       // see armPendingConfirmation's own comment. Persisting here would write
       // a real, non-synthetic checkpoint file under an identity that might
@@ -3273,6 +3317,9 @@ async function main(): Promise<void> {
       // realId, and runs before the tracker adopts realId, so adoptSessionId()
       // replays what it drains.
       sessionTraceId = realId;
+      // Keep this above replaceStore. Its halt() runs a final drain-all on the old
+      // store, which must stay drain-all so the adopter gets the no-session buffer.
+      localStore.setOwnIdPending(false);
       eventProcessor!.replaceStore(realLocalStore, false);
 
       sessionTracker!.adoptSessionId(
@@ -3299,7 +3346,7 @@ async function main(): Promise<void> {
         rehydrateTrackersIfResumed(realId);
         liftObserverCompleted(realId);
       }
-      refreshPriorCostBaseline();
+      seedBudgetPeriods();
 
       try {
         saveObservedSessions('running', (id) =>
@@ -3379,6 +3426,7 @@ async function main(): Promise<void> {
       };
       registerTools(mcpServer!.server, {
         headlessInstaller: buildHeadlessInstaller(),
+        hookRecordedReports: hookRecordedReports(),
         sessionTracker: sessionTracker!,
         costTracker,
         budgetTracker,
@@ -3563,6 +3611,7 @@ async function main(): Promise<void> {
             hooksInstalledFn: () => areHooksInstalledAtAnyScope(),
             headlessInstaller: buildHeadlessInstaller(),
           }),
+          hookRecordedReports: hookRecordedReports(),
         });
         sessionResolutionAbort = new AbortController();
         let resolvedSource: import('./hooks/session-resolver.js').SessionIdSource | undefined;
@@ -3636,6 +3685,7 @@ async function main(): Promise<void> {
         };
         registerTools(mcpServer!.server, {
           headlessInstaller: buildHeadlessInstaller(),
+          hookRecordedReports: hookRecordedReports(),
           sessionTracker,
           costTracker,
           budgetTracker,

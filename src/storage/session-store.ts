@@ -66,6 +66,7 @@ import type { EfficiencyScorer, EfficiencyScoreComponents } from '../metrics/eff
 import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
+import { parsePrRepo } from '../metrics/pr-ref.js';
 import {
   ToolSelectionScorer,
   toToolSelectionSummary,
@@ -504,6 +505,17 @@ function mergeTimeline(
   return merged.length > MAX_TIMELINE_ENTRIES
     ? merged.slice(merged.length - MAX_TIMELINE_ENTRIES)
     : merged;
+}
+
+/** The tool name of each call a saved timeline holds with a toolUseId, keyed by that id. */
+export function savedToolNameByUseId(
+  summary: Pick<FullSessionSummary, 'timeline'> | null | undefined,
+): Map<string, string> {
+  const byId = new Map<string, string>();
+  for (const entry of summary?.timeline ?? []) {
+    if (entry.toolUseId) byId.set(entry.toolUseId, entry.toolName);
+  }
+  return byId;
 }
 
 /** Exact-only (non-byte-estimated) share of the cost and token totals. */
@@ -1272,6 +1284,14 @@ export interface BuildSessionSummarySources {
   outcome?: string;
   platform?: string;
   instructionPromptHash?: string | null;
+  /**
+   * Re-runs the agent attribution join on each tool call before the anti-pattern
+   * and tool-selection analyses. By save time `SubagentWatcher` has tailed more
+   * transcript than at hook intake, so more calls resolve to their subagent.
+   */
+  backfillRecord?: (
+    record: import('../storage/types.js').ToolCallRecord,
+  ) => import('../storage/types.js').ToolCallRecord;
 }
 
 function skillInvocationCounts(
@@ -1362,6 +1382,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     antiPatternDetector,
     efficiencyScorer,
     developer,
+    backfillRecord,
   } = sources;
 
   const sessionMetrics = sessionTracker.getMetrics();
@@ -1401,7 +1422,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
       totalBuildsRun += task.buildRun;
       totalBuildsPassed += task.buildPassed;
       totalAgentSpawns += task.subAgentsSpawned;
-      allToolCalls.push(...task.toolCalls);
+      allToolCalls.push(...(backfillRecord ? task.toolCalls.map(backfillRecord) : task.toolCalls));
     }
 
     // Fold in pre-restart totals recovered by TaskDetector.seedFromPersisted()
@@ -1463,6 +1484,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     skillName: tc.toolName === 'Skill' && tc.skillName ? tc.skillName : undefined,
     agentType: tc.toolName === 'Agent' && tc.agentType ? tc.agentType : undefined,
     createdPrNumber: tc.createdPrNumber,
+    createdPrRepo: parsePrRepo(tc.createdPrRepo),
     mcpPrNumber: tc.mcpPrNumber,
     mcpPrRepo: tc.mcpPrRepo,
     runInBackground: tc.runInBackground === true || undefined,
@@ -2150,6 +2172,7 @@ export function deserializeFullSessionSummary(
               typeof e.createdPrNumber === 'string' && /^\d{1,9}$/.test(e.createdPrNumber)
                 ? e.createdPrNumber
                 : undefined,
+            createdPrRepo: parsePrRepo(e.createdPrRepo),
             mcpPrNumber:
               typeof e.mcpPrNumber === 'string' && /^\d{1,9}$/.test(e.mcpPrNumber)
                 ? e.mcpPrNumber
