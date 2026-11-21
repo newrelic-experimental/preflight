@@ -117,6 +117,7 @@ import { HeldTaskSends } from './metrics/held-task-sends.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
+import { startModelRecommendationPublisher } from './metrics/model-recommendation-publisher.js';
 import { tokenUsageFromSubagentTurn, tokenUsageFromTokenEvent } from './metrics/token-usage.js';
 import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
 import { TurnTracker } from './metrics/turn-tracker.js';
@@ -921,6 +922,7 @@ async function main(): Promise<void> {
   // independent of dashboard-bind status. Cleared in the shutdown handler.
   let maintenanceGcInterval: NodeJS.Timeout | undefined;
   let retentionInterval: NodeJS.Timeout | undefined;
+  let stopModelRecommendationPublisher: (() => void) | undefined;
   // Periodic re-fetch of ahead/behind-main counts so the Git Efficiency
   // dashboard's "behind main" KPI doesn't stay frozen at its startup value
   // for the life of a long-running `--local` daemon. Cleared in the
@@ -1016,6 +1018,7 @@ async function main(): Promise<void> {
       if (alertEvaluationInterval) clearInterval(alertEvaluationInterval);
       if (maintenanceGcInterval) clearInterval(maintenanceGcInterval);
       if (retentionInterval) clearInterval(retentionInterval);
+      stopModelRecommendationPublisher?.();
       if (branchDivergenceInterval) clearInterval(branchDivergenceInterval);
       if (dashboardRepollInterval) clearInterval(dashboardRepollInterval);
       if (sessionPersistInterval) clearInterval(sessionPersistInterval);
@@ -1836,6 +1839,10 @@ async function main(): Promise<void> {
     });
 
     const trendAnalyzer = new TrendAnalyzer({ sessionStore });
+    stopModelRecommendationPublisher = startModelRecommendationPublisher(
+      trendAnalyzer,
+      config.storagePath,
+    );
     const collaborationProfiler = new CollaborationProfiler({ sessionStore });
     const activeInstructionFilePaths = activePlatform.capabilities.instructionFilePaths;
     const claudeMdTracker = new ClaudeMdTracker({

@@ -35,6 +35,7 @@ import {
 } from '../hooks/session-breadcrumbs.js';
 import { countMintedToolUseId, MINTED_IDS_DIR_PREFIX } from '../hooks/minted-tool-use-ids.js';
 import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
+import { renameIntoPlace } from './rename-into-place.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -119,7 +120,7 @@ function parseHookEvents(raw: string): HookEvent[] {
  * we have rights to signal. ESRCH = dead, EPERM = alive (different uid),
  * anything else (e.g. EINVAL on a malformed PID) = treat as dead.
  */
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -519,7 +520,15 @@ export class LocalStore {
       if (!existsSync(this.storagePath)) {
         mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
       }
-      writeFileSync(heartbeatPath, String(pid), { mode: 0o600 });
+      // Rename into place: a sibling engine reading a half-written heartbeat
+      // sees no live owner, then archives this session's buffer as an orphan.
+      const tmpPath = `${heartbeatPath}.${process.pid}.tmp`;
+      try {
+        writeFileSync(tmpPath, String(pid), { mode: 0o600 });
+        renameIntoPlace(tmpPath, heartbeatPath, String(pid));
+      } finally {
+        rmSync(tmpPath, { force: true });
+      }
       // Sidecar metadata for listActiveStdioInstances() — kept separate from
       // the heartbeat's own bare-PID content so hasLiveOwner(),
       // getActiveSessionIdsFromHeartbeats(), and gcOrphanBuffers() (which all
