@@ -1,11 +1,11 @@
 /**
- * Retry/Thrashing Detection — flags a sliding window of recent tool calls
- * where the same tool is either failing repeatedly or being called with
- * near-identical input, both signs of retrying the same broken approach
- * instead of changing strategy. Similarity between calls is measured with
- * Levenshtein distance over each call's serialized (non-metadata) fields,
- * falling back to exact-match equality on a raw input hash only when those
- * fields carry no signal of their own (see computeGroupSimilarity()).
+ * Retry/Thrashing Detection — within a tool+session group in a sliding window
+ * of recent calls, takes the first failed call and the calls after it, and
+ * flags them as a retry when they all failed or their inputs match the failed
+ * call's (computeGroupSimilarity() at or above similarityThreshold, which
+ * defaults to an exact match). Calls before the first failure are never
+ * retries. An alert fires only when the call just recorded joins the
+ * offending group, and each call is charged to at most one alert.
  */
 
 import type { MetricAggregator } from '../core/index.js';
@@ -59,7 +59,9 @@ export interface RetryDetectorOptions {
 
 const DEFAULT_MIN_OCCURRENCES = 3;
 const DEFAULT_WINDOW_SIZE = 5;
-const DEFAULT_SIMILARITY_THRESHOLD = 0.8;
+// Exact by default because distinct Bash commands that share a long `cd`
+// prefix score above 0.9, as high as a genuine near-identical retry.
+const DEFAULT_SIMILARITY_THRESHOLD = 1;
 // Same rough chars-per-token heuristic used elsewhere in this codebase for
 // estimating token counts without an actual tokenizer (see CostTracker's
 // recordEstimatedTokens). Only used here to estimate wasted tokens for
@@ -72,11 +74,6 @@ const MAX_ALERTS = 200;
 // this map doesn't grow unboundedly as distinct session ids accumulate over
 // a long-running process's lifetime.
 const DEFAULT_MAX_SESSIONS = 50;
-// firedKeys grows by one entry per uniquely-fired alert group and is never
-// touched again after insertion (unlike bySession, which re-touches an
-// existing key on every repeat alert) — a FIFO cap mirroring MAX_ALERTS is
-// enough to bound it for the same long-running-process failure mode.
-const MAX_FIRED_KEYS = MAX_ALERTS;
 // Single owner of this sentinel — api-handler.ts's retryAlertsBySession()
 // used to own this convention locally; it now reads the pre-aggregated
 // bySession map this class maintains, so this is the one place that decides
@@ -142,8 +139,8 @@ export class RetryDetector implements Resettable {
   private totalTokensWasted = 0;
   private totalAlertsEmitted = 0;
   private readonly bySession = new Map<string, RetrySessionBreakdown>();
-  // Track which tool+window combos already fired to avoid spamming
-  private readonly firedKeys = new Set<string>();
+  // Ids of calls in recentCalls already charged to an alert.
+  private readonly chargedIds = new Set<string>();
 
   constructor(options?: RetryDetectorOptions) {
     this.minOccurrences = options?.minOccurrences ?? DEFAULT_MIN_OCCURRENCES;
@@ -155,12 +152,12 @@ export class RetryDetector implements Resettable {
   recordToolCall(record: ToolCallRecord): ThrashingAlert | null {
     this.recentCalls.push(record);
 
-    // Only keep the window we need
-    if (this.recentCalls.length > this.windowSize * 2) {
-      this.recentCalls.splice(0, this.recentCalls.length - this.windowSize * 2);
+    if (this.recentCalls.length > this.windowSize) {
+      const evicted = this.recentCalls.splice(0, this.recentCalls.length - this.windowSize);
+      for (const call of evicted) this.chargedIds.delete(call.id);
     }
 
-    return this.checkWindow();
+    return this.checkWindow(record);
   }
 
   getMetrics(): RetryDetectorMetrics {
@@ -185,90 +182,60 @@ export class RetryDetector implements Resettable {
     this.totalTokensWasted = 0;
     this.totalAlertsEmitted = 0;
     this.bySession.clear();
-    this.firedKeys.clear();
+    this.chargedIds.clear();
   }
 
-  private checkWindow(): ThrashingAlert | null {
-    const window = this.recentCalls.slice(-this.windowSize);
-    if (window.length < this.minOccurrences) return null;
+  private checkWindow(latest: ToolCallRecord): ThrashingAlert | null {
+    // Grouped by session as well as tool: a shared detector in --local mode
+    // sees every live session's calls, and identical ordinary commands in two
+    // sessions are not one retry loop.
+    const sessionKey = latest.sessionId ?? '';
+    const group = this.recentCalls.filter(
+      (c) => c.toolName === latest.toolName && (c.sessionId ?? '') === sessionKey,
+    );
+    const firstFailure = group.findIndex((c) => !c.success);
+    if (firstFailure === -1) return null;
+    const calls = group.slice(firstFailure);
+    if (calls.length < this.minOccurrences) return null;
 
-    // Group calls by tool name AND session — a shared RetryDetector instance
-    // in --local mode processes every concurrently-live session's calls
-    // (HookEventProcessor's drainAllSessions), so grouping by tool name
-    // alone let two different sessions running the same ordinary command
-    // (e.g. both running `npm test`) collapse into one group and risk a
-    // false thrashing alert now that serializeInput() no longer includes
-    // cwd/transcriptPath to distinguish them.
-    const byToolAndSession = new Map<string, ToolCallRecord[]>();
-    for (const call of window) {
-      const key = `${call.toolName}|${call.sessionId ?? ''}`;
-      const arr = byToolAndSession.get(key) ?? [];
-      arr.push(call);
-      byToolAndSession.set(key, arr);
+    const allFailed = calls.every((c) => !c.success);
+    const similarity = this.computeGroupSimilarity(calls);
+    if (!allFailed && similarity < this.similarityThreshold) return null;
+
+    const toolName = latest.toolName;
+    const uncharged = calls.slice(1).filter((c) => !this.chargedIds.has(c.id));
+    for (const call of uncharged) this.chargedIds.add(call.id);
+    const tokensWasted = estimateTokensWasted(uncharged);
+    const alert: ThrashingAlert = {
+      toolName,
+      occurrences: calls.length,
+      windowSize: this.windowSize,
+      similarity,
+      tokensWastedEstimate: tokensWasted,
+      timestamp: Date.now(),
+      sessionId: latest.sessionId ?? null,
+    };
+
+    this.alerts.push(alert);
+    if (this.alerts.length > MAX_ALERTS) {
+      this.alerts.shift();
+    }
+    this.totalAlertsEmitted++;
+    this.totalTokensWasted += tokensWasted;
+    this.recordSessionBreakdown(alert.sessionId ?? UNKNOWN_SESSION_KEY, tokensWasted);
+
+    logger.warn('Thrashing detected', {
+      tool: toolName,
+      occurrences: calls.length,
+      similarity: Math.round(similarity * 100),
+      tokensWasted,
+    });
+
+    if (this.onAlert) {
+      this.onAlert(alert);
     }
 
-    for (const calls of byToolAndSession.values()) {
-      if (calls.length < this.minOccurrences) continue;
-      const toolName = calls[0]!.toolName;
-
-      // Check: either all failed, or inputs are highly similar
-      const allFailed = calls.every((c) => !c.success);
-      const similarity = this.computeGroupSimilarity(calls);
-      const isSimilar = similarity >= this.similarityThreshold;
-
-      if (!allFailed && !isSimilar) continue;
-
-      // Dedupe on the offending group's actual call IDs — not a monotonic
-      // counter, which never repeats and so never dedupes: it re-fired for
-      // the same unchanged group on every subsequent call, however unrelated.
-      // A key built from the group's own call IDs repeats exactly when the
-      // group itself hasn't changed, and changes the moment a call ages out
-      // of the window or a genuinely new occurrence joins it.
-      const dedupeKey = `${toolName}:${calls
-        .map((c) => c.id)
-        .sort()
-        .join(',')}`;
-      if (this.firedKeys.has(dedupeKey)) continue;
-      this.firedKeys.add(dedupeKey);
-      if (this.firedKeys.size > MAX_FIRED_KEYS) {
-        const oldest = this.firedKeys.keys().next().value;
-        if (oldest !== undefined) this.firedKeys.delete(oldest);
-      }
-
-      const tokensWasted = this.estimateTokensWasted(calls);
-      const alert: ThrashingAlert = {
-        toolName,
-        occurrences: calls.length,
-        windowSize: this.windowSize,
-        similarity,
-        tokensWastedEstimate: tokensWasted,
-        timestamp: Date.now(),
-        sessionId: calls[0]!.sessionId ?? null,
-      };
-
-      this.alerts.push(alert);
-      if (this.alerts.length > MAX_ALERTS) {
-        this.alerts.shift();
-      }
-      this.totalAlertsEmitted++;
-      this.totalTokensWasted += tokensWasted;
-      this.recordSessionBreakdown(alert.sessionId ?? UNKNOWN_SESSION_KEY, tokensWasted);
-
-      logger.warn('Thrashing detected', {
-        tool: toolName,
-        occurrences: calls.length,
-        similarity: Math.round(similarity * 100),
-        tokensWasted,
-      });
-
-      if (this.onAlert) {
-        this.onAlert(alert);
-      }
-
-      return alert;
-    }
-
-    return null;
+    return alert;
   }
 
   // Same touch-then-evict LRU shape as TurnCostAttributor's
@@ -340,8 +307,8 @@ export class RetryDetector implements Resettable {
   // (isTestCommand/isBuildCommand/isLintCommand/bashCategory/
   // bashDestructive/bashNetwork) are identical for any two "ordinary" shell
   // commands. Left in place, these dominate the serialized string and pull
-  // genuinely distinct calls' similarity up into a false-positive band just
-  // above the default 0.8 threshold.
+  // genuinely distinct calls' similarity up into a false-positive band, close
+  // to a genuine retry's score.
   //
   // inputHash is also excluded here, but NOT dropped from similarity scoring
   // entirely — computeGroupSimilarity() falls back to comparing it by
@@ -394,14 +361,13 @@ export class RetryDetector implements Resettable {
       return '';
     }
   }
+}
 
-  // The first call in the group is necessary work, not waste — only the
-  // repeats after it represent redundant, wasted effort.
-  private estimateTokensWasted(calls: ToolCallRecord[]): number {
-    let totalBytes = 0;
-    for (const call of calls.slice(1)) {
-      totalBytes += (call.inputSizeBytes ?? 0) + (call.outputSizeBytes ?? 0);
-    }
-    return Math.ceil(totalBytes / BYTES_PER_TOKEN_ESTIMATE);
+// The group's first call is necessary work, so callers pass only the repeats.
+function estimateTokensWasted(calls: readonly ToolCallRecord[]): number {
+  let totalBytes = 0;
+  for (const call of calls) {
+    totalBytes += (call.inputSizeBytes ?? 0) + (call.outputSizeBytes ?? 0);
   }
+  return Math.ceil(totalBytes / BYTES_PER_TOKEN_ESTIMATE);
 }

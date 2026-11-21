@@ -67,13 +67,13 @@ describe('RetryDetector', () => {
     expect(alerts).toHaveLength(1);
   });
 
-  it('alerts when inputs are highly similar even if some succeed', () => {
+  it('alerts on near-identical calls that follow a failure, even if later ones succeed', () => {
     const detector = new RetryDetector({ similarityThreshold: 0.8 });
 
     detector.recordToolCall(
       makeRecord({
         toolName: 'Edit',
-        success: true,
+        success: false,
         filePath: '/a/b.ts',
         command: 'fix bug line 10',
       }),
@@ -211,6 +211,123 @@ describe('RetryDetector', () => {
     expect(detector.getMetrics().totalAlertsEmitted).toBe(2);
   });
 
+  it('does not flag successful reads of different line ranges that share a long command prefix', () => {
+    const detector = new RetryDetector();
+    const cd = 'cd /Users/dev/repo/.claude/worktrees/o-1054;';
+
+    detector.recordToolCall(
+      makeRecord({
+        command: `${cd} sed -n 1,200p src/metrics/session-tracker.ts`,
+        inputHash: 'h1',
+      }),
+    );
+    detector.recordToolCall(
+      makeRecord({
+        command: `${cd} sed -n 200,525p src/metrics/session-tracker.ts`,
+        inputHash: 'h2',
+      }),
+    );
+    detector.recordToolCall(
+      makeRecord({
+        command: `${cd} sed -n 160,300p src/storage/session-store.ts`,
+        inputHash: 'h3',
+      }),
+    );
+    detector.recordToolCall(
+      makeRecord({
+        command: `${cd} sed -n 440,720p src/storage/session-store.ts`,
+        inputHash: 'h4',
+      }),
+    );
+
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+    expect(detector.getMetrics().totalTokensWasted).toBe(0);
+  });
+
+  it('does not charge successful calls made before the first failure', () => {
+    const detector = new RetryDetector();
+    const cd = 'cd /Users/dev/repo/.claude/worktrees/o-1054;';
+
+    detector.recordToolCall(makeRecord({ command: `${cd} sed -n 1,200p src/a.ts` }));
+    detector.recordToolCall(makeRecord({ command: `${cd} sed -n 200,525p src/a.ts` }));
+    detector.recordToolCall(makeRecord({ command: `${cd} sed -n 160,300p src/b.ts` }));
+    detector.recordToolCall(
+      makeRecord({ command: `${cd} sed -n 1,40p src/missing.ts`, success: false }),
+    );
+
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+    expect(detector.getMetrics().totalTokensWasted).toBe(0);
+  });
+
+  it('does not charge distinct successful reads that follow one failed read', () => {
+    const detector = new RetryDetector();
+    const cd = 'cd /Users/dev/repo/.claude/worktrees/o-1054;';
+
+    detector.recordToolCall(
+      makeRecord({ command: `${cd} sed -n 1,40p src/missing.ts`, success: false }),
+    );
+    detector.recordToolCall(makeRecord({ command: `${cd} sed -n 1,200p src/a.ts` }));
+    detector.recordToolCall(makeRecord({ command: `${cd} sed -n 160,300p src/b.ts` }));
+
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+    expect(detector.getMetrics().totalTokensWasted).toBe(0);
+  });
+
+  it('charges only the calls after the first failure', () => {
+    const detector = new RetryDetector();
+
+    detector.recordToolCall(makeRecord({ command: 'npm test' }));
+    detector.recordToolCall(makeRecord({ command: 'npm test', success: false }));
+    detector.recordToolCall(makeRecord({ command: 'npm test', success: false }));
+    const alert = detector.recordToolCall(makeRecord({ command: 'npm test', success: false }));
+
+    expect(alert?.occurrences).toBe(3);
+    // 2 retries after the first failure, 500 bytes each, at 4 bytes per token.
+    expect(detector.getMetrics().totalTokensWasted).toBe(250);
+  });
+
+  it('alerts on distinct failing calls even when a success came before them', () => {
+    const detector = new RetryDetector();
+    const call = (inputHash: string, success: boolean): ToolCallRecord =>
+      makeRecord({ toolName: 'WebFetch', inputHash, success });
+
+    detector.recordToolCall(call('h0', true));
+    detector.recordToolCall(call('h1', false));
+    detector.recordToolCall(call('h2', false));
+    const alert = detector.recordToolCall(call('h3', false));
+
+    expect(alert?.occurrences).toBe(3);
+  });
+
+  it('does not treat repeated successful calls as retries', () => {
+    const detector = new RetryDetector();
+
+    for (let i = 0; i < 5; i++) {
+      detector.recordToolCall(
+        makeRecord({ toolName: 'TaskList', success: true, inputHash: 'same-input' }),
+      );
+    }
+
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+  });
+
+  it('charges each repeated call at most once as the window slides', () => {
+    const detector = new RetryDetector();
+    const fail = (): ReturnType<typeof makeRecord> =>
+      makeRecord({ toolName: 'Bash', success: false, inputSizeBytes: 400, outputSizeBytes: 600 });
+
+    detector.recordToolCall(fail());
+    detector.recordToolCall(fail());
+    detector.recordToolCall(fail());
+    detector.recordToolCall(fail());
+    detector.recordToolCall(makeRecord({ toolName: 'Read' }));
+    detector.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/b.ts' }));
+
+    // 3 repeats after the first failure, 1000 bytes each, at 4 bytes per token.
+    expect(detector.getMetrics().totalTokensWasted).toBe(750);
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(2);
+  });
+
   it('does not flag genuinely different calls of a tool with no metadata extractor', () => {
     // A tool outside extractInputMeta()'s switch (e.g. PowerShell, WebFetch,
     // a third-party MCP tool) carries no tool-specific fields, so every call
@@ -316,13 +433,13 @@ describe('RetryDetector', () => {
     // must not be capped by inputHash — inputHash differs on every call
     // here (it always does for non-identical real input), same as
     // production traffic. Verified numerically: 0.9091 group similarity
-    // under the gated formula, comfortably above the 0.8 default threshold.
-    const detector = new RetryDetector();
+    // under the gated formula, comfortably above a 0.8 threshold.
+    const detector = new RetryDetector({ similarityThreshold: 0.8 });
 
     detector.recordToolCall(
       makeRecord({
         toolName: 'Bash',
-        success: true,
+        success: false,
         command: 'npm test -- src/retry-detector.test.ts',
         inputHash: 'bbbb2222cccc0001',
       }),
@@ -382,7 +499,7 @@ describe('RetryDetector', () => {
     const detector = new RetryDetector();
 
     detector.recordToolCall(
-      makeRecord({ toolName: 'WebFetch', success: true, inputHash: 'aaaa1111bbbb2222' }),
+      makeRecord({ toolName: 'WebFetch', success: false, inputHash: 'aaaa1111bbbb2222' }),
     );
     detector.recordToolCall(
       makeRecord({ toolName: 'WebFetch', success: true, inputHash: 'aaaa1111bbbb2222' }),
@@ -429,14 +546,9 @@ describe('RetryDetector', () => {
 
   it('caps the alerts buffer at 200 while totalAlertsEmitted keeps counting past it', () => {
     const detector = new RetryDetector({ windowSize: 3, minOccurrences: 3 });
-    // Every call from the 3rd onward re-fires a distinct alert: the sliding
-    // 3-window's own call-id set changes on every push (ids are random per
-    // makeRecord call), so the dedupe key never repeats. 203 calls -> 201
-    // alerts fired, well past the 200 cap — this also exercises firedKeys'
-    // own FIFO eviction under heavy load without needing a direct accessor:
-    // a bug there (e.g. an off-by-one that lets an evicted key block a
-    // legitimate re-fire, or double-counts) would surface as a wrong
-    // totalAlertsEmitted below.
+    // Every failing call from the 3rd onward is a new occurrence in an
+    // all-failed group, so each fires an alert. 203 calls -> 201 alerts,
+    // well past the 200 cap.
     const CALLS = 203;
     for (let i = 0; i < CALLS; i++) {
       detector.recordToolCall(makeRecord({ toolName: 'Bash', success: false }));
