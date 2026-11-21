@@ -2337,6 +2337,11 @@ async function main(): Promise<void> {
       // live sessions' events. After real session ID resolution the processor
       // is hot-swapped to the scoped store via replaceStore().
       drainAllSessions: !options.stdio || isProvisional,
+      onPreToolUse: (event) => {
+        // Only the main agent's records read a start entry.
+        if (event.toolUseId && !event.agentId)
+          skillActivationTracker.recordToolStart(event.sessionId, event.toolUseId);
+      },
       onRecordAmend: (record) => {
         sessionTracker?.amendToolCall(record);
         localSessionAggregator.amendToolCall(record);
