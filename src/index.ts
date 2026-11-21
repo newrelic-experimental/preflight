@@ -2357,6 +2357,15 @@ async function main(): Promise<void> {
           incomingRecord,
           activeSubagentWatcher,
         );
+        // A subagent's first record usually beats the watcher's poll to its
+        // transcript. Reading it now lets the sidecar pin the subagent to the
+        // run its spawning call started in (onTurnRead below).
+        if (
+          attributed.agentId !== undefined &&
+          !skillActivationTracker.hasAgent(attributed.sessionId, attributed.agentId)
+        ) {
+          activeSubagentWatcher?.readLiveTails(attributed.sessionId ?? undefined);
+        }
         const activeSkill = skillActivationTracker.recordToolCall(attributed);
         const rawRecord = activeSkill ? { ...attributed, activeSkill } : attributed;
         if (!config || !sessionTracker || !taskDetector) {
@@ -3208,7 +3217,12 @@ async function main(): Promise<void> {
           // skip sessions that already have a live --stdio owner tailing them.
           localStore,
           ledger: billedTurnLedger,
-          onTurnRead: (turn: SubagentTokenEvent) => subagentAttribution.recordSubagentTurn(turn),
+          onTurnRead: (turn: SubagentTokenEvent) => {
+            subagentAttribution.recordSubagentTurn(turn);
+            if (turn.spawnToolUseId !== undefined) {
+              skillActivationTracker.pinSubagent(turn.sessionId, turn.agentId, turn.spawnToolUseId);
+            }
+          },
         };
         activeSubagentWatcher = new SubagentWatcher(
           isStdioWatcher

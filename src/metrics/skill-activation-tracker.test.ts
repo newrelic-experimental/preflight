@@ -480,6 +480,53 @@ describe('SkillActivationTracker.recordToolStart', () => {
   });
 });
 
+describe('SkillActivationTracker.pinSubagent', () => {
+  function spawnInReviewThenSimplify(t: SkillActivationTracker): SkillStamp | null {
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.recordToolStart('s1', 'agent-call');
+    t.recordPrompt('s1', 'simplify');
+    return review;
+  }
+
+  it('stamps a background subagent with the run open when its Agent call started', () => {
+    const t = new SkillActivationTracker();
+    const review = spawnInReviewThenSimplify(t);
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))).toEqual(review);
+  });
+
+  it('replaces the run a subagent was first seen under', () => {
+    const t = new SkillActivationTracker();
+    const review = spawnInReviewThenSimplify(t);
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))?.name).toBe('simplify');
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u2' }))).toEqual(review);
+  });
+
+  it('keeps a run the subagent opened itself', () => {
+    const t = new SkillActivationTracker();
+    spawnInReviewThenSimplify(t);
+    const lint = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', agentId: 'agent-1' }),
+    );
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u2' }))).toEqual(lint);
+  });
+
+  it('falls back to the run open at first sight when the Agent call start was not seen', () => {
+    const t = new SkillActivationTracker();
+    spawnInReviewThenSimplify(t);
+    t.pinSubagent('s1', 'agent-1', 'other-call');
+
+    expect(t.hasAgent('s1', 'agent-1')).toBe(false);
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))?.name).toBe('simplify');
+    expect(t.hasAgent('s1', 'agent-1')).toBe(true);
+  });
+});
+
 describe('SkillActivationTracker onRunOpened', () => {
   it('fires once for a Skill tool run with the stamp it returned and the record context', () => {
     const { tracker, opened } = makeTrackerWithOpenLog();
