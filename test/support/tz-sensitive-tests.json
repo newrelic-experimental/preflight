@@ -2,6 +2,7 @@
   "jest": [
     "src/alerts/local-alert-engine.test.ts",
     "src/dashboard/routes/api-handler.test.ts",
+    "src/dashboard/routes/api-handler.windowed-activity.test.ts",
     "src/hooks/cost-double-count.test.ts",
     "src/hooks/forked-session-cost.test.ts",
     "src/hooks/subagent-watcher.test.ts",
