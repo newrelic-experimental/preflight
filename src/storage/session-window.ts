@@ -74,9 +74,12 @@ export function windowShare(s: WindowSource, w: ActivityWindow): WindowShare {
     }
     if (calls > 0) return callsIn / calls;
     const active = overlapMs(start, last, from, to);
-    return active > 0
-      ? overlapMs(start, last, Math.max(from, w.startMs), Math.min(to, w.endMs)) / active
-      : 0;
+    if (active > 0) {
+      return overlapMs(start, last, Math.max(from, w.startMs), Math.min(to, w.endMs)) / active;
+    }
+    // Cost can land on a day the recorded span misses, such as a reply after
+    // the last tool call that crosses midnight. Spread it over that day.
+    return Number.isFinite(to - from) ? overlapMs(from, to, w.startMs, w.endMs) / (to - from) : 0;
   };
 
   const costUsd =
