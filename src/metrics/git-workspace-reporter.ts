@@ -445,6 +445,7 @@ export function replaySessionToActivityRecords(
       isBuildCommand: entry.isBuildCommand,
       errorType: entry.errorType,
       createdPrNumber: entry.createdPrNumber,
+      createdPrRepo: entry.createdPrRepo,
       mcpPrNumber: entry.mcpPrNumber,
       mcpPrRepo: entry.mcpPrRepo,
       runInBackground: entry.runInBackground,

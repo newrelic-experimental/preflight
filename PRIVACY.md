@@ -2,6 +2,8 @@
 
 This document describes what data this tool collects, what is sent to New Relic when cloud mode is active, and which configuration settings have privacy implications. It does not constitute legal advice. Individuals and organizations should review the information below and take whatever actions are appropriate for their situation before enabling cloud telemetry.
 
+For the data flow diagram, the New Relic certifications that apply to stored data, and a security FAQ, see [docs/COMPLIANCE.md](./docs/COMPLIANCE.md).
+
 ---
 
 ## What Is Always Collected (Local Only by Default)

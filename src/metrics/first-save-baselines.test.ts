@@ -2,6 +2,7 @@ import { describe, it, expect } from '@jest/globals';
 import { FirstSaveBaselines, costSeedOf, toolCallSeedOf } from './first-save-baselines.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from './quality-proxy-tracker.js';
+import { SessionTracker } from './session-tracker.js';
 
 function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummary {
   const now = Date.now();
@@ -160,5 +161,39 @@ describe('toolCallSeedOf', () => {
 
     expect(toolCallSeedOf(scored).efficiency).toEqual({ score: 60, components, sampleCount: 3 });
     expect(toolCallSeedOf({ ...scored, efficiencyScoreSampleCount: 0 }).efficiency).toBeNull();
+  });
+});
+
+describe('toolCallSeedOf', () => {
+  it('lets a tracker skip a saved Bash call it already counted', () => {
+    const tracker = new SessionTracker('sess-a');
+    tracker.recordToolCall({
+      id: 'rec-bash',
+      sessionId: 'sess-a',
+      toolName: 'Bash',
+      toolUseId: 'toolu_bash',
+      timestamp: 1000,
+      durationMs: 5,
+      success: true,
+    });
+    const saved = makeSummary({
+      toolCallCount: 1,
+      bashCommandCount: 1,
+      timeline: [
+        {
+          timestamp: 1000,
+          toolUseId: 'toolu_bash',
+          toolName: 'Bash',
+          durationMs: 5,
+          success: true,
+        },
+      ],
+    });
+
+    tracker.seedFromPersisted(toolCallSeedOf(saved).sessionTracker);
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.toolCallCount).toBe(1);
+    expect(metrics.bashCommandsRun).toBe(1);
   });
 });
