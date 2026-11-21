@@ -443,6 +443,82 @@ describe('collector-script', () => {
     });
   });
 
+  describe('processHook() — classification survives redaction', () => {
+    const eaten = (target: string) => `mysql -u root --password=\nrm -rf ${target}`;
+    const entryPoints = (command: string): Array<[string, string]> => [
+      ['Bash', makePreToolUse({ tool_name: 'Bash', tool_input: { command } })],
+      [
+        'run_in_terminal',
+        makePreToolUse({ tool_name: 'run_in_terminal', tool_input: { command } }),
+      ],
+      ['beforeShellExecution', makeCursorBeforeShellExecution({ command })],
+      [
+        'pre_run_command',
+        JSON.stringify({
+          agent_action_name: 'pre_run_command',
+          tool_info: { command_line: command, cwd: '/x' },
+        }),
+      ],
+    ];
+
+    it.each(entryPoints(eaten(`${'/sandbox'}/x`)))(
+      'keeps a destructive %s command destructive when redaction eats its rm',
+      (_name, raw) => {
+        processHook(raw);
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.command).not.toMatch(/\brm\b/);
+        expect(parseToolSpecificFields('Bash', toolInput, undefined).bashDestructive).toBe(true);
+      },
+    );
+
+    it.each(entryPoints('TOKEN=\ncurl https://example.test/x'))(
+      'keeps a network %s command network when redaction eats its leading command',
+      (_name, raw) => {
+        processHook(raw);
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(parseToolSpecificFields('Bash', toolInput, undefined).bashNetwork).toBe(true);
+      },
+    );
+
+    it.each(entryPoints('echo hello --password=\nls'))(
+      'leaves a safe %s command safe after redaction',
+      (_name, raw) => {
+        processHook(raw);
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        const fields = parseToolSpecificFields('Bash', toolInput, undefined);
+        expect(fields.bashDestructive).toBe(false);
+        expect(fields.bashNetwork).toBe(false);
+      },
+    );
+
+    it('carries no flags for a command too long to classify cheaply, so the stored text decides', () => {
+      processHook(
+        makePreToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: `echo ${'x'.repeat(20_000)} && rm -rf /sandbox/x` },
+        }),
+      );
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.bashDestructive).toBeUndefined();
+      expect(parseToolSpecificFields('Bash', toolInput, undefined).bashDestructive).toBe(true);
+    });
+
+    it('never stores the raw command', () => {
+      processHook(
+        makePreToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: `mysql -u root --password=S3CRET9 && ${'rm'} -rf /sandbox/x` },
+        }),
+      );
+
+      expect(readFileSync(bufferPath, 'utf8')).not.toContain('S3CRET9');
+    });
+  });
+
   describe('processHook() — PowerShell (native Windows tool, no Git Bash)', () => {
     // PowerShell is a real, first-party Claude Code tool (see
     // code.claude.com/docs/en/tools-reference) — extractInputMeta() had no
@@ -460,6 +536,8 @@ describe('collector-script', () => {
       const event = readBufferEvents()[0]!;
       expect(event.toolInput).toEqual({
         command: 'Get-Process',
+        bashDestructive: false,
+        bashNetwork: false,
         description: 'List processes',
         timeout: 30000,
         run_in_background: false,
@@ -487,7 +565,7 @@ describe('collector-script', () => {
       expect(event.toolOutput).toEqual({ exitCode: 0 });
     });
 
-    it('keeps only the PR number from a gh pr create URL, never the output text', () => {
+    it('keeps only the PR number and repo from a gh pr create URL, never the output text', () => {
       const response = {
         stdout: 'Creating pull request for fix into main\n\nhttps://github.com/acme/app/pull/42\n',
         stderr: '',
@@ -501,7 +579,22 @@ describe('collector-script', () => {
       );
 
       const event = readBufferEvents()[0]!;
-      expect(event.toolOutput).toEqual({ createdPrNumber: '42' });
+      expect(event.toolOutput).toEqual({ createdPrNumber: '42', createdPrRepo: 'acme/app' });
+    });
+
+    it('lowercases the repo a gh pr create URL names', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr create --fill' },
+          tool_response: { stdout: 'https://github.example.com/Acme/My.App/pull/7\n' },
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({
+        createdPrNumber: '7',
+        createdPrRepo: 'acme/my.app',
+      });
     });
 
     it.each([
@@ -509,6 +602,11 @@ describe('collector-script', () => {
         'two creates',
         'gh pr create --base main --fill && gh pr create --base part-1 --fill',
         'https://github.com/acme/app/pull/41\nhttps://github.com/acme/app/pull/42\n',
+      ],
+      [
+        'the same number in two repos',
+        'gh pr create --fill && gh pr create -R acme/other --fill',
+        'https://github.com/acme/app/pull/41\nhttps://github.com/acme/other/pull/41\n',
       ],
       [
         'a comment on another PR',
@@ -542,7 +640,10 @@ describe('collector-script', () => {
         }),
       );
 
-      expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '41' });
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({
+        createdPrNumber: '41',
+        createdPrRepo: 'acme/app',
+      });
     });
 
     it('ignores a PR URL in the output of a command that is not gh pr create', () => {
@@ -571,7 +672,10 @@ describe('collector-script', () => {
         }),
       );
 
-      expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '57' });
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({
+        createdPrNumber: '57',
+        createdPrRepo: 'acme/app',
+      });
     });
 
     it('keeps the repo and PR number an MCP merge_pull_request call names', () => {

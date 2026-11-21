@@ -10,8 +10,14 @@ import {
 import { resolve, dirname } from 'node:path';
 import { z } from 'zod';
 
-import { normalizeDeveloperName, ConfigFileSchema, DEFAULT_STORAGE_PATH } from '../config.js';
-import type { Mode } from '../config.js';
+import {
+  normalizeDeveloperName,
+  ConfigFileSchema,
+  DEFAULT_STORAGE_PATH,
+  RETENTION_PRESETS,
+  isRetentionPolicy,
+} from '../config.js';
+import type { Mode, RetentionPolicy } from '../config.js';
 import { migrateStoragePath } from './migrate.js';
 import { runInstallCli, verifyBinaryOnPath } from './cli.js';
 import { detectUpdateSupport, findRepoRoot, upgradeCommandFor } from './update-support.js';
@@ -198,6 +204,8 @@ export function buildConfig(
     licenseKeyCommand?: readonly string[] | null;
     /** Written instead of the plaintext `nrApiKey`, which is then dropped from the file. */
     nrApiKeyCommand?: readonly string[] | null;
+    /** Left untouched in the file when undefined. An explicit `retainSessionsDays` still outranks it at load. */
+    retentionPolicy?: RetentionPolicy;
   },
 ): Partial<z.infer<typeof ConfigFileSchema>> {
   const mode = inputs.mode ?? 'cloud';
@@ -217,6 +225,7 @@ export function buildConfig(
       : {}),
     ...(inputs.nrApiKey ? { nrApiKey: inputs.nrApiKey } : {}),
     ...(inputs.collectorHost ? { collectorHost: inputs.collectorHost } : {}),
+    ...(inputs.retentionPolicy ? { retentionPolicy: inputs.retentionPolicy } : {}),
   };
   // The command always outranks the file value at load, so exactly one of the
   // pair is written: a new plaintext key replaces a stale command, and a
@@ -259,7 +268,24 @@ export function resolveEnvironmentChoice(envRaw: string, defaultEnv: string): st
   return defaultEnv;
 }
 
-export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<void> {
+// One-line rationale per preset, shown in the retention prompt. Kept beside the
+// prompt rather than in RETENTION_PRESETS so that table stays a plain day map.
+const RETENTION_RATIONALE: Record<RetentionPolicy, string> = {
+  default: 'balanced default for personal coaching history',
+  'gdpr-minimisation': 'data minimisation principle under GDPR Article 5(1)(e)',
+  'soc2-audit': '1-year audit log retention common in SOC 2 engagements',
+  'hipaa-audit': 'HIPAA audit log requirement (6 years)',
+  minimal: 'for teams with strict data residency constraints',
+};
+
+function parseRetentionAnswer(raw: string): RetentionPolicy | null {
+  const name = raw.trim().toLowerCase();
+  return isRetentionPolicy(name) ? name : null;
+}
+
+export async function runSetupWizard(
+  opts: { staging?: boolean; retention?: RetentionPolicy } = {},
+): Promise<void> {
   migrateStoragePath(true);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   // Safety net: process.exit() bypasses finally blocks but still runs 'exit' handlers.
@@ -543,6 +569,51 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
       sessionBudgetUsd = parsed;
     }
 
+    // Step 5a: Retention preset. --retention pre-selects and skips the question.
+    // The preset only sets how long local files are kept; an explicit
+    // retainSessionsDays already in the file keeps winning, so it is left alone.
+    // Enter with no valid existing preset writes nothing, so a config that never
+    // chose one stays without the key.
+    const existingRetention: RetentionPolicy | undefined =
+      parseRetentionAnswer(existing.retentionPolicy ?? '') ?? undefined;
+    let retentionPolicy: RetentionPolicy | undefined;
+    if (opts.retention) {
+      retentionPolicy = opts.retention;
+      print(`Retention: ${retentionPolicy} (--retention flag)`);
+    } else {
+      print('\nRetention — how long local session, weekly summary and ledger files are kept:');
+      const nameWidth = Math.max(...Object.keys(RETENTION_PRESETS).map((n) => n.length));
+      for (const name of Object.keys(RETENTION_PRESETS) as RetentionPolicy[]) {
+        print(
+          `  ${name.padEnd(nameWidth)}  ${RETENTION_PRESETS[name]} days — ${RETENTION_RATIONALE[name]}`,
+        );
+      }
+      const retentionRaw = (
+        await rl.question(`Retention policy [${existingRetention ?? 'default'}]: `)
+      ).trim();
+      const answered = retentionRaw === '' ? null : parseRetentionAnswer(retentionRaw);
+      retentionPolicy = answered ?? existingRetention;
+      if (retentionRaw !== '' && answered === null) {
+        print(
+          `  ⚠ Unknown retention policy "${retentionRaw}" — ${retentionPolicy ? `keeping ${retentionPolicy}` : 'leaving it unset'}`,
+        );
+      }
+    }
+    if (existing.retentionPolicy !== undefined && existingRetention === undefined) {
+      print(
+        `  ⚠ config.json has an unrecognised retentionPolicy (${JSON.stringify(existing.retentionPolicy)})${retentionPolicy ? '' : ' — left unchanged'}. Valid names: ${Object.keys(RETENTION_PRESETS).join(', ')}`,
+      );
+    }
+    if (existing.retainSessionsDays !== undefined) {
+      const explicit =
+        existing.retainSessionsDays === null
+          ? 'disabled (null)'
+          : `${existing.retainSessionsDays} days`;
+      print(
+        `  ℹ config.json already sets retainSessionsDays (${explicit}). It is unchanged and takes precedence over any retentionPolicy.`,
+      );
+    }
+
     // Step 5b: Dashboard port (local/both only)
     let dashboardPort: number | null = null;
     if (mode === 'local' || mode === 'both') {
@@ -593,6 +664,7 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
       collectorHost,
       licenseKeyCommand,
       nrApiKeyCommand,
+      retentionPolicy,
     });
 
     writeJsonFile(CONFIG_PATH, config, DEFAULT_STORAGE_PATH);
