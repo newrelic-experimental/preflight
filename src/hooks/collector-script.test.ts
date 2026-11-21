@@ -1646,6 +1646,23 @@ describe('collector-script', () => {
 
         expect(readBufferEvents()[0]!.outputContent).toMatch(/^\{"a":"value","kkk/);
       });
+
+      it('marks a string past the cap as truncated when redaction pulls it inside', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+        const pem =
+          '-----BEGIN PRIVATE KEY-----\n' + 'A'.repeat(300) + '\n-----END PRIVATE KEY-----';
+
+        processHook(
+          makePostToolUse({ tool_response: { a: pem, b: 'curl -u me:hunter2 x', c: 'tail' } }),
+        );
+
+        expect(JSON.parse(readBufferEvents()[0]!.outputContent as string)).toEqual({
+          a: '[REDACTED]',
+          b: '...[truncated]',
+          c: '...[truncated]',
+        });
+      });
     });
 
     it('truncates content exceeding max length', () => {

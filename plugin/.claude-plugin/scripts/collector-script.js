@@ -1296,16 +1296,17 @@ function sizeOf(value) {
     return 0;
   }
 }
+var TRUNCATED = "...[truncated]";
 function truncate(value, maxLen) {
   if (value.length <= maxLen) return value;
-  return value.slice(0, maxLen) + "...[truncated]";
+  return value.slice(0, maxLen) + TRUNCATED;
 }
 function recordedContent(value, maxLen) {
   const redactUpTo = () => {
     let left = maxLen;
     return (text) => {
-      const kept = left > 0 ? redact(text) : "";
-      left -= text.length;
+      const kept = left > 0 ? redact(text) : TRUNCATED;
+      left -= text.length + 2;
       return kept;
     };
   };

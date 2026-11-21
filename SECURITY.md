@@ -118,7 +118,7 @@ A quoted flag or command name is not recognised, so `curl "-u" user:pass`, `"cur
 
 **Where applied:**
 
-- `collector-script.ts` — redacts tool input/output before writing to the hook buffer. Recorded content (`inputContent`, `outputContent`, `errorDetails`) redacts each string of a structured value, keys included, before JSON encoding and before the length cap, so the pass reads the text the tool saw and not its escaped form. A value that arrives as a string is redacted as is, since the collector cannot tell whether it is already encoded.
+- `collector-script.ts` — redacts tool input/output before writing to the hook buffer. Recorded content (`inputContent`, `outputContent`, `errorDetails`, `lastAssistantMessage`) redacts each string of a structured value, keys included, before JSON encoding and before the length cap, so the pass reads the text the tool saw and not its escaped form. A value that arrives as a string is redacted as is, since the collector cannot tell whether it is already encoded.
 - `src/config.ts` — `redactSensitive()` for free-form text, `redactIdentifier()` for identifiers
 
 **Rule:** Any string that might contain secrets and is heading to a log or NR event must pass through `redactSecrets()` first. Use `redactSensitive(text)` (MCP server) or the collector's `redact()`. A loop over `REDACTION_PATTERNS` alone misses the argument rules.
