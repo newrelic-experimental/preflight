@@ -131,13 +131,16 @@ Every test file defines `make*` factory functions that produce valid default obj
 
 The most common factory — used by all metric tracker and tool handler tests:
 
+Each record gets its own `toolUseId`, since `SessionTracker` counts a repeated id once:
+
 ```typescript
+let nextToolUseId = 0;
 function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
   return {
     id: 'rec-001',
     sessionId: 'sess-001',
     toolName: 'Read',
-    toolUseId: 'toolu_001',
+    toolUseId: `toolu_${++nextToolUseId}`,
     timestamp: Date.now(),
     durationMs: 50,
     success: true,

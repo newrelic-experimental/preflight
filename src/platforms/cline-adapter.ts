@@ -4,6 +4,7 @@ import type {
   PlatformConfig,
   PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Maps Cline's built-in tool names to the normalized Claude Code tool
@@ -134,6 +135,9 @@ export class ClineAdapter implements PlatformAdapter {
   }
 
   isSupported(): boolean {
-    return process.env.MCP_CLIENT === 'cline' || process.env.NEW_RELIC_AI_PLATFORM === 'cline';
+    return (
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'cline' ||
+      canonicalPlatformName(process.env.NEW_RELIC_AI_PLATFORM) === 'cline'
+    );
   }
 }
