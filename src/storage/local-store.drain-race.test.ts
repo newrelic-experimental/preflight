@@ -900,7 +900,7 @@ describe('hook writes racing a drain', () => {
     const drainer = new LocalStore(dir, SESSION);
     let duringWrite: HookEvent[] = [];
     mockHooks.write = (text) => {
-      if (text !== line('B')) return;
+      if (!text.includes('"B"')) return;
       mockHooks.write = null;
       duringWrite = drainer.drainBuffer();
     };
@@ -935,7 +935,7 @@ describe('hook writes racing a drain', () => {
     fs.writeFileSync(resolve(dir, `active-${SESSION}.pid`), String(DEAD_PID));
     const store = new LocalStore(dir, SESSION);
     mockHooks.write = (text) => {
-      if (text !== line('B')) return;
+      if (!text.includes('"B"')) return;
       mockHooks.write = null;
       expect(store.gcOrphanBuffers(new Set()).archived).toBe(1);
     };
@@ -1013,6 +1013,21 @@ describe('drain seals', () => {
     mockHooks.shortWrite = null;
 
     expect(tools(new LocalStore(dir, SESSION).drainBuffer()).sort()).toEqual(['A', 'B', 'C']);
+  });
+
+  it('keeps the next line when the end of a torn line fails to write', () => {
+    appendToHookBuffer(bufferPath, line('A'));
+    mockHooks.shortWrite = (text) => (text.includes('"B"') ? 10 : null);
+    mockHooks.write = (text) => {
+      if (text !== '\x1e\n') return;
+      mockHooks.write = null;
+      throw failing('ENOSPC');
+    };
+
+    expect(() => appendToHookBuffer(bufferPath, line('B'))).toThrow(/ENOSPC/);
+    appendToHookBuffer(bufferPath, line('C'));
+
+    expect(tools(new LocalStore(dir, SESSION).drainBuffer())).toEqual(['A', 'C']);
   });
 
   it('keeps the legacy migration file when an append cannot land', () => {

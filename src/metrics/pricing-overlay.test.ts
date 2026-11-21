@@ -1,89 +1,38 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { calculateCost, initPricing, PricingTable, resolveModelPricing } from '../core/pricing.js';
 import { makeUsage } from '../__test-utils__/token-usage.js';
 import {
-  applyGapFilledOverlay,
-  applyPricingOverlay,
+  applyCustomPricing,
   calculateModelCost,
   clearPricingMemo,
   normalizeModelId,
   priceModelUsage,
   resolvePricing,
   resolvePricingDetail,
-  resolvePricingOverlayPath,
   setRefreshedPricing,
 } from './pricing-overlay.js';
 
-describe('resolvePricingOverlayPath', () => {
-  it('resolves to the repo-root pricing-overlay/pricing.json in dev/test layout', () => {
-    const path = resolvePricingOverlayPath();
-    expect(path).not.toBeNull();
-    expect(existsSync(path!)).toBe(true);
-    expect(path!.endsWith(resolve('pricing-overlay', 'pricing.json'))).toBe(true);
-  });
-
-  it('the resolved file is valid JSON (a plain object, possibly empty)', () => {
-    // Deliberately not asserting on specific model keys — the bundled file is
-    // gap-fill-only, so its contents shrink to {} whenever the built-in table
-    // catches up (see pricing-overlay/README.md).
-    const path = resolvePricingOverlayPath();
-    const parsed: unknown = JSON.parse(readFileSync(path!, 'utf-8'));
-    expect(typeof parsed).toBe('object');
-    expect(parsed).not.toBeNull();
-    expect(Array.isArray(parsed)).toBe(false);
-  });
-});
-
-describe('applyGapFilledOverlay', () => {
-  let tmpDir: string;
-
-  afterEach(() => {
-    initPricing(null);
-    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it('gap-fills a model missing from the built-in table', () => {
-    expect(resolveModelPricing('a-brand-new-test-gap-model')).toBeNull();
-
-    tmpDir = mkdtempSync(join(tmpdir(), 'preflight-overlay-test-'));
-    const overlayPath = join(tmpDir, 'pricing.json');
-    writeFileSync(
-      overlayPath,
-      JSON.stringify({
-        'a-brand-new-test-gap-model': { inputPerMTok: 1, outputPerMTok: 2, contextWindow: 100_000 },
-      }),
-    );
-
-    applyGapFilledOverlay(overlayPath);
-
-    expect(resolveModelPricing('a-brand-new-test-gap-model')).toMatchObject({
-      inputPerMTok: 1,
-      outputPerMTok: 2,
-    });
-  });
-});
-
-describe('applyPricingOverlay', () => {
+describe('applyCustomPricing', () => {
   afterEach(() => {
     initPricing(null);
   });
 
-  it('applies the bundled overlay when no user customPricingFile is configured, without disturbing built-in entries', () => {
-    expect(() => applyPricingOverlay(null)).not.toThrow();
+  it('keeps the built-in table when no user customPricingFile is configured', () => {
+    expect(() => applyCustomPricing(null)).not.toThrow();
     expect(resolveModelPricing('claude-opus-4-8')).toMatchObject({
       inputPerMTok: 5,
       outputPerMTok: 25,
     });
   });
 
-  it('respects an explicit user customPricingFile instead of the bundled overlay', () => {
+  it('respects an explicit user customPricingFile', () => {
     // A user-supplied file that is not JSON at all — loadCustomPricing() will
-    // reject it and log a warning, but the point under test is that we never
-    // fall back to the bundled overlay once the user has configured their own.
-    applyPricingOverlay('/nonexistent/user-pricing.json');
+    // reject it and log a warning, but the point under test is that the
+    // rejected file leaves no model priced beyond the built-in table.
+    applyCustomPricing('/nonexistent/user-pricing.json');
     expect(resolveModelPricing('definitely-not-a-real-model')).toBeNull();
   });
 });
@@ -128,7 +77,7 @@ describe('model pricing through the boundary', () => {
   };
 
   afterEach(() => {
-    applyPricingOverlay(null);
+    applyCustomPricing(null);
     initPricing(null);
     if (dir) rmSync(dir, { recursive: true, force: true });
     dir = null;
@@ -152,7 +101,7 @@ describe('model pricing through the boundary', () => {
   });
 
   it('maps aliases, including application-inference-profile ARNs, to a known model', () => {
-    applyPricingOverlay(
+    applyCustomPricing(
       writePricing({
         aliases: {
           'gw-claude-sonnet': 'claude-sonnet-4-6',
@@ -169,7 +118,7 @@ describe('model pricing through the boundary', () => {
   });
 
   it('prices usage for an aliased model', () => {
-    applyPricingOverlay(writePricing({ aliases: { 'gw-claude-sonnet': 'claude-sonnet-4-6' } }));
+    applyCustomPricing(writePricing({ aliases: { 'gw-claude-sonnet': 'claude-sonnet-4-6' } }));
     const usage = {
       totalTokens: 1_000_000,
       inputTokens: 1_000_000,
@@ -185,7 +134,7 @@ describe('model pricing through the boundary', () => {
   });
 
   it('ignores an alias to an unknown model and keeps the valid ones', () => {
-    applyPricingOverlay(
+    applyCustomPricing(
       writePricing({
         aliases: { 'gw-bogus': 'no-such-model', 'gw-claude-sonnet': 'claude-sonnet-4-6' },
       }),
@@ -196,26 +145,56 @@ describe('model pricing through the boundary', () => {
 
   it('ignores malformed aliases without disturbing rate entries in the same file', () => {
     const rate = { inputPerMTok: 7, outputPerMTok: 9, contextWindow: 1000 };
-    applyPricingOverlay(writePricing({ 'my-model': rate, aliases: ['claude-sonnet-4-6'] }));
+    applyCustomPricing(writePricing({ 'my-model': rate, aliases: ['claude-sonnet-4-6'] }));
     expect(resolvePricing('my-model')).toMatchObject({ inputPerMTok: 7, outputPerMTok: 9 });
 
-    applyPricingOverlay(writePricing({ aliases: { 'gw-x': 42, 'gw-y': '' } }));
+    applyCustomPricing(writePricing({ aliases: { 'gw-x': 42, 'gw-y': '' } }));
     expect(resolvePricing('gw-x')).toBeNull();
     expect(resolvePricing('gw-y')).toBeNull();
   });
 
   it('lets an alias target a custom-priced model in the same file', () => {
     const rate = { inputPerMTok: 7, outputPerMTok: 9, contextWindow: 1000 };
-    applyPricingOverlay(
+    applyCustomPricing(
       writePricing({ 'contracted-model': rate, aliases: { 'gw-c': 'contracted-model' } }),
     );
     expect(resolvePricing('gw-c')).toMatchObject({ inputPerMTok: 7 });
   });
 
   it('clears aliases when the custom file is dropped', () => {
-    applyPricingOverlay(writePricing({ aliases: { 'gw-claude-sonnet': 'claude-sonnet-4-6' } }));
-    applyPricingOverlay(null);
+    applyCustomPricing(writePricing({ aliases: { 'gw-claude-sonnet': 'claude-sonnet-4-6' } }));
+    applyCustomPricing(null);
     expect(resolvePricing('gw-claude-sonnet')).toBeNull();
+  });
+
+  it('restores built-in rates when the custom file is dropped', () => {
+    const opus = resolveModelPricing('claude-opus-4-8');
+    applyCustomPricing(
+      writePricing({
+        'claude-opus-4-8': { inputPerMTok: 99, outputPerMTok: 99, contextWindow: 1000 },
+      }),
+    );
+    expect(resolveModelPricing('claude-opus-4-8')).toMatchObject({ inputPerMTok: 99 });
+    applyCustomPricing(null);
+    expect(resolveModelPricing('claude-opus-4-8')).toEqual(opus);
+  });
+
+  it('restores built-in rates when a rate file is replaced by an alias-only file', () => {
+    const opus = resolveModelPricing('claude-opus-4-8');
+    applyCustomPricing(
+      writePricing({
+        'claude-opus-4-8': { inputPerMTok: 99, outputPerMTok: 99, contextWindow: 1000 },
+      }),
+    );
+    applyCustomPricing(writePricing({ aliases: { 'gw-claude-sonnet': 'claude-sonnet-4-6' } }));
+    expect(resolveModelPricing('claude-opus-4-8')).toEqual(opus);
+  });
+
+  it('keeps the built-in table for an alias-only file', () => {
+    const opus = resolveModelPricing('claude-opus-4-8');
+    applyCustomPricing(writePricing({ aliases: { 'gw-claude-sonnet': 'claude-sonnet-4-6' } }));
+    expect(resolveModelPricing('claude-opus-4-8')).toEqual(opus);
+    expect(resolvePricing('gw-claude-sonnet')).toEqual(resolveModelPricing('claude-sonnet-4-6'));
   });
 });
 
@@ -259,19 +238,19 @@ describe('pricing memo', () => {
     expect(resolvePricing('claude-sonnet-5[1m]')).not.toBeNull();
   });
 
-  it('re-resolves after the overlay changes the table', () => {
+  it('re-resolves after a custom pricing file adds a model', () => {
     expect(resolvePricing('claude-foo-9-9')).toBeNull();
 
     dir = mkdtempSync(join(tmpdir(), 'preflight-pricing-memo-'));
-    const overlayPath = join(dir, 'pricing.json');
+    const customPath = join(dir, 'pricing.json');
     writeFileSync(
-      overlayPath,
+      customPath,
       JSON.stringify({
         'claude-foo-9-9': { inputPerMTok: 1, outputPerMTok: 2, contextWindow: 100_000 },
       }),
       { mode: 0o600 },
     );
-    applyGapFilledOverlay(overlayPath);
+    applyCustomPricing(customPath);
 
     expect(resolvePricing('claude-foo-9-9')?.contextWindow).toBe(100_000);
   });
@@ -281,7 +260,7 @@ describe('pricing memo', () => {
     dir = mkdtempSync(join(tmpdir(), 'preflight-pricing-memo-'));
     const file = join(dir, 'pricing.json');
     writeFileSync(file, JSON.stringify({ aliases: { 'gw-claude-sonnet': 'claude-sonnet-4-6' } }));
-    applyPricingOverlay(file);
+    applyCustomPricing(file);
     expect(resolvePricing('gw-claude-sonnet')).not.toBeNull();
   });
 
@@ -311,7 +290,7 @@ describe('family fallback', () => {
 
   afterEach(() => {
     consoleError.mockRestore();
-    applyPricingOverlay(null);
+    applyCustomPricing(null);
     clearPricingMemo();
     if (dir) rmSync(dir, { recursive: true, force: true });
     dir = null;
@@ -361,30 +340,30 @@ describe('family fallback', () => {
     });
   });
 
-  it('lets an overlay entry stand in as a sibling and yield to an exact entry', () => {
+  it('lets a custom pricing entry stand in as a sibling and yield to an exact entry', () => {
     dir = mkdtempSync(join(tmpdir(), 'preflight-pricing-family-'));
-    const overlayPath = join(dir, 'pricing.json');
+    const customPath = join(dir, 'pricing.json');
     writeFileSync(
-      overlayPath,
+      customPath,
       JSON.stringify({
         'claude-zzz-3-2': { inputPerMTok: 7, outputPerMTok: 9, contextWindow: 100_000 },
       }),
       { mode: 0o600 },
     );
-    applyPricingOverlay(overlayPath);
+    applyCustomPricing(customPath);
     expect(resolvePricingDetail('claude-zzz-3-5')).toMatchObject({
       source: 'estimated',
       estimatedFrom: 'claude-zzz-3-2',
     });
     writeFileSync(
-      overlayPath,
+      customPath,
       JSON.stringify({
         'claude-zzz-3-2': { inputPerMTok: 7, outputPerMTok: 9, contextWindow: 100_000 },
         'claude-zzz-3-5': { inputPerMTok: 1, outputPerMTok: 2, contextWindow: 100_000 },
       }),
       { mode: 0o600 },
     );
-    applyPricingOverlay(overlayPath);
+    applyCustomPricing(customPath);
     expect(resolvePricingDetail('claude-zzz-3-5')).toMatchObject({ source: 'table' });
   });
 });

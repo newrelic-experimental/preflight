@@ -122,4 +122,26 @@ describe('InfoTooltip', () => {
 
     expect(screen.getByRole('tooltip')).toBeInTheDocument();
   });
+
+  it('shifts the tooltip left so its right edge stays inside a narrow viewport', () => {
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(640);
+    render(<InfoTooltip text="Explains the panel." />);
+    const button = screen.getByRole('button', { name: 'What is this?' });
+    vi.spyOn(button, 'getBoundingClientRect').mockReturnValue(new DOMRect(500, 100, 12, 12));
+
+    fireEvent.mouseEnter(button);
+
+    expect(screen.getByRole('tooltip').style.left).toBe('392px');
+  });
+
+  it('keeps the tooltip at the button when it fits', () => {
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1280);
+    render(<InfoTooltip text="Explains the panel." />);
+    const button = screen.getByRole('button', { name: 'What is this?' });
+    vi.spyOn(button, 'getBoundingClientRect').mockReturnValue(new DOMRect(500, 100, 12, 12));
+
+    fireEvent.mouseEnter(button);
+
+    expect(screen.getByRole('tooltip').style.left).toBe('500px');
+  });
 });

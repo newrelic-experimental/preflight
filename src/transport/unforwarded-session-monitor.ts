@@ -28,13 +28,12 @@ const SNAPSHOT_SESSION_LIMIT = 20;
  * Why this process fell back to local mode: a credential was missing, or the
  * helper command that supplies it failed.
  */
-export type CloudForwardingGapReason =
-  'missing-license-key' | 'missing-account-id' | 'secret-helper-failed';
+export type CloudForwardingGapReason = 'missing-license-key' | 'secret-helper-failed';
 
 export interface CloudForwardingGap {
   readonly reason: CloudForwardingGapReason;
   /** The credential `reason` is about. */
-  readonly missingField: 'licenseKey' | 'accountId';
+  readonly missingField: 'licenseKey';
   /** The mode the config asked for before the fallback (`cloud` or `both`). */
   readonly requestedMode: Mode;
 }
@@ -84,7 +83,7 @@ export interface UnforwardedSessionMonitorOptions {
 /** How to fix the gap. Log it once at startup; the per-session warnings omit it. */
 export const UNFORWARDED_SESSIONS_HINT =
   'This dashboard process is not forwarding to New Relic because it cannot see your cloud ' +
-  'credentials. Add licenseKey and accountId to the config file (the dashboard LaunchAgent ' +
+  'credentials. Add licenseKey to the config file (the dashboard LaunchAgent ' +
   'does not inherit shell environment variables), then restart the dashboard.';
 
 /** Same fix-it hint for a gap caused by a failing secret helper command. */
@@ -125,7 +124,7 @@ export function detectCloudForwardingGap(err: unknown): CloudForwardingGap | nul
         : undefined;
   if (!source) return null;
   return {
-    reason: source.missingField === 'licenseKey' ? 'missing-license-key' : 'missing-account-id',
+    reason: 'missing-license-key',
     missingField: source.missingField,
     requestedMode: source.mode,
   };
