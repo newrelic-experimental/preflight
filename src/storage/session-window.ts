@@ -58,7 +58,13 @@ export function windowShare(s: WindowSource, w: ActivityWindow): WindowShare {
   const start = s.startTime;
   const last = lastActivityMs(s);
   const lifetimeUsd = Math.max(0, s.estimatedCostUsd ?? 0);
-  if (start >= w.startMs && last < w.endMs) {
+  // Cost can be booked to a day outside the session's recorded span, such as
+  // a turn before the tracker started, so a span inside the window is not enough.
+  const daysInWindow = Object.keys(s.costByDayUsd ?? {}).every((day) => {
+    const dayStart = dayStartOfKey(day);
+    return localEndOfDay(dayStart) > w.startMs && dayStart < w.endMs;
+  });
+  if (start >= w.startMs && last < w.endMs && daysInWindow) {
     return { weight: 1, costUsd: lifetimeUsd, toolCalls: s.toolCallCount };
   }
 
