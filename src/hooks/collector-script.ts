@@ -494,7 +494,7 @@ interface HookInput {
   file_path?: string;
   content?: string;
   edits?: { old_string?: string; new_string?: string }[];
-  // Windsurf (https://docs.windsurf.com/windsurf/cascade/hooks) sends a
+  // Windsurf (https://docs.windsurf.com/de/windsurf/cascade/hooks) sends a
   // completely different envelope from every other platform: the event name
   // itself is `agent_action_name`, not `hook_event_name`, and all
   // event-specific data lives nested under `tool_info` rather than flat
@@ -816,7 +816,7 @@ function extractOutputMeta(
 
 /**
  * Windsurf nests all event-specific data under `tool_info` instead of flat
- * top-level fields (https://docs.windsurf.com/windsurf/cascade/hooks).
+ * top-level fields (https://docs.windsurf.com/de/windsurf/cascade/hooks).
  * Returns an empty object when tool_info is missing or malformed so callers
  * can destructure without null checks.
  */
@@ -847,7 +847,7 @@ function processHook(raw: string, cliEvent?: string): void {
   // conversation_id is its closest analog (one per chat, like a Claude Code
   // session). Claude Code and Kiro always send session_id, so this only
   // takes effect for Cursor events.
-  // Windsurf (https://docs.windsurf.com/windsurf/cascade/hooks) never sends
+  // Windsurf (https://docs.windsurf.com/de/windsurf/cascade/hooks) never sends
   // session_id either — trajectory_id is its closest analog, the same role
   // conversation_id plays for Cursor.
   // Antigravity (https://antigravity.google/docs/hooks) never sends
@@ -890,7 +890,7 @@ function processHook(raw: string, cliEvent?: string): void {
   // spellings here (this file intentionally has no platform-adapter import —
   // see the file's own "no heavy imports" design constraint).
   // Windsurf sends the event name as agent_action_name, not hook_event_name
-  // (https://docs.windsurf.com/windsurf/cascade/hooks) — already lowercase
+  // (https://docs.windsurf.com/de/windsurf/cascade/hooks) — already lowercase
   // with underscores (e.g. "pre_read_code"), but .toLowerCase() is harmless
   // and keeps this line uniform with every other platform's derivation.
   const eventName = (data.hook_event_name ?? data.agent_action_name)?.toLowerCase();
@@ -1202,7 +1202,7 @@ function processHook(raw: string, cliEvent?: string): void {
       ...(data.file_path !== undefined && { toolInput: { file_path: data.file_path } }),
     };
   } else if (eventName === 'pre_read_code') {
-    // Confirmed payload: https://docs.windsurf.com/windsurf/cascade/hooks#pre_read_code
+    // Confirmed payload: https://docs.windsurf.com/de/windsurf/cascade/hooks#pre_read_code
     const filePath = getWindsurfToolInfo(data).file_path;
     event = {
       mode: 'pre' as const,
@@ -1246,7 +1246,7 @@ function processHook(raw: string, cliEvent?: string): void {
       ...(typeof filePath === 'string' && { toolInput: { file_path: filePath } }),
     };
   } else if (eventName === 'pre_run_command') {
-    // Confirmed payload: https://docs.windsurf.com/windsurf/cascade/hooks#pre_run_command
+    // Confirmed payload: https://docs.windsurf.com/de/windsurf/cascade/hooks#pre_run_command
     const commandLineRaw = getWindsurfToolInfo(data).command_line;
     const commandLine = typeof commandLineRaw === 'string' ? commandLineRaw : '';
     event = {
